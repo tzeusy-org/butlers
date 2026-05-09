@@ -12,12 +12,12 @@
  * Data:
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
  *   useIssues()             -- AttentionList
- *   useButlers()            -- ButlerIndex, KPI "butlers" cell
- *   useCostSummary("today") -- KPI "cost" cell, ButlerIndex per-butler cost
- *   useSessions(today)      -- KPI "sessions" cell
- *   useApprovalMetrics()    -- KPI "approvals" cell, NextList pending approvals
+ *   useButlers()            -- ButlerIndex, RuntimeSummaryKpi
+ *   useCostSummary("today") -- ButlerIndex per-butler cost
+ *   useApprovalMetrics()    -- RuntimeSummaryKpi "approvals" cell, NextList pending approvals
  *
  * bu-1fpvp.2 -- Frontend: replace DashboardPage with editorial layout.
+ * bu-bm58r.1 -- Runtime summary KPI card from existing hooks.
  */
 
 import { Page } from "@/components/ui/page";
@@ -25,7 +25,6 @@ import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useIssues } from "@/hooks/use-issues";
-import { useSessions } from "@/hooks/use-sessions";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 
 import { AttentionList } from "@/components/overview/AttentionList";
@@ -34,8 +33,8 @@ import { ButlerIndex } from "@/components/overview/ButlerIndex";
 import { DateEyebrow } from "@/components/overview/DateEyebrow";
 import { Elaboration } from "@/components/overview/Elaboration";
 import { Headline } from "@/components/overview/Headline";
-import { KpiStrip } from "@/components/overview/KpiStrip";
 import { NextList } from "@/components/overview/NextList";
+import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
 
 export default function DashboardPage() {
   // Briefing
@@ -46,26 +45,14 @@ export default function DashboardPage() {
   } = useBriefing();
 
   // Supporting data
-  const { data: butlersResponse, isLoading: butlersLoading } = useButlers();
-  const { data: costSummaryResponse, isLoading: costLoading } = useCostSummary("today");
-  const { data: sessionsTodayResponse, isLoading: sessionsLoading } = useSessions(
-    {
-      limit: 1,
-      offset: 0,
-      since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString(),
-    },
-    { refetchInterval: 60_000 },
-  );
+  const { data: butlersResponse } = useButlers();
+  const { data: costSummaryResponse } = useCostSummary("today");
   const { data: issuesResponse } = useIssues();
-  const { data: approvalMetricsResponse, isLoading: approvalsLoading } = useApprovalMetrics();
+  const { data: approvalMetricsResponse } = useApprovalMetrics();
 
   // Derived values
   const butlers = butlersResponse?.data ?? [];
-  const totalButlers = butlers.length;
-  const healthyButlers = butlers.filter((b) => b.status === "ok").length;
   const issues = issuesResponse?.data ?? [];
-  const sessionsToday = sessionsTodayResponse?.meta.total ?? 0;
-  const costToday = costSummaryResponse?.data.total_cost_usd ?? 0;
   const byButler = costSummaryResponse?.data.by_butler ?? {};
   const pendingApprovals = approvalMetricsResponse?.data.total_pending ?? 0;
 
@@ -77,31 +64,6 @@ export default function DashboardPage() {
       sessions: b.sessions_24h ?? 0,
       costUsd: byButler[b.name] ?? 0,
     }));
-
-  // KPI cells
-  const kpiCells: [
-    { eyebrow: string; value: string | number; delta?: string },
-    { eyebrow: string; value: string | number; delta?: string },
-    { eyebrow: string; value: string | number; delta?: string },
-    { eyebrow: string; value: string | number; delta?: string },
-  ] = [
-    {
-      eyebrow: "Butlers",
-      value: butlersLoading ? "--" : `${healthyButlers}/${totalButlers}`,
-    },
-    {
-      eyebrow: "Sessions",
-      value: sessionsLoading ? "--" : sessionsToday,
-    },
-    {
-      eyebrow: "Cost",
-      value: costLoading ? "--" : `$${costToday.toFixed(2)}`,
-    },
-    {
-      eyebrow: "Approvals",
-      value: approvalsLoading ? "--" : pendingApprovals,
-    },
-  ];
 
   // NextList: show pending approvals as upcoming items when available
   const nextItems =
@@ -159,8 +121,8 @@ export default function DashboardPage() {
           {/* Attention list */}
           <AttentionList items={issues} />
 
-          {/* KPI strip */}
-          <KpiStrip cells={kpiCells} />
+          {/* Runtime summary KPI: total / healthy / sessions_24h / pending approvals */}
+          <RuntimeSummaryKpi />
         </div>
 
         {/* Right column: index */}

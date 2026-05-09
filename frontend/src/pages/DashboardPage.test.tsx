@@ -1,10 +1,10 @@
 /**
- * Tests for DashboardPage (editorial archetype, bu-1fpvp.2).
+ * Tests for DashboardPage (editorial archetype, bu-1fpvp.2 / bu-bm58r.1).
  *
  * Verifies the editorial-archetype layout:
  * - Briefing surface: DateEyebrow, BriefingStatus pill, Headline, Elaboration
  * - AttentionList with items and empty-state fallback
- * - KpiStrip cells
+ * - RuntimeSummaryKpi cells (total / healthy / sessions_24h / pending approvals)
  * - ButlerIndex rows
  * - NextList (pending approvals)
  * - Five state_class values render without crashing
@@ -21,13 +21,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import DashboardPage from "@/pages/DashboardPage";
 
 // ---------------------------------------------------------------------------
-// Mock all hooks used by DashboardPage
+// Mock all hooks used by DashboardPage (and RuntimeSummaryKpi)
 // ---------------------------------------------------------------------------
 
 vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
 vi.mock("@/hooks/use-costs", () => ({ useCostSummary: vi.fn() }));
-vi.mock("@/hooks/use-sessions", () => ({ useSessions: vi.fn() }));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
 vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
 
@@ -38,7 +37,6 @@ vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
-import { useSessions } from "@/hooks/use-sessions";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 
@@ -70,8 +68,8 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
   vi.mocked(useButlers).mockReturnValue({
     data: {
       data: [
-        { name: "general", status: "ok", port: 40101, type: "butler" },
-        { name: "health", status: "ok", port: 40102, type: "butler" },
+        { name: "general", status: "ok", port: 40101, type: "butler", sessions_24h: 3 },
+        { name: "health", status: "ok", port: 40102, type: "butler", sessions_24h: 2 },
       ],
       meta: {},
     },
@@ -92,12 +90,6 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
       },
       meta: {},
     },
-    isLoading: false,
-    isError: false,
-    error: null,
-  } as AnyMock);
-  vi.mocked(useSessions).mockReturnValue({
-    data: { data: [], meta: { total: 5 } },
     isLoading: false,
     isError: false,
     error: null,
@@ -266,33 +258,33 @@ describe("DashboardPage -- AttentionList", () => {
 });
 
 // ---------------------------------------------------------------------------
-// KPI strip
+// RuntimeSummaryKpi strip (bu-bm58r.1)
 // ---------------------------------------------------------------------------
 
-describe("DashboardPage -- KpiStrip", () => {
+describe("DashboardPage -- RuntimeSummaryKpi", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setDefaultData();
   });
 
-  it("renders Butlers KPI cell", () => {
+  it("renders Total butlers KPI cell", () => {
     const html = renderPage();
-    expect(html).toContain("Butlers");
+    expect(html).toContain("Total butlers");
   });
 
-  it("renders Sessions KPI cell", () => {
+  it("renders Healthy KPI cell", () => {
+    const html = renderPage();
+    expect(html).toContain("Healthy");
+  });
+
+  it("renders Sessions · 24h KPI cell", () => {
     const html = renderPage();
     expect(html).toContain("Sessions");
   });
 
-  it("renders Cost KPI cell", () => {
+  it("renders Pending approvals KPI cell", () => {
     const html = renderPage();
-    expect(html).toContain("Cost");
-  });
-
-  it("renders Approvals KPI cell", () => {
-    const html = renderPage();
-    expect(html).toContain("Approvals");
+    expect(html).toContain("Pending approvals");
   });
 });
 
