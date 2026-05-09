@@ -230,13 +230,12 @@ function ProcessFactsCard({ processFacts }: ProcessFactsCardProps) {
 // ---------------------------------------------------------------------------
 
 interface CostCardProps {
-  butlerName: string;
-  cost24h: number | undefined;
+  costToday: number | undefined;
   cost7d: number | undefined;
   isLoading: boolean;
 }
 
-function CostCard({ butlerName: _butlerName, cost24h, cost7d, isLoading }: CostCardProps) {
+function CostCard({ costToday, cost7d, isLoading }: CostCardProps) {
   return (
     <Card aria-label="Cost summary">
       <CardHeader>
@@ -248,14 +247,18 @@ function CostCard({ butlerName: _butlerName, cost24h, cost7d, isLoading }: CostC
             <Skeleton className="h-6 w-24" />
             <Skeleton className="h-6 w-24" />
           </div>
-        ) : cost24h == null && cost7d == null ? (
+        ) : costToday == null && cost7d == null ? (
           <p className="text-sm text-muted-foreground">No cost data</p>
         ) : (
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground font-medium">Last 24h</dt>
-            <dd className="font-mono">{formatCurrency(cost24h ?? 0)}</dd>
+            <dt className="text-muted-foreground font-medium">Today</dt>
+            <dd className="font-mono">
+              {costToday != null ? formatCurrency(costToday) : "--"}
+            </dd>
             <dt className="text-muted-foreground font-medium">Last 7d</dt>
-            <dd className="font-mono">{formatCurrency(cost7d ?? 0)}</dd>
+            <dd className="font-mono">
+              {cost7d != null ? formatCurrency(cost7d) : "--"}
+            </dd>
           </dl>
         )}
       </CardContent>
@@ -406,7 +409,7 @@ function OverviewSkeleton() {
 
 export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
   const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName);
-  const { data: cost24hResponse, isLoading: cost24hLoading } = useCostSummary("24h");
+  const { data: costTodayResponse, isLoading: costTodayLoading } = useCostSummary("today");
   const { data: cost7dResponse, isLoading: cost7dLoading } = useCostSummary("7d");
   const { data: sessionsResponse, isLoading: sessionsLoading } = useButlerSessions(butlerName, {
     limit: 5,
@@ -425,14 +428,13 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   }
 
   const butler = butlerResponse?.data;
-  // Use the per-butler cost if the summary is available; default to 0 when the butler
-  // had no spend in the period. Both are null/undefined only when the request failed
-  // or is still loading.
-  const cost24hSummary = cost24hResponse?.data;
+  // Derive per-butler costs. A value of undefined means the summary wasn't available
+  // (loading or error); 0 means the summary loaded but this butler had no spend.
+  const costTodaySummary = costTodayResponse?.data;
   const cost7dSummary = cost7dResponse?.data;
-  const cost24h = cost24hSummary ? (cost24hSummary.by_butler?.[butlerName] ?? 0) : undefined;
+  const costToday = costTodaySummary ? (costTodaySummary.by_butler?.[butlerName] ?? 0) : undefined;
   const cost7d = cost7dSummary ? (cost7dSummary.by_butler?.[butlerName] ?? 0) : undefined;
-  const costLoading = cost24hLoading || cost7dLoading;
+  const costLoading = costTodayLoading || cost7dLoading;
   const recentSessions = sessionsResponse?.data ?? [];
   const notifications = notificationsResponse?.data ?? [];
 
@@ -545,8 +547,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
 
       {/* Cost Card */}
       <CostCard
-        butlerName={butlerName}
-        cost24h={cost24h}
+        costToday={costToday}
         cost7d={cost7d}
         isLoading={costLoading}
       />

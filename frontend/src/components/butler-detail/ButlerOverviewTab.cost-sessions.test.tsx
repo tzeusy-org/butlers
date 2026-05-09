@@ -3,7 +3,7 @@
  *
  * Pins the contracts for both cards:
  *   Cost card:
- *     1. Renders "Last 24h" and "Last 7d" labels with monospace values.
+ *     1. Renders "Today" and "Last 7d" labels with monospace values.
  *     2. Shows "$0.00" when the butler has no spend in the period.
  *     3. Shows "No cost data" when both periods return no data.
  *     4. Shows a skeleton when isLoading.
@@ -29,6 +29,16 @@ import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 
 vi.mock("@/hooks/use-butlers", () => ({
   useButler: vi.fn(),
+  useButlerModules: vi.fn(() => ({ data: { data: [], meta: {} }, isLoading: false, isError: false, error: null })),
+}));
+
+vi.mock("@/hooks/use-system", () => ({
+  useButlerHeartbeats: vi.fn(() => ({
+    data: { data: { butlers: [] }, meta: {} },
+    isLoading: false,
+    isError: false,
+    error: null,
+  })),
 }));
 
 vi.mock("@/hooks/use-general", () => ({
@@ -168,7 +178,7 @@ function setupDefaultMocks({
     refetch: vi.fn().mockResolvedValue(undefined),
   } as ReturnType<typeof useButler>);
 
-  // useCostSummary is called twice: once with "24h" and once with "7d".
+  // useCostSummary is called twice: once with "today" and once with "7d".
   // Use mockImplementation to discriminate by argument instead of relying on
   // call-order queues, which are consumed across test invocations.
   vi.mocked(useCostSummary).mockImplementation((period) => {
@@ -207,14 +217,14 @@ describe("ButlerOverviewTab — cost card", () => {
     vi.resetAllMocks();
   });
 
-  it("renders 'Last 24h' and 'Last 7d' labels", () => {
+  it("renders 'Today' and 'Last 7d' labels", () => {
     setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain("Last 24h");
+    expect(html).toContain("Today");
     expect(html).toContain("Last 7d");
   });
 
-  it("renders 24h cost in monospace with dollar sign", () => {
+  it("renders today cost in monospace with dollar sign", () => {
     setupDefaultMocks({ costSummary24h: makeCostSummary(0.05) });
     const html = renderTab();
     // $0.05 should appear with monospace class (font-mono)
