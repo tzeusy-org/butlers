@@ -3,13 +3,15 @@
  * ButlerEducationReviewsTab — RTL tests pinning the three sections.
  *
  * Tests:
- *  - Renders three sections (mastery KPI strip, due-now, frontier)
+ *  - Renders three sections (mastery KPI strip, review timeline, frontier)
+ *  - Timeline sections grouped by Overdue / Today / This Week / Later
+ *  - Color-coded left borders on each timeline group section
  *  - Empty states are shown explicitly when data is empty (no infinite spinner)
  *  - KPI values render with data
- *  - Due-now items link to /education
+ *  - Review items link to /education
  *  - Frontier items appear when data is present
  *
- * bead: bu-3cujw.1
+ * bead: bu-3cujw.1, bu-1zefq
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -62,6 +64,22 @@ const PENDING_REVIEWS = [
     repetitions: 1,
     next_review_at: new Date(Date.now() - 7200_000).toISOString(), // 2h overdue
     mastery_status: "learning",
+  },
+  {
+    node_id: "node-ghi",
+    label: "Lambda functions",
+    ease_factor: 2.0,
+    repetitions: 0,
+    next_review_at: new Date(Date.now() + 3 * 24 * 60 * 60_000).toISOString(), // 3 days away — This Week
+    mastery_status: "learning",
+  },
+  {
+    node_id: "node-jkl",
+    label: "Async await",
+    ease_factor: 2.0,
+    repetitions: 0,
+    next_review_at: new Date(Date.now() + 14 * 24 * 60 * 60_000).toISOString(), // 14 days away — Later
+    mastery_status: "unseen",
   },
 ];
 
@@ -209,9 +227,9 @@ describe("ButlerEducationReviewsTab — three sections present", () => {
     expect(screen.getByTestId("mastery-kpi-strip")).toBeDefined();
   });
 
-  it("renders the due-now section", () => {
+  it("renders the review timeline section", () => {
     renderTab();
-    expect(screen.getByTestId("reviews-due-now-section")).toBeDefined();
+    expect(screen.getByTestId("reviews-timeline-section")).toBeDefined();
   });
 
   it("renders the frontier section", () => {
@@ -223,7 +241,9 @@ describe("ButlerEducationReviewsTab — three sections present", () => {
     renderTab();
     expect(screen.getByText("Total cards")).toBeDefined();
     expect(screen.getByText("Mastered")).toBeDefined();
-    expect(screen.getByText("Overdue")).toBeDefined();
+    // "Overdue" appears as both a KPI label and a timeline section title when there are overdue items
+    const overdueElements = screen.getAllByText("Overdue");
+    expect(overdueElements.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -255,10 +275,10 @@ describe("ButlerEducationReviewsTab — KPI values aggregate across maps", () =>
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Due-now list
+// Tests: Review timeline grouping
 // ---------------------------------------------------------------------------
 
-describe("ButlerEducationReviewsTab — due-now list", () => {
+describe("ButlerEducationReviewsTab — review timeline grouping", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
@@ -266,18 +286,42 @@ describe("ButlerEducationReviewsTab — due-now list", () => {
 
   afterEach(() => cleanup());
 
-  it("renders due-now items", () => {
+  it("renders the Overdue section for past-due items", () => {
     renderTab();
-    const items = screen.getAllByTestId("due-now-item");
-    expect(items.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("shows list comprehension item in due-now list", () => {
-    renderTab();
+    expect(screen.getByTestId("reviews-overdue-section")).toBeDefined();
+    // Both overdue items should be visible
     expect(screen.getByText("List comprehensions")).toBeDefined();
+    expect(screen.getByText("Decorators")).toBeDefined();
   });
 
-  it("due-now items link to /education", () => {
+  it("renders the This Week section for items due within 7 days", () => {
+    renderTab();
+    expect(screen.getByTestId("reviews-this-week-section")).toBeDefined();
+    expect(screen.getByText("Lambda functions")).toBeDefined();
+  });
+
+  it("renders the Later section for items due beyond 7 days", () => {
+    renderTab();
+    expect(screen.getByTestId("reviews-later-section")).toBeDefined();
+    expect(screen.getByText("Async await")).toBeDefined();
+  });
+
+  it("overdue section has red left border class", () => {
+    renderTab();
+    const overdueSection = screen.getByTestId("reviews-overdue-section");
+    // CardContent inside has the border class
+    const content = overdueSection.querySelector("[class*='border-l-red']");
+    expect(content).not.toBeNull();
+  });
+
+  it("this-week section has blue left border class", () => {
+    renderTab();
+    const weekSection = screen.getByTestId("reviews-this-week-section");
+    const content = weekSection.querySelector("[class*='border-l-blue']");
+    expect(content).not.toBeNull();
+  });
+
+  it("review items link to /education", () => {
     renderTab();
     const items = screen.getAllByTestId("due-now-item") as HTMLAnchorElement[];
     for (const item of items) {
@@ -322,11 +366,14 @@ describe("ButlerEducationReviewsTab — explicit empty states", () => {
 
   afterEach(() => cleanup());
 
-  it("shows empty state for due-now when no reviews are pending", () => {
+  it("shows empty state for reviews when no reviews are pending", () => {
     renderTab();
-    // No due-now-list — empty state line shows instead
-    expect(screen.queryByTestId("due-now-list")).toBeNull();
-    // Empty state lines appear (at least one for due-now)
+    // No timeline group sections — empty state line shows instead
+    expect(screen.queryByTestId("reviews-overdue-section")).toBeNull();
+    expect(screen.queryByTestId("reviews-today-section")).toBeNull();
+    expect(screen.queryByTestId("reviews-this-week-section")).toBeNull();
+    expect(screen.queryByTestId("reviews-later-section")).toBeNull();
+    // Empty state lines appear (at least one for reviews)
     const emptyLines = screen.getAllByTestId("empty-state-line");
     expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
@@ -368,9 +415,12 @@ describe("ButlerEducationReviewsTab — loading state", () => {
     expect(screen.queryByTestId("empty-state-line")).toBeNull();
   });
 
-  it("does not render due-now-list while loading", () => {
+  it("does not render timeline group sections while loading", () => {
     renderTab();
-    expect(screen.queryByTestId("due-now-list")).toBeNull();
+    expect(screen.queryByTestId("reviews-overdue-section")).toBeNull();
+    expect(screen.queryByTestId("reviews-today-section")).toBeNull();
+    expect(screen.queryByTestId("reviews-this-week-section")).toBeNull();
+    expect(screen.queryByTestId("reviews-later-section")).toBeNull();
   });
 
   it("does not render frontier-list while loading", () => {

@@ -7,7 +7,8 @@
  *
  * Three sections:
  *  1. Mastery KPI strip — total cards, mastered, overdue count.
- *  2. Due now — overdue pending reviews, top 5. Click → /education.
+ *  2. Review timeline — grouped by Overdue / Today / This Week / Later with
+ *     color-coded left borders per spec (dashboard-education-ui).
  *  3. Frontier — next ready-to-learn nodes across active maps, top 5.
  *
  * All hooks are called once at the top level and passed down to avoid
@@ -172,62 +173,126 @@ function LoadingLine() {
 }
 
 // ---------------------------------------------------------------------------
-// Section: Due Now
+// Section: Review Timeline (Overdue / Today / This Week / Later)
 // ---------------------------------------------------------------------------
 
-function DueNowSection({
+interface TimelineGroup {
+  label: string;
+  testId: string;
+  borderClass: string;
+  entries: ReviewEntry[];
+}
+
+function groupByTimePeriod(entries: ReviewEntry[]): TimelineGroup[] {
+  const now = new Date();
+  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const weekEnd = new Date(todayEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  const groups: TimelineGroup[] = [
+    { label: "Overdue", testId: "reviews-overdue-section", borderClass: "border-l-4 border-l-red-500", entries: [] },
+    { label: "Today", testId: "reviews-today-section", borderClass: "border-l-4 border-l-amber-500", entries: [] },
+    { label: "This Week", testId: "reviews-this-week-section", borderClass: "border-l-4 border-l-blue-500", entries: [] },
+    { label: "Later", testId: "reviews-later-section", borderClass: "border-l-4 border-l-gray-300", entries: [] },
+  ];
+
+  for (const entry of entries) {
+    const reviewDate = new Date(entry.next_review_at);
+    if (reviewDate < now) {
+      groups[0].entries.push(entry);
+    } else if (reviewDate <= todayEnd) {
+      groups[1].entries.push(entry);
+    } else if (reviewDate <= weekEnd) {
+      groups[2].entries.push(entry);
+    } else {
+      groups[3].entries.push(entry);
+    }
+  }
+
+  return groups;
+}
+
+function ReviewTimelineSection({
   entries,
   isLoading,
 }: {
   entries: ReviewEntry[];
   isLoading: boolean;
 }) {
-  const top5 = entries.slice(0, 5);
+  const groups = groupByTimePeriod(entries);
+  const hasAny = groups.some((g) => g.entries.length > 0);
+
+  if (isLoading) {
+    return (
+      <Card data-testid="reviews-timeline-section">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Reviews</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <LoadingLine />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!hasAny) {
+    return (
+      <Card data-testid="reviews-timeline-section">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Reviews</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <EmptyStateLine>
+            No reviews scheduled — keep learning and reviews will appear here.
+          </EmptyStateLine>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
-    <Card data-testid="reviews-due-now-section">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Due now</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
-          <LoadingLine />
-        ) : top5.length === 0 ? (
-          <EmptyStateLine>No reviews due — keep learning!</EmptyStateLine>
-        ) : (
-          <ul className="divide-y" data-testid="due-now-list">
-            {top5.map((entry) => (
-              <li
-                key={`${entry.mind_map_id}-${entry.node_id}`}
-                className="flex items-center justify-between py-2"
-              >
-                <div>
-                  <Link
-                    to="/education"
-                    className="text-sm font-medium hover:underline"
-                    data-testid="due-now-item"
+    <div className="space-y-3" data-testid="reviews-timeline-section">
+      {groups
+        .filter((group) => group.entries.length > 0)
+        .map((group) => (
+          <Card key={group.label} data-testid={group.testId}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">{group.label}</CardTitle>
+            </CardHeader>
+            <CardContent className={group.borderClass}>
+              <ul className="divide-y" data-testid={`${group.testId}-list`}>
+                {group.entries.map((entry) => (
+                  <li
+                    key={`${entry.mind_map_id}-${entry.node_id}`}
+                    className="flex items-center justify-between py-2"
                   >
-                    {entry.label}
-                  </Link>
-                  <p className="text-xs text-muted-foreground">{entry.mind_map_title}</p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Badge variant="outline" className="text-xs font-mono">
-                    {entry.mastery_status}
-                  </Badge>
-                  <Link
-                    to="/education"
-                    className="text-xs text-muted-foreground hover:underline"
-                  >
-                    Review →
-                  </Link>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+                    <div>
+                      <Link
+                        to="/education"
+                        className="text-sm font-medium hover:underline"
+                        data-testid="due-now-item"
+                      >
+                        {entry.label}
+                      </Link>
+                      <p className="text-xs text-muted-foreground">{entry.mind_map_title}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Badge variant="outline" className="text-xs font-mono">
+                        {entry.mastery_status}
+                      </Badge>
+                      <Link
+                        to="/education"
+                        className="text-xs text-muted-foreground hover:underline"
+                      >
+                        Review →
+                      </Link>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        ))}
+    </div>
   );
 }
 
@@ -328,14 +393,18 @@ function FrontierSection({
 export default function ButlerEducationReviewsTab() {
   const { pendingEntries, mastery, frontierEntries, isLoading } = useReviewsTabData();
 
+  const overdueCount = pendingEntries.filter(
+    (e) => new Date(e.next_review_at) < new Date(),
+  ).length;
+
   return (
     <div className="space-y-4 pt-4" data-testid="education-reviews-tab">
       <MasteryKpiStrip
         mastery={mastery}
-        overdueCount={pendingEntries.length}
+        overdueCount={overdueCount}
         isLoading={isLoading}
       />
-      <DueNowSection entries={pendingEntries} isLoading={isLoading} />
+      <ReviewTimelineSection entries={pendingEntries} isLoading={isLoading} />
       <FrontierSection entries={frontierEntries} isLoading={isLoading} />
     </div>
   );
