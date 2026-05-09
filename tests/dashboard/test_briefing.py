@@ -15,7 +15,7 @@ Coverage:
 
 from __future__ import annotations
 
-import time
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -446,7 +446,7 @@ class TestCacheTTL:
             ) as client:
                 resp1 = await client.get("/api/dashboard/briefing")
                 # Sleep long enough for the TTL to expire.
-                time.sleep(0.05)
+                await asyncio.sleep(0.05)
                 resp2 = await client.get("/api/dashboard/briefing")
 
         assert resp1.status_code == 200
