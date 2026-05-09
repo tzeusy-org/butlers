@@ -191,6 +191,69 @@ memory_store_fact(
 
 If the object entity doesn't exist yet (e.g., a new organization), create it with `memory_entity_create` first, then store the edge-fact.
 
+## Step 5c: Correct Existing Edge-Facts (Retract + Replace)
+
+When the user **corrects** an existing relationship — phrased as "X works at Y, not Z", "actually X moved to company Y", or "X no longer works at Z, they're at Y now" — this is a **correction workflow**, not a new-fact workflow. Do NOT simply append a new fact; retract the old edge-fact first.
+
+**Correction is signaled by language like:** "not", "actually", "instead", "correction", "no longer", "moved to", "now at".
+
+### Correction workflow for employment/workplace
+
+```python
+# "Yousof works at Globex, not ACME"
+# Step 1: Resolve the person
+entity_id = memory_entity_resolve("Yousof", entity_type="person")["entity_id"]
+
+# Step 2: Find the active works_at edge-fact(s) to retract
+old_facts = memory_search(
+    query="Yousof works_at",
+    types=["fact"],
+    filters={"entity_id": entity_id, "predicate": "works_at"}
+)
+# Also search for stale workplace property-facts
+old_props = memory_search(
+    query="Yousof workplace",
+    types=["fact"],
+    filters={"entity_id": entity_id, "predicate": "workplace"}
+)
+
+# Step 3: Retract each old active fact
+for fact in old_facts + old_props:
+    if fact.get("validity") == "active":
+        memory_forget(memory_type="fact", memory_id=fact["id"])
+
+# Step 4: Resolve or create the new organization entity
+candidates = memory_entity_resolve(name="Globex", entity_type="organization")
+if candidates:
+    new_org_entity_id = candidates[0]["entity_id"]
+else:
+    result = memory_entity_create(
+        canonical_name="Globex",
+        entity_type="organization",
+        metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"}
+    )
+    new_org_entity_id = result["entity_id"]
+
+# Step 5: Store the new edge-fact with correction provenance in metadata
+memory_store_fact(
+    subject="Yousof",
+    predicate="works_at",
+    content="<role if known, else omit>",
+    entity_id=entity_id,
+    object_entity_id=new_org_entity_id,
+    permanence="stable",
+    importance=7.0,
+    tags=["work"],
+    metadata={"correction_source": "user", "corrected_from": "ACME"}
+)
+```
+
+**Critical rules for corrections:**
+- **Never** leave the old edge-fact active after a correction. The facts supersession system keys on `(entity_id, predicate, scope)` — a new `workplace` property-fact does NOT supersede a `works_at` edge-fact because they have different predicates.
+- **Never** store an audit predicate like `workplace_correction`. Use `metadata` on the new fact to record provenance.
+- **Always** resolve or create the new organization entity before storing the new edge-fact. A fact without `object_entity_id` is invisible in the relationship graph.
+- When in doubt about whether the user is correcting vs adding new info, use `memory_search` with `filters={"entity_id": ..., "predicate": "works_at"}` to check if a prior fact exists.
+
 ## Step 6: Log Interactions
 
 When the message implies the user interacted with a person (met, called, had lunch, etc.), log the interaction using the resolved `contact_id`:
@@ -393,11 +456,12 @@ User: "What does Alice like?"
 2. `memory_entity_resolve("Sarah", entity_type="person", context_hints={"topic": "dinner, visit", "mentioned_with": ["John"]})` → `entity_id="<uuid-sarah>"`, single match
 3. `interaction_log(contact_id="<john_contact_id>", interaction_type="meal", summary="Dinner with Sarah. John moving to Seattle for Amazon job.")`
 4. `interaction_log(contact_id="<sarah_contact_id>", interaction_type="meal", summary="Dinner with John. Mentioned might visit.")`
-5. `memory_store_fact(subject="John", predicate="workplace", content="Amazon (starting next month)", entity_id="<uuid-john>", permanence="stable", importance=8.0, tags=["work", "major-change"])`
-6. `memory_store_fact(subject="John", predicate="lives_in", content="Seattle (moving next month)", entity_id="<uuid-john>", permanence="stable", importance=8.0, tags=["location", "major-change"])`
-7. `memory_store_fact(subject="Sarah", predicate="travel_intent", content="might visit (context: John's move)", entity_id="<uuid-sarah>", permanence="volatile", importance=4.0)`
-8. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
-9. `notify(channel="telegram", message="Logged dinner with John and Sarah. Noted John's move to Amazon in Seattle next month. Should I set a reminder to check in with him after the move?", intent="reply", request_context=...)`
+5. Resolve Amazon org: `memory_entity_resolve("Amazon", entity_type="organization")` → `entity_id="<uuid-amazon>"` (create if new)
+6. `memory_store_fact(subject="John", predicate="works_at", content="Amazon (starting next month)", entity_id="<uuid-john>", object_entity_id="<uuid-amazon>", permanence="stable", importance=8.0, tags=["work", "major-change"])` — edge-fact: John → Amazon
+7. `memory_store_fact(subject="John", predicate="lives_in", content="Seattle (moving next month)", entity_id="<uuid-john>", permanence="stable", importance=8.0, tags=["location", "major-change"])`
+8. `memory_store_fact(subject="Sarah", predicate="travel_intent", content="might visit (context: John's move)", entity_id="<uuid-sarah>", permanence="volatile", importance=4.0)`
+9. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
+10. `notify(channel="telegram", message="Logged dinner with John and Sarah. Noted John's move to Amazon in Seattle next month. Should I set a reminder to check in with him after the move?", intent="reply", request_context=...)`
 
 ### Example 6: Ambiguous Name — Inferred Resolution (HIGH confidence)
 
@@ -496,6 +560,21 @@ You should still run Steps 1–3 for any *other* people mentioned in the message
 4. `memory_store_fact(subject="Dan", predicate="recent_travel", content="visited Japan, saw cherry blossoms", entity_id="<uuid-dan>", permanence="volatile", importance=4.0, tags=["travel"])`
 5. `interaction_log(contact_id="<uuid-jake>", interaction_type="text", summary="Mentioned colleague Dan's trip to Japan")`
 6. `notify(channel="telegram", intent="react", emoji="🌸", request_context=...)`
+
+### Example 12: Workplace Correction — Retract + Replace
+
+**User message**: "Yousof works at Globex, not ACME"
+
+**Actions:**
+1. `memory_entity_resolve("Yousof", entity_type="person", context_hints={"topic": "workplace, ACME, Globex"})` → `entity_id="<uuid-yousof>"`, single match
+2. Find old `works_at` facts: `memory_search(query="Yousof works_at employment", types=["fact"], filters={"entity_id": "<uuid-yousof>", "predicate": "works_at"})` → returns fact `id="<old-fact-id>"` (ACME edge-fact)
+3. Find old `workplace` property-facts: `memory_search(query="Yousof workplace", types=["fact"], filters={"entity_id": "<uuid-yousof>", "predicate": "workplace"})` → may return additional stale entries
+4. Retract each active old fact: `memory_forget(memory_type="fact", memory_id="<old-fact-id>")` for ACME works_at and any workplace property-facts
+5. Resolve new org: `memory_entity_resolve("Globex", entity_type="organization")` → existing or create with `memory_entity_create(canonical_name="Globex", entity_type="organization", metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → `entity_id="<uuid-globex>"`
+6. `memory_store_fact(subject="Yousof", predicate="works_at", content="currently employed", entity_id="<uuid-yousof>", object_entity_id="<uuid-globex>", permanence="stable", importance=7.0, tags=["work"], metadata={"correction_source": "user", "corrected_from": "ACME"})`
+7. `notify(channel="telegram", message="Updated: Yousof now works at Globex (corrected from ACME).", intent="reply", request_context=...)`
+
+**Wrong:** Storing `fact_set(contact_id, "workplace", "Globex")` or `memory_store_fact(predicate="workplace_correction", ...)`. These do not retract the old `works_at` edge-fact and leave the dashboard showing the wrong employer.
 
 ## Guidelines
 
