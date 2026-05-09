@@ -156,7 +156,7 @@ function ItemGlyph({
           {item.label[0]}
         </span>
       )}
-      {/* Status dot takes precedence over badge when both would render */}
+      {/* Badge takes precedence over status dot when both would render */}
       {count > 0 ? (
         <BadgeIndicator
           count={count}
