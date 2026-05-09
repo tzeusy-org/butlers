@@ -72,7 +72,9 @@ describe("ButlersPage", () => {
     });
 
     const html = renderPage();
+    // Spec §Empty-state: exact copy "No butlers found" with daemon-status guidance
     expect(html).toContain("No butlers found");
+    expect(html).toContain("Check daemon status");
   });
 
   it("renders full-page error when no cached data exists", () => {
@@ -82,8 +84,10 @@ describe("ButlersPage", () => {
     });
 
     const html = renderPage();
+    // Spec §Error: error region + error message + retry affordance
     expect(html).toContain("Something went wrong");
     expect(html).toContain("network offline");
+    expect(html).toContain("Retry");
   });
 
   it("keeps cached butlers visible on refetch error", () => {
@@ -168,6 +172,59 @@ describe("ButlersPage", () => {
       const html = renderPage();
       // "Quarantined" chip should not appear
       expect(html).not.toContain("Quarantined");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Spec scenarios — sort, empty, error, polling (bu-insd4.3)
+  // -------------------------------------------------------------------------
+
+  describe("spec scenarios", () => {
+    // Spec §Butler card grid: butlers sorted alphabetically by name,
+    // staffers (type="staffer") grouped after all butlers.
+    it("sorts butlers alphabetically and groups staffers after butlers", () => {
+      setQueryState({
+        data: {
+          data: [
+            { name: "zebra", status: "ok", port: 40105, type: "butler" as const },
+            { name: "alpha", status: "ok", port: 40102, type: "butler" as const },
+            { name: "mango", status: "ok", port: 40103, type: "staffer" as const },
+            { name: "apple", status: "ok", port: 40104, type: "staffer" as const },
+          ],
+        },
+      });
+
+      const html = renderPage();
+
+      // All four names must be present
+      expect(html).toContain("zebra");
+      expect(html).toContain("alpha");
+      expect(html).toContain("mango");
+      expect(html).toContain("apple");
+
+      // Butlers section appears before Staffers section
+      const butlersSectionPos = html.indexOf(">Butlers<");
+      const staffersSectionPos = html.indexOf(">Staffers<");
+      expect(butlersSectionPos).toBeGreaterThan(-1);
+      expect(staffersSectionPos).toBeGreaterThan(-1);
+      expect(butlersSectionPos).toBeLessThan(staffersSectionPos);
+
+      // Within butlers: "alpha" appears before "zebra" (alphabetical)
+      const alphaPos = html.indexOf(">alpha<");
+      const zebraPos = html.indexOf(">zebra<");
+      expect(alphaPos).toBeGreaterThan(-1);
+      expect(zebraPos).toBeGreaterThan(-1);
+      expect(alphaPos).toBeLessThan(zebraPos);
+
+      // Within staffers: "apple" appears before "mango" (alphabetical)
+      const applePos = html.indexOf(">apple<");
+      const mangoPos = html.indexOf(">mango<");
+      expect(applePos).toBeGreaterThan(-1);
+      expect(mangoPos).toBeGreaterThan(-1);
+      expect(applePos).toBeLessThan(mangoPos);
+
+      // Staffers must appear after all butlers in the rendered HTML
+      expect(staffersSectionPos).toBeGreaterThan(zebraPos);
     });
   });
 

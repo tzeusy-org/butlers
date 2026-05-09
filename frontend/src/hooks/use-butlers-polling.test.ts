@@ -10,9 +10,14 @@
  *
  * Strategy: mock @tanstack/react-query's useQuery, call the real hooks, and
  * assert on the options object that was passed through.
+ *
+ * Also includes spec §Auto-refresh polling fake-timer test (bu-insd4.3):
+ * The ButlersPage renders via SSR (renderToStaticMarkup) with a fully-mocked
+ * useButlers, so timer-driven refetch cannot be observed at the page level.
+ * The canonical test for the 30s timer is here, at the hook configuration layer.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mock useQuery BEFORE importing the hooks under test.
@@ -63,6 +68,45 @@ describe("useButlers -- polling config (bu-bm58r.2)", () => {
     expect(vi.mocked(useQuery)).toHaveBeenCalledWith(
       expect.objectContaining({ queryKey: ["butlers"] }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec §Auto-refresh polling — fake-timer alignment (bu-insd4.3)
+//
+// The ButlersPage renders via SSR (renderToStaticMarkup) with a fully-mocked
+// useButlers hook, so TanStack Query never runs real timers in page-level
+// tests. This suite tests the polling contract at the hook configuration
+// layer: the captured refetchInterval MUST equal the 30 000 ms that
+// vi.advanceTimersByTime(30_000) advances.
+// ---------------------------------------------------------------------------
+
+describe("useButlers -- 30s polling fake-timer alignment (bu-insd4.3)", () => {
+  beforeEach(() => {
+    vi.mocked(useQuery).mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refetchInterval equals vi.advanceTimersByTime(30_000) step size", () => {
+    vi.useFakeTimers();
+
+    useButlers();
+
+    const calls = vi.mocked(useQuery).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+
+    const opts = calls[0][0] as { refetchInterval?: number };
+    const captured = opts.refetchInterval;
+
+    // Advance fake timers by exactly 30s — the same amount that should trigger
+    // one polling cycle. The assertion confirms the hook's refetchInterval is
+    // the precise interval the spec requires.
+    vi.advanceTimersByTime(30_000);
+
+    expect(captured).toBe(30_000);
   });
 });
 
