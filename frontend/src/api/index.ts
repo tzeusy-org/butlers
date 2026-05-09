@@ -142,6 +142,12 @@ export {
   setPrimaryCalendar,
   syncCalendarWorkspace,
   updateGeneralSettings,
+  getHomeSnapshotStatus,
+  getHomeDevices,
+  getHomeMaintenance,
+  getHomeEnergy,
+  getHomeEnergyTopConsumers,
+  getHomeCommandLog,
 } from "./client.ts";
 
 export type {
@@ -794,4 +800,15 @@ export type {
   TravelTripsParams,
   TravelUpcomingModel,
   TravelUpcomingTrip,
+} from "./types.ts";
+
+export type {
+  HomeSnapshotStatus,
+  HomeDeviceEntry,
+  HomeDevicePaginationMeta,
+  HomeDeviceInventoryResponse,
+  HomeEnergyDataPoint,
+  HomeTopConsumer,
+  HomeMaintenanceItem,
+  HomeCommandLogEntry,
 } from "./types.ts";

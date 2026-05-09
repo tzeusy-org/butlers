@@ -86,6 +86,11 @@ const ButlerRelationshipContactsTab = lazy(
   () => import("@/components/butler-detail/ButlerRelationshipContactsTab.tsx"),
 );
 
+// Home butler tabs (lazy)
+const ButlerHomeDevicesTab = lazy(
+  () => import("@/components/butler-detail/ButlerHomeDevicesTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Tab configuration
 // ---------------------------------------------------------------------------
@@ -789,13 +794,9 @@ export default function ButlerDetailPage() {
 
           {showDevicesTab && (
             <TabsContent value="devices">
-              <Card>
-                <CardContent className="py-12">
-                  <p className="text-muted-foreground text-center text-sm">
-                    Devices coming soon.
-                  </p>
-                </CardContent>
-              </Card>
+              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
+                <ButlerHomeDevicesTab />
+              </Suspense>
             </TabsContent>
           )}
 

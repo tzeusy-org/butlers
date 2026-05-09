@@ -3988,3 +3988,79 @@ export interface TravelTripsParams {
   offset?: number;
   limit?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Home butler types
+// ---------------------------------------------------------------------------
+
+/** Aggregate statistics about the Home butler's entity snapshot cache. */
+export interface HomeSnapshotStatus {
+  total_entities: number;
+  domains: Record<string, number>;
+  oldest_captured_at: string | null;
+  newest_captured_at: string | null;
+}
+
+/** A single device entry in the home butler device inventory. */
+export interface HomeDeviceEntry {
+  entity_id: string;
+  state: string;
+  friendly_name: string | null;
+  area_name: string | null;
+  domain: string;
+  last_updated: string | null;
+  health_status: "healthy" | "offline";
+}
+
+/** Pagination metadata for the device inventory endpoint. */
+export interface HomeDevicePaginationMeta {
+  page: number;
+  page_size: number;
+  total_count: number;
+  total_pages: number;
+}
+
+/** Paginated response for the device inventory endpoint. */
+export interface HomeDeviceInventoryResponse {
+  data: HomeDeviceEntry[];
+  meta: HomeDevicePaginationMeta;
+}
+
+/** A single time-series data point for energy consumption. */
+export interface HomeEnergyDataPoint {
+  timestamp: string;
+  total_kwh: number;
+  devices: Record<string, number>;
+}
+
+/** A top energy-consuming device entry. */
+export interface HomeTopConsumer {
+  entity_id: string;
+  friendly_name: string | null;
+  total_kwh: number;
+  percentage: number;
+}
+
+/** A maintenance item with computed status. */
+export interface HomeMaintenanceItem {
+  id: string;
+  name: string;
+  category: string;
+  interval_days: number;
+  last_completed_at: string | null;
+  next_due_at: string | null;
+  status: "overdue" | "due" | "upcoming" | "ok";
+  notes: string | null;
+}
+
+/** A single entry in the Home Assistant command audit log. */
+export interface HomeCommandLogEntry {
+  id: number;
+  domain: string;
+  service: string;
+  target: Record<string, unknown> | null;
+  data: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  context_id: string | null;
+  issued_at: string;
+}
