@@ -146,3 +146,184 @@ Entities is both necessary and sufficient.
   Backed by `GET /api/general/entities?q=&tag=`.
 
 <!-- END bu-dg5qc.1 -->
+
+<!-- BEGIN bu-dg5qc.2 -->
+
+## health
+
+**Tab decision:** No additional bespoke tab (spec-mandated `+Health` conditional tab is sufficient)
+
+**Justification:**
+The health butler already carries a spec-mandated conditional `+Health` tab
+(`openspec/changes/archive/2026-02-24-alpha-release-mvp/specs/dashboard-butler-management/spec.md:61-63`).
+That tab is defined to show a card grid linking to six health sub-pages: Measurements, Medications,
+Conditions, Symptoms, Meals, and Research — which directly maps to the six entity types the API exposes.
+The `+Health` conditional tab therefore already IS the bespoke surface for this butler. Adding a second
+bespoke tab alongside the spec-mandated one would create an ambiguous duplicate rather than a coherent
+augmentation.
+
+All seven API endpoints serve data that belongs under the existing `+Health` tab sub-pages. There is no
+domain content that falls outside what the spec-mandated conditional tab already covers. The decision is
+therefore: honour the existing spec commitment rather than layer a redundant bespoke tab on top of it.
+If the `+Health` tab body needs to be upgraded from navigation cards to data panels (KPI strip, trend
+charts, adherence timeline), that is a spec-amendment task against the `+Health` tab itself, not a
+new bespoke-tab decision.
+
+**Supporting endpoints (confirming the existing +Health tab fully covers the domain):**
+
+| Endpoint | File:line | Existing +Health sub-page |
+|---|---|---|
+| `GET /api/health/measurements` | `roster/health/api/router.py:68` | Measurements |
+| `GET /api/health/medications` | `roster/health/api/router.py:136` | Medications |
+| `GET /api/health/medications/{id}/doses` | `roster/health/api/router.py:195` | Medications (dose log) |
+| `GET /api/health/conditions` | `roster/health/api/router.py:246` | Conditions |
+| `GET /api/health/symptoms` | `roster/health/api/router.py:290` | Symptoms |
+| `GET /api/health/meals` | `roster/health/api/router.py:388` | Meals |
+| `GET /api/health/research` | `roster/health/api/router.py:458` | Research |
+
+**Panel sketch for the existing +Health tab (for completeness — as a data-panel upgrade, not a new tab):**
+
+- **KPI strip (full-width, 4 cols):** Latest measurement per type (weight, blood pressure, glucose),
+  active medication count, medication adherence rate (doses taken vs. scheduled this week).
+  Backed by `GET /api/health/measurements?limit=1&type=<type>` per type and
+  `GET /api/health/medications?active=true`.
+- **Measurement trends · 30d (3 cols):** Sparkline per tracked metric (weight, BP systolic/diastolic,
+  glucose) over the trailing 30 days. Backed by `GET /api/health/measurements?since=<30d ago>`.
+- **Active conditions & recent symptoms (1 col):** Compact list of active conditions and the three
+  most recent symptoms with severity dots. Backed by `GET /api/health/conditions` and
+  `GET /api/health/symptoms?limit=3`.
+- **Recent meals · today (2 cols):** Breakfast / lunch / dinner / snack entries for today with
+  calorie totals where available. Backed by `GET /api/health/meals?since=<today 00:00>`.
+- **Research notes (2 cols):** Most recently saved research entries with tag chips and source link.
+  Backed by `GET /api/health/research?limit=5`.
+
+---
+
+## home
+
+**Tab decision:** `Devices` (bespoke tab warranted)
+
+**Justification:**
+The home butler owns a rich, purpose-built smart-home data model — device inventory (HA entity
+snapshot cache), energy consumption time-series, maintenance items, and command audit log — that
+has no equivalent in any base resident tab (Activity, Logs, Approvals, Spend, Config, Memory).
+The Logs base tab covers session/MCP logs, not HA command history. The Activity base tab covers
+butler session activity, not smart-home device state.
+
+A `Devices` bespoke tab is the correct surface for three reasons:
+
+1. **Device health is uniquely actionable**: The `GET /api/home/devices?health=offline` filter
+   surfaces unhealthy devices; the `GET /api/home/maintenance` endpoint surfaces overdue maintenance
+   items with computed urgency status. This is operator-actionable data with no base-tab home.
+2. **Energy is domain-specific and visual**: `GET /api/home/energy` and `/energy/top-consumers`
+   provide time-series data suited to a chart panel. This is the home butler's analytics surface.
+3. **Command audit is distinct from session audit**: `GET /api/home/command-log` records HA service
+   calls (domain, service, target, result) — a different audit dimension from the Sessions base tab.
+
+The tab name `Devices` (rather than `Home` or `Smart Home`) reflects the primary lens: the user's
+primary question when opening this tab is "what are my devices doing?" Device inventory, health
+status, energy consumption, and maintenance all answer that question.
+
+**Supporting endpoints:**
+
+| Endpoint | File:line | Role in the tab |
+|---|---|---|
+| `GET /api/home/devices` | `roster/home/api/router.py:353` | KPI strip + device inventory table (domain/area/health filters) |
+| `GET /api/home/snapshot-status` | `roster/home/api/router.py:303` | Freshness widget — total entities, per-domain counts, oldest/newest captured_at |
+| `GET /api/home/energy` | `roster/home/api/router.py:470` | Energy time-series chart (day/hour granularity) |
+| `GET /api/home/energy/top-consumers` | `roster/home/api/router.py:607` | Top-10 consumers bar chart (entity_id, friendly_name, total_kwh, percentage) |
+| `GET /api/home/maintenance` | `roster/home/api/router.py:801` | Maintenance items panel (overdue/due/upcoming/ok status chips) |
+| `GET /api/home/command-log` | `roster/home/api/router.py:229` | HA command audit panel (domain, service, target, result, timestamp) |
+| `GET /api/home/areas` | `roster/home/api/router.py:196` | Area filter list for device table |
+
+**Indicative panel composition (4-col grid):**
+
+- **KPI strip (full-width, 4 cols):** Total device count, offline device count (with destructive badge
+  if > 0), overdue maintenance item count (with amber badge), latest snapshot freshness
+  (`newest_captured_at` relative time). Backed by `GET /api/home/snapshot-status` and
+  `GET /api/home/devices?health=offline` (count only) and
+  `GET /api/home/maintenance?status=overdue` (count only).
+- **Device inventory (3 cols):** Paginated table — entity_id, friendly_name, area, domain, state,
+  health_status chip. Filterable by domain, area, and health status inline. Row-click opens
+  entity detail drawer. Backed by `GET /api/home/devices`.
+- **Maintenance queue (1 col):** Compact urgency list — name, category, next_due_at, status chip
+  (overdue / due / upcoming / ok). Backed by `GET /api/home/maintenance`.
+- **Energy · 7d (2 cols):** Area chart of total kWh per day over the trailing 7 days, with
+  top-3 consumer legend. Backed by `GET /api/home/energy?period=day` and
+  `GET /api/home/energy/top-consumers`.
+- **HA command log (2 cols):** Recent HA service calls — timestamp, domain.service, target, result
+  chip (success / error). Backed by `GET /api/home/command-log?limit=20`.
+
+---
+
+## lifestyle
+
+**Tab decision:** No bespoke (no API router; all domain data is memory-module facts)
+
+**Justification:**
+The lifestyle butler has no `api/` directory and exposes no dashboard API endpoints. Its entire data
+surface — taste preferences, consumption state, Spotify-enriched facts, hobby records — lives
+exclusively in the memory module's SPO facts store, not in butler-specific REST endpoints.
+
+The Memory base tab already provides access to the facts store through the shared memory browser.
+There is no domain-specific structured data (no transactions, no device inventory, no episode
+timeline, no subscription roster) that would require a dedicated bespoke panel beyond what the
+Memory tab already offers.
+
+The lifestyle butler's scheduled outputs (weekly taste digest) are delivered via `notify()` and
+are therefore visible in the Notifications surface rather than a dashboard tab. The Spotify and
+Steam integration tools are agent-side MCP tools, not dashboard-facing endpoints.
+
+Until a dedicated `roster/lifestyle/api/router.py` is added with domain-specific aggregate
+endpoints (e.g. a taste-trend summary, top-artists-this-month, current-consumption-state query),
+a bespoke tab cannot be backed by any API and would have nothing to render.
+
+**Confirming absence of API surface:**
+
+| What was checked | Finding |
+|---|---|
+| `roster/lifestyle/api/` directory | Does not exist |
+| `roster/lifestyle/butler.toml` modules | `memory`, `calendar`, `contacts`, `spotify`, `steam` — all standard modules, no custom API |
+| Domain data storage | Memory module SPO facts only (`memory_store_fact` / `memory_search`) |
+
+**Panel sketch if a lifestyle API were added in future:**
+
+- **KPI strip:** Taste facts logged this week, current listening artist (from `listens_to` volatile
+  fact), currently watching (from `watches` volatile fact).
+- **Taste timeline · 30d:** Horizontal list of logged preferences grouped by week — restaurants,
+  genres, artists, hobbies. Backed by a future `GET /api/lifestyle/facts/recent` endpoint.
+- **Genre & cuisine heatmap:** Frequency map of `likes_genre` and `likes_cuisine` facts over time.
+
+---
+
+## messenger
+
+**Tab decision:** No bespoke (infrastructure staffer; no domain content)
+
+**Justification:**
+The messenger butler is a `type = "staffer"` infrastructure component, not a domain butler.
+It has no `api/` directory and exposes no dashboard API endpoints beyond core infrastructure
+routes. Its entire function is delivery execution: accept `notify.v1` payloads from the Switchboard
+and emit them to Telegram, Email, and WhatsApp channel APIs.
+
+The messenger has no domain-specific data model, no user-facing content surface, and no
+accumulation of domain state that would warrant a bespoke tab. The Logs base tab covers session
+history; the Activity base tab covers delivery session activity. The MCP base tab surfaces the
+channel egress tools. No bespoke panel would add meaningful information beyond what these base
+tabs already provide.
+
+Unlike domain butlers (chronicler, finance, health, home) whose data models are rich and unique,
+the messenger's data model is intentionally minimal: delivery outcomes and channel credentials.
+Delivery outcomes belong in the Logs/Sessions base tab; credentials belong in the Config/State
+base tab. Neither warrants a dedicated bespoke panel.
+
+**Confirming absence of API surface:**
+
+| What was checked | Finding |
+|---|---|
+| `roster/messenger/api/` directory | Does not exist |
+| `roster/messenger/butler.toml` type | `type = "staffer"` — excluded from user-message routing |
+| Domain data storage | Session log + state store only; no domain entity tables |
+| Butler-specific data model | None — delivery outcomes are operational, not domain content |
+
+<!-- END bu-dg5qc.2 -->
