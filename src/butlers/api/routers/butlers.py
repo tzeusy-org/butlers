@@ -254,7 +254,8 @@ def _build_process_facts(
     host = os.environ.get("BUTLERS_HOST", "localhost")
     container_name: str | None = host if host and host != "localhost" else None
 
-    config_path = f"roster/{connection_info.name}/butler.toml"
+    toml_path = roster_dir / connection_info.name / "butler.toml"
+    config_path = str(toml_path.relative_to(roster_dir.parent))
 
     return ProcessFacts(
         container_name=container_name,

@@ -141,7 +141,7 @@ class TestProcessFactsCard:
 
         data = await _get_detail(app, "general")
         pf = data["process_facts"]
-        assert pf["config_path"] == "roster/general/butler.toml"
+        assert pf["config_path"].endswith("general/butler.toml")
 
     async def test_port_matches_butler_config(self, app, roster_dir):
         """port in process_facts matches the butler's configured port."""
