@@ -13,7 +13,7 @@ encode that decision before frontend work rewrites the butler detail tab shell.
 - Preserve the full 10 spec-mandated tabs in operator mode: Overview,
   Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory.
 - Require the selected mode to persist in `localStorage` using
-  `butlers:detail:mode`, defaulting to `resident`.
+  `butlers.detail.mode`, defaulting to `resident`.
 - Require deep links to mode-exclusive tabs to resolve the owning mode before
   fallback; operator-only tabs auto-promote the page to operator mode rather
   than falling back to Overview.

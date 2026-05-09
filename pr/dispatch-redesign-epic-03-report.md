@@ -184,7 +184,7 @@ The default is `"resident"`. Gate-B resolution and spec are correctly implemente
 | `OPERATOR_EXTENSION_TABS` = ["models"] (non-spec) | design.md §6 | Covered (bu-8bayc.1, tests) |
 | Resident is the default mode (no localStorage) | design.md §1 | Covered (bu-8bayc.2, tests) |
 | Mode persisted in localStorage | design.md §1 | Covered (bu-8bayc.2, tests) |
-| localStorage key is `butlers:detail:mode` | design.md §1 | **GAP — key mismatch** (see §5) |
+| localStorage key is `butlers.detail.mode` | design.md §1 | Covered (spec updated to match code, bu-4zxxs) |
 | Mode toggle pill with `role="switch"` | spec.md:96-99 | Covered (bu-8bayc.2, tests) |
 | `aria-checked` reflects mode | proposal.md | Covered (bu-8bayc.2, tests) |
 | Operator-only deep link auto-promotes mode | design.md §4 | Covered (bu-8bayc.2, tests) |
@@ -230,26 +230,17 @@ spec and code remain (see §6).
 
 ## 6. Gaps
 
-### GAP-1: localStorage key mismatch (cosmetic / spec conformance)
+### GAP-1: localStorage key mismatch (cosmetic / spec conformance) — RESOLVED
 
-**Severity:** Low — functional behavior is identical; the mismatch only affects
-cross-tab state sharing by other consumers that read the exact key.
+**Resolution (bu-4zxxs):** Spec updated to match the shipped code. The canonical form
+is `butlers.detail.mode` (dots). All OpenSpec change documents (`design.md`,
+`proposal.md`, `tasks.md`, and the `dashboard-butler-management` spec delta) have been
+updated to use the dot form. No code change was needed; the code was already correct.
 
-**Spec says:** `butlers:detail:mode` (colons) — in `design.md §Decision 1`,
-`proposal.md`, and all scenarios in the OpenSpec delta `spec.md`.
-
-**Code uses:** `butlers.detail.mode` (dots) — `ButlerDetailPage.tsx:113` and all
-tests use the dot form.
-
-**Impact:** No functional regression. If the key is ever read by another page or a
-migration tool, the colon vs dot difference would cause a stale-read fallback to
-resident. The key was decided in the spec during Epic 00 scaffolding and the
-implementation chose dots; the spec was not updated to match.
-
-**Recommended resolution:** Update `MODE_STORAGE_KEY` in `ButlerDetailPage.tsx` from
-`"butlers.detail.mode"` to `"butlers:detail:mode"` and update all test assertions to
-match. OR update the spec to canonicalize the dot form. Either is acceptable; both
-should happen atomically.
+**Original finding:** Spec used `butlers:detail:mode` (colons) while code used
+`butlers.detail.mode` (dots). The dot form was merged and shipped in PR #1502; the spec
+was not updated at that time. The decision to canonicalize dots avoids a runtime
+migration path for any user who already has the dot-form key stored in their browser.
 
 ---
 
@@ -316,7 +307,7 @@ Epic 03 core deliverables are complete and merged:
 | Gate-B B2 disposition documented | This report |
 | OpenSpec `redesign-detail-page-tab-vocabulary` validates | Confirmed |
 
-Three gaps remain for follow-up beads:
-- **GAP-1** (localStorage key) — `"butlers.detail.mode"` vs spec `"butlers:detail:mode"`
+Two gaps remain for follow-up beads:
+- **GAP-1** (localStorage key) — RESOLVED by bu-4zxxs: spec updated to canonical `"butlers.detail.mode"` (dots)
 - **GAP-2** (missing conditional tabs) — `general` Collections/Entities, `education` Reviews
 - **GAP-3** (reverse deep-link promotion) — operator→resident for resident-only tab params

@@ -29,7 +29,7 @@ the full administrative vocabulary.
 - **AND** the following resident base tabs are visible: Overview, Activity,
   Logs, Approvals, Spend, Config, Memory
 - **AND** the resident mode is persisted in `localStorage` under
-  `butlers:detail:mode` when the user selects it explicitly
+  `butlers.detail.mode` when the user selects it explicitly
 
 #### Scenario: Operator mode preserves the administrative vocabulary
 
@@ -38,13 +38,13 @@ the full administrative vocabulary.
   Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory
 - **AND** these tabs are rendered inside the primary slot's `<TabsList>`
 - **AND** the operator mode is persisted in `localStorage` under
-  `butlers:detail:mode`
+  `butlers.detail.mode`
 
 #### Scenario: Stored mode is restored
 
-- **WHEN** `localStorage["butlers:detail:mode"]` is `resident`
+- **WHEN** `localStorage["butlers.detail.mode"]` is `resident`
 - **THEN** the page loads in resident mode
-- **WHEN** `localStorage["butlers:detail:mode"]` is `operator`
+- **WHEN** `localStorage["butlers.detail.mode"]` is `operator`
 - **THEN** the page loads in operator mode
 - **WHEN** the stored value is absent or any other value
 - **THEN** the page loads in resident mode
@@ -58,7 +58,7 @@ the full administrative vocabulary.
 - **THEN** the page switches to operator mode
 - **AND** the requested tab is selected instead of falling back to Overview
 - **AND** the promoted operator mode is persisted in `localStorage` under
-  `butlers:detail:mode`
+  `butlers.detail.mode`
 
 #### Scenario: Deep links to resident-only tabs select resident mode
 
@@ -68,7 +68,7 @@ the full administrative vocabulary.
 - **THEN** the page switches to resident mode
 - **AND** the requested tab is selected instead of falling back to Overview
 - **AND** the resident mode is persisted in `localStorage` under
-  `butlers:detail:mode`
+  `butlers.detail.mode`
 
 #### Scenario: Non-spec Models tab is operator-only while exposed
 

@@ -16,7 +16,7 @@
 - [ ] 2.1 Split butler detail base-tab configuration into resident and operator
       tab sets.
 - [ ] 2.2 Make resident mode the default and persist the selected mode in
-      `localStorage` under `butlers:detail:mode`.
+      `localStorage` under `butlers.detail.mode`.
 - [ ] 2.3 Add an accessible operator/resident toggle in the detail page shell
       actions or an equivalent page-level control.
 - [ ] 2.4 Render resident mode with Overview, Activity, Logs, Approvals, Spend,

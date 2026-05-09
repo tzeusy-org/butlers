@@ -25,7 +25,7 @@ Reporter: Beads Worker (automated reconciliation)
 
 **Status:** CLOSED
 
-**Chosen option:** B2 - Operator/resident mode toggle. Operator mode shows all 10 spec-mandated base tabs (Overview, Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory). Resident mode shows the narrow Dispatch vocabulary (Overview, Activity, Logs, Approvals, Spend, Config, Memory). Default is resident; persisted via `localStorage` key `butlers:detail:mode`. Deep-linking to a non-resident tab auto-promotes mode. Conditional tabs (switchboard +Routing Log/Registry, health +Health, general +Collections/Entities, education +Reviews) preserved across both modes.
+**Chosen option:** B2 - Operator/resident mode toggle. Operator mode shows all 10 spec-mandated base tabs (Overview, Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory). Resident mode shows the narrow Dispatch vocabulary (Overview, Activity, Logs, Approvals, Spend, Config, Memory). Default is resident; persisted via `localStorage` key `butlers.detail.mode`. Deep-linking to a non-resident tab auto-promotes mode. Conditional tabs (switchboard +Routing Log/Registry, health +Health, general +Collections/Entities, education +Reviews) preserved across both modes.
 
 **Owner:** uniquosity@gmail.com
 **Timestamp:** 2026-05-09
@@ -83,7 +83,7 @@ Resolves the conflict between Dispatch's Tier-2 Hero block on the butler detail 
 
 **Validates:** PASS (`openspec validate redesign-detail-page-tab-vocabulary --strict`)
 
-Encodes Gate B option B2: operator/resident mode toggle. Resident mode (default) uses the narrow 7-tab Dispatch vocabulary (Overview, Activity, Logs, Approvals, Spend, Config, Memory); operator mode uses the full 10 spec-mandated base tabs. Mode persists in `localStorage` under `butlers:detail:mode`. Deep links to operator-only tabs auto-promote the page to operator mode rather than falling back to Overview. Conditional tabs (switchboard, health, general, education) are preserved across both modes. The non-spec Models tab is treated as operator-only. Proposal cites gate-B bead ID `bu-41p8z` explicitly.
+Encodes Gate B option B2: operator/resident mode toggle. Resident mode (default) uses the narrow 7-tab Dispatch vocabulary (Overview, Activity, Logs, Approvals, Spend, Config, Memory); operator mode uses the full 10 spec-mandated base tabs. Mode persists in `localStorage` under `butlers.detail.mode`. Deep links to operator-only tabs auto-promote the page to operator mode rather than falling back to Overview. Conditional tabs (switchboard, health, general, education) are preserved across both modes. The non-spec Models tab is treated as operator-only. Proposal cites gate-B bead ID `bu-41p8z` explicitly.
 
 **Gate citation:** bu-41p8z (B2) - PRESENT
 

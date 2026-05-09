@@ -30,7 +30,7 @@ eleventh base tab, but implementation cannot ignore it while the route exists.
 ## Decisions
 
 1. **Mode storage.** The selected detail-page mode is persisted in browser
-   `localStorage` under `butlers:detail:mode`. Missing, invalid, or unsupported
+   `localStorage` under `butlers.detail.mode`. Missing, invalid, or unsupported
    stored values resolve to `resident`.
 
 2. **Resident tabs.** Resident mode shows the Dispatch vocabulary:
