@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, useSearchParams } from "react-router";
+import { MemoryRouter, useParams, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerDetailPage, {
@@ -911,6 +911,60 @@ describe("ButlerDetailPage — deep-linking: conditional tab keys", () => {
     expect(isValidTab("registry", "general", "operator")).toBe(false);
     expect(isValidTab("registry", "health", "resident")).toBe(false);
   });
+
+  // ---------------------------------------------------------------------------
+  // New bespoke tabs: chronicler, finance, home, relationship, travel
+  // ---------------------------------------------------------------------------
+
+  it("timelines tab is a valid deep-link for chronicler butler in both modes", () => {
+    expect(isValidTab("timelines", "chronicler", "operator")).toBe(true);
+    expect(isValidTab("timelines", "chronicler", "resident")).toBe(true);
+  });
+
+  it("timelines tab is NOT a valid deep-link for a non-chronicler butler", () => {
+    expect(isValidTab("timelines", "general", "operator")).toBe(false);
+    expect(isValidTab("timelines", "health", "resident")).toBe(false);
+  });
+
+  it("finances tab is a valid deep-link for finance butler in both modes", () => {
+    expect(isValidTab("finances", "finance", "operator")).toBe(true);
+    expect(isValidTab("finances", "finance", "resident")).toBe(true);
+  });
+
+  it("finances tab is NOT a valid deep-link for a non-finance butler", () => {
+    expect(isValidTab("finances", "general", "operator")).toBe(false);
+    expect(isValidTab("finances", "health", "resident")).toBe(false);
+  });
+
+  it("devices tab is a valid deep-link for home butler in both modes", () => {
+    expect(isValidTab("devices", "home", "operator")).toBe(true);
+    expect(isValidTab("devices", "home", "resident")).toBe(true);
+  });
+
+  it("devices tab is NOT a valid deep-link for a non-home butler", () => {
+    expect(isValidTab("devices", "general", "operator")).toBe(false);
+    expect(isValidTab("devices", "health", "resident")).toBe(false);
+  });
+
+  it("contacts tab is a valid deep-link for relationship butler in both modes", () => {
+    expect(isValidTab("contacts", "relationship", "operator")).toBe(true);
+    expect(isValidTab("contacts", "relationship", "resident")).toBe(true);
+  });
+
+  it("contacts tab is NOT a valid deep-link for a non-relationship butler", () => {
+    expect(isValidTab("contacts", "general", "operator")).toBe(false);
+    expect(isValidTab("contacts", "health", "resident")).toBe(false);
+  });
+
+  it("trips tab is a valid deep-link for travel butler in both modes", () => {
+    expect(isValidTab("trips", "travel", "operator")).toBe(true);
+    expect(isValidTab("trips", "travel", "resident")).toBe(true);
+  });
+
+  it("trips tab is NOT a valid deep-link for a non-travel butler", () => {
+    expect(isValidTab("trips", "general", "operator")).toBe(false);
+    expect(isValidTab("trips", "health", "resident")).toBe(false);
+  });
 });
 
 describe("ButlerDetailPage — deep-linking: overview removes ?tab= param", () => {
@@ -1236,5 +1290,140 @@ describe("ButlerDetailPage — spec item 6: error state via DetailPage shell", (
     setButlerState(null, { isLoading: false, error: new Error("fetch failed") });
     const html = renderPage();
     expect(html).toContain("Retry");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bespoke conditional tabs: chronicler, finance, home, relationship, travel
+// ---------------------------------------------------------------------------
+//
+// bead: bu-dg5qc.4
+//
+// Each domain butler receives exactly one bespoke tab that is rendered only
+// when the page is for that specific butler. All five are stubs (Coming soon).
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — bespoke conditional tabs", () => {
+  function setButlerName(name: string) {
+    vi.mocked(useParams).mockReturnValue({ name });
+    setButlerState({ ...BASE_BUTLER, name });
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER); // default: general
+  });
+
+  afterEach(() => {
+    localStorageMock.clear();
+  });
+
+  // chronicler → Timelines
+  it("Timelines tab is rendered for chronicler butler", () => {
+    setButlerName("chronicler");
+    const html = renderPage();
+    expect(html).toContain("Timelines");
+  });
+
+  it("Timelines tab is NOT rendered for non-chronicler butler (general)", () => {
+    const html = renderPage();
+    expect(html).not.toContain("Timelines");
+  });
+
+  it("getAllTabs includes timelines for chronicler in both modes", () => {
+    expect(getAllTabs("chronicler", "operator")).toContain("timelines");
+    expect(getAllTabs("chronicler", "resident")).toContain("timelines");
+  });
+
+  it("getAllTabs does NOT include timelines for general", () => {
+    expect(getAllTabs("general", "operator")).not.toContain("timelines");
+  });
+
+  // finance → Finances
+  it("Finances tab is rendered for finance butler", () => {
+    setButlerName("finance");
+    const html = renderPage();
+    expect(html).toContain("Finances");
+  });
+
+  it("Finances tab is NOT rendered for non-finance butler (general)", () => {
+    const html = renderPage();
+    expect(html).not.toContain("Finances");
+  });
+
+  it("getAllTabs includes finances for finance in both modes", () => {
+    expect(getAllTabs("finance", "operator")).toContain("finances");
+    expect(getAllTabs("finance", "resident")).toContain("finances");
+  });
+
+  it("getAllTabs does NOT include finances for general", () => {
+    expect(getAllTabs("general", "operator")).not.toContain("finances");
+  });
+
+  // home → Devices
+  it("Devices tab is rendered for home butler", () => {
+    setButlerName("home");
+    const html = renderPage();
+    expect(html).toContain("Devices");
+  });
+
+  it("Devices tab is NOT rendered for non-home butler (general)", () => {
+    const html = renderPage();
+    expect(html).not.toContain("Devices");
+  });
+
+  it("getAllTabs includes devices for home in both modes", () => {
+    expect(getAllTabs("home", "operator")).toContain("devices");
+    expect(getAllTabs("home", "resident")).toContain("devices");
+  });
+
+  it("getAllTabs does NOT include devices for general", () => {
+    expect(getAllTabs("general", "operator")).not.toContain("devices");
+  });
+
+  // relationship → Contacts
+  it("Contacts tab is rendered for relationship butler", () => {
+    setButlerName("relationship");
+    const html = renderPage();
+    expect(html).toContain("Contacts");
+  });
+
+  it("Contacts tab is NOT rendered for non-relationship butler (general)", () => {
+    const html = renderPage();
+    expect(html).not.toContain("Contacts");
+  });
+
+  it("getAllTabs includes contacts for relationship in both modes", () => {
+    expect(getAllTabs("relationship", "operator")).toContain("contacts");
+    expect(getAllTabs("relationship", "resident")).toContain("contacts");
+  });
+
+  it("getAllTabs does NOT include contacts for general", () => {
+    expect(getAllTabs("general", "operator")).not.toContain("contacts");
+  });
+
+  // travel → Trips
+  it("Trips tab is rendered for travel butler", () => {
+    setButlerName("travel");
+    const html = renderPage();
+    expect(html).toContain("Trips");
+  });
+
+  it("Trips tab is NOT rendered for non-travel butler (general)", () => {
+    const html = renderPage();
+    expect(html).not.toContain("Trips");
+  });
+
+  it("getAllTabs includes trips for travel in both modes", () => {
+    expect(getAllTabs("travel", "operator")).toContain("trips");
+    expect(getAllTabs("travel", "resident")).toContain("trips");
+  });
+
+  it("getAllTabs does NOT include trips for general", () => {
+    expect(getAllTabs("general", "operator")).not.toContain("trips");
   });
 });
