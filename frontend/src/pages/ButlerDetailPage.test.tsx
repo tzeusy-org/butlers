@@ -66,6 +66,7 @@ const BASE_BUTLER: ButlerSummary = {
   status: "ok",
   port: 8001,
   type: "butler",
+  sessions_24h: 0,
 };
 
 function setButlerState(butler: ButlerSummary | null, opts: Partial<UseButlerResult> = {}) {

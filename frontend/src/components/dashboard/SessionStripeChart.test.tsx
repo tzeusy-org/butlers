@@ -104,7 +104,7 @@ import type { ButlerSummary } from "@/api/types"
 const mockUseQuery = vi.mocked(useQuery)
 
 function makeButler(name: string): ButlerSummary {
-  return { name, status: "ok", port: 41200, type: "butler" }
+  return { name, status: "ok", port: 41200, type: "butler", sessions_24h: 0 }
 }
 
 function renderChart(props: Parameters<typeof SessionStripeChart>[0]): string {

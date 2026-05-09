@@ -3,24 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import ButlersPage from "@/pages/ButlersPage";
-import { useButlers } from "@/hooks/use-butlers";
+import { resetUseButlersMock, setUseButlersState } from "@/test-utils/use-butlers";
 
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(),
 }));
 
-type UseButlersResult = ReturnType<typeof useButlers>;
-
-function setQueryState(state: Partial<UseButlersResult>) {
-  vi.mocked(useButlers).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    refetch: vi.fn().mockResolvedValue(undefined),
-    ...state,
-  } as UseButlersResult);
-}
+const setQueryState = setUseButlersState;
 
 function renderPage(): string {
   return renderToStaticMarkup(
@@ -32,7 +21,7 @@ function renderPage(): string {
 
 describe("ButlersPage", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetUseButlersMock();
   });
 
   it("renders loading skeleton via Page primitive", () => {
