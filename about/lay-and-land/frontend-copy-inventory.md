@@ -51,6 +51,16 @@ Do **not** edit manually: re-run the script to refresh.
 - Previous
 - Next
 
+## `frontend/src/pages/ButlerDetailPage.stories.tsx`
+
+- Chat
+- Loading butler…
+- Something went wrong: Failed to fetch butler data.
+- Force run butler
+- Open chat panel for general
+- Butler detail: general
+- Loading butler data
+
 ## `frontend/src/pages/ButlerDetailPage.tsx`
 
 - Sessions
@@ -67,6 +77,10 @@ Do **not** edit manually: re-run the script to refresh.
 - Health features are only available for the health butler.
 - View
 - Overview
+- Activity
+- Logs
+- Approvals
+- Spend
 - Config
 - Skills
 - Schedules
@@ -79,6 +93,10 @@ Do **not** edit manually: re-run the script to refresh.
 - Health
 - Routing Log
 - Registry
+- Activity view coming soon.
+- Logs view coming soon.
+- Approvals view coming soon.
+- Spend view coming soon.
 - routing log
 
 ## `frontend/src/pages/ButlersPage.tsx`
@@ -86,9 +104,11 @@ Do **not** edit manually: re-run the script to refresh.
 - Up
 - Down
 - Degraded
-- Status
-- Port
-- Open details
+- Unavailable
+- Active
+- Quarantined
+- Stale
+- open →
 - Total Agents
 - Healthy
 - Butlers
@@ -174,9 +194,6 @@ Do **not** edit manually: re-run the script to refresh.
 
 - Chronicles
 - Retrospective view of lived past time reconstructed from butler evidence.
-- Gantt area
-- Aggregations area
-- Scrubber
 
 ## `frontend/src/pages/ConditionsPage.tsx`
 
@@ -236,26 +253,9 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/pages/DashboardPage.tsx`
 
-- System-wide quality patrol status
-- View QA dashboard
-- Failed to load QA status.
-- QA Staffer not active.
-- Last patrol
-- Status
-- Patrols (24h)
-- Findings (24h)
-- Sessions
-- Butler activity over the past 24 hours
-- Recent Activity
-- Latest butler actions
-- Recent notification delivery failures across all butlers
-- View all
-- No failed notifications. All systems healthy.
-- Loading stats
 - Overview
-- sessions today
-- est. cost today
-- pending approvals
+- Briefing
+- Butler index
 
 ## `frontend/src/pages/EducationPage.tsx`
 
@@ -989,9 +989,6 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/butler-detail/ButlerOverviewTab.tsx`
 
-- Up
-- Down
-- Degraded
 - Active
 - Port
 - Status
@@ -1036,13 +1033,19 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/butler-detail/ButlerStateTab.tsx`
 
-- Set Value
+- Set value
 - Create or overwrite a key-value pair in the state store
 - Key
 - Value (JSON)
 - Cancel
 - State Store
 - e.g. config.theme
+
+## `frontend/src/components/butler-detail/ButlerStatusBadge.tsx`
+
+- Up
+- Degraded
+- Down
 
 ## `frontend/src/components/butler-detail/ButlerTriggerTab.tsx`
 
@@ -1117,6 +1120,14 @@ Do **not** edit manually: re-run the script to refresh.
 - Try again
 - No activity recorded for this window.
 - Loading stacked bar chart
+
+## `frontend/src/components/chronicles/ChroniclesDrilldownPanel.tsx`
+
+- Drilldown
+- Gantt area
+- Aggregations area
+- Chronicles drilldown
+- Scrubber
 
 ## `frontend/src/components/chronicles/EpisodeDrawer.tsx`
 
@@ -1194,6 +1205,10 @@ Do **not** edit manually: re-run the script to refresh.
 - No activity recorded for this window.
 - Location points appear when the chronicler detects travel or place events.
 - Location map
+
+## `frontend/src/components/chronicles/RecentDaysIndex.tsx`
+
+- No prior days projected yet.
 
 ## `frontend/src/components/chronicles/SourceStateBadgeStrip.tsx`
 
@@ -1326,7 +1341,6 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/health/MeasurementChart.tsx`
 
-- No measurements found for this type and date range.
 - From
 - To
 - Clear
@@ -1334,10 +1348,11 @@ Do **not** edit manually: re-run the script to refresh.
 - Type
 - Value
 - Notes
+- No measurements found.
+- No data available for this type and date range.
 
 ## `frontend/src/components/health/MedicationTracker.tsx`
 
-- No medications found.
 - No dose records yet.
 - Adherence:
 - Date
@@ -1345,6 +1360,8 @@ Do **not** edit manually: re-run the script to refresh.
 - Notes
 - Active
 - All
+- No medications found.
+- Medications appear here once they are added to your health record.
 
 ## `frontend/src/components/ingestion/BatchSettingsCard.tsx`
 
@@ -1527,8 +1544,9 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/layout/Sidebar.tsx`
 
-- Today&apos;s spend
 - Butlers
+- Today&apos;s spend
+- Main navigation
 
 ## `frontend/src/components/memory/ConcentricCirclesCanvas.tsx`
 
@@ -1623,6 +1641,29 @@ Do **not** edit manually: re-run the script to refresh.
 - Failed
 - Failure Rate
 - By channel:
+
+## `frontend/src/components/overview/AttentionList.tsx`
+
+- Nothing waiting.
+- Attention items
+
+## `frontend/src/components/overview/ButlerIndex.tsx`
+
+- No butlers active.
+- Butler index
+
+## `frontend/src/components/overview/KpiStrip.tsx`
+
+- Key performance indicators
+
+## `frontend/src/components/overview/NextList.tsx`
+
+- Nothing scheduled.
+- Upcoming items
+
+## `frontend/src/components/overview/RuntimeSummaryKpi.tsx`
+
+- System runtime summary
 
 ## `frontend/src/components/relationship/ContactDetailView.tsx`
 
@@ -2426,4 +2467,4 @@ Do **not** edit manually: re-run the script to refresh.
 - Preset windows
 
 ---
-*Total strings: 1903*
+*Total strings: 1917*
