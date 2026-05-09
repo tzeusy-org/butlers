@@ -10,7 +10,7 @@ vi.mock("@/hooks/use-butlers", () => ({
 }));
 
 vi.mock("@/hooks/use-general", () => ({
-  useRegistry: vi.fn(() => ({ data: undefined })),
+  useRegistry: vi.fn(() => ({ data: undefined, isSuccess: false })),
 }));
 
 import { useRegistry } from "@/hooks/use-general";
@@ -35,7 +35,7 @@ function renderPage(): string {
 describe("ButlersPage", () => {
   beforeEach(() => {
     resetUseButlersMock();
-    vi.mocked(useRegistry).mockReturnValue({ data: undefined } as ReturnType<typeof useRegistry>);
+    vi.mocked(useRegistry).mockReturnValue({ data: undefined, isSuccess: false } as ReturnType<typeof useRegistry>);
   });
 
   it("renders loading skeleton via Page primitive", () => {
@@ -179,8 +179,8 @@ describe("ButlersPage", () => {
 
     it("omits eligibility chip while registry is still loading", () => {
       setQueryState({ data: { data: [BUTLER], meta: {} } });
-      // registry not yet loaded: isSuccess is false (default mock has no isSuccess)
-      vi.mocked(useRegistry).mockReturnValue({ data: undefined } as ReturnType<typeof useRegistry>);
+      // registry not yet loaded: isSuccess is false
+      vi.mocked(useRegistry).mockReturnValue({ data: undefined, isSuccess: false } as ReturnType<typeof useRegistry>);
       const html = renderPage();
       // No eligibility chip at all while loading
       expect(html).not.toContain("Unavailable");

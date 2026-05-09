@@ -181,7 +181,8 @@ function ButlerGroup({
 
 export default function ButlersPage() {
   const { data: response, isLoading, isError, error, refetch } = useButlers();
-  const { data: registryResponse, isSuccess: registryLoaded } = useRegistry();
+  const { data: registryResponse } = useRegistry();
+  const registryLoaded = registryResponse != null;
 
   const { butlers, staffers, onlineCount } = useMemo(() => {
     const allSorted = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
