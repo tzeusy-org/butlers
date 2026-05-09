@@ -40,6 +40,10 @@ vi.mock("@/hooks/use-notifications", () => ({
   useButlerNotifications: vi.fn(() => ({ data: null, isLoading: false })),
 }));
 
+vi.mock("@/hooks/use-sessions", () => ({
+  useButlerSessions: vi.fn(() => ({ data: null, isLoading: false })),
+}));
+
 vi.mock("@/hooks/use-general", () => ({
   useRegistry: vi.fn(() => ({ data: null, isLoading: false })),
   useSetEligibility: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

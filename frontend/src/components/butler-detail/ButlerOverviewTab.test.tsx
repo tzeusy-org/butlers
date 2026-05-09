@@ -52,6 +52,10 @@ vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-sessions", () => ({
+  useButlerSessions: vi.fn(),
+}));
+
 // Stub EligibilityTimeline to avoid additional hook chains in SSR tests
 vi.mock("@/components/butler-detail/EligibilityTimeline", () => ({
   default: ({ butlerName }: { butlerName: string }) => (
@@ -74,6 +78,7 @@ import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useButlerNotifications } from "@/hooks/use-notifications";
 import { useButlerHeartbeats } from "@/hooks/use-system";
+import { useButlerSessions } from "@/hooks/use-sessions";
 
 // ---------------------------------------------------------------------------
 // Shared mock data
@@ -175,6 +180,13 @@ function setupDefaultMocks() {
     isError: false,
     error: null,
   } as ReturnType<typeof useButlerModules>);
+
+  vi.mocked(useButlerSessions).mockReturnValue({
+    data: { data: [], meta: { total: 0, offset: 0, limit: 5 } },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as ReturnType<typeof useButlerSessions>);
 }
 
 function renderTab(butlerName = "general"): string {

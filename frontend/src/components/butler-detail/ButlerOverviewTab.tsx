@@ -21,7 +21,8 @@ import { useCostSummary } from "@/hooks/use-costs";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useButlerNotifications } from "@/hooks/use-notifications";
 import { useButlerHeartbeats } from "@/hooks/use-system";
-import type { ModuleStatus, ProcessFacts } from "@/api/types";
+import { useButlerSessions } from "@/hooks/use-sessions";
+import type { ModuleStatus, ProcessFacts, SessionSummary } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -170,6 +171,25 @@ function formatDuration(seconds: number): string {
   return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 }
 
+/** Map session success field to a compact status badge. */
+function sessionStatusBadge(success: boolean | null) {
+  if (success === true) {
+    return (
+      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
+        Success
+      </Badge>
+    );
+  }
+  if (success === false) {
+    return <Badge variant="destructive">Failed</Badge>;
+  }
+  return (
+    <Badge variant="secondary" className="text-muted-foreground">
+      Running
+    </Badge>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Process facts card
 // ---------------------------------------------------------------------------
@@ -200,6 +220,101 @@ function ProcessFactsCard({ processFacts }: ProcessFactsCardProps) {
           <dt className="text-muted-foreground font-medium font-sans">Config</dt>
           <dd>{processFacts?.config_path ?? unavailable}</dd>
         </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cost card
+// ---------------------------------------------------------------------------
+
+interface CostCardProps {
+  costToday: number | undefined;
+  cost7d: number | undefined;
+  isLoading: boolean;
+}
+
+function CostCard({ costToday, cost7d, isLoading }: CostCardProps) {
+  return (
+    <Card aria-label="Cost summary">
+      <CardHeader>
+        <CardTitle>Cost</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-24" />
+            <Skeleton className="h-6 w-24" />
+          </div>
+        ) : costToday == null && cost7d == null ? (
+          <p className="text-sm text-muted-foreground">No cost data</p>
+        ) : (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+            <dt className="text-muted-foreground font-medium">Today</dt>
+            <dd className="font-mono">
+              {costToday != null ? formatCurrency(costToday) : "--"}
+            </dd>
+            <dt className="text-muted-foreground font-medium">Last 7d</dt>
+            <dd className="font-mono">
+              {cost7d != null ? formatCurrency(cost7d) : "--"}
+            </dd>
+          </dl>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Recent sessions card
+// ---------------------------------------------------------------------------
+
+interface RecentSessionsCardProps {
+  butlerName: string;
+  sessions: SessionSummary[];
+  isLoading: boolean;
+}
+
+function RecentSessionsCard({ butlerName, sessions, isLoading }: RecentSessionsCardProps) {
+  return (
+    <Card aria-label="Recent sessions">
+      <CardHeader>
+        <CardTitle>Recent Sessions</CardTitle>
+        <CardAction>
+          <Button variant="link" size="sm" asChild>
+            <Link to={`/butlers/${encodeURIComponent(butlerName)}/sessions`}>
+              View all
+            </Link>
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : sessions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No sessions yet</p>
+        ) : (
+          <ul className="divide-y divide-border" aria-label="sessions list">
+            {sessions.map((session) => (
+              <li key={session.id} className="py-2 flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm truncate text-foreground" title={session.prompt}>
+                    {session.prompt}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    <Time value={session.started_at} mode="smart" compact />
+                  </p>
+                </div>
+                <div className="shrink-0">{sessionStatusBadge(session.success)}</div>
+              </li>
+            ))}
+          </ul>
+        )}
       </CardContent>
     </Card>
   );
@@ -257,8 +372,21 @@ function OverviewSkeleton() {
         <CardHeader>
           <Skeleton className="h-5 w-28" />
         </CardHeader>
-        <CardContent>
-          <Skeleton className="h-8 w-20" />
+        <CardContent className="space-y-2">
+          <Skeleton className="h-6 w-24" />
+          <Skeleton className="h-6 w-24" />
+        </CardContent>
+      </Card>
+
+      {/* Recent sessions skeleton */}
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-36" />
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
         </CardContent>
       </Card>
 
@@ -281,7 +409,11 @@ function OverviewSkeleton() {
 
 export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
   const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName);
-  const { data: costResponse, isLoading: costLoading } = useCostSummary("today");
+  const { data: costTodayResponse, isLoading: costTodayLoading } = useCostSummary("today");
+  const { data: cost7dResponse, isLoading: cost7dLoading } = useCostSummary("7d");
+  const { data: sessionsResponse, isLoading: sessionsLoading } = useButlerSessions(butlerName, {
+    limit: 5,
+  });
   const {
     data: notificationsResponse,
     isLoading: notificationsLoading,
@@ -296,13 +428,15 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   }
 
   const butler = butlerResponse?.data;
-  const costSummary = costResponse?.data;
+  // Derive per-butler costs. A value of undefined means the summary wasn't available
+  // (loading or error); 0 means the summary loaded but this butler had no spend.
+  const costTodaySummary = costTodayResponse?.data;
+  const cost7dSummary = cost7dResponse?.data;
+  const costToday = costTodaySummary ? (costTodaySummary.by_butler?.[butlerName] ?? 0) : undefined;
+  const cost7d = cost7dSummary ? (cost7dSummary.by_butler?.[butlerName] ?? 0) : undefined;
+  const costLoading = costTodayLoading || cost7dLoading;
+  const recentSessions = sessionsResponse?.data ?? [];
   const notifications = notificationsResponse?.data ?? [];
-  const butlerCostToday = costSummary?.by_butler?.[butlerName] ?? 0;
-  const butlerCostShare =
-    costSummary && costSummary.total_cost_usd > 0
-      ? Math.round((butlerCostToday / costSummary.total_cost_usd) * 100)
-      : 0;
 
   // Find this butler's registry entry for eligibility state
   const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
@@ -412,33 +546,18 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       </Card>
 
       {/* Cost Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Cost Today</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {costLoading ? (
-            <Skeleton className="h-8 w-20" />
-          ) : costSummary ? (
-            <div>
-              <div className="text-2xl font-bold">
-                {formatCurrency(butlerCostToday)}
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-4 text-sm text-muted-foreground">
-                <div>
-                  <span className="font-medium">Share:</span> {butlerCostShare}%
-                </div>
-                <div>
-                  <span className="font-medium">Global total:</span>{" "}
-                  {formatCurrency(costSummary.total_cost_usd)}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No cost data</p>
-          )}
-        </CardContent>
-      </Card>
+      <CostCard
+        costToday={costToday}
+        cost7d={cost7d}
+        isLoading={costLoading}
+      />
+
+      {/* Recent Sessions */}
+      <RecentSessionsCard
+        butlerName={butlerName}
+        sessions={recentSessions}
+        isLoading={sessionsLoading}
+      />
 
       {/* Recent Notifications */}
       <Card>
