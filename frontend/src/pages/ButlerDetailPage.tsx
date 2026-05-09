@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import type { SessionParams, SessionSummary } from "@/api/types";
@@ -448,7 +449,11 @@ function ButlerHealthTab({ butlerName }: { butlerName: string }) {
 export default function ButlerDetailPage() {
   const { name = "" } = useParams<{ name: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { data: butlerResponse } = useButler(name);
+  const { data: butlerResponse, isLoading: butlerLoading, error: butlerError } = useButler(name);
+  const queryClient = useQueryClient();
+  const handleRetry = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["butlers", name] });
+  }, [queryClient, name]);
 
   const tabParam = searchParams.get("tab");
 
@@ -524,6 +529,9 @@ export default function ButlerDetailPage() {
       record={{ title: titleize(name), subtitle: description }}
       breadcrumbs={breadcrumbs}
       actions={<ButlerDetailActions butlerName={name} mode={mode} onModeChange={setMode} />}
+      loading={butlerLoading}
+      error={butlerError}
+      onRetry={handleRetry}
       pulse={<ButlerHeartbeatTile />}
       primary={
         <Tabs value={activeTab} onValueChange={handleTabChange}>

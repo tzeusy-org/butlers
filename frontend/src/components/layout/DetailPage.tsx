@@ -86,6 +86,8 @@ export interface DetailPageProps {
   // ----- Async state (forwarded to <Page>) -----
   loading?: boolean;
   error?: unknown | null;
+  /** When set, the error region shows a retry button. Forwarded to <Page>. */
+  onRetry?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +109,7 @@ export function DetailPage({
   practical,
   loading = false,
   error,
+  onRetry,
 }: DetailPageProps) {
   return (
     <Page
@@ -117,6 +120,7 @@ export function DetailPage({
       actions={actions}
       loading={loading}
       error={error}
+      onRetry={onRetry}
     >
       {/* Type pill — record classification badge beneath the H1 */}
       {record.type && (

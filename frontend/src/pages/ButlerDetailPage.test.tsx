@@ -1159,3 +1159,82 @@ describe("ButlerDetailPage — replaceState: setSearchParams uses replace:true",
     expect(mockSet).not.toHaveBeenCalled();
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// Spec items 5-6: loading/error forwarded to DetailPage shell
+// ---------------------------------------------------------------------------
+//
+// spec: openspec/specs/dashboard-butler-management/spec.md §145-152
+// bead: bu-wam7f
+//
+// 5. When the butler record is loading, the shell MUST render a skeleton
+//    (role="status" aria-label="Loading") and NO tab content.
+// 6. When the butler fetch fails, the shell MUST render the destructive error
+//    card (role="alert") and NO tab content.
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — spec item 5: loading state via DetailPage shell", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+  });
+
+  it("renders a loading skeleton (role=status) when butler record is loading", () => {
+    setButlerState(null, { isLoading: true, error: null });
+    const html = renderPage();
+    expect(html).toContain('role="status"');
+    expect(html).toContain('aria-label="Loading"');
+  });
+
+  it("does NOT render tab triggers during loading", () => {
+    setButlerState(null, { isLoading: true, error: null });
+    const html = renderPage();
+    // Operator tab triggers (Sessions, Skills, etc.) must not render during loading skeleton
+    expect(html).not.toContain(">Sessions<");
+    expect(html).not.toContain(">Skills<");
+    // No role="tab" elements should be present while skeleton is shown
+    expect(html).not.toContain('role="tab"');
+  });
+});
+
+describe("ButlerDetailPage — spec item 6: error state via DetailPage shell", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+  });
+
+  it("renders the destructive error card (role=alert) when butler fetch fails", () => {
+    setButlerState(null, { isLoading: false, error: new Error("butler not found") });
+    const html = renderPage();
+    expect(html).toContain('role="alert"');
+  });
+
+  it("error card shows the error message", () => {
+    setButlerState(null, { isLoading: false, error: new Error("butler not found") });
+    const html = renderPage();
+    expect(html).toContain("butler not found");
+  });
+
+  it("does NOT render tab triggers when an error is shown", () => {
+    setButlerState(null, { isLoading: false, error: new Error("not found") });
+    const html = renderPage();
+    // Operator tab triggers must not render during error state
+    expect(html).not.toContain(">Sessions<");
+    expect(html).not.toContain(">Skills<");
+    // No role="tab" elements should be present during error state
+    expect(html).not.toContain('role="tab"');
+  });
+
+  it("renders a Retry button alongside the error card", () => {
+    setButlerState(null, { isLoading: false, error: new Error("fetch failed") });
+    const html = renderPage();
+    expect(html).toContain("Retry");
+  });
+});
