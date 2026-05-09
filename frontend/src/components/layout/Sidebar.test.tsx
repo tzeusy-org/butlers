@@ -225,9 +225,9 @@ describe("Sidebar", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Active state: active item renders with a data-active attribute or class
-  // React Router NavLink calls the className function; DOM reflects resolved value.
-  // We verify the link is present (active) and check the data-slot for the trigger.
+  // Active state: NavLink sets aria-current="page" on the active anchor.
+  // This is the stable identity token — className function resolution is
+  // env-dependent and must not be used as the assertion target.
   // -------------------------------------------------------------------------
 
   it("active item link is present when its route matches", () => {
