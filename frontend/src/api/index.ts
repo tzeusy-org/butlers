@@ -774,3 +774,24 @@ export type {
   FinanceUpcomingBillsParams,
   FinanceUpcomingBillsResponse,
 } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Travel butler (bu-0eac9)
+// ---------------------------------------------------------------------------
+
+export { getTravelTrips, getTravelTripSummary, getTravelUpcoming } from "./client.ts";
+
+export type {
+  TravelAccommodation,
+  TravelAlert,
+  TravelDocument,
+  TravelLeg,
+  TravelPreTripAction,
+  TravelReservation,
+  TravelTimelineEntry,
+  TravelTrip,
+  TravelTripSummary,
+  TravelTripsParams,
+  TravelUpcomingModel,
+  TravelUpcomingTrip,
+} from "./types.ts";
