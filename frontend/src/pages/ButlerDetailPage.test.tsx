@@ -27,6 +27,7 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButler: vi.fn(),
   useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useButlerConfig: vi.fn(() => ({ data: null, isLoading: false })),
+  useButlerModules: vi.fn(() => ({ data: null, isLoading: false })),
   useButlerSkills: vi.fn(() => ({ data: null, isLoading: false })),
   useRuntimeConfig: vi.fn(() => ({ data: null, isLoading: false })),
   usePatchRuntimeConfig: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

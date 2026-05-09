@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getButler,
   getButlerConfig,
+  getButlerModules,
   getButlerSkills,
   getButlers,
   getRuntimeConfig,
@@ -39,6 +40,16 @@ export function useButlerConfig(name: string) {
     queryKey: ["butlers", name, "config"],
     queryFn: () => getButlerConfig(name),
     enabled: !!name,
+  });
+}
+
+/** Fetch per-module health status for a specific butler. */
+export function useButlerModules(name: string) {
+  return useQuery({
+    queryKey: ["butlers", name, "modules"],
+    queryFn: () => getButlerModules(name),
+    enabled: !!name,
+    refetchInterval: 30_000,
   });
 }
 

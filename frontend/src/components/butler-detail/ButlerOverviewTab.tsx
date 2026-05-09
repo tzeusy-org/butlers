@@ -14,12 +14,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Time } from "@/components/ui/time";
 import EligibilityTimeline from "@/components/butler-detail/EligibilityTimeline";
-import { useButler } from "@/hooks/use-butlers";
+import { useButler, useButlerModules } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useButlerNotifications } from "@/hooks/use-notifications";
-import type { ProcessFacts } from "@/api/types";
+import { useButlerHeartbeats } from "@/hooks/use-system";
+import type { ModuleStatus, ProcessFacts } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -33,36 +35,78 @@ interface ButlerOverviewTabProps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Map module health status to a colored badge. */
-function moduleHealthBadge(name: string, status: string) {
-  const label = name;
-  switch (status) {
-    case "connected":
-    case "ok":
+/** Heartbeat freshness thresholds in seconds. */
+const HEARTBEAT_STALE_SECONDS = 5 * 60;
+const HEARTBEAT_DEAD_SECONDS = 30 * 60;
+
+type HeartbeatFreshness = "fresh" | "stale" | "dead" | "unknown";
+
+function heartbeatFreshness(ageSeconds: number | null | undefined): HeartbeatFreshness {
+  if (ageSeconds === null || ageSeconds === undefined) return "unknown";
+  if (ageSeconds <= HEARTBEAT_STALE_SECONDS) return "fresh";
+  if (ageSeconds <= HEARTBEAT_DEAD_SECONDS) return "stale";
+  return "dead";
+}
+
+function HeartbeatFreshnessPill({ freshness }: { freshness: HeartbeatFreshness }) {
+  switch (freshness) {
+    case "fresh":
       return (
-        <Badge key={name} className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-          {label}
+        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-xs">Fresh</Badge>
+      );
+    case "stale":
+      return (
+        <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs">
+          Stale
         </Badge>
       );
-    case "degraded":
+    case "dead":
       return (
-        <Badge key={name} variant="outline" className="border-amber-500 text-amber-600">
-          {label}
-        </Badge>
-      );
-    case "error":
-      return (
-        <Badge key={name} variant="destructive">
-          {label}
+        <Badge variant="destructive" className="text-xs">
+          Dead
         </Badge>
       );
     default:
       return (
-        <Badge key={name} variant="secondary">
-          {label}
+        <Badge variant="secondary" className="text-xs">
+          Unknown
         </Badge>
       );
   }
+}
+
+/** Map module health status to a colored badge variant for per-module cells. */
+function moduleStatusVariant(status: string): {
+  className?: string;
+  variant?: "default" | "secondary" | "destructive" | "outline";
+} {
+  switch (status) {
+    case "connected":
+    case "ok":
+      return { className: "bg-emerald-600 text-white hover:bg-emerald-600/90" };
+    case "degraded":
+      return { variant: "outline", className: "border-amber-500 text-amber-600" };
+    case "error":
+      return { variant: "destructive" };
+    default:
+      return { variant: "secondary" };
+  }
+}
+
+/** Single module cell showing name + status badge. */
+function ModuleCell({ mod }: { mod: ModuleStatus }) {
+  const { variant, className } = moduleStatusVariant(mod.status);
+  return (
+    <div
+      className="flex flex-col gap-1 rounded-md border p-3"
+      title={mod.error ?? mod.status}
+    >
+      <span className="text-sm font-medium truncate">{mod.name}</span>
+      <Badge variant={variant} className={className}>
+        {mod.status}
+      </Badge>
+    </div>
+  );
 }
 
 /** Map eligibility state to a badge. Quarantined/stale are clickable to restore. */
@@ -177,6 +221,7 @@ function OverviewSkeleton() {
         <CardContent className="space-y-3">
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-4 w-40" />
         </CardContent>
       </Card>
 
@@ -199,10 +244,10 @@ function OverviewSkeleton() {
           <Skeleton className="h-5 w-32" />
         </CardHeader>
         <CardContent>
-          <div className="flex gap-2">
-            <Skeleton className="h-6 w-16 rounded-full" />
-            <Skeleton className="h-6 w-20 rounded-full" />
-            <Skeleton className="h-6 w-16 rounded-full" />
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <Skeleton className="h-16 rounded-md" />
+            <Skeleton className="h-16 rounded-md" />
+            <Skeleton className="h-16 rounded-md" />
           </div>
         </CardContent>
       </Card>
@@ -243,6 +288,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   } = useButlerNotifications(butlerName, { limit: 5 });
   const { data: registryResponse } = useRegistry();
   const setEligibility = useSetEligibility();
+  const { data: heartbeatsResponse, isLoading: heartbeatsLoading } = useButlerHeartbeats();
+  const { data: modulesResponse, isLoading: modulesLoading } = useButlerModules(butlerName);
 
   if (butlerLoading) {
     return <OverviewSkeleton />;
@@ -257,16 +304,15 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       ? Math.round((butlerCostToday / costSummary.total_cost_usd) * 100)
       : 0;
 
-  // Extract modules from butler data if available
-  const modules =
-    butler && "modules" in butler
-      ? (butler as Record<string, unknown>).modules as
-          | { name: string; status: string }[]
-          | undefined
-      : undefined;
-
   // Find this butler's registry entry for eligibility state
   const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
+
+  // Find this butler's heartbeat entry
+  const heartbeatEntry = heartbeatsResponse?.data?.butlers?.find((b) => b.name === butlerName);
+  const freshness = heartbeatFreshness(heartbeatEntry?.heartbeat_age_seconds);
+
+  // Per-module health from dedicated endpoint
+  const modules = modulesResponse?.data ?? [];
 
   return (
     <div className="space-y-6">
@@ -289,6 +335,23 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
             <dd>{butler?.port ?? "--"}</dd>
             <dt className="text-muted-foreground font-medium">Status</dt>
             <dd className="capitalize">{butler?.status ?? "unknown"}</dd>
+            <dt className="text-muted-foreground font-medium">Heartbeat</dt>
+            <dd className="flex items-center gap-2" data-testid="heartbeat-row">
+              {heartbeatsLoading ? (
+                <Skeleton className="h-5 w-16" />
+              ) : (
+                <>
+                  <HeartbeatFreshnessPill freshness={freshness} />
+                  {heartbeatEntry?.last_heartbeat_at ? (
+                    <span className="text-xs text-muted-foreground">
+                      <Time value={heartbeatEntry.last_heartbeat_at} mode="relative" />
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">No heartbeat recorded</span>
+                  )}
+                </>
+              )}
+            </dd>
             {registryEntry && (
               <>
                 <dt className="text-muted-foreground font-medium">Eligibility</dt>
@@ -327,9 +390,20 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
           <CardTitle>Module Health</CardTitle>
         </CardHeader>
         <CardContent>
-          {modules && modules.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {modules.map((mod) => moduleHealthBadge(mod.name, mod.status))}
+          {modulesLoading ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <Skeleton className="h-16 rounded-md" />
+              <Skeleton className="h-16 rounded-md" />
+              <Skeleton className="h-16 rounded-md" />
+            </div>
+          ) : modules.length > 0 ? (
+            <div
+              className="grid grid-cols-2 gap-2 sm:grid-cols-3"
+              data-testid="module-health-grid"
+            >
+              {modules.map((mod) => (
+                <ModuleCell key={mod.name} mod={mod} />
+              ))}
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">No modules registered</p>

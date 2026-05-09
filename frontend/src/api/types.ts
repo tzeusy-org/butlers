@@ -81,6 +81,15 @@ export interface ProcessFacts {
   config_path: string;
 }
 
+/** Per-module health status returned by GET /api/butlers/:name/modules. */
+export interface ModuleStatus {
+  name: string;
+  enabled: boolean;
+  status: string;
+  phase?: string | null;
+  error?: string | null;
+}
+
 /** Extended butler representation returned by GET /api/butlers/:name. */
 export interface ButlerDetail extends ButlerSummary {
   db_name?: string | null;
