@@ -66,6 +66,11 @@ const ButlerModelOverridesTab = lazy(
   () => import("@/components/butler-detail/ButlerModelOverridesTab.tsx"),
 );
 
+// Chronicler butler tabs (lazy)
+const ButlerChroniclerTimelinesTab = lazy(
+  () => import("@/components/butler-detail/ButlerChroniclerTimelinesTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Tab configuration
 // ---------------------------------------------------------------------------
@@ -753,13 +758,9 @@ export default function ButlerDetailPage() {
 
           {showTimelinesTab && (
             <TabsContent value="timelines">
-              <Card>
-                <CardContent className="py-12">
-                  <p className="text-muted-foreground text-center text-sm">
-                    Timelines coming soon.
-                  </p>
-                </CardContent>
-              </Card>
+              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
+                <ButlerChroniclerTimelinesTab />
+              </Suspense>
             </TabsContent>
           )}
 
