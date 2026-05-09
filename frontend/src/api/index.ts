@@ -749,3 +749,25 @@ export type {
   ChroniclerSourceStateRow,
   ChroniclerSubsourceCheckpoint,
 } from "./types.ts";
+
+export {
+  getFinanceBills,
+  getFinanceSpendingSummary,
+  getFinanceSubscriptions,
+  getFinanceTransactions,
+  getFinanceUpcomingBills,
+} from "./client.ts";
+
+export type {
+  FinanceBill,
+  FinanceSpendingGroup,
+  FinanceSpendingSummary,
+  FinanceSpendingSummaryParams,
+  FinanceSubscription,
+  FinanceSubscriptionListParams,
+  FinanceTransaction,
+  FinanceTransactionListParams,
+  FinanceUpcomingBillItem,
+  FinanceUpcomingBillsParams,
+  FinanceUpcomingBillsResponse,
+} from "./types.ts";
