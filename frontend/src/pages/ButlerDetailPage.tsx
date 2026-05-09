@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import type { SessionParams, SessionSummary } from "@/api/types";
@@ -106,6 +106,11 @@ export const OPERATOR_EXTENSION_TABS = ["models"] as const;
 const HEALTH_TABS = ["health"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
 
+type DetailMode = "operator" | "resident";
+
+/** localStorage key for persisting the detail page mode. */
+const MODE_STORAGE_KEY = "butlers.detail.mode";
+
 type TabValue =
   | (typeof BASE_TABS_OPERATOR)[number]
   | (typeof BASE_TABS_RESIDENT)[number]
@@ -113,22 +118,62 @@ type TabValue =
   | (typeof HEALTH_TABS)[number]
   | (typeof SWITCHBOARD_TABS)[number];
 
-function getAllTabs(butlerName: string): readonly string[] {
-  // bu-8bayc.2 will thread the mode prop through here; for now operator is the default.
-  const tabs: string[] = [...BASE_TABS_OPERATOR, ...OPERATOR_EXTENSION_TABS];
+/**
+ * Returns the full set of valid tab values for the given butler and mode.
+ * Operator mode: 10 spec-mandated base tabs + extension tabs (models).
+ * Resident mode: 7-tab Dispatch vocabulary.
+ * Butler-specific conditional tabs (health, switchboard) are appended
+ * regardless of mode.
+ */
+export function getAllTabs(butlerName: string, mode: DetailMode): readonly string[] {
+  const baseTabs: string[] =
+    mode === "operator"
+      ? [...BASE_TABS_OPERATOR, ...OPERATOR_EXTENSION_TABS]
+      : [...BASE_TABS_RESIDENT];
   if (butlerName === "health") {
-    tabs.push(...HEALTH_TABS);
+    baseTabs.push(...HEALTH_TABS);
   }
   if (butlerName === "switchboard") {
-    tabs.push(...SWITCHBOARD_TABS);
+    baseTabs.push(...SWITCHBOARD_TABS);
   }
-  return tabs;
+  return baseTabs;
 }
 
 const PAGE_SIZE = 20;
 
-function isValidTab(value: string | null, butlerName: string): value is TabValue {
-  return getAllTabs(butlerName).includes(value as string);
+/**
+ * Returns true if `value` is a valid tab for the given butler and mode.
+ */
+export function isValidTab(
+  value: string | null,
+  butlerName: string,
+  mode: DetailMode,
+): value is TabValue {
+  return getAllTabs(butlerName, mode).includes(value as string);
+}
+
+/**
+ * Reads the persisted mode from localStorage, defaulting to "resident".
+ */
+function readPersistedMode(): DetailMode {
+  try {
+    const stored = localStorage.getItem(MODE_STORAGE_KEY);
+    if (stored === "operator" || stored === "resident") return stored;
+  } catch {
+    // localStorage not available (e.g. SSR or private browsing restrictions)
+  }
+  return "resident";
+}
+
+/**
+ * Writes the mode to localStorage.
+ */
+function persistMode(mode: DetailMode): void {
+  try {
+    localStorage.setItem(MODE_STORAGE_KEY, mode);
+  } catch {
+    // Ignore write failures
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +450,41 @@ export default function ButlerDetailPage() {
   const { data: butlerResponse } = useButler(name);
 
   const tabParam = searchParams.get("tab");
-  const activeTab: TabValue = isValidTab(tabParam, name) ? tabParam : "overview";
+
+  // ---------------------------------------------------------------------------
+  // Mode — operator vs resident
+  // Initialised from localStorage; defaults to "resident".
+  //
+  // Deep-link auto-promotion (Spec Decision 6): if the URL tab param names an
+  // operator-only tab, the initial mode is immediately promoted to "operator"
+  // and persisted. This happens synchronously during state initialisation so
+  // that the correct tab list is rendered on the first pass (works in both
+  // CSR and SSR rendering contexts where effects don't run).
+  // ---------------------------------------------------------------------------
+  const [mode, setModeState] = useState<DetailMode>(() => {
+    const stored = readPersistedMode();
+    if (stored === "operator") return "operator";
+    // Auto-promote: if the URL tab is only valid in operator mode, elevate now.
+    if (tabParam) {
+      const validForOperator = getAllTabs(name, "operator").includes(tabParam);
+      const validForResident = getAllTabs(name, "resident").includes(tabParam);
+      if (validForOperator && !validForResident) {
+        persistMode("operator");
+        return "operator";
+      }
+    }
+    return stored;
+  });
+
+  const setMode = useCallback(
+    (next: DetailMode) => {
+      setModeState(next);
+      persistMode(next);
+    },
+    [],
+  );
+
+  const activeTab: TabValue = isValidTab(tabParam, name, mode) ? tabParam : "overview";
 
   const isSwitchboard = name === "switchboard";
 
@@ -436,22 +515,40 @@ export default function ButlerDetailPage() {
     <DetailPage
       record={{ title: name, subtitle: description }}
       breadcrumbs={breadcrumbs}
-      actions={<ButlerDetailActions butlerName={name} />}
+      actions={<ButlerDetailActions butlerName={name} mode={mode} onModeChange={setMode} />}
       pulse={<ButlerHeartbeatTile />}
       primary={
         <Tabs value={activeTab} onValueChange={handleTabChange}>
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="sessions">Sessions</TabsTrigger>
+            {mode === "operator" && (
+              <>
+                <TabsTrigger value="sessions">Sessions</TabsTrigger>
+              </>
+            )}
+            {mode === "resident" && (
+              <>
+                <TabsTrigger value="activity">Activity</TabsTrigger>
+                <TabsTrigger value="logs">Logs</TabsTrigger>
+                <TabsTrigger value="approvals">Approvals</TabsTrigger>
+                <TabsTrigger value="spend">Spend</TabsTrigger>
+              </>
+            )}
             <TabsTrigger value="config">Config</TabsTrigger>
-            <TabsTrigger value="skills">Skills</TabsTrigger>
-            <TabsTrigger value="schedules">Schedules</TabsTrigger>
-            <TabsTrigger value="trigger">Trigger</TabsTrigger>
-            <TabsTrigger value="mcp">MCP</TabsTrigger>
-            <TabsTrigger value="state">State</TabsTrigger>
-            <TabsTrigger value="crm">CRM</TabsTrigger>
+            {mode === "operator" && (
+              <>
+                <TabsTrigger value="skills">Skills</TabsTrigger>
+                <TabsTrigger value="schedules">Schedules</TabsTrigger>
+                <TabsTrigger value="trigger">Trigger</TabsTrigger>
+                <TabsTrigger value="mcp">MCP</TabsTrigger>
+                <TabsTrigger value="state">State</TabsTrigger>
+                <TabsTrigger value="crm">CRM</TabsTrigger>
+              </>
+            )}
             <TabsTrigger value="memory">Memory</TabsTrigger>
-            <TabsTrigger value="models">Models</TabsTrigger>
+            {mode === "operator" && (
+              <TabsTrigger value="models">Models</TabsTrigger>
+            )}
             {showHealthTab && <TabsTrigger value="health">Health</TabsTrigger>}
             {isSwitchboard && (
               <>
@@ -467,6 +564,47 @@ export default function ButlerDetailPage() {
 
           <TabsContent value="sessions">
             <ButlerSessionsTab butlerName={name} />
+          </TabsContent>
+
+          {/* Resident-mode tabs — vocabulary stubs, not yet implemented */}
+          <TabsContent value="activity">
+            <Card>
+              <CardContent className="py-12">
+                <p className="text-muted-foreground text-center text-sm">
+                  Activity view coming soon.
+                </p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="logs">
+            <Card>
+              <CardContent className="py-12">
+                <p className="text-muted-foreground text-center text-sm">
+                  Logs view coming soon.
+                </p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="approvals">
+            <Card>
+              <CardContent className="py-12">
+                <p className="text-muted-foreground text-center text-sm">
+                  Approvals view coming soon.
+                </p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="spend">
+            <Card>
+              <CardContent className="py-12">
+                <p className="text-muted-foreground text-center text-sm">
+                  Spend view coming soon.
+                </p>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           <TabsContent value="config">

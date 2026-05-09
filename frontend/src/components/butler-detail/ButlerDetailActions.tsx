@@ -28,15 +28,25 @@ import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 // Props
 // ---------------------------------------------------------------------------
 
+type DetailMode = "operator" | "resident";
+
 interface ButlerDetailActionsProps {
   butlerName: string;
+  /** Current operator/resident view mode. */
+  mode?: DetailMode;
+  /** Callback to change the mode. */
+  onModeChange?: (mode: DetailMode) => void;
 }
 
 // ---------------------------------------------------------------------------
 // ButlerDetailActions
 // ---------------------------------------------------------------------------
 
-export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
+export function ButlerDetailActions({
+  butlerName,
+  mode = "resident",
+  onModeChange,
+}: ButlerDetailActionsProps) {
   const { data: butlerResponse } = useButler(butlerName);
   const { data: registryResponse, isLoading: registryLoading } = useRegistry();
   const setEligibility = useSetEligibility();
@@ -74,9 +84,26 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
     });
   }
 
+  function handleModeToggle() {
+    onModeChange?.(mode === "operator" ? "resident" : "operator");
+  }
+
   return (
     <div className="flex items-center gap-2" data-testid="butler-detail-actions">
       <ButlerStatusBadge status={status} data-testid="butler-status-pill" />
+
+      {/* Operator / Resident mode toggle pill */}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={mode === "operator"}
+        aria-label={`Switch to ${mode === "operator" ? "resident" : "operator"} mode`}
+        data-testid="butler-mode-toggle"
+        onClick={handleModeToggle}
+        className="inline-flex cursor-pointer items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 select-none"
+      >
+        {mode === "operator" ? "Operator" : "Resident"}
+      </button>
 
       <Button
         variant="outline"
