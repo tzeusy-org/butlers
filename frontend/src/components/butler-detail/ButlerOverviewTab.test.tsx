@@ -1,7 +1,7 @@
 /**
  * ButlerOverviewTab — identity card content tests.
  *
- * Pins the five required elements of the identity card:
+ * Pins the six required elements of the identity card:
  *   1. Butler name
  *   2. Status badge
  *   3. Description (serif italic, when present)
