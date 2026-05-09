@@ -288,7 +288,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   } = useButlerNotifications(butlerName, { limit: 5 });
   const { data: registryResponse } = useRegistry();
   const setEligibility = useSetEligibility();
-  const { data: heartbeatsResponse } = useButlerHeartbeats();
+  const { data: heartbeatsResponse, isLoading: heartbeatsLoading } = useButlerHeartbeats();
   const { data: modulesResponse, isLoading: modulesLoading } = useButlerModules(butlerName);
 
   if (butlerLoading) {
@@ -337,13 +337,19 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
             <dd className="capitalize">{butler?.status ?? "unknown"}</dd>
             <dt className="text-muted-foreground font-medium">Heartbeat</dt>
             <dd className="flex items-center gap-2" data-testid="heartbeat-row">
-              <HeartbeatFreshnessPill freshness={freshness} />
-              {heartbeatEntry?.last_heartbeat_at ? (
-                <span className="text-xs text-muted-foreground">
-                  <Time value={heartbeatEntry.last_heartbeat_at} mode="relative" />
-                </span>
+              {heartbeatsLoading ? (
+                <Skeleton className="h-5 w-16" />
               ) : (
-                <span className="text-xs text-muted-foreground">No heartbeat recorded</span>
+                <>
+                  <HeartbeatFreshnessPill freshness={freshness} />
+                  {heartbeatEntry?.last_heartbeat_at ? (
+                    <span className="text-xs text-muted-foreground">
+                      <Time value={heartbeatEntry.last_heartbeat_at} mode="relative" />
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">No heartbeat recorded</span>
+                  )}
+                </>
               )}
             </dd>
             {registryEntry && (

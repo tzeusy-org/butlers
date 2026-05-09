@@ -25,6 +25,11 @@ import type { ButlerDetail } from "@/api/types";
 
 vi.mock("@/hooks/use-butlers", () => ({
   useButler: vi.fn(),
+  useButlerModules: vi.fn(() => ({ data: null, isLoading: false })),
+}));
+
+vi.mock("@/hooks/use-system", () => ({
+  useButlerHeartbeats: vi.fn(() => ({ data: null, isLoading: false, error: null })),
 }));
 
 vi.mock("@/hooks/use-costs", () => ({
