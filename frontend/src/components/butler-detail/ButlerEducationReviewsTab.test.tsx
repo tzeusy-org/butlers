@@ -175,6 +175,23 @@ function setupEmpty() {
   );
 }
 
+function setupLoading() {
+  vi.mocked(useMindMaps).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useMindMaps>);
+
+  vi.mocked(usePendingReviews).mockReturnValue(
+    { data: undefined, isLoading: true } as ReturnType<typeof usePendingReviews>,
+  );
+  vi.mocked(useMasterySummary).mockReturnValue(
+    { data: undefined, isLoading: true } as ReturnType<typeof useMasterySummary>,
+  );
+  vi.mocked(useFrontierNodes).mockReturnValue(
+    { data: undefined, isLoading: true } as ReturnType<typeof useFrontierNodes>,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tests: three sections are rendered
 // ---------------------------------------------------------------------------
@@ -202,12 +219,11 @@ describe("ButlerEducationReviewsTab — three sections present", () => {
     expect(screen.getByTestId("reviews-frontier-section")).toBeDefined();
   });
 
-  it("renders all four KPI labels", () => {
+  it("renders all three KPI labels", () => {
     renderTab();
     expect(screen.getByText("Total cards")).toBeDefined();
     expect(screen.getByText("Mastered")).toBeDefined();
-    expect(screen.getByText("Due today")).toBeDefined();
-    expect(screen.getByText("Due this week")).toBeDefined();
+    expect(screen.getByText("Overdue")).toBeDefined();
   });
 });
 
@@ -329,6 +345,37 @@ describe("ButlerEducationReviewsTab — explicit empty states", () => {
     const kpiValues = screen.getAllByTestId("kpi-value");
     expect(kpiValues[0].textContent).toBe("—");
     expect(kpiValues[1].textContent).toBe("—");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: loading state shows placeholder, not empty-state text
+// ---------------------------------------------------------------------------
+
+describe("ButlerEducationReviewsTab — loading state", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupLoading();
+  });
+
+  afterEach(() => cleanup());
+
+  it("shows loading placeholders instead of empty-state lines while queries are pending", () => {
+    renderTab();
+    // Loading lines appear — no empty-state text while loading
+    const loadingLines = screen.getAllByTestId("loading-line");
+    expect(loadingLines.length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByTestId("empty-state-line")).toBeNull();
+  });
+
+  it("does not render due-now-list while loading", () => {
+    renderTab();
+    expect(screen.queryByTestId("due-now-list")).toBeNull();
+  });
+
+  it("does not render frontier-list while loading", () => {
+    renderTab();
+    expect(screen.queryByTestId("frontier-list")).toBeNull();
   });
 });
 

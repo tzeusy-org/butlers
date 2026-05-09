@@ -6,12 +6,16 @@
  * routes are added.
  *
  * Three sections:
- *  1. Due now — today's pending reviews, top 5. Click → /education.
- *  2. Mastery KPI strip — total cards, mastered, due today, due this week.
+ *  1. Mastery KPI strip — total cards, mastered, overdue count.
+ *  2. Due now — overdue pending reviews, top 5. Click → /education.
  *  3. Frontier — next ready-to-learn nodes across active maps, top 5.
+ *
+ * All hooks are called once at the top level and passed down to avoid
+ * duplicate hook calls and reduce rerender churn.
  */
 
 import { useMemo } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,7 +28,7 @@ import {
 import type { PendingReviewNode, MindMapNode, MasterySummary } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
-// Due-now helpers
+// Types
 // ---------------------------------------------------------------------------
 
 interface ReviewEntry extends PendingReviewNode {
@@ -32,132 +36,122 @@ interface ReviewEntry extends PendingReviewNode {
   mind_map_title: string;
 }
 
-/** Hook that returns pending reviews for a single map (null-safe wrapper). */
-function useMapPendingReviews(mindMapId: string | null) {
-  return usePendingReviews(mindMapId);
-}
-
-/** Hook that aggregates pending reviews across the first 5 active mind maps. */
-function useAggregatedPendingReviews() {
-  const { data: mapsResp } = useMindMaps({ status: "active" });
-  const maps = mapsResp?.data ?? [];
-
-  // Fixed-count hooks required by React hook rules (no conditional hooks in loops).
-  const r0 = useMapPendingReviews(maps[0]?.id ?? null);
-  const r1 = useMapPendingReviews(maps[1]?.id ?? null);
-  const r2 = useMapPendingReviews(maps[2]?.id ?? null);
-  const r3 = useMapPendingReviews(maps[3]?.id ?? null);
-  const r4 = useMapPendingReviews(maps[4]?.id ?? null);
-
-  return useMemo(() => {
-    const entries: ReviewEntry[] = [];
-    const results = [r0, r1, r2, r3, r4];
-    for (let i = 0; i < Math.min(maps.length, 5); i++) {
-      const nodes = results[i]?.data ?? [];
-      for (const node of nodes) {
-        entries.push({
-          ...node,
-          mind_map_id: maps[i].id,
-          mind_map_title: maps[i].title,
-        });
-      }
-    }
-    // Sort by next_review_at ascending (most overdue first).
-    entries.sort(
-      (a, b) =>
-        new Date(a.next_review_at).getTime() - new Date(b.next_review_at).getTime(),
-    );
-    return { entries, maps };
-  }, [maps, r0, r1, r2, r3, r4]);
-}
-
-// ---------------------------------------------------------------------------
-// Mastery aggregation helpers
-// ---------------------------------------------------------------------------
-
-function useMapMasterySummary(mindMapId: string | null) {
-  return useMasterySummary(mindMapId);
-}
-
-function useAggregatedMastery() {
-  const { data: mapsResp } = useMindMaps({ status: "active" });
-  const maps = mapsResp?.data ?? [];
-
-  const s0 = useMapMasterySummary(maps[0]?.id ?? null);
-  const s1 = useMapMasterySummary(maps[1]?.id ?? null);
-  const s2 = useMapMasterySummary(maps[2]?.id ?? null);
-  const s3 = useMapMasterySummary(maps[3]?.id ?? null);
-  const s4 = useMapMasterySummary(maps[4]?.id ?? null);
-
-  return useMemo(() => {
-    const summaries = [s0, s1, s2, s3, s4]
-      .slice(0, maps.length)
-      .map((r) => r.data)
-      .filter((s): s is MasterySummary => s != null);
-
-    if (summaries.length === 0) return null;
-
-    return summaries.reduce(
-      (acc, s) => ({
-        total_nodes: acc.total_nodes + s.total_nodes,
-        mastered_count: acc.mastered_count + s.mastered_count,
-        learning_count: acc.learning_count + s.learning_count,
-        reviewing_count: acc.reviewing_count + s.reviewing_count,
-        unseen_count: acc.unseen_count + s.unseen_count,
-      }),
-      { total_nodes: 0, mastered_count: 0, learning_count: 0, reviewing_count: 0, unseen_count: 0 },
-    );
-  }, [maps.length, s0, s1, s2, s3, s4]);
-}
-
-// ---------------------------------------------------------------------------
-// Frontier aggregation helpers
-// ---------------------------------------------------------------------------
-
 interface FrontierEntry extends MindMapNode {
   mind_map_id: string;
   mind_map_title: string;
 }
 
-function useMapFrontier(mindMapId: string | null) {
-  return useFrontierNodes(mindMapId);
+interface AggregatedData {
+  pendingEntries: ReviewEntry[];
+  mastery: (MasterySummary & { total_nodes: number; mastered_count: number }) | null;
+  frontierEntries: FrontierEntry[];
+  isLoading: boolean;
 }
 
-function useAggregatedFrontier() {
-  const { data: mapsResp } = useMindMaps({ status: "active" });
+// ---------------------------------------------------------------------------
+// Top-level aggregation hook — called once in the parent
+// ---------------------------------------------------------------------------
+
+/** Aggregates all data for the Reviews tab in a single hook call per data type. */
+function useReviewsTabData(): AggregatedData {
+  const { data: mapsResp, isLoading: mapsLoading } = useMindMaps({ status: "active" });
   const maps = mapsResp?.data ?? [];
 
-  const f0 = useMapFrontier(maps[0]?.id ?? null);
-  const f1 = useMapFrontier(maps[1]?.id ?? null);
-  const f2 = useMapFrontier(maps[2]?.id ?? null);
-  const f3 = useMapFrontier(maps[3]?.id ?? null);
-  const f4 = useMapFrontier(maps[4]?.id ?? null);
+  // Fixed-count hooks required by React hook rules (no conditional hooks in loops).
+  const r0 = usePendingReviews(maps[0]?.id ?? null);
+  const r1 = usePendingReviews(maps[1]?.id ?? null);
+  const r2 = usePendingReviews(maps[2]?.id ?? null);
+  const r3 = usePendingReviews(maps[3]?.id ?? null);
+  const r4 = usePendingReviews(maps[4]?.id ?? null);
+
+  const s0 = useMasterySummary(maps[0]?.id ?? null);
+  const s1 = useMasterySummary(maps[1]?.id ?? null);
+  const s2 = useMasterySummary(maps[2]?.id ?? null);
+  const s3 = useMasterySummary(maps[3]?.id ?? null);
+  const s4 = useMasterySummary(maps[4]?.id ?? null);
+
+  const f0 = useFrontierNodes(maps[0]?.id ?? null);
+  const f1 = useFrontierNodes(maps[1]?.id ?? null);
+  const f2 = useFrontierNodes(maps[2]?.id ?? null);
+  const f3 = useFrontierNodes(maps[3]?.id ?? null);
+  const f4 = useFrontierNodes(maps[4]?.id ?? null);
+
+  const pendingResults = [r0, r1, r2, r3, r4];
+  const summaryResults = [s0, s1, s2, s3, s4];
+  const frontierResults = [f0, f1, f2, f3, f4];
+
+  const isLoading =
+    mapsLoading ||
+    pendingResults.some((r) => r.isLoading) ||
+    summaryResults.some((r) => r.isLoading) ||
+    frontierResults.some((r) => r.isLoading);
 
   return useMemo(() => {
-    const entries: FrontierEntry[] = [];
-    const results = [f0, f1, f2, f3, f4];
+    const pendingEntries: ReviewEntry[] = [];
     for (let i = 0; i < Math.min(maps.length, 5); i++) {
-      const nodes = results[i]?.data ?? [];
+      const nodes = pendingResults[i]?.data ?? [];
       for (const node of nodes) {
-        entries.push({
+        pendingEntries.push({
           ...node,
           mind_map_id: maps[i].id,
           mind_map_title: maps[i].title,
         });
       }
     }
-    // Sort by mastery_score ascending (least mastered first).
-    entries.sort((a, b) => a.mastery_score - b.mastery_score);
-    return entries;
-  }, [maps, f0, f1, f2, f3, f4]);
+    pendingEntries.sort(
+      (a, b) =>
+        new Date(a.next_review_at).getTime() - new Date(b.next_review_at).getTime(),
+    );
+
+    const summaries = summaryResults
+      .slice(0, maps.length)
+      .map((r) => r.data)
+      .filter((s): s is MasterySummary => s != null);
+
+    const mastery =
+      summaries.length === 0
+        ? null
+        : summaries.reduce(
+            (acc, s) => ({
+              total_nodes: acc.total_nodes + s.total_nodes,
+              mastered_count: acc.mastered_count + s.mastered_count,
+              learning_count: acc.learning_count + s.learning_count,
+              reviewing_count: acc.reviewing_count + s.reviewing_count,
+              unseen_count: acc.unseen_count + s.unseen_count,
+            }),
+            {
+              total_nodes: 0,
+              mastered_count: 0,
+              learning_count: 0,
+              reviewing_count: 0,
+              unseen_count: 0,
+            },
+          );
+
+    const frontierEntries: FrontierEntry[] = [];
+    for (let i = 0; i < Math.min(maps.length, 5); i++) {
+      const nodes = frontierResults[i]?.data ?? [];
+      for (const node of nodes) {
+        frontierEntries.push({
+          ...node,
+          mind_map_id: maps[i].id,
+          mind_map_title: maps[i].title,
+        });
+      }
+    }
+    frontierEntries.sort((a, b) => a.mastery_score - b.mastery_score);
+
+    return { pendingEntries, mastery, frontierEntries, isLoading };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maps, r0, r1, r2, r3, r4, s0, s1, s2, s3, s4, f0, f1, f2, f3, f4, isLoading]);
 }
 
 // ---------------------------------------------------------------------------
-// Section: Due Now
+// Shared primitives
 // ---------------------------------------------------------------------------
 
 /** Empty-state text: serif italic per Dispatch typography guidelines. */
-function EmptyStateLine({ children }: { children: React.ReactNode }) {
+function EmptyStateLine({ children }: { children: ReactNode }) {
   return (
     <p
       className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
@@ -168,8 +162,26 @@ function EmptyStateLine({ children }: { children: React.ReactNode }) {
   );
 }
 
-function DueNowSection() {
-  const { entries } = useAggregatedPendingReviews();
+/** Non-spinner loading placeholder. */
+function LoadingLine() {
+  return (
+    <p className="text-sm text-muted-foreground" data-testid="loading-line">
+      Loading…
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Section: Due Now
+// ---------------------------------------------------------------------------
+
+function DueNowSection({
+  entries,
+  isLoading,
+}: {
+  entries: ReviewEntry[];
+  isLoading: boolean;
+}) {
   const top5 = entries.slice(0, 5);
 
   return (
@@ -178,7 +190,9 @@ function DueNowSection() {
         <CardTitle className="text-sm font-medium">Due now</CardTitle>
       </CardHeader>
       <CardContent>
-        {top5.length === 0 ? (
+        {isLoading ? (
+          <LoadingLine />
+        ) : top5.length === 0 ? (
           <EmptyStateLine>No reviews due — keep learning!</EmptyStateLine>
         ) : (
           <ul className="divide-y" data-testid="due-now-list">
@@ -221,31 +235,24 @@ function DueNowSection() {
 // Section: Mastery KPI strip
 // ---------------------------------------------------------------------------
 
-function MasteryKpiStrip() {
-  const aggregated = useAggregatedMastery();
-  const { entries: pendingEntries } = useAggregatedPendingReviews();
-
-  const now = new Date();
-  const weekEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-  const dueToday = pendingEntries.filter(
-    (e) => new Date(e.next_review_at) <= now,
-  ).length;
-
-  const dueThisWeek = pendingEntries.filter(
-    (e) => new Date(e.next_review_at) <= weekEnd,
-  ).length;
-
+function MasteryKpiStrip({
+  mastery,
+  overdueCount,
+  isLoading,
+}: {
+  mastery: AggregatedData["mastery"];
+  overdueCount: number;
+  isLoading: boolean;
+}) {
   const kpis = [
-    { label: "Total cards", value: aggregated?.total_nodes ?? "—" },
-    { label: "Mastered", value: aggregated?.mastered_count ?? "—" },
-    { label: "Due today", value: dueToday },
-    { label: "Due this week", value: dueThisWeek },
+    { label: "Total cards", value: isLoading ? "…" : (mastery?.total_nodes ?? "—") },
+    { label: "Mastered", value: isLoading ? "…" : (mastery?.mastered_count ?? "—") },
+    { label: "Overdue", value: isLoading ? "…" : overdueCount },
   ];
 
   return (
     <div
-      className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+      className="grid grid-cols-2 gap-3 sm:grid-cols-3"
       data-testid="mastery-kpi-strip"
     >
       {kpis.map((kpi) => (
@@ -266,9 +273,14 @@ function MasteryKpiStrip() {
 // Section: Frontier
 // ---------------------------------------------------------------------------
 
-function FrontierSection() {
-  const frontier = useAggregatedFrontier();
-  const top5 = frontier.slice(0, 5);
+function FrontierSection({
+  entries,
+  isLoading,
+}: {
+  entries: FrontierEntry[];
+  isLoading: boolean;
+}) {
+  const top5 = entries.slice(0, 5);
 
   return (
     <Card data-testid="reviews-frontier-section">
@@ -276,7 +288,9 @@ function FrontierSection() {
         <CardTitle className="text-sm font-medium">Ready to learn</CardTitle>
       </CardHeader>
       <CardContent>
-        {top5.length === 0 ? (
+        {isLoading ? (
+          <LoadingLine />
+        ) : top5.length === 0 ? (
           <EmptyStateLine>No frontier nodes yet — keep mastering prerequisites!</EmptyStateLine>
         ) : (
           <ul className="divide-y" data-testid="frontier-list">
@@ -312,11 +326,17 @@ function FrontierSection() {
 // ---------------------------------------------------------------------------
 
 export default function ButlerEducationReviewsTab() {
+  const { pendingEntries, mastery, frontierEntries, isLoading } = useReviewsTabData();
+
   return (
     <div className="space-y-4 pt-4" data-testid="education-reviews-tab">
-      <MasteryKpiStrip />
-      <DueNowSection />
-      <FrontierSection />
+      <MasteryKpiStrip
+        mastery={mastery}
+        overdueCount={pendingEntries.length}
+        isLoading={isLoading}
+      />
+      <DueNowSection entries={pendingEntries} isLoading={isLoading} />
+      <FrontierSection entries={frontierEntries} isLoading={isLoading} />
     </div>
   );
 }
