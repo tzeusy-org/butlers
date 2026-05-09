@@ -571,17 +571,15 @@ export default function ButlerChroniclerTimelinesTab() {
   } = useChroniclesEpisodes(todayEpisodesParams);
 
   // Accumulate pages into allEpisodes.
-  const processedOffsetRef = useRef<number>(-1);
+  // No offset-dedup guard: offset=0 always replaces (handles day-reset and live refetches),
+  // and subsequent pages deduplicate by id, so StrictMode double-effects are safe.
   useEffect(() => {
     if (!episodesData) return;
     const { data: page, meta } = episodesData;
-    // Avoid double-processing the same response.
-    if (processedOffsetRef.current === meta.offset) return;
-    processedOffsetRef.current = meta.offset;
 
     setAllEpisodes((prev) => {
       if (meta.offset === 0) {
-        // First page (or reset): replace.
+        // First page (or reset): replace entirely so live updates and day flips always land.
         return page;
       }
       // Subsequent page: append, deduplicating by id.
