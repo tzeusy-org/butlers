@@ -91,6 +91,43 @@ Run ESLint checks:
 npm run lint
 ```
 
+### Stories (Ladle)
+
+Component stories are powered by [Ladle](https://www.ladle.dev/) — a lightweight
+Storybook alternative. Stories live next to their components as `*.stories.tsx`
+files.
+
+```bash
+# Serve stories in the browser with hot-reload
+npm run story
+
+# Production build of the story catalogue
+npm run story:build
+```
+
+Stories are located in `src/pages/` and `src/components/`:
+
+| File | What it covers |
+|---|---|
+| `src/pages/ButlerDetailPage.stories.tsx` | Gate-A A2 actions slot: all status states, loading, error |
+
+### Accessibility (axe-core)
+
+A11y baseline tests run as part of the normal test suite using
+[jest-axe](https://github.com/nickvdyck/jest-axe) + `@testing-library/react`:
+
+```bash
+# Run all tests (includes a11y)
+npm test
+
+# Run only the a11y baseline tests
+npm test -- --run src/pages/ButlerDetailPage.a11y.test.tsx
+```
+
+A11y test files are named `*.a11y.test.tsx` and live next to their page file.
+Each test renders a story-equivalent fixture and asserts zero axe violations.
+Colour-contrast rules are disabled because jsdom cannot compute computed styles.
+
 ## Project Structure
 
 ```
