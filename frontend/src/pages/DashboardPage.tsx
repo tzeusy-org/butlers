@@ -1,238 +1,177 @@
-import { Link } from "react-router";
-import { Time } from "@/components/ui/time";
+/**
+ * DashboardPage -- editorial archetype landing for the Overview page.
+ *
+ * Replaces the vertical-D overview layout with the two-column editorial
+ * archetype: left column carries the narrative (date eyebrow, Display
+ * headline, Voice paragraph, attention list, KPI strip) and right column
+ * carries the index (ButlerIndex, NextList).
+ *
+ * Layout: two columns 1.4fr / 1fr, gap 56px.
+ * Frame: <Page archetype="editorial"> (max-width 1280px, padding 48px 56px).
+ *
+ * Data:
+ *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
+ *   useIssues()             -- AttentionList
+ *   useButlers()            -- ButlerIndex, KPI "butlers" cell
+ *   useCostSummary("today") -- KPI "cost" cell, ButlerIndex per-butler cost
+ *   useSessions(today)      -- KPI "sessions" cell
+ *   useApprovalMetrics()    -- KPI "approvals" cell, NextList pending approvals
+ *
+ * bu-1fpvp.2 -- Frontend: replace DashboardPage with editorial layout.
+ */
 
-import { RecentMoments } from "@/components/dashboard/RecentMoments";
-import { SessionStripeChart } from "@/components/dashboard/SessionStripeChart";
-import { NotificationFeed } from "@/components/notifications/notification-feed";
-import { NotificationTableSkeleton } from "@/components/skeletons";
-import IssuesPanel from "@/components/issues/IssuesPanel";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
-import { useApprovalMetrics } from "@/hooks/use-approvals";
+import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useIssues } from "@/hooks/use-issues";
-import { useNotifications } from "@/hooks/use-notifications";
 import { useSessions } from "@/hooks/use-sessions";
-import { useQaSummary } from "@/hooks/use-qa";
+import { useApprovalMetrics } from "@/hooks/use-approvals";
 
-function StatItem({ label, value }: { label: string; value: string | number }) {
-  return (
-    <span className="flex items-baseline gap-1.5">
-      <span className="text-foreground text-sm font-medium tabular-nums">{value}</span>
-      <span className="text-muted-foreground text-xs">{label}</span>
-    </span>
-  );
-}
-
-function StatStripSkeleton() {
-  return (
-    <div
-      className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-border pt-3"
-      role="status"
-      aria-label="Loading stats"
-    >
-      {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="h-4 w-20 animate-pulse rounded bg-muted" />
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// QA widget
-// ---------------------------------------------------------------------------
-
-function QaWidget() {
-  const { data: summaryResponse, isLoading, isError } = useQaSummary();
-  const summary = summaryResponse?.data;
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          QA Staffer
-          {!isLoading && summary && summary.stats_24h.dispatched_investigations > 0 && (
-            <Badge variant="secondary">{summary.stats_24h.dispatched_investigations} active</Badge>
-          )}
-        </CardTitle>
-        <CardDescription>System-wide quality patrol status</CardDescription>
-        <CardAction>
-          <Button variant="link" size="sm" asChild>
-            <Link to="/qa">View QA dashboard</Link>
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
-          <div className="space-y-2">
-            <div className="h-4 w-full animate-pulse rounded bg-muted" />
-            <div className="h-4 w-2/3 animate-pulse rounded bg-muted" />
-          </div>
-        ) : isError ? (
-          <p className="text-destructive text-sm">Failed to load QA status.</p>
-        ) : !summary?.last_patrol ? (
-          <p className="text-muted-foreground text-sm">QA Staffer not active.</p>
-        ) : (
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">Last patrol</dt>
-            <dd><Time value={summary.last_patrol.started_at} mode="absolute" /></dd>
-
-            <dt className="text-muted-foreground">Status</dt>
-            <dd>
-              <span
-                className={
-                  summary.last_patrol.status === "clean"
-                    ? "text-emerald-600 font-medium"
-                    : summary.last_patrol.status === "error"
-                      ? "text-destructive font-medium"
-                      : "text-foreground"
-                }
-              >
-                {summary.last_patrol.status}
-              </span>
-            </dd>
-
-            <dt className="text-muted-foreground">Patrols (24h)</dt>
-            <dd>{summary.stats_24h.patrols_completed}</dd>
-
-            <dt className="text-muted-foreground">Findings (24h)</dt>
-            <dd>
-              {summary.stats_24h.total_findings}
-              {summary.stats_24h.novel_findings > 0 && (
-                <span className="text-muted-foreground ml-1 text-xs">
-                  ({summary.stats_24h.novel_findings} novel)
-                </span>
-              )}
-            </dd>
-          </dl>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+import { AttentionList } from "@/components/overview/AttentionList";
+import { BriefingStatus } from "@/components/overview/BriefingStatus";
+import { ButlerIndex } from "@/components/overview/ButlerIndex";
+import { DateEyebrow } from "@/components/overview/DateEyebrow";
+import { Elaboration } from "@/components/overview/Elaboration";
+import { Headline } from "@/components/overview/Headline";
+import { KpiStrip } from "@/components/overview/KpiStrip";
+import { NextList } from "@/components/overview/NextList";
 
 export default function DashboardPage() {
+  // Briefing
+  const {
+    data: briefing,
+    isFetching: briefingFetching,
+    refetch: refetchBriefing,
+  } = useBriefing();
+
+  // Supporting data
   const { data: butlersResponse, isLoading: butlersLoading } = useButlers();
-  const { data: costSummaryResponse, isLoading: costSummaryLoading } = useCostSummary("today");
-  const { data: sessionsTodayResponse, isLoading: sessionsTodayLoading } = useSessions({
-    limit: 1,
-    offset: 0,
-    since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString(),
-  }, { refetchInterval: 60_000 });
-  const { data: issuesResponse, isLoading: issuesLoading } = useIssues();
-  const { data: failedResponse, isLoading: failedLoading } = useNotifications({
-    status: "failed",
-    limit: 5,
-  });
+  const { data: costSummaryResponse, isLoading: costLoading } = useCostSummary("today");
+  const { data: sessionsTodayResponse, isLoading: sessionsLoading } = useSessions(
+    {
+      limit: 1,
+      offset: 0,
+      since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString(),
+    },
+    { refetchInterval: 60_000 },
+  );
+  const { data: issuesResponse } = useIssues();
   const { data: approvalMetricsResponse, isLoading: approvalsLoading } = useApprovalMetrics();
 
+  // Derived values
   const butlers = butlersResponse?.data ?? [];
   const totalButlers = butlers.length;
   const healthyButlers = butlers.filter((b) => b.status === "ok").length;
-
-  const failedNotifications = failedResponse?.data ?? [];
-  const failedTotal = failedResponse?.meta.total ?? 0;
+  const issues = issuesResponse?.data ?? [];
   const sessionsToday = sessionsTodayResponse?.meta.total ?? 0;
   const costToday = costSummaryResponse?.data.total_cost_usd ?? 0;
-  const issues = issuesResponse?.data ?? [];
+  const byButler = costSummaryResponse?.data.by_butler ?? {};
   const pendingApprovals = approvalMetricsResponse?.data.total_pending ?? 0;
 
+  // Butler index rows: join butlers with cost data
+  const butlerIndexEntries = butlers
+    .filter((b) => b.type === "butler")
+    .map((b) => ({
+      name: b.name,
+      sessions: 0, // sessions per butler not available from current API without per-butler queries
+      costUsd: byButler[b.name] ?? 0,
+    }));
+
+  // KPI cells
+  const kpiCells: [
+    { eyebrow: string; value: string | number; delta?: string },
+    { eyebrow: string; value: string | number; delta?: string },
+    { eyebrow: string; value: string | number; delta?: string },
+    { eyebrow: string; value: string | number; delta?: string },
+  ] = [
+    {
+      eyebrow: "Butlers",
+      value: butlersLoading ? "--" : `${healthyButlers}/${totalButlers}`,
+    },
+    {
+      eyebrow: "Sessions",
+      value: sessionsLoading ? "--" : sessionsToday,
+    },
+    {
+      eyebrow: "Cost",
+      value: costLoading ? "--" : `$${costToday.toFixed(2)}`,
+    },
+    {
+      eyebrow: "Approvals",
+      value: approvalsLoading ? "--" : pendingApprovals,
+    },
+  ];
+
+  // NextList: show pending approvals as upcoming items when available
+  const nextItems =
+    pendingApprovals > 0
+      ? [
+          {
+            time: "now",
+            label: `${pendingApprovals} pending approval${pendingApprovals === 1 ? "" : "s"}`,
+            kind: "approval",
+          },
+        ]
+      : [];
+
+  // Briefing headline and greet with safe fallbacks
+  const greet = briefing?.greet ?? "Good morning.";
+  const headline = briefing?.headline ?? "Checking in.";
+  const elaboration =
+    briefing?.elaboration ??
+    "Butlers are running. Check back in a moment for a fresh briefing.";
+
   return (
-    <Page archetype="overview" title="Overview">
-      {/* Hero region: session stripe chart (primary visualization) */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Sessions</CardTitle>
-          <CardDescription>Butler activity over the past 24 hours</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <SessionStripeChart butlers={butlers} />
-        </CardContent>
-      </Card>
-
-      {/* Secondary region: recent moments feed */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Recent Activity</CardTitle>
-          <CardDescription>Latest butler actions</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <RecentMoments limit={7} />
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              Failed Notifications
-              {!failedLoading && failedTotal > 0 && (
-                <Badge variant="destructive">{failedTotal}</Badge>
-              )}
-            </CardTitle>
-            <CardDescription>
-              Recent notification delivery failures across all butlers
-            </CardDescription>
-            <CardAction>
-              <Button variant="link" size="sm" asChild>
-                <Link to="/notifications">View all</Link>
-              </Button>
-            </CardAction>
-          </CardHeader>
-          <CardContent>
-            {failedLoading ? (
-              <NotificationTableSkeleton rows={5} />
-            ) : failedNotifications.length === 0 ? (
-              <EmptyState
-                title="No failed notifications."
-                description="All systems healthy."
+    <Page archetype="editorial" title="Overview">
+      {/* Two-column editorial grid */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1.4fr 1fr",
+          gap: "56px",
+          alignItems: "start",
+        }}
+      >
+        {/* Left column: narrative */}
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: "28px" }}
+          aria-label="Briefing"
+        >
+          {/* Date eyebrow with briefing status pill */}
+          <DateEyebrow
+            statusSlot={
+              <BriefingStatus
+                source={briefing?.source}
+                generatedAt={briefing?.generated_at}
+                isFetching={briefingFetching}
+                onRefetch={() => { void refetchBriefing(); }}
               />
-            ) : (
-              <NotificationFeed notifications={failedNotifications} isLoading={false} />
-            )}
-          </CardContent>
-        </Card>
+            }
+          />
 
-        <IssuesPanel issues={issues} isLoading={issuesLoading} />
-      </div>
+          {/* Display headline */}
+          <Headline greet={greet} body={headline} />
 
-      {/* QA Widget */}
-      <QaWidget />
+          {/* Voice elaboration paragraph */}
+          <Elaboration text={elaboration} isFetching={briefingFetching} />
 
-      {/* Supporting stat strip -- quiet context, not hero */}
-      {butlersLoading ? (
-        <StatStripSkeleton />
-      ) : (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-border pt-3">
-          <StatItem
-            label={`of ${totalButlers} healthy`}
-            value={healthyButlers}
-          />
-          <StatItem
-            label="sessions today"
-            value={sessionsTodayLoading ? "--" : sessionsToday}
-          />
-          <StatItem
-            label="est. cost today"
-            value={costSummaryLoading ? "--" : `$${costToday.toFixed(2)}`}
-          />
-          <StatItem
-            label="pending approvals"
-            value={approvalsLoading ? "--" : pendingApprovals}
-          />
+          {/* Attention list */}
+          <AttentionList items={issues} />
+
+          {/* KPI strip */}
+          <KpiStrip cells={kpiCells} />
         </div>
-      )}
+
+        {/* Right column: index */}
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: "32px" }}
+          aria-label="Butler index"
+        >
+          <ButlerIndex butlers={butlerIndexEntries} />
+          <NextList items={nextItems} />
+        </div>
+      </div>
     </Page>
   );
 }

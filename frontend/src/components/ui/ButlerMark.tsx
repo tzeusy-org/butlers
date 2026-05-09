@@ -46,7 +46,7 @@ const CATEGORY_VARS = [
  *
  * Unknown names (not in this list) receive a hash-derived slot so they
  * remain visually distinct from each other and from known butlers. The
- * hash is deterministic across renders and sessions.
+ * hash is deterministic across renders and sessions (multiplier-31 rolling hash).
  */
 export const KNOWN_BUTLERS: readonly string[] = [
   "chronicler",
@@ -62,7 +62,10 @@ export const KNOWN_BUTLERS: readonly string[] = [
   "travel",
 ]
 
-/** Multiplier-31 rolling hash: maps any string to a non-negative integer. */
+/**
+ * Multiplier-31 rolling hash (not djb2): maps any string to a non-negative integer.
+ * Deterministic across renders and sessions.
+ */
 function hashName(name: string): number {
   let h = 0
   for (let i = 0; i < name.length; i++) {

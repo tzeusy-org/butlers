@@ -1,10 +1,16 @@
 /**
- * Tests for DashboardPage.
+ * Tests for DashboardPage (editorial archetype, bu-1fpvp.2).
  *
- * Focused on verifying the post-Vertical-D information hierarchy:
- * - TopologyGraph is absent (moved to /system)
- * - Hero (Sessions) and secondary (Recent Activity) regions are present
- * - Stat strip is present
+ * Verifies the editorial-archetype layout:
+ * - Briefing surface: DateEyebrow, BriefingStatus pill, Headline, Elaboration
+ * - AttentionList with items and empty-state fallback
+ * - KpiStrip cells
+ * - ButlerIndex rows
+ * - NextList (pending approvals)
+ * - Five state_class values render without crashing
+ *
+ * Prior test contracts (Vertical-D hero/secondary regions) are replaced by
+ * the editorial layout.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -18,76 +24,95 @@ import DashboardPage from "@/pages/DashboardPage";
 // Mock all hooks used by DashboardPage
 // ---------------------------------------------------------------------------
 
+vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
 vi.mock("@/hooks/use-costs", () => ({ useCostSummary: vi.fn() }));
 vi.mock("@/hooks/use-sessions", () => ({ useSessions: vi.fn() }));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
-vi.mock("@/hooks/use-notifications", () => ({ useNotifications: vi.fn() }));
 vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
-vi.mock("@/hooks/use-qa", () => ({ useQaSummary: vi.fn() }));
-
-// DashboardPage renders SessionStripeChart and RecentMoments -- mock them to
-// keep the test hermetic (they have their own hooks/deps).
-vi.mock("@/components/dashboard/SessionStripeChart", () => ({
-  SessionStripeChart: () => <div data-testid="session-stripe-chart" />,
-}));
-vi.mock("@/components/dashboard/RecentMoments", () => ({
-  RecentMoments: () => <div data-testid="recent-moments" />,
-}));
 
 // ---------------------------------------------------------------------------
 // Imports after mocks are registered
 // ---------------------------------------------------------------------------
 
+import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useSessions } from "@/hooks/use-sessions";
 import { useIssues } from "@/hooks/use-issues";
-import { useNotifications } from "@/hooks/use-notifications";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
-import { useQaSummary } from "@/hooks/use-qa";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
 
-function setAllLoading() {
-  vi.mocked(useButlers).mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null, refetch: vi.fn() } as AnyMock);
-  vi.mocked(useCostSummary).mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null } as AnyMock);
-  vi.mocked(useSessions).mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null } as AnyMock);
-  vi.mocked(useIssues).mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null } as AnyMock);
-  vi.mocked(useNotifications).mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null } as AnyMock);
-  vi.mocked(useApprovalMetrics).mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null } as AnyMock);
-  vi.mocked(useQaSummary).mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null } as AnyMock);
+/** A briefing for a given state_class. */
+function makeBriefing(
+  stateClass: string,
+  source: "llm" | "fallback" = "llm",
+  headline = "Everything is in hand.",
+) {
+  return {
+    data: {
+      greet: "Good morning.",
+      headline,
+      elaboration: "The system is operating normally.",
+      source,
+      state_class: stateClass,
+      generated_at: new Date().toISOString(),
+    },
+    isFetching: false,
+    refetch: vi.fn(),
+  };
 }
 
-function setAllSuccess() {
+function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.") {
+  vi.mocked(useBriefing).mockReturnValue(makeBriefing(stateClass, "llm", headline) as AnyMock);
   vi.mocked(useButlers).mockReturnValue({
-    data: { data: [{ name: "general", status: "ok", port: 40101, type: "butler" }], meta: {} },
-    isLoading: false, isError: false, error: null, refetch: vi.fn(),
+    data: {
+      data: [
+        { name: "general", status: "ok", port: 40101, type: "butler" },
+        { name: "health", status: "ok", port: 40102, type: "butler" },
+      ],
+      meta: {},
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
   } as AnyMock);
   vi.mocked(useCostSummary).mockReturnValue({
-    data: { data: { total_cost_usd: 0.42 }, meta: {} },
-    isLoading: false, isError: false, error: null,
+    data: {
+      data: {
+        total_cost_usd: 0.42,
+        total_sessions: 5,
+        total_input_tokens: 1000,
+        total_output_tokens: 500,
+        by_butler: { general: 0.30, health: 0.12 },
+        by_model: {},
+      },
+      meta: {},
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
   } as AnyMock);
   vi.mocked(useSessions).mockReturnValue({
-    data: { data: [], meta: { total: 3 } },
-    isLoading: false, isError: false, error: null,
+    data: { data: [], meta: { total: 5 } },
+    isLoading: false,
+    isError: false,
+    error: null,
   } as AnyMock);
   vi.mocked(useIssues).mockReturnValue({
     data: { data: [], meta: {} },
-    isLoading: false, isError: false, error: null,
-  } as AnyMock);
-  vi.mocked(useNotifications).mockReturnValue({
-    data: { data: [], meta: { total: 0 } },
-    isLoading: false, isError: false, error: null,
+    isLoading: false,
+    isError: false,
+    error: null,
   } as AnyMock);
   vi.mocked(useApprovalMetrics).mockReturnValue({
     data: { data: { total_pending: 0 }, meta: {} },
-    isLoading: false, isError: false, error: null,
-  } as AnyMock);
-  vi.mocked(useQaSummary).mockReturnValue({
-    data: { data: { last_patrol: null, stats_24h: { patrols_completed: 0, total_findings: 0, novel_findings: 0, dispatched_investigations: 0 } }, meta: {} },
-    isLoading: false, isError: false, error: null,
+    isLoading: false,
+    isError: false,
+    error: null,
   } as AnyMock);
 }
 
@@ -103,62 +128,217 @@ function renderPage(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Briefing surface
 // ---------------------------------------------------------------------------
 
-describe("DashboardPage -- information hierarchy", () => {
+describe("DashboardPage -- briefing surface", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    setAllSuccess();
+    setDefaultData();
   });
 
-  it("renders the Sessions (hero) region", () => {
+  it("renders the greet line", () => {
+    const html = renderPage();
+    expect(html).toContain("Good morning.");
+  });
+
+  it("renders the headline", () => {
+    const html = renderPage();
+    expect(html).toContain("Everything is in hand.");
+  });
+
+  it("renders the elaboration paragraph", () => {
+    const html = renderPage();
+    expect(html).toContain("The system is operating normally.");
+  });
+
+  it("renders a BriefingStatus pill", () => {
+    const html = renderPage();
+    // BriefingStatus renders an aria-label containing "Briefing status"
+    expect(html).toContain("Briefing status");
+  });
+
+  it("renders llm status label when source is llm", () => {
+    const html = renderPage();
+    expect(html).toContain("llm");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fallback path (source === "fallback", i.e. templated)
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- fallback / templated path", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+    // Override briefing source to fallback
+    vi.mocked(useBriefing).mockReturnValue(
+      makeBriefing("quiet", "fallback", "Everything is in hand.") as AnyMock,
+    );
+  });
+
+  it("renders 'templated' in the status pill when source is fallback", () => {
+    const html = renderPage();
+    expect(html).toContain("templated");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Composing state (isFetching)
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- composing state", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+    vi.mocked(useBriefing).mockReturnValue({
+      ...makeBriefing("quiet"),
+      isFetching: true,
+    } as AnyMock);
+  });
+
+  it("renders 'composing' label while isFetching", () => {
+    const html = renderPage();
+    expect(html).toContain("composing");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Five state_class values render without errors
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- state_class variants", () => {
+  const STATE_CLASSES: Array<{ stateClass: string; headline: string }> = [
+    { stateClass: "quiet", headline: "Everything is in hand." },
+    { stateClass: "mild", headline: "Things are quiet, with 1 exception." },
+    { stateClass: "busy", headline: "Things are busy with 5 items waiting." },
+    { stateClass: "degraded-quiet", headline: "Quiet, but 1 butler is degraded." },
+    { stateClass: "urgent", headline: "One thing needs you now." },
+  ];
+
+  for (const { stateClass, headline } of STATE_CLASSES) {
+    it(`renders state_class="${stateClass}" without errors`, () => {
+      vi.resetAllMocks();
+      setDefaultData(stateClass, headline);
+      const html = renderPage();
+      expect(html).toContain(headline);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AttentionList
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- AttentionList", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+  });
+
+  it("renders 'Nothing waiting.' when there are no issues", () => {
+    const html = renderPage();
+    expect(html).toContain("Nothing waiting.");
+  });
+
+  it("renders issue descriptions when issues are present", () => {
+    vi.mocked(useIssues).mockReturnValue({
+      data: {
+        data: [
+          {
+            severity: "high",
+            type: "error",
+            butler: "general",
+            description: "Session failed unexpectedly.",
+            link: null,
+          },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("Session failed unexpectedly.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KPI strip
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- KpiStrip", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+  });
+
+  it("renders Butlers KPI cell", () => {
+    const html = renderPage();
+    expect(html).toContain("Butlers");
+  });
+
+  it("renders Sessions KPI cell", () => {
     const html = renderPage();
     expect(html).toContain("Sessions");
   });
 
-  it("renders the Recent Activity (secondary) region", () => {
+  it("renders Cost KPI cell", () => {
     const html = renderPage();
-    expect(html).toContain("Recent Activity");
+    expect(html).toContain("Cost");
   });
 
-  it("does NOT render Ecosystem Topology on the home page", () => {
-    // TopologyGraph has been moved to /system per bu-2okpr.5
+  it("renders Approvals KPI cell", () => {
     const html = renderPage();
-    expect(html).not.toContain("Ecosystem Topology");
+    expect(html).toContain("Approvals");
   });
 });
 
-describe("DashboardPage -- stat strip", () => {
+// ---------------------------------------------------------------------------
+// ButlerIndex
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- ButlerIndex", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    setAllSuccess();
+    setDefaultData();
   });
 
-  it("renders sessions today stat", () => {
+  it("renders butler names in the index", () => {
     const html = renderPage();
-    expect(html).toContain("sessions today");
+    expect(html).toContain("general");
+    expect(html).toContain("health");
   });
 
-  it("renders estimated cost today stat", () => {
+  it("renders the Butlers section eyebrow", () => {
     const html = renderPage();
-    expect(html).toContain("est. cost today");
-  });
-
-  it("renders pending approvals stat", () => {
-    const html = renderPage();
-    expect(html).toContain("pending approvals");
+    // The eyebrow text is "Butlers" in HTML; CSS text-transform uppercase
+    // applies visually but does not change the serialized string.
+    expect(html).toContain("Butlers");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Loading state
+// ---------------------------------------------------------------------------
 
 describe("DashboardPage -- loading state", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    setAllLoading();
+    setDefaultData();
+    // Briefing not yet loaded
+    vi.mocked(useBriefing).mockReturnValue({
+      data: undefined,
+      isFetching: true,
+      refetch: vi.fn(),
+    } as AnyMock);
   });
 
-  it("renders stat strip skeleton while butlers are loading", () => {
+  it("renders default fallback headline when briefing is loading", () => {
     const html = renderPage();
-    expect(html).toContain('aria-label="Loading stats"');
+    // Falls back to "Checking in."
+    expect(html).toContain("Checking in.");
   });
 });

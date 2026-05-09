@@ -47,7 +47,7 @@ export interface PageProps {
   onRetry?: () => void;
 
   // --- layout ---
-  archetype: "overview" | "list" | "detail" | "workspace" | "editor";
+  archetype: "overview" | "list" | "detail" | "workspace" | "editor" | "editorial";
   /** Editor archetype only: number of CardSkeleton placeholders (default 2) */
   skeletonSectionCount?: number;
 
@@ -183,6 +183,21 @@ function ArchetypeWrapper({
   if (archetype === "editor") {
     return <div className="max-w-2xl">{children}</div>;
   }
+  if (archetype === "editorial") {
+    // The editorial archetype owns its own layout (two-column grid, max-width
+    // 1280px, padding 48px 56px). The <Page> wrapper does not add space-y-6
+    // here; DashboardPage composes the two-column region directly inside children.
+    return (
+      <div
+        style={{
+          maxWidth: "1280px",
+          padding: "48px 56px",
+        }}
+      >
+        {children}
+      </div>
+    );
+  }
   // overview, list, workspace: unrestricted
   return <>{children}</>;
 }
@@ -255,12 +270,15 @@ export function Page({
           {breadcrumbs && breadcrumbs.length > 0 && (
             <Breadcrumbs items={breadcrumbs} />
           )}
-          <HeadingBlockSkeleton />
+          {/* The editorial archetype manages its own heading region inside children;
+              it does not render the standard HeadingBlock skeleton. */}
+          {archetype !== "editorial" && <HeadingBlockSkeleton />}
           {archetype === "overview" && <OverviewSkeleton />}
           {archetype === "list" && <ListSkeleton />}
           {archetype === "detail" && <DetailSkeleton />}
           {archetype === "workspace" && <WorkspaceSkeleton />}
           {archetype === "editor" && <EditorSkeleton count={skeletonSectionCount} />}
+          {archetype === "editorial" && <WorkspaceSkeleton />}
         </div>
       </ArchetypeWrapper>
     );
@@ -269,6 +287,27 @@ export function Page({
   // -- Error state -----------------------------------------------------------
   if (error != null) {
     const message = extractErrorMessage(error);
+    // The editorial archetype does not use the standard HeadingBlock for its
+    // error region; render a simple error card without a heading block.
+    if (archetype === "editorial") {
+      return (
+        <ArchetypeWrapper archetype={archetype}>
+          <Card className="border-destructive" role="alert">
+            <CardHeader>
+              <p className="font-semibold text-destructive">Something went wrong</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-destructive">{message}</p>
+              {onRetry && (
+                <Button variant="outline" size="sm" onClick={onRetry}>
+                  Retry
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        </ArchetypeWrapper>
+      );
+    }
     return (
       <ArchetypeWrapper archetype={archetype}>
         <div className="space-y-6">
@@ -302,13 +341,15 @@ export function Page({
     return (
       <ArchetypeWrapper archetype={archetype}>
         <div className="space-y-6">
-          <HeadingBlock
-            title={title}
-            description={description}
-            breadcrumbs={breadcrumbs}
-            status={status}
-            actions={actions}
-          />
+          {archetype !== "editorial" && (
+            <HeadingBlock
+              title={title}
+              description={description}
+              breadcrumbs={breadcrumbs}
+              status={status}
+              actions={actions}
+            />
+          )}
           <EmptyState
             title={empty.title}
             description={empty.description}
@@ -321,6 +362,16 @@ export function Page({
   }
 
   // -- Children --------------------------------------------------------------
+  // For editorial archetype, children own the full layout (no HeadingBlock,
+  // no space-y-6 wrapper). The two-column grid is composed directly in children.
+  if (archetype === "editorial") {
+    return (
+      <ArchetypeWrapper archetype={archetype}>
+        {children}
+      </ArchetypeWrapper>
+    );
+  }
+
   return (
     <ArchetypeWrapper archetype={archetype}>
       <div className="space-y-6">
