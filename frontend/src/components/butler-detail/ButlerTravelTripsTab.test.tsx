@@ -317,37 +317,32 @@ describe("ButlerTravelTripsTab — KPI values", () => {
 
   it("renders four KPI cards", () => {
     renderTab();
-    const kpiValues = screen.getAllByTestId("kpi-value");
-    expect(kpiValues.length).toBe(4);
+    expect(screen.getByTestId("kpi-next-departure")).toBeDefined();
+    expect(screen.getByTestId("kpi-active-count")).toBeDefined();
+    expect(screen.getByTestId("kpi-planned-count")).toBeDefined();
+    expect(screen.getByTestId("kpi-open-actions")).toBeDefined();
   });
 
   it("shows next departure trip name with days until", () => {
     renderTab();
-    const kpiValues = screen.getAllByTestId("kpi-value");
-    // First KPI is "Next departure"
-    expect(kpiValues[0].textContent).toContain("Tokyo Adventure");
-    expect(kpiValues[0].textContent).toContain("31d");
+    const kpi = screen.getByTestId("kpi-next-departure");
+    expect(kpi.textContent).toContain("Tokyo Adventure");
+    expect(kpi.textContent).toContain("31d");
   });
 
   it("shows active trip count", () => {
     renderTab();
-    const kpiValues = screen.getAllByTestId("kpi-value");
-    // Second KPI is "Active trips" = 1 (Paris is active)
-    expect(kpiValues[1].textContent).toBe("1");
+    expect(screen.getByTestId("kpi-active-count").textContent).toBe("1");
   });
 
   it("shows planned trip count", () => {
     renderTab();
-    const kpiValues = screen.getAllByTestId("kpi-value");
-    // Third KPI is "Planned trips" = 1 (Tokyo is planned)
-    expect(kpiValues[2].textContent).toBe("1");
+    expect(screen.getByTestId("kpi-planned-count").textContent).toBe("1");
   });
 
   it("shows open actions count", () => {
     renderTab();
-    const kpiValues = screen.getAllByTestId("kpi-value");
-    // Fourth KPI is "Open actions" = 2
-    expect(kpiValues[3].textContent).toBe("2");
+    expect(screen.getByTestId("kpi-open-actions").textContent).toBe("2");
   });
 });
 
@@ -447,12 +442,6 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     expect(screen.queryByTestId("trip-detail-drawer")).toBeNull();
   });
 
-  it("closes the drawer on backdrop click", () => {
-    renderTab();
-    fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
-    fireEvent.click(screen.getByTestId("drawer-backdrop"));
-    expect(screen.queryByTestId("trip-detail-drawer")).toBeNull();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -483,8 +472,7 @@ describe("ButlerTravelTripsTab — empty states", () => {
 
   it("shows '—' for next departure KPI when no upcoming trips", () => {
     renderTab();
-    const kpiValues = screen.getAllByTestId("kpi-value");
-    expect(kpiValues[0].textContent).toBe("—");
+    expect(screen.getByTestId("kpi-next-departure").textContent).toBe("—");
   });
 });
 
@@ -513,9 +501,8 @@ describe("ButlerTravelTripsTab — loading state", () => {
 
   it("shows '…' for KPI values while loading", () => {
     renderTab();
-    const kpiValues = screen.getAllByTestId("kpi-value");
-    for (const kpi of kpiValues) {
-      expect(kpi.textContent).toBe("…");
+    for (const testId of ["kpi-next-departure", "kpi-active-count", "kpi-planned-count", "kpi-open-actions"]) {
+      expect(screen.getByTestId(testId).textContent).toBe("…");
     }
   });
 });

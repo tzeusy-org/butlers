@@ -26,6 +26,13 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useUpcomingTravel, useTravelTrips, useTravelTripSummary } from "@/hooks/use-travel";
 import type {
@@ -92,6 +99,36 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/**
+ * Safely format a timeline sort_key for display.
+ *
+ * The backend can emit:
+ *   - ISO datetime:        "2025-06-01T14:00:00+00:00"
+ *   - Date-only:           "2025-06-01"  (accommodations)
+ *   - Space-separated UTC: "2025-06-01 14:00:00+00:00" (str(datetime))
+ *
+ * Returns "—" when sortKey is null/undefined, or the raw sortKey when parsing
+ * fails (avoids "Invalid Date" leaking to the UI).
+ */
+function formatSortKey(sortKey: string | null | undefined): string {
+  if (!sortKey) return "—";
+  // Normalise space-separated datetime (Python str(datetime)) to ISO T-form
+  const iso = sortKey.includes("T") ? sortKey : sortKey.replace(" ", "T");
+  const dateOnly = /^\d{4}-\d{2}-\d{2}(T00:00:00.*)?$/.test(iso);
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return sortKey;
+  if (dateOnly) {
+    // Render date-only strings without a time component to avoid TZ shifts
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Section 1: KPI strip
 // ---------------------------------------------------------------------------
@@ -133,7 +170,7 @@ function KpiStrip({ upcoming, isLoading }: KpiStripProps) {
             <p className="text-xs text-muted-foreground">{kpi.label}</p>
             <p
               className={`text-2xl font-bold font-mono truncate ${kpi.highlight ? "text-destructive" : ""}`}
-              data-testid="kpi-value"
+              data-testid={kpi.testId}
             >
               {kpi.value}
             </p>
@@ -298,125 +335,124 @@ interface TripDetailDrawerProps {
 function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
   const { data: summary, isLoading } = useTravelTripSummary(tripId);
 
-  if (!tripId) return null;
-
   return (
-    <div
-      className="fixed inset-y-0 right-0 z-50 w-full max-w-md shadow-xl bg-background border-l flex flex-col"
-      data-testid="trip-detail-drawer"
-      role="dialog"
-      aria-label="Trip detail"
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
-        <h2 className="font-semibold text-sm truncate">
-          {isLoading ? "Loading…" : (summary?.trip.name ?? "Trip")}
-        </h2>
-        <Button variant="ghost" size="sm" onClick={onClose} data-testid="trip-drawer-close">
-          Close
-        </Button>
-      </div>
+    <Sheet open={tripId != null} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent
+        side="right"
+        className="w-full sm:max-w-md flex flex-col gap-0 p-0 overflow-y-auto"
+        data-testid="trip-detail-drawer"
+      >
+        {/* Header */}
+        <SheetHeader className="border-b px-4 py-3 shrink-0">
+          <SheetTitle className="font-semibold text-sm truncate">
+            {isLoading ? "Loading…" : (summary?.trip.name ?? "Trip")}
+          </SheetTitle>
+          <SheetDescription className="sr-only">
+            Trip detail, including timeline, alerts, and accommodations.
+          </SheetDescription>
+        </SheetHeader>
 
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        ) : !summary ? (
-          <p className="text-sm text-muted-foreground" data-testid="drawer-loading-line">
-            Trip data unavailable.
-          </p>
-        ) : (
-          <>
-            {/* Trip meta */}
-            <div data-testid="drawer-trip-meta">
-              <p className="text-xs text-muted-foreground mb-1">Destination</p>
-              <p className="text-sm font-medium">{summary.trip.destination}</p>
-              <p className="text-xs text-muted-foreground mt-2 mb-1">Dates</p>
-              <p className="text-sm">
-                {summary.trip.start_date} – {summary.trip.end_date}
-              </p>
-              <div className="mt-2">
-                <StatusBadge status={summary.trip.status} />
-              </div>
+        {/* Explicit close button (for tests and keyboard users; Sheet also provides ESC) */}
+        <div className="flex justify-end px-4 pt-2 shrink-0">
+          <Button variant="ghost" size="sm" onClick={onClose} data-testid="trip-drawer-close">
+            Close
+          </Button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {isLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
             </div>
-
-            {/* Alerts */}
-            {summary.alerts.length > 0 && (
-              <div data-testid="drawer-alerts">
-                <p className="text-xs font-medium text-muted-foreground mb-2">Alerts</p>
-                <ul className="space-y-1">
-                  {summary.alerts.map((alert) => (
-                    <li
-                      key={alert.type}
-                      className="flex items-start gap-2 text-sm"
-                      data-testid="drawer-alert-item"
-                    >
-                      <SeverityBadge severity={alert.severity} />
-                      <span className="text-xs text-muted-foreground">{alert.message}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Timeline */}
-            <div data-testid="drawer-timeline">
-              <p className="text-xs font-medium text-muted-foreground mb-2">Timeline</p>
-              {summary.timeline.length === 0 ? (
-                <EmptyStateLine>No timeline entries yet.</EmptyStateLine>
-              ) : (
-                <ol className="space-y-2">
-                  {summary.timeline.map((entry) => (
-                    <li
-                      key={`${entry.entity_type}-${entry.entity_id}`}
-                      className="flex gap-2 items-start"
-                      data-testid="timeline-entry"
-                    >
-                      <span className="text-xs text-muted-foreground w-28 shrink-0 pt-0.5">
-                        {entry.sort_key
-                          ? new Date(entry.sort_key).toLocaleString(undefined, {
-                              month: "short",
-                              day: "numeric",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
-                          : "—"}
-                      </span>
-                      <span className="text-sm">{timelineLabel(entry)}</span>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </div>
-
-            {/* Accommodations summary */}
-            {summary.accommodations.length > 0 && (
-              <div data-testid="drawer-accommodations">
-                <p className="text-xs font-medium text-muted-foreground mb-2">
-                  Accommodations
+          ) : !summary ? (
+            <p className="text-sm text-muted-foreground" data-testid="drawer-loading-line">
+              Trip data unavailable.
+            </p>
+          ) : (
+            <>
+              {/* Trip meta */}
+              <div data-testid="drawer-trip-meta">
+                <p className="text-xs text-muted-foreground mb-1">Destination</p>
+                <p className="text-sm font-medium">{summary.trip.destination}</p>
+                <p className="text-xs text-muted-foreground mt-2 mb-1">Dates</p>
+                <p className="text-sm">
+                  {summary.trip.start_date} – {summary.trip.end_date}
                 </p>
-                <ul className="space-y-1">
-                  {summary.accommodations.map((acc) => (
-                    <li key={acc.id} className="text-sm">
-                      <span className="font-medium">{acc.name ?? acc.type}</span>
-                      {acc.check_in && acc.check_out && (
-                        <span className="text-muted-foreground text-xs ml-2">
-                          {acc.check_in} – {acc.check_out}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <div className="mt-2">
+                  <StatusBadge status={summary.trip.status} />
+                </div>
               </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+
+              {/* Alerts */}
+              {summary.alerts.length > 0 && (
+                <div data-testid="drawer-alerts">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Alerts</p>
+                  <ul className="space-y-1">
+                    {summary.alerts.map((alert) => (
+                      <li
+                        key={alert.type}
+                        className="flex items-start gap-2 text-sm"
+                        data-testid="drawer-alert-item"
+                      >
+                        <SeverityBadge severity={alert.severity} />
+                        <span className="text-xs text-muted-foreground">{alert.message}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Timeline */}
+              <div data-testid="drawer-timeline">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Timeline</p>
+                {summary.timeline.length === 0 ? (
+                  <EmptyStateLine>No timeline entries yet.</EmptyStateLine>
+                ) : (
+                  <ol className="space-y-2">
+                    {summary.timeline.map((entry) => (
+                      <li
+                        key={`${entry.entity_type}-${entry.entity_id}`}
+                        className="flex gap-2 items-start"
+                        data-testid="timeline-entry"
+                      >
+                        <span className="text-xs text-muted-foreground w-28 shrink-0 pt-0.5">
+                          {formatSortKey(entry.sort_key)}
+                        </span>
+                        <span className="text-sm">{timelineLabel(entry)}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+
+              {/* Accommodations summary */}
+              {summary.accommodations.length > 0 && (
+                <div data-testid="drawer-accommodations">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">
+                    Accommodations
+                  </p>
+                  <ul className="space-y-1">
+                    {summary.accommodations.map((acc) => (
+                      <li key={acc.id} className="text-sm">
+                        <span className="font-medium">{acc.name ?? acc.type}</span>
+                        {acc.check_in && acc.check_out && (
+                          <span className="text-muted-foreground text-xs ml-2">
+                            {acc.check_in} – {acc.check_out}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -450,18 +486,8 @@ export default function ButlerTravelTripsTab() {
       {/* Section 3: Trip roster */}
       <TripRoster onTripClick={handleTripClick} />
 
-      {/* Section 4: Trip detail drawer (overlay) */}
-      {selectedTripId && (
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-40 bg-black/20"
-            onClick={handleDrawerClose}
-            data-testid="drawer-backdrop"
-          />
-          <TripDetailDrawer tripId={selectedTripId} onClose={handleDrawerClose} />
-        </>
-      )}
+      {/* Section 4: Trip detail drawer (Sheet / Radix Dialog for a11y) */}
+      <TripDetailDrawer tripId={selectedTripId} onClose={handleDrawerClose} />
     </div>
   );
 }

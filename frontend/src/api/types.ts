@@ -3863,7 +3863,7 @@ export interface TravelTrip {
   destination: string;
   start_date: string;
   end_date: string;
-  status: string;
+  status: "planned" | "active" | "completed" | "cancelled";
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -3940,7 +3940,7 @@ export interface TravelTimelineEntry {
 export interface TravelAlert {
   type: string;
   message: string;
-  severity: string;
+  severity: "high" | "medium" | "low";
 }
 
 /** Full trip summary with all linked entities and timeline. */
@@ -3968,7 +3968,7 @@ export interface TravelPreTripAction {
   trip_name: string;
   type: string;
   message: string;
-  severity: string;
+  severity: "high" | "medium" | "low";
   urgency_rank: number;
 }
 
