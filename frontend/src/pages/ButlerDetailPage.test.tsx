@@ -57,10 +57,16 @@ vi.mock("@/components/chat/ChatPanel", () => ({
   ),
 }));
 
-// Mock triggerButler so force-run button does not fire real HTTP requests
-vi.mock("@/api/index.ts", () => ({
-  triggerButler: vi.fn(() => Promise.resolve({ success: true, session_id: null, output: "" })),
-}));
+// Mock triggerButler so force-run button does not fire real HTTP requests.
+// Spread real module exports so other symbols imported from @/api/index.ts
+// remain available and do not resolve to undefined in components under test.
+vi.mock("@/api/index.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+  return {
+    ...actual,
+    triggerButler: vi.fn(() => Promise.resolve({ success: true, session_id: null, output: "" })),
+  };
+});
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 

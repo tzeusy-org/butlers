@@ -4,7 +4,7 @@
 // Composes the Page shell `actions` slot for the Butler detail page per the
 // Gate-A A2 resolution (bu-rx6c2):
 //
-//   ChatPanel button | status pill | force-run button | pause/resume button
+//   status pill | force-run button | pause/resume button | ChatPanel button
 //
 // Status pill:    derived from butler.status (ok/degraded/down/error/unknown)
 // Force-run:      calls triggerButler with a default scheduler prompt
@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
+import { toast } from "sonner";
 
 import { triggerButler } from "@/api/index.ts";
 import { ChatPanel } from "@/components/chat/ChatPanel";
@@ -78,7 +79,7 @@ function StatusPill({ status }: { status: string }) {
 
 export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
   const { data: butlerResponse } = useButler(butlerName);
-  const { data: registryResponse } = useRegistry();
+  const { data: registryResponse, isLoading: registryLoading } = useRegistry();
   const setEligibility = useSetEligibility();
 
   const [isForceRunning, setIsForceRunning] = useState(false);
@@ -86,15 +87,21 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
   const butler = butlerResponse?.data;
   const status = butler?.status ?? "unknown";
 
-  // Find the registry entry to determine current eligibility / paused state
+  // Find the registry entry to determine current eligibility / paused state.
+  // registryEntry is undefined while loading or when the butler is not in the
+  // registry; disable the pause control until we have a known state.
   const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
   const isPaused = registryEntry?.eligibility_state === "quarantined";
+  const pauseDisabled = registryLoading || registryEntry === undefined || setEligibility.isPending;
 
   async function handleForceRun() {
     if (isForceRunning) return;
     setIsForceRunning(true);
     try {
       await triggerButler(butlerName, "Run your scheduled tick now.", "medium");
+      toast.success("Force run triggered");
+    } catch {
+      toast.error("Failed to trigger force run");
     } finally {
       setIsForceRunning(false);
     }
@@ -126,7 +133,7 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
         variant={isPaused ? "default" : "outline"}
         size="sm"
         data-testid="butler-pause"
-        disabled={setEligibility.isPending}
+        disabled={pauseDisabled}
         onClick={handlePauseToggle}
       >
         {setEligibility.isPending
