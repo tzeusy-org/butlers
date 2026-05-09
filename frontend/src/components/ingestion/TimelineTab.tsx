@@ -141,6 +141,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
       <div className="relative rounded-md border bg-muted/20 overflow-hidden">
         {butlers.map((butler) => {
           const laneSessions = withTimes.filter((s) => s.butler_name === butler);
+          const laneColor = butlerHueVar(butler);
           return (
             <div
               key={butler}
@@ -164,7 +165,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
                     style={{
                       left: `${left}%`,
                       width: `${width}%`,
-                      backgroundColor: butlerHueVar(s.butler_name),
+                      backgroundColor: laneColor,
                     }}
                   >
                     <span className="px-1 text-[10px] font-medium text-white truncate block leading-6">
