@@ -88,7 +88,7 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 // paths explicitly.
 
 const localStorageMock = (() => {
-  let store: Record<string, string> = {};
+  let store: Record<string, string | null> = {};
   return {
     getItem: vi.fn((key: string) => store[key] ?? null),
     setItem: vi.fn((key: string, value: string) => { store[key] = value; }),
