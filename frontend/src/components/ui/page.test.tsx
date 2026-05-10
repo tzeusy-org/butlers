@@ -687,3 +687,168 @@ describe("Page -- BreadcrumbsControlContext", () => {
     expect(probe?.textContent).toBe("false");
   });
 });
+
+// ---------------------------------------------------------------------------
+// status-board archetype
+// ---------------------------------------------------------------------------
+
+describe("Page -- status-board archetype", () => {
+  it("renders children without an h1", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      children: <div data-testid="grid">Board grid</div>,
+    });
+    expect(html).toContain("Board grid");
+    expect(html).not.toContain("<h1");
+  });
+
+  it("renders the header slot above children when header prop is given", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      header: <div data-testid="board-header">Board Header</div>,
+      children: <div>Board grid</div>,
+    });
+    expect(html).toContain("Board Header");
+    expect(html).toContain("Board grid");
+    // Header must appear before the body grid
+    const headerPos = html.indexOf("Board Header");
+    const gridPos = html.indexOf("Board grid");
+    expect(headerPos).toBeLessThan(gridPos);
+  });
+
+  it("does not render header content when header prop is omitted", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      children: <div>Board grid</div>,
+    });
+    // Without a header prop, the ArchetypeWrapper skips the header branch
+    // entirely (conditional render, not an empty wrapper div).
+    // We verify by confirming no board-header data-testid appears and that
+    // the children content is still present.
+    expect(html).not.toContain("board-header");
+    expect(html).toContain("Board grid");
+  });
+
+  it("renders the footer slot below children when footer prop is given", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      footer: <div data-testid="board-footer">Board Footer</div>,
+      children: <div>Board grid</div>,
+    });
+    expect(html).toContain("Board Footer");
+    expect(html).toContain("Board grid");
+    // Footer must appear after the body grid
+    const gridPos = html.indexOf("Board grid");
+    const footerPos = html.indexOf("Board Footer");
+    expect(footerPos).toBeGreaterThan(gridPos);
+  });
+
+  it("does not render footer content when footer prop is omitted", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      children: <div>Board grid</div>,
+    });
+    // Without a footer prop, the ArchetypeWrapper skips the footer branch
+    // entirely (conditional render, not an empty wrapper div).
+    expect(html).not.toContain("board-footer");
+    expect(html).toContain("Board grid");
+  });
+
+  it("renders both header and footer when both are provided", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      header: <div>Header</div>,
+      footer: <div>Footer</div>,
+      children: <div>Grid</div>,
+    });
+    const headerPos = html.indexOf("Header");
+    const gridPos = html.indexOf("Grid");
+    const footerPos = html.indexOf("Footer");
+    expect(headerPos).toBeLessThan(gridPos);
+    expect(footerPos).toBeGreaterThan(gridPos);
+  });
+
+  it("loading: renders StatusBoardSkeleton (h-14 header, grid-cols-2 cells, h-16 footer band)", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      loading: true,
+      children: <div>SHOULD NOT APPEAR</div>,
+    });
+    expect(html).not.toContain("SHOULD NOT APPEAR");
+    expect(html).not.toContain("<h1");
+    // Header skeleton line
+    expect(html).toContain("h-14");
+    // Cell grid
+    expect(html).toContain("grid-cols-2");
+    // Cell height
+    expect(html).toContain("h-56");
+    // Footer band
+    expect(html).toContain("h-16");
+  });
+
+  it("loading: status-board skeleton does not render HeadingBlockSkeleton (h-8 w-48)", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      loading: true,
+      children: <div>hidden</div>,
+    });
+    // The standard heading skeleton (h-8 w-48) must not appear for status-board
+    expect(html).not.toContain("h-8 w-48");
+  });
+
+  it("error: renders destructive card without h1", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      error: new Error("Board load failed"),
+      children: <div>hidden</div>,
+    });
+    expect(html).toContain("Board load failed");
+    expect(html).toContain("Something went wrong");
+    expect(html).not.toContain("<h1");
+  });
+
+  it("error: renders destructive card and passes header slot to wrapper", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      error: new Error("oops"),
+      header: <div>BoardHeader</div>,
+      children: <div>hidden</div>,
+    });
+    // Header slot is present even in error state
+    expect(html).toContain("BoardHeader");
+    expect(html).toContain("Something went wrong");
+  });
+
+  it("empty: renders EmptyState without h1", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      empty: { title: "No butlers yet", description: "Add one to get started" },
+      children: <div>hidden</div>,
+    });
+    expect(html).toContain("No butlers yet");
+    expect(html).not.toContain("<h1");
+  });
+
+  it("uses flex-col layout container (min-h-full flex flex-col)", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      children: <div>content</div>,
+    });
+    // Assert the exact compound class string from ArchetypeWrapper so that a
+    // broken status-board branch (or flex-col from an unrelated parent element)
+    // cannot produce a false-positive.
+    expect(html).toContain("flex min-h-full flex-col");
+  });
+});

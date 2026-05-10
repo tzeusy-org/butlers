@@ -47,9 +47,22 @@ export interface PageProps {
   onRetry?: () => void;
 
   // --- layout ---
-  archetype: "overview" | "list" | "detail" | "workspace" | "editor" | "editorial";
+  archetype: "overview" | "list" | "detail" | "workspace" | "editor" | "editorial" | "status-board";
   /** Editor archetype only: number of CardSkeleton placeholders (default 2) */
   skeletonSectionCount?: number;
+
+  /**
+   * Status-board archetype only: header slot rendered above the body grid.
+   * Consumers supply their own BoardHeader component here. The slot is rendered
+   * without a border by the Page shell; the consumer's component carries its
+   * own border-bottom if desired.
+   */
+  header?: React.ReactNode;
+  /**
+   * Status-board archetype only: footer slot rendered below the body grid.
+   * Consumers supply their own BoardFooter component here.
+   */
+  footer?: React.ReactNode;
 
   children: React.ReactNode;
 }
@@ -166,6 +179,27 @@ function EditorSkeleton({ count }: { count: number }) {
   );
 }
 
+/**
+ * Skeleton for the status-board archetype: a header line, a 4×2 grid of cell
+ * placeholders (h-56 each, matching the board cell minimum height), and a footer band.
+ */
+function StatusBoardSkeleton() {
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Header line */}
+      <div className="h-14 w-full animate-pulse rounded bg-muted" />
+      {/* 2-column × 4-row cell grid */}
+      <div className="grid grid-cols-2 gap-4">
+        {Array.from({ length: 8 }, (_, i) => (
+          <div key={i} className="h-56 w-full animate-pulse rounded bg-muted" />
+        ))}
+      </div>
+      {/* Footer band */}
+      <div className="h-16 w-full animate-pulse rounded bg-muted" />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Max-width wrapper per archetype
 // ---------------------------------------------------------------------------
@@ -173,9 +207,13 @@ function EditorSkeleton({ count }: { count: number }) {
 function ArchetypeWrapper({
   archetype,
   children,
+  header,
+  footer,
 }: {
   archetype: PageProps["archetype"];
   children: React.ReactNode;
+  header?: React.ReactNode;
+  footer?: React.ReactNode;
 }) {
   if (archetype === "detail") {
     return <div className="max-w-5xl">{children}</div>;
@@ -198,6 +236,18 @@ function ArchetypeWrapper({
       </div>
     );
   }
+  if (archetype === "status-board") {
+    // The status-board archetype owns its chrome: header slot at top (consumer's
+    // BoardHeader carries its own border-bottom), body in the middle (flex-1;
+    // consumer composes the grid layout themselves), footer slot at bottom.
+    return (
+      <div className="flex min-h-full flex-col">
+        {header && <div>{header}</div>}
+        <div className="flex-1">{children}</div>
+        {footer && <div>{footer}</div>}
+      </div>
+    );
+  }
   // overview, list, workspace: unrestricted
   return <>{children}</>;
 }
@@ -207,8 +257,8 @@ function ArchetypeWrapper({
 // ---------------------------------------------------------------------------
 
 /**
- * Page primitive. Wraps the <main> outlet content for all five page archetypes:
- * overview, list, detail, workspace, and editor.
+ * Page primitive. Wraps the <main> outlet content for all page archetypes:
+ * overview, list, detail, workspace, editor, editorial, and status-board.
  *
  * Priority: loading > error > empty > children.
  */
@@ -224,6 +274,8 @@ export function Page({
   onRetry,
   archetype,
   skeletonSectionCount = 2,
+  header,
+  footer,
   children,
 }: PageProps) {
   const { setSupplyingBreadcrumbs } = useBreadcrumbsControl();
@@ -262,6 +314,20 @@ export function Page({
 
   // -- Loading state ---------------------------------------------------------
   if (loading) {
+    // The status-board archetype manages its own heading region (BoardHeader);
+    // render StatusBoardSkeleton directly without the standard HeadingBlock skeleton.
+    if (archetype === "status-board") {
+      // The status-board consumer owns its entire heading region (BoardHeader);
+      // breadcrumbs are not rendered here in any state so there is no
+      // loading-then-gone flicker. Navigation context lives in the header slot.
+      return (
+        <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
+          <div role="status" aria-label="Loading">
+            <StatusBoardSkeleton />
+          </div>
+        </ArchetypeWrapper>
+      );
+    }
     return (
       <ArchetypeWrapper archetype={archetype}>
         <div className="space-y-6" role="status" aria-label="Loading">
@@ -287,11 +353,11 @@ export function Page({
   // -- Error state -----------------------------------------------------------
   if (error != null) {
     const message = extractErrorMessage(error);
-    // The editorial archetype does not use the standard HeadingBlock for its
-    // error region; render a simple error card without a heading block.
-    if (archetype === "editorial") {
+    // The editorial and status-board archetypes do not use the standard
+    // HeadingBlock for their error region; render a simple error card.
+    if (archetype === "editorial" || archetype === "status-board") {
       return (
-        <ArchetypeWrapper archetype={archetype}>
+        <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
           <Card className="border-destructive" role="alert">
             <CardHeader>
               <p className="font-semibold text-destructive">Something went wrong</p>
@@ -339,9 +405,9 @@ export function Page({
   // -- Empty state -----------------------------------------------------------
   if (empty != null) {
     return (
-      <ArchetypeWrapper archetype={archetype}>
+      <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
         <div className="space-y-6">
-          {archetype !== "editorial" && (
+          {archetype !== "editorial" && archetype !== "status-board" && (
             <HeadingBlock
               title={title}
               description={description}
@@ -367,6 +433,17 @@ export function Page({
   if (archetype === "editorial") {
     return (
       <ArchetypeWrapper archetype={archetype}>
+        {children}
+      </ArchetypeWrapper>
+    );
+  }
+
+  // For status-board archetype, children are the body grid. The header and
+  // footer slots are rendered by ArchetypeWrapper. No HeadingBlock or h1 is
+  // rendered here; the consumer's BoardHeader carries its own title display.
+  if (archetype === "status-board") {
+    return (
+      <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
         {children}
       </ArchetypeWrapper>
     );
