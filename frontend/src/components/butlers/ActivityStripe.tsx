@@ -17,6 +17,17 @@
 interface ActivityStripeProps {
   /** 24 hourly session counts, oldest first (slot 0 = oldest). Length MUST be 24. */
   counts: number[]
+  /**
+   * UTC-aligned window end timestamp used to compute the peak-hour label.
+   *
+   * The slots produced by `bucketSessionsByHour` are UTC-aligned — slot 0 is
+   * the oldest UTC-hour bucket, slot 23 is the most recent. When `windowEnd`
+   * is provided, the peak-hour label is derived from its UTC-hour floor so it
+   * is consistent with the bucketing boundary. When omitted, the local clock
+   * (`new Date()`) is used as a fallback, which is correct for users in UTC
+   * but may diverge by one hour for users in other timezones.
+   */
+  windowEnd?: Date
   /** Optional className forwarded to the container element. */
   className?: string
 }
@@ -24,10 +35,16 @@ interface ActivityStripeProps {
 /**
  * Horizontal 24-cell stripe showing hourly session density for the past 24 hours.
  *
+ * @param counts - 24 hourly session counts, oldest first. Length MUST be 24.
+ * @param windowEnd - UTC-aligned window end for peak-hour label computation.
+ *   Pass the same `endAt` reference used by `bucketSessionsByHour` for exact
+ *   timezone alignment. Defaults to `new Date()` when omitted.
+ * @param className - Optional className forwarded to the container element.
+ *
  * @example
- *   <ActivityStripe counts={row.hourlyStripe} />
+ *   <ActivityStripe counts={row.hourlyStripe} windowEnd={stripeEndAt} />
  */
-export function ActivityStripe({ counts, className }: ActivityStripeProps) {
+export function ActivityStripe({ counts, windowEnd, className }: ActivityStripeProps) {
   if (import.meta.env.DEV && counts.length !== 24) {
     console.error(`ActivityStripe: counts.length must be 24, got ${counts.length}`)
   }
@@ -35,9 +52,13 @@ export function ActivityStripe({ counts, className }: ActivityStripeProps) {
   const max = Math.max(...counts, 0)
   const total = counts.reduce((s, n) => s + n, 0)
 
-  // Determine peak hour label (0-23, oldest-first slot index maps to HH:00)
+  // Determine peak hour label (0-23, oldest-first slot index maps to HH:00 UTC).
+  // Slot 23 corresponds to utcHourFloor(windowEnd); slot peakIdx is (23 - peakIdx)
+  // hours earlier. We use UTC hours to stay aligned with the bucketing utility.
   const peakIdx = counts.indexOf(Math.max(...counts))
-  const peakHour = (new Date().getHours() - 23 + peakIdx + 24) % 24
+  const referenceDate = windowEnd ?? new Date()
+  const slot23UTCHour = referenceDate.getUTCHours()
+  const peakHour = (slot23UTCHour - 23 + peakIdx + 24) % 24
   const peakLabel = String(peakHour).padStart(2, "0")
 
   const ariaLabel = `24-hour activity, total ${total} sessions, peak ${Math.max(...counts)} at ${peakLabel}:00`

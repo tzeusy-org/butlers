@@ -129,6 +129,55 @@ describe("ActivityStripe: aria-label", () => {
 })
 
 // ---------------------------------------------------------------------------
+// windowEnd prop — UTC-aligned peak-hour label
+// ---------------------------------------------------------------------------
+
+describe("ActivityStripe: windowEnd prop", () => {
+  it("derives peak-hour label from windowEnd UTC hours, not local clock", () => {
+    // Construct a windowEnd at UTC 14:30 so slot 23 = UTC hour 14.
+    // With all counts zero except slot 20 (peak), the peak is 3 hours before slot 23:
+    //   peakHour = (14 - 23 + 20 + 24) % 24 = 35 % 24 = 11 → "11:00"
+    const windowEnd = new Date("2026-05-10T14:30:00.000Z") // UTC hour = 14
+    const data = counts({ 20: 5 })
+    const html = renderToStaticMarkup(
+      <ActivityStripe counts={data} windowEnd={windowEnd} />,
+    )
+    expect(html).toContain("11:00")
+  })
+
+  it("uses slot 23 as the anchor: windowEnd at UTC 00:45 → slot 23 = hour 00", () => {
+    // windowEnd UTC hour = 0, peakIdx = 23 (most recent slot):
+    //   peakHour = (0 - 23 + 23 + 24) % 24 = 24 % 24 = 0 → "00:00"
+    const windowEnd = new Date("2026-05-11T00:45:00.000Z") // UTC hour = 0
+    const data = counts({ 23: 3 })
+    const html = renderToStaticMarkup(
+      <ActivityStripe counts={data} windowEnd={windowEnd} />,
+    )
+    expect(html).toContain("00:00")
+  })
+
+  it("windowEnd at UTC 23:00, peak at slot 0 → hour 00:00", () => {
+    // windowEnd UTC hour = 23, peakIdx = 0 (oldest slot):
+    //   peakHour = (23 - 23 + 0 + 24) % 24 = 24 % 24 = 0 → "00:00"
+    const windowEnd = new Date("2026-05-10T23:00:00.000Z") // UTC hour = 23
+    const data = counts({ 0: 7 })
+    const html = renderToStaticMarkup(
+      <ActivityStripe counts={data} windowEnd={windowEnd} />,
+    )
+    expect(html).toContain("00:00")
+  })
+
+  it("falls back gracefully when windowEnd is omitted (aria-label still present)", () => {
+    // Without windowEnd the component falls back to new Date(); just verify the
+    // aria-label is well-formed (total + "peak N at").
+    const data = counts({ 10: 2 })
+    const html = renderToStaticMarkup(<ActivityStripe counts={data} />)
+    expect(html).toContain("total 2 sessions")
+    expect(html).toContain("peak 2 at")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // className forwarding
 // ---------------------------------------------------------------------------
 

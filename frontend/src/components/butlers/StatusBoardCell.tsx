@@ -226,7 +226,7 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
             past 24 h
           </span>
         </div>
-        <ActivityStripe counts={hourlyStripe} />
+        <ActivityStripe counts={hourlyStripe} windowEnd={new Date()} />
       </div>
 
       {/* Hover affordance: "open →" bottom-right */}
