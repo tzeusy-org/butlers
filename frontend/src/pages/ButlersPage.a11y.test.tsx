@@ -189,9 +189,9 @@ describe("a11y: Populated state", () => {
   it("has zero axe violations", async () => {
     await checkA11y(
       <main aria-label="Butlers">
-        {/* BoardHeader — rendered as a plain div here; role=banner is on the
-            BoardHeader component itself, which in production is rendered
-            outside the main landmark by the app shell. */}
+        {/* BoardHeader — rendered as a plain div here. BoardHeader uses a
+            semantic <header> element without role=banner so it is valid
+            inside <main>; axe banner-is-top-level is not triggered. */}
         <div aria-label="Status board header">
           <span style={{ fontFamily: "monospace", fontSize: 10, textTransform: "uppercase" }}>
             Butlers, status board
@@ -213,9 +213,9 @@ describe("a11y: Populated state", () => {
           <CellStub name="finance" activity="IDLE" />
         </div>
 
-        {/* BoardFooter — rendered as a plain div here; role=contentinfo is on the
-            BoardFooter component itself, which in production is rendered
-            outside the main landmark by the app shell. */}
+        {/* BoardFooter — rendered as a plain div here. BoardFooter uses a
+            semantic <footer> element without role=contentinfo so it is valid
+            inside <main>; axe contentinfo-is-top-level is not triggered. */}
         <div aria-label="Status board footer">
           <div
             role="group"

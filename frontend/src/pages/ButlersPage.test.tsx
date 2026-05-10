@@ -10,7 +10,7 @@
  *   - Empty state ("No butlers found")
  *   - Stale-fetch banner (error + cached rows)
  *   - Loading skeleton (aria-label="Loading")
- *   - Quarantine click-to-restore (setEligibility called with correct args)
+ *   - Quarantine restore chip (restore button rendered for quarantined/stale rows)
  *   - Partial-data tolerance (rows render even when some sources fail)
  *   - No inline-style violations on the page-level container
  */
@@ -167,8 +167,11 @@ describe("ButlersPage — empty state", () => {
 
 describe("ButlersPage — stale-fetch banner", () => {
   it("shows stale banner and cached rows when refetch fails with prior data", () => {
+    // The hook sets isError only when there is NO cached data. When rows survive
+    // from cache, the hook leaves isError=false but populates error. The banner
+    // must key off `error != null && hasRows` — this test mirrors that contract.
     const rows = [makeRow({ name: "general" })];
-    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, isError: true, error: new Error("timed out") }));
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, isError: false, error: new Error("timed out") }));
     const html = renderPage();
     expect(html).toContain("Showing last known butler status");
     expect(html).toContain("timed out");

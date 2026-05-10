@@ -45,8 +45,11 @@ export default function ButlersPage() {
   // Full-page error only when there is no cached data to show.
   const pageError = isError && !hasRows ? error : null;
 
-  // Stale-data banner: query errored but rows are available from cache.
-  const showStaleBanner = isError && hasRows;
+  // Stale-data banner: last refetch errored but cached rows are still visible.
+  // We key off `error != null && hasRows` rather than `isError && hasRows`
+  // because the hook sets isError only when there is no cached data; when rows
+  // survive from cache the error object is still populated but isError is false.
+  const showStaleBanner = error != null && hasRows;
 
   function handleRestore(name: string) {
     setEligibility.mutate({ name, state: "active" });
