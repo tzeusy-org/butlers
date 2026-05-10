@@ -395,7 +395,13 @@ async def init_db_manager(
                 modules=cfg.modules,
             )
         except Exception:
-            logger.warning("Failed to add DB pool for butler %s", cfg.name, exc_info=True)
+            logger.warning(
+                "Failed to add DB pool for butler %r (db=%s, schema=%s)",
+                cfg.name,
+                cfg.db_name or "butlers",
+                cfg.db_schema or "default",
+                exc_info=True,
+            )
 
     configured_shared_db_name = shared_db_name_from_env()
     shared_db_env_override = os.environ.get("BUTLER_SHARED_DB_NAME")

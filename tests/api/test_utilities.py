@@ -14,6 +14,7 @@ Drops: trivial Pydantic field tests, router discovery internals,
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,7 @@ from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
+    init_db_manager,
 )
 from butlers.api.routers.secrets import _get_db_manager as _secrets_get_db
 from butlers.api.routers.state import _get_db_manager as _state_get_db
@@ -56,6 +58,28 @@ class TestDatabaseAndDeps:
             await mgr.get_client("nonexistent")
         mgr.register("alpha", ButlerConnectionInfo("alpha", 41100))
         assert "alpha" in mgr.butler_names
+
+    async def test_init_db_manager_logs_butler_name_db_and_schema_on_pool_failure(self, caplog):
+        """Pool-init failure warning includes butler name, db name, and schema."""
+        cfg = ButlerConnectionInfo(
+            name="ghost",
+            port=41999,
+            db_name="butlers",
+            db_schema="ghost",
+        )
+        with (
+            patch("butlers.api.deps.Database.from_env", side_effect=RuntimeError("conn refused")),
+            patch("butlers.api.deps.shared_db_name_from_env", return_value="butlers"),
+            patch("butlers.api.deps.DatabaseManager") as MockMgr,
+            caplog.at_level(logging.WARNING, logger="butlers.api.deps"),
+        ):
+            MockMgr.return_value = AsyncMock()
+            await init_db_manager([cfg])
+
+        warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "ghost" in msg and "butlers" in msg and "ghost" in msg for msg in warning_messages
+        ), f"Expected butler name/db/schema in warning. Got: {warning_messages}"
 
 
 # ---------------------------------------------------------------------------
