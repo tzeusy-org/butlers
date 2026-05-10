@@ -9,6 +9,9 @@
 //   - title attribute present / absent
 //   - datetime attribute is ISO 8601
 //   - className forwarded
+//   - precision=short-date (bu-hb7dh.4): format correctness, timezone, compact
+//   - mode=relative-compact (bu-hb7dh.4): "now", "6m ago", "2h ago", "3d ago"
+//   - mode=clock-24h-mono (bu-hb7dh.4): SSR snapshot, timezone, monospace class
 //
 // Strategy:
 //   - renderToStaticMarkup for lightweight HTML introspection (no React
@@ -17,10 +20,13 @@
 //     and smart tests.
 //   - Wrap in ChroniclesTimezoneProvider to supply the context timezone; use
 //     the `timezone` prop to override in override-specific tests.
+//   - @testing-library/react for clock-24h-mono live-ticking tests that
+//     exercise useEffect (renderToStaticMarkup skips effects).
 // ---------------------------------------------------------------------------
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
+import { render as rtlRender, act, cleanup } from "@testing-library/react"
 
 import { ChroniclesTimezoneProvider } from "@/components/chronicles/timezone-context"
 import { Time } from "./time"
@@ -550,5 +556,298 @@ describe("date-only string (YYYY-MM-DD)", () => {
     )
     // Should be anchored to UTC noon, not midnight
     expect(datetime).toBe("2026-05-03T12:00:00.000Z")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 13. precision=short-date (bu-hb7dh.4)
+//     "EEE d MMM yyyy" → e.g. "Sun 3 May 2026"
+//     Used in BoardHeader's right-aligned date cluster under the clock.
+// ---------------------------------------------------------------------------
+
+describe("precision=short-date (bu-hb7dh.4)", () => {
+  const SGT = "Asia/Singapore"
+  // 2026-05-03T00:00:00Z = 08:00 SGT (UTC+8) — Sunday 3 May 2026 in SGT
+
+  it("renders 3-letter weekday + day + 3-letter month + year in non-compact mode", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "short-date" }, SGT),
+    )
+    // "Sun 3 May 2026"
+    expect(text).toMatch(/^Sun \d+ May 2026$/)
+    expect(text).toContain("3")
+    expect(text).toContain("2026")
+  })
+
+  it("compact=true omits year, keeps weekday + day + month", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "short-date", compact: true }, SGT),
+    )
+    // "Sun 3 May"
+    expect(text).toMatch(/^Sun \d+ May$/)
+    expect(text).not.toContain("2026")
+  })
+
+  it("does not include a timezone abbreviation", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "short-date" }, SGT),
+    )
+    expect(text).not.toMatch(/SGT|GMT/)
+  })
+
+  it("reflects correct weekday in owner timezone (SGT = UTC+8 stays Sunday)", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "short-date" }, SGT),
+    )
+    expect(text).toContain("Sun")
+  })
+
+  it("shifts to Saturday when timezone puts the date on the previous day", () => {
+    // 2026-05-03T00:00:00Z = 2026-05-02T20:00 EDT — Saturday 2 May in NYC
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "short-date", timezone: "America/New_York" }),
+    )
+    expect(text).toContain("Sat")
+    expect(text).toContain("May")
+    expect(text).toContain("2")
+  })
+
+  it("renders midnight correctly across the day boundary (UTC midnight → SGT 08:00, same date)", () => {
+    // SGT is UTC+8 so UTC midnight still lands on May 3 in SGT.
+    // Verify the day number is 3, not 2, and the output is for Sunday (not Saturday).
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "short-date" }, SGT),
+    )
+    // "Sun 3 May 2026" — day 3 immediately follows "Sun " in the format
+    expect(text).toMatch(/^Sun 3 /)
+    expect(text).not.toContain("Sat")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 14. mode=relative-compact (bu-hb7dh.4)
+//     Compact single-letter suffixes: "now" (<60s), "6m ago", "2h ago", "3d ago".
+//     Owner-timezone-agnostic (wall-clock diff only).
+// ---------------------------------------------------------------------------
+
+describe("mode=relative-compact (bu-hb7dh.4)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("renders 'now' for values less than 60 seconds ago", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 30_000)) // +30 s
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("now")
+  })
+
+  it("renders 'now' for values exactly at the boundary (0 seconds ago)", () => {
+    vi.setSystemTime(FIXED_DATE)
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("now")
+  })
+
+  it("renders 'Xm ago' for values in the 1–59 minute range", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 6 * 60_000)) // +6 min
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("6m ago")
+  })
+
+  it("renders '1m ago' for exactly 60 seconds ago", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 60_000)) // +60 s
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("1m ago")
+  })
+
+  it("renders 'Xh ago' for values in the 1–23 hour range", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 2 * 3_600_000)) // +2 h
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("2h ago")
+  })
+
+  it("renders 'Xd ago' for values >= 24 hours ago", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 3 * 86_400_000)) // +3 d
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("3d ago")
+  })
+
+  it("renders large day delta correctly (30d ago)", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 30 * 86_400_000))
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("30d ago")
+  })
+
+  it("never produces verbose 'seconds ago' phrasing", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 45_000)) // 45 s
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    // Must be "now", not "45 seconds ago" or similar
+    expect(text).toBe("now")
+    expect(text).not.toMatch(/second/)
+  })
+
+  it("is owner-timezone-agnostic (same output regardless of context timezone)", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 6 * 60_000)) // +6 min
+    const { text: sgtText } = parseTime(
+      render({ value: FIXED_ISO, mode: "relative-compact" }, "Asia/Singapore"),
+    )
+    const { text: nyText } = parseTime(
+      render({ value: FIXED_ISO, mode: "relative-compact" }, "America/New_York"),
+    )
+    // Both should produce the same compact output regardless of timezone
+    expect(sgtText).toBe(nyText)
+    expect(sgtText).toBe("6m ago")
+  })
+
+  it("ignores compact and precision props (they have no effect)", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 6 * 60_000)) // +6 min
+    const { text: plain } = parseTime(
+      render({ value: FIXED_ISO, mode: "relative-compact" }),
+    )
+    const { text: withCompact } = parseTime(
+      render({ value: FIXED_ISO, mode: "relative-compact", compact: true, precision: "second" }),
+    )
+    expect(plain).toBe(withCompact)
+  })
+
+  // Future timestamp handling (bu-mvzq4 review fix)
+  it("renders 'now' for values within 60 seconds in the future", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 30_000)) // now is 30s before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("now")
+  })
+
+  it("renders 'in Xm' for future values in the 1–59 minute range", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 6 * 60_000)) // now is 6 min before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("in 6m")
+  })
+
+  it("renders 'in Xh' for future values in the 1–23 hour range", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 2 * 3_600_000)) // now is 2 h before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("in 2h")
+  })
+
+  it("renders 'in Xd' for future values >= 24 hours ahead", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 3 * 86_400_000)) // now is 3 d before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("in 3d")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 15. mode=clock-24h-mono (bu-hb7dh.4)
+//     Live 24-hour clock in owner timezone with monospace tabular-nums.
+//     Uses a tick counter (clockTick) to trigger re-renders every 60 s;
+//     display text is derived from tz at render time (formatClock24h(tz)).
+//     SSR (renderToStaticMarkup): useEffect is a no-op so no ticks fire;
+//       the initial formatClock24h(tz) call at render time is used throughout.
+//     Live (rtlRender): interval fires every 60 s → re-render → updated time.
+// ---------------------------------------------------------------------------
+
+describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
+  const SGT = "Asia/Singapore"
+  // Use fake timers to control Date.now() for deterministic clock output.
+  // The clock-24h-mono mode always shows the current wall-clock time (Date.now()),
+  // never the `value` prop time — `value` is only used for the datetime attribute.
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // Set system time to 2026-05-03T06:00:00Z = 14:00 SGT
+    vi.setSystemTime(new Date("2026-05-03T06:00:00Z"))
+  })
+
+  afterEach(() => {
+    // Unmount before restoring real timers so React's effect cleanup (clearInterval)
+    // runs while fake timers are still active and the timer IDs are valid.
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it("renders current wall-clock time (not value prop time) in owner timezone", () => {
+    // Date.now() = 2026-05-03T06:00:00Z = 14:00 SGT
+    // FIXED_ISO (value prop) = 2026-05-03T00:00:00Z = 08:00 SGT — must NOT appear
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "clock-24h-mono" }, SGT),
+    )
+    expect(text).toBe("14:00")
+  })
+
+  it("renders correct time when timezone prop shifts the hour", () => {
+    // Date.now() = 2026-05-03T06:00:00Z = 02:00 EDT (America/New_York, UTC-4)
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "clock-24h-mono", timezone: "America/New_York" }),
+    )
+    expect(text).toBe("02:00")
+  })
+
+  it("applies font-mono and tabular-nums CSS classes", () => {
+    const html = renderToStaticMarkup(
+      <ChroniclesTimezoneProvider timezone={SGT}>
+        <Time value={FIXED_ISO} mode="clock-24h-mono" />
+      </ChroniclesTimezoneProvider>,
+    )
+    const div = document.createElement("div")
+    div.innerHTML = html
+    const el = div.querySelector("time")!
+    expect(el.className).toContain("font-mono")
+    expect(el.className).toContain("tabular-nums")
+  })
+
+  it("merges caller className with the monospace classes", () => {
+    const html = renderToStaticMarkup(
+      <ChroniclesTimezoneProvider timezone={SGT}>
+        <Time value={FIXED_ISO} mode="clock-24h-mono" className="text-4xl" />
+      </ChroniclesTimezoneProvider>,
+    )
+    const div = document.createElement("div")
+    div.innerHTML = html
+    const el = div.querySelector("time")!
+    expect(el.className).toContain("font-mono")
+    expect(el.className).toContain("tabular-nums")
+    expect(el.className).toContain("text-4xl")
+  })
+
+  it("sets datetime attribute to the value ISO string (a11y machine-readable)", () => {
+    // datetime always reflects the passed value for semantic correctness.
+    const { datetime } = parseTime(
+      render({ value: FIXED_ISO, mode: "clock-24h-mono" }, SGT),
+    )
+    expect(datetime).toBe(FIXED_DATE.toISOString())
+  })
+
+  it("live: shows correct current time immediately after mount via useState init", async () => {
+    // Text is derived from tz at render time via formatClock24h(tz).
+    // System time is 2026-05-03T06:00:00Z = 14:00 SGT (set in beforeEach).
+    const { getByRole } = rtlRender(
+      <ChroniclesTimezoneProvider timezone={SGT}>
+        <Time value={FIXED_ISO} mode="clock-24h-mono" />
+      </ChroniclesTimezoneProvider>,
+    )
+    await act(async () => {})
+    expect(getByRole("time").textContent).toBe("14:00")
+  })
+
+  it("live: updates display after 60 seconds via the interval", async () => {
+    // Start at 2026-05-03T06:00:00Z = 14:00 SGT (set in beforeEach).
+    const { getByRole } = rtlRender(
+      <ChroniclesTimezoneProvider timezone={SGT}>
+        <Time value={FIXED_ISO} mode="clock-24h-mono" />
+      </ChroniclesTimezoneProvider>,
+    )
+    await act(async () => {})
+    expect(getByRole("time").textContent).toBe("14:00")
+
+    // Advance the fake clock by 60 seconds. This fires the interval callback once.
+    // The callback reads Date.now() which vi.advanceTimersByTime advances too,
+    // so the clock is at 2026-05-03T06:01:00Z = 14:01 SGT when the callback fires.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(getByRole("time").textContent).toBe("14:01")
   })
 })
