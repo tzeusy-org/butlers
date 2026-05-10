@@ -18,10 +18,8 @@ export interface BucketableSession {
 /**
  * Truncate a Date to its UTC-hour floor and return as epoch ms.
  *
- * A timezone string is accepted but the bucketing is done in UTC because session
- * timestamps stored by the server are UTC ISO strings. The tz parameter is
- * reserved for future display-layer use and does not change which bucket a
- * session lands in.
+ * Bucketing is done in UTC because session timestamps stored by the server are
+ * UTC ISO strings.
  */
 function utcHourFloor(d: Date): number {
   return Math.floor(d.getTime() / (60 * 60 * 1000)) * (60 * 60 * 1000)
@@ -40,7 +38,10 @@ function utcHourFloor(d: Date): number {
  * @param sessions - Array of sessions (any butler, any time)
  * @param butlerName - Only sessions where session.butler === butlerName are counted
  * @param tz - Owner timezone (reserved; bucket assignment uses UTC)
- * @param endAt - Window end (defaults to now). The window is [endAt - 24h, endAt).
+ * @param endAt - Window end reference (defaults to now). The actual window end is
+ *   aligned to the next UTC-hour boundary: `utcHourFloor(endAt) + 1h`. The window
+ *   therefore covers `[windowEnd - 24h, windowEnd)` where `windowEnd` is that
+ *   hour-aligned boundary.
  */
 export function bucketSessionsByHour(
   sessions: BucketableSession[],

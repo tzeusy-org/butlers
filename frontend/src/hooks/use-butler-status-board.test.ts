@@ -20,7 +20,8 @@ const mockUseButlers = vi.fn()
 const mockUseRegistry = vi.fn()
 const mockUseButlerHeartbeats = vi.fn()
 const mockUseCostSummary = vi.fn()
-const mockUseSessions = vi.fn()
+// mockUseQuery handles the sessions-24h query (and any other direct useQuery calls).
+const mockUseQuery = vi.fn()
 // useQueries returns an array of query-result objects; one per butler.
 const mockUseQueries = vi.fn()
 
@@ -47,11 +48,12 @@ function runtimeResultsPerIndex(values: Array<number | null>): { data: { max_con
 
 // Default mocks — each test can override as needed.
 function setDefaults() {
-  mockUseButlers.mockReturnValue({ data: [], isLoading: false, isError: false, error: null, refetch: vi.fn() })
-  mockUseRegistry.mockReturnValue({ data: [], isLoading: false, isError: false, error: null })
-  mockUseButlerHeartbeats.mockReturnValue({ data: { butlers: [] }, isLoading: false, isError: false, error: null })
-  mockUseCostSummary.mockReturnValue({ data: { by_butler: {} }, isLoading: false, isError: false, error: null })
-  mockUseSessions.mockReturnValue({ data: { data: [], meta: { total: 0 } }, isLoading: false, isError: false, error: null })
+  mockUseButlers.mockReturnValue(butlersQueryResult([]))
+  mockUseRegistry.mockReturnValue(registryQueryResult([]))
+  mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([]))
+  mockUseCostSummary.mockReturnValue(costQueryResult({}))
+  // useQuery intercepts the sessions-24h query (PaginatedResponse, not ApiResponse)
+  mockUseQuery.mockReturnValue({ data: { data: [], meta: { total: 0 } }, isLoading: false, isError: false, error: null })
   // useQueries returns an empty array when no butlers are present
   mockUseQueries.mockReturnValue([])
 }
@@ -72,14 +74,11 @@ vi.mock("@/hooks/use-costs", () => ({
   useCostSummary: (...args: unknown[]) => mockUseCostSummary(...args),
 }))
 
-vi.mock("@/hooks/use-sessions", () => ({
-  useSessions: (...args: unknown[]) => mockUseSessions(...args),
-}))
-
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>()
   return {
     ...actual,
+    useQuery: (...args: unknown[]) => mockUseQuery(...args),
     useQueries: (...args: unknown[]) => mockUseQueries(...args),
   }
 })
@@ -102,6 +101,11 @@ import { bucketSessionsByHour } from "@/lib/session-buckets"
 // Fixtures
 // ---------------------------------------------------------------------------
 
+/** Wrap a value in the ApiResponse envelope used by all list/detail endpoints. */
+function apiResponse<T>(data: T): { data: T; meta: Record<string, unknown> } {
+  return { data, meta: {} }
+}
+
 function makeButler(overrides: Partial<ButlerSummary> = {}): ButlerSummary {
   return {
     name: "test-butler",
@@ -112,6 +116,31 @@ function makeButler(overrides: Partial<ButlerSummary> = {}): ButlerSummary {
     sessions_24h: 0,
     ...overrides,
   }
+}
+
+/**
+ * Build a mock return value for useButlers.
+ * Wraps the butler array in an ApiResponse<ButlerSummary[]> envelope.
+ */
+function butlersQueryResult(
+  butlers: ButlerSummary[],
+  overrides: { isLoading?: boolean; isError?: boolean; error?: Error | null } = {},
+) {
+  return {
+    data: apiResponse(butlers),
+    isLoading: overrides.isLoading ?? false,
+    isError: overrides.isError ?? false,
+    error: overrides.error ?? null,
+    refetch: vi.fn(),
+  }
+}
+
+/**
+ * Build a mock return value for useRegistry.
+ * Wraps the entries in an ApiResponse<RegistryEntry[]> envelope.
+ */
+function registryQueryResult(entries: Array<{ name: string; eligibility_state: string }>) {
+  return { data: apiResponse(entries), isLoading: false, isError: false, error: null }
 }
 
 function makeHeartbeats(entries: Array<{ name: string; active_session_count?: number; last_session_at?: string | null }>) {
@@ -126,6 +155,35 @@ function makeHeartbeats(entries: Array<{ name: string; active_session_count?: nu
   }
 }
 
+/**
+ * Build a mock return value for useButlerHeartbeats.
+ * Wraps the HeartbeatFacts in an ApiResponse envelope.
+ */
+function heartbeatsQueryResult(
+  entries: Array<{ name: string; active_session_count?: number; last_session_at?: string | null }>,
+  overrides: { isError?: boolean; error?: Error | null } = {},
+) {
+  return {
+    data: apiResponse(makeHeartbeats(entries)),
+    isLoading: false,
+    isError: overrides.isError ?? false,
+    error: overrides.error ?? null,
+  }
+}
+
+/**
+ * Build a mock return value for useCostSummary.
+ * Wraps the CostSummary in an ApiResponse envelope.
+ */
+function costQueryResult(byButler: Record<string, number>) {
+  return {
+    data: apiResponse({ by_butler: byButler }),
+    isLoading: false,
+    isError: false,
+    error: null,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   setDefaults()
@@ -137,12 +195,9 @@ beforeEach(() => {
 
 describe("activity verb derivation", () => {
   it("maps degraded status → paused, cellTone=red", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a", status: "degraded" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({ data: [{ name: "a", eligibility_state: "active" }], isLoading: false, isError: false })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 2 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "degraded" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "active" }]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 2 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -151,11 +206,8 @@ describe("activity verb derivation", () => {
   })
 
   it("maps status=waiting → awaiting, cellTone=amber", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a", status: "waiting" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({ data: [{ name: "a", eligibility_state: "active" }], isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "waiting" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "active" }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -164,12 +216,9 @@ describe("activity verb derivation", () => {
   })
 
   it("quarantined eligibility → quarantined activity, cellTone=red (even with active sessions)", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a", status: "healthy" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({ data: [{ name: "a", eligibility_state: "quarantined" }], isLoading: false, isError: false })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 3 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "healthy" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "quarantined" }]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 3 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -179,12 +228,9 @@ describe("activity verb derivation", () => {
   })
 
   it("active_session_count > 0 (healthy, active eligibility) → running, cellTone=green", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a", status: "healthy" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({ data: [{ name: "a", eligibility_state: "active" }], isLoading: false, isError: false })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 1 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "healthy" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "active" }]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 1 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -193,12 +239,9 @@ describe("activity verb derivation", () => {
   })
 
   it("healthy, active, no active sessions → idle, cellTone=neutral", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a", status: "healthy" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({ data: [{ name: "a", eligibility_state: "active" }], isLoading: false, isError: false })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 0 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "healthy" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "active" }]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 0 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -213,11 +256,8 @@ describe("activity verb derivation", () => {
 
 describe("loadPct derivation", () => {
   it("returns null when max_concurrent is unavailable (runtime-config error)", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 2 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 2 }]))
     // useQueries returns an error result for the one butler
     mockUseQueries.mockReturnValue(runtimeResults(1, null))
 
@@ -226,11 +266,8 @@ describe("loadPct derivation", () => {
   })
 
   it("returns null when max_concurrent is 0", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 2 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 2 }]))
     mockUseQueries.mockReturnValue([{ data: { max_concurrent: 0 }, isLoading: false, isError: false }])
 
     const { rows } = useButlerStatusBoard()
@@ -238,11 +275,8 @@ describe("loadPct derivation", () => {
   })
 
   it("computes rounded loadPct when max_concurrent is known", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 2 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 2 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -250,11 +284,8 @@ describe("loadPct derivation", () => {
   })
 
   it("rounds fractional loadPct", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseButlerHeartbeats.mockReturnValue({ data: makeHeartbeats([{ name: "a", active_session_count: 1 }]), isLoading: false, isError: false })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 1 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 3))
 
     const { rows } = useButlerStatusBoard()
@@ -268,14 +299,11 @@ describe("loadPct derivation", () => {
 
 describe("sort order", () => {
   it("sorts rows by sessions24h descending", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "low", sessions_24h: 2 }),
-        makeButler({ name: "high", sessions_24h: 10 }),
-        makeButler({ name: "mid", sessions_24h: 5 }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "low", sessions_24h: 2 }),
+      makeButler({ name: "high", sessions_24h: 10 }),
+      makeButler({ name: "mid", sessions_24h: 5 }),
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(3, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -283,14 +311,11 @@ describe("sort order", () => {
   })
 
   it("breaks ties by name ascending", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "zara", sessions_24h: 5 }),
-        makeButler({ name: "alice", sessions_24h: 5 }),
-        makeButler({ name: "mike", sessions_24h: 5 }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "zara", sessions_24h: 5 }),
+      makeButler({ name: "alice", sessions_24h: 5 }),
+      makeButler({ name: "mike", sessions_24h: 5 }),
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(3, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -298,15 +323,12 @@ describe("sort order", () => {
   })
 
   it("combined sort: sessions desc, then name asc for ties", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "charlie", sessions_24h: 3 }),
-        makeButler({ name: "alice", sessions_24h: 3 }),
-        makeButler({ name: "zara", sessions_24h: 10 }),
-        makeButler({ name: "bob", sessions_24h: 1 }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "charlie", sessions_24h: 3 }),
+      makeButler({ name: "alice", sessions_24h: 3 }),
+      makeButler({ name: "zara", sessions_24h: 10 }),
+      makeButler({ name: "bob", sessions_24h: 1 }),
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(4, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -320,10 +342,7 @@ describe("sort order", () => {
 
 describe("partial failure — secondary sources do not drop rows", () => {
   it("cost fetch failure: rows still render with costToday=0", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" }), makeButler({ name: "b" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" }), makeButler({ name: "b" })]))
     mockUseCostSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("cost failed") })
     mockUseQueries.mockReturnValue(runtimeResults(2, 4))
 
@@ -333,10 +352,7 @@ describe("partial failure — secondary sources do not drop rows", () => {
   })
 
   it("heartbeat fetch failure: rows render with lastRunISO=null", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
     mockUseButlerHeartbeats.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("hb failed") })
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
@@ -346,11 +362,9 @@ describe("partial failure — secondary sources do not drop rows", () => {
   })
 
   it("sessions fetch failure: rows render with hourlyStripe=Array(24).fill(0)", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseSessions.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("sessions failed") })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    // Override the useQuery mock to simulate sessions-24h fetch failure
+    mockUseQuery.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("sessions failed") })
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -359,10 +373,7 @@ describe("partial failure — secondary sources do not drop rows", () => {
   })
 
   it("registry fetch failure: eligibility falls back to 'unavailable'", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
     mockUseRegistry.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("registry failed") })
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
@@ -372,14 +383,11 @@ describe("partial failure — secondary sources do not drop rows", () => {
   })
 
   it("all secondary sources fail: rows are still emitted with fallback values", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" }), makeButler({ name: "b" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" }), makeButler({ name: "b" })]))
     mockUseRegistry.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseButlerHeartbeats.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseCostSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
-    mockUseSessions.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
+    mockUseQuery.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseQueries.mockReturnValue(runtimeResults(2, null))
 
     const { rows, aggregates } = useButlerStatusBoard()
@@ -401,14 +409,8 @@ describe("partial failure — secondary sources do not drop rows", () => {
 
 describe("eligibility mapping", () => {
   it("returns 'unavailable' for a butler not in the registry", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "unknown-butler" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({
-      data: [{ name: "other-butler", eligibility_state: "active" }],
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "unknown-butler" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "other-butler", eligibility_state: "active" }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -416,22 +418,16 @@ describe("eligibility mapping", () => {
   })
 
   it("passes through 'active', 'quarantined', 'stale' correctly", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "a" }),
-        makeButler({ name: "b" }),
-        makeButler({ name: "c" }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({
-      data: [
-        { name: "a", eligibility_state: "active" },
-        { name: "b", eligibility_state: "quarantined" },
-        { name: "c", eligibility_state: "stale" },
-      ],
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+      makeButler({ name: "c" }),
+    ]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([
+      { name: "a", eligibility_state: "active" },
+      { name: "b", eligibility_state: "quarantined" },
+      { name: "c", eligibility_state: "stale" },
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(3, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -448,14 +444,11 @@ describe("eligibility mapping", () => {
 
 describe("aggregate correctness", () => {
   it("counts butler vs staffer types correctly", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "b1", type: "butler" }),
-        makeButler({ name: "b2", type: "butler" }),
-        makeButler({ name: "s1", type: "staffer" }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "b1", type: "butler" }),
+      makeButler({ name: "b2", type: "butler" }),
+      makeButler({ name: "s1", type: "staffer" }),
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(3, 4))
 
     const { aggregates } = useButlerStatusBoard()
@@ -465,14 +458,11 @@ describe("aggregate correctness", () => {
   })
 
   it("sums totalSessions24h across all rows", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "a", sessions_24h: 10 }),
-        makeButler({ name: "b", sessions_24h: 5 }),
-        makeButler({ name: "c", sessions_24h: 2 }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a", sessions_24h: 10 }),
+      makeButler({ name: "b", sessions_24h: 5 }),
+      makeButler({ name: "c", sessions_24h: 2 }),
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(3, 4))
 
     const { aggregates } = useButlerStatusBoard()
@@ -480,17 +470,11 @@ describe("aggregate correctness", () => {
   })
 
   it("sums totalSpendToday from by_butler cost data", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "a" }),
-        makeButler({ name: "b" }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseCostSummary.mockReturnValue({
-      data: { by_butler: { a: 1.5, b: 2.25 } },
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+    ]))
+    mockUseCostSummary.mockReturnValue(costQueryResult({ a: 1.5, b: 2.25 }))
     mockUseQueries.mockReturnValue(runtimeResults(2, 4))
 
     const { aggregates } = useButlerStatusBoard()
@@ -499,24 +483,18 @@ describe("aggregate correctness", () => {
 
   it("computes avgLoadPct ignoring null entries", () => {
     // a → max=4, active=2 → 50%; b → max=4, active=4 → 100%; c → no config → null
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "a" }),
-        makeButler({ name: "b" }),
-        makeButler({ name: "c" }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+      makeButler({ name: "c" }),
+    ]))
     // runtimeConfigResults: a→4, b→4, c→null (error)
     mockUseQueries.mockReturnValue(runtimeResultsPerIndex([4, 4, null]))
-    mockUseButlerHeartbeats.mockReturnValue({
-      data: makeHeartbeats([
-        { name: "a", active_session_count: 2 },
-        { name: "b", active_session_count: 4 },
-        { name: "c", active_session_count: 0 },
-      ]),
-      isLoading: false, isError: false,
-    })
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([
+      { name: "a", active_session_count: 2 },
+      { name: "b", active_session_count: 4 },
+      { name: "c", active_session_count: 0 },
+    ]))
 
     const { aggregates } = useButlerStatusBoard()
     // avg of 50 and 100 = 75
@@ -524,10 +502,7 @@ describe("aggregate correctness", () => {
   })
 
   it("returns avgLoadPct=null when no row has known load", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
     mockUseQueries.mockReturnValue(runtimeResults(1, null))
 
     const { aggregates } = useButlerStatusBoard()
@@ -535,22 +510,16 @@ describe("aggregate correctness", () => {
   })
 
   it("counts awaiting separately from quarantined in aggregates", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "q", status: "healthy" }),   // quarantined
-        makeButler({ name: "w", status: "waiting" }),   // awaiting
-        makeButler({ name: "h", status: "healthy" }),   // idle
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({
-      data: [
-        { name: "q", eligibility_state: "quarantined" },
-        { name: "w", eligibility_state: "active" },
-        { name: "h", eligibility_state: "active" },
-      ],
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "q", status: "healthy" }),   // quarantined
+      makeButler({ name: "w", status: "waiting" }),   // awaiting
+      makeButler({ name: "h", status: "healthy" }),   // idle
+    ]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([
+      { name: "q", eligibility_state: "quarantined" },
+      { name: "w", eligibility_state: "active" },
+      { name: "h", eligibility_state: "active" },
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(3, 4))
 
     const { aggregates } = useButlerStatusBoard()
@@ -572,11 +541,7 @@ describe("loading and error propagation", () => {
   })
 
   it("aggregates.isLoading=false when butlers list is loading but has cached data", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: true, // background refetch
-      isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })], { isLoading: true }))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { aggregates } = useButlerStatusBoard()
@@ -593,10 +558,7 @@ describe("loading and error propagation", () => {
   })
 
   it("secondary source loading does not block row render (aggregates.isLoading=false)", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
     mockUseCostSummary.mockReturnValue(loadingNoData)
     mockUseButlerHeartbeats.mockReturnValue(loadingNoData)
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
@@ -689,18 +651,9 @@ describe("empty state", () => {
 
 describe("quarantined activity dominates running", () => {
   it("butler with active sessions AND quarantined eligibility gets quarantined activity", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a", status: "healthy" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({
-      data: [{ name: "a", eligibility_state: "quarantined" }],
-      isLoading: false, isError: false,
-    })
-    mockUseButlerHeartbeats.mockReturnValue({
-      data: makeHeartbeats([{ name: "a", active_session_count: 5 }]),
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "healthy" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "quarantined" }]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 5 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -715,14 +668,8 @@ describe("quarantined activity dominates running", () => {
 
 describe("rule ordering", () => {
   it("degraded status wins over quarantined eligibility (rule 1 fires before rule 2)", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a", status: "degraded" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseRegistry.mockReturnValue({
-      data: [{ name: "a", eligibility_state: "quarantined" }],
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "degraded" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "quarantined" }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -737,13 +684,10 @@ describe("rule ordering", () => {
 
 describe("staffers and butlers in the same list", () => {
   it("staffers appear in the sorted list alongside butlers", () => {
-    mockUseButlers.mockReturnValue({
-      data: [
-        makeButler({ name: "butler-a", type: "butler", sessions_24h: 1 }),
-        makeButler({ name: "staffer-x", type: "staffer", sessions_24h: 5 }),
-      ],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "butler-a", type: "butler", sessions_24h: 1 }),
+      makeButler({ name: "staffer-x", type: "staffer", sessions_24h: 5 }),
+    ]))
     mockUseQueries.mockReturnValue(runtimeResults(2, 4))
 
     const { rows, aggregates } = useButlerStatusBoard()
@@ -762,14 +706,8 @@ describe("staffers and butlers in the same list", () => {
 describe("lastRunISO", () => {
   it("reflects heartbeat.last_session_at", () => {
     const ts = "2026-05-10T08:00:00Z"
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseButlerHeartbeats.mockReturnValue({
-      data: makeHeartbeats([{ name: "a", last_session_at: ts }]),
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", last_session_at: ts }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -777,14 +715,8 @@ describe("lastRunISO", () => {
   })
 
   it("returns null when butler has no heartbeat entry", () => {
-    mockUseButlers.mockReturnValue({
-      data: [makeButler({ name: "a" })],
-      isLoading: false, isError: false, error: null, refetch: vi.fn(),
-    })
-    mockUseButlerHeartbeats.mockReturnValue({
-      data: makeHeartbeats([]), // empty — "a" has no entry
-      isLoading: false, isError: false,
-    })
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()

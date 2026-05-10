@@ -7,7 +7,7 @@
 //   useRegistry          → eligibility_state per butler
 //   useButlerHeartbeats  → last_session_at, active_session_count, heartbeat_age_seconds
 //   useCostSummary       → cost today per butler
-//   useSessions          → raw session list for 24h hourly bucketing
+//   useQuery (sessions)  → raw session list for 24h hourly bucketing (stable key, rolling ISO since)
 //   useQueries (runtime) → max_concurrent per butler via per-butler runtime-config queries
 //
 // Partial-failure tolerance: if any non-butlers source errors, rows are still
@@ -16,14 +16,13 @@
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react"
-import { useQueries } from "@tanstack/react-query"
+import { useQueries, useQuery } from "@tanstack/react-query"
 
-import { getRuntimeConfig } from "@/api/index.ts"
+import { getRuntimeConfig, getSessions } from "@/api/index.ts"
 import { useButlers } from "@/hooks/use-butlers"
 import { useRegistry } from "@/hooks/use-general"
 import { useButlerHeartbeats } from "@/hooks/use-system"
 import { useCostSummary } from "@/hooks/use-costs"
-import { useSessions } from "@/hooks/use-sessions"
 import { bucketSessionsByHour } from "@/lib/session-buckets"
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 
@@ -154,13 +153,24 @@ export function useButlerStatusBoard(): StatusBoardResult {
   const costQuery = useCostSummary("today")
 
   // Fetch sessions for the past 24h for hourly bucketing.
-  // The since timestamp is stable per mount; the query key and refetchInterval
-  // advance the rolling window on background refetches.
-  const sessionsQuery = useSessions({ since: "24h", limit: 1000, offset: 0 })
+  // The query key is stable ("sessions-24h") while queryFn recomputes the ISO
+  // since timestamp on each refetch, so the rolling window advances without
+  // polluting the query key or causing excess re-renders.
+  const sessionsQuery = useQuery({
+    queryKey: ["sessions-24h"],
+    queryFn: () =>
+      getSessions({
+        since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        limit: 1000,
+        offset: 0,
+      }),
+    refetchInterval: 60_000,
+  })
 
   // Stable reference: prevents `butlers` from appearing as a new array on every
   // render, which would otherwise trigger unnecessary useMemo re-runs.
-  const butlers = useMemo(() => butlersQuery.data ?? [], [butlersQuery.data])
+  // useButlers returns ApiResponse<ButlerSummary[]>; unwrap with .data.
+  const butlers = useMemo(() => butlersQuery.data?.data ?? [], [butlersQuery.data])
 
   // Per-butler runtime-config queries using useQueries so query count tracks
   // the live butler list without violating React's rules of hooks.
@@ -189,8 +199,8 @@ export function useButlerStatusBoard(): StatusBoardResult {
 
     // Build lookup maps for secondary sources (all tolerate undefined/null)
     const registryMap: Record<string, string> = {}
-    if (!registryQuery.isError && registryQuery.data) {
-      for (const entry of registryQuery.data) {
+    if (!registryQuery.isError && registryQuery.data?.data) {
+      for (const entry of registryQuery.data.data) {
         registryMap[entry.name] = entry.eligibility_state
       }
     }
@@ -199,8 +209,8 @@ export function useButlerStatusBoard(): StatusBoardResult {
       string,
       { last_session_at: string | null; active_session_count: number }
     > = {}
-    if (!heartbeatsQuery.isError && heartbeatsQuery.data) {
-      for (const hb of heartbeatsQuery.data.butlers) {
+    if (!heartbeatsQuery.isError && heartbeatsQuery.data?.data) {
+      for (const hb of heartbeatsQuery.data.data.butlers) {
         heartbeatMap[hb.name] = {
           last_session_at: hb.last_session_at,
           active_session_count: hb.active_session_count,
@@ -209,9 +219,13 @@ export function useButlerStatusBoard(): StatusBoardResult {
     }
 
     const byButlerCost: Record<string, number> =
-      !costQuery.isError && costQuery.data ? costQuery.data.by_butler : {}
+      !costQuery.isError && costQuery.data?.data ? costQuery.data.data.by_butler : {}
 
     const sessionList = !sessionsQuery.isError && sessionsQuery.data ? sessionsQuery.data.data : []
+
+    // Compute a single endAt for all bucketSessionsByHour calls so that all
+    // per-butler hourly stripes use a consistent 24h window boundary.
+    const stripeEndAt = new Date()
 
     const derived: StatusBoardRow[] = butlers.map((butler) => {
       // --- eligibility ---
@@ -243,7 +257,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
       const costToday = byButlerCost[butler.name] ?? 0
 
       // --- hourly stripe ---
-      const hourlyStripe = bucketSessionsByHour(sessionList, butler.name, OWNER_TZ_DEFAULT)
+      const hourlyStripe = bucketSessionsByHour(sessionList, butler.name, OWNER_TZ_DEFAULT, stripeEndAt)
 
       return {
         name: butler.name,
