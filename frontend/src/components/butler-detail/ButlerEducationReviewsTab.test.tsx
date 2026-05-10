@@ -27,16 +27,16 @@ import ButlerEducationReviewsTab from "./ButlerEducationReviewsTab";
 
 vi.mock("@/hooks/use-education", () => ({
   useMindMaps: vi.fn(),
-  usePendingReviews: vi.fn(),
-  useMasterySummary: vi.fn(),
-  useFrontierNodes: vi.fn(),
+  useAllPendingReviews: vi.fn(),
+  useAllMasterySummaries: vi.fn(),
+  useAllFrontierNodes: vi.fn(),
 }));
 
 import {
   useMindMaps,
-  usePendingReviews,
-  useMasterySummary,
-  useFrontierNodes,
+  useAllPendingReviews,
+  useAllMasterySummaries,
+  useAllFrontierNodes,
 } from "@/hooks/use-education";
 
 // ---------------------------------------------------------------------------
@@ -164,29 +164,34 @@ function setupWithData() {
     isLoading: false,
   } as ReturnType<typeof useMindMaps>);
 
-  vi.mocked(usePendingReviews).mockImplementation((mindMapId) => {
-    if (mindMapId === "map-1") {
-      return { data: PENDING_REVIEWS, isLoading: false } as ReturnType<typeof usePendingReviews>;
-    }
-    return { data: [], isLoading: false } as ReturnType<typeof usePendingReviews>;
-  });
+  // useAllPendingReviews returns an array of results, one per map ID.
+  vi.mocked(useAllPendingReviews).mockImplementation((mapIds) =>
+    mapIds.map((id) =>
+      id === "map-1"
+        ? ({ data: PENDING_REVIEWS, isLoading: false } as ReturnType<typeof useAllPendingReviews>[number])
+        : ({ data: [], isLoading: false } as ReturnType<typeof useAllPendingReviews>[number]),
+    ),
+  );
 
-  vi.mocked(useMasterySummary).mockImplementation((mindMapId) => {
-    if (mindMapId === "map-1") {
-      return { data: MASTERY_SUMMARY_1, isLoading: false } as ReturnType<typeof useMasterySummary>;
-    }
-    if (mindMapId === "map-2") {
-      return { data: MASTERY_SUMMARY_2, isLoading: false } as ReturnType<typeof useMasterySummary>;
-    }
-    return { data: null, isLoading: false } as ReturnType<typeof useMasterySummary>;
-  });
+  vi.mocked(useAllMasterySummaries).mockImplementation((mapIds) =>
+    mapIds.map((id) => {
+      if (id === "map-1") {
+        return { data: MASTERY_SUMMARY_1, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number];
+      }
+      if (id === "map-2") {
+        return { data: MASTERY_SUMMARY_2, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number];
+      }
+      return { data: null, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number];
+    }),
+  );
 
-  vi.mocked(useFrontierNodes).mockImplementation((mindMapId) => {
-    if (mindMapId === "map-1") {
-      return { data: FRONTIER_NODES, isLoading: false } as ReturnType<typeof useFrontierNodes>;
-    }
-    return { data: [], isLoading: false } as ReturnType<typeof useFrontierNodes>;
-  });
+  vi.mocked(useAllFrontierNodes).mockImplementation((mapIds) =>
+    mapIds.map((id) =>
+      id === "map-1"
+        ? ({ data: FRONTIER_NODES, isLoading: false } as ReturnType<typeof useAllFrontierNodes>[number])
+        : ({ data: [], isLoading: false } as ReturnType<typeof useAllFrontierNodes>[number]),
+    ),
+  );
 }
 
 function setupEmpty() {
@@ -195,15 +200,10 @@ function setupEmpty() {
     isLoading: false,
   } as ReturnType<typeof useMindMaps>);
 
-  vi.mocked(usePendingReviews).mockReturnValue(
-    { data: [], isLoading: false } as ReturnType<typeof usePendingReviews>,
-  );
-  vi.mocked(useMasterySummary).mockReturnValue(
-    { data: null, isLoading: false } as ReturnType<typeof useMasterySummary>,
-  );
-  vi.mocked(useFrontierNodes).mockReturnValue(
-    { data: [], isLoading: false } as ReturnType<typeof useFrontierNodes>,
-  );
+  // No maps → hooks receive empty arrays → return empty arrays.
+  vi.mocked(useAllPendingReviews).mockReturnValue([]);
+  vi.mocked(useAllMasterySummaries).mockReturnValue([]);
+  vi.mocked(useAllFrontierNodes).mockReturnValue([]);
 }
 
 function setupLoading() {
@@ -212,15 +212,11 @@ function setupLoading() {
     isLoading: true,
   } as ReturnType<typeof useMindMaps>);
 
-  vi.mocked(usePendingReviews).mockReturnValue(
-    { data: undefined, isLoading: true } as ReturnType<typeof usePendingReviews>,
-  );
-  vi.mocked(useMasterySummary).mockReturnValue(
-    { data: undefined, isLoading: true } as ReturnType<typeof useMasterySummary>,
-  );
-  vi.mocked(useFrontierNodes).mockReturnValue(
-    { data: undefined, isLoading: true } as ReturnType<typeof useFrontierNodes>,
-  );
+  // When maps are still loading, the aggregate hooks receive an empty mapIds
+  // array and return []. isLoading from useMindMaps drives the overall state.
+  vi.mocked(useAllPendingReviews).mockReturnValue([]);
+  vi.mocked(useAllMasterySummaries).mockReturnValue([]);
+  vi.mocked(useAllFrontierNodes).mockReturnValue([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +445,87 @@ describe("ButlerEducationReviewsTab — loading state", () => {
   it("does not render frontier-list while loading", () => {
     renderTab();
     expect(screen.queryByTestId("frontier-list")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: all active mind maps contribute (no fixed 5-map cap)
+// ---------------------------------------------------------------------------
+
+describe("ButlerEducationReviewsTab — no fixed 5-map cap", () => {
+  const SIX_MAPS = [
+    { id: "map-1", title: "Python", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
+    { id: "map-2", title: "Calculus", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
+    { id: "map-3", title: "Chemistry", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
+    { id: "map-4", title: "History", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
+    { id: "map-5", title: "Music", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
+    { id: "map-6", title: "Japanese", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
+  ];
+
+  const MAP6_REVIEW = {
+    node_id: "node-m6",
+    label: "Hiragana basics",
+    ease_factor: 2.5,
+    repetitions: 1,
+    next_review_at: new Date(Date.now() - 1800_000).toISOString(), // overdue
+    mastery_status: "learning",
+  };
+
+  const MAP6_MASTERY = {
+    mind_map_id: "map-6",
+    total_nodes: 8,
+    mastered_count: 2,
+    learning_count: 3,
+    reviewing_count: 2,
+    unseen_count: 1,
+    diagnosed_count: 0,
+    avg_mastery_score: 0.4,
+    struggling_node_ids: [],
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+
+    vi.mocked(useMindMaps).mockReturnValue({
+      data: { data: SIX_MAPS, meta: { total: 6, offset: 0, limit: 20 } },
+      isLoading: false,
+    } as ReturnType<typeof useMindMaps>);
+
+    vi.mocked(useAllPendingReviews).mockImplementation((mapIds) =>
+      mapIds.map((id) =>
+        id === "map-6"
+          ? ({ data: [MAP6_REVIEW], isLoading: false } as ReturnType<typeof useAllPendingReviews>[number])
+          : ({ data: [], isLoading: false } as ReturnType<typeof useAllPendingReviews>[number]),
+      ),
+    );
+
+    vi.mocked(useAllMasterySummaries).mockImplementation((mapIds) =>
+      mapIds.map((id) =>
+        id === "map-6"
+          ? ({ data: MAP6_MASTERY, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number])
+          : ({ data: null, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number]),
+      ),
+    );
+
+    vi.mocked(useAllFrontierNodes).mockImplementation((mapIds) =>
+      mapIds.map(() => ({ data: [], isLoading: false } as ReturnType<typeof useAllFrontierNodes>[number])),
+    );
+  });
+
+  afterEach(() => cleanup());
+
+  it("passes all 6 map IDs to the aggregate hooks (not capped at 5)", () => {
+    renderTab();
+    // If the old 5-cap were still present, map-6's review would not appear.
+    expect(screen.getByText("Hiragana basics")).toBeDefined();
+  });
+
+  it("aggregates KPI totals from all 6 maps including map-6 (0+0+0+0+0+8 = 8 total nodes)", () => {
+    renderTab();
+    const kpiValues = screen.getAllByTestId("kpi-value");
+    // Only map-6 has a mastery summary in this setup → total_nodes = 8
+    expect(kpiValues[0].textContent).toBe("8");
+    expect(kpiValues[1].textContent).toBe("2");
   });
 });
 

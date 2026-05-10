@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
@@ -81,6 +81,60 @@ export function useMasterySummary(mindMapId: string | null) {
     queryFn: () => getEducationMasterySummary(mindMapId!),
     enabled: !!mindMapId,
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Fetch pending reviews for all provided map IDs in parallel.
+ *
+ * Uses `useQueries` so the number of queries tracks the live map list without
+ * violating React's rules of hooks. Returns an array of query results in the
+ * same order as `mapIds`.
+ */
+export function useAllPendingReviews(mapIds: string[]) {
+  return useQueries({
+    queries: mapIds.map((id) => ({
+      queryKey: ["education", "pending-reviews", id],
+      queryFn: () => getEducationPendingReviews(id, 14),
+      refetchInterval: 15_000,
+      refetchIntervalInBackground: false,
+    })),
+  });
+}
+
+/**
+ * Fetch mastery summaries for all provided map IDs in parallel.
+ *
+ * Uses `useQueries` so the number of queries tracks the live map list without
+ * violating React's rules of hooks. Returns an array of query results in the
+ * same order as `mapIds`.
+ */
+export function useAllMasterySummaries(mapIds: string[]) {
+  return useQueries({
+    queries: mapIds.map((id) => ({
+      queryKey: ["education", "mastery-summary", id],
+      queryFn: () => getEducationMasterySummary(id),
+      refetchInterval: 30_000,
+      refetchIntervalInBackground: false,
+    })),
+  });
+}
+
+/**
+ * Fetch frontier nodes for all provided map IDs in parallel.
+ *
+ * Uses `useQueries` so the number of queries tracks the live map list without
+ * violating React's rules of hooks. Returns an array of query results in the
+ * same order as `mapIds`.
+ */
+export function useAllFrontierNodes(mapIds: string[]) {
+  return useQueries({
+    queries: mapIds.map((id) => ({
+      queryKey: ["education", "frontier", id],
+      queryFn: () => getEducationMindMapFrontier(id),
+      refetchInterval: 30_000,
+      refetchIntervalInBackground: false,
+    })),
   });
 }
 
