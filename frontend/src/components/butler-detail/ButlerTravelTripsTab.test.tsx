@@ -511,7 +511,7 @@ describe("ButlerTravelTripsTab — loading state", () => {
 // Tests: ButlerDetailPage integration — travel tab in getAllTabs
 // ---------------------------------------------------------------------------
 
-import { getAllTabs, isValidTab } from "@/pages/ButlerDetailPage";
+import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
 describe("ButlerDetailPage — travel trips tab in getAllTabs", () => {
   it("travel butler has 'trips' tab in operator mode", () => {
