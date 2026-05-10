@@ -4,9 +4,8 @@
 //
 // Gate B (bu-41p8z) resolved to B2: operator/resident mode toggle.
 // Operator mode: full 10 spec-mandated base tabs (dashboard-butler-management spec.md:55, 178-179).
-// Resident mode: narrow 7-tab Dispatch vocabulary (intended future default for new visitors).
-// Today operator is the active default; bu-8bayc.2 adds the toggle UI, localStorage persistence,
-// and will wire up resident as the default for first-time visitors.
+// Resident mode: narrow 7-tab Dispatch vocabulary; this is the default for first-time visitors.
+// The toggle UI and localStorage persistence are wired up in ButlerDetailPage; mode survives reloads.
 //
 // Extracted from ButlerDetailPage.tsx so that the page module only exports its
 // component (react-refresh/only-export-components).
