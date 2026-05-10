@@ -85,19 +85,65 @@ export function useMasterySummary(mindMapId: string | null) {
 }
 
 /**
+ * Compute a polling interval that backs off as the active map count grows.
+ *
+ * Active-tab polling cost on the Reviews tab is O(N) where N = active maps and
+ * each map contributes 3 polled queries (pending reviews on a 15s base, mastery
+ * + frontier on a 30s base). For small N (the common case) we keep the base
+ * interval; once N grows past the inflection point we lengthen the interval so
+ * total per-second request volume stays bounded.
+ *
+ * Formula: `max(baseMs, perMapMs * mapCount)`.
+ *  - baseMs is the original interval and is preserved for low map counts.
+ *  - perMapMs sets the inflection point: floor(baseMs / perMapMs) maps pass
+ *    through unchanged; beyond that the interval scales linearly with N.
+ *
+ * Examples (15s base / 5s perMap):
+ *  - 1-3 maps -> 15s
+ *  - 5 maps   -> 25s
+ *  - 10 maps  -> 50s
+ *
+ * Examples (30s base / 10s perMap):
+ *  - 1-3 maps -> 30s
+ *  - 5 maps   -> 50s
+ *  - 10 maps  -> 100s
+ *
+ * Exported for unit testing.
+ */
+export function scaledPollInterval(
+  baseMs: number,
+  perMapMs: number,
+  mapCount: number,
+): number {
+  if (mapCount <= 0) return baseMs;
+  return Math.max(baseMs, perMapMs * mapCount);
+}
+
+/**
  * Fetch pending reviews for all provided map IDs in parallel.
  *
  * Uses `useQueries` so the number of queries tracks the live map list without
  * violating React's rules of hooks. Returns an array of query results in the
  * same order as `mapIds`.
+ *
+ * Polling interval scales with `mapIds.length` so per-map polling stays bounded
+ * for residents with many active maps. See `scaledPollInterval`.
  */
 export function useAllPendingReviews(mapIds: string[]) {
+  const interval = scaledPollInterval(15_000, 5_000, mapIds.length);
   return useQueries({
     queries: mapIds.map((id) => ({
       queryKey: ["education", "pending-reviews", id],
       queryFn: () => getEducationPendingReviews(id, 14),
-      refetchInterval: 15_000,
+      refetchInterval: interval,
       refetchIntervalInBackground: false,
+      // Match staleTime to the scaled polling cadence. Without this, the
+      // global default staleTime (30s) is shorter than the scaled interval
+      // for high map counts, so refetchOnWindowFocus / refetchOnMount would
+      // fire extra requests between scheduled polls and partially undo the
+      // backoff. Pinning staleTime=interval keeps the backoff effective
+      // under focus/mount as well.
+      staleTime: interval,
     })),
   });
 }
@@ -108,14 +154,22 @@ export function useAllPendingReviews(mapIds: string[]) {
  * Uses `useQueries` so the number of queries tracks the live map list without
  * violating React's rules of hooks. Returns an array of query results in the
  * same order as `mapIds`.
+ *
+ * Polling interval scales with `mapIds.length` so per-map polling stays bounded
+ * for residents with many active maps. See `scaledPollInterval`.
  */
 export function useAllMasterySummaries(mapIds: string[]) {
+  const interval = scaledPollInterval(30_000, 10_000, mapIds.length);
   return useQueries({
     queries: mapIds.map((id) => ({
       queryKey: ["education", "mastery-summary", id],
       queryFn: () => getEducationMasterySummary(id),
-      refetchInterval: 30_000,
+      refetchInterval: interval,
       refetchIntervalInBackground: false,
+      // See useAllPendingReviews: keep staleTime aligned with the scaled
+      // refetchInterval so focus/mount refetches don't punch through the
+      // backoff for residents with many active maps.
+      staleTime: interval,
     })),
   });
 }
@@ -126,14 +180,22 @@ export function useAllMasterySummaries(mapIds: string[]) {
  * Uses `useQueries` so the number of queries tracks the live map list without
  * violating React's rules of hooks. Returns an array of query results in the
  * same order as `mapIds`.
+ *
+ * Polling interval scales with `mapIds.length` so per-map polling stays bounded
+ * for residents with many active maps. See `scaledPollInterval`.
  */
 export function useAllFrontierNodes(mapIds: string[]) {
+  const interval = scaledPollInterval(30_000, 10_000, mapIds.length);
   return useQueries({
     queries: mapIds.map((id) => ({
       queryKey: ["education", "frontier", id],
       queryFn: () => getEducationMindMapFrontier(id),
-      refetchInterval: 30_000,
+      refetchInterval: interval,
       refetchIntervalInBackground: false,
+      // See useAllPendingReviews: keep staleTime aligned with the scaled
+      // refetchInterval so focus/mount refetches don't punch through the
+      // backoff for residents with many active maps.
+      staleTime: interval,
     })),
   });
 }
