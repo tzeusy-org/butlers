@@ -10,11 +10,12 @@
  *  - KPI values render with data
  *  - Day-close stale marker renders when response.stale is true
  *  - Day-close prose renders when response.stale is false
- *  - Pagination: "Load more" button shown when has_more=true, hidden when false
- *  - Pagination: clicking "Load more" triggers fetch with offset=50
- *  - Pagination: button shows "Loading…" while isFetching and offset > 0
+ *  - Pagination: "Load more" button shown when hasNextPage=true, hidden when false
+ *  - Pagination: clicking "Load more" calls fetchNextPage
+ *  - Pagination: button shows "Loading…" while isFetchingNextPage
+ *  - Live updates: all loaded pages refetch (offset=0 stays active after Load more)
  *
- * bead: bu-aeg7w
+ * bead: bu-aeg7w, bu-gh6r8
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
@@ -33,7 +34,7 @@ vi.mock("@/hooks/use-chronicles-kpi", () => ({
 }));
 
 vi.mock("@/hooks/use-chronicles", () => ({
-  useChroniclesEpisodes: vi.fn(),
+  useChroniclesEpisodesInfinite: vi.fn(),
   useChroniclesByCategory: vi.fn(),
   useChroniclesSourceState: vi.fn(),
   useChroniclesDayClose: vi.fn(),
@@ -41,7 +42,7 @@ vi.mock("@/hooks/use-chronicles", () => ({
 
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
 import {
-  useChroniclesEpisodes,
+  useChroniclesEpisodesInfinite,
   useChroniclesByCategory,
   useChroniclesSourceState,
   useChroniclesDayClose,
@@ -221,11 +222,17 @@ function setupWithData() {
     isError: false,
   } as ReturnType<typeof useChroniclesKpi>);
 
-  vi.mocked(useChroniclesEpisodes).mockReturnValue({
-    data: { data: EPISODES, meta: { total: 2, offset: 0, limit: 50, has_more: false } },
+  vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
+    data: {
+      pages: [{ data: EPISODES, meta: { total: 2, offset: 0, limit: 50, has_more: false } }],
+      pageParams: [0],
+    },
     isLoading: false,
+    isFetchingNextPage: false,
+    hasNextPage: false,
+    fetchNextPage: vi.fn(),
     isError: false,
-  } as ReturnType<typeof useChroniclesEpisodes>);
+  } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
 
   vi.mocked(useChroniclesSourceState).mockReturnValue({
     data: { data: SOURCE_ROWS, meta: {} },
@@ -253,11 +260,17 @@ function setupEmpty() {
     isError: false,
   } as ReturnType<typeof useChroniclesKpi>);
 
-  vi.mocked(useChroniclesEpisodes).mockReturnValue({
-    data: { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } },
+  vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
+    data: {
+      pages: [{ data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } }],
+      pageParams: [0],
+    },
     isLoading: false,
+    isFetchingNextPage: false,
+    hasNextPage: false,
+    fetchNextPage: vi.fn(),
     isError: false,
-  } as ReturnType<typeof useChroniclesEpisodes>);
+  } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
 
   vi.mocked(useChroniclesSourceState).mockReturnValue({
     data: { data: [], meta: {} },
@@ -285,11 +298,14 @@ function setupLoading() {
     isError: false,
   } as ReturnType<typeof useChroniclesKpi>);
 
-  vi.mocked(useChroniclesEpisodes).mockReturnValue({
+  vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
     data: undefined,
     isLoading: true,
+    isFetchingNextPage: false,
+    hasNextPage: false,
+    fetchNextPage: vi.fn(),
     isError: false,
-  } as ReturnType<typeof useChroniclesEpisodes>);
+  } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
 
   vi.mocked(useChroniclesSourceState).mockReturnValue({
     data: undefined,
@@ -555,7 +571,7 @@ describe("ButlerChroniclerTimelinesTab — loading states", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: "Load more" pagination
+// Tests: "Load more" pagination (useInfiniteQuery-based)
 // ---------------------------------------------------------------------------
 
 describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
@@ -565,73 +581,120 @@ describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
   });
   afterEach(() => cleanup());
 
-  it("hides Load more button when has_more is false", () => {
-    // setupWithData returns has_more: false
+  it("hides Load more button when hasNextPage is false", () => {
+    // setupWithData returns hasNextPage: false
     renderTab();
     expect(screen.queryByTestId("load-more-button")).toBeNull();
   });
 
-  it("shows Load more button when has_more is true", () => {
-    vi.mocked(useChroniclesEpisodes).mockReturnValue({
-      data: { data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } },
+  it("shows Load more button when hasNextPage is true", () => {
+    vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
+      data: {
+        pages: [{ data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } }],
+        pageParams: [0],
+      },
       isLoading: false,
-      isFetching: false,
+      isFetchingNextPage: false,
+      hasNextPage: true,
+      fetchNextPage: vi.fn(),
       isError: false,
-    } as ReturnType<typeof useChroniclesEpisodes>);
+    } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
 
     renderTab();
     expect(screen.getByTestId("load-more-button")).toBeDefined();
     expect(screen.getByTestId("load-more-button").textContent).toBe("Load more");
   });
 
-  it("clicking Load more triggers a new fetch with offset=50", () => {
-    vi.mocked(useChroniclesEpisodes).mockReturnValue({
-      data: { data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } },
+  it("clicking Load more calls fetchNextPage", () => {
+    const fetchNextPage = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
+      data: {
+        pages: [{ data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } }],
+        pageParams: [0],
+      },
       isLoading: false,
-      isFetching: false,
+      isFetchingNextPage: false,
+      hasNextPage: true,
+      fetchNextPage,
       isError: false,
-    } as ReturnType<typeof useChroniclesEpisodes>);
+    } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
 
     renderTab();
-    const btn = screen.getByTestId("load-more-button");
-    fireEvent.click(btn);
-
-    // After clicking, useChroniclesEpisodes must have been called with offset: 50.
-    const calls = vi.mocked(useChroniclesEpisodes).mock.calls;
-    const offsetCalls = calls.filter((c) => c[0]?.offset === 50);
-    expect(offsetCalls.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("shows Loading… text on Load more button while fetching next page", () => {
-    // To trigger isFetchingMore=true in the component, we need:
-    //   1. nextOffset > 0 (set by clicking "Load more")
-    //   2. isFetching=true from the hook
-    // Strategy: render page 0 (has_more=true), click the button, then observe that
-    // the hook is called with offset=50; stub subsequent calls as isFetching=true.
-    vi.mocked(useChroniclesEpisodes)
-      // First call: page 0 loaded successfully.
-      .mockReturnValueOnce({
-        data: { data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } },
-        isLoading: false,
-        isFetching: false,
-        isError: false,
-      } as ReturnType<typeof useChroniclesEpisodes>)
-      // Second call onward (after click → offset becomes 50): page is fetching.
-      .mockReturnValue({
-        data: undefined,
-        isLoading: false,
-        isFetching: true,
-        isError: false,
-      } as ReturnType<typeof useChroniclesEpisodes>);
-
-    renderTab();
-
-    // Click Load more — nextOffset advances to 50, causing a re-render with the second mock.
     fireEvent.click(screen.getByTestId("load-more-button"));
 
-    // Button should now show "Loading…" and be disabled.
+    expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows Loading… text on Load more button while isFetchingNextPage", () => {
+    vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
+      data: {
+        pages: [{ data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } }],
+        pageParams: [0],
+      },
+      isLoading: false,
+      isFetchingNextPage: true,
+      hasNextPage: true,
+      fetchNextPage: vi.fn(),
+      isError: false,
+    } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
+
+    renderTab();
+
     const btn = screen.getByTestId("load-more-button");
     expect(btn.textContent).toBe("Loading…");
     expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("renders episodes from all loaded pages (live update: first page stays active)", () => {
+    // Two pages loaded: page 0 has ep-1/ep-2, page 1 has ep-3 (a new episode on page 2).
+    // With useInfiniteQuery, both pages are kept active and all episodes appear.
+    const EP_PAGE2 = {
+      id: "ep-3",
+      source_name: "toggl",
+      source_ref: "ref-3",
+      episode_type: "task",
+      start_at: `${TODAY}T14:00:00Z`,
+      end_at: `${TODAY}T15:00:00Z`,
+      precision: "minute",
+      title: "Afternoon session",
+      payload: {},
+      privacy: "normal",
+      retention_days: null,
+      tombstone_at: null,
+      canonical_start_at: `${TODAY}T14:00:00Z`,
+      canonical_end_at: `${TODAY}T15:00:00Z`,
+      canonical_title: "Afternoon session",
+      canonical_privacy: "normal",
+      corrected_at: null,
+      correction_note: null,
+      created_at: `${TODAY}T00:00:00Z`,
+      updated_at: `${TODAY}T00:00:00Z`,
+      category: "work",
+    };
+
+    vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
+      data: {
+        pages: [
+          { data: EPISODES, meta: { total: 103, offset: 0, limit: 50, has_more: true } },
+          { data: [EP_PAGE2], meta: { total: 103, offset: 50, limit: 50, has_more: false } },
+        ],
+        pageParams: [0, 50],
+      },
+      isLoading: false,
+      isFetchingNextPage: false,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isError: false,
+    } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
+
+    renderTab();
+
+    // All 3 episodes across both pages should appear
+    const items = screen.getAllByTestId("episode-spine-item");
+    expect(items.length).toBe(3);
+    // The page-2 episode title should be visible
+    expect(screen.getByText("Afternoon session")).toBeDefined();
+    // The page-1 normal episode should also still be present
+    expect(screen.getByText("Morning work block")).toBeDefined();
   });
 });

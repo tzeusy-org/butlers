@@ -2,11 +2,12 @@
  * TanStack Query hooks for the Chronicler dashboard API.
  *
  * Query-key strategy:
- * - chroniclesKeys.episodes(params)       → PaginatedResponse<ChroniclerEpisode>
- * - chroniclesKeys.byCategory(params)     → ApiResponse<ChroniclerCategoryBuckets>
- * - chroniclesKeys.byDay(params)          → ChroniclerAggregateByDayRow[]
- * - chroniclesKeys.sourceState()          → ApiResponse<ChroniclerSourceStateRow[]>
- * - chroniclesKeys.dayClose(params)       → ChroniclerDayCloseResponse
+ * - chroniclesKeys.episodes(params)         → PaginatedResponse<ChroniclerEpisode>
+ * - chroniclesKeys.episodesInfinite(params) → InfiniteData<PaginatedResponse<ChroniclerEpisode>>
+ * - chroniclesKeys.byCategory(params)       → ApiResponse<ChroniclerCategoryBuckets>
+ * - chroniclesKeys.byDay(params)            → ChroniclerAggregateByDayRow[]
+ * - chroniclesKeys.sourceState()            → ApiResponse<ChroniclerSourceStateRow[]>
+ * - chroniclesKeys.dayClose(params)         → ChroniclerDayCloseResponse
  *
  * Privacy defaults:
  * - Episodes: restricted rows are excluded by the server unless the caller
@@ -17,7 +18,7 @@
  * Tombstone defaults: include_tombstoned defaults to false in all hooks.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getChroniclerAggregateByCategory,
@@ -47,6 +48,8 @@ export const chroniclesKeys = {
   all: ["chronicles"] as const,
   episodes: (params?: ChroniclerEpisodesParams) =>
     [...chroniclesKeys.all, "episodes", params] as const,
+  episodesInfinite: (params?: Omit<ChroniclerEpisodesParams, "offset">) =>
+    [...chroniclesKeys.all, "episodes-infinite", params] as const,
   episode: (id: string) => [...chroniclesKeys.all, "episode", id] as const,
   episodeEvents: (id: string) => [...chroniclesKeys.all, "episode-events", id] as const,
   episodeCorrections: (id: string) =>
@@ -85,6 +88,34 @@ export function useChroniclesEpisodes(
   return useQuery({
     queryKey: chroniclesKeys.episodes(params),
     queryFn: () => getChroniclerEpisodes(params),
+    refetchInterval: options?.refetchInterval ?? 30_000,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch all Chronicler episodes for a window using infinite pagination.
+ *
+ * Uses useInfiniteQuery so that ALL loaded pages remain active and are
+ * refetched on each interval — including page 0. This means newly recorded
+ * episodes that fall in the first page remain visible even after the user
+ * has clicked "Load more".
+ *
+ * pageParam is the offset (number). TanStack Query v5 requires initialPageParam.
+ */
+export function useChroniclesEpisodesInfinite(
+  params?: Omit<ChroniclerEpisodesParams, "offset">,
+  options?: ChroniclesHookOptions,
+) {
+  return useInfiniteQuery({
+    queryKey: chroniclesKeys.episodesInfinite(params),
+    queryFn: ({ pageParam }) =>
+      getChroniclerEpisodes({ ...params, offset: pageParam as number }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      if (!lastPage.meta.has_more) return undefined;
+      return lastPage.meta.offset + lastPage.meta.limit;
+    },
     refetchInterval: options?.refetchInterval ?? 30_000,
     enabled: options?.enabled !== false,
   });

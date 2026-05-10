@@ -13,7 +13,7 @@
 // All data comes from existing hooks. No new HTTP routes are added.
 // ---------------------------------------------------------------------------
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo } from "react";
 
 import type {
   ChroniclesKpi,
@@ -30,7 +30,7 @@ import { Button } from "@/components/ui/button";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
 import {
-  useChroniclesEpisodes,
+  useChroniclesEpisodesInfinite,
   useChroniclesByCategory,
   useChroniclesSourceState,
   useChroniclesDayClose,
@@ -533,77 +533,49 @@ export default function ButlerChroniclerTimelinesTab() {
   const { data: kpiData, isLoading: kpiLoading } = useChroniclesKpi({ date: today, tz });
   const kpi = kpiData?.data;
 
-  // --- Section 2: Today's episodes — paginated, accumulated across "Load more" clicks
-  // nextOffset tracks what offset to use for the next page fetch.
-  // allEpisodes accumulates all loaded episodes across pages.
-  const [nextOffset, setNextOffset] = useState(0);
-  const [allEpisodes, setAllEpisodes] = useState<ChroniclerEpisode[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-
-  // Stable base params (overlaps window). Offset/limit are added per-fetch.
-  const todayWindowRef = useRef({ overlaps_start: todayStart, overlaps_end: todayEnd });
-  // Reset pagination whenever the day window changes (timezone or date flip).
-  useEffect(() => {
-    if (
-      todayWindowRef.current.overlaps_start !== todayStart ||
-      todayWindowRef.current.overlaps_end !== todayEnd
-    ) {
-      todayWindowRef.current = { overlaps_start: todayStart, overlaps_end: todayEnd };
-      setNextOffset(0);
-      setAllEpisodes([]);
-      setHasMore(false);
-    }
-  }, [todayStart, todayEnd]);
-
+  // --- Section 2: Today's episodes — infinite pagination via useInfiniteQuery.
+  // All loaded pages remain active and are refetched on each interval, so
+  // newly recorded episodes in the first page stay visible even after "Load more".
   const todayEpisodesParams = useMemo(
     () => ({
       overlaps_start: todayStart,
       overlaps_end: todayEnd,
       limit: PAGE_SIZE,
-      offset: nextOffset,
     }),
-    [todayStart, todayEnd, nextOffset],
+    [todayStart, todayEnd],
   );
   const {
-    data: episodesData,
+    data: infiniteEpisodesData,
     isLoading: episodesLoading,
-    isFetching: episodesFetching,
-  } = useChroniclesEpisodes(todayEpisodesParams);
+    isFetchingNextPage: isFetchingMore,
+    hasNextPage,
+    fetchNextPage,
+  } = useChroniclesEpisodesInfinite(todayEpisodesParams);
 
-  // Accumulate pages into allEpisodes.
-  // No offset-dedup guard: offset=0 always replaces (handles day-reset and live refetches),
-  // and subsequent pages deduplicate by id, so StrictMode double-effects are safe.
-  useEffect(() => {
-    if (!episodesData) return;
-    const { data: page, meta } = episodesData;
-
-    setAllEpisodes((prev) => {
-      if (meta.offset === 0) {
-        // First page (or reset): replace entirely so live updates and day flips always land.
-        return page;
+  // Flatten all pages and deduplicate by id, then sort chronologically.
+  const episodes = useMemo(() => {
+    if (!infiniteEpisodesData) return [];
+    const seen = new Set<string>();
+    const flat: ChroniclerEpisode[] = [];
+    for (const page of infiniteEpisodesData.pages) {
+      for (const ep of page.data) {
+        if (!seen.has(ep.id)) {
+          seen.add(ep.id);
+          flat.push(ep);
+        }
       }
-      // Subsequent page: append, deduplicating by id.
-      const existingIds = new Set(prev.map((ep) => ep.id));
-      const fresh = page.filter((ep) => !existingIds.has(ep.id));
-      return [...prev, ...fresh];
-    });
-    setHasMore(meta.has_more);
-  }, [episodesData]);
+    }
+    return flat.sort(
+      (a, b) =>
+        new Date(a.canonical_start_at).getTime() -
+        new Date(b.canonical_start_at).getTime(),
+    );
+  }, [infiniteEpisodesData]);
 
-  const episodes = useMemo(
-    () =>
-      [...allEpisodes].sort(
-        (a, b) =>
-          new Date(a.canonical_start_at).getTime() -
-          new Date(b.canonical_start_at).getTime(),
-      ),
-    [allEpisodes],
-  );
-
-  const isFetchingMore = episodesFetching && nextOffset > 0;
+  const hasMore = !!hasNextPage;
 
   function handleLoadMore() {
-    setNextOffset((prev) => prev + PAGE_SIZE);
+    void fetchNextPage();
   }
 
   // --- Section 3: Source state
