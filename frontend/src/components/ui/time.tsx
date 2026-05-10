@@ -334,26 +334,20 @@ export function Time({
   const tz = timezone ?? contextTz
 
   // clock-24h-mono mode: live ticking clock that ignores `value` after mount.
-  // State holds the current "HH:MM" string in the owner timezone.
-  // Initialized to the current clock time so the first render is already
-  // accurate (no stale value flash). The interval fires every 60 s to keep
-  // the display in sync with the wall clock.
-  // On SSR (renderToStaticMarkup), useEffect is a no-op so the initial state
-  // value is used throughout — it is derived from Date.now() so the snapshot
-  // is correct for the server render time.
-  const [clockText, setClockText] = useState<string | null>(
-    mode === "clock-24h-mono" ? formatClock24h(tz) : null,
-  )
+  // A tick counter drives re-renders every 60 s; the display text is derived
+  // from the current tz at render time so timezone changes also reflect
+  // immediately on the next render, with no stale intermediate state.
+  // On SSR (renderToStaticMarkup), useEffect is a no-op so the ticker never
+  // increments — the first render's formatClock24h(tz) is used throughout,
+  // which is correct for the server render time.
+  const [clockTick, setClockTick] = useState(0)
   useEffect(() => {
     if (mode !== "clock-24h-mono") return
-    // Immediately update clockText so a timezone change takes effect right away,
-    // rather than waiting up to 60 s for the next interval tick.
-    setClockText(formatClock24h(tz))
     const id = setInterval(() => {
-      setClockText(formatClock24h(tz))
+      setClockTick((t) => t + 1)
     }, 60_000)
     return () => clearInterval(id)
-  }, [mode, tz])
+  }, [mode])
 
   const date = toDate(value)
 
@@ -370,12 +364,13 @@ export function Time({
   const isoString = date.toISOString()
 
   // clock-24h-mono: live ticking 24-hour clock in the owner timezone.
-  // clockText is null only when the component first renders in a non-clock mode
-  // and later switches to clock-24h-mono before the effect has run (a rare
-  // edge case). Fall back to the value-derived snapshot so static rendering is
-  // still correct in that case.
+  // Text is derived from tz at render time (not from stale state) so it is
+  // always in sync with both the current minute and the current tz.
+  // clockTick is read here only to ensure React re-renders when the interval
+  // fires — its numeric value is not used directly.
   if (mode === "clock-24h-mono") {
-    const text = clockText ?? formatInTimeZone(date, tz, "HH:mm")
+    void clockTick  // consumed to keep React's dependency tracking happy
+    const text = formatClock24h(tz)
     // tabular-nums ensures digits are fixed-width (no layout shift as time changes).
     const clockClass = ["font-mono tabular-nums", className].filter(Boolean).join(" ")
     return (

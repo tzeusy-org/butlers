@@ -742,9 +742,11 @@ describe("mode=relative-compact (bu-hb7dh.4)", () => {
 // ---------------------------------------------------------------------------
 // 15. mode=clock-24h-mono (bu-hb7dh.4)
 //     Live 24-hour clock in owner timezone with monospace tabular-nums.
-//     SSR (renderToStaticMarkup): clockText is null (useEffect no-op) →
-//       falls back to value-derived HH:mm snapshot.
-//     Live (rtlRender): useEffect fires after mount → shows current time.
+//     Uses a tick counter (clockTick) to trigger re-renders every 60 s;
+//     display text is derived from tz at render time (formatClock24h(tz)).
+//     SSR (renderToStaticMarkup): useEffect is a no-op so no ticks fire;
+//       the initial formatClock24h(tz) call at render time is used throughout.
+//     Live (rtlRender): interval fires every 60 s → re-render → updated time.
 // ---------------------------------------------------------------------------
 
 describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
@@ -819,7 +821,7 @@ describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
   })
 
   it("live: shows correct current time immediately after mount via useState init", async () => {
-    // useState is initialized with formatClock24h(tz) = Date.now() formatted in tz.
+    // Text is derived from tz at render time via formatClock24h(tz).
     // System time is 2026-05-03T06:00:00Z = 14:00 SGT (set in beforeEach).
     const { getByRole } = rtlRender(
       <ChroniclesTimezoneProvider timezone={SGT}>
