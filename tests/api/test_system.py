@@ -472,6 +472,90 @@ async def test_heartbeat_503_when_registry_fails():
     assert resp.status_code == 503
 
 
+async def test_heartbeat_null_last_heartbeat_when_not_in_registry():
+    """Butlers known to the DB manager but absent from the registry have null heartbeat fields.
+
+    Regression: verifies that a butler present in db.butler_names but not in the
+    switchboard registry appears in results with last_heartbeat_at=None,
+    heartbeat_age_seconds=None, and no error (session facts still populated).
+    """
+    # Pass a sentinel value to distinguish "no rows" from "use default rows"
+    mock_db = _make_heartbeat_db(
+        registry_rows=[{"name": "other-butler", "last_seen_at": _NOW}],  # general not in registry
+        butler_names=["general"],
+        active_count=2,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/butlers/heartbeat")
+    assert resp.status_code == 200
+    butlers = resp.json()["data"]["butlers"]
+    names = [b["name"] for b in butlers]
+    assert "general" in names, "butler in db.butler_names must appear even if absent from registry"
+    general = next(b for b in butlers if b["name"] == "general")
+    assert general["last_heartbeat_at"] is None
+    assert general["heartbeat_age_seconds"] is None
+    assert general["active_session_count"] == 2
+    assert general["error"] is None
+
+
+async def test_heartbeat_omits_butler_absent_from_db_manager_and_registry():
+    """GAP DOCUMENTATION: butlers discoverable by /api/butlers but with failed DB pool init are omitted.
+
+    The list endpoint (/api/butlers) derives its butler set from get_butler_configs(),
+    which scans the roster filesystem.  The heartbeat endpoint derives its set from
+    db.butler_names (pool keys) union switchboard registry names.
+
+    If a butler's pool fails to initialize (exception in init_db_manager) and the butler
+    has never pinged the switchboard, it will be absent from the heartbeat response.
+    This test documents that known parity gap: a butler named 'ghost' in the roster but
+    absent from db.butler_names and not in the registry is silently omitted.
+
+    The heartbeat endpoint SHOULD use get_butler_configs() as its canonical source and
+    fall back to error='schema_unreachable' for butlers without a pool — but currently
+    it does not. A follow-up fix bead should address this.
+    """
+    # "ghost" is in the registry rows but NOT in butler_names — simulates failed pool init
+    # We verify that "ghost" appears when it's in the registry (union path works)
+    mock_db_with_registry = _make_heartbeat_db(
+        registry_rows=[
+            {"name": "general", "last_seen_at": _NOW},
+            {"name": "ghost", "last_seen_at": _NOW},
+        ],
+        butler_names=["general"],  # ghost pool never initialized
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db_with_registry)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/system/butlers/heartbeat")
+    assert resp.status_code == 200
+    names_with_registry = [b["name"] for b in resp.json()["data"]["butlers"]]
+    assert "ghost" in names_with_registry, (
+        "ghost appears via registry union path when it has pinged the switchboard"
+    )
+
+    # Now the same butler without any registry row — this is the gap case
+    mock_db_no_registry = _make_heartbeat_db(
+        registry_rows=[{"name": "general", "last_seen_at": _NOW}],
+        butler_names=["general"],  # ghost pool never initialized, never pinged
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db_no_registry)),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/system/butlers/heartbeat")
+    assert resp.status_code == 200
+    names_no_registry = [b["name"] for b in resp.json()["data"]["butlers"]]
+    # GAP: ghost is absent from heartbeat but would appear in /api/butlers roster scan
+    assert "ghost" not in names_no_registry, (
+        "GAP CONFIRMED: ghost is omitted from heartbeat when pool init failed and "
+        "it has never pinged the switchboard registry. "
+        "Fix: heartbeat should use get_butler_configs() as canonical source."
+    )
+
+
 # ---------------------------------------------------------------------------
 # OTel span: system.egress.read
 # ---------------------------------------------------------------------------
