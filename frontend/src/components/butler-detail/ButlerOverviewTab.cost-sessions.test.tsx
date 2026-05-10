@@ -146,9 +146,13 @@ type CostSummaryData = {
   by_model: Record<string, number>;
 };
 
-function makeCostSummary(butlerCost: number, butlerName = "general"): CostSummaryData {
+function makeCostSummary(
+  butlerCost: number,
+  butlerName = "general",
+  globalTotal?: number,
+): CostSummaryData {
   return {
-    total_cost_usd: butlerCost,
+    total_cost_usd: globalTotal ?? butlerCost,
     total_sessions: 1,
     total_input_tokens: 1000,
     total_output_tokens: 300,
@@ -282,6 +286,49 @@ describe("ButlerOverviewTab — cost card", () => {
     setupDefaultMocks();
     const html = renderTab();
     expect(html).toContain('aria-label="Cost summary"');
+  });
+
+  it("renders global total and percentage share when butler is a fraction of total", () => {
+    // Butler spent $0.05 out of a $0.20 global total → 25.0%
+    setupDefaultMocks({
+      costSummary24h: makeCostSummary(0.05, "general", 0.20),
+    });
+    const html = renderTab();
+    expect(html).toContain("Share (today)");
+    expect(html).toContain("$0.05");
+    expect(html).toContain("$0.20");
+    expect(html).toContain("25.0%");
+  });
+
+  it("renders share row when butler is sole contributor (100%)", () => {
+    // Butler spent $0.10, global total is also $0.10 → 100.0%
+    setupDefaultMocks({
+      costSummary24h: makeCostSummary(0.10, "general", 0.10),
+    });
+    const html = renderTab();
+    expect(html).toContain("100.0%");
+  });
+
+  it("omits share row when global total is zero", () => {
+    // Global total is zero: division guard should suppress the share row
+    setupDefaultMocks({
+      costSummary24h: {
+        total_cost_usd: 0,
+        total_sessions: 0,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        by_butler: {},
+        by_model: {},
+      },
+    });
+    const html = renderTab();
+    expect(html).not.toContain("Share (today)");
+  });
+
+  it("omits share row when cost data is unavailable", () => {
+    setupDefaultMocks({ costSummary24h: null, costSummary7d: null });
+    const html = renderTab();
+    expect(html).not.toContain("Share (today)");
   });
 });
 

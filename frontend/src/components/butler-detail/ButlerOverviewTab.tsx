@@ -233,10 +233,20 @@ function ProcessFactsCard({ processFacts }: ProcessFactsCardProps) {
 interface CostCardProps {
   costToday: number | undefined;
   cost7d: number | undefined;
+  globalTotalToday: number | undefined;
   isLoading: boolean;
 }
 
-function CostCard({ costToday, cost7d, isLoading }: CostCardProps) {
+/** Format a percentage share, rounded to one decimal place. */
+function formatPercent(share: number, total: number): string {
+  if (total === 0) return "0.0%";
+  return `${((share / total) * 100).toFixed(1)}%`;
+}
+
+function CostCard({ costToday, cost7d, globalTotalToday, isLoading }: CostCardProps) {
+  const showShareRow =
+    costToday != null && globalTotalToday != null && globalTotalToday > 0;
+
   return (
     <Card aria-label="Cost summary">
       <CardHeader>
@@ -247,6 +257,7 @@ function CostCard({ costToday, cost7d, isLoading }: CostCardProps) {
           <div className="space-y-2">
             <Skeleton className="h-6 w-24" />
             <Skeleton className="h-6 w-24" />
+            <Skeleton className="h-6 w-32" />
           </div>
         ) : costToday == null && cost7d == null ? (
           <p className="text-sm text-muted-foreground">No cost data</p>
@@ -260,6 +271,15 @@ function CostCard({ costToday, cost7d, isLoading }: CostCardProps) {
             <dd className="font-mono">
               {cost7d != null ? formatCurrency(cost7d) : "--"}
             </dd>
+            {showShareRow && (
+              <>
+                <dt className="text-muted-foreground font-medium">Share (today)</dt>
+                <dd className="font-mono" data-testid="cost-share-row">
+                  {formatCurrency(costToday!)} / {formatCurrency(globalTotalToday!)}{" "}
+                  ({formatPercent(costToday!, globalTotalToday!)})
+                </dd>
+              </>
+            )}
           </dl>
         )}
       </CardContent>
@@ -435,6 +455,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const cost7dSummary = cost7dResponse?.data;
   const costToday = costTodaySummary ? (costTodaySummary.by_butler?.[butlerName] ?? 0) : undefined;
   const cost7d = cost7dSummary ? (cost7dSummary.by_butler?.[butlerName] ?? 0) : undefined;
+  const globalTotalToday = costTodaySummary?.total_cost_usd;
   const costLoading = costTodayLoading || cost7dLoading;
   const recentSessions = sessionsResponse?.data ?? [];
   const notifications = notificationsResponse?.data ?? [];
@@ -551,6 +572,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <CostCard
         costToday={costToday}
         cost7d={cost7d}
+        globalTotalToday={globalTotalToday}
         isLoading={costLoading}
       />
 
