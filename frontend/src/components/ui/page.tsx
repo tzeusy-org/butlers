@@ -181,7 +181,7 @@ function EditorSkeleton({ count }: { count: number }) {
 
 /**
  * Skeleton for the status-board archetype: a header line, a 4×2 grid of cell
- * placeholders (matching StatusBoardCell minimum height), and a footer band.
+ * placeholders (h-56 each, matching the board cell minimum height), and a footer band.
  */
 function StatusBoardSkeleton() {
   return (
@@ -317,12 +317,12 @@ export function Page({
     // The status-board archetype manages its own heading region (BoardHeader);
     // render StatusBoardSkeleton directly without the standard HeadingBlock skeleton.
     if (archetype === "status-board") {
+      // The status-board consumer owns its entire heading region (BoardHeader);
+      // breadcrumbs are not rendered here in any state so there is no
+      // loading-then-gone flicker. Navigation context lives in the header slot.
       return (
         <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
           <div role="status" aria-label="Loading">
-            {breadcrumbs && breadcrumbs.length > 0 && (
-              <Breadcrumbs items={breadcrumbs} />
-            )}
             <StatusBoardSkeleton />
           </div>
         </ArchetypeWrapper>

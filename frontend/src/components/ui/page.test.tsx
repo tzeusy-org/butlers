@@ -718,14 +718,18 @@ describe("Page -- status-board archetype", () => {
     expect(headerPos).toBeLessThan(gridPos);
   });
 
-  it("does not render a header wrapper when header prop is omitted", () => {
+  it("does not render header content when header prop is omitted", () => {
     const html = render({
       title: "Butlers",
       archetype: "status-board",
       children: <div>Board grid</div>,
     });
-    // Without header, there should be no BoardHeader marker in the output
+    // Without a header prop, the ArchetypeWrapper skips the header branch
+    // entirely (conditional render, not an empty wrapper div).
+    // We verify by confirming no board-header data-testid appears and that
+    // the children content is still present.
     expect(html).not.toContain("board-header");
+    expect(html).toContain("Board grid");
   });
 
   it("renders the footer slot below children when footer prop is given", () => {
@@ -743,13 +747,16 @@ describe("Page -- status-board archetype", () => {
     expect(footerPos).toBeGreaterThan(gridPos);
   });
 
-  it("does not render a footer wrapper when footer prop is omitted", () => {
+  it("does not render footer content when footer prop is omitted", () => {
     const html = render({
       title: "Butlers",
       archetype: "status-board",
       children: <div>Board grid</div>,
     });
+    // Without a footer prop, the ArchetypeWrapper skips the footer branch
+    // entirely (conditional render, not an empty wrapper div).
     expect(html).not.toContain("board-footer");
+    expect(html).toContain("Board grid");
   });
 
   it("renders both header and footer when both are provided", () => {
@@ -839,7 +846,9 @@ describe("Page -- status-board archetype", () => {
       archetype: "status-board",
       children: <div>content</div>,
     });
-    expect(html).toContain("flex");
-    expect(html).toContain("flex-col");
+    // Assert the exact compound class string from ArchetypeWrapper so that a
+    // broken status-board branch (or flex-col from an unrelated parent element)
+    // cannot produce a false-positive.
+    expect(html).toContain("flex min-h-full flex-col");
   });
 });
