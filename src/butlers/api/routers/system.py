@@ -40,6 +40,7 @@ from prometheus_client import Counter
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.models import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -643,12 +644,17 @@ async def get_egress_catalog(
 @router.get("/butlers/heartbeat", response_model=ApiResponse[HeartbeatFacts])
 async def get_butlers_heartbeat(
     db: DatabaseManager = Depends(_get_db_manager),
+    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
 ) -> ApiResponse[HeartbeatFacts]:
     """Return per-butler liveness registry snapshots and session facts.
 
     Reads from the switchboard's butler_registry table for heartbeat timestamps
     and fans out to per-butler schema sessions tables for session facts. Does
     not issue live MCP calls to any butler.
+
+    Uses get_butler_configs() as the canonical butler source so that butlers
+    whose DB pool failed to initialize at startup still appear in the response
+    with error='schema_unreachable' rather than being silently omitted.
 
     If a butler's schema is unreachable, its session fields are null/0 and
     the entry is included with error='schema_unreachable'.
@@ -673,12 +679,13 @@ async def get_butlers_heartbeat(
         row["name"]: row["last_seen_at"] for row in registry_rows
     }
 
-    # All butler names from the DatabaseManager (the registered roster)
-    all_butler_names = sorted(db.butler_names)
-
-    # Merge: include all butlers the DB manager knows about, plus any in the
-    # registry that the DB manager doesn't have a pool for (edge case).
-    all_names = sorted(set(all_butler_names) | set(registry.keys()))
+    # Canonical butler set: roster scan via get_butler_configs().
+    # This ensures butlers whose DB pool failed at startup (absent from
+    # db.butler_names) still appear in the response instead of being silently
+    # omitted. Union with registry names to cover heartbeat-only butlers not
+    # yet in the roster scan.
+    roster_names = {cfg.name for cfg in configs}
+    all_names = sorted(roster_names | set(registry.keys()))
 
     now = datetime.now(UTC)
     entries: list[ButlerHeartbeat] = []
@@ -703,7 +710,7 @@ async def get_butlers_heartbeat(
         active_session_count: int = 0
         entry_error: str | None = None
 
-        if name in all_butler_names:
+        if name in db.butler_names:
             try:
                 pool = db.pool(name)
                 # Most-recent completed session
@@ -726,6 +733,10 @@ async def get_butlers_heartbeat(
             except Exception as exc:
                 logger.warning("Session query failed for butler %s: %s", name, exc)
                 entry_error = "schema_unreachable"
+        elif name in roster_names:
+            # Butler is in the roster but has no DB pool (pool init failed at startup).
+            # Report it with schema_unreachable rather than silently omitting it.
+            entry_error = "schema_unreachable"
 
         entries.append(
             ButlerHeartbeat(
