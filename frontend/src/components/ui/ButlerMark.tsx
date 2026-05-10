@@ -119,6 +119,11 @@ export interface ButlerMarkProps {
    *   "neutral" — transparent background, hue-colored initial, hairline border. Default.
    */
   tone?: "fill" | "neutral"
+  /**
+   * Size in pixels for the squircle. Defaults to 16.
+   * Font size is scaled proportionally (60% of size).
+   */
+  size?: number
   /** Optional className forwarded to the root element. */
   className?: string
 }
@@ -131,20 +136,20 @@ export interface ButlerMarkProps {
  *   <ButlerMark name="health" tone="fill" />
  *   <ButlerMark name="qa" tone="neutral" />
  */
-export function ButlerMark({ name, tone = "neutral", className }: ButlerMarkProps) {
+export function ButlerMark({ name, tone = "neutral", size = 16, className }: ButlerMarkProps) {
   const hue = butlerHueVar(name)
   const initial = (name[0] ?? "?").toUpperCase()
 
   const baseStyle: React.CSSProperties = {
-    width: 16,
-    height: 16,
-    borderRadius: 4,
+    width: size,
+    height: size,
+    borderRadius: Math.round(size * 0.25),
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     fontFamily: "var(--font-sans)",
     fontWeight: 600,
-    fontSize: "9.6px", // 60% of 16px
+    fontSize: `${(size * 0.6).toFixed(1)}px`, // 60% of size
     lineHeight: 1,
     flexShrink: 0,
   }
