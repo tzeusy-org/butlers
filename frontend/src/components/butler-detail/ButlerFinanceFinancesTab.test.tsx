@@ -620,7 +620,7 @@ describe("ButlerFinanceFinancesTab — loading state", () => {
 // Tests: getAllTabs includes finance finances tab
 // ---------------------------------------------------------------------------
 
-import { getAllTabs, isValidTab } from "@/pages/ButlerDetailPage";
+import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
 describe("ButlerDetailPage — finance finances tab in getAllTabs", () => {
   it("finance butler has 'finances' tab in operator mode", () => {

@@ -3,13 +3,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, useParams, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import ButlerDetailPage, {
+import ButlerDetailPage from "@/pages/ButlerDetailPage";
+import {
   BASE_TABS_OPERATOR,
   BASE_TABS_RESIDENT,
   OPERATOR_EXTENSION_TABS,
   getAllTabs,
   isValidTab,
-} from "@/pages/ButlerDetailPage";
+} from "@/pages/butler-detail-tabs";
 import { useButler } from "@/hooks/use-butlers";
 import type { ButlerSummary } from "@/api/types";
 

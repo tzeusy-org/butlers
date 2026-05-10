@@ -533,7 +533,7 @@ describe("ButlerEducationReviewsTab — no fixed 5-map cap", () => {
 // Tests: getAllTabs includes education reviews tab
 // ---------------------------------------------------------------------------
 
-import { getAllTabs, isValidTab } from "@/pages/ButlerDetailPage";
+import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
 describe("ButlerDetailPage — education reviews tab in getAllTabs", () => {
   it("education butler has 'reviews' tab in operator mode", () => {
