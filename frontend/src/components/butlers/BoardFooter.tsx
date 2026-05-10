@@ -37,6 +37,7 @@ interface StatCellProps {
 function StatCell({ label, value, dotClass, showDot = false, ariaLabel }: StatCellProps) {
   return (
     <div
+      role="group"
       className="flex flex-col gap-1"
       aria-label={ariaLabel ?? `${label}: ${value}`}
     >
@@ -99,21 +100,21 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
         <StatCell
           label="Active"
           value={String(active)}
-          dotClass="bg-green-500"
+          dotClass="bg-emerald-500"
           showDot={active > 0}
           ariaLabel={`Active: ${active}`}
         />
         <StatCell
           label="Paused"
           value={String(paused)}
-          dotClass="bg-destructive"
+          dotClass="bg-amber-500"
           showDot={paused > 0}
           ariaLabel={`Paused: ${paused}`}
         />
         <StatCell
           label="Awaiting"
           value={String(awaitingPlusQuarantined)}
-          dotClass="bg-amber-500"
+          dotClass="bg-destructive"
           showDot={awaitingPlusQuarantined > 0}
           ariaLabel={`Awaiting: ${awaitingPlusQuarantined}`}
         />
@@ -136,7 +137,8 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
 
       {/* Composition addendum */}
       <p className="mt-2 font-mono text-[10px] text-muted-foreground">
-        {butlerCount} butlers, {stafferCount} staffers
+        {butlerCount} {butlerCount === 1 ? "butler" : "butlers"},{" "}
+        {stafferCount} {stafferCount === 1 ? "staffer" : "staffers"}
       </p>
     </footer>
   )

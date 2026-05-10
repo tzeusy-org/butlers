@@ -119,48 +119,48 @@ describe("BoardFooter", () => {
   })
 
   describe("status-tone dots", () => {
-    it("renders green dot when active > 0", () => {
+    it("renders emerald dot when active > 0", () => {
       const html = render(makeAggregates({ active: 1 }))
-      expect(html).toContain("bg-green-500")
+      expect(html).toContain("bg-emerald-500")
     })
 
-    it("does NOT render green dot when active === 0", () => {
+    it("does NOT render emerald dot when active === 0", () => {
       const html = render(makeAggregates({ active: 0 }))
-      expect(html).not.toContain("bg-green-500")
+      expect(html).not.toContain("bg-emerald-500")
     })
 
-    it("renders destructive dot when paused > 0", () => {
+    it("renders amber dot when paused > 0", () => {
       const html = render(makeAggregates({ paused: 2 }))
+      expect(html).toContain("bg-amber-500")
+    })
+
+    it("does NOT render amber dot when paused === 0 and awaiting === 0 and quarantined === 0", () => {
+      const html = render(makeAggregates({ paused: 0, awaiting: 0, quarantined: 0 }))
+      expect(html).not.toContain("bg-amber-500")
+    })
+
+    it("renders destructive dot when awaiting > 0", () => {
+      const html = render(makeAggregates({ awaiting: 1, quarantined: 0 }))
       expect(html).toContain("bg-destructive")
     })
 
-    it("does NOT render destructive dot when paused === 0", () => {
-      const html = render(makeAggregates({ paused: 0 }))
-      expect(html).not.toContain("bg-destructive")
-    })
-
-    it("renders amber dot when awaiting > 0", () => {
-      const html = render(makeAggregates({ awaiting: 1, quarantined: 0 }))
-      expect(html).toContain("bg-amber-500")
-    })
-
-    it("renders amber dot when quarantined > 0 (counted in awaiting cell)", () => {
+    it("renders destructive dot when quarantined > 0 (counted in awaiting cell)", () => {
       const html = render(makeAggregates({ awaiting: 0, quarantined: 1 }))
-      expect(html).toContain("bg-amber-500")
+      expect(html).toContain("bg-destructive")
     })
 
-    it("does NOT render amber dot when awaiting === 0 and quarantined === 0", () => {
+    it("does NOT render destructive dot when awaiting === 0 and quarantined === 0", () => {
       const html = render(makeAggregates({ awaiting: 0, quarantined: 0 }))
-      expect(html).not.toContain("bg-amber-500")
+      expect(html).not.toContain("bg-destructive")
     })
 
     it("renders no dots at all when all counts are zero", () => {
       const html = render(
         makeAggregates({ active: 0, paused: 0, awaiting: 0, quarantined: 0 }),
       )
-      expect(html).not.toContain("bg-green-500")
-      expect(html).not.toContain("bg-destructive")
+      expect(html).not.toContain("bg-emerald-500")
       expect(html).not.toContain("bg-amber-500")
+      expect(html).not.toContain("bg-destructive")
     })
   })
 
@@ -173,8 +173,17 @@ describe("BoardFooter", () => {
 
     it("uses a comma separator between butlers and staffers (no em-dash)", () => {
       const html = render(makeAggregates({ butlerCount: 5, stafferCount: 1 }))
-      expect(html).toContain("5 butlers, 1 staffers")
+      expect(html).toContain("5 butlers")
+      expect(html).toContain("1 staffer")
+      expect(html).not.toContain("1 staffers") // singular when count === 1
       expect(html).not.toContain("—") // no em-dash in addendum
+    })
+
+    it("pluralizes butler correctly for singular count", () => {
+      const html = render(makeAggregates({ butlerCount: 1, stafferCount: 2 }))
+      expect(html).toContain("1 butler")
+      expect(html).not.toContain("1 butlers") // singular when count === 1
+      expect(html).toContain("2 staffers")
     })
   })
 

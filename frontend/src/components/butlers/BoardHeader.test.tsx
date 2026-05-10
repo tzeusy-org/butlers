@@ -84,6 +84,12 @@ describe("BoardHeader", () => {
     expect(html).toContain("refreshes every 1m")
   })
 
+  it("uses singular 'butler' when count is 1", () => {
+    const html = render(makeAggregates({ butlerCount: 1 }), 30_000)
+    expect(html).toContain("1 butler")
+    expect(html).not.toContain("1 butlers")
+  })
+
   it("renders refresh interval in seconds when under 60s", () => {
     const html = render(makeAggregates(), 30_000)
     expect(html).toContain("refreshes every 30s")

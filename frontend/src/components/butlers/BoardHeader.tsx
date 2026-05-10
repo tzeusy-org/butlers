@@ -89,7 +89,8 @@ export function BoardHeader({ aggregates, refreshIntervalMs }: BoardHeaderProps)
         <div className="flex flex-wrap items-baseline gap-4">
           <h1 className="text-2xl font-bold tracking-tight">The staff, at a glance</h1>
           <span className="font-mono text-xs text-muted-foreground">
-            {aggregates.butlerCount} butlers, {refreshLabel}
+            {aggregates.butlerCount} {aggregates.butlerCount === 1 ? "butler" : "butlers"},{" "}
+            {refreshLabel}
           </span>
         </div>
       </div>
