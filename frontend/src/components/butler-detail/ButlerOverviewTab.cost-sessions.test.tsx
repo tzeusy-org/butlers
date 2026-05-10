@@ -180,7 +180,7 @@ function setupDefaultMocks({
     isError: false,
     error: null,
     refetch: vi.fn().mockResolvedValue(undefined),
-  } as ReturnType<typeof useButler>);
+  } as unknown as ReturnType<typeof useButler>);
 
   // useCostSummary is called twice: once with "today" and once with "7d".
   // Use mockImplementation to discriminate by argument instead of relying on

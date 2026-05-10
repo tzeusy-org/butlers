@@ -197,7 +197,7 @@ function setupWithData() {
     data: SNAPSHOT_STATUS,
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useHomeSnapshotStatus>);
+  } as unknown as ReturnType<typeof useHomeSnapshotStatus>);
 
   // useHomeDevices is called twice: once with health=offline, once without
   vi.mocked(useHomeDevices).mockImplementation((params) => {
@@ -246,7 +246,7 @@ function setupWithData() {
     data: COMMAND_LOG_RESP,
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useHomeCommandLog>);
+  } as unknown as ReturnType<typeof useHomeCommandLog>);
 }
 
 function setupEmpty() {
@@ -260,31 +260,31 @@ function setupEmpty() {
     data: { data: [], meta: { page: 1, page_size: 50, total_count: 0, total_pages: 0 } },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useHomeDevices>);
+  } as unknown as ReturnType<typeof useHomeDevices>);
 
   vi.mocked(useHomeMaintenance).mockReturnValue({
     data: [],
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useHomeMaintenance>);
+  } as unknown as ReturnType<typeof useHomeMaintenance>);
 
   vi.mocked(useHomeEnergy).mockReturnValue({
     data: [],
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useHomeEnergy>);
+  } as unknown as ReturnType<typeof useHomeEnergy>);
 
   vi.mocked(useHomeEnergyTopConsumers).mockReturnValue({
     data: [],
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useHomeEnergyTopConsumers>);
+  } as unknown as ReturnType<typeof useHomeEnergyTopConsumers>);
 
   vi.mocked(useHomeCommandLog).mockReturnValue({
     data: { data: [], meta: {} },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useHomeCommandLog>);
+  } as unknown as ReturnType<typeof useHomeCommandLog>);
 }
 
 function setupLoading() {

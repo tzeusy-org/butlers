@@ -300,12 +300,12 @@ function setupEmpty() {
   vi.mocked(useFinanceTransactions).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 15 } },
     isLoading: false,
-  } as ReturnType<typeof useFinanceTransactions>);
+  } as unknown as ReturnType<typeof useFinanceTransactions>);
 
   vi.mocked(useFinanceSubscriptions).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 50 } },
     isLoading: false,
-  } as ReturnType<typeof useFinanceSubscriptions>);
+  } as unknown as ReturnType<typeof useFinanceSubscriptions>);
 
   vi.mocked(useFinanceUpcomingBills).mockReturnValue({
     data: {
@@ -316,7 +316,7 @@ function setupEmpty() {
       include_overdue: true,
     },
     isLoading: false,
-  } as ReturnType<typeof useFinanceUpcomingBills>);
+  } as unknown as ReturnType<typeof useFinanceUpcomingBills>);
 
   vi.mocked(useFinanceSpendingSummary).mockReturnValue({
     data: {
@@ -327,7 +327,7 @@ function setupEmpty() {
       groups: [],
     },
     isLoading: false,
-  } as ReturnType<typeof useFinanceSpendingSummary>);
+  } as unknown as ReturnType<typeof useFinanceSpendingSummary>);
 }
 
 function setupLoading() {

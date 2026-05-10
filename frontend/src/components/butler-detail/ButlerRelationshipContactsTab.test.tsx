@@ -196,19 +196,19 @@ function setupWithData() {
     data: UNLINKED_DATA,
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useUnlinkedContacts>);
+  } as unknown as ReturnType<typeof useUnlinkedContacts>);
 
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: DUNBAR_DATA,
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useDunbarRanking>);
+  } as unknown as ReturnType<typeof useDunbarRanking>);
 
   vi.mocked(useGroups).mockReturnValue({
     data: GROUPS_DATA,
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useGroups>);
+  } as unknown as ReturnType<typeof useGroups>);
 }
 
 function setupEmpty() {
@@ -216,31 +216,31 @@ function setupEmpty() {
     data: [],
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useUpcomingDates>);
+  } as unknown as ReturnType<typeof useUpcomingDates>);
 
   vi.mocked(useContacts).mockReturnValue({
     data: { contacts: [], total: 0 },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useContacts>);
+  } as unknown as ReturnType<typeof useContacts>);
 
   vi.mocked(useUnlinkedContacts).mockReturnValue({
     data: { contacts: [], total: 0 },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useUnlinkedContacts>);
+  } as unknown as ReturnType<typeof useUnlinkedContacts>);
 
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: { entries: [], owner_entity_id: null },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useDunbarRanking>);
+  } as unknown as ReturnType<typeof useDunbarRanking>);
 
   vi.mocked(useGroups).mockReturnValue({
     data: { groups: [], total: 0 },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useGroups>);
+  } as unknown as ReturnType<typeof useGroups>);
 }
 
 function setupLoading() {

@@ -244,7 +244,7 @@ function setupWithData() {
     data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: CATEGORY_BUCKETS }, meta: {} },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useChroniclesByCategory>);
+  } as unknown as ReturnType<typeof useChroniclesByCategory>);
 
   vi.mocked(useChroniclesDayClose).mockReturnValue({
     data: DAY_CLOSE_FRESH,
@@ -276,13 +276,13 @@ function setupEmpty() {
     data: { data: [], meta: {} },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useChroniclesSourceState>);
+  } as unknown as ReturnType<typeof useChroniclesSourceState>);
 
   vi.mocked(useChroniclesByCategory).mockReturnValue({
     data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: [] }, meta: {} },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useChroniclesByCategory>);
+  } as unknown as ReturnType<typeof useChroniclesByCategory>);
 
   vi.mocked(useChroniclesDayClose).mockReturnValue({
     data: undefined,
