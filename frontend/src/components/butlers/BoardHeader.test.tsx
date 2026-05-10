@@ -95,10 +95,13 @@ describe("BoardHeader", () => {
     expect(html).toContain("refreshes every 30s")
   })
 
-  it("renders the role='banner' a11y attribute", () => {
+  it("renders a semantic <header> element (no explicit role=banner needed; valid inside main)", () => {
+    // BoardHeader intentionally omits role="banner" so it is valid inside the
+    // <main> landmark rendered by Shell.tsx. The implicit <header> role is
+    // sufficient when not at the top level of the document.
     const html = render(makeAggregates())
     const div = parseHtml(html)
-    const header = div.querySelector("[role='banner']")
+    const header = div.querySelector("header")
     expect(header).not.toBeNull()
   })
 

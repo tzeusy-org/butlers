@@ -71,6 +71,9 @@ function StatCell({ label, value, dotClass, showDot = false, ariaLabel }: StatCe
  *
  * Status-tone dots appear only when the relevant count > 0.
  * The border-top separates this band from the grid above.
+ *
+ * Uses a plain `<footer>` element (no role="contentinfo") so it is valid
+ * inside the `<main>` landmark rendered by Shell.tsx.
  */
 export function BoardFooter({ aggregates }: BoardFooterProps) {
   const {
@@ -93,7 +96,6 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
 
   return (
     <footer
-      role="contentinfo"
       className="border-t border-border px-7 py-4"
     >
       <div className="grid grid-cols-6 gap-4">

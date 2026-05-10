@@ -1,28 +1,91 @@
+/**
+ * ButlersPage — unit tests for the status-board rewrite (bu-hb7dh.8)
+ *
+ * All data sources are mocked via useButlerStatusBoard. The hook returns rows
+ * and aggregates; tests drive both to verify the full rendered surface:
+ *
+ *   - Header pill (healthy/total reflects aggregates)
+ *   - Grid render (cells rendered for each fixture row, linked to detail pages)
+ *   - Footer aggregates
+ *   - Empty state ("No butlers found")
+ *   - Stale-fetch banner (error + cached rows)
+ *   - Loading skeleton (aria-label="Loading")
+ *   - Quarantine restore chip (restore button rendered for quarantined/stale rows)
+ *   - Partial-data tolerance (rows render even when some sources fail)
+ *   - No inline-style violations on the page-level container
+ */
+
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import ButlersPage from "@/pages/ButlersPage";
-import { resetUseButlersMock, setUseButlersState } from "@/test-utils/use-butlers";
+import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board";
 
-vi.mock("@/hooks/use-butlers", () => ({
-  useButlers: vi.fn(),
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+vi.mock("@/hooks/use-butler-status-board", () => ({
+  useButlerStatusBoard: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-general", () => ({
-  useRegistry: vi.fn(() => ({ data: undefined, isSuccess: false })),
+  useSetEligibility: vi.fn(),
 }));
 
-import { useRegistry } from "@/hooks/use-general";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
+import { useSetEligibility } from "@/hooks/use-general";
 
-function setRegistryState(entries: { name: string; eligibility_state: string }[]) {
-  vi.mocked(useRegistry).mockReturnValue({
-    data: { data: entries, meta: {} },
-    isSuccess: true,
-  } as ReturnType<typeof useRegistry>);
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+
+const NO_OP_REFETCH = vi.fn().mockResolvedValue(undefined);
+
+function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusBoardAggregates {
+  return {
+    total: 0,
+    butlerCount: 0,
+    stafferCount: 0,
+    active: 0,
+    paused: 0,
+    awaiting: 0,
+    quarantined: 0,
+    totalSessions24h: 0,
+    totalSpendToday: 0,
+    avgLoadPct: null,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: NO_OP_REFETCH,
+    ...overrides,
+  };
 }
 
-const setQueryState = setUseButlersState;
+function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
+  return {
+    name: "general",
+    type: "butler",
+    description: null,
+    status: "ok",
+    activity: "idle",
+    cellTone: "neutral",
+    eligibility: "active",
+    sessions24h: 0,
+    costToday: 0,
+    loadPct: null,
+    lastRunISO: null,
+    hourlyStripe: Array(24).fill(0),
+    ...overrides,
+  };
+}
+
+function setHookState(rows: StatusBoardRow[], aggregates: StatusBoardAggregates) {
+  vi.mocked(useButlerStatusBoard).mockReturnValue({ rows, aggregates });
+}
+
+const mockMutate = vi.fn();
 
 function renderPage(): string {
   return renderToStaticMarkup(
@@ -32,276 +95,269 @@ function renderPage(): string {
   );
 }
 
-describe("ButlersPage", () => {
-  beforeEach(() => {
-    resetUseButlersMock();
-    vi.mocked(useRegistry).mockReturnValue({ data: undefined, isSuccess: false } as ReturnType<typeof useRegistry>);
-  });
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
 
-  it("renders loading skeleton via Page primitive", () => {
-    setQueryState({ isLoading: true });
+beforeEach(() => {
+  vi.mocked(useSetEligibility).mockReturnValue({
+    mutate: mockMutate,
+    mutateAsync: vi.fn(),
+    isPending: false,
+    isSuccess: false,
+    isError: false,
+    isIdle: true,
+    error: null,
+    data: undefined,
+    reset: vi.fn(),
+    context: undefined,
+    failureCount: 0,
+    failureReason: null,
+    status: "idle",
+    submittedAt: 0,
+    variables: undefined,
+  } as unknown as ReturnType<typeof useSetEligibility>);
+
+  // Default: empty board, not loading, not error
+  setHookState([], makeAggregates());
+});
+
+// ---------------------------------------------------------------------------
+// Loading state
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — loading", () => {
+  it("renders the Page primitive loading skeleton (aria-label=Loading)", () => {
+    setHookState([], makeAggregates({ isLoading: true }));
     const html = renderPage();
-    // Page primitive renders aria-label="Loading" when loading=true
     expect(html).toContain('aria-label="Loading"');
   });
+});
 
-  it("renders butler links to detail pages", () => {
-    setQueryState({
-      data: {
-        data: [
-          { name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 0 },
-          { name: "switchboard", status: "degraded", port: 40100, type: "butler" as const, sessions_24h: 0 },
-        ],
-        meta: {},
-      },
-    });
+// ---------------------------------------------------------------------------
+// Error state (full-page — no cached rows)
+// ---------------------------------------------------------------------------
 
+describe("ButlersPage — full-page error", () => {
+  it("renders error region when no cached rows exist", () => {
+    setHookState([], makeAggregates({ isError: true, error: new Error("network offline") }));
     const html = renderPage();
-
-    expect(html).toContain("general");
-    expect(html).toContain("switchboard");
-    expect(html).toContain('href="/butlers/general"');
-    expect(html).toContain('href="/butlers/switchboard"');
-  });
-
-  it("renders empty state when no butlers returned", () => {
-    setQueryState({
-      data: {
-        data: [],
-        meta: {},
-      },
-    });
-
-    const html = renderPage();
-    // Spec §Empty-state: exact copy "No butlers found" with daemon-status guidance
-    expect(html).toContain("No butlers found");
-    expect(html).toContain("Check daemon status");
-  });
-
-  it("renders full-page error when no cached data exists", () => {
-    setQueryState({
-      isError: true,
-      error: new Error("network offline"),
-    });
-
-    const html = renderPage();
-    // Spec §Error: error region + error message + retry affordance
     expect(html).toContain("Something went wrong");
     expect(html).toContain("network offline");
     expect(html).toContain("Retry");
   });
+});
 
-  it("keeps cached butlers visible on refetch error", () => {
-    setQueryState({
-      data: {
-        data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 0 }],
-        meta: {},
-      },
-      isError: true,
-      error: new Error("timed out"),
-    });
+// ---------------------------------------------------------------------------
+// Empty state
+// ---------------------------------------------------------------------------
 
+describe("ButlersPage — empty state", () => {
+  it("renders empty message when rows are empty and not loading/error", () => {
+    setHookState([], makeAggregates({ total: 0 }));
+    const html = renderPage();
+    expect(html).toContain("No butlers found");
+    expect(html).toContain("Check daemon status");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale-fetch banner
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — stale-fetch banner", () => {
+  it("shows stale banner and cached rows when refetch fails with prior data", () => {
+    // The hook sets isError only when there is NO cached data. When rows survive
+    // from cache, the hook leaves isError=false but populates error. The banner
+    // must key off `error != null && hasRows` — this test mirrors that contract.
+    const rows = [makeRow({ name: "general" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, isError: false, error: new Error("timed out") }));
+    const html = renderPage();
+    expect(html).toContain("Showing last known butler status");
+    expect(html).toContain("timed out");
+    expect(html).toContain("general");
+  });
+
+  it("does not show stale banner when no error", () => {
+    const rows = [makeRow({ name: "general" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
+    const html = renderPage();
+    expect(html).not.toContain("Showing last known butler status");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Grid render
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — grid render", () => {
+  it("renders a cell per row with name and detail-page link", () => {
+    const rows = [
+      makeRow({ name: "health" }),
+      makeRow({ name: "finance", type: "butler" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 2, butlerCount: 2 }));
+    const html = renderPage();
+    expect(html).toContain("health");
+    expect(html).toContain("finance");
+    expect(html).toContain('href="/butlers/health"');
+    expect(html).toContain('href="/butlers/finance"');
+  });
+
+  it("renders all 12 canonical butlers", () => {
+    const names = [
+      "chronicler", "education", "finance", "general", "health",
+      "home", "lifestyle", "messenger", "qa", "relationship", "switchboard", "travel",
+    ];
+    const rows = names.map((name) => makeRow({ name }));
+    setHookState(rows, makeAggregates({ total: 12, butlerCount: 12 }));
+    const html = renderPage();
+    for (const name of names) {
+      expect(html).toContain(name);
+      expect(html).toContain(`href="/butlers/${name}"`);
+    }
+  });
+
+  it("renders an unfamiliar butler name without errors", () => {
+    const rows = [makeRow({ name: "future-butler" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
+    const html = renderPage();
+    expect(html).toContain("future-butler");
+    expect(html).toContain('href="/butlers/future-butler"');
+  });
+
+  it("renders description when present", () => {
+    const rows = [makeRow({ name: "health", description: "Tracks your wellness goals" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
+    const html = renderPage();
+    expect(html).toContain("Tracks your wellness goals");
+  });
+
+  it("suppresses description when absent", () => {
+    const rows = [makeRow({ name: "health", description: null })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
+    const html = renderPage();
+    expect(html).not.toContain("Tracks your wellness goals");
+  });
+
+  it("renders the ButlerMark glyph (title attribute) per cell", () => {
+    const rows = [makeRow({ name: "health" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
+    const html = renderPage();
+    expect(html).toContain('title="health"');
+  });
+
+  it("renders sessions24h KPI value", () => {
+    const rows = [makeRow({ name: "health", sessions24h: 7 })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
+    const html = renderPage();
+    expect(html).toContain("7");
+    expect(html).toContain("SESS 24H");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Header pill (healthy / total reflects aggregates)
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — BoardHeader healthy/total pill", () => {
+  it("reflects healthy and total counts from aggregates", () => {
+    // healthy = total - paused - awaiting - quarantined
+    // 3 total, 1 paused, 0 awaiting, 0 quarantined → 2 healthy
+    const rows = [
+      makeRow({ name: "a" }),
+      makeRow({ name: "b" }),
+      makeRow({ name: "c", activity: "paused", cellTone: "red" }),
+    ];
+    setHookState(
+      rows,
+      makeAggregates({ total: 3, butlerCount: 3, paused: 1 }),
+    );
+    const html = renderPage();
+    // BoardHeader renders "healthy/total reporting"
+    expect(html).toContain("2/3 reporting");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Footer aggregates
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — BoardFooter aggregates", () => {
+  it("renders footer with correct sessions and spend values", () => {
+    const rows = [
+      makeRow({ name: "a", sessions24h: 10, costToday: 1.5 }),
+      makeRow({ name: "b", sessions24h: 5, costToday: 0.25 }),
+    ];
+    setHookState(
+      rows,
+      makeAggregates({ total: 2, butlerCount: 2, totalSessions24h: 15, totalSpendToday: 1.75 }),
+    );
+    const html = renderPage();
+    // BoardFooter renders "Sessions·24h" label and total sessions
+    expect(html).toContain("Sessions");
+    expect(html).toContain("15");
+    // BoardFooter renders spend formatted to 2dp
+    expect(html).toContain("$1.75");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quarantine click-to-restore
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — quarantine restore", () => {
+  it("renders a restore chip for quarantined rows", () => {
+    const rows = [makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+    const html = renderPage();
+    // StatusBoardCell renders the activity chip as a <button> when restorable
+    expect(html).toContain("QUARANTINED");
+    // The restore button uses a <button> element (not just a <span>)
+    expect(html).toMatch(/<button[^>]*>QUARANTINED<\/button>/);
+  });
+
+  it("renders a restore chip for stale rows", () => {
+    const rows = [makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
+    const html = renderPage();
+    expect(html).toMatch(/<button[^>]*>IDLE<\/button>/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Partial-data tolerance
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — partial-data tolerance", () => {
+  it("renders rows even when cost and load data fall back to defaults", () => {
+    const rows = [
+      makeRow({ name: "alpha", costToday: 0, loadPct: null, lastRunISO: null }),
+      makeRow({ name: "beta", costToday: 0, loadPct: null, lastRunISO: null }),
+    ];
+    setHookState(rows, makeAggregates({ total: 2, butlerCount: 2 }));
+    const html = renderPage();
+    expect(html).toContain("alpha");
+    expect(html).toContain("beta");
+    // Null load renders as placeholder dash
+    expect(html).toContain("—");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No inline-style on the page-level container
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — no inline style on page container", () => {
+  it("does not emit a style attribute on the status-board grid container", () => {
+    const rows = [makeRow({ name: "health" })];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
     const html = renderPage();
 
-    expect(html).toContain("Showing last known butler status.");
-    expect(html).toContain("general");
-    expect(html).toContain("timed out");
-  });
-
-  // -------------------------------------------------------------------------
-  // Dispatch layout — 5 elements (bu-insd4.1)
-  // -------------------------------------------------------------------------
-
-  describe("Dispatch layout card elements", () => {
-    const BUTLER = {
-      name: "health",
-      status: "ok",
-      port: 40201,
-      type: "butler" as const,
-      description: "Tracks your wellness goals",
-      sessions_24h: 7,
-    };
-
-    it("renders ButlerMark glyph (initial letter via title attribute)", () => {
-      setQueryState({ data: { data: [BUTLER], meta: {} } });
-      const html = renderPage();
-      // ButlerMark renders title={name} — specific to the squircle element, not the link wrapper
-      expect(html).toContain('title="health"');
-    });
-
-    it("renders name and status pill", () => {
-      setQueryState({ data: { data: [BUTLER], meta: {} } });
-      const html = renderPage();
-      expect(html).toContain("health");
-      // Status pill shows "Up" for ok/online
-      expect(html).toContain("Up");
-    });
-
-    it("renders description text when present", () => {
-      setQueryState({ data: { data: [BUTLER], meta: {} } });
-      const html = renderPage();
-      expect(html).toContain("Tracks your wellness goals");
-    });
-
-    it("suppresses description paragraph when absent", () => {
-      const noDesc = { ...BUTLER, description: undefined };
-      setQueryState({ data: { data: [noDesc], meta: {} } });
-      const html = renderPage();
-      // Description text must not appear when description is absent
-      expect(html).not.toContain("Tracks your wellness goals");
-    });
-
-    it("renders sessions_24h count and open link", () => {
-      setQueryState({ data: { data: [BUTLER], meta: {} } });
-      const html = renderPage();
-      expect(html).toContain("7");
-      expect(html).toContain("sess");
-      expect(html).toContain("open →");
-    });
-
-    it("renders eligibility chip from useRegistry when present", () => {
-      setQueryState({ data: { data: [BUTLER], meta: {} } });
-      setRegistryState([{ name: "health", eligibility_state: "active" }]);
-      const html = renderPage();
-      expect(html).toContain("Active");
-    });
-
-    it("shows Unavailable chip when registry loaded but has no entry for the butler", () => {
-      setQueryState({ data: { data: [BUTLER], meta: {} } });
-      // registry loaded (isSuccess: true) but has entry for a different butler only
-      setRegistryState([{ name: "other", eligibility_state: "quarantined" }]);
-      const html = renderPage();
-      // "Quarantined" chip should not appear (for a different butler)
-      expect(html).not.toContain("Quarantined");
-      // "Unavailable" chip must appear for the butler with no registry entry
-      expect(html).toContain("Unavailable");
-    });
-
-    it("omits eligibility chip while registry is still loading", () => {
-      setQueryState({ data: { data: [BUTLER], meta: {} } });
-      // registry not yet loaded: isSuccess is false
-      vi.mocked(useRegistry).mockReturnValue({ data: undefined, isSuccess: false } as ReturnType<typeof useRegistry>);
-      const html = renderPage();
-      // No eligibility chip at all while loading
-      expect(html).not.toContain("Unavailable");
-      expect(html).not.toContain("Active");
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Spec scenarios — sort, empty, error, polling (bu-insd4.3)
-  // -------------------------------------------------------------------------
-
-  describe("spec scenarios", () => {
-    // Spec §Butler card grid: butlers sorted alphabetically by name,
-    // staffers (type="staffer") grouped after all butlers.
-    it("sorts butlers alphabetically and groups staffers after butlers", () => {
-      setQueryState({
-        data: {
-          data: [
-            { name: "zebra", status: "ok", port: 40105, type: "butler" as const },
-            { name: "alpha", status: "ok", port: 40102, type: "butler" as const },
-            { name: "mango", status: "ok", port: 40103, type: "staffer" as const },
-            { name: "apple", status: "ok", port: 40104, type: "staffer" as const },
-          ],
-        },
-      });
-
-      const html = renderPage();
-
-      // All four names must be present
-      expect(html).toContain("zebra");
-      expect(html).toContain("alpha");
-      expect(html).toContain("mango");
-      expect(html).toContain("apple");
-
-      // Butlers section appears before Staffers section
-      const butlersSectionPos = html.indexOf(">Butlers<");
-      const staffersSectionPos = html.indexOf(">Staffers<");
-      expect(butlersSectionPos).toBeGreaterThan(-1);
-      expect(staffersSectionPos).toBeGreaterThan(-1);
-      expect(butlersSectionPos).toBeLessThan(staffersSectionPos);
-
-      // Within butlers: "alpha" appears before "zebra" (alphabetical)
-      const alphaPos = html.indexOf(">alpha<");
-      const zebraPos = html.indexOf(">zebra<");
-      expect(alphaPos).toBeGreaterThan(-1);
-      expect(zebraPos).toBeGreaterThan(-1);
-      expect(alphaPos).toBeLessThan(zebraPos);
-
-      // Within staffers: "apple" appears before "mango" (alphabetical)
-      const applePos = html.indexOf(">apple<");
-      const mangoPos = html.indexOf(">mango<");
-      expect(applePos).toBeGreaterThan(-1);
-      expect(mangoPos).toBeGreaterThan(-1);
-      expect(applePos).toBeLessThan(mangoPos);
-
-      // Staffers must appear after all butlers in the rendered HTML
-      expect(staffersSectionPos).toBeGreaterThan(zebraPos);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Real roster fixture — no mock data (bu-insd4.2)
-  // -------------------------------------------------------------------------
-
-  describe("real roster fixture", () => {
-    /** Canonical 12 butlers as returned by GET /api/butlers. */
-    const REAL_ROSTER = [
-      "chronicler",
-      "education",
-      "finance",
-      "general",
-      "health",
-      "home",
-      "lifestyle",
-      "messenger",
-      "qa",
-      "relationship",
-      "switchboard",
-      "travel",
-    ].map((name) => ({
-      name,
-      status: "ok" as const,
-      port: 40100,
-      type: "butler" as const,
-      sessions_24h: 0,
-    }));
-
-    it("renders all 12 canonical butlers by name", () => {
-      setQueryState({ data: { data: REAL_ROSTER, meta: {} } });
-      const html = renderPage();
-
-      for (const { name } of REAL_ROSTER) {
-        expect(html).toContain(name);
-      }
-    });
-
-    it("renders detail-page links for every canonical butler", () => {
-      setQueryState({ data: { data: REAL_ROSTER, meta: {} } });
-      const html = renderPage();
-
-      for (const { name } of REAL_ROSTER) {
-        expect(html).toContain(`href="/butlers/${name}"`);
-      }
-    });
-
-    it("renders an unfamiliar butler name without errors", () => {
-      // If the API returns a butler that the front-end has never seen, the list
-      // must still render. ButlerMark falls back to a hash-derived colour slot.
-      const withUnknown = [
-        ...REAL_ROSTER,
-        { name: "future-butler", status: "ok" as const, port: 40199, type: "butler" as const, sessions_24h: 0 },
-      ];
-      setQueryState({ data: { data: withUnknown, meta: {} } });
-      const html = renderPage();
-
-      expect(html).toContain("future-butler");
-      expect(html).toContain('href="/butlers/future-butler"');
-      // All canonical butlers must still appear alongside the unknown one
-      for (const { name } of REAL_ROSTER) {
-        expect(html).toContain(name);
-      }
-    });
+    // The grid wrapper rendered by ButlersPage must not have a style attribute.
+    // Match the grid container's opening tag (aria-label="Butler status board").
+    const gridTagMatch = html.match(/<div[^>]*aria-label="Butler status board"[^>]*>/);
+    expect(gridTagMatch).not.toBeNull();
+    expect(gridTagMatch?.[0]).not.toContain("style=");
   });
 });

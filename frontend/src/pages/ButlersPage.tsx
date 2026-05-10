@@ -1,221 +1,78 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router";
+// ---------------------------------------------------------------------------
+// ButlersPage — status-board rewrite (bu-hb7dh.8)
+//
+// Replaces the alphabetical row-list layout with the 4-column status-board
+// grid introduced by the bu-hb7dh epic. All upstream primitives are on main:
+//   - Page archetype='status-board' with header/footer slots (PR #1526)
+//   - useButlerStatusBoard hook (PR #1528)
+//   - StatusBoardCell component (PR #1532)
+//   - BoardHeader + BoardFooter chrome (PR #1531)
+//
+// Patterns preserved from the old page:
+//   - Stale-data banner when the query is in error but cached rows exist.
+//   - Empty state via the Page primitive's `empty` slot.
+//   - Full-page error (no cached data) via Page primitive's `error` prop.
+//   - Loading state delegated to the Page primitive skeleton.
+//   - onRestore wired to useSetEligibility mutation.
+// ---------------------------------------------------------------------------
 
-import type { ButlerSummary } from "@/api/types";
-import { useButlers } from "@/hooks/use-butlers";
-import { useRegistry } from "@/hooks/use-general";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card";
-import { EmptyState } from "@/components/ui/empty-state";
+import { Card, CardContent } from "@/components/ui/card";
 import { Page } from "@/components/ui/page";
-import { ButlerMark } from "@/components/ui/ButlerMark";
+import { BoardFooter } from "@/components/butlers/BoardFooter";
+import { BoardHeader } from "@/components/butlers/BoardHeader";
+import { StatusBoardCell } from "@/components/butlers/StatusBoardCell";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
+import { useSetEligibility } from "@/hooks/use-general";
 
 // ---------------------------------------------------------------------------
-// Status pill
+// Constants
 // ---------------------------------------------------------------------------
 
-function statusPill(status: string) {
-  switch (status) {
-    case "ok":
-    case "online":
-      return <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-xs">Up</Badge>;
-    case "error":
-    case "down":
-    case "offline":
-      return <Badge variant="destructive" className="text-xs">Down</Badge>;
-    case "degraded":
-      return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs">
-          Degraded
-        </Badge>
-      );
-    default:
-      return <Badge variant="secondary" className="text-xs">{status}</Badge>;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Eligibility chip
-// ---------------------------------------------------------------------------
-
-function eligibilityChip(state: string | null) {
-  if (state === null) {
-    return (
-      <Badge variant="outline" className="border-border text-muted-foreground text-xs">
-        Unavailable
-      </Badge>
-    );
-  }
-  if (state === "active") {
-    return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-xs">
-        Active
-      </Badge>
-    );
-  }
-  if (state === "quarantined") {
-    return <Badge variant="destructive" className="text-xs">Quarantined</Badge>;
-  }
-  if (state === "stale") {
-    return (
-      <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs">
-        Stale
-      </Badge>
-    );
-  }
-  return <Badge variant="secondary" className="text-xs capitalize">{state}</Badge>;
-}
-
-// ---------------------------------------------------------------------------
-// ButlerCard — denser Dispatch layout (bu-insd4.1)
-//
-// Layout: 3-column grid
-//   col-1  40px   ButlerMark glyph
-//   col-2  1fr    name + status pill / description
-//   col-3  auto   sessions count + open → link + eligibility chip
-//
-// Hover: inline margin/padding tween gives a subtle lift without a shadow.
-// ---------------------------------------------------------------------------
-
-function ButlerCard({
-  butler,
-  eligibilityState,
-  registryLoaded,
-}: {
-  butler: ButlerSummary;
-  eligibilityState?: string;
-  registryLoaded: boolean;
-}) {
-  const detailPath = `/butlers/${encodeURIComponent(butler.name)}`;
-  const [hover, setHover] = useState(false);
-
-  const isActive = butler.status === "ok" || butler.status === "online";
-  const tone = isActive ? "fill" : "neutral";
-
-  return (
-    <Link
-      to={detailPath}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      className="grid grid-cols-[40px_1fr_auto] gap-6 py-[22px] items-start no-underline text-inherit transition-[margin-inline,padding-inline] duration-[120ms] ease-in-out"
-      style={{
-        marginInline: hover ? "-16px" : "0",
-        paddingInline: hover ? "16px" : "0",
-      }}
-    >
-      {/* Col 1: ButlerMark glyph */}
-      <div style={{ marginTop: 2 }}>
-        <ButlerMark name={butler.name} tone={tone} />
-      </div>
-
-      {/* Col 2: name + status pill / description */}
-      <div style={{ minWidth: 0 }}>
-        <div className="flex items-baseline gap-2 flex-wrap">
-          <span className="text-base font-medium tracking-tight capitalize whitespace-nowrap">
-            {butler.name}
-          </span>
-          {statusPill(butler.status)}
-        </div>
-        {butler.description ? (
-          <p className="text-sm text-muted-foreground mt-1 leading-snug max-w-[52ch] italic font-[family-name:var(--font-serif,serif)]">
-            {butler.description}
-          </p>
-        ) : null}
-      </div>
-
-      {/* Col 3: sessions count + open → link + eligibility chip */}
-      <div className="flex flex-col items-end gap-2 min-w-[8rem] mt-1">
-        {registryLoaded
-          ? eligibilityChip(eligibilityState ?? null)
-          : null}
-        <div className="flex items-baseline gap-3 font-mono text-[11px]">
-          <span>
-            <span className="font-medium tabular-nums">{butler.sessions_24h}</span>
-            <span className="text-muted-foreground ml-1">sess</span>
-          </span>
-          <span
-            className="font-sans text-[13px] font-medium underline underline-offset-4 decoration-border/50"
-            style={{ opacity: hover ? 1 : 0.65, transition: "opacity 120ms ease" }}
-          >
-            open →
-          </span>
-        </div>
-      </div>
-    </Link>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ButlerGroup — rule-separated list of ButlerCard rows
-// ---------------------------------------------------------------------------
-
-function ButlerGroup({
-  butlers,
-  eligibilityMap,
-  registryLoaded,
-}: {
-  butlers: ButlerSummary[];
-  eligibilityMap: Map<string, string>;
-  registryLoaded: boolean;
-}) {
-  return (
-    <div className="divide-y divide-border/40">
-      {butlers.map((butler) => (
-        <ButlerCard
-          key={butler.name}
-          butler={butler}
-          eligibilityState={eligibilityMap.get(butler.name)}
-          registryLoaded={registryLoaded}
-        />
-      ))}
-    </div>
-  );
-}
+/** Polling interval forwarded to BoardHeader's refresh caption. */
+const REFRESH_INTERVAL_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // ButlersPage
 // ---------------------------------------------------------------------------
 
 export default function ButlersPage() {
-  const { data: response, isLoading, isError, error, refetch } = useButlers();
-  const { data: registryResponse } = useRegistry();
-  const registryLoaded = registryResponse != null;
+  const { rows, aggregates } = useButlerStatusBoard();
+  const setEligibility = useSetEligibility();
 
-  const { butlers, staffers, onlineCount } = useMemo(() => {
-    const allSorted = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
-    const butlerList = allSorted.filter((b) => b.type !== "staffer");
-    const stafferList = allSorted.filter((b) => b.type === "staffer");
-    const count = allSorted.filter((b) => b.status === "ok" || b.status === "online").length;
-    return { butlers: butlerList, staffers: stafferList, onlineCount: count };
-  }, [response?.data]);
+  const { isLoading, isError, error, refetch } = aggregates;
+  const hasRows = rows.length > 0;
 
-  const eligibilityMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const entry of registryResponse?.data ?? []) {
-      map.set(entry.name, entry.eligibility_state);
-    }
-    return map;
-  }, [registryResponse?.data]);
+  // Full-page error only when there is no cached data to show.
+  const pageError = isError && !hasRows ? error : null;
 
-  const hasData = butlers.length > 0 || staffers.length > 0;
+  // Stale-data banner: last refetch errored but cached rows are still visible.
+  // We key off `error != null && hasRows` rather than `isError && hasRows`
+  // because the hook sets isError only when there is no cached data; when rows
+  // survive from cache the error object is still populated but isError is false.
+  const showStaleBanner = error != null && hasRows;
 
-  // Full-page error only when there is no cached data to show
-  const pageError = isError && !hasData ? error : null;
+  function handleRestore(name: string) {
+    setEligibility.mutate({ name, state: "active" });
+  }
 
   return (
     <Page
-      archetype="overview"
+      archetype="status-board"
       title="Butlers"
-      description="Browse all registered butlers and jump directly to detail views."
       loading={isLoading}
       error={pageError}
       onRetry={pageError != null ? () => void refetch() : undefined}
+      empty={
+        !isError && !hasRows && !isLoading
+          ? { title: "No butlers found", description: "Check daemon status and try again." }
+          : null
+      }
+      header={<BoardHeader aggregates={aggregates} refreshIntervalMs={REFRESH_INTERVAL_MS} />}
+      footer={<BoardFooter aggregates={aggregates} />}
     >
-      {/* Partial-data stale-fetch banner */}
-      {isError && hasData && (
+      {/* Stale-data banner — shown above the grid when cached rows exist but the
+          last refresh failed. Mirrors the pattern from the old ButlersPage. */}
+      {showStaleBanner && (
         <Card>
           <CardContent className="py-4">
             <p className="text-sm text-destructive">
@@ -226,60 +83,21 @@ export default function ButlersPage() {
         </Card>
       )}
 
-      {/* Empty state (no data at all, no error) */}
-      {!isError && !hasData && (
-        <EmptyState
-          title="No butlers found."
-          description="Check daemon status and try again."
-        />
-      )}
-
-      {hasData && (
-        <>
-          {/* Stats row */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="text-muted-foreground text-sm font-medium mb-1">Total Agents</div>
-                <div className="text-2xl font-bold">{butlers.length + staffers.length}</div>
-                {staffers.length > 0 && (
-                  <p className="text-muted-foreground mt-1 text-xs">
-                    {butlers.length} butler{butlers.length !== 1 ? "s" : ""},{" "}
-                    {staffers.length} staffer{staffers.length !== 1 ? "s" : ""}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="text-muted-foreground text-sm font-medium mb-1">Healthy</div>
-                <div className="text-2xl font-bold">{onlineCount}</div>
-                <p className="text-muted-foreground mt-1 text-xs">
-                  {Math.round(
-                    (onlineCount / (butlers.length + staffers.length)) * 100,
-                  )}% currently up
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-
-          {butlers.length > 0 && (
-            <div className="space-y-2">
-              <h2 className="text-lg font-semibold tracking-tight">Butlers</h2>
-              <ButlerGroup butlers={butlers} eligibilityMap={eligibilityMap} registryLoaded={registryLoaded} />
-            </div>
-          )}
-
-          {staffers.length > 0 && (
-            <div className="space-y-2">
-              <h2 className="text-lg font-semibold tracking-tight">Staffers</h2>
-              <p className="text-muted-foreground text-sm -mt-1">
-                Infrastructure services that support butler operations.
-              </p>
-              <ButlerGroup butlers={staffers} eligibilityMap={eligibilityMap} registryLoaded={registryLoaded} />
-            </div>
-          )}
-        </>
+      {/* Status-board grid — 4 columns, each cell links to the butler detail page. */}
+      {hasRows && (
+        <div
+          role="group"
+          aria-label="Butler status board"
+          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60"
+        >
+          {rows.map((row) => (
+            <StatusBoardCell
+              key={row.name}
+              row={row}
+              onRestore={handleRestore}
+            />
+          ))}
+        </div>
       )}
     </Page>
   );

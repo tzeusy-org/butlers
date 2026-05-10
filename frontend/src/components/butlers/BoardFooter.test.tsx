@@ -60,10 +60,13 @@ function parseHtml(html: string) {
 // ---------------------------------------------------------------------------
 
 describe("BoardFooter", () => {
-  it("renders the role='contentinfo' a11y attribute", () => {
+  it("renders a semantic <footer> element (no explicit role=contentinfo needed; valid inside main)", () => {
+    // BoardFooter intentionally omits role="contentinfo" so it is valid inside the
+    // <main> landmark rendered by Shell.tsx. The implicit <footer> role is
+    // sufficient when not at the top level of the document.
     const html = render(makeAggregates())
     const div = parseHtml(html)
-    const footer = div.querySelector("[role='contentinfo']")
+    const footer = div.querySelector("footer")
     expect(footer).not.toBeNull()
   })
 

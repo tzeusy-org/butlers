@@ -62,6 +62,9 @@ function pillDotClass(healthy: number, total: number): string {
  *
  * The component carries its own border-bottom so the status-board Page shell
  * does not need to add one.
+ *
+ * Uses a plain `<header>` element (no role="banner") so it is valid inside
+ * the `<main>` landmark rendered by Shell.tsx.
  */
 export function BoardHeader({ aggregates, refreshIntervalMs }: BoardHeaderProps) {
   const healthy = healthyCount(aggregates)
@@ -78,7 +81,6 @@ export function BoardHeader({ aggregates, refreshIntervalMs }: BoardHeaderProps)
 
   return (
     <header
-      role="banner"
       className="grid grid-cols-[1fr_auto] items-baseline gap-6 border-b border-border px-7 pb-4"
     >
       {/* LEFT block: eyebrow + title row */}
