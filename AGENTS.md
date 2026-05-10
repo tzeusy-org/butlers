@@ -315,6 +315,7 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - Refresh token lives exclusively in `public.contact_info` on the owner contact (type `google_oauth_refresh`, `secured=true`). No butler_secrets fallback exists.
 - No runtime env-var fallback; all credential resolution is DB-only.
 - `dev.sh` gate and runtime code both read from `public.contact_info` so shell gating and runtime behavior cannot drift.
+- `scripts/compose.sh`/`oauth-gate` only proves the refresh token row exists; a revoked/expired token still lets the stack start, then Google-backed connectors/modules log `invalid_grant`/`Token has been expired or revoked` until the account is reauthorized with forced consent.
 
 ### compose.sh dev DB role-grant contract
 - `scripts/compose.sh` can clear Tailscale/OAuth gates and still fail at `butlers-up` if the target DB user lacks runtime role membership/ACLs; the signature is repeated `InsufficientPrivilegeError: permission denied for schema public` plus per-butler failures like `permission denied for schema <butler>` or `permission denied to set role "butler_<name>_rw"`.
