@@ -2,6 +2,8 @@
 // Nav item types (discriminated union)
 // ---------------------------------------------------------------------------
 
+import type { NavIconName } from './NavIcon'
+
 /** A flat navigation link. */
 export interface NavFlatItem {
   kind?: 'flat'
@@ -10,6 +12,12 @@ export interface NavFlatItem {
   end?: boolean
   /** If set, only show when this butler is present in the roster. */
   butler?: string
+  /**
+   * Hairline SVG glyph for the rail. When omitted, the rail falls back to
+   * a first-letter glyph. Items in the "Dedicated Butlers" section with a
+   * `butler` field render `ButlerMark` instead and ignore this field.
+   */
+  icon?: NavIconName
   /** If set, a React key used to look up a live badge count from the badge registry. */
   badgeKey?: string
   /**
@@ -50,15 +58,15 @@ export const navSections: NavSection[] = [
   {
     title: 'Main',
     items: [
-      { path: '/', label: 'Overview', end: true },
-      { path: '/butlers', label: 'Butlers' },
-      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-known-issues', badgeVariant: 'red' },
-      { path: '/ingestion', label: 'Ingestion' },
-      { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber' },
-      { path: '/memory', label: 'Memory' },
-      { path: '/entities', label: 'Entities' },
-      { path: '/secrets', label: 'Secrets' },
-      { path: '/settings', label: 'Settings' },
+      { path: '/', label: 'Overview', end: true, icon: 'overview' },
+      { path: '/butlers', label: 'Butlers', icon: 'butlers' },
+      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-known-issues', badgeVariant: 'red', icon: 'qa' },
+      { path: '/ingestion', label: 'Ingestion', icon: 'ingestion' },
+      { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber', icon: 'approvals' },
+      { path: '/memory', label: 'Memory', icon: 'memory' },
+      { path: '/entities', label: 'Entities', icon: 'entities' },
+      { path: '/secrets', label: 'Secrets', icon: 'secrets' },
+      { path: '/settings', label: 'Settings', icon: 'settings' },
     ],
   },
   {
@@ -83,12 +91,12 @@ export const navSections: NavSection[] = [
     title: 'Telemetry',
     defaultExpanded: false,
     items: [
-      { path: '/timeline', label: 'Timeline' },
-      { path: '/notifications', label: 'Notifications' },
-      { path: '/issues', label: 'Issues' },
-      { path: '/sessions', label: 'Sessions' },
-      { path: '/audit-log', label: 'Audit Log' },
-      { path: '/system', label: 'System', tooltip: 'Instance ownership and runtime facts' },
+      { path: '/timeline', label: 'Timeline', icon: 'timeline' },
+      { path: '/notifications', label: 'Notifications', icon: 'notifications' },
+      { path: '/issues', label: 'Issues', icon: 'issues' },
+      { path: '/sessions', label: 'Sessions', icon: 'sessions' },
+      { path: '/audit-log', label: 'Audit Log', icon: 'audit' },
+      { path: '/system', label: 'System', icon: 'system', tooltip: 'Instance ownership and runtime facts' },
     ],
   },
 ]

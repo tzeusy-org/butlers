@@ -11,6 +11,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { navSections, type NavItem, type NavFlatItem, type NavGroupItem, type NavSection } from './nav-config'
+import { NavIcon } from './NavIcon'
 
 // ---------------------------------------------------------------------------
 // Type guard
@@ -77,7 +78,7 @@ function useFilteredNavSections(sections: NavSection[]): {
 
 function railItemClassName(isActive: boolean): string {
   return [
-    'relative flex items-center justify-center w-full h-10 transition-colors',
+    'relative flex items-center justify-center w-full h-9 transition-colors',
     isActive
       ? 'border-l-2 border-sidebar-primary bg-sidebar-primary/[0.05] dark:bg-sidebar-primary/[0.06]'
       : 'border-l-2 border-transparent hover:bg-sidebar-accent/50',
@@ -153,6 +154,8 @@ function ItemGlyph({
     <span className="relative flex size-6 shrink-0 items-center justify-center">
       {useButlerMark ? (
         <ButlerMark name={item.butler!} tone="neutral" />
+      ) : item.icon ? (
+        <NavIcon name={item.icon} className="text-muted-foreground" />
       ) : (
         <span className="flex size-4 items-center justify-center rounded text-xs font-semibold text-muted-foreground">
           {item.label[0]}
@@ -188,6 +191,10 @@ function FlatNavLink({
   butlerStatusMap?: ButlerStatusMap
   badgeCounts?: Record<string, number>
 }) {
+  // Radix TooltipTrigger asChild stringifies a function className via clsx,
+  // so we compute isActive here and pass className as a string.
+  const location = useLocation()
+  const isActive = isPathActive(location.pathname, item.path, item.end)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
 
   return (
@@ -197,7 +204,7 @@ function FlatNavLink({
           to={item.path}
           end={item.end}
           onClick={onNavClick}
-          className={({ isActive }) => railItemClassName(isActive)}
+          className={railItemClassName(isActive)}
           aria-label={item.tooltip ?? item.label}
         >
           <ItemGlyph
@@ -288,29 +295,29 @@ function NavGroup({
           expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
         }`}
       >
-        {item.children.map((child) => (
-          <Tooltip key={child.path}>
-            <TooltipTrigger asChild>
-              <NavLink
-                to={child.path}
-                end={child.end}
-                onClick={onNavClick}
-                className={({ isActive }) => [
-                  railItemClassName(isActive),
-                  'pl-2', // indent children
-                ].join(' ')}
-                aria-label={child.label}
-              >
-                <span className="flex size-5 items-center justify-center rounded text-[10px] font-semibold text-muted-foreground/70">
-                  {child.label[0]}
-                </span>
-              </NavLink>
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8}>
-              {child.label}
-            </TooltipContent>
-          </Tooltip>
-        ))}
+        {item.children.map((child) => {
+          const childActive = isPathActive(location.pathname, child.path, child.end)
+          return (
+            <Tooltip key={child.path}>
+              <TooltipTrigger asChild>
+                <NavLink
+                  to={child.path}
+                  end={child.end}
+                  onClick={onNavClick}
+                  className={[railItemClassName(childActive), 'pl-2'].join(' ')}
+                  aria-label={child.label}
+                >
+                  <span className="flex size-5 items-center justify-center rounded text-[10px] font-semibold text-muted-foreground/70">
+                    {child.label[0]}
+                  </span>
+                </NavLink>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                {child.label}
+              </TooltipContent>
+            </Tooltip>
+          )
+        })}
       </div>
     </div>
   )
@@ -465,18 +472,22 @@ export default function Sidebar({ mobileExpanded = false, onNavClick }: SidebarP
   return (
     <TooltipProvider delayDuration={0}>
       <div className="flex h-full flex-col">
-        {/* Brand mark */}
+        {/* Brand mark — transparent left border matches the nav-item geometry
+            so the brand "B" lines up with the icon-rail centerline. */}
         <div
           data-testid="sidebar-brand"
-          className="flex h-14 items-center justify-center border-b border-border"
+          className="flex h-14 items-center justify-center border-b border-l-2 border-transparent border-b-border"
         >
           <span className="text-lg font-semibold" aria-label="Butlers">
             B
           </span>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-2" aria-label="Main navigation">
+        {/* Navigation — scrollbar hidden (rail-style); wheel/keyboard still scroll. */}
+        <nav
+          className="flex-1 overflow-y-auto py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          aria-label="Main navigation"
+        >
           {filteredSections.map((section, idx) => (
             <NavSectionGroup
               key={section.title}
@@ -535,6 +546,8 @@ function MobileFlatLink({
       <span className="relative flex size-6 shrink-0 items-center justify-center">
         {useButlerMark ? (
           <ButlerMark name={item.butler!} tone="neutral" />
+        ) : item.icon ? (
+          <NavIcon name={item.icon} className="text-muted-foreground" />
         ) : (
           <span className="flex size-6 items-center justify-center rounded bg-muted text-xs font-semibold">
             {item.label[0]}
