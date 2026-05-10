@@ -1,14 +1,20 @@
 // ---------------------------------------------------------------------------
 // <Time> — semantic time primitive with absolute / relative / smart modes
-// (bu-v1tt2.2, bu-fv4vy, bu-5j7p9)
+// (bu-v1tt2.2, bu-fv4vy, bu-5j7p9, bu-hb7dh.4)
 //
 // Renders a <time> element with a datetime attribute (a11y / machine-readable)
 // and human-readable text according to the chosen mode.
 //
 // Mode behaviour:
-//   - absolute: "May 3, 2026 at 4:42 PM SGT"
-//   - relative:  "4 minutes ago"
-//   - smart:     relative for < 24 h, absolute for older (default)
+//   - absolute:         "May 3, 2026 at 4:42 PM SGT"
+//   - relative:         "4 minutes ago"
+//   - smart:            relative for < 24 h, absolute for older (default)
+//   - clock-24h-mono:   "08:30" — live-ticking 24-hour clock, tabular-nums
+//                       monospace. Renders as the owner timezone via context.
+//                       Updates on a 60-second interval (SSR: static snapshot).
+//   - relative-compact: "6m ago", "2h ago", "3d ago"; "now" for < 60 s.
+//                       Seconds-precision floor — never produces "5 seconds ago"
+//                       verbosity. Owner-timezone-agnostic (uses wall-clock diff).
 //
 // compact flag:
 //   When true, absolute output omits the year and timezone abbreviation,
@@ -18,16 +24,20 @@
 //     precision=second:  "May 3, 4:42:07 PM"
 //     precision=hour:    "May 3, 4 PM"
 //     precision=day:     "May 3"
-//   compact has no effect on relative output.
+//   compact has no effect on relative or relative-compact output.
 //
-// precision extensions (bu-5j7p9):
-//   - weekday: full weekday + date, e.g. "Sunday, May 3, 2026"
-//              Compact form omits year: "Sunday, May 3"
-//              Timezone label intentionally suppressed (date headings need none).
-//   - time:    time-only (24-hour clock), e.g. "08:30"
-//              Used for dense time-column cells. compact flag ignored.
-//              Timezone label intentionally suppressed (cell is too narrow).
-//   Both precisions still use the user's timezone for TZ-correct rendering.
+// precision extensions (bu-5j7p9, bu-hb7dh.4):
+//   - weekday:    full weekday + date, e.g. "Sunday, May 3, 2026"
+//                 Compact form omits year: "Sunday, May 3"
+//                 Timezone label intentionally suppressed (date headings need none).
+//   - time:       time-only (24-hour clock), e.g. "08:30"
+//                 Used for dense time-column cells. compact flag ignored.
+//                 Timezone label intentionally suppressed (cell is too narrow).
+//   - short-date: 3-letter weekday + day + 3-letter month + year,
+//                 e.g. "Sun 3 May 2026". Used in BoardHeader date cluster.
+//                 Compact form omits year: "Sun 3 May".
+//                 Timezone label intentionally suppressed (calendar dates need none).
+//   All precisions still use the owner timezone via formatInTimeZone().
 //
 // Date-only strings (YYYY-MM-DD):
 //   Anchored to UTC noon (T12:00:00.000Z) to prevent midnight-crossing
@@ -44,7 +54,7 @@
 // thread a `smartThresholdMs` prop through; the logic is isolated in one place.
 // ---------------------------------------------------------------------------
 
-import { formatDistanceToNow } from "date-fns"
+import { useEffect, useState } from "react"
 import { formatInTimeZone } from "date-fns-tz"
 import { useTimezone } from "@/components/ui/timezone-context"
 
@@ -52,29 +62,43 @@ import { useTimezone } from "@/components/ui/timezone-context"
 // Types
 // ---------------------------------------------------------------------------
 
-export type TimeMode = "absolute" | "relative" | "smart"
-export type TimePrecision = "second" | "minute" | "hour" | "day" | "weekday" | "time"
+export type TimeMode = "absolute" | "relative" | "smart" | "clock-24h-mono" | "relative-compact"
+export type TimePrecision = "second" | "minute" | "hour" | "day" | "weekday" | "time" | "short-date"
 
 export interface TimeProps {
   /** The date value to render. Accepts an ISO 8601 string or a Date object. */
   value: string | Date
   /**
    * Display mode.
-   *   - absolute: full date + time + tz abbreviation
-   *   - relative: "N minutes/hours/days ago"
-   *   - smart: relative when < 24 h old, absolute otherwise
+   *   - absolute:         full date + time + tz abbreviation
+   *   - relative:         "N minutes/hours/days ago" (date-fns natural language)
+   *   - smart:            relative when < 24 h old, absolute otherwise
+   *   - clock-24h-mono:   "HH:MM" — live 24-hour clock in owner timezone.
+   *                       Applies `tabular-nums` font-variant and `font-mono`
+   *                       CSS classes for fixed-width digit rendering in headers.
+   *                       Refreshes on a 60-second interval in the browser.
+   *                       `value` is used as the initial render; the component
+   *                       replaces it with `Date.now()` after first mount.
+   *                       The `precision` prop is ignored for this mode.
+   *   - relative-compact: "6m ago", "2h ago", "3d ago".
+   *                       Seconds-precision floor: values < 60 s render as "now".
+   *                       Large deltas: minutes use "m", hours use "h", days use "d".
+   *                       Owner-timezone-agnostic — computed from wall-clock diff.
+   *                       The `precision` and `compact` props are ignored.
    * @default "smart"
    */
   mode?: TimeMode
   /**
    * Display precision (affects absolute / smart-absolute output only).
-   * Relative mode always uses date-fns natural language.
-   *   - second:  "May 3, 2026 at 4:42:07 PM SGT"
-   *   - minute:  "May 3, 2026 at 4:42 PM SGT"  (default)
-   *   - hour:    "May 3, 2026 at 4 PM SGT"
-   *   - day:     "May 3, 2026 SGT"
-   *   - weekday: "Sunday, May 3, 2026"  (compact: "Sunday, May 3"; no tz label)
-   *   - time:    "08:30"  (24-hour clock, time-only; compact has no effect; no tz label)
+   * Relative and relative-compact modes always use their own format logic.
+   *   - second:     "May 3, 2026 at 4:42:07 PM SGT"
+   *   - minute:     "May 3, 2026 at 4:42 PM SGT"  (default)
+   *   - hour:       "May 3, 2026 at 4 PM SGT"
+   *   - day:        "May 3, 2026 SGT"
+   *   - weekday:    "Sunday, May 3, 2026"  (compact: "Sunday, May 3"; no tz label)
+   *   - time:       "08:30"  (24-hour clock, time-only; compact has no effect; no tz label)
+   *   - short-date: "Sun 3 May 2026"  (3-letter weekday + day + 3-letter month + year;
+   *                 compact: "Sun 3 May"; no tz label). Used in BoardHeader date cluster.
    * @default "minute"
    */
   precision?: TimePrecision
@@ -108,27 +132,30 @@ export interface TimeProps {
 // Format strings per precision
 // ---------------------------------------------------------------------------
 
-// Note: `weekday` and `time` precisions intentionally omit the timezone
-// abbreviation (zzz). `weekday` renders a calendar-date heading where the tz
-// label adds no value; `time` renders a compact 24-hour column cell. Both still
-// consume the user's timezone via formatInTimeZone() so output is TZ-correct.
+// Note: `weekday`, `time`, and `short-date` precisions intentionally omit the
+// timezone abbreviation (zzz). `weekday` renders a calendar-date heading where
+// the tz label adds no value; `time` renders a compact 24-hour column cell;
+// `short-date` renders a brief header date (e.g. "Sun 3 May 2026"). All three
+// still consume the owner timezone via formatInTimeZone() so output is TZ-correct.
 const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
-  second:  "MMM d, yyyy 'at' h:mm:ss a zzz",
-  minute:  "MMM d, yyyy 'at' h:mm a zzz",
-  hour:    "MMM d, yyyy 'at' h a zzz",
-  day:     "MMM d, yyyy zzz",
-  weekday: "EEEE, MMMM d, yyyy",
-  time:    "HH:mm",
+  second:     "MMM d, yyyy 'at' h:mm:ss a zzz",
+  minute:     "MMM d, yyyy 'at' h:mm a zzz",
+  hour:       "MMM d, yyyy 'at' h a zzz",
+  day:        "MMM d, yyyy zzz",
+  weekday:    "EEEE, MMMM d, yyyy",
+  time:       "HH:mm",
+  "short-date": "EEE d MMM yyyy",
 }
 
 // Compact format omits year and timezone — used in dense table cells.
 const COMPACT_FORMAT: Record<TimePrecision, string> = {
-  second:  "MMM d, h:mm:ss a",
-  minute:  "MMM d, h:mm a",
-  hour:    "MMM d, h a",
-  day:     "MMM d",
-  weekday: "EEEE, MMMM d",
-  time:    "HH:mm",  // time precision: compact has no effect, same format
+  second:     "MMM d, h:mm:ss a",
+  minute:     "MMM d, h:mm a",
+  hour:       "MMM d, h a",
+  day:        "MMM d",
+  weekday:    "EEEE, MMMM d",
+  time:       "HH:mm",      // compact has no effect, same format
+  "short-date": "EEE d MMM", // compact omits year: "Sun 3 May"
 }
 
 // 24-hour threshold in ms — smart mode crossover point.
@@ -165,9 +192,68 @@ function formatAbsolute(date: Date, precision: TimePrecision, tz: string, compac
 
 function formatRelative(date: Date): string {
   try {
-    return formatDistanceToNow(date, { addSuffix: true })
+    // Inline natural-language relative format (replaces formatDistanceToNow).
+    // Uses seconds-precision thresholds consistent with date-fns conventions.
+    const diffMs = Date.now() - date.getTime()
+    const absDiff = Math.abs(diffMs)
+    const suffix = diffMs >= 0 ? " ago" : ""
+    const prefix = diffMs < 0 ? "in " : ""
+    const absSec = Math.floor(absDiff / 1_000)
+    if (absSec < 45) return `${prefix}less than a minute${suffix}`
+    if (absSec < 90) return `${prefix}about 1 minute${suffix}`
+    const absMin = Math.round(absDiff / 60_000)
+    if (absMin < 45) return `${prefix}${absMin} minutes${suffix}`
+    if (absMin < 90) return `${prefix}about 1 hour${suffix}`
+    const absHr = Math.round(absDiff / 3_600_000)
+    if (absHr < 24) return `${prefix}about ${absHr} hours${suffix}`
+    if (absHr < 36) return `${prefix}1 day${suffix}`
+    const absDays = Math.round(absDiff / 86_400_000)
+    if (absDays < 30) return `${prefix}${absDays} days${suffix}`
+    if (absDays < 45) return `${prefix}about 1 month${suffix}`
+    const absMonths = Math.round(absDiff / (30 * 86_400_000))
+    if (absDays < 365) return `${prefix}${absMonths} months${suffix}`
+    if (absDays < 548) return `${prefix}about 1 year${suffix}`
+    const absYears = Math.round(absDiff / (365 * 86_400_000))
+    return `${prefix}${absYears} years${suffix}`
   } catch {
     return date.toISOString()
+  }
+}
+
+/**
+ * Format a date as a compact relative string with a seconds-precision floor.
+ * Values < 60 s → "now". Otherwise uses single-letter suffixes: "m", "h", "d".
+ *
+ * Examples: "now", "6m ago", "2h ago", "3d ago".
+ *
+ * Owner-timezone-agnostic — computed purely from the wall-clock difference.
+ * The precision and compact props have no effect on this mode.
+ */
+function formatRelativeCompact(date: Date): string {
+  try {
+    const diffMs = Date.now() - date.getTime()
+    const diffSec = Math.floor(diffMs / 1_000)
+    if (diffSec < 60) return "now"
+    const diffMin = Math.floor(diffSec / 60)
+    if (diffMin < 60) return `${diffMin}m ago`
+    const diffHr = Math.floor(diffMin / 60)
+    if (diffHr < 24) return `${diffHr}h ago`
+    const diffDays = Math.floor(diffHr / 24)
+    return `${diffDays}d ago`
+  } catch {
+    return date.toISOString()
+  }
+}
+
+/**
+ * Format the current wall-clock time as "HH:MM" in the given IANA timezone.
+ * Used by clock-24h-mono mode. Always reads Date.now() so the result is live.
+ */
+function formatClock24h(tz: string): string {
+  try {
+    return formatInTimeZone(new Date(), tz, "HH:mm")
+  } catch {
+    return "--:--"
   }
 }
 
@@ -215,6 +301,18 @@ function resolveSmartMode(date: Date): { useRelative: boolean } {
  * @example
  * // Time-only cell (24-hour clock) — "08:30"
  * <Time value={entry.eaten_at} mode="absolute" precision="time" />
+ *
+ * @example
+ * // BoardHeader date cluster — "Sun 3 May 2026"
+ * <Time value={new Date()} mode="absolute" precision="short-date" />
+ *
+ * @example
+ * // BoardHeader live clock — "08:30" (updates every minute, monospace)
+ * <Time value={new Date()} mode="clock-24h-mono" />
+ *
+ * @example
+ * // StatusBoardCell KPI 'last' field — "6m ago", "2h ago", "3d ago"
+ * <Time value={kpi.last_updated_at} mode="relative-compact" />
  */
 export function Time({
   value,
@@ -227,6 +325,25 @@ export function Time({
 }: TimeProps) {
   const contextTz = useTimezone()
   const tz = timezone ?? contextTz
+
+  // clock-24h-mono mode: live ticking clock that ignores `value` after mount.
+  // State holds the current "HH:MM" string in the owner timezone.
+  // Initialized to the current clock time so the first render is already
+  // accurate (no stale value flash). The interval fires every 60 s to keep
+  // the display in sync with the wall clock.
+  // On SSR (renderToStaticMarkup), useEffect is a no-op so the initial state
+  // value is used throughout — it is derived from Date.now() so the snapshot
+  // is correct for the server render time.
+  const [clockText, setClockText] = useState<string | null>(
+    mode === "clock-24h-mono" ? formatClock24h(tz) : null,
+  )
+  useEffect(() => {
+    if (mode !== "clock-24h-mono") return
+    const id = setInterval(() => {
+      setClockText(formatClock24h(tz))
+    }, 60_000)
+    return () => clearInterval(id)
+  }, [mode, tz])
 
   const date = toDate(value)
 
@@ -242,8 +359,28 @@ export function Time({
 
   const isoString = date.toISOString()
 
+  // clock-24h-mono: live ticking 24-hour clock in the owner timezone.
+  // clockText is null only on SSR (useEffect is a no-op there); fall back to
+  // the value-derived snapshot so static rendering is still correct.
+  if (mode === "clock-24h-mono") {
+    const text = clockText ?? formatInTimeZone(date, tz, "HH:mm")
+    // tabular-nums ensures digits are fixed-width (no layout shift as time changes).
+    const clockClass = ["font-mono tabular-nums", className].filter(Boolean).join(" ")
+    return (
+      <time
+        dateTime={isoString}
+        title={showTitle ? isoString : undefined}
+        className={clockClass}
+      >
+        {text}
+      </time>
+    )
+  }
+
   let text: string
-  if (mode === "relative") {
+  if (mode === "relative-compact") {
+    text = formatRelativeCompact(date)
+  } else if (mode === "relative") {
     text = formatRelative(date)
   } else if (mode === "absolute") {
     text = formatAbsolute(date, precision, tz, compact)
