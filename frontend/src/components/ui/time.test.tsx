@@ -851,3 +851,92 @@ describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
     expect(getByRole("time").textContent).toBe("14:01")
   })
 })
+
+// ---------------------------------------------------------------------------
+// 16. mode=clock-24h-mono — minute-boundary alignment (bu-n38t8)
+//     The component schedules an initial timeout to the next minute boundary
+//     rather than a naive fixed 60 s interval. This eliminates display lag
+//     when the component mounts mid-minute (up to 59 s with a fixed interval).
+// ---------------------------------------------------------------------------
+
+describe("mode=clock-24h-mono — minute-boundary alignment (bu-n38t8)", () => {
+  const SGT = "Asia/Singapore"
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it("fires the first tick at the next minute rollover (mounted at T+59s)", async () => {
+    // Mount at 2026-05-03T06:00:59Z = 14:00:59 SGT — 1 second before 14:01.
+    // The display should show "14:00" (current minute) and then advance to
+    // "14:01" after only ~1 second (not 60 s as a naive interval would require).
+    vi.setSystemTime(new Date("2026-05-03T06:00:59Z"))
+
+    const { getByRole } = rtlRender(
+      <ChroniclesTimezoneProvider timezone={SGT}>
+        <Time value={FIXED_ISO} mode="clock-24h-mono" />
+      </ChroniclesTimezoneProvider>,
+    )
+    await act(async () => {})
+    expect(getByRole("time").textContent).toBe("14:00")
+
+    // Advance by only 1 second — the alignment timeout fires and the clock rolls over.
+    await act(async () => {
+      vi.advanceTimersByTime(1_000)
+    })
+    expect(getByRole("time").textContent).toBe("14:01")
+  })
+
+  it("keeps ticking on a 60 s interval after the alignment timeout fires", async () => {
+    // Mount at 2026-05-03T06:00:59Z = 14:00:59 SGT (1 s before next minute).
+    vi.setSystemTime(new Date("2026-05-03T06:00:59Z"))
+
+    const { getByRole } = rtlRender(
+      <ChroniclesTimezoneProvider timezone={SGT}>
+        <Time value={FIXED_ISO} mode="clock-24h-mono" />
+      </ChroniclesTimezoneProvider>,
+    )
+    await act(async () => {})
+
+    // Fire the initial alignment timeout (1 s) — clock rolls to 14:01.
+    await act(async () => {
+      vi.advanceTimersByTime(1_000)
+    })
+    expect(getByRole("time").textContent).toBe("14:01")
+
+    // Advance another 60 s — the steady-state interval fires, rolling to 14:02.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(getByRole("time").textContent).toBe("14:02")
+  })
+
+  it("unmounting before the alignment timeout fires prevents a tick (no setState-after-unmount)", async () => {
+    // Mount at 2026-05-03T06:00:30Z = 14:00:30 SGT — 30 s before next minute.
+    vi.setSystemTime(new Date("2026-05-03T06:00:30Z"))
+
+    const { getByRole, unmount } = rtlRender(
+      <ChroniclesTimezoneProvider timezone={SGT}>
+        <Time value={FIXED_ISO} mode="clock-24h-mono" />
+      </ChroniclesTimezoneProvider>,
+    )
+    await act(async () => {})
+    expect(getByRole("time").textContent).toBe("14:00")
+
+    // Unmount before the timeout fires (only 10 s in, 20 s still remain).
+    act(() => {
+      unmount()
+    })
+
+    // Advance past the original timeout boundary — should not throw or warn.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    // Test passes without React warnings about setState on an unmounted component.
+  })
+})

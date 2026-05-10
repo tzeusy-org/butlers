@@ -11,7 +11,8 @@
 //   - smart:            relative for < 24 h, absolute for older (default)
 //   - clock-24h-mono:   "08:30" — live-ticking 24-hour clock, tabular-nums
 //                       monospace. Renders as the owner timezone via context.
-//                       Updates on a 60-second interval (SSR: static snapshot).
+//                       Aligned to the next minute boundary then ticks every
+//                       60 s (SSR: static snapshot).
 //   - relative-compact: "6m ago", "2h ago", "3d ago"; "now" for < 60 s.
 //                       Seconds-precision floor — never produces "5 seconds ago"
 //                       verbosity. Future times render as "in 6m", "in 2h", "in 3d".
@@ -77,7 +78,10 @@ export interface TimeProps {
    *   - clock-24h-mono:   "HH:MM" — live 24-hour clock in owner timezone.
    *                       Applies `tabular-nums` font-variant and `font-mono`
    *                       CSS classes for fixed-width digit rendering in headers.
-   *                       Refreshes on a 60-second interval in the browser.
+   *                       Aligned to minute boundaries: an initial timeout fires
+   *                       at the next whole minute, then a 60 s interval takes
+   *                       over. This eliminates the up-to-59 s display lag that
+   *                       a fixed interval incurs when mounted mid-minute.
    *                       Initialized immediately from `Date.now()` (the current
    *                       wall-clock time), so the first render is already accurate.
    *                       `value` is only used for the `datetime` a11y attribute.
@@ -340,13 +344,26 @@ export function Time({
   // On SSR (renderToStaticMarkup), useEffect is a no-op so the ticker never
   // increments — the first render's formatClock24h(tz) is used throughout,
   // which is correct for the server render time.
+  //
+  // Alignment: instead of a naive fixed 60 s interval (which can lag up to
+  // 59 s if the component mounts mid-minute), we schedule an initial timeout
+  // to the next minute boundary, then switch to a steady 60 s interval after
+  // that first fire. This eliminates display lag at mount time.
   const [clockTick, setClockTick] = useState(0)
   useEffect(() => {
     if (mode !== "clock-24h-mono") return
-    const id = setInterval(() => {
+    const msUntilNextMinute = 60_000 - (Date.now() % 60_000)
+    let intervalId: ReturnType<typeof setInterval> | undefined
+    const timeoutId = setTimeout(() => {
       setClockTick((t) => t + 1)
-    }, 60_000)
-    return () => clearInterval(id)
+      intervalId = setInterval(() => {
+        setClockTick((t) => t + 1)
+      }, 60_000)
+    }, msUntilNextMinute)
+    return () => {
+      clearTimeout(timeoutId)
+      if (intervalId !== undefined) clearInterval(intervalId)
+    }
   }, [mode])
 
   const date = toDate(value)
