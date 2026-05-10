@@ -1,14 +1,13 @@
 """Session history endpoints — paginated, filterable session log.
 
-Provides three routers:
+Provides two routers:
 
 - ``router`` — cross-butler endpoint at ``GET /api/sessions``
-- ``butler_sessions_router`` — butler-scoped list at
-  ``GET /api/butlers/{name}/sessions``
-- ``butler_sessions_router`` — butler-scoped detail at
-  ``GET /api/butlers/{name}/sessions/{session_id}``
-- ``butler_sessions_router`` — butler-scoped analytics at
-  ``GET /api/butlers/{name}/analytics/latency-stats``
+- ``butler_sessions_router`` — butler-scoped endpoints:
+
+  - ``GET /api/butlers/{name}/sessions``
+  - ``GET /api/butlers/{name}/sessions/{session_id}``
+  - ``GET /api/butlers/{name}/analytics/latency-stats``
 """
 
 from __future__ import annotations
@@ -527,7 +526,7 @@ SELECT
     COUNT(*) AS count,
     mode() WITHIN GROUP (ORDER BY model) AS model
 FROM sessions
-WHERE started_at >= NOW() - ($1 || ' days')::interval
+WHERE started_at >= NOW() - ($1 * INTERVAL '1 day')
   AND duration_ms IS NOT NULL
 """
 
@@ -558,7 +557,7 @@ async def get_butler_latency_stats(
             detail=f"Butler '{name}' database is not available",
         )
 
-    row = await pool.fetchrow(_LATENCY_STATS_SQL, str(window_days))
+    row = await pool.fetchrow(_LATENCY_STATS_SQL, window_days)
 
     if row is None or row["count"] == 0:
         return ApiResponse[LatencyStats](data=LatencyStats())

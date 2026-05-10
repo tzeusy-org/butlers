@@ -50,7 +50,6 @@ def _make_latency_row(
 
 
 def _make_app_with_latency_row(
-    butler_name: str,
     row: MagicMock | None,
 ) -> object:
     """Wire a fresh app with a mock pool returning the given fetchrow result."""
@@ -89,7 +88,7 @@ async def test_latency_stats_seeded_sessions() -> None:
         count=10,
         model="claude-sonnet-4-5",
     )
-    app = _make_app_with_latency_row("atlas", row)
+    app = _make_app_with_latency_row(row)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -108,7 +107,7 @@ async def test_latency_stats_seeded_sessions() -> None:
 async def test_latency_stats_default_window_days() -> None:
     """window_days defaults to 7 — endpoint is callable without the param."""
     row = _make_latency_row(p50_ms=300.0, p95_ms=800.0, mean_ms=350.0, count=5, model=None)
-    app = _make_app_with_latency_row("general", row)
+    app = _make_app_with_latency_row(row)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -121,11 +120,11 @@ async def test_latency_stats_default_window_days() -> None:
 
 
 async def test_latency_stats_window_days_forwarded() -> None:
-    """window_days query param is forwarded to the SQL query as a string."""
+    """window_days query param is forwarded to the SQL query as an integer."""
     mock_pool = AsyncMock()
     captured_args: list = []
 
-    async def _fetchrow(sql: str, *args):
+    async def _fetchrow(_sql: str, *args):
         captured_args.extend(args)
         return _make_latency_row(p50_ms=100.0, p95_ms=200.0, mean_ms=150.0, count=3, model=None)
 
@@ -142,15 +141,15 @@ async def test_latency_stats_window_days_forwarded() -> None:
         resp = await client.get("/api/butlers/atlas/analytics/latency-stats?window_days=30")
 
     assert resp.status_code == 200
-    # The first positional arg after the SQL string should be the window as a string
-    assert captured_args[0] == "30"
+    # The first positional arg after the SQL string should be window_days as an int
+    assert captured_args[0] == 30
 
 
 async def test_latency_stats_empty_result_returns_zeros() -> None:
     """When no sessions have duration_ms, returns count=0 and None percentiles."""
     # Simulate the DB returning a row where count=0 (percentile_cont yields NULL)
     row = _make_latency_row(p50_ms=None, p95_ms=None, mean_ms=None, count=0, model=None)
-    app = _make_app_with_latency_row("atlas", row)
+    app = _make_app_with_latency_row(row)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -168,7 +167,7 @@ async def test_latency_stats_empty_result_returns_zeros() -> None:
 
 async def test_latency_stats_null_fetchrow_returns_zeros() -> None:
     """When fetchrow returns None (table missing / empty), returns count=0."""
-    app = _make_app_with_latency_row("atlas", None)
+    app = _make_app_with_latency_row(None)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -202,7 +201,7 @@ async def test_latency_stats_model_most_frequent() -> None:
         count=20,
         model="claude-opus-4-5",
     )
-    app = _make_app_with_latency_row("atlas", row)
+    app = _make_app_with_latency_row(row)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -215,7 +214,7 @@ async def test_latency_stats_model_most_frequent() -> None:
 
 async def test_latency_stats_window_days_validation() -> None:
     """window_days must be >= 1 (FastAPI 422 for invalid values)."""
-    app = _make_app_with_latency_row("atlas", None)
+    app = _make_app_with_latency_row(None)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
