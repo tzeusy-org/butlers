@@ -162,26 +162,26 @@ function setupWithData() {
   vi.mocked(useMindMaps).mockReturnValue({
     data: { data: ACTIVE_MAPS, meta: { total: 2, offset: 0, limit: 20 } },
     isLoading: false,
-  } as ReturnType<typeof useMindMaps>);
+  } as unknown as ReturnType<typeof useMindMaps>);
 
   // useAllPendingReviews returns an array of results, one per map ID.
   vi.mocked(useAllPendingReviews).mockImplementation((mapIds) =>
     mapIds.map((id) =>
       id === "map-1"
         ? ({ data: PENDING_REVIEWS, isLoading: false } as ReturnType<typeof useAllPendingReviews>[number])
-        : ({ data: [], isLoading: false } as ReturnType<typeof useAllPendingReviews>[number]),
+        : ({ data: [], isLoading: false } as unknown as ReturnType<typeof useAllPendingReviews>[number]),
     ),
   );
 
   vi.mocked(useAllMasterySummaries).mockImplementation((mapIds) =>
     mapIds.map((id) => {
       if (id === "map-1") {
-        return { data: MASTERY_SUMMARY_1, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number];
+        return { data: MASTERY_SUMMARY_1, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number];
       }
       if (id === "map-2") {
-        return { data: MASTERY_SUMMARY_2, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number];
+        return { data: MASTERY_SUMMARY_2, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number];
       }
-      return { data: null, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number];
+      return { data: null, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number];
     }),
   );
 
@@ -189,7 +189,7 @@ function setupWithData() {
     mapIds.map((id) =>
       id === "map-1"
         ? ({ data: FRONTIER_NODES, isLoading: false } as ReturnType<typeof useAllFrontierNodes>[number])
-        : ({ data: [], isLoading: false } as ReturnType<typeof useAllFrontierNodes>[number]),
+        : ({ data: [], isLoading: false } as unknown as ReturnType<typeof useAllFrontierNodes>[number]),
     ),
   );
 }
@@ -198,7 +198,7 @@ function setupEmpty() {
   vi.mocked(useMindMaps).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 20 } },
     isLoading: false,
-  } as ReturnType<typeof useMindMaps>);
+  } as unknown as ReturnType<typeof useMindMaps>);
 
   // No maps → hooks receive empty arrays → return empty arrays.
   vi.mocked(useAllPendingReviews).mockReturnValue([]);
@@ -489,26 +489,26 @@ describe("ButlerEducationReviewsTab — no fixed 5-map cap", () => {
     vi.mocked(useMindMaps).mockReturnValue({
       data: { data: SIX_MAPS, meta: { total: 6, offset: 0, limit: 20 } },
       isLoading: false,
-    } as ReturnType<typeof useMindMaps>);
+    } as unknown as ReturnType<typeof useMindMaps>);
 
     vi.mocked(useAllPendingReviews).mockImplementation((mapIds) =>
       mapIds.map((id) =>
         id === "map-6"
           ? ({ data: [MAP6_REVIEW], isLoading: false } as ReturnType<typeof useAllPendingReviews>[number])
-          : ({ data: [], isLoading: false } as ReturnType<typeof useAllPendingReviews>[number]),
+          : ({ data: [], isLoading: false } as unknown as ReturnType<typeof useAllPendingReviews>[number]),
       ),
     );
 
     vi.mocked(useAllMasterySummaries).mockImplementation((mapIds) =>
       mapIds.map((id) =>
         id === "map-6"
-          ? ({ data: MAP6_MASTERY, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number])
-          : ({ data: null, isLoading: false } as ReturnType<typeof useAllMasterySummaries>[number]),
+          ? ({ data: MAP6_MASTERY, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number])
+          : ({ data: null, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number]),
       ),
     );
 
     vi.mocked(useAllFrontierNodes).mockImplementation((mapIds) =>
-      mapIds.map(() => ({ data: [], isLoading: false } as ReturnType<typeof useAllFrontierNodes>[number])),
+      mapIds.map(() => ({ data: [], isLoading: false } as unknown as ReturnType<typeof useAllFrontierNodes>[number])),
     );
   });
 

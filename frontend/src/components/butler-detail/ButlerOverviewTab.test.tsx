@@ -145,7 +145,7 @@ function setupDefaultMocks() {
     isError: false,
     error: null,
     refetch: vi.fn().mockResolvedValue(undefined),
-  } as ReturnType<typeof useButler>);
+  } as unknown as ReturnType<typeof useButler>);
 
   vi.mocked(useRegistry).mockReturnValue({
     data: { data: [REGISTRY_ACTIVE], meta: {} },
@@ -156,7 +156,7 @@ function setupDefaultMocks() {
   vi.mocked(useSetEligibility).mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
-  } as ReturnType<typeof useSetEligibility>);
+  } as unknown as ReturnType<typeof useSetEligibility>);
 
   vi.mocked(useCostSummary).mockReturnValue({
     data: undefined,
@@ -166,7 +166,7 @@ function setupDefaultMocks() {
   vi.mocked(useButlerNotifications).mockReturnValue({
     data: { data: [], meta: {} },
     isLoading: false,
-  } as ReturnType<typeof useButlerNotifications>);
+  } as unknown as ReturnType<typeof useButlerNotifications>);
 
   vi.mocked(useButlerHeartbeats).mockReturnValue({
     data: { data: { butlers: [HEARTBEAT_FRESH] }, meta: {} },
@@ -187,7 +187,7 @@ function setupDefaultMocks() {
     isLoading: false,
     isError: false,
     error: null,
-  } as ReturnType<typeof useButlerSessions>);
+  } as unknown as ReturnType<typeof useButlerSessions>);
 }
 
 function renderTab(butlerName = "general"): string {
@@ -253,7 +253,7 @@ describe("ButlerOverviewTab — identity card", () => {
       isError: false,
       error: null,
       refetch: vi.fn().mockResolvedValue(undefined),
-    } as ReturnType<typeof useButler>);
+    } as unknown as ReturnType<typeof useButler>);
 
     const html = renderTab();
     expect(html).toContain("Down");
@@ -283,7 +283,7 @@ describe("ButlerOverviewTab — identity card", () => {
       isError: false,
       error: null,
       refetch: vi.fn().mockResolvedValue(undefined),
-    } as ReturnType<typeof useButler>);
+    } as unknown as ReturnType<typeof useButler>);
 
     const html = renderTab();
     expect(html).not.toContain("Your everyday assistant for general tasks");
@@ -363,7 +363,7 @@ describe("ButlerOverviewTab — identity card", () => {
       data: { data: [], meta: {} },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useRegistry>);
+    } as unknown as ReturnType<typeof useRegistry>);
 
     const html = renderTab();
     expect(html).not.toContain('data-testid="eligibility-timeline"');
@@ -380,7 +380,7 @@ describe("ButlerOverviewTab — identity card", () => {
       isError: false,
       error: null,
       refetch: vi.fn().mockResolvedValue(undefined),
-    } as ReturnType<typeof useButler>);
+    } as unknown as ReturnType<typeof useButler>);
 
     const html = renderTab();
     // The skeleton renders without crashing; content elements are absent
@@ -427,7 +427,7 @@ describe("ButlerOverviewTab — heartbeat row", () => {
       isLoading: false,
       isError: false,
       error: null,
-    } as ReturnType<typeof useButlerHeartbeats>);
+    } as unknown as ReturnType<typeof useButlerHeartbeats>);
 
     const html = renderTab();
     expect(html).toContain("Unknown");
@@ -520,7 +520,7 @@ describe("ButlerOverviewTab — module health card", () => {
       isLoading: false,
       isError: false,
       error: null,
-    } as ReturnType<typeof useButlerModules>);
+    } as unknown as ReturnType<typeof useButlerModules>);
 
     const html = renderTab();
     expect(html).toContain("No modules registered");
