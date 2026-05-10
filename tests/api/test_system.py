@@ -28,6 +28,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.routers.system import (
     _get_db_manager,
     _read_backup_facts_from_dir,
@@ -432,10 +433,25 @@ def _make_heartbeat_db(
     return mock_db
 
 
+def _make_heartbeat_app(mock_db, roster_names):
+    """Build a test app with both DB manager and butler configs overridden.
+
+    The heartbeat endpoint uses get_butler_configs() as the canonical butler
+    source. Tests must supply roster_names so the dependency override matches
+    the scenario under test.
+    """
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    configs = [ButlerConnectionInfo(name=n, port=40000) for n in roster_names]
+    app.dependency_overrides[get_butler_configs] = lambda: configs
+    return app
+
+
 async def test_heartbeat_happy_path_fields():
     mock_db = _make_heartbeat_db(active_count=3)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
     ) as client:
         resp = await client.get("/api/system/butlers/heartbeat")
     assert resp.status_code == 200
@@ -455,7 +471,8 @@ async def test_heartbeat_happy_path_fields():
 async def test_heartbeat_schema_unreachable_sets_error():
     mock_db = _make_heartbeat_db(session_fails=True)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
     ) as client:
         resp = await client.get("/api/system/butlers/heartbeat")
     assert resp.status_code == 200
@@ -466,7 +483,8 @@ async def test_heartbeat_schema_unreachable_sets_error():
 async def test_heartbeat_503_when_registry_fails():
     mock_db = _make_heartbeat_db(registry_fails=True)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
     ) as client:
         resp = await client.get("/api/system/butlers/heartbeat")
     assert resp.status_code == 503
@@ -479,14 +497,14 @@ async def test_heartbeat_null_last_heartbeat_when_not_in_registry():
     switchboard registry appears in results with last_heartbeat_at=None,
     heartbeat_age_seconds=None, and no error (session facts still populated).
     """
-    # Pass a sentinel value to distinguish "no rows" from "use default rows"
     mock_db = _make_heartbeat_db(
         registry_rows=[{"name": "other-butler", "last_seen_at": _NOW}],  # general not in registry
         butler_names=["general"],
         active_count=2,
     )
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
     ) as client:
         resp = await client.get("/api/system/butlers/heartbeat")
     assert resp.status_code == 200
@@ -500,24 +518,20 @@ async def test_heartbeat_null_last_heartbeat_when_not_in_registry():
     assert general["error"] is None
 
 
-async def test_heartbeat_omits_butler_absent_from_db_manager_and_registry():
-    """GAP DOCUMENTATION: butlers discoverable by /api/butlers but with failed DB pool init are omitted.
+async def test_heartbeat_includes_roster_butler_with_failed_pool_as_schema_unreachable():
+    """Corrected behavior: roster butlers with failed DB pool appear with error='schema_unreachable'.
 
-    The list endpoint (/api/butlers) derives its butler set from get_butler_configs(),
-    which scans the roster filesystem.  The heartbeat endpoint derives its set from
-    db.butler_names (pool keys) union switchboard registry names.
+    The heartbeat endpoint uses get_butler_configs() as the canonical butler source.
+    A butler in the roster whose DB pool failed to initialize at startup (absent from
+    db.butler_names) and has never pinged the switchboard (absent from registry) must
+    still appear in the heartbeat response with error='schema_unreachable' and null/0
+    session facts — not be silently omitted.
 
-    If a butler's pool fails to initialize (exception in init_db_manager) and the butler
-    has never pinged the switchboard, it will be absent from the heartbeat response.
-    This test documents that known parity gap: a butler named 'ghost' in the roster but
-    absent from db.butler_names and not in the registry is silently omitted.
-
-    The heartbeat endpoint SHOULD use get_butler_configs() as its canonical source and
-    fall back to error='schema_unreachable' for butlers without a pool — but currently
-    it does not. A follow-up fix bead should address this.
+    Also verifies the registry-union path: a roster-absent butler that HAS pinged the
+    switchboard still appears via the registry union.
     """
-    # "ghost" is in the registry rows but NOT in butler_names — simulates failed pool init
-    # We verify that "ghost" appears when it's in the registry (union path works)
+    # Part 1: ghost is in the registry (union path) but not in butler_names or roster.
+    # It should still appear via registry union even without a roster entry.
     mock_db_with_registry = _make_heartbeat_db(
         registry_rows=[
             {"name": "general", "last_seen_at": _NOW},
@@ -526,7 +540,7 @@ async def test_heartbeat_omits_butler_absent_from_db_manager_and_registry():
         butler_names=["general"],  # ghost pool never initialized
     )
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db_with_registry)),
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db_with_registry, ["general"])),
         base_url="http://test",
     ) as client:
         resp = await client.get("/api/system/butlers/heartbeat")
@@ -536,24 +550,31 @@ async def test_heartbeat_omits_butler_absent_from_db_manager_and_registry():
         "ghost appears via registry union path when it has pinged the switchboard"
     )
 
-    # Now the same butler without any registry row — this is the gap case
+    # Part 2: ghost is in the roster but NOT in butler_names and NOT in registry.
+    # FIX VERIFIED: ghost must appear with error='schema_unreachable', not be omitted.
     mock_db_no_registry = _make_heartbeat_db(
         registry_rows=[{"name": "general", "last_seen_at": _NOW}],
         butler_names=["general"],  # ghost pool never initialized, never pinged
     )
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db_no_registry)),
+        transport=httpx.ASGITransport(
+            app=_make_heartbeat_app(mock_db_no_registry, ["general", "ghost"])
+        ),
         base_url="http://test",
     ) as client:
         resp = await client.get("/api/system/butlers/heartbeat")
     assert resp.status_code == 200
-    names_no_registry = [b["name"] for b in resp.json()["data"]["butlers"]]
-    # GAP: ghost is absent from heartbeat but would appear in /api/butlers roster scan
-    assert "ghost" not in names_no_registry, (
-        "GAP CONFIRMED: ghost is omitted from heartbeat when pool init failed and "
-        "it has never pinged the switchboard registry. "
-        "Fix: heartbeat should use get_butler_configs() as canonical source."
+    butlers_no_registry = resp.json()["data"]["butlers"]
+    names_no_registry = [b["name"] for b in butlers_no_registry]
+    assert "ghost" in names_no_registry, (
+        "ghost must appear in heartbeat when in roster even if pool init failed "
+        "and it has never pinged the switchboard registry"
     )
+    ghost = next(b for b in butlers_no_registry if b["name"] == "ghost")
+    assert ghost["error"] == "schema_unreachable"
+    assert ghost["last_session_at"] is None
+    assert ghost["active_session_count"] == 0
+    assert ghost["last_heartbeat_at"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -796,7 +817,7 @@ class TestPrometheusCounters:
             return sw_pool
 
         mock_db.pool.side_effect = _pool
-        app = _make_app_with_db(mock_db)
+        app = _make_heartbeat_app(mock_db, [])
         before = self._counter_value(system_butlers_heartbeat_reads_total)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
