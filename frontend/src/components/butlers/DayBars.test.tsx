@@ -47,10 +47,10 @@ describe("DayBars: all-zero data", () => {
     expect(matches.length).toBe(7)
   })
 
-  it("applies minimal visible height (2px) to all-zero bars", () => {
+  it("applies minimal visible height (h-px) to all-zero bars", () => {
     const html = renderToStaticMarkup(<DayBars data={zeros(7)} />)
-    // Bars must have at least a 2px height so the row has presence.
-    expect(html).toContain("2px")
+    // Bars must have at least a minimal height so the row has presence.
+    expect(html).toContain("h-px")
   })
 
   it("does not apply the color class on all-zero bars", () => {
@@ -191,6 +191,22 @@ describe("DayBars: aria-label", () => {
     const html = renderToStaticMarkup(<DayBars data={zeros(7)} />)
     expect(html).toContain("total 0")
     expect(html).toContain("peak 0")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// className prop
+// ---------------------------------------------------------------------------
+
+describe("DayBars: className prop", () => {
+  it("forwards className to the container element", () => {
+    const html = renderToStaticMarkup(<DayBars data={[1, 2, 3]} className="mt-2" />)
+    expect(html).toContain("mt-2")
+  })
+
+  it("does not include undefined class when className is omitted", () => {
+    const html = renderToStaticMarkup(<DayBars data={[1, 2, 3]} />)
+    expect(html).not.toContain("undefined")
   })
 })
 

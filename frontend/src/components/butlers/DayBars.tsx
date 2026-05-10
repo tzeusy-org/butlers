@@ -32,6 +32,8 @@ interface DayBarsProps {
    * Defaults to "bg-foreground/60".
    */
   color?: string
+  /** Optional className forwarded to the container element. */
+  className?: string
 }
 
 /**
@@ -45,12 +47,12 @@ interface DayBarsProps {
  *   <DayBars data={row.dailyCounts7d} />
  *   <DayBars data={row.dailyCounts30d} height={24} color="bg-chart-1" />
  */
-export function DayBars({ data, height = 32, color = "bg-foreground/60" }: DayBarsProps) {
+export function DayBars({ data, height = 32, color = "bg-foreground/60", className }: DayBarsProps) {
   if (data.length === 0) {
     return null
   }
 
-  const max = Math.max(...data, 0)
+  const max = data.reduce((a, b) => Math.max(a, b), 0)
   const total = data.reduce((s, n) => s + n, 0)
 
   const ariaLabel = `${data.length}-day activity, total ${total}, peak ${max}`
@@ -61,7 +63,7 @@ export function DayBars({ data, height = 32, color = "bg-foreground/60" }: DayBa
       aria-label={ariaLabel}
       // Typed primitive exemption: height is a single dynamic CSS prop.
       style={{ height }}
-      className="flex items-end gap-px w-full"
+      className={["flex items-end gap-px w-full", className].filter(Boolean).join(" ")}
     >
       {data.map((count, i) => {
         if (max === 0) {
@@ -69,8 +71,7 @@ export function DayBars({ data, height = 32, color = "bg-foreground/60" }: DayBa
           return (
             <div
               key={i}
-              className="flex-1 rounded-[1px] bg-muted/40"
-              style={{ height: "2px" }}
+              className="flex-1 rounded-[1px] bg-muted/40 h-px"
             />
           )
         }
