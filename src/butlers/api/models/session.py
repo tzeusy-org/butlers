@@ -3,8 +3,9 @@
 Provides ``SessionDetail`` for the full session detail endpoint, extends
 the existing ``SessionSummary`` with a ``butler`` field for cross-butler
 views, ``SessionKindBreakdown`` for the session-kinds analytics endpoint,
-``DailyActivity`` for the daily-activity analytics endpoint, and
-``HourlyActivity`` for the hourly-activity analytics endpoint.
+``DailyActivity`` for the daily-activity analytics endpoint,
+``HourlyActivity`` for the hourly-activity analytics endpoint, and
+``LatencyStats`` for the latency-stats analytics endpoint.
 """
 
 from __future__ import annotations
@@ -88,6 +89,23 @@ class HourlyActivity(BaseModel):
     """
 
     buckets: list[HourlyActivityBucket] = []
+
+
+class LatencyStats(BaseModel):
+    """Latency percentile statistics for a butler over a rolling window.
+
+    Returned by ``GET /api/butlers/{name}/analytics/latency-stats``.
+
+    All duration fields are in milliseconds.  When no sessions with a
+    recorded ``duration_ms`` exist in the window, ``count`` is 0 and the
+    percentile/mean fields are ``None``.
+    """
+
+    p50_ms: float | None = None
+    p95_ms: float | None = None
+    mean_ms: float | None = None
+    count: int = 0
+    model: str | None = None
 
 
 class SessionDetail(BaseModel):
