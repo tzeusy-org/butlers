@@ -686,6 +686,7 @@ async def get_butlers_heartbeat(
     # yet in the roster scan.
     roster_names = {cfg.name for cfg in configs}
     all_names = sorted(roster_names | set(registry.keys()))
+    db_names = set(db.butler_names)
 
     now = datetime.now(UTC)
     entries: list[ButlerHeartbeat] = []
@@ -710,7 +711,7 @@ async def get_butlers_heartbeat(
         active_session_count: int = 0
         entry_error: str | None = None
 
-        if name in db.butler_names:
+        if name in db_names:
             try:
                 pool = db.pool(name)
                 # Most-recent completed session

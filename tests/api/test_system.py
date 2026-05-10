@@ -518,7 +518,7 @@ async def test_heartbeat_null_last_heartbeat_when_not_in_registry():
     assert general["error"] is None
 
 
-async def test_heartbeat_omits_butler_absent_from_db_manager_and_registry():
+async def test_heartbeat_includes_roster_butler_with_failed_pool_as_schema_unreachable():
     """Corrected behavior: roster butlers with failed DB pool appear with error='schema_unreachable'.
 
     The heartbeat endpoint uses get_butler_configs() as the canonical butler source.
