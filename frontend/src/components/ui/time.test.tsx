@@ -712,6 +712,31 @@ describe("mode=relative-compact (bu-hb7dh.4)", () => {
     )
     expect(plain).toBe(withCompact)
   })
+
+  // Future timestamp handling (bu-mvzq4 review fix)
+  it("renders 'now' for values within 60 seconds in the future", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 30_000)) // now is 30s before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("now")
+  })
+
+  it("renders 'in Xm' for future values in the 1–59 minute range", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 6 * 60_000)) // now is 6 min before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("in 6m")
+  })
+
+  it("renders 'in Xh' for future values in the 1–23 hour range", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 2 * 3_600_000)) // now is 2 h before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("in 2h")
+  })
+
+  it("renders 'in Xd' for future values >= 24 hours ahead", () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() - 3 * 86_400_000)) // now is 3 d before FIXED_DATE
+    const { text } = parseTime(render({ value: FIXED_ISO, mode: "relative-compact" }))
+    expect(text).toBe("in 3d")
+  })
 })
 
 // ---------------------------------------------------------------------------

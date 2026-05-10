@@ -14,7 +14,8 @@
 //                       Updates on a 60-second interval (SSR: static snapshot).
 //   - relative-compact: "6m ago", "2h ago", "3d ago"; "now" for < 60 s.
 //                       Seconds-precision floor — never produces "5 seconds ago"
-//                       verbosity. Owner-timezone-agnostic (uses wall-clock diff).
+//                       verbosity. Future times render as "in 6m", "in 2h", "in 3d".
+//                       Owner-timezone-agnostic (uses wall-clock diff).
 //
 // compact flag:
 //   When true, absolute output omits the year and timezone abbreviation,
@@ -77,12 +78,14 @@ export interface TimeProps {
    *                       Applies `tabular-nums` font-variant and `font-mono`
    *                       CSS classes for fixed-width digit rendering in headers.
    *                       Refreshes on a 60-second interval in the browser.
-   *                       `value` is used as the initial render; the component
-   *                       replaces it with `Date.now()` after first mount.
+   *                       Initialized immediately from `Date.now()` (the current
+   *                       wall-clock time), so the first render is already accurate.
+   *                       `value` is only used for the `datetime` a11y attribute.
    *                       The `precision` prop is ignored for this mode.
-   *   - relative-compact: "6m ago", "2h ago", "3d ago".
-   *                       Seconds-precision floor: values < 60 s render as "now".
-   *                       Large deltas: minutes use "m", hours use "h", days use "d".
+   *   - relative-compact: "6m ago", "2h ago", "3d ago"; "in 6m", "in 2h", "in 3d".
+   *                       Seconds-precision floor: values within ±60 s render as "now".
+   *                       Large past deltas: "m"/"h"/"d" suffixed with " ago".
+   *                       Large future deltas: "m"/"h"/"d" prefixed with "in ".
    *                       Owner-timezone-agnostic — computed from wall-clock diff.
    *                       The `precision` and `compact` props are ignored.
    * @default "smart"
@@ -222,9 +225,12 @@ function formatRelative(date: Date): string {
 
 /**
  * Format a date as a compact relative string with a seconds-precision floor.
- * Values < 60 s → "now". Otherwise uses single-letter suffixes: "m", "h", "d".
+ * Values within ±60 s of now → "now". Otherwise uses single-letter suffixes:
+ * "m", "h", "d" with an "ago" suffix for past times and an "in" prefix for
+ * future times (e.g. "in 6m", "in 2h").
  *
- * Examples: "now", "6m ago", "2h ago", "3d ago".
+ * Examples (past):   "now", "6m ago", "2h ago", "3d ago".
+ * Examples (future): "now" (< 60 s), "in 6m", "in 2h", "in 3d".
  *
  * Owner-timezone-agnostic — computed purely from the wall-clock difference.
  * The precision and compact props have no effect on this mode.
@@ -232,14 +238,15 @@ function formatRelative(date: Date): string {
 function formatRelativeCompact(date: Date): string {
   try {
     const diffMs = Date.now() - date.getTime()
-    const diffSec = Math.floor(diffMs / 1_000)
-    if (diffSec < 60) return "now"
-    const diffMin = Math.floor(diffSec / 60)
-    if (diffMin < 60) return `${diffMin}m ago`
-    const diffHr = Math.floor(diffMin / 60)
-    if (diffHr < 24) return `${diffHr}h ago`
-    const diffDays = Math.floor(diffHr / 24)
-    return `${diffDays}d ago`
+    const absDiffSec = Math.floor(Math.abs(diffMs) / 1_000)
+    if (absDiffSec < 60) return "now"
+    const isPast = diffMs >= 0
+    const absDiffMin = Math.floor(absDiffSec / 60)
+    if (absDiffMin < 60) return isPast ? `${absDiffMin}m ago` : `in ${absDiffMin}m`
+    const absDiffHr = Math.floor(absDiffMin / 60)
+    if (absDiffHr < 24) return isPast ? `${absDiffHr}h ago` : `in ${absDiffHr}h`
+    const absDiffDays = Math.floor(absDiffHr / 24)
+    return isPast ? `${absDiffDays}d ago` : `in ${absDiffDays}d`
   } catch {
     return date.toISOString()
   }
@@ -339,6 +346,9 @@ export function Time({
   )
   useEffect(() => {
     if (mode !== "clock-24h-mono") return
+    // Immediately update clockText so a timezone change takes effect right away,
+    // rather than waiting up to 60 s for the next interval tick.
+    setClockText(formatClock24h(tz))
     const id = setInterval(() => {
       setClockText(formatClock24h(tz))
     }, 60_000)
@@ -360,8 +370,10 @@ export function Time({
   const isoString = date.toISOString()
 
   // clock-24h-mono: live ticking 24-hour clock in the owner timezone.
-  // clockText is null only on SSR (useEffect is a no-op there); fall back to
-  // the value-derived snapshot so static rendering is still correct.
+  // clockText is null only when the component first renders in a non-clock mode
+  // and later switches to clock-24h-mono before the effect has run (a rare
+  // edge case). Fall back to the value-derived snapshot so static rendering is
+  // still correct in that case.
   if (mode === "clock-24h-mono") {
     const text = clockText ?? formatInTimeZone(date, tz, "HH:mm")
     // tabular-nums ensures digits are fixed-width (no layout shift as time changes).
