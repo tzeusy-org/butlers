@@ -26,7 +26,7 @@ function zeros(): number[] {
 function counts(overrides: Partial<Record<number, number>> = {}): number[] {
   const arr = zeros()
   for (const [k, v] of Object.entries(overrides)) {
-    arr[Number(k)] = v
+    if (v !== undefined) arr[Number(k)] = v
   }
   return arr
 }

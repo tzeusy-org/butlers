@@ -14,11 +14,14 @@
 //   - No forbidden inline style on rendered DOM (except ActivityStripe intensity cells).
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
+import { render, fireEvent, cleanup } from "@testing-library/react"
 
 import { StatusBoardCell } from "./StatusBoardCell"
 import type { StatusBoardRow } from "@/hooks/use-butler-status-board"
+
+afterEach(() => { cleanup() })
 
 // ---------------------------------------------------------------------------
 // Helper: build a minimal StatusBoardRow with safe defaults
@@ -340,10 +343,10 @@ describe("StatusBoardCell: ActivityStripe embedded", () => {
     expect(html).toContain("24H ACTIVITY")
   })
 
-  it("renders 00:00 to now label without em-dash", () => {
+  it("renders past-24h label without em-dash", () => {
     const html = renderToStaticMarkup(<StatusBoardCell row={makeRow()} />)
-    expect(html).toContain("00:00 to now")
-    expect(html).not.toContain("—00")  // no em-dash-based separator
+    expect(html).toContain("past 24 h")
+    expect(html).not.toContain("—")  // no em-dash in stripe caption area
   })
 
   it("renders 24 ActivityStripe cells (role=img wrapper)", () => {
@@ -371,5 +374,33 @@ describe("StatusBoardCell: onRestore callback", () => {
       />,
     )
     expect(html).toContain("<button")
+  })
+
+  it("clicking the restore chip invokes onRestore with the butler name", () => {
+    const onRestore = vi.fn()
+    const { getByRole } = render(
+      <StatusBoardCell
+        row={makeRow({ eligibility: "stale", activity: "idle", name: "finance" })}
+        onRestore={onRestore}
+      />,
+    )
+    const btn = getByRole("button")
+    fireEvent.click(btn)
+    expect(onRestore).toHaveBeenCalledOnce()
+    expect(onRestore).toHaveBeenCalledWith("finance")
+  })
+
+  it("clicking the restore chip for quarantined activity invokes onRestore", () => {
+    const onRestore = vi.fn()
+    const { getByRole } = render(
+      <StatusBoardCell
+        row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined", name: "qa" })}
+        onRestore={onRestore}
+      />,
+    )
+    const btn = getByRole("button")
+    fireEvent.click(btn)
+    expect(onRestore).toHaveBeenCalledOnce()
+    expect(onRestore).toHaveBeenCalledWith("qa")
   })
 })

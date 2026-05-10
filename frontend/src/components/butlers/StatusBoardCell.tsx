@@ -11,8 +11,9 @@
 //   - 24h activity stripe pinned at the bottom
 //
 // Click-to-restore: when activity is 'quarantined' OR eligibility is 'stale',
-// the activity chip becomes a <button> that calls onRestore(name). The parent
-// (ButlersPage) wires this to the setEligibility('active') mutation.
+// the activity chip becomes a <button> that calls onRestore(name). The outer
+// container switches from <a> to <div role="link"> to avoid nesting interactive
+// content inside a link (invalid HTML per spec).
 //
 // Doctrine:
 //   - NO inline style except inside ActivityStripe (its own typed-primitive exemption).
@@ -104,6 +105,11 @@ export interface StatusBoardCellProps {
 /**
  * Card-like grid tile for a single butler in the status-board grid.
  *
+ * When the cell is restorable (quarantined or stale eligibility) and onRestore
+ * is provided, the outer container switches from <a> to <div role="link"> so
+ * that the restore <button> is not nested inside interactive content (invalid
+ * HTML per spec). Navigation is handled via onClick and onKeyDown on the div.
+ *
  * @example
  *   <StatusBoardCell row={row} onRestore={(name) => setEligibility(name, 'active')} />
  */
@@ -124,22 +130,21 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
   const isRestorable = activity === "quarantined" || eligibility === "stale"
   const railClass = railColorClass(cellTone)
   const markTone = activity === "running" ? "fill" : "neutral"
+  const href = `/butlers/${name}`
 
   const ariaLabel = `${name}, ${activity}, last run ${lastRunISO ? "recently" : "unknown"}, ${sessions24h} sessions in 24h`
 
-  return (
-    <a
-      href={`/butlers/${name}`}
-      aria-label={ariaLabel}
-      className={[
-        "group relative flex flex-col",
-        "border-r border-b border-border/60",
-        "p-5 min-h-56",
-        "transition-colors duration-[120ms] ease-in-out",
-        "hover:bg-foreground/[0.025] dark:hover:bg-foreground/[0.025]",
-        "no-underline text-inherit",
-      ].join(" ")}
-    >
+  const containerClass = [
+    "group relative flex flex-col",
+    "border-r border-b border-border/60",
+    "p-5 min-h-56",
+    "transition-colors duration-[120ms] ease-in-out",
+    "hover:bg-foreground/[0.025] dark:hover:bg-foreground/[0.025]",
+    "no-underline text-inherit cursor-pointer",
+  ].join(" ")
+
+  const innerContent = (
+    <>
       {/* Left-edge state rail — only for red and amber tones */}
       {railClass ? (
         <div
@@ -159,12 +164,11 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
           {name}
         </span>
 
-        {/* Activity chip — clickable when restorable */}
+        {/* Activity chip — plain span when not restorable */}
         {isRestorable && onRestore ? (
           <button
             type="button"
             onClick={(e) => {
-              e.preventDefault()
               e.stopPropagation()
               onRestore(name)
             }}
@@ -219,7 +223,7 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
             24H ACTIVITY
           </span>
           <span className="font-mono text-[9px] text-muted-foreground">
-            00:00 to now
+            past 24 h
           </span>
         </div>
         <ActivityStripe counts={hourlyStripe} />
@@ -231,6 +235,34 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
           open →
         </span>
       </div>
+    </>
+  )
+
+  // When a restore chip is present, switch to div+role="link" so the <button>
+  // is not nested inside an <a> (invalid HTML: interactive content inside
+  // interactive content). Navigation is handled imperatively.
+  if (isRestorable && onRestore) {
+    return (
+      <div
+        role="link"
+        tabIndex={0}
+        aria-label={ariaLabel}
+        className={containerClass}
+        onClick={() => { window.location.href = href }}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") window.location.href = href }}
+      >
+        {innerContent}
+      </div>
+    )
+  }
+
+  return (
+    <a
+      href={href}
+      aria-label={ariaLabel}
+      className={containerClass}
+    >
+      {innerContent}
     </a>
   )
 }

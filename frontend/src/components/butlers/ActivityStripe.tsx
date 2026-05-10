@@ -28,6 +28,10 @@ interface ActivityStripeProps {
  *   <ActivityStripe counts={row.hourlyStripe} />
  */
 export function ActivityStripe({ counts, className }: ActivityStripeProps) {
+  if (import.meta.env.DEV && counts.length !== 24) {
+    console.error(`ActivityStripe: counts.length must be 24, got ${counts.length}`)
+  }
+
   const max = Math.max(...counts, 0)
   const total = counts.reduce((s, n) => s + n, 0)
 

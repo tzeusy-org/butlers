@@ -135,3 +135,32 @@ describe("ButlerMark: className forwarding", () => {
     expect(html).toContain("my-extra-class")
   })
 })
+
+describe("ButlerMark: size prop", () => {
+  it("defaults to 16px width and height", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="health" />)
+    expect(html).toContain("width:16px")
+    expect(html).toContain("height:16px")
+  })
+
+  it("renders at the specified size", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="health" size={28} />)
+    expect(html).toContain("width:28px")
+    expect(html).toContain("height:28px")
+  })
+
+  it("scales font-size proportionally (60% of size)", () => {
+    // size=16 → 9.6px; size=28 → 16.8px
+    const html16 = renderToStaticMarkup(<ButlerMark name="health" size={16} />)
+    const html28 = renderToStaticMarkup(<ButlerMark name="health" size={28} />)
+    expect(html16).toContain("9.6px")
+    expect(html28).toContain("16.8px")
+  })
+
+  it("existing callers are unaffected by the default (backwards-compatible)", () => {
+    // Render without size prop; should produce the same output as size={16}.
+    const htmlDefault = renderToStaticMarkup(<ButlerMark name="health" />)
+    const htmlExplicit = renderToStaticMarkup(<ButlerMark name="health" size={16} />)
+    expect(htmlDefault).toBe(htmlExplicit)
+  })
+})
