@@ -130,7 +130,11 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
   const isRestorable = activity === "quarantined" || eligibility === "stale"
   const railClass = railColorClass(cellTone)
   const markTone = activity === "running" ? "fill" : "neutral"
-  const href = `/butlers/${name}`
+  // Prepend Vite's BASE_URL so the link resolves correctly when the app is
+  // mounted under a path prefix (e.g. /butlers-dev/). Without this, a raw
+  // /butlers/{name} bypasses the prefix and 404s on the bare /butlers/ path.
+  const basePath = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "")
+  const href = `${basePath}/butlers/${name}`
 
   const ariaLabel = `${name}, ${activity}, last run ${lastRunISO ? "recently" : "unknown"}, ${sessions24h} sessions in 24h`
 
@@ -216,24 +220,27 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
         />
       </div>
 
-      {/* 24h activity stripe — pinned bottom */}
+      {/* 24h activity stripe — pinned bottom. The right-side caption swaps from
+          "past 24 h" to the "open →" hover affordance so the click target hint
+          never overlaps the stripe bars below. */}
       <div className="mt-auto pt-4">
         <div className="flex items-center justify-between mb-1">
           <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
             24H ACTIVITY
           </span>
-          <span className="font-mono text-[9px] text-muted-foreground">
-            past 24 h
+          <span className="relative inline-flex items-center font-mono text-[9px] text-muted-foreground">
+            <span className="transition-opacity duration-[120ms] ease-in-out group-hover:opacity-0">
+              past 24 h
+            </span>
+            <span
+              aria-hidden="true"
+              className="absolute right-0 top-0 whitespace-nowrap opacity-0 group-hover:opacity-85 transition-opacity duration-[120ms] ease-in-out"
+            >
+              open →
+            </span>
           </span>
         </div>
         <ActivityStripe counts={hourlyStripe} windowEnd={new Date()} />
-      </div>
-
-      {/* Hover affordance: "open →" bottom-right */}
-      <div className="absolute bottom-4 right-5 opacity-0 group-hover:opacity-85 transition-opacity duration-[120ms] ease-in-out">
-        <span className="font-mono text-[11px] text-muted-foreground">
-          open →
-        </span>
       </div>
     </>
   )
