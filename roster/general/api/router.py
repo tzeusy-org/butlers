@@ -26,6 +26,8 @@ if _spec is not None and _spec.loader is not None:
 
     Collection = _models.Collection
     Entity = _models.Entity
+    GeneralStats = _models.GeneralStats
+    SizeHistogramBucket = _models.SizeHistogramBucket
 else:
     raise RuntimeError("Failed to load general API models")
 
@@ -53,6 +55,98 @@ def _pool(db: DatabaseManager):
             status_code=503,
             detail="General butler database is not available",
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /stats — aggregated KPIs and size histogram
+# ---------------------------------------------------------------------------
+
+_HISTOGRAM_BRACKETS = ["0", "1-10", "11-100", "101+"]
+
+
+@router.get("/stats", response_model=GeneralStats)
+async def get_stats(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> GeneralStats:
+    """Return aggregated KPIs and collection size histogram.
+
+    - total_collections: number of collections
+    - total_entities: total items across all collections
+    - last_modified_collection: name of the collection with the most-recently
+      modified item (falls back to the most-recently created collection when
+      no items exist)
+    - largest_collection_size: item count of the biggest collection
+    - size_histogram: distribution of collections by item count
+    """
+    pool = _pool(db)
+
+    total_collections: int = await pool.fetchval("SELECT count(*) FROM collections") or 0
+    total_entities: int = await pool.fetchval("SELECT count(*) FROM collection_items") or 0
+
+    last_modified_collection: str | None = await pool.fetchval(
+        """
+        SELECT name FROM (
+            (SELECT c.name, i.updated_at AS ts
+             FROM collection_items i
+             JOIN collections c ON c.id = i.collection_id
+             ORDER BY i.updated_at DESC LIMIT 1)
+            UNION ALL
+            (SELECT name, created_at AS ts
+             FROM collections
+             ORDER BY created_at DESC LIMIT 1)
+        ) sub ORDER BY ts DESC LIMIT 1
+        """
+    )
+
+    largest_collection_size: int = (
+        await pool.fetchval(
+            """
+            SELECT COALESCE(MAX(cnt), 0)
+            FROM (
+                SELECT count(*) AS cnt
+                FROM collection_items
+                GROUP BY collection_id
+            ) sub
+            """
+        )
+        or 0
+    )
+
+    # Build size histogram: count collections per bracket
+    size_rows = await pool.fetch(
+        """
+        SELECT
+            CASE
+                WHEN item_count = 0 THEN '0'
+                WHEN item_count BETWEEN 1 AND 10 THEN '1-10'
+                WHEN item_count BETWEEN 11 AND 100 THEN '11-100'
+                ELSE '101+'
+            END AS bracket,
+            count(*) AS count
+        FROM (
+            SELECT c.id, count(i.id) AS item_count
+            FROM collections c
+            LEFT JOIN collection_items i ON i.collection_id = c.id
+            GROUP BY c.id
+        ) sub
+        GROUP BY bracket
+        """
+    )
+
+    bracket_map: dict[str, int] = {r["bracket"]: r["count"] for r in size_rows}
+    # Always emit all brackets so the histogram shape is predictable for the frontend.
+    size_histogram = [
+        SizeHistogramBucket(bracket=label, count=bracket_map.get(label, 0))
+        for label in _HISTOGRAM_BRACKETS
+    ]
+
+    return GeneralStats(
+        total_collections=total_collections,
+        total_entities=total_entities,
+        last_modified_collection=last_modified_collection,
+        largest_collection_size=largest_collection_size,
+        size_histogram=size_histogram,
+    )
 
 
 # ---------------------------------------------------------------------------

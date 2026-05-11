@@ -28,3 +28,20 @@ class Entity(BaseModel):
     tags: list[str] = []  # JSONB
     created_at: str
     updated_at: str
+
+
+class SizeHistogramBucket(BaseModel):
+    """A bucket in the collection size distribution histogram."""
+
+    bracket: str  # e.g., "0", "1-10", "11-100", "101+"
+    count: int  # number of collections in this bracket
+
+
+class GeneralStats(BaseModel):
+    """Aggregated statistics for the general butler's collections."""
+
+    total_collections: int
+    total_entities: int  # sum of entities across all collections
+    last_modified_collection: str | None  # name of most recently modified collection
+    largest_collection_size: int
+    size_histogram: list[SizeHistogramBucket]
