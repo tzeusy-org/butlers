@@ -280,6 +280,9 @@ import type {
   MessengerQueueDepth,
   MessengerDeadLetterSummary,
   MessengerDeadLettersParams,
+  GeneralCollection,
+  GeneralEntity,
+  GeneralStats,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1282,6 +1285,59 @@ export function getEligibilityHistory(
 ): Promise<ApiResponse<EligibilityHistoryResponse>> {
   return apiFetch<ApiResponse<EligibilityHistoryResponse>>(
     `/switchboard/registry/${encodeURIComponent(name)}/eligibility-history?hours=${hours}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// General butler — collections API (bu-iuol4.30)
+// ---------------------------------------------------------------------------
+
+/** GET /api/general/stats — aggregated KPIs and collection size histogram. */
+export function getGeneralStats(): Promise<GeneralStats> {
+  return apiFetch<GeneralStats>("/general/stats");
+}
+
+export interface GeneralCollectionsParams {
+  q?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/** GET /api/general/collections — list collections with entity counts. */
+export function getGeneralCollections(
+  params?: GeneralCollectionsParams,
+): Promise<PaginatedResponse<GeneralCollection>> {
+  const sp = new URLSearchParams();
+  if (params?.q) sp.set("q", params.q);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<GeneralCollection>>(
+    qs ? `/general/collections?${qs}` : "/general/collections",
+  );
+}
+
+export interface GeneralEntitiesParams {
+  q?: string;
+  collection?: string;
+  tag?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/** GET /api/general/entities — search or list all entities. */
+export function getGeneralEntities(
+  params?: GeneralEntitiesParams,
+): Promise<PaginatedResponse<GeneralEntity>> {
+  const sp = new URLSearchParams();
+  if (params?.q) sp.set("q", params.q);
+  if (params?.collection) sp.set("collection", params.collection);
+  if (params?.tag) sp.set("tag", params.tag);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<GeneralEntity>>(
+    qs ? `/general/entities?${qs}` : "/general/entities",
   );
 }
 

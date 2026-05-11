@@ -154,7 +154,12 @@ export {
   getHomeEnergy,
   getHomeEnergyTopConsumers,
   getHomeCommandLog,
+  getGeneralStats,
+  getGeneralCollections,
+  getGeneralEntities,
 } from "./client.ts";
+
+export type { GeneralCollectionsParams, GeneralEntitiesParams } from "./client.ts";
 
 export type {
   ApiMeta,
@@ -320,6 +325,10 @@ export type {
   GoogleHealthStatusResponse,
   GeneralSettings,
   GeneralSettingsUpdate,
+  GeneralCollection,
+  GeneralEntity,
+  GeneralStats,
+  GeneralSizeHistogramBucket,
   OAuthCredentialState,
   OAuthCredentialStatus,
   OAuthStatusResponse,
