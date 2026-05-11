@@ -587,7 +587,7 @@ describe("ButlerDetailPage — Gate-B B2 localStorage persistence", () => {
 
 describe("ButlerDetailPage — Gate-B B2 getAllTabs helper", () => {
   it("operator mode returns all 10 base tabs + models for a regular butler", () => {
-    const tabs = getAllTabs("general", "operator");
+    const tabs = getAllTabs("other", "operator");
     expect(tabs).toContain("overview");
     expect(tabs).toContain("sessions");
     expect(tabs).toContain("skills");
@@ -596,7 +596,7 @@ describe("ButlerDetailPage — Gate-B B2 getAllTabs helper", () => {
   });
 
   it("resident mode returns 7 dispatch vocabulary tabs for a regular butler", () => {
-    const tabs = getAllTabs("general", "resident");
+    const tabs = getAllTabs("other", "resident");
     expect(tabs).toContain("overview");
     expect(tabs).toContain("activity");
     expect(tabs).toContain("logs");
@@ -608,11 +608,16 @@ describe("ButlerDetailPage — Gate-B B2 getAllTabs helper", () => {
   });
 
   it("resident mode does not include operator-only tabs", () => {
-    const tabs = getAllTabs("general", "resident");
+    const tabs = getAllTabs("other", "resident");
     const operatorOnly = ["sessions", "skills", "schedules", "trigger", "mcp", "state", "crm", "models"];
     for (const tab of operatorOnly) {
       expect(tabs).not.toContain(tab);
     }
+  });
+
+  it("general butler appends the collections tab in both modes", () => {
+    expect(getAllTabs("general", "operator")).toContain("collections");
+    expect(getAllTabs("general", "resident")).toContain("collections");
   });
 
   it("health butler appends the health tab in both modes", () => {

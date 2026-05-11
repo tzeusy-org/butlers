@@ -51,6 +51,7 @@ const EDUCATION_TABS = ["reviews"] as const;
 // Bespoke tabs for domain butlers (stub UI — full implementation tracked separately).
 const CHRONICLER_TABS = ["timelines"] as const;
 const FINANCE_TABS = ["finances"] as const;
+const GENERAL_TABS = ["collections"] as const;
 const HOME_TABS = ["devices"] as const;
 const LIFESTYLE_TABS = ["taste"] as const;
 const MESSENGER_TABS = ["conversations"] as const;
@@ -69,6 +70,7 @@ export type TabValue =
   | (typeof EDUCATION_TABS)[number]
   | (typeof CHRONICLER_TABS)[number]
   | (typeof FINANCE_TABS)[number]
+  | (typeof GENERAL_TABS)[number]
   | (typeof HOME_TABS)[number]
   | (typeof LIFESTYLE_TABS)[number]
   | (typeof MESSENGER_TABS)[number]
@@ -102,6 +104,9 @@ export function getAllTabs(butlerName: string, mode: DetailMode): readonly strin
   }
   if (butlerName === "finance") {
     baseTabs.push(...FINANCE_TABS);
+  }
+  if (butlerName === "general") {
+    baseTabs.push(...GENERAL_TABS);
   }
   if (butlerName === "home") {
     baseTabs.push(...HOME_TABS);

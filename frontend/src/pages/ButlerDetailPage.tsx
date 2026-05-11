@@ -122,6 +122,11 @@ const ButlerMessengerConversationsTab = lazy(
   () => import("@/components/butler-detail/ButlerMessengerConversationsTab.tsx"),
 );
 
+// General butler tabs (lazy)
+const ButlerGeneralCollectionsTab = lazy(
+  () => import("@/components/butler-detail/ButlerGeneralCollectionsTab.tsx"),
+);
+
 // Resident-mode core tabs (lazy)
 const ButlerLogsTab = lazy(
   () => import("@/components/butler-detail/ButlerLogsTab.tsx"),
@@ -430,6 +435,7 @@ export default function ButlerDetailPage() {
     }
   }
 
+  const showCollectionsTab = name === "general";
   const showHealthTab = name === "health";
   const showReviewsTab = name === "education";
   const showTimelinesTab = name === "chronicler";
@@ -493,6 +499,9 @@ export default function ButlerDetailPage() {
             <TabsTrigger value="memory">Memory</TabsTrigger>
             {mode === "operator" && (
               <TabsTrigger value="models">Models</TabsTrigger>
+            )}
+            {showCollectionsTab && (
+              <TabsTrigger value="collections">Collections</TabsTrigger>
             )}
             {showHealthTab && <TabsTrigger value="health">Health</TabsTrigger>}
             {isSwitchboard && (
@@ -606,6 +615,14 @@ export default function ButlerDetailPage() {
               <ButlerModelOverridesTab butlerName={name} />
             </Suspense>
           </TabsContent>
+
+          {showCollectionsTab && (
+            <TabsContent value="collections">
+              <Suspense fallback={<TabFallback label="collections" />}>
+                <ButlerGeneralCollectionsTab />
+              </Suspense>
+            </TabsContent>
+          )}
 
           {showHealthTab && (
             <TabsContent value="health">

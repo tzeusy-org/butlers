@@ -1022,6 +1022,7 @@ export interface GeneralCollection {
   id: string;
   name: string;
   description: string | null;
+  entity_count: number;
   created_at: string;
 }
 
@@ -1034,6 +1035,21 @@ export interface GeneralEntity {
   data: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+/** A bucket in the collection size distribution histogram. */
+export interface GeneralSizeHistogramBucket {
+  bracket: string; // e.g. "0", "1-10", "11-100", "101+"
+  count: number;
+}
+
+/** Aggregated statistics from GET /api/general/stats (bu-iuol4.31). */
+export interface GeneralStats {
+  total_collections: number;
+  total_entities: number;
+  last_modified_collection: string | null;
+  largest_collection_size: number;
+  size_histogram: GeneralSizeHistogramBucket[];
 }
 
 // ---------------------------------------------------------------------------

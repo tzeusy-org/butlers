@@ -6,11 +6,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getEligibilityHistory,
+  getGeneralCollections,
+  getGeneralEntities,
+  getGeneralStats,
   getRegistry,
   getRoutingLog,
   setButlerEligibility,
 } from "@/api/index.ts";
-import type { RoutingLogParams } from "@/api/index.ts";
+import type {
+  GeneralCollectionsParams,
+  GeneralEntitiesParams,
+  RoutingLogParams,
+} from "@/api/index.ts";
 
 /** Fetch the switchboard routing log. */
 export function useRoutingLog(params?: RoutingLogParams) {
@@ -50,5 +57,36 @@ export function useSetEligibility() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["switchboard-registry"] });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// General butler — collections (bu-iuol4.30)
+// ---------------------------------------------------------------------------
+
+/** GET /api/general/stats — aggregated KPIs and size histogram. */
+export function useGeneralStats() {
+  return useQuery({
+    queryKey: ["general-stats"],
+    queryFn: () => getGeneralStats(),
+    refetchInterval: 60_000,
+  });
+}
+
+/** GET /api/general/collections — paginated collection list with entity counts. */
+export function useGeneralCollections(params?: GeneralCollectionsParams) {
+  return useQuery({
+    queryKey: ["general-collections", params],
+    queryFn: () => getGeneralCollections(params),
+    refetchInterval: 60_000,
+  });
+}
+
+/** GET /api/general/entities — search or list all entities. */
+export function useGeneralEntities(params?: GeneralEntitiesParams) {
+  return useQuery({
+    queryKey: ["general-entities", params],
+    queryFn: () => getGeneralEntities(params),
+    refetchInterval: 60_000,
   });
 }
