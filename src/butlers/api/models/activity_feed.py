@@ -23,7 +23,7 @@ class ActivityEvent(BaseModel):
     ----------
     event_type:
         Discriminator field. One of ``"session_completed"``,
-        ``"approval_raised"``, ``"memory_write"``, or ``"draft_created"``.
+        ``"approval_raised"``, or ``"memory_write"``.
     ts:
         Timestamp of the event (source-table column varies by event_type).
     summary:
@@ -35,7 +35,7 @@ class ActivityEvent(BaseModel):
         Source-specific payload with additional context.
     """
 
-    event_type: Literal["session_completed", "approval_raised", "memory_write", "draft_created"]
+    event_type: Literal["session_completed", "approval_raised", "memory_write"]
     ts: datetime
     summary: str
     entity_id: str | None = None

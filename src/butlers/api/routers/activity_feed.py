@@ -21,7 +21,9 @@ application code, then capped at ``limit``.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
+from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
@@ -51,7 +53,7 @@ def _session_to_event(row) -> ActivityEvent:
     summary = (prompt[:120] + "...") if len(prompt) > 120 else prompt
     return ActivityEvent(
         event_type="session_completed",
-        ts=row["completed_at"] or row["started_at"],
+        ts=row["completed_at"],
         summary=summary or "Session completed",
         entity_id=str(row["id"]),
         metadata={
@@ -142,13 +144,15 @@ async def get_activity_feed(
         rows = await pool.fetch(
             "SELECT id, prompt, trigger_source, success, started_at, completed_at, duration_ms "
             "FROM sessions "
-            "ORDER BY completed_at DESC NULLS LAST "
-            f"LIMIT {limit}",
+            "WHERE completed_at IS NOT NULL "
+            "ORDER BY completed_at DESC "
+            "LIMIT $1",
+            limit,
         )
         for row in rows:
             events.append(_session_to_event(row))
-    except Exception:
-        logger.debug("Could not query sessions for butler '%s'", name, exc_info=True)
+    except UndefinedTableError:
+        logger.debug("sessions table not found for butler '%s'; skipping", name)
 
     # --- Pending actions ---
     try:
@@ -156,12 +160,13 @@ async def get_activity_feed(
             "SELECT id, tool_name, agent_summary, status, requested_at, session_id "
             "FROM pending_actions "
             "ORDER BY requested_at DESC "
-            f"LIMIT {limit}",
+            "LIMIT $1",
+            limit,
         )
         for row in rows:
             events.append(_action_to_event(row))
-    except Exception:
-        logger.debug("Could not query pending_actions for butler '%s'", name, exc_info=True)
+    except UndefinedTableError:
+        logger.debug("pending_actions table not found for butler '%s'; skipping", name)
 
     # --- Memory episodes ---
     try:
@@ -169,13 +174,15 @@ async def get_activity_feed(
             "SELECT id, content, importance, consolidation_status, created_at, session_id "
             "FROM episodes "
             "ORDER BY created_at DESC "
-            f"LIMIT {limit}",
+            "LIMIT $1",
+            limit,
         )
         for row in rows:
             events.append(_episode_to_event(row))
-    except Exception:
-        logger.debug("Could not query episodes for butler '%s'", name, exc_info=True)
+    except UndefinedTableError:
+        logger.debug("episodes table not found for butler '%s'; skipping", name)
 
-    # Merge and sort by ts descending, cap at limit
-    events.sort(key=lambda e: e.ts, reverse=True)
+    # Merge and sort by ts descending, cap at limit.
+    # Use a timezone-aware sentinel so naive/aware comparisons never raise.
+    events.sort(key=lambda e: e.ts or datetime.min.replace(tzinfo=UTC), reverse=True)
     return ActivityFeed(events=events[:limit])

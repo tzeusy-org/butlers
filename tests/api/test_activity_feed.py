@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
@@ -129,15 +130,15 @@ def _make_app(
     async def _fetch(sql, *args):
         if "FROM sessions" in sql:
             if sessions_raise:
-                raise Exception("table sessions does not exist")
+                raise UndefinedTableError("table sessions does not exist")
             return session_rows
         elif "FROM pending_actions" in sql:
             if actions_raise:
-                raise Exception("table pending_actions does not exist")
+                raise UndefinedTableError("table pending_actions does not exist")
             return action_rows
         elif "FROM episodes" in sql:
             if episodes_raise:
-                raise Exception("table episodes does not exist")
+                raise UndefinedTableError("table episodes does not exist")
             return episode_rows
         return []
 
