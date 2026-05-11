@@ -308,6 +308,7 @@ async def _get_butler_daily_stats(
 async def get_daily_costs(
     from_date: date | None = Query(None, alias="from"),
     to_date: date | None = Query(None, alias="to"),
+    butler: str | None = Query(None, description="Filter to a single butler by name"),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
@@ -318,6 +319,9 @@ async def get_daily_costs(
     date strings, e.g. ``2026-02-03``).  Both default to the last 7 days
     when omitted.
 
+    When ``butler`` is provided, only that butler's data is included.  An
+    unknown butler name returns an empty 200 response.
+
     The endpoint fans out ``sessions_daily`` MCP calls to every butler,
     then merges per-day results into a single sorted time series.
     """
@@ -325,6 +329,9 @@ async def get_daily_costs(
         to_date = date.today()
     if from_date is None:
         from_date = to_date - timedelta(days=6)
+
+    if butler is not None:
+        configs = [c for c in configs if c.name == butler]
 
     tasks = [
         _get_butler_daily_stats(mgr, info, pricing, from_date.isoformat(), to_date.isoformat())
@@ -419,6 +426,7 @@ async def _get_butler_top_sessions(
 @router.get("/top-sessions", response_model=ApiResponse[list[TopSession]])
 async def get_top_sessions(
     limit: int = Query(default=10, ge=1, le=50),
+    butler: str | None = Query(None, description="Filter to a single butler by name"),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
@@ -428,7 +436,13 @@ async def get_top_sessions(
     Fans out to each butler's ``top_sessions`` MCP tool, merges the results,
     calculates costs using the pricing config, and returns the top *limit*
     sessions sorted by cost descending.
+
+    When ``butler`` is provided, only that butler's data is included.  An
+    unknown butler name returns an empty 200 response.
     """
+    if butler is not None:
+        configs = [c for c in configs if c.name == butler]
+
     tasks = [_get_butler_top_sessions(mgr, info, pricing, limit) for info in configs]
     results = await asyncio.gather(*tasks)
 
@@ -492,11 +506,19 @@ async def _get_butler_schedule_costs(
 
 @router.get("/by-schedule", response_model=ApiResponse[list[ScheduleCost]])
 async def get_costs_by_schedule(
+    butler: str | None = Query(None, description="Filter to a single butler by name"),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[list[ScheduleCost]]:
-    """Return per-schedule cost analysis across all butlers."""
+    """Return per-schedule cost analysis across all butlers.
+
+    When ``butler`` is provided, only that butler's data is included.  An
+    unknown butler name returns an empty 200 response.
+    """
+    if butler is not None:
+        configs = [c for c in configs if c.name == butler]
+
     tasks = [_get_butler_schedule_costs(mgr, info, pricing) for info in configs]
     results = await asyncio.gather(*tasks)
     all_costs = [c for butler_costs in results for c in butler_costs]
