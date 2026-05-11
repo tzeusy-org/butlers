@@ -97,6 +97,11 @@ const ButlerHomeDevicesTab = lazy(
   () => import("@/components/butler-detail/ButlerHomeDevicesTab.tsx"),
 );
 
+// Resident-mode tabs (lazy)
+const ButlerApprovalsTab = lazy(
+  () => import("@/components/butler-detail/ButlerApprovalsTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Page-local constants
 // ---------------------------------------------------------------------------
@@ -575,13 +580,9 @@ export default function ButlerDetailPage() {
           </TabsContent>
 
           <TabsContent value="approvals">
-            <Card>
-              <CardContent className="py-12">
-                <p className="text-muted-foreground text-center text-sm">
-                  Approvals view coming soon.
-                </p>
-              </CardContent>
-            </Card>
+            <Suspense fallback={<Skeleton className="h-[calc(100vh-18rem)] w-full" />}>
+              <ButlerApprovalsTab butlerName={name} />
+            </Suspense>
           </TabsContent>
 
           <TabsContent value="spend">
