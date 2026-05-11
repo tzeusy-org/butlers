@@ -384,13 +384,14 @@ function SourcesPanel({ rows, isLoading, nowMs }: SourcesPanelProps) {
             data-testid="source-health-row"
           >
             <div className="min-w-0">
-              <p className="flex items-center gap-1 font-medium truncate">
-                {label}
+              <p className="flex items-center gap-1 font-medium min-w-0">
+                <span className="truncate">{label}</span>
                 {hasError && (
                   <AlertTriangle
-                    className="inline-block h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+                    className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
                     aria-label={`Source error: ${row.last_error}`}
                     title={row.last_error ?? undefined}
+                    role="img"
                     data-testid="source-error-icon"
                   />
                 )}
