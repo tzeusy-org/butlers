@@ -466,8 +466,11 @@ describe("ButlerHealthMeasurementsTab — sources list", () => {
 
   it("shows source sample counts", () => {
     renderTab();
-    // 1,240 formatted with toLocaleString
-    expect(screen.getByText("1,240")).toBeDefined();
+    // Use a regex tolerant of locale-specific grouping separators.
+    // toLocaleString("en-US", { useGrouping: true }) produces "1,240" in most
+    // test environments but runners with non-en-US locale may differ.
+    // The regex /1.240/ matches the digit sequence regardless of separator char.
+    expect(screen.getByText(/^1.240$/)).toBeDefined();
   });
 
   it("shows 'No sources connected' when empty", () => {
