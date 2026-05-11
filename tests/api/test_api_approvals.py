@@ -277,3 +277,20 @@ async def test_list_actions_unknown_butler_returns_empty(app):
     body = resp.json()
     assert body["data"] == []
     assert body["meta"]["total"] == 0
+
+
+async def test_list_executed_actions_butler_filter(app):
+    """?butler= param on /actions/executed returns only that butler's rows."""
+    home_action = _make_action(tool_name="notify", status="executed")
+    general_action = _make_action(tool_name="send_telegram", status="executed")
+    app = _app_with_two_butlers(app, home_rows=[home_action], general_rows=[general_action])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions/executed?butler=home")
+    assert resp.status_code == 200
+    body = resp.json()
+    actions = body["data"]
+    assert len(actions) == 1
+    assert actions[0]["butler"] == "home"
+    assert actions[0]["tool_name"] == "notify"

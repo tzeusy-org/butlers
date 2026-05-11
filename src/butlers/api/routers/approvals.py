@@ -270,6 +270,13 @@ async def list_actions(
     which butler owns the action.
     """
     # Resolve target (butler_name, pool) pairs — filter to one butler when set.
+    # Short-circuit: if butler param is given and not a known butler, return empty immediately
+    # without scanning all pools. Avoids catalog load proportional to roster size.
+    if butler is not None and butler not in db_mgr.butler_names:
+        return PaginatedResponse(
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        )
     named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
     if butler is not None:
         named_target_pools = [(n, p) for n, p in named_pools if n == butler]
@@ -359,10 +366,25 @@ async def list_executed_actions(
     rule_id: str | None = Query(default=None),
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
+    butler: str | None = Query(default=None),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalAction]:
-    """List executed actions for audit review."""
-    named_target_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    """List executed actions for audit review.
+
+    When ``butler`` is supplied, only that butler's executed actions are returned.
+    Without it, executed actions are aggregated across all butlers.
+    """
+    if butler is not None and butler not in db_mgr.butler_names:
+        return PaginatedResponse(
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        )
+    all_named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    named_target_pools = (
+        [(n, p) for n, p in all_named_pools if n == butler]
+        if butler is not None
+        else all_named_pools
+    )
 
     if not named_target_pools:
         return PaginatedResponse(
@@ -424,7 +446,9 @@ async def list_executed_actions(
         except Exception:
             logger.warning("Failed to query executed actions from a pool", exc_info=True)
 
-    all_rows.sort(key=lambda pair: pair[1]["decided_at"] or datetime.min, reverse=True)
+    all_rows.sort(
+        key=lambda pair: pair[1]["decided_at"] or datetime.min.replace(tzinfo=UTC), reverse=True
+    )
     page_rows = all_rows[offset : offset + limit]
 
     actions = []
