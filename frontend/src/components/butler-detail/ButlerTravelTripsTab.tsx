@@ -36,7 +36,6 @@ import { useUpcomingTravel, useTravelTrips, useTravelTripSummary } from "@/hooks
 import type {
   TravelLeg,
   TravelAccommodation,
-  TravelPreTripAction,
   TravelTimelineEntry,
   TravelTrip,
   TravelUpcomingTrip,
