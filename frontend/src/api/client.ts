@@ -2331,6 +2331,7 @@ export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
 
 import type {
   AnalyticsSnapshot,
+  AnalyticsTrendResponse,
   CrossTopicAnalytics,
   CurriculumRequestBody,
   CurriculumRequestResponse,
@@ -2341,6 +2342,7 @@ import type {
   PendingReviewNode,
   QuizResponse,
   QuizResponseParams,
+  StrugglingNodesResponse,
   TeachingFlow,
 } from "./types.ts";
 
@@ -2464,6 +2466,32 @@ export function requestEducationCurriculum(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Get analytics trend time-series for a mind map (dedicated /analytics/trend endpoint).
+ *
+ * Wraps GET /api/education/mind-maps/{id}/analytics/trend?days={days}.
+ * Snapshots are ordered oldest-first within the requested day window.
+ */
+export function getEducationMindMapAnalyticsTrend(
+  mindMapId: string,
+  days: number = 7,
+): Promise<AnalyticsTrendResponse> {
+  return apiFetch<AnalyticsTrendResponse>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}/analytics/trend?days=${days}`,
+  );
+}
+
+/** Get struggling nodes for a mind map (nodes with declining or low mastery).
+ *
+ * Wraps GET /api/education/mind-maps/{id}/struggling-nodes.
+ */
+export function getEducationMindMapStrugglingNodes(
+  mindMapId: string,
+): Promise<StrugglingNodesResponse> {
+  return apiFetch<StrugglingNodesResponse>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}/struggling-nodes`,
+  );
 }
 
 // ---------------------------------------------------------------------------

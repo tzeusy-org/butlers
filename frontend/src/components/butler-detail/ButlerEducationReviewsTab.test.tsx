@@ -1,17 +1,24 @@
 // @vitest-environment jsdom
 /**
- * ButlerEducationReviewsTab — RTL tests pinning the three sections.
+ * ButlerEducationReviewsTab — RTL tests for the redesigned 4-col panel grid.
+ *
+ * Layout (3 rows):
+ *  Row 1: 4 KPI cells — total cards, mastered count, overdue count, avg mastery score
+ *  Row 2: mind maps progress + pending reviews timeline
+ *  Row 3: frontier nodes + 7d retention trend
  *
  * Tests:
- *  - Renders three sections (mastery KPI strip, review timeline, frontier)
- *  - Timeline sections grouped by Overdue / Today / This Week / Later
- *  - Color-coded left borders on each timeline group section
- *  - Empty states are shown explicitly when data is empty (no infinite spinner)
- *  - KPI values render with data
- *  - Review items link to /education
- *  - Frontier items appear when data is present
+ *  - KPI quartet renders all four cells
+ *  - KPI aggregation (total_nodes, mastered_count, overdue, avg mastery)
+ *  - Mind maps progress panel renders and handles empty state
+ *  - Review timeline grouping (Overdue / Today / This Week / Later)
+ *  - Review timeline color-coded left borders
+ *  - Empty states are explicit (no infinite spinner)
+ *  - Frontier list renders items
+ *  - Retention chart renders with data / empty state
+ *  - No fixed 5-map cap
  *
- * bead: bu-3cujw.1, bu-1zefq
+ * bead: bu-iuol4.26
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -30,6 +37,7 @@ vi.mock("@/hooks/use-education", () => ({
   useAllPendingReviews: vi.fn(),
   useAllMasterySummaries: vi.fn(),
   useAllFrontierNodes: vi.fn(),
+  useMindMapAnalyticsTrend: vi.fn(),
 }));
 
 import {
@@ -37,10 +45,11 @@ import {
   useAllPendingReviews,
   useAllMasterySummaries,
   useAllFrontierNodes,
+  useMindMapAnalyticsTrend,
 } from "@/hooks/use-education";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Fixtures
 // ---------------------------------------------------------------------------
 
 const ACTIVE_MAPS = [
@@ -140,6 +149,20 @@ const FRONTIER_NODES = [
   },
 ];
 
+const TREND_DATA = {
+  mind_map_id: "map-1",
+  days: 7,
+  trend: [
+    { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-05", metrics: { mastery_pct: 0.40 }, created_at: "2026-05-05T00:00:00Z" },
+    { id: "t2", mind_map_id: "map-1", snapshot_date: "2026-05-06", metrics: { mastery_pct: 0.45 }, created_at: "2026-05-06T00:00:00Z" },
+    { id: "t3", mind_map_id: "map-1", snapshot_date: "2026-05-07", metrics: { mastery_pct: 0.50 }, created_at: "2026-05-07T00:00:00Z" },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
@@ -155,7 +178,7 @@ function renderTab() {
 }
 
 // ---------------------------------------------------------------------------
-// Default mock setup: one active map with data
+// Default mock setups
 // ---------------------------------------------------------------------------
 
 function setupWithData() {
@@ -164,7 +187,6 @@ function setupWithData() {
     isLoading: false,
   } as unknown as ReturnType<typeof useMindMaps>);
 
-  // useAllPendingReviews returns an array of results, one per map ID.
   vi.mocked(useAllPendingReviews).mockImplementation((mapIds) =>
     mapIds.map((id) =>
       id === "map-1"
@@ -192,6 +214,12 @@ function setupWithData() {
         : ({ data: [], isLoading: false } as unknown as ReturnType<typeof useAllFrontierNodes>[number]),
     ),
   );
+
+  vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+    data: TREND_DATA,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
 }
 
 function setupEmpty() {
@@ -200,10 +228,15 @@ function setupEmpty() {
     isLoading: false,
   } as unknown as ReturnType<typeof useMindMaps>);
 
-  // No maps → hooks receive empty arrays → return empty arrays.
   vi.mocked(useAllPendingReviews).mockReturnValue([]);
   vi.mocked(useAllMasterySummaries).mockReturnValue([]);
   vi.mocked(useAllFrontierNodes).mockReturnValue([]);
+
+  vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
 }
 
 function setupLoading() {
@@ -212,18 +245,22 @@ function setupLoading() {
     isLoading: true,
   } as ReturnType<typeof useMindMaps>);
 
-  // When maps are still loading, the aggregate hooks receive an empty mapIds
-  // array and return []. isLoading from useMindMaps drives the overall state.
   vi.mocked(useAllPendingReviews).mockReturnValue([]);
   vi.mocked(useAllMasterySummaries).mockReturnValue([]);
   vi.mocked(useAllFrontierNodes).mockReturnValue([]);
+
+  vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+  } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
 }
 
 // ---------------------------------------------------------------------------
-// Tests: three sections are rendered
+// Tests: all panel sections are rendered
 // ---------------------------------------------------------------------------
 
-describe("ButlerEducationReviewsTab — three sections present", () => {
+describe("ButlerEducationReviewsTab — panel sections present", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
@@ -231,9 +268,15 @@ describe("ButlerEducationReviewsTab — three sections present", () => {
 
   afterEach(() => cleanup());
 
-  it("renders the mastery KPI strip section", () => {
+  it("renders the KPI strip section", () => {
     renderTab();
     expect(screen.getByTestId("mastery-kpi-strip")).toBeDefined();
+  });
+
+  it("renders 4 KPI cells", () => {
+    renderTab();
+    const kpiValues = screen.getAllByTestId("kpi-value");
+    expect(kpiValues.length).toBe(4);
   });
 
   it("renders the review timeline section", () => {
@@ -241,18 +284,29 @@ describe("ButlerEducationReviewsTab — three sections present", () => {
     expect(screen.getByTestId("reviews-timeline-section")).toBeDefined();
   });
 
+  it("renders the mind maps progress panel", () => {
+    renderTab();
+    expect(screen.getByTestId("mind-maps-progress-panel")).toBeDefined();
+  });
+
   it("renders the frontier section", () => {
     renderTab();
     expect(screen.getByTestId("reviews-frontier-section")).toBeDefined();
   });
 
-  it("renders all three KPI labels", () => {
+  it("renders the retention trend panel", () => {
+    renderTab();
+    expect(screen.getByTestId("retention-trend-panel")).toBeDefined();
+  });
+
+  it("renders all KPI labels (total cards, mastered, overdue, avg mastery)", () => {
     renderTab();
     expect(screen.getByText("Total cards")).toBeDefined();
     expect(screen.getByText("Mastered")).toBeDefined();
-    // "Overdue" appears as both a KPI label and a timeline section title when there are overdue items
+    // "Overdue" appears as both a KPI label and a timeline section title
     const overdueElements = screen.getAllByText("Overdue");
     expect(overdueElements.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Avg mastery")).toBeDefined();
   });
 });
 
@@ -270,9 +324,8 @@ describe("ButlerEducationReviewsTab — KPI values aggregate across maps", () =>
 
   it("aggregates total_nodes across maps (25 + 15 = 40)", () => {
     renderTab();
-    // KPI strip values rendered with data-testid="kpi-value"
     const kpiValues = screen.getAllByTestId("kpi-value");
-    // First KPI is Total cards = 40
+    // KPI order: total cards, mastered, overdue, avg mastery
     expect(kpiValues[0].textContent).toBe("40");
   });
 
@@ -281,10 +334,66 @@ describe("ButlerEducationReviewsTab — KPI values aggregate across maps", () =>
     const kpiValues = screen.getAllByTestId("kpi-value");
     expect(kpiValues[1].textContent).toBe("15");
   });
+
+  it("shows overdue count for overdue items (2 overdue in fixture)", () => {
+    renderTab();
+    const kpiValues = screen.getAllByTestId("kpi-value");
+    // 2 items are overdue in PENDING_REVIEWS (node-abc and node-def)
+    expect(kpiValues[2].textContent).toBe("2");
+  });
+
+  it("shows avg mastery score as percentage", () => {
+    renderTab();
+    const kpiValues = screen.getAllByTestId("kpi-value");
+    // weighted avg of 0.65*25 and 0.5*15 over 40 total = (16.25+7.5)/40 = 23.75/40 = 59%
+    expect(kpiValues[3].textContent).toBe("59%");
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Review timeline grouping
+// Tests: mind maps progress panel
+// ---------------------------------------------------------------------------
+
+describe("ButlerEducationReviewsTab — mind maps progress panel", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders a progress row for each active mind map", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("mind-map-progress-row");
+    expect(rows.length).toBe(2);
+  });
+
+  it("renders Python and Calculus map titles", () => {
+    renderTab();
+    // Both maps appear (may appear multiple times as map title + review badge context)
+    expect(screen.getAllByText("Python").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Calculus").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders progress bars for maps with mastery data", () => {
+    renderTab();
+    const bars = screen.getAllByTestId("mastery-progress-bar");
+    expect(bars.length).toBe(2);
+  });
+
+  it("shows empty state when no active maps exist", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    renderTab();
+    // Empty state message in the mind maps progress panel
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByTestId("mind-maps-list")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: review timeline grouping
 // ---------------------------------------------------------------------------
 
 describe("ButlerEducationReviewsTab — review timeline grouping", () => {
@@ -298,7 +407,6 @@ describe("ButlerEducationReviewsTab — review timeline grouping", () => {
   it("renders the Overdue section for past-due items", () => {
     renderTab();
     expect(screen.getByTestId("reviews-overdue-section")).toBeDefined();
-    // Both overdue items should be visible
     expect(screen.getByText("List comprehensions")).toBeDefined();
     expect(screen.getByText("Decorators")).toBeDefined();
   });
@@ -308,7 +416,6 @@ describe("ButlerEducationReviewsTab — review timeline grouping", () => {
     const todaySection = screen.getByTestId("reviews-today-section");
     expect(todaySection).toBeDefined();
     expect(screen.getByText("Type hints")).toBeDefined();
-    // Amber left border indicates Today bucket
     const content = todaySection.querySelector("[class*='border-l-amber']");
     expect(content).not.toBeNull();
   });
@@ -328,7 +435,6 @@ describe("ButlerEducationReviewsTab — review timeline grouping", () => {
   it("overdue section has red left border class", () => {
     renderTab();
     const overdueSection = screen.getByTestId("reviews-overdue-section");
-    // CardContent inside has the border class
     const content = overdueSection.querySelector("[class*='border-l-red']");
     expect(content).not.toBeNull();
   });
@@ -374,7 +480,149 @@ describe("ButlerEducationReviewsTab — frontier list", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: empty states are explicit (no infinite spinner)
+// Tests: Retention 7d trend chart
+// ---------------------------------------------------------------------------
+
+describe("ButlerEducationReviewsTab — retention trend chart", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders the retention chart when trend data is present", () => {
+    renderTab();
+    expect(screen.getByTestId("retention-chart")).toBeDefined();
+  });
+
+  it("renders the retention sparkline", () => {
+    renderTab();
+    expect(screen.getByTestId("retention-sparkline")).toBeDefined();
+  });
+
+  it("shows latest retention value (50% from last trend snapshot)", () => {
+    renderTab();
+    const latestValue = screen.getByTestId("retention-latest-value");
+    expect(latestValue.textContent).toBe("50%");
+  });
+
+  it("shows empty state when no trend data", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: { mind_map_id: "map-1", days: 7, trend: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    expect(screen.queryByTestId("retention-chart")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows error state when trend fetch fails", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    expect(screen.queryByTestId("retention-chart")).toBeNull();
+    const errorLines = screen.getAllByTestId("error-state-line");
+    expect(errorLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("calls useMindMapAnalyticsTrend with the first active map id and 7 days", () => {
+    renderTab();
+    expect(vi.mocked(useMindMapAnalyticsTrend)).toHaveBeenCalledWith("map-1", 7);
+  });
+
+  // ---------------------------------------------------------------------------
+  // extractMasteryPct fallback key tests (bu-8mtqt follow-up coverage)
+  //
+  // The function tries mastery_pct → mastered_pct → mastery_percent in order.
+  // All three must produce a valid chart value; unknown keys must return null
+  // and be excluded from chartData.
+  // ---------------------------------------------------------------------------
+
+  it("renders retention value when trend uses mastered_pct key (fallback form 2)", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { mastered_pct: 0.72 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    const latestValue = screen.getByTestId("retention-latest-value");
+    expect(latestValue.textContent).toBe("72%");
+  });
+
+  it("renders retention value when trend uses mastery_percent key (fallback form 3)", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { mastery_percent: 0.88 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    const latestValue = screen.getByTestId("retention-latest-value");
+    expect(latestValue.textContent).toBe("88%");
+  });
+
+  it("shows empty state when metrics contain no known mastery key", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { unknown_key: 0.5 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    // All entries filtered → chartData empty → empty state shown
+    expect(screen.queryByTestId("retention-chart")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("clamps mastery_pct already expressed as percentage (>1 value → no multiply by 100)", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { mastery_pct: 65 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    const latestValue = screen.getByTestId("retention-latest-value");
+    expect(latestValue.textContent).toBe("65%");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: explicit empty states (no infinite spinner)
 // ---------------------------------------------------------------------------
 
 describe("ButlerEducationReviewsTab — explicit empty states", () => {
@@ -392,7 +640,6 @@ describe("ButlerEducationReviewsTab — explicit empty states", () => {
     expect(screen.queryByTestId("reviews-today-section")).toBeNull();
     expect(screen.queryByTestId("reviews-this-week-section")).toBeNull();
     expect(screen.queryByTestId("reviews-later-section")).toBeNull();
-    // Empty state lines appear (at least one for reviews)
     const emptyLines = screen.getAllByTestId("empty-state-line");
     expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
@@ -407,15 +654,20 @@ describe("ButlerEducationReviewsTab — explicit empty states", () => {
   it("renders KPI strip even when no maps exist (shows dashes)", () => {
     renderTab();
     expect(screen.getByTestId("mastery-kpi-strip")).toBeDefined();
-    // With no maps, total nodes and mastered show "—"
     const kpiValues = screen.getAllByTestId("kpi-value");
+    // Total cards and mastered show "—" with no maps
     expect(kpiValues[0].textContent).toBe("—");
     expect(kpiValues[1].textContent).toBe("—");
+  });
+
+  it("renders mind maps empty state when no maps exist", () => {
+    renderTab();
+    expect(screen.queryByTestId("mind-maps-list")).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: loading state shows placeholder, not empty-state text
+// Tests: loading state
 // ---------------------------------------------------------------------------
 
 describe("ButlerEducationReviewsTab — loading state", () => {
@@ -428,7 +680,6 @@ describe("ButlerEducationReviewsTab — loading state", () => {
 
   it("shows loading placeholders instead of empty-state lines while queries are pending", () => {
     renderTab();
-    // Loading lines appear — no empty-state text while loading
     const loadingLines = screen.getAllByTestId("loading-line");
     expect(loadingLines.length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByTestId("empty-state-line")).toBeNull();
@@ -449,7 +700,7 @@ describe("ButlerEducationReviewsTab — loading state", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: all active mind maps contribute (no fixed 5-map cap)
+// Tests: no fixed 5-map cap
 // ---------------------------------------------------------------------------
 
 describe("ButlerEducationReviewsTab — no fixed 5-map cap", () => {
@@ -510,27 +761,37 @@ describe("ButlerEducationReviewsTab — no fixed 5-map cap", () => {
     vi.mocked(useAllFrontierNodes).mockImplementation((mapIds) =>
       mapIds.map(() => ({ data: [], isLoading: false } as unknown as ReturnType<typeof useAllFrontierNodes>[number])),
     );
+
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: { mind_map_id: "map-1", days: 7, trend: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
   });
 
   afterEach(() => cleanup());
 
   it("passes all 6 map IDs to the aggregate hooks (not capped at 5)", () => {
     renderTab();
-    // If the old 5-cap were still present, map-6's review would not appear.
     expect(screen.getByText("Hiragana basics")).toBeDefined();
   });
 
-  it("aggregates KPI totals from all 6 maps including map-6 (0+0+0+0+0+8 = 8 total nodes)", () => {
+  it("aggregates KPI totals from all 6 maps including map-6 (only map-6 has mastery → 8 nodes)", () => {
     renderTab();
     const kpiValues = screen.getAllByTestId("kpi-value");
-    // Only map-6 has a mastery summary in this setup → total_nodes = 8
     expect(kpiValues[0].textContent).toBe("8");
     expect(kpiValues[1].textContent).toBe("2");
+  });
+
+  it("renders progress rows for all 6 mind maps", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("mind-map-progress-row");
+    expect(rows.length).toBe(6);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: getAllTabs includes education reviews tab
+// Tests: education reviews tab in getAllTabs
 // ---------------------------------------------------------------------------
 
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";

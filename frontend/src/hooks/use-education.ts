@@ -7,7 +7,9 @@ import {
   getEducationMasterySummary,
   getEducationMindMap,
   getEducationMindMapAnalytics,
+  getEducationMindMapAnalyticsTrend,
   getEducationMindMapFrontier,
+  getEducationMindMapStrugglingNodes,
   getEducationMindMaps,
   getEducationPendingReviews,
   getEducationQuizResponses,
@@ -238,6 +240,46 @@ export function useUpdateMindMapStatus() {
       qc.invalidateQueries({ queryKey: ["education", "mind-maps"] });
       qc.invalidateQueries({ queryKey: ["education", "mind-map"] });
     },
+  });
+}
+
+/**
+ * Fetch the analytics trend time-series for a single mind map.
+ *
+ * Wraps GET /api/education/mind-maps/{id}/analytics/trend?days={days}.
+ * Snapshots are ordered oldest-first, suitable for a sparkline chart.
+ *
+ * The query is disabled when mindMapId is null or empty.
+ */
+export function useMindMapAnalyticsTrend(mindMapId: string | null, days: number = 7) {
+  return useQuery({
+    queryKey: ["education", "analytics-trend", mindMapId, days],
+    queryFn: () => getEducationMindMapAnalyticsTrend(mindMapId!, days),
+    enabled: !!mindMapId,
+    refetchInterval: 60_000,
+    // Align staleTime with the polling interval so window-focus/mount refetches
+    // don't fire extra requests between poll cycles (same rationale as
+    // useAllPendingReviews / useAllMasterySummaries).
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * Fetch struggling nodes for a single mind map.
+ *
+ * Wraps GET /api/education/mind-maps/{id}/struggling-nodes.
+ * Returns nodes with declining or consistently low mastery scores.
+ *
+ * The query is disabled when mindMapId is null or empty.
+ */
+export function useMindMapStrugglingNodes(mindMapId: string | null) {
+  return useQuery({
+    queryKey: ["education", "struggling-nodes", mindMapId],
+    queryFn: () => getEducationMindMapStrugglingNodes(mindMapId!),
+    enabled: !!mindMapId,
+    refetchInterval: 60_000,
+    // Align staleTime with the polling interval (see useMindMapAnalyticsTrend).
+    staleTime: 60_000,
   });
 }
 
