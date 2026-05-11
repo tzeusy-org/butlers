@@ -7,6 +7,8 @@ endpoints.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -93,3 +95,68 @@ class Research(BaseModel):
     condition_id: str | None = None
     created_at: str
     updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# Measurements — latest-by-type, sleep, sources
+# ---------------------------------------------------------------------------
+
+
+class LatestMeasurementEntry(BaseModel):
+    """Latest measurement row for a single type.
+
+    ``value`` is the raw JSONB from the measurements table — may be a scalar
+    wrapper ``{"value": X}`` or a compound dict (e.g. blood pressure).
+    ``unit`` and ``metadata`` are absent on this table; they are ``None``.
+    """
+
+    measured_at: str
+    value: Any  # JSONB from DB — scalar or compound dict
+    unit: str | None = None
+    metadata: dict | None = None
+
+
+class LatestMeasurementsResponse(BaseModel):
+    """Response for GET /measurements/latest?types=X,Y,Z.
+
+    Keys are the requested type strings.  A key maps to ``None`` when no row
+    exists for that type.
+    """
+
+    measurements: dict[str, LatestMeasurementEntry | None]
+
+
+class SleepStage(BaseModel):
+    """A single sleep-stage entry in a sleep session."""
+
+    kind: str  # deep | light | rem | awake
+    minutes: int
+
+
+class SleepSessionResponse(BaseModel):
+    """Response for GET /measurements/sleep/latest.
+
+    Derived from the ``sleep_session`` fact stored by the Google Health
+    connector.  ``total_duration_minutes`` is computed from
+    ``metadata.duration_ms``.  ``stages`` is populated from
+    ``metadata.stages`` when present.
+    """
+
+    session_start: str
+    session_end: str | None = None
+    total_duration_minutes: int
+    stages: list[SleepStage] = []
+
+
+class MeasurementSource(BaseModel):
+    """A single data-source entry observed across measurements."""
+
+    name: str
+    last_sample_at: str
+    sample_count: int
+
+
+class MeasurementSourcesResponse(BaseModel):
+    """Response for GET /measurements/sources."""
+
+    sources: list[MeasurementSource]

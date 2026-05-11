@@ -28,10 +28,16 @@ if _spec is not None and _spec.loader is not None:
 
     Condition = _models.Condition
     Dose = _models.Dose
+    LatestMeasurementEntry = _models.LatestMeasurementEntry
+    LatestMeasurementsResponse = _models.LatestMeasurementsResponse
     Meal = _models.Meal
     Measurement = _models.Measurement
+    MeasurementSource = _models.MeasurementSource
+    MeasurementSourcesResponse = _models.MeasurementSourcesResponse
     Medication = _models.Medication
     Research = _models.Research
+    SleepSessionResponse = _models.SleepSessionResponse
+    SleepStage = _models.SleepStage
     Symptom = _models.Symptom
 
 logger = logging.getLogger(__name__)
@@ -514,3 +520,186 @@ async def list_research(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /measurements/latest — latest row per requested type
+# ---------------------------------------------------------------------------
+
+
+@router.get("/measurements/latest", response_model=LatestMeasurementsResponse)
+async def get_measurements_latest(
+    types: str = Query(..., description="Comma-separated list of measurement types"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> LatestMeasurementsResponse:
+    """Return the latest measurement row for each requested type.
+
+    Types are provided as a comma-separated query string, e.g.
+    ``?types=weight,heart_rate``.  Types with no data map to ``null``.
+
+    SQL uses ``DISTINCT ON (type)`` to retrieve one row per type in a
+    single round-trip.  The pool is butler-scoped — no butler_name filter
+    is applied.
+    """
+    pool = _pool(db)
+
+    type_list = [t.strip() for t in types.split(",") if t.strip()]
+    if not type_list:
+        return LatestMeasurementsResponse(measurements={})
+
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (type) type, value, measured_at
+        FROM measurements
+        WHERE type = ANY($1::text[])
+        ORDER BY type, measured_at DESC
+        """,
+        type_list,
+    )
+
+    result: dict[str, LatestMeasurementEntry | None] = {t: None for t in type_list}
+    for r in rows:
+        raw_value = r["value"]
+        if isinstance(raw_value, str):
+            try:
+                raw_value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                raw_value = {}
+        result[r["type"]] = LatestMeasurementEntry(
+            measured_at=str(r["measured_at"]),
+            value=raw_value,
+        )
+
+    return LatestMeasurementsResponse(measurements=result)
+
+
+# ---------------------------------------------------------------------------
+# GET /measurements/sleep/latest — most recent sleep session
+# ---------------------------------------------------------------------------
+
+# Stage-name normalisation: Google Health returns camelCase or underscore keys.
+_SLEEP_STAGE_ALIASES: dict[str, str] = {
+    "deep": "deep",
+    "deep_sleep": "deep",
+    "deepSleep": "deep",
+    "light": "light",
+    "light_sleep": "light",
+    "lightSleep": "light",
+    "rem": "rem",
+    "rem_sleep": "rem",
+    "remSleep": "rem",
+    "awake": "awake",
+    "wake": "awake",
+}
+
+
+def _parse_sleep_stages(stages: dict | None) -> list[SleepStage]:
+    """Convert a raw stages dict from fact metadata into SleepStage entries."""
+    if not stages or not isinstance(stages, dict):
+        return []
+    result: list[SleepStage] = []
+    for raw_kind, raw_minutes in stages.items():
+        kind = _SLEEP_STAGE_ALIASES.get(raw_kind)
+        if kind is None:
+            continue
+        try:
+            minutes = int(raw_minutes)
+        except (TypeError, ValueError):
+            continue
+        result.append(SleepStage(kind=kind, minutes=minutes))
+    return result
+
+
+@router.get("/measurements/sleep/latest", response_model=SleepSessionResponse | None)
+async def get_sleep_latest(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> SleepSessionResponse | None:
+    """Return the most recent sleep session.
+
+    Sleep data is stored in the ``facts`` table by the Google Health
+    connector using predicate ``sleep_session``.  ``total_duration_minutes``
+    is derived from ``metadata.duration_ms``.  Returns HTTP 200 with a JSON
+    ``null`` body when no sleep session exists yet.
+
+    The pool is butler-scoped — no butler_name filter is applied.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        """
+        SELECT id, valid_at, metadata
+        FROM facts
+        WHERE predicate = 'sleep_session'
+          AND validity = 'active'
+          AND scope = 'health'
+        ORDER BY valid_at DESC
+        LIMIT 1
+        """
+    )
+
+    if row is None:
+        return None
+
+    meta = _as_json_object(row["metadata"])
+
+    duration_ms = int(meta.get("duration_ms") or 0)
+    total_duration_minutes = duration_ms // 60_000 if duration_ms > 0 else 0
+
+    stages = _parse_sleep_stages(meta.get("stages"))
+
+    session_start = str(row["valid_at"])
+    end_time = meta.get("end_time")
+    session_end = str(end_time) if end_time else None
+
+    return SleepSessionResponse(
+        session_start=session_start,
+        session_end=session_end,
+        total_duration_minutes=total_duration_minutes,
+        stages=stages,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /measurements/sources — data sources observed in measurements.value
+# ---------------------------------------------------------------------------
+
+
+@router.get("/measurements/sources", response_model=MeasurementSourcesResponse)
+async def get_measurements_sources(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> MeasurementSourcesResponse:
+    """Return all data sources observed across measurements.
+
+    The ``measurements`` table stores compound JSONB values.  When a row's
+    ``value`` JSONB contains a ``"source"`` key, that value is treated as the
+    source name.  Rows without a ``"source"`` key are excluded.
+
+    The pool is butler-scoped — no butler_name filter is applied.
+    """
+    pool = _pool(db)
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            value->>'source'  AS name,
+            MAX(measured_at)  AS last_sample_at,
+            COUNT(*)          AS sample_count
+        FROM measurements
+        WHERE value ? 'source'
+          AND value->>'source' IS NOT NULL
+          AND value->>'source' <> ''
+        GROUP BY value->>'source'
+        ORDER BY last_sample_at DESC
+        """
+    )
+
+    sources = [
+        MeasurementSource(
+            name=r["name"],
+            last_sample_at=str(r["last_sample_at"]),
+            sample_count=int(r["sample_count"]),
+        )
+        for r in rows
+    ]
+
+    return MeasurementSourcesResponse(sources=sources)
