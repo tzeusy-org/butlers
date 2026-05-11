@@ -17,8 +17,8 @@ Table shape
 - ``source``     — Optional logger / subsystem name.
 - ``request_id`` — Optional UUID tying the line to a session request.
 - ``metadata``   — Optional JSONB bag for structured fields.
-- ``created_at`` — Row insertion timestamp (matches ``ts`` for sync writes;
-                   may differ slightly for async-buffered writes).
+- ``created_at`` — Row insertion timestamp (matches ``ts`` for awaited writes;
+                   may differ slightly when written via fire-and-forget tasks).
 
 Indexes
 -------

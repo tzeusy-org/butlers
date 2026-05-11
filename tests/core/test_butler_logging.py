@@ -66,6 +66,26 @@ def test_level_rank_unknown():
 
 
 # ---------------------------------------------------------------------------
+# ButlerLogger __init__ validation
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_min_level_raises() -> None:
+    """Passing an invalid min_level to ButlerLogger raises ValueError."""
+    pool, _ = _make_pool()
+    with pytest.raises(ValueError, match="Invalid min_level"):
+        ButlerLogger(pool=pool, schema="general", min_level="TRACE")
+
+
+def test_valid_min_levels_accepted() -> None:
+    """All four documented levels are accepted as min_level."""
+    pool, _ = _make_pool()
+    for level in ("DEBUG", "INFO", "WARN", "ERROR"):
+        bl = ButlerLogger(pool=pool, schema="general", min_level=level)
+        assert bl is not None
+
+
+# ---------------------------------------------------------------------------
 # Write propagation
 # ---------------------------------------------------------------------------
 

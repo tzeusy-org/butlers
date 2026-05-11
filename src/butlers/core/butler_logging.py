@@ -14,8 +14,8 @@ Rationale:
   level to stderr via the stdlib logger).  This matches the principle that
   structured logs are observability data, not a transaction log.
 
-Buffer flush cadence: N/A — no buffer.  Each ``log()`` call schedules one
-``CREATE TASK`` immediately.
+Buffer flush cadence: N/A — no buffer.  Each ``log_nowait()`` call schedules
+one ``create_task`` immediately; ``log()`` awaits ``_write()`` directly.
 
 Retention policy: no automatic vacuum or partition.  Retention is handled
 out-of-band by the operator (cron delete, pg_partman, or table truncation).
@@ -76,9 +76,14 @@ class ButlerLogger:
         schema: str,
         min_level: str = "INFO",
     ) -> None:
+        norm_min = min_level.upper()
+        if norm_min not in _VALID_LEVELS:
+            raise ValueError(
+                f"Invalid min_level {min_level!r}. Must be one of: {', '.join(_LEVEL_ORDER)}"
+            )
         self._pool = pool
         self._schema = schema
-        self._min_rank = _level_rank(min_level)
+        self._min_rank = _level_rank(norm_min)
 
     # ------------------------------------------------------------------
     # Public API
