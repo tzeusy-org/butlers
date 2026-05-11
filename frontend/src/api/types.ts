@@ -2679,6 +2679,7 @@ export interface DunbarEntry {
   warmth?: number | null;
   avatar_url?: string | null;
   aliases?: string[];
+  last_interaction_at?: string | null;
 }
 
 /** Response from GET /api/relationship/dunbar/ranking */

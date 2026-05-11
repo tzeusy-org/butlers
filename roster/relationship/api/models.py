@@ -369,6 +369,9 @@ class DunbarEntry(BaseModel):
     The ``warmth`` field uses the same formula as ``ContactSummary.warmth``
     (see docstring there) but is always computed in the ranking endpoint since
     Dunbar tier context is already available.
+
+    ``last_interaction_at`` is the timestamp of the most recent interaction
+    fact for this contact, or None if no interactions have been recorded.
     """
 
     contact_id: UUID
@@ -380,6 +383,7 @@ class DunbarEntry(BaseModel):
     avatar_url: str | None = None
     aliases: list[str] = Field(default_factory=list)
     warmth: float | None = None
+    last_interaction_at: datetime | None = None
 
 
 class DunbarRankingResponse(BaseModel):

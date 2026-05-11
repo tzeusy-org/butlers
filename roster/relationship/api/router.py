@@ -3313,6 +3313,7 @@ async def get_dunbar_ranking(
                 avatar_url=contact_avatars.get(cid),
                 aliases=entity_aliases.get(r["entity_id"], []),
                 warmth=warmth,
+                last_interaction_at=r.get("last_interaction_at"),
             )
         )
 
