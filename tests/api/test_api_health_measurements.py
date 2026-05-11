@@ -250,3 +250,47 @@ async def test_list_measurements_does_not_query_measurements_table():
         assert "FROM measurements" not in sql, (
             f"Query must not touch the legacy measurements table:\n{sql}"
         )
+
+
+def test_no_health_measurements_table_references():
+    """Regression guard: NO source file should query the dropped health.measurements table.
+
+    Scans src/, roster/, and conftest.py for any SQL pattern that touches the
+    ``measurements`` table.  Migration files (which legitimately reference the table)
+    and this test file are excluded.
+    """
+    import pathlib
+    import re
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    bad_patterns = [
+        r"FROM\s+measurements\b",
+        r"FROM\s+health\.measurements\b",
+        r"INSERT\s+INTO\s+measurements\b",
+        r"UPDATE\s+measurements\b",
+    ]
+    # Scan src/, roster/, conftest.py — exclude tests/ (test fixtures may reference history),
+    # exclude migration files (they DEFINE or DROP the table), exclude this test file itself.
+    candidate_globs = ["src/**/*.py", "roster/**/*.py", "conftest.py"]
+    excludes = {
+        # Defines the table — legitimate reference.
+        "roster/health/migrations/001_health_tables.py",
+        # Drops the table — legitimate DDL reference in the drop migration.
+        "roster/health/migrations/002_drop_measurements_table.py",
+        # One-time backfill script that reads the legacy table to migrate data
+        # into facts.  Must run before health_002 drops the table.
+        "src/butlers/scripts/backfill_facts.py",
+    }
+    offenders = []
+    for glob in candidate_globs:
+        for p in repo_root.glob(glob):
+            rel = str(p.relative_to(repo_root))
+            if rel in excludes:
+                continue
+            content = p.read_text()
+            for pattern in bad_patterns:
+                if re.search(pattern, content, re.IGNORECASE):
+                    offenders.append(f"{rel} matches {pattern!r}")
+    assert not offenders, (
+        "These files still reference the dropped measurements table:\n" + "\n".join(offenders)
+    )
