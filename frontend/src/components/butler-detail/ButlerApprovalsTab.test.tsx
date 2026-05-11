@@ -112,6 +112,7 @@ function setupWithActions(actions: typeof HIGH_ACTION[]) {
   vi.mocked(useApprovalActions).mockReturnValue({
     data: { data: actions, meta: { total: actions.length, offset: 0, limit: 50, has_more: false } },
     isLoading: false,
+    error: null,
   } as unknown as ReturnType<typeof useApprovalActions>)
 }
 
@@ -119,6 +120,7 @@ function setupEmpty() {
   vi.mocked(useApprovalActions).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } },
     isLoading: false,
+    error: null,
   } as unknown as ReturnType<typeof useApprovalActions>)
 }
 
@@ -126,6 +128,15 @@ function setupLoading() {
   vi.mocked(useApprovalActions).mockReturnValue({
     data: undefined,
     isLoading: true,
+    error: null,
+  } as unknown as ReturnType<typeof useApprovalActions>)
+}
+
+function setupError(message = "Network error") {
+  vi.mocked(useApprovalActions).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    error: new Error(message),
   } as unknown as ReturnType<typeof useApprovalActions>)
 }
 
@@ -358,5 +369,47 @@ describe("ButlerApprovalsTab -- row content", () => {
     renderTab()
     // LOW_ACTION has agent_summary: null -- falls back to first 8 chars of id
     expect(screen.getByText(LOW_ACTION.id.slice(0, 8))).toBeDefined()
+  })
+
+  it("falls back to short action ID when agent_summary is an empty string", () => {
+    const emptyStringAction = { ...HIGH_ACTION, agent_summary: "" }
+    setupWithActions([emptyStringAction])
+    renderTab()
+    expect(screen.getByText(emptyStringAction.id.slice(0, 8))).toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests: error state
+// ---------------------------------------------------------------------------
+
+describe("ButlerApprovalsTab -- error state", () => {
+  beforeEach(() => vi.resetAllMocks())
+  afterEach(() => cleanup())
+
+  it("shows error element when the hook returns an error", () => {
+    setupError("Network error")
+    renderTab()
+    expect(screen.getByTestId("approvals-error")).toBeDefined()
+  })
+
+  it("displays the error message text when error is an Error instance", () => {
+    setupError("Request failed with status 503")
+    renderTab()
+    expect(screen.getByTestId("approvals-error").textContent).toBe(
+      "Request failed with status 503",
+    )
+  })
+
+  it("does not show empty state when there is an error", () => {
+    setupError()
+    renderTab()
+    expect(screen.queryByTestId("approvals-empty")).toBeNull()
+  })
+
+  it("does not show loading state when there is an error", () => {
+    setupError()
+    renderTab()
+    expect(screen.queryByTestId("approvals-loading")).toBeNull()
   })
 })

@@ -10,8 +10,8 @@
  *   medium -- expires within 24 hours
  *   low    -- no expiry or expires later
  *
- * Filtering: passes butlerName to useApprovalActions so the backend returns
- * only actions belonging to this butler.
+ * Filtering: passes butlerName to useApprovalActions for forward compatibility.
+ * The backend does not yet filter by butler; server-side scoping is a follow-up.
  *
  * Empty state (per project voice rules -- no em-dashes, sentence case):
  *   "No items pending review."
@@ -98,9 +98,9 @@ function ApprovalRow({ action }: ApprovalRowProps) {
         </p>
         <div className="flex items-center gap-1.5 mt-0.5">
           <MonoLabel className="text-[10px] truncate max-w-xs">
-            {action.agent_summary ?? action.id.slice(0, 8)}
+            {action.agent_summary || action.id.slice(0, 8)}
           </MonoLabel>
-          <MonoLabel className="text-[10px] opacity-60" aria-hidden>·</MonoLabel>
+          <span className="font-mono text-[10px] opacity-60" aria-hidden>·</span>
           <MonoLabel className="text-[10px] opacity-60">
             <Time value={action.requested_at} mode="relative-compact" />
           </MonoLabel>
@@ -129,7 +129,11 @@ export interface ButlerApprovalsTabProps {
 }
 
 export default function ButlerApprovalsTab({ butlerName }: ButlerApprovalsTabProps) {
-  const { data, isLoading } = useApprovalActions({ status: "pending", butler: butlerName })
+  // NOTE: the backend GET /approvals/actions endpoint does not yet accept a
+  // `butler` query param — it aggregates across all pools and the response does
+  // not include a butler field. The `butler` param is passed for forward
+  // compatibility; actual server-side scoping is tracked in a follow-up bead.
+  const { data, isLoading, error } = useApprovalActions({ status: "pending", butler: butlerName })
 
   const actions = data?.data ?? []
 
@@ -148,6 +152,13 @@ export default function ButlerApprovalsTab({ butlerName }: ButlerApprovalsTabPro
             data-testid="approvals-loading"
           >
             Loading…
+          </p>
+        ) : error ? (
+          <p
+            className="text-sm text-destructive"
+            data-testid="approvals-error"
+          >
+            {error instanceof Error ? error.message : "Failed to load approvals."}
           </p>
         ) : actions.length === 0 ? (
           <p

@@ -580,7 +580,7 @@ export default function ButlerDetailPage() {
           </TabsContent>
 
           <TabsContent value="approvals">
-            <Suspense fallback={<Skeleton className="h-48 w-full" />}>
+            <Suspense fallback={<Skeleton className="h-[calc(100vh-18rem)] w-full" />}>
               <ButlerApprovalsTab butlerName={name} />
             </Suspense>
           </TabsContent>
