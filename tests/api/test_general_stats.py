@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.router_discovery import discover_butler_routers
 
 pytestmark = pytest.mark.unit
+
+_MODULE_NAME = "general_api_router"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -17,7 +21,7 @@ pytestmark = pytest.mark.unit
 
 
 class _Row(dict):
-    """dict subclass that mimics asyncpg Record (supports dict() and attr access)."""
+    """dict subclass that mimics asyncpg Record (supports dict-style key access)."""
 
     def __getitem__(self, key):
         return super().__getitem__(key)
@@ -27,39 +31,27 @@ def _row(data: dict) -> _Row:
     return _Row(data)
 
 
+def _get_db_dep():
+    """Return the _get_db_manager function from the general API router module.
+
+    Triggers router discovery on first call to ensure the module is loaded,
+    then resolves the dependency function by deterministic module name.
+    """
+    discover_butler_routers()
+    if _MODULE_NAME not in sys.modules:
+        raise RuntimeError(
+            f"Router module '{_MODULE_NAME}' not found after discovery. "
+            "Ensure roster/general/api/router.py is present."
+        )
+    return sys.modules[_MODULE_NAME]._get_db_manager
+
+
 def _make_app(app, *, fetchval_seq=None, fetch_seq=None):
     """Wire the shared app with a mocked pool for /stats.
 
     fetchval_seq: list of values returned by successive fetchval calls.
     fetch_seq: list of row-lists returned by successive fetch calls.
     """
-    # Import the dependency stub from the dynamically loaded router.
-    # The router is registered under /api/general so we import it via
-    # the app's registered routes — but it's simpler to import the module
-    # directly since it's already been loaded by create_app().
-    import sys
-
-    # The router module is loaded dynamically under 'general_api_router' or
-    # similar; however, the dependency override target is the function object
-    # inside the loaded module.  We locate it via the router's route objects.
-    from butlers.api.router_discovery import discover_butler_routers
-
-    # Trigger router discovery to ensure all butler routers are registered.
-    discover_butler_routers()
-
-    # Locate _get_db_manager from the already-imported module
-    _get_db_manager_fn = None
-    for mod_name, mod in sys.modules.items():
-        if "general" in mod_name and hasattr(mod, "_get_db_manager"):
-            obj = getattr(mod, "_get_db_manager")
-            # Use the first match that is a plain function (not a class method)
-            if callable(obj) and not isinstance(obj, type):
-                _get_db_manager_fn = obj
-                break
-
-    if _get_db_manager_fn is None:
-        pytest.skip("Could not locate _get_db_manager for general router")
-
     mock_pool = AsyncMock()
     fv_iter = iter(fetchval_seq or [])
     ft_iter = iter(fetch_seq or [])
@@ -82,7 +74,7 @@ def _make_app(app, *, fetchval_seq=None, fetch_seq=None):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
 
-    app.dependency_overrides[_get_db_manager_fn] = lambda: mock_db
+    app.dependency_overrides[_get_db_dep()] = lambda: mock_db
     return app, mock_pool
 
 
@@ -214,22 +206,9 @@ class TestGeneralStats503:
     """Stats endpoint returns 503 when the database pool is unavailable."""
 
     async def test_missing_pool_returns_503(self, app):
-        import sys
-
-        _get_db_manager_fn = None
-        for mod_name, mod in sys.modules.items():
-            if "general" in mod_name and hasattr(mod, "_get_db_manager"):
-                obj = getattr(mod, "_get_db_manager")
-                if callable(obj) and not isinstance(obj, type):
-                    _get_db_manager_fn = obj
-                    break
-
-        if _get_db_manager_fn is None:
-            pytest.skip("Could not locate _get_db_manager for general router")
-
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.side_effect = KeyError("general")
-        app.dependency_overrides[_get_db_manager_fn] = lambda: mock_db
+        app.dependency_overrides[_get_db_dep()] = lambda: mock_db
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

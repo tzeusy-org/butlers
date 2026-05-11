@@ -61,12 +61,7 @@ def _pool(db: DatabaseManager):
 # GET /stats — aggregated KPIs and size histogram
 # ---------------------------------------------------------------------------
 
-_HISTOGRAM_BRACKETS = [
-    ("0", 0, 0),
-    ("1-10", 1, 10),
-    ("11-100", 11, 100),
-    ("101+", 101, None),
-]
+_HISTOGRAM_BRACKETS = ["0", "1-10", "11-100", "101+"]
 
 
 @router.get("/stats", response_model=GeneralStats)
@@ -90,12 +85,16 @@ async def get_stats(
 
     last_modified_collection: str | None = await pool.fetchval(
         """
-        SELECT c.name
-        FROM collections c
-        LEFT JOIN collection_items i ON i.collection_id = c.id
-        GROUP BY c.id, c.name, c.created_at
-        ORDER BY COALESCE(MAX(i.updated_at), c.created_at) DESC
-        LIMIT 1
+        SELECT name FROM (
+            (SELECT c.name, i.updated_at AS ts
+             FROM collection_items i
+             JOIN collections c ON c.id = i.collection_id
+             ORDER BY i.updated_at DESC LIMIT 1)
+            UNION ALL
+            (SELECT name, created_at AS ts
+             FROM collections
+             ORDER BY created_at DESC LIMIT 1)
+        ) sub ORDER BY ts DESC LIMIT 1
         """
     )
 
@@ -138,7 +137,7 @@ async def get_stats(
     # Always emit all brackets so the histogram shape is predictable for the frontend.
     size_histogram = [
         SizeHistogramBucket(bracket=label, count=bracket_map.get(label, 0))
-        for label, *_ in _HISTOGRAM_BRACKETS
+        for label in _HISTOGRAM_BRACKETS
     ]
 
     return GeneralStats(
