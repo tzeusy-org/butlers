@@ -107,6 +107,11 @@ const ButlerHealthMeasurementsTab = lazy(
   () => import("@/components/butler-detail/ButlerHealthMeasurementsTab.tsx"),
 );
 
+// QA butler tabs (lazy)
+const ButlerQaInvestigationsTab = lazy(
+  () => import("@/components/butler-detail/ButlerQaInvestigationsTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Page-local constants
 // ---------------------------------------------------------------------------
@@ -415,6 +420,7 @@ export default function ButlerDetailPage() {
   const showTimelinesTab = name === "chronicler";
   const showFinancesTab = name === "finance";
   const showDevicesTab = name === "home";
+  const showInvestigationsTab = name === "qa";
   const showContactsTab = name === "relationship";
   const showTripsTab = name === "travel";
 
@@ -482,6 +488,9 @@ export default function ButlerDetailPage() {
             {showTimelinesTab && <TabsTrigger value="timelines">Timelines</TabsTrigger>}
             {showFinancesTab && <TabsTrigger value="finances">Finances</TabsTrigger>}
             {showDevicesTab && <TabsTrigger value="devices">Devices</TabsTrigger>}
+            {showInvestigationsTab && (
+              <TabsTrigger value="investigations">Investigations</TabsTrigger>
+            )}
             {showContactsTab && <TabsTrigger value="contacts">Contacts</TabsTrigger>}
             {showTripsTab && <TabsTrigger value="trips">Trips</TabsTrigger>}
           </TabsList>
@@ -632,6 +641,14 @@ export default function ButlerDetailPage() {
             <TabsContent value="devices">
               <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
                 <ButlerHomeDevicesTab />
+              </Suspense>
+            </TabsContent>
+          )}
+
+          {showInvestigationsTab && (
+            <TabsContent value="investigations">
+              <Suspense fallback={<TabFallback label="investigations" />}>
+                <ButlerQaInvestigationsTab />
               </Suspense>
             </TabsContent>
           )}
