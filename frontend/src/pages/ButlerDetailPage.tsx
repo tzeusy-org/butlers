@@ -137,6 +137,11 @@ const ButlerActivityTab = lazy(
   () => import("@/components/butler-detail/ButlerActivityTab.tsx"),
 );
 
+// Spend tab (lazy) — bu-iuol4.19
+const ButlerSpendTab = lazy(
+  () => import("@/components/butler-detail/ButlerSpendTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Page-local constants
 // ---------------------------------------------------------------------------
@@ -558,13 +563,9 @@ export default function ButlerDetailPage() {
           </TabsContent>
 
           <TabsContent value="spend">
-            <Card>
-              <CardContent className="py-12">
-                <p className="text-muted-foreground text-center text-sm">
-                  Spend view coming soon.
-                </p>
-              </CardContent>
-            </Card>
+            <Suspense fallback={<TabFallback label="spend" />}>
+              <ButlerSpendTab butlerName={name} />
+            </Suspense>
           </TabsContent>
 
           <TabsContent value="config">
