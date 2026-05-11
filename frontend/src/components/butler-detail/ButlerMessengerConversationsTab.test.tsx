@@ -482,7 +482,7 @@ describe("ButlerMessengerConversationsTab — dead-letter rows", () => {
 
   it("shows timestamp for dead letters using <Time>", () => {
     renderTab();
-    const timeTags = screen.getAllByTagName?.("time") ?? document.querySelectorAll("time");
+    const timeTags = document.querySelectorAll("time");
     expect(timeTags.length).toBeGreaterThanOrEqual(1);
   });
 

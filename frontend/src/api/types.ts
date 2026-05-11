@@ -4219,8 +4219,7 @@ export interface MessengerDeliveryStats {
 /** Circuit breaker state for a single channel. */
 export interface MessengerCircuitChannelEntry {
   name: string;
-  /** 'closed' | 'open' | 'half_open' */
-  state: string;
+  state: "closed" | "open" | "half_open";
   last_state_change: string | null;
   failure_rate_15m: number | null;
 }
@@ -4229,7 +4228,7 @@ export interface MessengerCircuitChannelEntry {
 export interface MessengerCircuitStatus {
   channels: MessengerCircuitChannelEntry[];
   /** Always 'db_approximation' — derived from DB, not live in-memory state. */
-  source: string;
+  source: "db_approximation";
 }
 
 /** Outbound queue depth by channel and priority. */

@@ -184,7 +184,7 @@ function KpiQuartet({
 // ---------------------------------------------------------------------------
 
 /** Map circuit state to a badge variant + class. */
-function CircuitStateBadge({ state }: { state: string }) {
+function CircuitStateBadge({ state }: { state: "closed" | "open" | "half_open" }) {
   if (state === "closed") {
     return (
       <Badge
@@ -223,7 +223,7 @@ function CircuitStateBadge({ state }: { state: string }) {
 
 interface ActiveChannelsPanelProps {
   channels: MessengerCircuitChannelEntry[];
-  source: string;
+  source: "db_approximation";
   isLoading: boolean;
   isError: boolean;
 }
