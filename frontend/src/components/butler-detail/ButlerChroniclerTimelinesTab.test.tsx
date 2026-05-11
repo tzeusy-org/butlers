@@ -549,6 +549,64 @@ describe("ButlerChroniclerTimelinesTab — sources status badge variants", () =>
 });
 
 // ---------------------------------------------------------------------------
+// Tests: Sources last_error warning icon
+// ---------------------------------------------------------------------------
+
+describe("ButlerChroniclerTimelinesTab — sources last_error warning icon", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+  afterEach(() => cleanup());
+
+  it("shows warning icon when last_error is non-null on a source row", () => {
+    // SOURCE_ROWS fixture has calendar with last_error = "Auth error"
+    renderTab();
+    const icons = screen.getAllByTestId("source-error-icon");
+    expect(icons.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not show warning icon when last_error is null on a source row", () => {
+    // Only include a source with last_error = null
+    const cleanSource = {
+      source_name: "toggl",
+      chronicler_compatibility: "supported",
+      read_surface: "api",
+      boundary_semantics: "closed",
+      optional_schema: false,
+      active: true,
+      inactive_reason: null,
+      last_run_at: `${TODAY}T07:30:00Z`,
+      last_error: null,
+      subsource_checkpoints: null,
+    };
+
+    vi.mocked(useChroniclesSourceState).mockReturnValue({
+      data: { data: [cleanSource], meta: {} },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useChroniclesSourceState>);
+
+    renderTab();
+    expect(screen.queryByTestId("source-error-icon")).toBeNull();
+  });
+
+  it("warning icon has an accessible aria-label containing the error text", () => {
+    renderTab();
+    const icon = screen.getAllByTestId("source-error-icon")[0];
+    const ariaLabel = icon.getAttribute("aria-label");
+    expect(ariaLabel).not.toBeNull();
+    expect(ariaLabel).toContain("Auth error");
+  });
+
+  it("warning icon title attribute matches the error string", () => {
+    renderTab();
+    const icon = screen.getAllByTestId("source-error-icon")[0];
+    expect(icon.getAttribute("title")).toBe("Auth error");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: Loading states
 // ---------------------------------------------------------------------------
 
