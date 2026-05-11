@@ -14,7 +14,7 @@
 // Doctrine:
 //   - No raw oklch / hex — design tokens only.
 //   - Sentence case strings.
-//   - tabular-nums on timestamp column (font-mono + tnum).
+//   - tnum utility on timestamp and level columns (font-variant-numeric).
 //   - <Time precision="ms"> for log timestamps.
 // ---------------------------------------------------------------------------
 
@@ -107,7 +107,7 @@ function LogLineRow({ ts, level, msg }: LogLineRowProps) {
     >
       {/* Timestamp: fixed 78px, mono, tabular-nums */}
       <span
-        className="w-[78px] shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground"
+        className="w-[78px] shrink-0 font-mono text-[10px] tnum text-muted-foreground"
         data-testid="log-ts"
       >
         <Time value={ts} mode="absolute" precision="ms" />
@@ -116,7 +116,7 @@ function LogLineRow({ ts, level, msg }: LogLineRowProps) {
       {/* Level: fixed 56px, tonal mono */}
       <span
         className={cn(
-          "w-[56px] shrink-0 font-mono text-[10px] font-semibold uppercase tracking-wide tabular-nums",
+          "w-[56px] shrink-0 font-mono text-[10px] font-semibold uppercase tracking-wide tnum",
           levelClass(level),
         )}
         data-testid="log-level"
@@ -126,7 +126,7 @@ function LogLineRow({ ts, level, msg }: LogLineRowProps) {
 
       {/* Message: flex, breaks on long lines */}
       <span
-        className="min-w-0 flex-1 font-mono text-[10px] leading-relaxed break-all text-foreground"
+        className="min-w-0 flex-1 font-mono text-[10px] leading-relaxed break-words text-foreground"
         data-testid="log-msg"
       >
         {msg}
@@ -138,11 +138,16 @@ function LogLineRow({ ts, level, msg }: LogLineRowProps) {
 // ---------------------------------------------------------------------------
 // Auto-scroll hook
 //
-// Scrolls a container ref to the bottom whenever `deps` change (new log
-// lines arrive), unless the user has manually scrolled up.
+// Scrolls a container to the bottom whenever `data` changes (new log lines
+// arrive), unless the user has manually scrolled up.
+//
+// Uses a callback ref so the scroll listener is attached/detached whenever
+// the <ul> node mounts or unmounts (it is conditionally rendered).
+// Enabling auto-scroll resets the manual-scroll state and forces an
+// immediate scroll to bottom.
 // ---------------------------------------------------------------------------
 
-function useAutoScroll(enabled: boolean, deps: unknown[]) {
+function useAutoScroll(enabled: boolean, data: unknown) {
   const containerRef = useRef<HTMLUListElement | null>(null);
   const userScrolledUp = useRef(false);
 
@@ -151,30 +156,49 @@ function useAutoScroll(enabled: boolean, deps: unknown[]) {
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
-  // Detect manual upward scroll.
-  useEffect(() => {
+  // Stable scroll handler; reads containerRef at call time.
+  const onScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    function onScroll() {
-      if (!el) return;
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
-      userScrolledUp.current = !atBottom;
-    }
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    userScrolledUp.current = !atBottom;
   }, []);
 
+  // Callback ref: attaches the scroll listener as soon as the <ul> mounts.
+  // Handles the case where <ul> is conditionally rendered (loading/empty states
+  // mean the node may not exist on the initial effect run).
+  const setListRef = useCallback(
+    (node: HTMLUListElement | null) => {
+      // Detach listener from old node.
+      if (containerRef.current) {
+        containerRef.current.removeEventListener("scroll", onScroll);
+      }
+      containerRef.current = node;
+      // Attach listener to new node.
+      if (node) {
+        node.addEventListener("scroll", onScroll, { passive: true });
+      }
+    },
+    [onScroll],
+  );
+
   // Scroll on new data if auto-scroll is on and user hasn't scrolled up.
-  // deps is an opaque array (log lines) passed from the parent; spreading it
-  // here is intentional and exhaustive-deps cannot statically verify it.
   useEffect(() => {
     if (enabled && !userScrolledUp.current) {
       scrollToBottom();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, enabled]);
+  }, [data, enabled, scrollToBottom]);
 
-  return containerRef;
+  // When auto-scroll is re-enabled, reset the manual-scroll state and force
+  // an immediate scroll to bottom so the toggle is immediately responsive.
+  useEffect(() => {
+    if (enabled) {
+      userScrolledUp.current = false;
+      scrollToBottom();
+    }
+  }, [enabled, scrollToBottom]);
+
+  return setListRef;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +224,7 @@ export default function ButlerLogsTab({ butlerName }: ButlerLogsTabProps) {
 
   const lines = data?.lines ?? [];
 
-  const listRef = useAutoScroll(autoScroll, [lines]);
+  const listRef = useAutoScroll(autoScroll, lines);
 
   return (
     <div className="space-y-0 pt-4" data-testid="butler-logs-tab">
@@ -238,15 +262,12 @@ export default function ButlerLogsTab({ butlerName }: ButlerLogsTabProps) {
         ))}
       </div>
 
-      {/* Error state */}
-      {isError && (
+      {/* Row 3: log line list — states: error > loading > empty > content */}
+      {isError ? (
         <p className="px-4 pb-2 text-xs text-destructive" data-testid="logs-load-error">
           Failed to load logs. Retrying...
         </p>
-      )}
-
-      {/* Row 3: log line list */}
-      {isLoading && lines.length === 0 ? (
+      ) : isLoading && lines.length === 0 ? (
         <div className="space-y-1 px-4" data-testid="logs-loading">
           {Array.from({ length: 8 }, (_, i) => (
             <div key={i} className="flex items-center gap-3" data-testid="loading-line">
@@ -267,10 +288,11 @@ export default function ButlerLogsTab({ butlerName }: ButlerLogsTabProps) {
           aria-label="Log lines"
           data-testid="log-line-list"
         >
-          {lines.map((line, idx) => (
+          {lines.map((line) => (
             <LogLineRow
-              // ts+level+idx is the best stable key without a dedicated line ID
-              key={`${line.ts}-${line.level}-${idx}`}
+              // Content-based key: avoids full re-render of all rows in a sliding
+              // window when the oldest line drops and a new one appends.
+              key={`${line.ts}-${line.level}-${line.msg.slice(0, 32)}`}
               ts={line.ts}
               level={line.level}
               msg={line.msg}

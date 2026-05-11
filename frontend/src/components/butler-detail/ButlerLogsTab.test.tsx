@@ -260,6 +260,50 @@ describe("ButlerLogsTab — filter chips", () => {
     const active = chips.filter((c) => c.getAttribute("aria-pressed") === "true");
     expect(active.length).toBe(1);
   });
+
+  it("'All' chip passes level=undefined to useButlerLogs (returns all levels)", () => {
+    renderTab();
+    // Default state — All is active. Hook should be called without a level filter.
+    const calls = vi.mocked(useButlerLogs).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[1]?.level).toBeUndefined();
+  });
+
+  it("clicking 'Info' chip passes level='INFO' to useButlerLogs", () => {
+    renderTab();
+    const chips = screen.getAllByTestId("filter-chip");
+    const infoChip = chips.find((c) => c.textContent === "Info")!;
+    fireEvent.click(infoChip);
+
+    const calls = vi.mocked(useButlerLogs).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[1]?.level).toBe("INFO");
+  });
+
+  it("clicking 'Error' chip passes level='ERROR' to useButlerLogs", () => {
+    renderTab();
+    const chips = screen.getAllByTestId("filter-chip");
+    const errorChip = chips.find((c) => c.textContent === "Error")!;
+    fireEvent.click(errorChip);
+
+    const calls = vi.mocked(useButlerLogs).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[1]?.level).toBe("ERROR");
+  });
+
+  it("switching back to 'All' passes level=undefined to useButlerLogs", () => {
+    renderTab();
+    const chips = screen.getAllByTestId("filter-chip");
+    const warnChip = chips.find((c) => c.textContent === "Warn")!;
+    const allChip = chips.find((c) => c.textContent === "All")!;
+
+    fireEvent.click(warnChip);
+    fireEvent.click(allChip);
+
+    const calls = vi.mocked(useButlerLogs).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[1]?.level).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
