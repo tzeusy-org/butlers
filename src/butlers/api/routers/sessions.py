@@ -25,7 +25,12 @@ from butlers.api.models import (
     PaginationMeta,
     SessionSummary,
 )
-from butlers.api.models.session import ProcessLog, SessionDetail
+from butlers.api.models.session import (
+    ProcessLog,
+    SessionDetail,
+    SessionKindBreakdown,
+    SessionKindItem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -337,3 +342,48 @@ async def get_butler_session(
         logger.debug("Could not fetch correction count for session %s", session_id, exc_info=True)
 
     return ApiResponse[SessionDetail](data=detail)
+
+
+# ---------------------------------------------------------------------------
+# Butler-scoped analytics: GET /api/butlers/{name}/analytics/session-kinds
+# ---------------------------------------------------------------------------
+
+_SESSION_KINDS_SQL = """
+SELECT trigger_source, COUNT(*) AS count
+FROM sessions
+WHERE butler_name = $1
+  AND started_at >= NOW() - ($2 * INTERVAL '1 day')
+GROUP BY trigger_source
+"""
+
+
+@butler_sessions_router.get(
+    "/{name}/analytics/session-kinds",
+    response_model=ApiResponse[SessionKindBreakdown],
+)
+async def get_butler_session_kinds(
+    name: str,
+    window_days: int = Query(7, ge=0, description="Rolling window in days (default 7)"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SessionKindBreakdown]:
+    """Return session counts grouped by trigger_source for a rolling window.
+
+    Queries the butler's ``sessions`` table grouped by ``trigger_source``
+    over the last ``window_days`` days.  Returns whatever trigger_source
+    values exist — the spec does not prescribe a fixed set.
+
+    When no sessions exist in the window, returns an empty ``kinds`` list.
+    """
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        )
+
+    rows = await pool.fetch(_SESSION_KINDS_SQL, name, window_days)
+
+    kinds = [SessionKindItem(kind=row["trigger_source"], count=int(row["count"])) for row in rows]
+
+    return ApiResponse[SessionKindBreakdown](data=SessionKindBreakdown(kinds=kinds))
