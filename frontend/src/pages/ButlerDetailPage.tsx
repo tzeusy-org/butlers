@@ -132,6 +132,11 @@ const ButlerLogsTab = lazy(
   () => import("@/components/butler-detail/ButlerLogsTab.tsx"),
 );
 
+// Activity tab — replaces stub (bu-iuol4.16)
+const ButlerActivityTab = lazy(
+  () => import("@/components/butler-detail/ButlerActivityTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Page-local constants
 // ---------------------------------------------------------------------------
@@ -533,15 +538,11 @@ export default function ButlerDetailPage() {
             <ButlerSessionsTab butlerName={name} />
           </TabsContent>
 
-          {/* Resident-mode tabs — vocabulary stubs, not yet implemented */}
+          {/* Resident-mode tabs */}
           <TabsContent value="activity">
-            <Card>
-              <CardContent className="py-12">
-                <p className="text-muted-foreground text-center text-sm">
-                  Activity view coming soon.
-                </p>
-              </CardContent>
-            </Card>
+            <Suspense fallback={<TabFallback label="activity" />}>
+              <ButlerActivityTab butlerName={name} />
+            </Suspense>
           </TabsContent>
 
           <TabsContent value="logs">

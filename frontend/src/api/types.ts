@@ -4309,3 +4309,57 @@ export interface MessengerDeliveryStatsParams {
 export interface MessengerDeadLettersParams {
   limit?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Butler analytics (bu-iuol4.16)
+// ---------------------------------------------------------------------------
+
+/** A single hourly bucket from GET /api/butlers/{name}/analytics/hourly-activity. */
+export interface HourlyActivityBucket {
+  hour_start: string; // ISO datetime string
+  sessions_count: number;
+  /** 0 = most recent hour; higher = further back. */
+  hour_index: number;
+}
+
+/** Response from GET /api/butlers/{name}/analytics/hourly-activity. */
+export interface HourlyActivity {
+  buckets: HourlyActivityBucket[];
+}
+
+/** Query params for GET /api/butlers/{name}/analytics/hourly-activity. */
+export interface HourlyActivityParams {
+  window_hours?: number;
+}
+
+/** A single daily bucket from GET /api/butlers/{name}/analytics/daily-activity. */
+export interface DailyActivityBucket {
+  date: string; // ISO date string
+  sessions_count: number;
+}
+
+/** Response from GET /api/butlers/{name}/analytics/daily-activity. */
+export interface DailyActivity {
+  buckets: DailyActivityBucket[];
+}
+
+/** Query params for GET /api/butlers/{name}/analytics/daily-activity. */
+export interface DailyActivityParams {
+  window_days?: 7 | 30;
+}
+
+/** A single kind entry from GET /api/butlers/{name}/analytics/session-kinds. */
+export interface SessionKindItem {
+  kind: string;
+  count: number;
+}
+
+/** Response from GET /api/butlers/{name}/analytics/session-kinds. */
+export interface SessionKindBreakdown {
+  kinds: SessionKindItem[];
+}
+
+/** Query params for GET /api/butlers/{name}/analytics/session-kinds. */
+export interface SessionKindsParams {
+  window_days?: number;
+}
