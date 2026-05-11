@@ -36,9 +36,15 @@ class CircuitChannelEntry(BaseModel):
 
 
 class CircuitStatus(BaseModel):
-    """Circuit breaker state per channel."""
+    """Circuit breaker state per channel.
+
+    ``source`` is always ``"db_approximation"``: the real in-memory
+    CircuitBreaker state is not persisted to the DB, so this endpoint
+    derives an approximation from recent delivery outcomes.
+    """
 
     channels: list[CircuitChannelEntry]
+    source: str = "db_approximation"
 
 
 # ---------------------------------------------------------------------------

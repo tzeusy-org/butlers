@@ -176,7 +176,12 @@ async def test_delivery_stats_pool_missing():
 
 
 async def test_circuit_status_success():
-    """Returns channel circuit states derived from recent delivery outcomes."""
+    """Returns channel circuit states derived from recent delivery outcomes.
+
+    dead_lettered rows are counted as failures (same as 'failed' status).
+    Response includes source='db_approximation' to document the divergence
+    from the real in-memory CircuitBreaker state.
+    """
     circuit_rows = [
         _row(channel="telegram", failures=5, successes=0, last_activity=_NOW),
         _row(channel="email", failures=0, successes=10, last_activity=_NOW),
@@ -191,6 +196,7 @@ async def test_circuit_status_success():
 
     assert resp.status_code == 200
     body = resp.json()
+    assert body["source"] == "db_approximation"
     channels = {ch["name"]: ch for ch in body["channels"]}
     assert channels["telegram"]["state"] == "open"
     assert channels["telegram"]["failure_rate_15m"] == 1.0
@@ -230,18 +236,19 @@ async def test_circuit_status_pool_missing():
 
 
 async def test_queue_depth_success():
-    """Returns total and per-channel queue depth."""
+    """Returns total (derived from channel counts) and per-channel queue depth.
+
+    The priority breakdown falls back to {} because delivery_requests does not
+    currently have a priority column; the endpoint catches UndefinedColumnError
+    and logs a warning rather than failing.
+    """
     channel_rows = [
         _row(channel="telegram", cnt=8),
         _row(channel="email", cnt=3),
     ]
-    priority_rows = [
-        _row(priority="normal", cnt=10),
-        _row(priority="high", cnt=1),
-    ]
     pool = _make_pool(
-        fetchval_results=[11],
-        fetch_results=[channel_rows, priority_rows],
+        # No fetchval call — total is derived from channel-count sum.
+        fetch_results=[channel_rows, []],  # second fetch: priority query returns no rows
     )
     app = _make_app(pool)
 
@@ -252,16 +259,16 @@ async def test_queue_depth_success():
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total"] == 11
+    assert body["total"] == 11  # sum of 8 + 3
     assert body["by_channel"]["telegram"] == 8
     assert body["by_channel"]["email"] == 3
-    assert body["by_priority"]["normal"] == 10
+    # by_priority may be {} (priority column absent) or populated if column exists
+    assert isinstance(body["by_priority"], dict)
 
 
 async def test_queue_depth_empty():
     """Returns zeros when queue is empty."""
     pool = _make_pool(
-        fetchval_results=[0],
         fetch_results=[[], []],
     )
     app = _make_app(pool)

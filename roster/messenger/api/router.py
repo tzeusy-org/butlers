@@ -20,6 +20,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import asyncpg.exceptions
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
@@ -108,13 +109,14 @@ async def get_delivery_stats(
     dead_letter = counts.get("dead_lettered", 0)
     pending = counts.get("pending", 0) + counts.get("in_progress", 0)
 
-    # Retried = deliveries that had more than one attempt
+    # Retried = deliveries that had more than one attempt.
+    # delivery_attempts has started_at/completed_at; there is no created_at column.
     retried_row = await pool.fetchval(
         """
         SELECT COUNT(DISTINCT delivery_request_id)
         FROM delivery_attempts
         WHERE attempt_number > 1
-          AND created_at >= $1
+          AND started_at >= $1
         """,
         since_dt,
     )
@@ -149,16 +151,18 @@ async def get_circuit_status(
 ) -> CircuitStatus:
     """Return current circuit-breaker state per channel.
 
-    Wraps the ``messenger_circuit_status`` MCP tool logic. Circuit breaker
-    state is derived from recent delivery attempt outcomes in the DB.
+    IMPORTANT — DB approximation, not real circuit-breaker state:
+    The MCP tool (``messenger_circuit_status``) reads in-memory CircuitBreaker
+    objects that are not accessible from the API tier.  This endpoint computes
+    an approximation from delivery_requests outcomes in the last 15 minutes:
+      - all failures (including dead_lettered) and no successes → "open"
+      - mix of failures and successes                           → "half_open"
+      - otherwise                                               → "closed"
+    The response includes ``source: "db_approximation"`` to make this explicit.
+    Known divergence: a channel that just flipped OPEN won't show in DB outcomes
+    until its cooldown period ends.
 
     The pool is butler-scoped — no butler_name filter is applied.
-
-    Note: The MCP tool (``messenger_circuit_status``) operates on in-memory
-    CircuitBreaker objects that are not available from the API tier. This
-    endpoint instead computes an approximation from the delivery_requests
-    table: channels with only failures in the last 15 minutes are considered
-    "open"; channels with a mix are "half_open"; otherwise "closed".
     """
     pool = _pool(db)
 
@@ -166,7 +170,7 @@ async def get_circuit_status(
         """
         SELECT
             channel,
-            COUNT(*) FILTER (WHERE status = 'failed') AS failures,
+            COUNT(*) FILTER (WHERE status IN ('failed', 'dead_lettered')) AS failures,
             COUNT(*) FILTER (WHERE status = 'delivered') AS successes,
             MAX(updated_at) AS last_activity
         FROM delivery_requests
@@ -202,7 +206,7 @@ async def get_circuit_status(
             )
         )
 
-    return CircuitStatus(channels=channels)
+    return CircuitStatus(channels=channels, source="db_approximation")
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +226,6 @@ async def get_queue_depth(
     """
     pool = _pool(db)
 
-    total_row = await pool.fetchval(
-        "SELECT COUNT(*) FROM delivery_requests WHERE status IN ('pending', 'in_progress')",
-    )
-    total = int(total_row or 0)
-
     channel_rows = await pool.fetch(
         """
         SELECT channel, COUNT(*) AS cnt
@@ -236,9 +235,13 @@ async def get_queue_depth(
         """,
     )
     by_channel: dict[str, int] = {row["channel"]: row["cnt"] for row in channel_rows}
+    # Derive total from channel counts — avoids a redundant table scan.
+    # channel is NOT NULL in the schema so sum always equals the full count.
+    total = sum(by_channel.values())
 
     # Priority breakdown — fall back to empty dict if the column doesn't exist
-    # (priority is optional on delivery_requests; treat missing as unknown).
+    # (priority is not currently in the delivery_requests schema; treat missing
+    # as unknown rather than a hard failure).
     try:
         priority_rows = await pool.fetch(
             """
@@ -251,7 +254,10 @@ async def get_queue_depth(
             """,
         )
         by_priority: dict[str, int] = {row["priority"]: row["cnt"] for row in priority_rows}
-    except Exception:
+    except asyncpg.exceptions.UndefinedColumnError:
+        logger.warning(
+            "delivery_requests.priority column not found; returning empty priority breakdown"
+        )  # noqa: E501
         by_priority = {}
 
     return QueueDepth(
