@@ -181,6 +181,7 @@ async def get_cost_summary(
     period: str = Query("today", pattern="^(today|7d|30d)$"),
     from_date: date | None = Query(None, alias="from"),
     to_date: date | None = Query(None, alias="to"),
+    butler: str | None = Query(None, description="Filter to a single butler by name"),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
@@ -191,6 +192,9 @@ async def get_cost_summary(
     e.g. ``2026-01-01``), the summary covers that custom date range and the
     ``period`` param is ignored.  When omitted, the ``period`` preset
     (``today`` / ``7d`` / ``30d``) is used.
+
+    When ``butler`` is provided, only that butler's data is included.  An
+    unknown butler name returns an empty 200 response (all counts zero).
 
     Validation: both ``from`` and ``to`` must be provided together, and
     ``from`` must not be later than ``to``.
@@ -205,6 +209,8 @@ async def get_cost_summary(
             status_code=422,
             detail="'from' must not be later than 'to'.",
         )
+    if butler is not None:
+        configs = [c for c in configs if c.name == butler]
     if from_date is not None and to_date is not None:
         tasks = [
             _get_butler_session_stats_for_range(mgr, info, pricing, from_date, to_date)
