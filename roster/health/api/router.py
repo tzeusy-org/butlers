@@ -68,6 +68,16 @@ def _pool(db: DatabaseManager):
 
 # ---------------------------------------------------------------------------
 # GET /measurements — list measurements
+#
+# Storage: reads from the `facts` table using predicates of the form
+# `measurement_{type}` (e.g. `measurement_weight`).  This matches the write
+# path used by the `measurement_log` MCP tool, which stores measurements as
+# facts with `scope='health'` and `metadata.value` holding the typed value.
+#
+# The legacy `health.measurements` table from migration `health_001` is no
+# longer written to.  Migration `health_002` drops that table.  Any data
+# that existed only in `measurements` and was never written via the tool
+# will not appear here; in practice the tool is the only write path.
 # ---------------------------------------------------------------------------
 
 
@@ -80,53 +90,73 @@ async def list_measurements(
     limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Measurement]:
-    """List measurements with optional type and date range filters."""
+    """List measurements with optional type and date range filters.
+
+    Reads from the ``facts`` table (predicate = ``measurement_{type}``,
+    scope = ``health``), which is the same surface written by the
+    ``measurement_log`` MCP tool.
+    """
     pool = _pool(db)
 
-    conditions: list[str] = []
-    args: list[object] = []
-    idx = 1
-
+    # Base predicate filter — either a specific type or all measurement facts.
+    # When no type is specified, use a prefix LIKE filter so that wellness-ingest
+    # measurements (measurement_spo2, measurement_steps, etc.) are included
+    # alongside the core tool types.  This matches the approach used by
+    # GET /measurements/sources.
     if type is not None:
-        conditions.append(f"type = ${idx}")
-        args.append(type)
-        idx += 1
+        predicate_cond = "predicate = $1"
+        args: list[object] = [f"measurement_{type}"]
+        idx = 2
+    else:
+        predicate_cond = "predicate LIKE 'measurement~_%' ESCAPE '~'"
+        args = []
+        idx = 1
+
+    base_where = f"{predicate_cond} AND scope = 'health' AND validity = 'active'"
+    extra: list[str] = []
 
     if since is not None:
-        conditions.append(f"measured_at >= ${idx}")
+        extra.append(f"valid_at >= ${idx}")
         args.append(since)
         idx += 1
 
     if until is not None:
-        conditions.append(f"measured_at <= ${idx}")
+        extra.append(f"valid_at <= ${idx}")
         args.append(until)
         idx += 1
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = base_where + ("".join(f" AND {c}" for c in extra))
 
-    total = await pool.fetchval(f"SELECT count(*) FROM measurements{where}", *args) or 0
+    total = await pool.fetchval(f"SELECT count(*) FROM facts WHERE {where}", *args) or 0
 
     rows = await pool.fetch(
-        f"SELECT id, type, value, measured_at, notes, created_at"
-        f" FROM measurements{where}"
-        f" ORDER BY measured_at DESC"
+        f"SELECT id, predicate, valid_at, created_at, metadata"
+        f" FROM facts WHERE {where}"
+        f" ORDER BY valid_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
         offset,
         limit,
     )
 
-    data = [
-        Measurement(
-            id=str(r["id"]),
-            type=r["type"],
-            value=dict(r["value"]) if isinstance(r["value"], dict) else json.loads(r["value"]),
-            measured_at=str(r["measured_at"]),
-            notes=r["notes"],
-            created_at=str(r["created_at"]),
+    data = []
+    for r in rows:
+        meta = _as_json_object(r["metadata"])
+        mtype = r["predicate"].removeprefix("measurement_")
+        raw_value = meta.get("value")
+        # Normalise scalar values to a dict for the Measurement model (value: dict).
+        if not isinstance(raw_value, dict):
+            raw_value = {"value": raw_value}
+        data.append(
+            Measurement(
+                id=str(r["id"]),
+                type=mtype,
+                value=raw_value,
+                measured_at=str(r["valid_at"]),
+                notes=meta.get("notes"),
+                created_at=str(r["created_at"]),
+            )
         )
-        for r in rows
-    ]
 
     return PaginatedResponse[Measurement](
         data=data,
