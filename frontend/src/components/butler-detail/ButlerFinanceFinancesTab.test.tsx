@@ -15,7 +15,8 @@
  * bead: bu-nqepq
  */
 
-import { createElement, ReactNode } from "react";
+import { createElement } from "react";
+import type { ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
