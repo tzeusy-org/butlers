@@ -53,9 +53,8 @@ export function useMemoryStats() {
  * Fetch recent memory writes for a specific butler.
  *
  * Calls GET /api/memory/episodes?butler={name}&limit={limit} ordered by
- * created_at desc (server default). Falls back gracefully when the butler
- * filter is not supported by the backend — the query still succeeds, returning
- * unfiltered results.
+ * created_at desc (server default). The backend applies the butler filter
+ * in the SQL WHERE clause — results are scoped to the given butler.
  */
 export function useMemoryRecentWrites(butler: string, limit = 10) {
   return useQuery({

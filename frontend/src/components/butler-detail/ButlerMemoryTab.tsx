@@ -21,10 +21,9 @@
 // deprecated — they serve a different purpose (deep-browse) vs this tab's
 // summary+recent-writes view.
 //
-// ?butler= filter status: supported by the /memory/episodes API client
-// (EpisodeParams.butler is serialised by episodeSearchParams). If the backend
-// does not honour the filter, the panel degrades gracefully — it still renders
-// all episodes, but without butler isolation.
+// ?butler= filter: EpisodeParams.butler is serialised by episodeSearchParams
+// and applied server-side in the SQL WHERE clause. Results are scoped to this
+// butler.
 // ---------------------------------------------------------------------------
 
 import type { ReactNode } from "react";
@@ -34,7 +33,7 @@ import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell } from "./atoms";
+import { KpiCell, toneClass } from "./atoms";
 import { useMemoryStats, useMemoryRecentWrites } from "@/hooks/use-memory";
 import { useEntities } from "@/hooks/use-memory";
 import type { Episode } from "@/api/types";
@@ -47,10 +46,10 @@ import type { Episode } from "@/api/types";
 function ErrorLine({ children }: { children: ReactNode }) {
   return (
     <p
-      className="flex items-center gap-1.5 text-sm text-destructive min-w-0"
+      className={"flex items-center gap-1.5 text-sm min-w-0 " + toneClass("red")}
       data-testid="error-state-line"
     >
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span className="truncate">{children}</span>
     </p>
   );
@@ -180,14 +179,14 @@ interface RecentWriteRowProps {
 function RecentWriteRow({ episode }: RecentWriteRowProps) {
   return (
     <div
-      className="flex items-baseline gap-3 py-1.5 border-b border-border/40 last:border-b-0"
+      className="flex items-baseline gap-3 py-1.5 border-b border-border/40 last:border-b-0 min-w-0"
       data-testid="recent-write-row"
     >
       {/* Timestamp — 50px mono, ms precision */}
       <span className="shrink-0 w-[50px] font-mono text-xs text-muted-foreground tnum">
         <Time value={episode.created_at} mode="absolute" precision="ms" />
       </span>
-      {/* Kind label — 90px mono */}
+      {/* Butler name — 90px mono */}
       <span
         className="shrink-0 w-[90px] font-mono text-xs text-muted-foreground truncate"
         title={episode.butler}
