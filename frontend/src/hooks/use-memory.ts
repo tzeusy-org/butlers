@@ -320,3 +320,66 @@ export function useDunbarRanking(enabled: boolean = false) {
     staleTime: 60_000,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Lifestyle memory hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Recall all active facts for a given subject from a specific butler's scope.
+ *
+ * Maps to GET /memory/facts?subject=<subject>&scope=<butler>&validity=active.
+ * The `butler` param targets the specific butler schema's fact scope.
+ * Returns up to `limit` facts (default 100).
+ */
+export function useMemoryRecall({
+  butler,
+  subject,
+  limit = 100,
+}: {
+  butler: string;
+  subject: string;
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: ["memory-recall", butler, subject, limit],
+    queryFn: () => getFacts({ subject, scope: butler, validity: "active", limit }),
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * Search facts by one or more predicate prefixes for a given butler scope.
+ *
+ * Fetches all active facts with the given subject and butler scope, then
+ * client-side filters to those whose predicate starts with any of the given
+ * prefixes. This avoids adding a new backend parameter — the API does not
+ * yet support server-side predicate filtering.
+ *
+ * Returns the raw query result (isLoading / isError / data) plus a filtered
+ * `facts` array with only the predicate-matched entries.
+ */
+export function useMemorySearch({
+  butler,
+  subject,
+  predicates,
+  limit = 200,
+}: {
+  butler: string;
+  subject: string;
+  predicates: string[];
+  limit?: number;
+}) {
+  const result = useQuery({
+    queryKey: ["memory-search", butler, subject, predicates, limit],
+    queryFn: () => getFacts({ subject, scope: butler, validity: "active", limit }),
+    refetchInterval: 60_000,
+  });
+
+  const allFacts = result.data?.data ?? [];
+  const facts = allFacts.filter((f) =>
+    predicates.some((p) => f.predicate.startsWith(p)),
+  );
+
+  return { ...result, facts };
+}

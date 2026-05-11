@@ -52,6 +52,7 @@ const EDUCATION_TABS = ["reviews"] as const;
 const CHRONICLER_TABS = ["timelines"] as const;
 const FINANCE_TABS = ["finances"] as const;
 const HOME_TABS = ["devices"] as const;
+const LIFESTYLE_TABS = ["taste"] as const;
 const QA_TABS = ["investigations"] as const;
 const RELATIONSHIP_TABS = ["contacts"] as const;
 const TRAVEL_TABS = ["trips"] as const;
@@ -68,6 +69,7 @@ export type TabValue =
   | (typeof CHRONICLER_TABS)[number]
   | (typeof FINANCE_TABS)[number]
   | (typeof HOME_TABS)[number]
+  | (typeof LIFESTYLE_TABS)[number]
   | (typeof QA_TABS)[number]
   | (typeof RELATIONSHIP_TABS)[number]
   | (typeof TRAVEL_TABS)[number];
@@ -101,6 +103,9 @@ export function getAllTabs(butlerName: string, mode: DetailMode): readonly strin
   }
   if (butlerName === "home") {
     baseTabs.push(...HOME_TABS);
+  }
+  if (butlerName === "lifestyle") {
+    baseTabs.push(...LIFESTYLE_TABS);
   }
   if (butlerName === "qa") {
     baseTabs.push(...QA_TABS);

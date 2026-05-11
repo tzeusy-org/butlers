@@ -97,6 +97,11 @@ const ButlerHomeDevicesTab = lazy(
   () => import("@/components/butler-detail/ButlerHomeDevicesTab.tsx"),
 );
 
+// Lifestyle butler tabs (lazy)
+const ButlerLifestyleTasteTab = lazy(
+  () => import("@/components/butler-detail/ButlerLifestyleTasteTab.tsx"),
+);
+
 // Resident-mode tabs (lazy)
 const ButlerApprovalsTab = lazy(
   () => import("@/components/butler-detail/ButlerApprovalsTab.tsx"),
@@ -425,6 +430,7 @@ export default function ButlerDetailPage() {
   const showTimelinesTab = name === "chronicler";
   const showFinancesTab = name === "finance";
   const showDevicesTab = name === "home";
+  const showTasteTab = name === "lifestyle";
   const showInvestigationsTab = name === "qa";
   const showContactsTab = name === "relationship";
   const showTripsTab = name === "travel";
@@ -493,6 +499,7 @@ export default function ButlerDetailPage() {
             {showTimelinesTab && <TabsTrigger value="timelines">Timelines</TabsTrigger>}
             {showFinancesTab && <TabsTrigger value="finances">Finances</TabsTrigger>}
             {showDevicesTab && <TabsTrigger value="devices">Devices</TabsTrigger>}
+            {showTasteTab && <TabsTrigger value="taste">Taste</TabsTrigger>}
             {showInvestigationsTab && (
               <TabsTrigger value="investigations">Investigations</TabsTrigger>
             )}
@@ -642,6 +649,14 @@ export default function ButlerDetailPage() {
             <TabsContent value="devices">
               <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
                 <ButlerHomeDevicesTab />
+              </Suspense>
+            </TabsContent>
+          )}
+
+          {showTasteTab && (
+            <TabsContent value="taste">
+              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
+                <ButlerLifestyleTasteTab />
               </Suspense>
             </TabsContent>
           )}
