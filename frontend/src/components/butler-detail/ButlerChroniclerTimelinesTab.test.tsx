@@ -1,21 +1,22 @@
 // @vitest-environment jsdom
 /**
- * ButlerChroniclerTimelinesTab — RTL tests pinning all 5 sections.
+ * ButlerChroniclerTimelinesTab — RTL tests for the redesigned tab (bu-iuol4.25).
  *
  * Tests:
- *  - All 5 sections render (KPI strip, today timeline, sources, category breakdown, day-close)
+ *  - Main sections present: KPI strip, today timeline, sources
+ *  - KPI rendering: today events count, sources live count, longest gap
+ *  - KPI: next assembly shows relative time when schedule data is available
  *  - Loading states show loading placeholders, not empty-state text
- *  - Empty states are shown explicitly when data is empty
+ *  - Today timeline empty state when no episodes
+ *  - Sources: live/stale/offline status badge variants
+ *  - Sources empty state when no sources configured
  *  - Episode spine renders items with privacy masking for sensitive episodes
- *  - KPI values render with data
- *  - Day-close stale marker renders when response.stale is true
- *  - Day-close prose renders when response.stale is false
  *  - Pagination: "Load more" button shown when hasNextPage=true, hidden when false
  *  - Pagination: clicking "Load more" calls fetchNextPage
- *  - Pagination: button shows "Loading…" while isFetchingNextPage
- *  - Live updates: all loaded pages refetch (offset=0 stays active after Load more)
+ *  - Pagination: button shows "Loading..." while isFetchingNextPage
+ *  - Multi-page live update: all loaded pages remain active after Load more
  *
- * bead: bu-aeg7w, bu-gh6r8
+ * bead: bu-iuol4.25
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
@@ -35,24 +36,24 @@ vi.mock("@/hooks/use-chronicles-kpi", () => ({
 
 vi.mock("@/hooks/use-chronicles", () => ({
   useChroniclesEpisodesInfinite: vi.fn(),
-  useChroniclesByCategory: vi.fn(),
   useChroniclesSourceState: vi.fn(),
-  useChroniclesDayClose: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-schedules", () => ({
+  useSchedules: vi.fn(),
 }));
 
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
 import {
   useChroniclesEpisodesInfinite,
-  useChroniclesByCategory,
   useChroniclesSourceState,
-  useChroniclesDayClose,
 } from "@/hooks/use-chronicles";
+import { useSchedules } from "@/hooks/use-schedules";
 
 // ---------------------------------------------------------------------------
 // Fixed clock — prevents midnight/timezone flakes
 // ---------------------------------------------------------------------------
 
-/** Fixed date used for all time-dependent fixtures. */
 const FIXED_NOW_ISO = "2026-05-10T08:00:00.000Z";
 const TODAY = "2026-05-10";
 
@@ -74,7 +75,6 @@ const KPI_DATA = {
     hours_by_top_lanes: [
       { lane: "work", hours: 5.5 },
       { lane: "music", hours: 2.0 },
-      { lane: "exercise", hours: 1.0 },
     ],
     longest_episode_minutes: 90,
     longest_episode_title: "Deep work session",
@@ -133,6 +133,7 @@ const EPISODES = [
   },
 ];
 
+// SOURCE_ROWS: toggl = live (active, recent), calendar = offline (inactive), spotify = planned
 const SOURCE_ROWS = [
   {
     source_name: "toggl",
@@ -142,7 +143,8 @@ const SOURCE_ROWS = [
     optional_schema: false,
     active: true,
     inactive_reason: null,
-    last_run_at: `${TODAY}T10:00:00Z`,
+    // last_run_at within 2h of FIXED_NOW_ISO (08:00Z), so "live"
+    last_run_at: `${TODAY}T07:30:00Z`,
     last_error: null,
     subsource_checkpoints: null,
   },
@@ -158,39 +160,55 @@ const SOURCE_ROWS = [
     last_error: "Auth error",
     subsource_checkpoints: null,
   },
-];
-
-const CATEGORY_BUCKETS = [
   {
-    category: "work",
-    total_seconds: 19800,
-    episode_count: 5,
-    source_breakdown: [],
-    precision: "minute",
-    retention_floor_days: null,
-  },
-  {
-    category: "sleep",
-    total_seconds: 28800,
-    episode_count: 1,
-    source_breakdown: [],
-    precision: "minute",
-    retention_floor_days: 90,
+    source_name: "spotify",
+    chronicler_compatibility: "planned",
+    read_surface: null,
+    boundary_semantics: null,
+    optional_schema: false,
+    active: false,
+    inactive_reason: null,
+    last_run_at: null,
+    last_error: null,
+    subsource_checkpoints: null,
   },
 ];
 
-const DAY_CLOSE_FRESH = {
-  stale: false as const,
-  prose:
-    "Today was a productive day. You spent most of the morning working, followed by a long exercise session in the afternoon.",
-  provenance_refs: ["ep-1"],
-  cache_built_at: `${TODAY}T23:00:00Z`,
+// A source that is active but with a last_run_at older than 2h = "stale"
+const STALE_SOURCE = {
+  source_name: "home_assistant",
+  chronicler_compatibility: "supported",
+  read_surface: "api",
+  boundary_semantics: "open",
+  optional_schema: false,
+  active: true,
+  inactive_reason: null,
+  // more than 2h before FIXED_NOW_ISO (08:00Z)
+  last_run_at: `${TODAY}T05:00:00Z`,
+  last_error: null,
+  subsource_checkpoints: null,
 };
 
-const DAY_CLOSE_STALE = {
-  stale: true as const,
-  cache_built_at: `${TODAY}T20:00:00Z`,
-  last_invalidating_event_at: `${TODAY}T22:30:00Z`,
+const SCHEDULES_DATA = {
+  data: [
+    {
+      id: "sched-1",
+      name: "chronicler_day_close",
+      cron: "5 1 * * *",
+      prompt: "...",
+      dispatch_mode: "prompt",
+      job_name: null,
+      job_args: null,
+      complexity: "high",
+      source: "toml",
+      enabled: true,
+      // 17 hours in the future from FIXED_NOW_ISO = next day 01:05Z
+      next_run_at: "2026-05-11T01:05:00Z",
+      last_run_at: "2026-05-10T01:05:00Z",
+      created_at: `${TODAY}T00:00:00Z`,
+      updated_at: `${TODAY}T00:00:00Z`,
+    },
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -240,17 +258,11 @@ function setupWithData() {
     isError: false,
   } as ReturnType<typeof useChroniclesSourceState>);
 
-  vi.mocked(useChroniclesByCategory).mockReturnValue({
-    data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: CATEGORY_BUCKETS }, meta: {} },
+  vi.mocked(useSchedules).mockReturnValue({
+    data: SCHEDULES_DATA,
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useChroniclesByCategory>);
-
-  vi.mocked(useChroniclesDayClose).mockReturnValue({
-    data: DAY_CLOSE_FRESH,
-    isLoading: false,
-    isError: false,
-  } as ReturnType<typeof useChroniclesDayClose>);
+  } as unknown as ReturnType<typeof useSchedules>);
 }
 
 function setupEmpty() {
@@ -278,17 +290,11 @@ function setupEmpty() {
     isError: false,
   } as unknown as ReturnType<typeof useChroniclesSourceState>);
 
-  vi.mocked(useChroniclesByCategory).mockReturnValue({
-    data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: [] }, meta: {} },
+  vi.mocked(useSchedules).mockReturnValue({
+    data: { data: [] },
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useChroniclesByCategory>);
-
-  vi.mocked(useChroniclesDayClose).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-  } as ReturnType<typeof useChroniclesDayClose>);
+  } as unknown as ReturnType<typeof useSchedules>);
 }
 
 function setupLoading() {
@@ -313,24 +319,18 @@ function setupLoading() {
     isError: false,
   } as ReturnType<typeof useChroniclesSourceState>);
 
-  vi.mocked(useChroniclesByCategory).mockReturnValue({
+  vi.mocked(useSchedules).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
-  } as ReturnType<typeof useChroniclesByCategory>);
-
-  vi.mocked(useChroniclesDayClose).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as ReturnType<typeof useChroniclesDayClose>);
+  } as unknown as ReturnType<typeof useSchedules>);
 }
 
 // ---------------------------------------------------------------------------
-// Tests: 5 sections present
+// Tests: main sections present
 // ---------------------------------------------------------------------------
 
-describe("ButlerChroniclerTimelinesTab — all 5 sections present", () => {
+describe("ButlerChroniclerTimelinesTab — main sections present", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
@@ -352,45 +352,86 @@ describe("ButlerChroniclerTimelinesTab — all 5 sections present", () => {
     expect(screen.getByTestId("sources-card")).toBeDefined();
   });
 
-  it("renders the category breakdown card", () => {
+  it("does not render a category breakdown card", () => {
     renderTab();
-    expect(screen.getByTestId("category-breakdown-card")).toBeDefined();
+    expect(screen.queryByTestId("category-breakdown-card")).toBeNull();
   });
 
-  it("renders the day-close card", () => {
+  it("does not render a day-close card", () => {
     renderTab();
-    expect(screen.getByTestId("day-close-card")).toBeDefined();
+    expect(screen.queryByTestId("day-close-card")).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: KPI values render with data
+// Tests: KPI rendering
 // ---------------------------------------------------------------------------
 
-describe("ButlerChroniclerTimelinesTab — KPI values", () => {
+describe("ButlerChroniclerTimelinesTab — KPI rendering", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("renders kpi-item elements for top lanes and sleep", () => {
+  it("renders 4 kpi-item cells", () => {
     renderTab();
     const items = screen.getAllByTestId("kpi-item");
-    // 3 top lanes + sleep + sleep streak + longest episode = 6
-    expect(items.length).toBeGreaterThanOrEqual(4);
+    expect(items.length).toBe(4);
   });
 
-  it("renders KPI value for sleep streak", () => {
+  it("renders today events count (2 episodes in fixture)", () => {
     renderTab();
-    const values = screen.getAllByTestId("kpi-value");
-    const texts = values.map((v) => v.textContent ?? "");
-    expect(texts.some((t) => t.includes("7d"))).toBe(true);
+    // The KpiCell value for today events shows the episode count
+    const items = screen.getAllByTestId("kpi-item");
+    const texts = items.map((el) => el.textContent ?? "");
+    // First cell: "Today events" label + count "2"
+    expect(texts[0]).toContain("Today events");
+    expect(texts[0]).toContain("2");
+  });
+
+  it("renders sources live count (1 active source within 2h)", () => {
+    renderTab();
+    const items = screen.getAllByTestId("kpi-item");
+    const texts = items.map((el) => el.textContent ?? "");
+    // Second cell: "Sources live" label + count "1"
+    expect(texts[1]).toContain("Sources live");
+    expect(texts[1]).toContain("1");
+  });
+
+  it("renders longest gap from KPI data (45 min = 45m)", () => {
+    renderTab();
+    const items = screen.getAllByTestId("kpi-item");
+    const texts = items.map((el) => el.textContent ?? "");
+    // Third cell: "Longest gap"
+    expect(texts[2]).toContain("Longest gap");
+    expect(texts[2]).toContain("45m");
+  });
+
+  it("renders next assembly cell label", () => {
+    renderTab();
+    const items = screen.getAllByTestId("kpi-item");
+    const texts = items.map((el) => el.textContent ?? "");
+    // Fourth cell: "Next assembly"
+    expect(texts[3]).toContain("Next assembly");
+  });
+
+  it("shows dash for next assembly when no schedule data", () => {
+    vi.mocked(useSchedules).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSchedules>);
+
+    renderTab();
+    const items = screen.getAllByTestId("kpi-item");
+    const assemblyText = items[3].textContent ?? "";
+    expect(assemblyText).toContain("—");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Episode spine renders items with privacy masking
+// Tests: Episode spine
 // ---------------------------------------------------------------------------
 
 describe("ButlerChroniclerTimelinesTab — episode spine", () => {
@@ -419,121 +460,81 @@ describe("ButlerChroniclerTimelinesTab — episode spine", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Source health widget
+// Tests: Today timeline empty state
 // ---------------------------------------------------------------------------
 
-describe("ButlerChroniclerTimelinesTab — source health widget", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupWithData();
-  });
-  afterEach(() => cleanup());
-
-  it("renders source health rows", () => {
-    renderTab();
-    const rows = screen.getAllByTestId("source-health-row");
-    expect(rows.length).toBeGreaterThanOrEqual(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Category breakdown
-// ---------------------------------------------------------------------------
-
-describe("ButlerChroniclerTimelinesTab — category breakdown", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupWithData();
-  });
-  afterEach(() => cleanup());
-
-  it("renders category breakdown items", () => {
-    renderTab();
-    const items = screen.getAllByTestId("category-breakdown-item");
-    expect(items.length).toBeGreaterThanOrEqual(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Day-close prose renders fresh response
-// ---------------------------------------------------------------------------
-
-describe("ButlerChroniclerTimelinesTab — day-close prose (fresh)", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupWithData();
-  });
-  afterEach(() => cleanup());
-
-  it("renders day-close prose container", () => {
-    renderTab();
-    expect(screen.getByTestId("day-close-prose")).toBeDefined();
-  });
-
-  it("renders the day-close prose text", () => {
-    renderTab();
-    expect(screen.getByText(/Today was a productive day/)).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Day-close stale marker
-// ---------------------------------------------------------------------------
-
-describe("ButlerChroniclerTimelinesTab — day-close stale marker", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupWithData();
-    // Override day-close with stale response
-    vi.mocked(useChroniclesDayClose).mockReturnValue({
-      data: DAY_CLOSE_STALE,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useChroniclesDayClose>);
-  });
-  afterEach(() => cleanup());
-
-  it("renders stale marker when day-close is stale", () => {
-    renderTab();
-    expect(screen.getByTestId("day-close-stale")).toBeDefined();
-  });
-
-  it("shows stale message text", () => {
-    renderTab();
-    expect(screen.getByText(/Summary is stale/)).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Empty states
-// ---------------------------------------------------------------------------
-
-describe("ButlerChroniclerTimelinesTab — empty states", () => {
+describe("ButlerChroniclerTimelinesTab — today timeline empty state", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupEmpty();
   });
   afterEach(() => cleanup());
 
-  it("shows empty state for KPI when no data", () => {
+  it("shows empty state when no episodes recorded", () => {
     renderTab();
+    expect(screen.queryByTestId("episode-spine")).toBeNull();
     const emptyLines = screen.getAllByTestId("empty-state-line");
     expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
+});
 
-  it("shows empty state for episodes when no episodes", () => {
+// ---------------------------------------------------------------------------
+// Tests: Sources status badge variants (live / stale / offline)
+// ---------------------------------------------------------------------------
+
+describe("ButlerChroniclerTimelinesTab — sources status badge variants", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+  afterEach(() => cleanup());
+
+  it("renders source-health-list when sources are configured", () => {
     renderTab();
-    expect(screen.queryByTestId("episode-spine")).toBeNull();
+    expect(screen.getByTestId("source-health-list")).toBeDefined();
   });
 
-  it("shows empty state for sources when no sources", () => {
+  it("renders a live badge for an active source with recent last_run_at", () => {
+    renderTab();
+    const liveBadges = screen.getAllByTestId("source-status-badge-live");
+    expect(liveBadges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders an offline badge for an inactive source", () => {
+    renderTab();
+    const offlineBadges = screen.getAllByTestId("source-status-badge-offline");
+    expect(offlineBadges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders a planned badge for a planned source", () => {
+    renderTab();
+    const plannedBadges = screen.getAllByTestId("source-status-badge-planned");
+    expect(plannedBadges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders a stale badge for an active source with old last_run_at", () => {
+    vi.mocked(useChroniclesSourceState).mockReturnValue({
+      data: { data: [STALE_SOURCE], meta: {} },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useChroniclesSourceState>);
+
+    renderTab();
+    const staleBadges = screen.getAllByTestId("source-status-badge-stale");
+    expect(staleBadges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows empty state when no sources configured", () => {
+    vi.mocked(useChroniclesSourceState).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useChroniclesSourceState>);
+
     renderTab();
     expect(screen.queryByTestId("source-health-list")).toBeNull();
-  });
-
-  it("shows empty state for category breakdown when no buckets", () => {
-    renderTab();
-    expect(screen.queryByTestId("category-breakdown-list")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -563,15 +564,10 @@ describe("ButlerChroniclerTimelinesTab — loading states", () => {
     renderTab();
     expect(screen.queryByTestId("episode-spine")).toBeNull();
   });
-
-  it("does not render category-breakdown-list while loading", () => {
-    renderTab();
-    expect(screen.queryByTestId("category-breakdown-list")).toBeNull();
-  });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: "Load more" pagination (useInfiniteQuery-based)
+// Tests: Pagination ("Load more")
 // ---------------------------------------------------------------------------
 
 describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
@@ -582,7 +578,6 @@ describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
   afterEach(() => cleanup());
 
   it("hides Load more button when hasNextPage is false", () => {
-    // setupWithData returns hasNextPage: false
     renderTab();
     expect(screen.queryByTestId("load-more-button")).toBeNull();
   });
@@ -621,11 +616,10 @@ describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
 
     renderTab();
     fireEvent.click(screen.getByTestId("load-more-button"));
-
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 
-  it("shows Loading… text on Load more button while isFetchingNextPage", () => {
+  it("shows Loading text on Load more button while isFetchingNextPage", () => {
     vi.mocked(useChroniclesEpisodesInfinite).mockReturnValue({
       data: {
         pages: [{ data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } }],
@@ -639,15 +633,12 @@ describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
     } as unknown as ReturnType<typeof useChroniclesEpisodesInfinite>);
 
     renderTab();
-
     const btn = screen.getByTestId("load-more-button");
     expect(btn.textContent).toBe("Loading…");
     expect((btn as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("renders episodes from all loaded pages (live update: first page stays active)", () => {
-    // Two pages loaded: page 0 has ep-1/ep-2, page 1 has ep-3 (a new episode on page 2).
-    // With useInfiniteQuery, both pages are kept active and all episodes appear.
     const EP_PAGE2 = {
       id: "ep-3",
       source_name: "toggl",
@@ -689,12 +680,9 @@ describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
 
     renderTab();
 
-    // All 3 episodes across both pages should appear
     const items = screen.getAllByTestId("episode-spine-item");
     expect(items.length).toBe(3);
-    // The page-2 episode title should be visible
     expect(screen.getByText("Afternoon session")).toBeDefined();
-    // The page-1 normal episode should also still be present
     expect(screen.getByText("Morning work block")).toBeDefined();
   });
 });
