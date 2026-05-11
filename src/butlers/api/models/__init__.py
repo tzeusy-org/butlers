@@ -374,6 +374,8 @@ from butlers.api.models.secrets import SecretEntry, SecretUpsertRequest  # noqa:
 from butlers.api.models.session import (  # noqa: E402
     DailyActivity,
     DailyActivityBucket,
+    HourlyActivity,
+    HourlyActivityBucket,
     SessionDetail,
     SessionKindBreakdown,
     SessionKindItem,
@@ -428,6 +430,8 @@ __all__ = [
     "ErrorResponse",
     "ExpireStaleActionsResponse",
     "HealthResponse",
+    "HourlyActivity",
+    "HourlyActivityBucket",
     "Issue",
     "ModuleInfo",
     "ModuleRuntimeStateResponse",

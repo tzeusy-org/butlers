@@ -28,6 +28,8 @@ from butlers.api.models import (
 from butlers.api.models.session import (
     DailyActivity,
     DailyActivityBucket,
+    HourlyActivity,
+    HourlyActivityBucket,
     ProcessLog,
     SessionDetail,
     SessionKindBreakdown,
@@ -443,3 +445,68 @@ async def get_butler_daily_activity(
     ]
 
     return ApiResponse[DailyActivity](data=DailyActivity(buckets=buckets))
+
+
+# ---------------------------------------------------------------------------
+# Butler-scoped analytics: GET /api/butlers/{name}/analytics/hourly-activity
+# ---------------------------------------------------------------------------
+
+_HOURLY_ACTIVITY_SQL = """
+WITH hours AS (
+  SELECT generate_series(
+    DATE_TRUNC('hour', NOW()) - (($1 - 1) * INTERVAL '1 hour'),
+    DATE_TRUNC('hour', NOW()),
+    '1 hour'
+  ) AS hour_start
+)
+SELECT
+  h.hour_start,
+  COUNT(s.id) AS sessions_count
+FROM hours h
+LEFT JOIN sessions s ON s.started_at >= h.hour_start
+                    AND s.started_at < h.hour_start + INTERVAL '1 hour'
+GROUP BY 1
+ORDER BY 1 DESC
+"""
+
+
+@butler_sessions_router.get(
+    "/{name}/analytics/hourly-activity",
+    response_model=ApiResponse[HourlyActivity],
+)
+async def get_butler_hourly_activity(
+    name: str,
+    window_hours: int = Query(24, ge=1, le=24, description="Rolling window in hours (default 24)"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[HourlyActivity]:
+    """Return hourly session counts for a butler over a rolling window.
+
+    Queries the butler's ``sessions`` table and returns a dense series of
+    ``HourlyActivityBucket`` entries covering the last ``window_hours`` clock
+    hours.  Every hour in the window is always present — zero-count hours are
+    included via ``generate_series`` + LEFT JOIN.  ``hour_index=0`` is the
+    current (most recent) hour; the SQL orders newest-first so the index equals
+    the enumeration position directly.
+
+    Returns 503 when the butler's DB pool is not registered.
+    """
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        )
+
+    rows = await pool.fetch(_HOURLY_ACTIVITY_SQL, window_hours)
+
+    buckets = [
+        HourlyActivityBucket(
+            hour_start=row["hour_start"],
+            sessions_count=int(row["sessions_count"]),
+            hour_index=idx,
+        )
+        for idx, row in enumerate(rows)
+    ]
+
+    return ApiResponse[HourlyActivity](data=HourlyActivity(buckets=buckets))
