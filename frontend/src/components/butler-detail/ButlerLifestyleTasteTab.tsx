@@ -18,7 +18,6 @@
 // Tracked in bu-4q6hg for future enhancement (digest persistence in lifestyle butler).
 // ---------------------------------------------------------------------------
 
-import { useMemo } from "react";
 import type { ReactNode } from "react";
 
 import { AlertTriangle } from "lucide-react";
@@ -53,15 +52,7 @@ function computeRecentlyLoggedCount(facts: Fact[]): number {
 // ---------------------------------------------------------------------------
 
 /** Predicates that represent user preferences / tastes. */
-const PREFERENCE_PREDICATES = [
-  "likes_genre",
-  "likes_cuisine",
-  "likes_artist",
-  "likes_author",
-  "likes_sport",
-  "likes_activity",
-  "likes_",
-];
+const PREFERENCE_PREDICATES = ["likes_"];
 
 /** Predicates that represent current consumption state. */
 const CONSUMPTION_PREDICATES = ["watches", "reads", "plays"];
@@ -396,18 +387,12 @@ export default function ButlerLifestyleTasteTab() {
   });
 
   // All recalled facts (for recent additions).
-  const allFacts = useMemo(() => recallData?.data ?? [], [recallData]);
+  const allFacts = recallData?.data ?? [];
 
   // KPI computations.
   const activePrefCount = preferenceFacts.length;
   const consumingCount = consumptionFacts.length;
-
-  // Recently logged: computed via a module-level function to keep Date.now()
-  // out of the render-path, satisfying the react-hooks/purity ESLint rule.
-  const recentlyLoggedCount = useMemo(
-    () => computeRecentlyLoggedCount(allFacts),
-    [allFacts],
-  );
+  const recentlyLoggedCount = computeRecentlyLoggedCount(allFacts);
 
   const kpiLoading = recallLoading || prefLoading || consumptionLoading;
   const kpiError = recallError || prefError || consumptionError;

@@ -334,20 +334,22 @@ describe("ButlerLifestyleTasteTab — KPI rendering", () => {
 
   it("shows consumption count from watches/reads/plays facts", () => {
     renderTab();
-    // 3 consumption facts — value also shows as "3" (same as prefs in this fixture)
-    // Verify KPI labels appear
+    // 3 consumption facts — value shows as "3" in the second KPI item
     expect(screen.getByText("Active preferences")).toBeDefined();
     expect(screen.getByText("Currently consuming")).toBeDefined();
     expect(screen.getByText("Recently logged")).toBeDefined();
     expect(screen.getByText("Weekly digest")).toBeDefined();
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[1].textContent).toContain("3");
   });
 
   it("shows recently logged count (facts within 7 days)", () => {
     renderTab();
-    // 5 facts within 7d (the 6 facts from PREFERENCE + CONSUMPTION, minus D10_AGO one)
-    // D2_AGO is within 7d, H1_AGO is within 7d. D10_AGO is NOT within 7d.
-    // preference: 3, consumption: 3 = 6 facts within 7d (all from ALL_RECALL_FACTS except D10_AGO)
-    expect(screen.getByText("Recently logged")).toBeDefined();
+    // ALL_RECALL_FACTS has 7 facts: 3 prefs (D2_AGO/H1_AGO) + 3 consumption (D2_AGO/H1_AGO) +
+    // 1 other (D10_AGO, older than 7d). So 6 facts fall within the 7d window.
+    // The recently-logged KPI is driven by allFacts (recallData), which is ALL_RECALL_FACTS.
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[2].textContent).toContain("6");
   });
 
   it("shows dash for weekly digest when no digests exist", () => {

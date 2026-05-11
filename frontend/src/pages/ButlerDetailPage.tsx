@@ -655,7 +655,7 @@ export default function ButlerDetailPage() {
 
           {showTasteTab && (
             <TabsContent value="taste">
-              <Suspense fallback={<TabFallback label="taste" />}>
+              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
                 <ButlerLifestyleTasteTab />
               </Suspense>
             </TabsContent>
