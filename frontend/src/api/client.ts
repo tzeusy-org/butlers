@@ -263,6 +263,7 @@ import type {
   TravelTripSummary,
   TravelUpcomingModel,
   TravelTripsParams,
+  TravelExpiringDocumentsResponse,
   HomeSnapshotStatus,
   HomeDeviceInventoryResponse,
   HomeMaintenanceItem,
@@ -3988,6 +3989,14 @@ export function getTravelTripSummary(tripId: string): Promise<TravelTripSummary>
 export function getTravelUpcoming(withinDays?: number): Promise<TravelUpcomingModel> {
   const qs = withinDays != null ? `?within_days=${withinDays}` : "";
   return apiFetch<TravelUpcomingModel>(`/travel/upcoming${qs}`);
+}
+
+/** Fetch documents expiring within the given look-ahead window (default: 180 days). */
+export function getTravelExpiringDocuments(
+  days?: number,
+): Promise<TravelExpiringDocumentsResponse> {
+  const qs = days != null ? `?days=${days}` : "";
+  return apiFetch<TravelExpiringDocumentsResponse>(`/travel/documents/expiring${qs}`);
 }
 
 // ---------------------------------------------------------------------------

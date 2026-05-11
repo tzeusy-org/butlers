@@ -142,3 +142,20 @@ class UpcomingTravelModel(BaseModel):
     actions: list[PreTripActionModel] = []
     window_start: str
     window_end: str
+
+
+class ExpiringDocumentModel(BaseModel):
+    """A document expiring within the requested look-ahead window."""
+
+    id: str
+    trip_id: str
+    type: str
+    name: str | None = None
+    expiry_date: str
+    days_until_expiry: int
+
+
+class ExpiringDocumentsResponse(BaseModel):
+    """Response for the cross-trip expiring-documents aggregation endpoint."""
+
+    documents: list[ExpiringDocumentModel] = []

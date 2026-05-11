@@ -31,15 +31,25 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell, Panel } from "@/components/butler-detail/atoms";
-import { useUpcomingTravel, useTravelTrips, useTravelTripSummary } from "@/hooks/use-travel";
+import { KpiCell, Panel, toneClass } from "@/components/butler-detail/atoms";
+import type { Tone } from "@/components/butler-detail/atoms";
+import {
+  useUpcomingTravel,
+  useTravelTrips,
+  useTravelTripSummary,
+  useExpiringDocuments,
+} from "@/hooks/use-travel";
 import type {
+  TravelExpiringDocument,
   TravelLeg,
   TravelAccommodation,
   TravelTimelineEntry,
   TravelTrip,
   TravelUpcomingTrip,
 } from "@/api/index.ts";
+
+// Look-ahead window for expiring-document alerts (must match hook default).
+const EXPIRING_DOCS_LOOKAHEAD_DAYS = 180;
 
 // ---------------------------------------------------------------------------
 // Shared primitives
@@ -112,6 +122,42 @@ function normaliseSortKey(sortKey: string | null | undefined): string | null {
   if (!sortKey) return null;
   // Normalise Python str(datetime) space to ISO T-separator.
   return sortKey.includes("T") ? sortKey : sortKey.replace(" ", "T");
+}
+
+// ---------------------------------------------------------------------------
+// Expiring docs banner (rendered above KPI strip when count > 0)
+// ---------------------------------------------------------------------------
+
+interface ExpiringDocsBannerProps {
+  documents: TravelExpiringDocument[];
+  lookaheadDays: number;
+}
+
+function ExpiringDocsBanner({ documents, lookaheadDays }: ExpiringDocsBannerProps) {
+  if (documents.length === 0) return null;
+
+  const urgentCount = documents.filter((d) => d.days_until_expiry <= 30).length;
+  const tone: Tone = urgentCount > 0 ? "red" : "amber";
+
+  return (
+    <div
+      className="flex items-center gap-2 px-4 py-2 border border-border/60 bg-muted/30 rounded text-sm"
+      data-testid="expiring-docs-banner"
+      role="alert"
+    >
+      <span className={`font-medium tnum ${toneClass(tone)}`} data-testid="expiring-docs-count">
+        {documents.length}
+      </span>
+      <span className="text-muted-foreground">
+        {documents.length === 1 ? "document" : "documents"} expiring within {lookaheadDays} days
+        {urgentCount > 0 && (
+          <span className={`${toneClass("red")} font-medium ml-1`}>
+            ({urgentCount} within 30 days)
+          </span>
+        )}
+      </span>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +643,9 @@ export default function ButlerTravelTripsTab() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
   const { data: upcoming, isLoading: upcomingLoading, error: upcomingError } = useUpcomingTravel(90);
+  const { data: expiringDocs } = useExpiringDocuments(EXPIRING_DOCS_LOOKAHEAD_DAYS);
+
+  const expiringDocuments = expiringDocs?.documents ?? [];
 
   function handleTripClick(trip: TravelTrip) {
     setSelectedTripId(trip.id);
@@ -608,6 +657,13 @@ export default function ButlerTravelTripsTab() {
 
   return (
     <div className="pt-4" data-testid="travel-trips-tab">
+      {/* Expiring docs banner — only shown when documents are expiring */}
+      {expiringDocuments.length > 0 && (
+        <div className="px-4 pb-3">
+          <ExpiringDocsBanner documents={expiringDocuments} lookaheadDays={EXPIRING_DOCS_LOOKAHEAD_DAYS} />
+        </div>
+      )}
+
       {/* Row 1: KPI strip — full 4-col width */}
       <KpiStrip upcoming={upcoming} isLoading={upcomingLoading} />
 

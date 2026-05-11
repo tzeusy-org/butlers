@@ -4081,6 +4081,21 @@ export interface TravelTripsParams {
   limit?: number;
 }
 
+/** A document expiring within the requested look-ahead window. */
+export interface TravelExpiringDocument {
+  id: string;
+  trip_id: string;
+  type: string;
+  name: string | null;
+  expiry_date: string;
+  days_until_expiry: number;
+}
+
+/** Response for the cross-trip expiring-documents aggregation endpoint. */
+export interface TravelExpiringDocumentsResponse {
+  documents: TravelExpiringDocument[];
+}
+
 // ---------------------------------------------------------------------------
 // Home butler types
 // ---------------------------------------------------------------------------

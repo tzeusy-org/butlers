@@ -29,6 +29,8 @@ if _spec is not None and _spec.loader is not None:
     AccommodationModel = _models.AccommodationModel
     AlertModel = _models.AlertModel
     DocumentModel = _models.DocumentModel
+    ExpiringDocumentModel = _models.ExpiringDocumentModel
+    ExpiringDocumentsResponse = _models.ExpiringDocumentsResponse
     LegModel = _models.LegModel
     PreTripActionModel = _models.PreTripActionModel
     ReservationModel = _models.ReservationModel
@@ -659,3 +661,76 @@ async def get_upcoming_travel(
         window_start=today.isoformat(),
         window_end=window_end.isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /documents/expiring — cross-trip expiring document aggregation
+# ---------------------------------------------------------------------------
+
+_VALID_DAYS = {30, 60, 90, 180, 365}
+
+
+@router.get("/documents/expiring", response_model=ExpiringDocumentsResponse)
+async def get_expiring_documents(
+    days: int = Query(
+        180,
+        description=("Look-ahead window in days. Allowed values: 30, 60, 90, 180, 365."),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ExpiringDocumentsResponse:
+    """Return documents expiring within the given look-ahead window, sorted by expiry_date asc.
+
+    Aggregates across all trips. Only documents with a non-null expiry_date that falls on or
+    before today + `days` days are returned.
+    """
+    if days not in _VALID_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid days value '{days}'. Must be one of: {sorted(_VALID_DAYS)}",
+        )
+
+    pool = _pool(db)
+
+    today = date.today()
+    cutoff = today + timedelta(days=days)
+
+    rows = await pool.fetch(
+        "SELECT id, trip_id, type, metadata, expiry_date"
+        " FROM travel.documents"
+        " WHERE expiry_date IS NOT NULL"
+        "   AND expiry_date >= $1"
+        "   AND expiry_date <= $2"
+        " ORDER BY expiry_date ASC",
+        today,
+        cutoff,
+    )
+
+    documents: list[ExpiringDocumentModel] = []
+    for r in rows:
+        d = dict(r)
+        expiry = d["expiry_date"]
+        if isinstance(expiry, date):
+            days_until = (expiry - today).days
+            expiry_str = expiry.isoformat()
+        else:
+            # Fallback for string values
+            expiry_date_parsed = date.fromisoformat(str(expiry))
+            days_until = (expiry_date_parsed - today).days
+            expiry_str = str(expiry)
+
+        # Extract a human-readable name from metadata if present
+        metadata = dict(d["metadata"]) if d["metadata"] else {}
+        name: str | None = metadata.get("name") or metadata.get("title")
+
+        documents.append(
+            ExpiringDocumentModel(
+                id=str(d["id"]),
+                trip_id=str(d["trip_id"]),
+                type=d["type"],
+                name=name,
+                expiry_date=expiry_str,
+                days_until_expiry=days_until,
+            )
+        )
+
+    return ExpiringDocumentsResponse(documents=documents)
