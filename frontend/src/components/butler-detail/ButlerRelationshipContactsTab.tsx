@@ -23,6 +23,8 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 
+import { AlertTriangle } from "lucide-react";
+
 import type {
   ContactDetail,
   DunbarEntry,
@@ -65,6 +67,16 @@ function EmptyStateLine({ children }: { children: ReactNode }) {
       data-testid="empty-state-line"
     >
       {children}
+    </p>
+  );
+}
+
+/** Error state: icon + destructive-tone text. */
+function ErrorLine({ children }: { children: ReactNode }) {
+  return (
+    <p className="flex items-center gap-1.5 text-sm text-destructive min-w-0" data-testid="error-state-line">
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="truncate">{children}</span>
     </p>
   );
 }
@@ -118,9 +130,10 @@ interface KpiStripProps {
   overdueCount: number;
   totalContacts: number;
   isLoading: boolean;
+  isError: boolean;
 }
 
-function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading }: KpiStripProps) {
+function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading, isError }: KpiStripProps) {
   const kpiSkeleton = (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 px-4 py-3">
       {Array.from({ length: 4 }, (_, i) => (
@@ -139,6 +152,19 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading 
           <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
         </CardHeader>
         <CardContent className="p-0 pb-4">{kpiSkeleton}</CardContent>
+      </Card>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card data-testid="kpi-strip">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ErrorLine>Could not load relationship overview.</ErrorLine>
+        </CardContent>
       </Card>
     );
   }
@@ -202,11 +228,16 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading 
 interface TierDistributionProps {
   ranking: DunbarRankingResponse | undefined;
   isLoading: boolean;
+  isError: boolean;
 }
 
-function TierDistributionPanel({ ranking, isLoading }: TierDistributionProps) {
+function TierDistributionPanel({ ranking, isLoading, isError }: TierDistributionProps) {
   if (isLoading && !ranking) {
     return <LoadingRows count={4} />;
+  }
+
+  if (isError) {
+    return <ErrorLine>Could not load tier distribution.</ErrorLine>;
   }
 
   if (!ranking || ranking.entries.length === 0) {
@@ -261,11 +292,16 @@ function TierDistributionPanel({ ranking, isLoading }: TierDistributionProps) {
 interface OverduePanelProps {
   contacts: OverdueContact[];
   isLoading: boolean;
+  isError: boolean;
 }
 
-function OverduePanel({ contacts, isLoading }: OverduePanelProps) {
+function OverduePanel({ contacts, isLoading, isError }: OverduePanelProps) {
   if (isLoading && contacts.length === 0) {
     return <LoadingRows count={3} />;
+  }
+
+  if (isError) {
+    return <ErrorLine>Could not load overdue contacts.</ErrorLine>;
   }
 
   if (contacts.length === 0) {
@@ -303,11 +339,12 @@ function OverduePanel({ contacts, isLoading }: OverduePanelProps) {
 interface WatchlistPanelProps {
   ranking: DunbarRankingResponse | undefined;
   isLoading: boolean;
+  isError: boolean;
   selectedContactId: string | null;
   onSelectContact: (id: string, name: string) => void;
 }
 
-function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact }: WatchlistPanelProps) {
+function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSelectContact }: WatchlistPanelProps) {
   if (isLoading && !ranking) {
     return (
       <div className="space-y-2" data-testid="watchlist-loading">
@@ -320,6 +357,10 @@ function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact
         ))}
       </div>
     );
+  }
+
+  if (isError) {
+    return <ErrorLine>Could not load watchlist.</ErrorLine>;
   }
 
   const entries = (ranking?.entries ?? []).filter((e) =>
@@ -401,6 +442,7 @@ interface ThreadPanelProps {
   contactId: string | null;
   contactName: string | null;
   isLoading: boolean;
+  isError: boolean;
   interactions: ContactInteraction[];
 }
 
@@ -410,7 +452,7 @@ const DIRECTION_META: Record<ContactInteraction["direction"], { label: string; t
   drafted: { label: "Draft", tone: "text-amber-500"        },
 };
 
-function ThreadPanel({ contactId, contactName, isLoading, interactions }: ThreadPanelProps) {
+function ThreadPanel({ contactId, contactName, isLoading, isError, interactions }: ThreadPanelProps) {
   if (!contactId) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="thread-empty-prompt">
@@ -421,6 +463,10 @@ function ThreadPanel({ contactId, contactName, isLoading, interactions }: Thread
 
   if (isLoading) {
     return <LoadingRows count={4} />;
+  }
+
+  if (isError) {
+    return <ErrorLine>Could not load thread.</ErrorLine>;
   }
 
   if (interactions.length === 0) {
@@ -501,16 +547,16 @@ export default function ButlerRelationshipContactsTab() {
   const [selectedContactName, setSelectedContactName] = useState<string | null>(null);
 
   // --- Panel 1 + 2 + 4: Dunbar ranking (tier distribution, watchlist, KPI warmth)
-  const { data: dunbarData, isLoading: dunbarLoading } = useDunbarRanking(true);
+  const { data: dunbarData, isLoading: dunbarLoading, isError: dunbarError } = useDunbarRanking(true);
 
   // --- Panel 1: KPI — total contacts count
-  const { data: contactsData, isLoading: contactsLoading } = useContacts({ limit: 1 });
+  const { data: contactsData, isLoading: contactsLoading, isError: contactsError } = useContacts({ limit: 1 });
 
   // --- Panel 3: Overdue contacts
-  const { data: overdueData, isLoading: overdueLoading } = useOverdueContacts(14);
+  const { data: overdueData, isLoading: overdueLoading, isError: overdueError } = useOverdueContacts(14);
 
   // --- Panel 5: Interaction thread for selected contact
-  const { data: interactionsData, isLoading: interactionsLoading } = useContactInteractions(
+  const { data: interactionsData, isLoading: interactionsLoading, isError: interactionsError } = useContactInteractions(
     selectedContactId ?? undefined,
     4,
   );
@@ -528,6 +574,7 @@ export default function ButlerRelationshipContactsTab() {
 
   const totalContacts = contactsData?.total ?? 0;
   const kpiLoading = dunbarLoading || contactsLoading || overdueLoading;
+  const kpiError = dunbarError || contactsError || overdueError;
 
   return (
     <div className="space-y-6" data-testid="relationship-contacts-tab">
@@ -537,6 +584,7 @@ export default function ButlerRelationshipContactsTab() {
         overdueCount={overdueContacts.length}
         totalContacts={totalContacts}
         isLoading={kpiLoading}
+        isError={kpiError}
       />
 
       {/* Panels 2–3: Tier distribution (2col) + Overdue (2col) */}
@@ -546,7 +594,7 @@ export default function ButlerRelationshipContactsTab() {
             <CardTitle className="text-sm font-medium">Tier distribution</CardTitle>
           </CardHeader>
           <CardContent>
-            <TierDistributionPanel ranking={dunbarData} isLoading={dunbarLoading} />
+            <TierDistributionPanel ranking={dunbarData} isLoading={dunbarLoading} isError={dunbarError} />
           </CardContent>
         </Card>
 
@@ -555,7 +603,7 @@ export default function ButlerRelationshipContactsTab() {
             <CardTitle className="text-sm font-medium">Overdue · 14d threshold</CardTitle>
           </CardHeader>
           <CardContent>
-            <OverduePanel contacts={overdueContacts} isLoading={overdueLoading} />
+            <OverduePanel contacts={overdueContacts} isLoading={overdueLoading} isError={overdueError} />
           </CardContent>
         </Card>
       </div>
@@ -569,6 +617,7 @@ export default function ButlerRelationshipContactsTab() {
           <WatchlistPanel
             ranking={dunbarData}
             isLoading={dunbarLoading}
+            isError={dunbarError}
             selectedContactId={selectedContactId}
             onSelectContact={handleSelectContact}
           />
@@ -590,6 +639,7 @@ export default function ButlerRelationshipContactsTab() {
               contactId={selectedContactId}
               contactName={selectedContactName}
               isLoading={interactionsLoading}
+              isError={interactionsError}
               interactions={interactions}
             />
           </CardContent>

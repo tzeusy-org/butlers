@@ -309,6 +309,38 @@ function setupLoading() {
   } as ReturnType<typeof useContactInteractions>);
 }
 
+function setupWithError() {
+  vi.mocked(useContacts).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useContacts>);
+
+  vi.mocked(useContact).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as unknown as ReturnType<typeof useContact>);
+
+  vi.mocked(useDunbarRanking).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useDunbarRanking>);
+
+  vi.mocked(useOverdueContacts).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useOverdueContacts>);
+
+  vi.mocked(useContactInteractions).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useContactInteractions>);
+}
+
 // ---------------------------------------------------------------------------
 // Tests: All panels present
 // ---------------------------------------------------------------------------
@@ -666,6 +698,94 @@ describe("ButlerRelationshipContactsTab — empty states", () => {
     renderTab();
     expect(screen.queryByTestId("watchlist-table")).toBeNull();
     expect(screen.getByText("No T1 or T2 contacts yet.")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Error states [bu-mnnoo]
+// ---------------------------------------------------------------------------
+
+describe("ButlerRelationshipContactsTab — error states", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithError();
+  });
+  afterEach(() => cleanup());
+
+  it("shows error state for KPI strip when all hooks error", () => {
+    renderTab();
+    expect(screen.getByText("Could not load relationship overview.")).toBeDefined();
+  });
+
+  it("shows error state for tier distribution when dunbar hook errors", () => {
+    renderTab();
+    expect(screen.getByText("Could not load tier distribution.")).toBeDefined();
+  });
+
+  it("shows error state for overdue panel when overdue hook errors", () => {
+    renderTab();
+    expect(screen.getByText("Could not load overdue contacts.")).toBeDefined();
+  });
+
+  it("shows error state for watchlist when dunbar hook errors", () => {
+    renderTab();
+    expect(screen.getByText("Could not load watchlist.")).toBeDefined();
+  });
+
+  it("renders error-state-line elements (not empty-state or data)", () => {
+    renderTab();
+    const errorLines = screen.getAllByTestId("error-state-line");
+    expect(errorLines.length).toBeGreaterThanOrEqual(4);
+    expect(screen.queryByTestId("tier-distribution-list")).toBeNull();
+    expect(screen.queryByTestId("overdue-list")).toBeNull();
+    expect(screen.queryByTestId("watchlist-table")).toBeNull();
+  });
+});
+
+describe("ButlerRelationshipContactsTab — thread panel error state", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // Use normal data for dunbar (watchlist visible) but error for interactions
+    vi.mocked(useContacts).mockReturnValue({
+      data: CONTACTS_DATA,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useContacts>);
+
+    vi.mocked(useContact).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useContact>);
+
+    vi.mocked(useDunbarRanking).mockReturnValue({
+      data: DUNBAR_DATA,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useDunbarRanking>);
+
+    vi.mocked(useOverdueContacts).mockReturnValue({
+      data: OVERDUE_DATA,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useOverdueContacts>);
+
+    vi.mocked(useContactInteractions).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as ReturnType<typeof useContactInteractions>);
+  });
+  afterEach(() => cleanup());
+
+  it("shows error message in thread panel when interactions hook errors (after contact selected)", () => {
+    renderTab();
+    // Select a contact so the thread panel becomes active
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    expect(aliceRow).toBeDefined();
+    fireEvent.click(aliceRow!);
+    expect(screen.getByText("Could not load thread.")).toBeDefined();
   });
 });
 
