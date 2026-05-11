@@ -6,6 +6,9 @@ inspecting per-module health status.
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +20,9 @@ class ModuleStatus(BaseModel):
     status: str
     phase: str | None = None
     error: str | None = None
+    oauth_status: Literal["granted", "reauth_needed", "not_configured"] | None = None
+    oauth_expires_at: datetime | None = None
+    credential_health: Literal["ok", "warning", "error"] | None = None
 
 
 class ButlerSummary(BaseModel):

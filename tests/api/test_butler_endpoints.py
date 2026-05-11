@@ -25,7 +25,8 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
-from butlers.api.routers.butlers import _get_db_manager
+from butlers.api.models.butler import ModuleStatus
+from butlers.api.routers.butlers import _get_db_manager, _get_module_health_via_mcp
 
 from .conftest import make_butler_dir, make_mock_mcp_manager, make_test_app
 
@@ -201,3 +202,194 @@ class TestButlerTrigger:
             )
         assert resp.status_code == 200
         assert resp.json()["data"]["session_id"] == "sess-1"
+
+
+# ---------------------------------------------------------------------------
+# ModuleStatus OAuth/credential fields — forward-compatible defaults
+# ---------------------------------------------------------------------------
+
+
+def _make_mcp_client_with_status(status_payload: dict) -> MagicMock:
+    """Return a mock MCP client whose status() call returns the given payload."""
+    block = MagicMock()
+    block.text = json.dumps(status_payload)
+    result = MagicMock()
+    result.content = [block]
+    result.is_error = False
+
+    client = MagicMock()
+    client.call_tool = AsyncMock(return_value=result)
+
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock(return_value=client)
+    return mgr
+
+
+class TestModuleStatusOAuthFields:
+    """OAuth/credential fields default to None when butler hasn't emitted them."""
+
+    def test_module_status_new_fields_default_none(self):
+        """All three new fields must be absent (None) by default."""
+        ms = ModuleStatus(name="gmail", enabled=True, status="connected")
+        assert ms.oauth_status is None
+        assert ms.oauth_expires_at is None
+        assert ms.credential_health is None
+
+    async def test_get_module_health_returns_none_fields_when_butler_omits_them(self):
+        """Active module without OAuth fields in status() → all three fields None."""
+        payload = {"health": "ok", "modules": {"gmail": {"status": "active"}}}
+        mgr = _make_mcp_client_with_status(payload)
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gmail"])
+
+        assert len(results) == 1
+        ms = results[0]
+        assert ms.name == "gmail"
+        assert ms.status == "connected"
+        assert ms.oauth_status is None
+        assert ms.oauth_expires_at is None
+        assert ms.credential_health is None
+
+    async def test_get_module_health_populates_oauth_status_when_present(self):
+        """oauth_status is forwarded from the MCP status payload."""
+        payload = {
+            "health": "ok",
+            "modules": {
+                "gmail": {
+                    "status": "active",
+                    "oauth_status": "granted",
+                    "credential_health": "ok",
+                }
+            },
+        }
+        mgr = _make_mcp_client_with_status(payload)
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gmail"])
+
+        ms = results[0]
+        assert ms.oauth_status == "granted"
+        assert ms.credential_health == "ok"
+        assert ms.oauth_expires_at is None  # not present in this payload
+
+    async def test_get_module_health_populates_oauth_expires_at_when_present(self):
+        """oauth_expires_at ISO string is parsed to a datetime object."""
+        payload = {
+            "health": "ok",
+            "modules": {
+                "gcal": {
+                    "status": "active",
+                    "oauth_status": "granted",
+                    "oauth_expires_at": "2026-06-01T12:00:00+00:00",
+                    "credential_health": "ok",
+                }
+            },
+        }
+        mgr = _make_mcp_client_with_status(payload)
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gcal"])
+
+        ms = results[0]
+        assert ms.oauth_status == "granted"
+        assert ms.oauth_expires_at is not None
+        assert ms.oauth_expires_at.year == 2026
+        assert ms.oauth_expires_at.month == 6
+
+    async def test_get_module_health_oauth_fields_present_on_error_status(self):
+        """OAuth fields are surfaced even when daemon_status != active."""
+        payload = {
+            "health": "ok",
+            "modules": {
+                "gmail": {
+                    "status": "failed",
+                    "error": "token expired",
+                    "oauth_status": "reauth_needed",
+                    "credential_health": "error",
+                }
+            },
+        }
+        mgr = _make_mcp_client_with_status(payload)
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gmail"])
+
+        ms = results[0]
+        assert ms.status == "error"
+        assert ms.oauth_status == "reauth_needed"
+        assert ms.credential_health == "error"
+
+    async def test_get_module_health_all_modules_none_when_unreachable(self):
+        """Unreachable butler returns ModuleStatus with status=unknown and None OAuth fields."""
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(
+            side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError("refused"))
+        )
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gmail", "gcal"])
+
+        assert len(results) == 2
+        for ms in results:
+            assert ms.status == "unknown"
+            assert ms.oauth_status is None
+            assert ms.oauth_expires_at is None
+            assert ms.credential_health is None
+
+    async def test_get_module_health_invalid_oauth_expires_at_yields_none(self):
+        """Unparseable oauth_expires_at string is silently dropped; no exception raised."""
+        payload = {
+            "health": "ok",
+            "modules": {
+                "gcal": {
+                    "status": "active",
+                    "oauth_status": "granted",
+                    "oauth_expires_at": "not-a-date",
+                    "credential_health": "ok",
+                }
+            },
+        }
+        mgr = _make_mcp_client_with_status(payload)
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gcal"])
+
+        ms = results[0]
+        assert ms.oauth_expires_at is None
+        assert ms.oauth_status == "granted"
+        assert ms.credential_health == "ok"
+
+    async def test_get_module_health_unknown_oauth_status_yields_none(self):
+        """Unknown oauth_status enum value is coerced to None without raising."""
+        payload = {
+            "health": "ok",
+            "modules": {
+                "gmail": {
+                    "status": "active",
+                    "oauth_status": "pending",  # not a known enum value
+                    "credential_health": "ok",
+                }
+            },
+        }
+        mgr = _make_mcp_client_with_status(payload)
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gmail"])
+
+        ms = results[0]
+        assert ms.oauth_status is None
+        assert ms.credential_health == "ok"
+
+    async def test_get_module_health_unknown_credential_health_yields_none(self):
+        """Unknown credential_health enum value is coerced to None without raising."""
+        payload = {
+            "health": "ok",
+            "modules": {
+                "gmail": {
+                    "status": "active",
+                    "oauth_status": "granted",
+                    "credential_health": "degraded",  # not a known enum value
+                }
+            },
+        }
+        mgr = _make_mcp_client_with_status(payload)
+
+        results = await _get_module_health_via_mcp("general", mgr, ["gmail"])
+
+        ms = results[0]
+        assert ms.oauth_status == "granted"
+        assert ms.credential_health is None
