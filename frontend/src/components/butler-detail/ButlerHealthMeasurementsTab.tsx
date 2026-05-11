@@ -177,7 +177,7 @@ function KpiQuartet({
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-testid="health-kpi-quartet">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="health-kpi-quartet">
       {kpis.map((kpi) => (
         <KpiCell key={kpi.label} {...kpi} />
       ))}

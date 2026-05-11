@@ -143,7 +143,7 @@ function KpiStrip({ upcoming, isLoading }: KpiStripProps) {
 
   return (
     <div
-      className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60"
+      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
       data-testid="travel-kpi-strip"
     >
       <Panel>

@@ -144,7 +144,7 @@ function KpiQuartet({
 
   return (
     <div
-      className="grid grid-cols-2 gap-3 lg:grid-cols-4"
+      className="grid grid-cols-2 gap-3 sm:grid-cols-4"
       data-testid="qa-kpi-quartet"
     >
       {kpis.map((kpi) => (
