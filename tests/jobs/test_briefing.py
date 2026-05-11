@@ -294,7 +294,8 @@ async def test_run_health_briefing_contribution_weight_from_facts_content():
     """Weight is read from public.facts; content field drives the display string.
 
     measurement_log stores content as "weight: <value> <unit>" (e.g. "weight: 82.5 kg").
-    The briefing strips the "<type>: " prefix so the highlight reads "Latest weight: 82.5 kg".
+    The briefing strips the "<type>: " prefix so the highlight reads "Latest weight: 82.5 kg"
+    and the summary reads "Weight: 82.5 kg." — without the redundant type prefix.
     """
     # Realistic fixture: measurement_log writes "weight: 82.5 kg" as content.
     weight_fact = {
@@ -304,9 +305,10 @@ async def test_run_health_briefing_contribution_weight_from_facts_content():
     }
     # fetch() is called twice (missed doses, taken doses); both return empty lists.
     pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
+    mock_write = AsyncMock()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
     ):
         result = await run_health_briefing_contribution(pool, None)
 
@@ -322,31 +324,38 @@ async def test_run_health_briefing_contribution_weight_from_facts_content():
     assert "valid_at IS NOT NULL" in sql
     assert "NULLS LAST" in sql
 
-    # SQL already checked above. The prefix-stripping behaviour is tested by asserting
-    # has_updates=True (i.e., a highlight was appended) and that the content path ran
-    # without error. Double-prefix ("Latest weight: weight: …") is prevented by the
-    # split(": ", 1)[-1] strip applied in briefing.py.
+    # Verify the highlight text strips "weight: " prefix — no double-prefix.
+    envelope = mock_write.call_args[0][1]
+    weight_highlight = next(h for h in envelope["highlights"] if h["category"] == "weight")
+    assert weight_highlight["text"] == "Latest weight: 82.5 kg"
+    # Summary must not contain "weight: weight:"
+    assert "weight: weight:" not in envelope["summary"].lower()
 
 
 async def test_run_health_briefing_contribution_weight_fallback_to_metadata():
-    """When content is absent the weight text comes from metadata value (no unit available).
+    """When content is empty the weight text falls back to metadata->>'value' (no unit).
 
-    measurement_log stores metadata as {"value": <raw_value>} — there is no "unit" key.
-    The fallback therefore produces just the numeric value string (e.g. "75.0").
+    public.facts.content is NOT NULL, so the realistic "no useful content" scenario
+    is an empty string, not NULL. measurement_log stores only {"value": <val>} in
+    metadata — there is no "unit" key — so the fallback produces the raw value string.
     """
     weight_fact = {
-        "content": None,
+        "content": "",  # empty string (NOT NULL column); triggers metadata fallback
         "value": "75.0",  # metadata->>'value'; no unit key in measurement_log metadata
         "valid_at": None,
     }
     pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
+    mock_write = AsyncMock()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
     ):
         result = await run_health_briefing_contribution(pool, None)
 
     assert result["has_updates"] is True
+    envelope = mock_write.call_args[0][1]
+    weight_highlight = next(h for h in envelope["highlights"] if h["category"] == "weight")
+    assert weight_highlight["text"] == "Latest weight: 75.0"
 
 
 async def test_run_health_briefing_contribution_no_weight_fact():
