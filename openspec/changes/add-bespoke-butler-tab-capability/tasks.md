@@ -28,7 +28,7 @@ checklist tracks the skeleton; actual panel content is per-butler scope.
       bu-iuol4.1 visual contract.
 - [ ] 2.3 finance / Finances tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.
-- [ ] 2.4 health / Health tab: implement Panel grid conforming to
+- [ ] 2.4 health / Measurements tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.
 - [ ] 2.5 home / Devices tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.

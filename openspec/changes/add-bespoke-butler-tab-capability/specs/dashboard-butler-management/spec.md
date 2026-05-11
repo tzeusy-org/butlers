@@ -126,7 +126,7 @@ and are not reclassified as bespoke.
 Each domain butler that carries a bespoke tab SHALL use the label registered in
 the table below. The labels in this table are normative; any implementation that
 uses a different label for a listed butler is non-conformant. Switchboard is
-explicitly absent — it carries no resident bespoke tab (Rule 9).
+explicitly absent: it carries no resident bespoke tab (Rule 9).
 
 | Butler       | Bespoke tab label | Justification                                                                   |
 |-------------|-------------------|---------------------------------------------------------------------------------|
@@ -134,9 +134,9 @@ explicitly absent — it carries no resident bespoke tab (Rule 9).
 | education   | Reviews           | Spaced-repetition review sessions are the primary user action; Anki integration is explicitly rejected by the manifesto ("We do not connect to Coursera, Anki, Canvas…"), so "Decks" is ruled out. |
 | finance     | Finances          | Direct mapping to the butler's domain: financial clarity over inbox noise.      |
 | general     | Collections       | The manifesto's organizing metaphor: "Collections let you group related things together." |
-| health      | Measurements      | Health butler leads with measurement tracking; the existing "Health" label is generic and collides with the butler name — "Measurements" is the primary tracking surface. |
+| health      | Measurements      | Health butler leads with measurement tracking; the existing "Health" label is generic and collides with the butler name ("Measurements" is the primary tracking surface). |
 | home        | Devices           | Device orchestration and monitoring is the bespoke surface: "Monitor device health." |
-| lifestyle   | Taste             | Manifesto central concept: "Taste is autobiography" — the butler is the keeper of your taste. |
+| lifestyle   | Taste             | Manifesto central concept: "Taste is autobiography"; the butler is the keeper of your taste. |
 | messenger   | Conversations     | Delivery health surface showing per-conversation send/receive outcomes; NOT a user-facing chat UI. |
 | qa          | Investigations    | Primary operator surface: active and historical investigation dispatch records. |
 | relationship| Contacts          | Contact management is the primary bespoke surface: "A living database of the people in your life." |
