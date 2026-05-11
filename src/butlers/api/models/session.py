@@ -1,7 +1,8 @@
 """Session-specific Pydantic models.
 
-Provides ``SessionDetail`` for the full session detail endpoint and extends
-the existing ``SessionSummary`` with a ``butler`` field for cross-butler views.
+Provides ``SessionDetail`` for the full session detail endpoint, extends
+the existing ``SessionSummary`` with a ``butler`` field for cross-butler
+views, and ``SessionKindBreakdown`` for the session-kinds analytics endpoint.
 """
 
 from __future__ import annotations
@@ -27,6 +28,25 @@ class ProcessLog(BaseModel):
     attempt_count: int | None = None
     created_at: datetime | None = None
     expires_at: datetime | None = None
+
+
+class SessionKindItem(BaseModel):
+    """A single trigger_source bucket with its session count."""
+
+    kind: str
+    count: int
+
+
+class SessionKindBreakdown(BaseModel):
+    """Breakdown of sessions by trigger_source for a rolling window.
+
+    Returned by ``GET /api/butlers/{name}/analytics/session-kinds``.
+
+    ``kinds`` lists every distinct ``trigger_source`` value found in the
+    window together with its count.  The list is empty when no sessions exist.
+    """
+
+    kinds: list[SessionKindItem] = []
 
 
 class SessionDetail(BaseModel):

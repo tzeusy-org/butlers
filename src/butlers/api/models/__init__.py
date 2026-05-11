@@ -371,7 +371,11 @@ from butlers.api.models.modules import (  # noqa: E402
 from butlers.api.models.notification import NotificationStats, NotificationSummary  # noqa: E402
 from butlers.api.models.search import SearchResponse, SearchResult  # noqa: E402
 from butlers.api.models.secrets import SecretEntry, SecretUpsertRequest  # noqa: E402
-from butlers.api.models.session import SessionDetail  # noqa: E402
+from butlers.api.models.session import (  # noqa: E402
+    SessionDetail,
+    SessionKindBreakdown,
+    SessionKindItem,
+)
 from butlers.api.models.state import StateEntry, StateSetRequest  # noqa: E402
 from butlers.api.models.timeline import TimelineEvent, TimelineResponse  # noqa: E402
 
@@ -441,6 +445,8 @@ __all__ = [
     "SecretEntry",
     "SecretUpsertRequest",
     "SessionDetail",
+    "SessionKindBreakdown",
+    "SessionKindItem",
     "SessionSummary",
     "SkillInfo",
     "StateEntry",
