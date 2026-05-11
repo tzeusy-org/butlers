@@ -537,6 +537,88 @@ describe("ButlerEducationReviewsTab — retention trend chart", () => {
     renderTab();
     expect(vi.mocked(useMindMapAnalyticsTrend)).toHaveBeenCalledWith("map-1", 7);
   });
+
+  // ---------------------------------------------------------------------------
+  // extractMasteryPct fallback key tests (bu-8mtqt follow-up coverage)
+  //
+  // The function tries mastery_pct → mastered_pct → mastery_percent in order.
+  // All three must produce a valid chart value; unknown keys must return null
+  // and be excluded from chartData.
+  // ---------------------------------------------------------------------------
+
+  it("renders retention value when trend uses mastered_pct key (fallback form 2)", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { mastered_pct: 0.72 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    const latestValue = screen.getByTestId("retention-latest-value");
+    expect(latestValue.textContent).toBe("72%");
+  });
+
+  it("renders retention value when trend uses mastery_percent key (fallback form 3)", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { mastery_percent: 0.88 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    const latestValue = screen.getByTestId("retention-latest-value");
+    expect(latestValue.textContent).toBe("88%");
+  });
+
+  it("shows empty state when metrics contain no known mastery key", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { unknown_key: 0.5 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    // All entries filtered → chartData empty → empty state shown
+    expect(screen.queryByTestId("retention-chart")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("clamps mastery_pct already expressed as percentage (>1 value → no multiply by 100)", () => {
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: {
+        mind_map_id: "map-1",
+        days: 7,
+        trend: [
+          { id: "t1", mind_map_id: "map-1", snapshot_date: "2026-05-10", metrics: { mastery_pct: 65 }, created_at: "2026-05-10T00:00:00Z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+
+    renderTab();
+    const latestValue = screen.getByTestId("retention-latest-value");
+    expect(latestValue.textContent).toBe("65%");
+  });
 });
 
 // ---------------------------------------------------------------------------

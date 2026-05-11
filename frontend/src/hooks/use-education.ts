@@ -257,6 +257,10 @@ export function useMindMapAnalyticsTrend(mindMapId: string | null, days: number 
     queryFn: () => getEducationMindMapAnalyticsTrend(mindMapId!, days),
     enabled: !!mindMapId,
     refetchInterval: 60_000,
+    // Align staleTime with the polling interval so window-focus/mount refetches
+    // don't fire extra requests between poll cycles (same rationale as
+    // useAllPendingReviews / useAllMasterySummaries).
+    staleTime: 60_000,
   });
 }
 
@@ -274,6 +278,8 @@ export function useMindMapStrugglingNodes(mindMapId: string | null) {
     queryFn: () => getEducationMindMapStrugglingNodes(mindMapId!),
     enabled: !!mindMapId,
     refetchInterval: 60_000,
+    // Align staleTime with the polling interval (see useMindMapAnalyticsTrend).
+    staleTime: 60_000,
   });
 }
 

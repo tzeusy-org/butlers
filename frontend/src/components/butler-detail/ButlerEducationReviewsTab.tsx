@@ -39,6 +39,7 @@ import {
   useAllFrontierNodes,
   useMindMapAnalyticsTrend,
 } from "@/hooks/use-education";
+import { toneClass } from "@/components/butler-detail/atoms";
 import type { PendingReviewNode, MindMapNode, MasterySummary, AnalyticsTrendEntry } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -81,10 +82,11 @@ interface AggregatedData {
 /** Aggregates all data for the Reviews tab in a single hook call per data type. */
 function useReviewsTabData(): AggregatedData {
   const { data: mapsResp, isLoading: mapsLoading } = useMindMaps({ status: "active" });
-  // Stable references: memoize the data array and the derived IDs array so that
-  // the inner useMemo deps don't fire on every render when data hasn't changed.
+  // Stable reference: memoize the data array so inner useMemo deps don't fire on
+  // every render when data hasn't changed (TanStack Query returns new object
+  // references on each render even when data is the same).
   const maps = useMemo(() => mapsResp?.data ?? [], [mapsResp?.data]);
-  const mapIds = useMemo(() => maps.map((m) => m.id), [maps]);
+  const mapIds = maps.map((m) => m.id);
 
   const pendingResults = useAllPendingReviews(mapIds);
   const summaryResults = useAllMasterySummaries(mapIds);
@@ -268,9 +270,9 @@ function KpiQuartet({
             <p
               className={`text-2xl font-bold tnum font-mono ${
                 kpi.tone === "red"
-                  ? "text-destructive"
+                  ? toneClass("red")
                   : kpi.tone === "amber"
-                    ? "text-amber-500"
+                    ? toneClass("amber")
                     : ""
               }`}
               data-testid="kpi-value"
@@ -310,7 +312,7 @@ function MindMapsProgressPanel({
         {isLoading ? (
           <LoadingLine />
         ) : items.length === 0 ? (
-          <EmptyStateLine>No active mind maps — start learning to see progress here.</EmptyStateLine>
+          <EmptyStateLine>No active mind maps (start learning to see progress here).</EmptyStateLine>
         ) : (
           <ul className="divide-y" data-testid="mind-maps-list">
             {items.map((item) => {
@@ -429,7 +431,7 @@ function ReviewTimelinePanel({
           <LoadingLine />
         ) : !hasAny ? (
           <EmptyStateLine>
-            No reviews scheduled — keep learning and reviews will appear here.
+            No reviews scheduled: keep learning and reviews will appear here.
           </EmptyStateLine>
         ) : (
           <div className="space-y-3">
