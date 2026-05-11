@@ -1,89 +1,159 @@
 // ---------------------------------------------------------------------------
-// ButlerRelationshipContactsTab — bu-ax5bi
+// ButlerRelationshipContactsTab — bu-iuol4.21
 //
 // Contacts bespoke tab for the Relationship butler detail page.
 //
-// Five sections (4-col grid):
-//   1. KPI strip (full-width)         — contacts count + upcoming dates + unlinked count
-//   2. Dunbar map (2col)              — GET /api/relationship/dunbar/ranking
-//   3. Upcoming dates (1col)          — GET /api/relationship/upcoming-dates
-//   4. Contact roster (3col)          — GET /api/relationship/contacts
-//   5. Group summary (1col)           — GET /api/relationship/groups
+// Six panels (4-col grid):
+//   1. KPI strip (span 4)          — tracked count, T1 warmth avg, cadence ok, overdue count
+//   2. Tier distribution (span 2)  — T1–T4 rows: count + warmth bar + warmth score
+//   3. Overdue (span 2)            — names ranked by owed_days desc
+//   4. Watchlist T1+T2 (span 4)    — scrollable table: warmth, last contact, tier
+//   5. Selected thread (span 3)    — last 4 messages with selected contact
+//   6. Known facts (span 1)        — bullet facts for selected contact
 //
-// All data comes from existing hooks. No new HTTP routes.
+// Hooks consumed:
+//   useDunbarRanking       — tier distribution + watchlist
+//   useUpcomingDates       — upcoming dates (KPI)
+//   useContacts            — contacts list (facts panel, total count)
+//   useGroups              — group summary
+//   useContactInteractions — NEW: contact interaction thread
+//   useOverdueContacts     — NEW: overdue contacts by owed_days
 // ---------------------------------------------------------------------------
 
+import { useState } from "react";
+import type { ReactNode } from "react";
+
 import type {
-  ContactListResponse,
-  ContactSummary,
+  ContactDetail,
   DunbarEntry,
   DunbarRankingResponse,
-  Group,
-  UpcomingDate,
-  UnlinkedContactsResponse,
+  ContactInteraction,
+  OverdueContact,
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useContacts, useGroups, useUnlinkedContacts, useUpcomingDates } from "@/hooks/use-contacts";
+import { KpiCell } from "./atoms";
+import { useContacts, useContact, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
 import { useDunbarRanking } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
-// Section 1: KPI Strip
+// Tier constants
 // ---------------------------------------------------------------------------
 
-interface KpiItemProps {
-  label: string;
-  value: string;
-  subLabel?: string;
+/** Dunbar tier display labels and target cadence in days. */
+const TIER_META: Record<number, { label: string; cadence_days: number }> = {
+  5:    { label: "T1 · Support 5",       cadence_days: 7  },
+  15:   { label: "T2 · Sympathy 15",     cadence_days: 14 },
+  50:   { label: "T3 · Friends 50",      cadence_days: 30 },
+  150:  { label: "T4 · Network 150",     cadence_days: 90 },
+  500:  { label: "T5 · Acquaintances",   cadence_days: 180 },
+  1500: { label: "T6 · Familiar",        cadence_days: 365 },
+};
+
+const TRACKED_TIERS = [5, 15, 50, 150];
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/** Empty-state placeholder: serif italic. */
+function EmptyStateLine({ children }: { children: ReactNode }) {
+  return (
+    <p
+      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
+      data-testid="empty-state-line"
+    >
+      {children}
+    </p>
+  );
 }
 
-function KpiItem({ label, value, subLabel }: KpiItemProps) {
+/** Loading placeholder row. */
+function LoadingRows({ count = 4 }: { count?: number }) {
   return (
-    <div className="flex flex-col gap-0.5" data-testid="kpi-item">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-2xl font-semibold tabular-nums" data-testid="kpi-value">
-        {value}
-      </span>
-      {subLabel && (
-        <span className="text-xs text-muted-foreground truncate">{subLabel}</span>
-      )}
+    <div className="space-y-2">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="flex items-center gap-2" data-testid="loading-line">
+          <Skeleton className="h-3 w-28 rounded" />
+          <Skeleton className="h-3 flex-1 rounded" />
+        </div>
+      ))}
     </div>
   );
 }
 
+/** Format a date string as short relative text ("3d ago" or ISO date). */
+function relativeDate(isoStr: string | null | undefined): string {
+  if (!isoStr) return "—";
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return "—";
+  const diffMs = Date.now() - d.getTime();
+  const diffDays = Math.floor(diffMs / 86_400_000);
+  if (diffDays < 0) return `in ${-diffDays}d`;
+  if (diffDays === 0) return "today";
+  if (diffDays === 1) return "1d ago";
+  if (diffDays < 365) return `${diffDays}d ago`;
+  return d.toLocaleDateString();
+}
+
+/** Clamp a number to [0, 1] and format as a percentage bar width. */
+function warmthBarWidth(warmth: number | null | undefined): string {
+  if (warmth == null) return "0%";
+  return `${Math.round(Math.max(0, Math.min(1, warmth)) * 100)}%`;
+}
+
+/** Format warmth as a display string (0.00–1.00). */
+function fmtWarmth(warmth: number | null | undefined): string {
+  if (warmth == null) return "—";
+  return warmth.toFixed(2);
+}
+
+// ---------------------------------------------------------------------------
+// Panel 1: KPI Strip (span 4)
+// ---------------------------------------------------------------------------
+
 interface KpiStripProps {
-  contacts: ContactListResponse | undefined;
-  upcomingDates: UpcomingDate[] | undefined;
-  unlinked: UnlinkedContactsResponse | undefined;
+  ranking: DunbarRankingResponse | undefined;
+  overdueCount: number;
+  totalContacts: number;
   isLoading: boolean;
 }
 
-function KpiStrip({ contacts, upcomingDates, unlinked, isLoading }: KpiStripProps) {
-  if (isLoading && !contacts && !upcomingDates && !unlinked) {
+function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading }: KpiStripProps) {
+  const kpiSkeleton = (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 px-4 py-3">
+      {Array.from({ length: 4 }, (_, i) => (
+        <div key={i} className="space-y-1" data-testid="loading-line">
+          <Skeleton className="h-2.5 w-20 rounded" />
+          <Skeleton className="h-7 w-12 rounded" />
+        </div>
+      ))}
+    </div>
+  );
+
+  if (isLoading && !ranking) {
     return (
       <Card data-testid="kpi-strip">
         <CardHeader>
           <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
-            {Array.from({ length: 3 }, (_, i) => (
-              <div key={i} className="space-y-1" data-testid="loading-line">
-                <Skeleton className="h-3 w-20 rounded" />
-                <Skeleton className="h-7 w-12 rounded" />
-              </div>
-            ))}
-          </div>
-        </CardContent>
+        <CardContent className="p-0 pb-4">{kpiSkeleton}</CardContent>
       </Card>
     );
   }
 
-  const contactsCount = contacts?.total ?? 0;
-  const upcomingCount = upcomingDates?.length ?? 0;
-  const nearestDate = upcomingDates?.[0];
-  const unlinkedCount = unlinked?.total ?? 0;
+  // Compute T1 warmth average over entries that actually have a warmth score.
+  const t1Entries = ranking?.entries.filter((e) => e.dunbar_tier === 5) ?? [];
+  const t1ScoredEntries = t1Entries.filter((e) => e.warmth != null);
+  const t1WarmthAvg =
+    t1ScoredEntries.length > 0
+      ? t1ScoredEntries.reduce((sum, e) => sum + e.warmth!, 0) / t1ScoredEntries.length
+      : null;
+
+  // Cadence ok count: tracked contacts not overdue (warmth >= 0.5 proxy).
+  const trackedEntries = ranking?.entries.filter((e) => TRACKED_TIERS.includes(e.dunbar_tier)) ?? [];
+  const cadenceOkCount = trackedEntries.filter((e) => (e.warmth ?? 0) >= 0.5).length;
 
   return (
     <Card data-testid="kpi-strip">
@@ -91,14 +161,34 @@ function KpiStrip({ contacts, upcomingDates, unlinked, isLoading }: KpiStripProp
         <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6">
-          <KpiItem label="Active contacts" value={String(contactsCount)} />
-          <KpiItem
-            label="Upcoming dates (30d)"
-            value={String(upcomingCount)}
-            subLabel={nearestDate ? `${nearestDate.contact_name} in ${nearestDate.days_until}d` : undefined}
-          />
-          <KpiItem label="Unlinked contacts" value={String(unlinkedCount)} />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
+          <div data-testid="kpi-item">
+            <KpiCell
+              label="Tracked contacts"
+              value={String(totalContacts)}
+            />
+          </div>
+          <div data-testid="kpi-item">
+            <KpiCell
+              label="T1 warmth avg"
+              value={fmtWarmth(t1WarmthAvg)}
+              tone={t1WarmthAvg != null && t1WarmthAvg >= 0.6 ? "green" : t1WarmthAvg != null && t1WarmthAvg < 0.4 ? "red" : "fg"}
+            />
+          </div>
+          <div data-testid="kpi-item">
+            <KpiCell
+              label="Warm / tracked"
+              value={`${cadenceOkCount} / ${trackedEntries.length}`}
+              tone={cadenceOkCount === trackedEntries.length ? "green" : "fg"}
+            />
+          </div>
+          <div data-testid="kpi-item">
+            <KpiCell
+              label="Overdue"
+              value={String(overdueCount)}
+              tone={overdueCount > 0 ? "amber" : "fg"}
+            />
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -106,84 +196,56 @@ function KpiStrip({ contacts, upcomingDates, unlinked, isLoading }: KpiStripProp
 }
 
 // ---------------------------------------------------------------------------
-// Section 2: Dunbar Map
+// Panel 2: Tier Distribution (span 2)
 // ---------------------------------------------------------------------------
 
-/** Dunbar tier ring sizes — tier values returned by the engine are the canonical layer sizes. */
-const DUNBAR_TIERS: { tier: number; label: string; colour: string }[] = [
-  { tier: 5, label: "Support 5", colour: "bg-violet-500" },
-  { tier: 15, label: "Sympathy 15", colour: "bg-blue-500" },
-  { tier: 50, label: "Friends 50", colour: "bg-green-500" },
-  { tier: 150, label: "Network 150", colour: "bg-yellow-500" },
-  { tier: 500, label: "Acquaintances 500", colour: "bg-orange-400" },
-  { tier: 1500, label: "Familiar 1500", colour: "bg-gray-400" },
-];
-
-interface DunbarMapProps {
+interface TierDistributionProps {
   ranking: DunbarRankingResponse | undefined;
   isLoading: boolean;
 }
 
-function DunbarMap({ ranking, isLoading }: DunbarMapProps) {
+function TierDistributionPanel({ ranking, isLoading }: TierDistributionProps) {
   if (isLoading && !ranking) {
-    return (
-      <div className="space-y-3" data-testid="dunbar-map-loading">
-        {Array.from({ length: 5 }, (_, i) => (
-          <div key={i} className="space-y-1" data-testid="loading-line">
-            <Skeleton className="h-3 w-20 rounded" />
-            <div className="flex flex-wrap gap-1">
-              {Array.from({ length: 3 }, (_, j) => (
-                <Skeleton key={j} className="h-5 w-16 rounded-full" />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    );
+    return <LoadingRows count={4} />;
   }
 
   if (!ranking || ranking.entries.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground" data-testid="empty-state-line">
-        No Dunbar ranking data available.
-      </p>
-    );
+    return <EmptyStateLine>No tier data available.</EmptyStateLine>;
   }
 
-  // Group entries by tier
   const byTier = new Map<number, DunbarEntry[]>();
-  for (const entry of ranking.entries) {
-    const tier = entry.dunbar_tier;
-    if (!byTier.has(tier)) byTier.set(tier, []);
-    byTier.get(tier)!.push(entry);
+  for (const e of ranking.entries) {
+    if (!byTier.has(e.dunbar_tier)) byTier.set(e.dunbar_tier, []);
+    byTier.get(e.dunbar_tier)!.push(e);
   }
 
   return (
-    <ul
-      className="space-y-3"
-      aria-label="Dunbar tier ranking"
-      data-testid="dunbar-map"
-    >
-      {DUNBAR_TIERS.map(({ tier, label, colour }) => {
+    <ul className="space-y-3" data-testid="tier-distribution-list">
+      {TRACKED_TIERS.map((tier) => {
         const members = byTier.get(tier) ?? [];
         if (members.length === 0) return null;
+        const meta = TIER_META[tier];
+        const scoredMembers = members.filter((m) => m.warmth != null);
+        const avgWarmth =
+          scoredMembers.length > 0
+            ? scoredMembers.reduce((s, m) => s + m.warmth!, 0) / scoredMembers.length
+            : null;
+
         return (
-          <li key={tier} data-testid="dunbar-tier-row">
-            <p className="text-xs font-medium text-muted-foreground mb-1">{label}</p>
-            <div className="flex flex-wrap gap-1">
-              {members.map((entry) => (
-                <Badge
-                  key={entry.contact_id}
-                  variant="outline"
-                  className={`text-xs ${entry.dunbar_tier_override ? "border-dashed" : ""}`}
-                >
-                  <span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${colour}`} aria-hidden />
-                  {entry.canonical_name}
-                  {entry.dunbar_tier_override && (
-                    <span className="ml-1 text-muted-foreground" title="Manually pinned">★</span>
-                  )}
-                </Badge>
-              ))}
+          <li key={tier} className="space-y-1" data-testid="tier-distribution-row">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-foreground">{meta.label}</span>
+              <span className="tnum text-muted-foreground">
+                {members.length} · {fmtWarmth(avgWarmth)}
+              </span>
+            </div>
+            {/* Warmth bar */}
+            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: warmthBarWidth(avgWarmth) }}
+                aria-label={`Warmth: ${fmtWarmth(avgWarmth)}`}
+              />
             </div>
           </li>
         );
@@ -193,187 +255,230 @@ function DunbarMap({ ranking, isLoading }: DunbarMapProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 3: Upcoming Dates Panel
+// Panel 3: Overdue (span 2)
 // ---------------------------------------------------------------------------
 
-interface UpcomingDatesPanelProps {
-  dates: UpcomingDate[] | undefined;
+interface OverduePanelProps {
+  contacts: OverdueContact[];
   isLoading: boolean;
 }
 
-function UpcomingDatesPanel({ dates, isLoading }: UpcomingDatesPanelProps) {
-  if (isLoading && !dates) {
-    return (
-      <div className="space-y-2" data-testid="upcoming-dates-loading">
-        {Array.from({ length: 4 }, (_, i) => (
-          <div key={i} className="flex items-center justify-between" data-testid="loading-line">
-            <Skeleton className="h-3 w-28 rounded" />
-            <Skeleton className="h-5 w-12 rounded-full" />
-          </div>
-        ))}
-      </div>
-    );
+function OverduePanel({ contacts, isLoading }: OverduePanelProps) {
+  if (isLoading && contacts.length === 0) {
+    return <LoadingRows count={3} />;
   }
 
-  if (!dates || dates.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground" data-testid="empty-state-line">
-        No upcoming dates in the next 60 days.
-      </p>
-    );
+  if (contacts.length === 0) {
+    return <EmptyStateLine>No overdue contacts. Cadence all clear.</EmptyStateLine>;
   }
+
+  // Sort descending by owed_days (most overdue first)
+  const sorted = [...contacts].sort((a, b) => b.owed_days - a.owed_days);
 
   return (
-    <ul
-      className="space-y-2"
-      aria-label="Upcoming dates"
-      data-testid="upcoming-dates-list"
-    >
-      {dates.map((item, idx) => (
+    <ul className="space-y-2" data-testid="overdue-list">
+      {sorted.map((c) => (
         <li
-          key={`${item.contact_id}-${item.date_type}-${idx}`}
-          className="flex items-start justify-between gap-2 text-sm"
-          data-testid="upcoming-date-row"
-        >
-          <div className="min-w-0">
-            <p className="font-medium truncate">{item.contact_name}</p>
-            <p className="text-xs text-muted-foreground capitalize">{item.date_type}</p>
-          </div>
-          <Badge
-            variant={item.days_until <= 7 ? "default" : "secondary"}
-            className="shrink-0 tabular-nums"
-          >
-            {item.days_until === 0 ? "today" : `${item.days_until}d`}
-          </Badge>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Section 4: Contact Roster
-// ---------------------------------------------------------------------------
-
-interface ContactRosterProps {
-  contacts: ContactSummary[] | undefined;
-  isLoading: boolean;
-}
-
-function ContactRoster({ contacts, isLoading }: ContactRosterProps) {
-  if (isLoading && (!contacts || contacts.length === 0)) {
-    return (
-      <div className="space-y-3" data-testid="contact-roster-loading">
-        {Array.from({ length: 6 }, (_, i) => (
-          <div key={i} className="flex items-center gap-3" data-testid="loading-line">
-            <Skeleton className="h-8 w-8 rounded-full shrink-0" />
-            <div className="flex-1 space-y-1">
-              <Skeleton className="h-3 w-32 rounded" />
-              <Skeleton className="h-3 w-20 rounded" />
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (!contacts || contacts.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground" data-testid="empty-state-line">
-        No contacts found.
-      </p>
-    );
-  }
-
-  return (
-    <ul
-      className="space-y-2 max-h-[480px] overflow-y-auto"
-      aria-label="Contact roster"
-      data-testid="contact-roster"
-    >
-      {contacts.map((contact) => (
-        <li
-          key={contact.id}
-          className="flex items-center gap-3 text-sm py-1"
-          data-testid="contact-roster-row"
-        >
-          {/* Avatar initials */}
-          <div
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium uppercase"
-            aria-hidden
-          >
-            {contact.first_name?.[0] ?? contact.full_name[0]}
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="font-medium truncate">{contact.full_name}</p>
-            {contact.last_interaction_at && (
-              <p className="text-xs text-muted-foreground">
-                Last: {new Date(contact.last_interaction_at).toLocaleDateString()}
-              </p>
-            )}
-          </div>
-          {contact.labels.length > 0 && (
-            <div className="flex shrink-0 gap-1">
-              {contact.labels.slice(0, 2).map((label) => (
-                <Badge key={label.id} variant="outline" className="text-xs">
-                  {label.name}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Section 5: Group Summary
-// ---------------------------------------------------------------------------
-
-interface GroupSummaryProps {
-  groups: Group[] | undefined;
-  isLoading: boolean;
-}
-
-function GroupSummary({ groups, isLoading }: GroupSummaryProps) {
-  if (isLoading && (!groups || groups.length === 0)) {
-    return (
-      <div className="space-y-2" data-testid="group-summary-loading">
-        {Array.from({ length: 4 }, (_, i) => (
-          <div key={i} className="flex items-center justify-between" data-testid="loading-line">
-            <Skeleton className="h-3 w-24 rounded" />
-            <Skeleton className="h-5 w-8 rounded-full" />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (!groups || groups.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground" data-testid="empty-state-line">
-        No groups configured.
-      </p>
-    );
-  }
-
-  return (
-    <ul
-      className="space-y-2"
-      aria-label="Groups"
-      data-testid="group-summary-list"
-    >
-      {groups.map((group) => (
-        <li
-          key={group.id}
+          key={c.contact_id}
           className="flex items-center justify-between gap-2 text-sm"
-          data-testid="group-summary-row"
+          data-testid="overdue-row"
         >
-          <p className="font-medium truncate">{group.name}</p>
-          <Badge variant="secondary" className="shrink-0 tabular-nums">
-            {group.member_count}
+          <span className="truncate font-medium">{c.name}</span>
+          <Badge
+            variant={c.owed_days > 30 ? "destructive" : "outline"}
+            className="shrink-0 tnum text-xs"
+          >
+            {c.owed_days}d overdue
           </Badge>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel 4: Watchlist T1+T2 (span 4, scrollable)
+// ---------------------------------------------------------------------------
+
+interface WatchlistPanelProps {
+  ranking: DunbarRankingResponse | undefined;
+  isLoading: boolean;
+  selectedContactId: string | null;
+  onSelectContact: (id: string, name: string) => void;
+}
+
+function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact }: WatchlistPanelProps) {
+  if (isLoading && !ranking) {
+    return (
+      <div className="space-y-2" data-testid="watchlist-loading">
+        {Array.from({ length: 5 }, (_, i) => (
+          <div key={i} className="flex items-center gap-3" data-testid="loading-line">
+            <Skeleton className="h-3 w-32 rounded" />
+            <Skeleton className="h-3 w-16 rounded" />
+            <Skeleton className="h-3 w-20 rounded" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const entries = (ranking?.entries ?? []).filter((e) =>
+    e.dunbar_tier === 5 || e.dunbar_tier === 15,
+  );
+
+  if (entries.length === 0) {
+    return <EmptyStateLine>No T1 or T2 contacts yet.</EmptyStateLine>;
+  }
+
+  // Sort by warmth desc (null last)
+  const sorted = [...entries].sort((a, b) => {
+    const wa = a.warmth ?? -1;
+    const wb = b.warmth ?? -1;
+    return wb - wa;
+  });
+
+  return (
+    <div className="overflow-x-auto max-h-[320px] overflow-y-auto" data-testid="watchlist">
+      <table className="w-full text-sm" data-testid="watchlist-table">
+        <thead className="sticky top-0 bg-card">
+          <tr className="border-b text-xs text-muted-foreground">
+            <th className="py-1.5 pr-4 text-left font-medium">Name</th>
+            <th className="py-1.5 pr-4 text-left font-medium">Tier</th>
+            <th className="py-1.5 text-right font-medium tnum">Warmth</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {sorted.map((entry) => {
+            const isSelected = entry.contact_id === selectedContactId;
+            return (
+              <tr
+                key={entry.contact_id}
+                data-testid="watchlist-row"
+                role="button"
+                tabIndex={0}
+                className={`cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${isSelected ? "bg-muted" : ""}`}
+                onClick={() => onSelectContact(entry.contact_id, entry.canonical_name)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelectContact(entry.contact_id, entry.canonical_name);
+                  }
+                }}
+              >
+                <td className="py-2 pr-4 font-medium truncate max-w-[180px]">
+                  {entry.canonical_name}
+                  {entry.dunbar_tier_override && (
+                    <span className="ml-1 text-muted-foreground" title="Manually pinned">★</span>
+                  )}
+                </td>
+                <td className="py-2 pr-4 text-xs text-muted-foreground">
+                  {TIER_META[entry.dunbar_tier]?.label ?? `T${entry.dunbar_tier}`}
+                </td>
+                <td className="py-2 text-right tnum font-mono text-xs">
+                  {fmtWarmth(entry.warmth)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel 5: Selected thread (span 3)
+// ---------------------------------------------------------------------------
+
+interface ThreadPanelProps {
+  contactId: string | null;
+  contactName: string | null;
+  isLoading: boolean;
+  interactions: ContactInteraction[];
+}
+
+const DIRECTION_META: Record<ContactInteraction["direction"], { label: string; tone: string }> = {
+  in:      { label: "In",    tone: "text-primary"          },
+  out:     { label: "Out",   tone: "text-emerald-500"      },
+  drafted: { label: "Draft", tone: "text-amber-500"        },
+};
+
+function ThreadPanel({ contactId, contactName, isLoading, interactions }: ThreadPanelProps) {
+  if (!contactId) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="thread-empty-prompt">
+        Select a contact from the watchlist above to see their recent messages.
+      </p>
+    );
+  }
+
+  if (isLoading) {
+    return <LoadingRows count={4} />;
+  }
+
+  if (interactions.length === 0) {
+    return <EmptyStateLine>No recorded interactions with {contactName ?? contactId}.</EmptyStateLine>;
+  }
+
+  return (
+    <ol className="space-y-3" data-testid="thread-list" aria-label={`Interactions with ${contactName}`}>
+      {interactions.map((ix) => {
+        const meta = DIRECTION_META[ix.direction] ?? { label: ix.direction, tone: "text-muted-foreground" };
+        return (
+          <li key={`${ix.ts}:${ix.direction}`} className="flex gap-2 text-sm" data-testid="thread-item">
+            <span className={`shrink-0 font-mono text-xs tnum ${meta.tone}`}>
+              {meta.label}
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground tnum">
+                {new Date(ix.ts).toLocaleDateString()}
+              </p>
+              <p className="truncate text-sm leading-snug">{ix.text}</p>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel 6: Known facts (span 1)
+// ---------------------------------------------------------------------------
+
+interface KnownFactsPanelProps {
+  contact: ContactDetail | undefined;
+  contactName: string | null;
+}
+
+function KnownFactsPanel({ contact, contactName }: KnownFactsPanelProps) {
+  if (!contactName) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="facts-empty-prompt">
+        Select a contact to see facts.
+      </p>
+    );
+  }
+
+  const facts: string[] = [];
+  if (contact?.email) facts.push(`Email: ${contact.email}`);
+  if (contact?.phone) facts.push(`Phone: ${contact.phone}`);
+  if (contact?.labels?.length) {
+    facts.push(`Labels: ${contact.labels.map((l) => l.name).join(", ")}`);
+  }
+  if (contact?.last_interaction_at) {
+    facts.push(`Last seen: ${relativeDate(contact.last_interaction_at)}`);
+  }
+
+  if (facts.length === 0) {
+    return <EmptyStateLine>No facts recorded yet.</EmptyStateLine>;
+  }
+
+  return (
+    <ul className="space-y-1.5" data-testid="known-facts-list">
+      {facts.map((fact, i) => (
+        <li key={i} className="text-xs text-foreground" data-testid="known-fact-item">
+          {fact}
         </li>
       ))}
     </ul>
@@ -385,73 +490,110 @@ function GroupSummary({ groups, isLoading }: GroupSummaryProps) {
 // ---------------------------------------------------------------------------
 
 export default function ButlerRelationshipContactsTab() {
-  // --- Section 1: KPI strip (contacts count, upcoming dates, unlinked count)
-  const { data: contactsData, isLoading: contactsLoading } = useContacts({ limit: 50 });
-  const { data: upcomingDatesData, isLoading: upcomingLoading } = useUpcomingDates(30);
-  const { data: unlinkedData, isLoading: unlinkedLoading } = useUnlinkedContacts({ limit: 1 });
+  const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
+  const [selectedContactName, setSelectedContactName] = useState<string | null>(null);
 
-  // --- Section 2: Dunbar map
+  // --- Panel 1 + 2 + 4: Dunbar ranking (tier distribution, watchlist, KPI warmth)
   const { data: dunbarData, isLoading: dunbarLoading } = useDunbarRanking(true);
 
-  // --- Section 3: Upcoming dates (60-day window for the panel)
-  const { data: upcomingDates60, isLoading: upcomingLoading60 } = useUpcomingDates(60);
+  // --- Panel 1: KPI — total contacts count
+  const { data: contactsData, isLoading: contactsLoading } = useContacts({ limit: 1 });
 
-  // --- Section 4: Contact roster (first page, 50 contacts)
-  // Reuse contactsData from above (already fetched for KPI)
+  // --- Panel 3: Overdue contacts
+  const { data: overdueData, isLoading: overdueLoading } = useOverdueContacts(14);
 
-  // --- Section 5: Group summary
-  const { data: groupsData, isLoading: groupsLoading } = useGroups();
+  // --- Panel 5: Interaction thread for selected contact
+  const { data: interactionsData, isLoading: interactionsLoading } = useContactInteractions(
+    selectedContactId ?? undefined,
+    4,
+  );
 
-  const kpiLoading = contactsLoading || upcomingLoading || unlinkedLoading;
+  // --- Panel 6: Facts for selected contact (fetch single record; enabled only when selected)
+  const { data: selectedContact } = useContact(selectedContactId ?? undefined);
+
+  const overdueContacts = overdueData?.contacts ?? [];
+  const interactions = interactionsData?.interactions ?? [];
+
+  function handleSelectContact(id: string, name: string) {
+    setSelectedContactId((prev) => (prev === id ? null : id));
+    setSelectedContactName((prev) => (prev === name ? null : name));
+  }
+
+  const totalContacts = contactsData?.total ?? 0;
+  const kpiLoading = dunbarLoading || contactsLoading || overdueLoading;
 
   return (
     <div className="space-y-6" data-testid="relationship-contacts-tab">
-      {/* Section 1: KPI strip — full width */}
-      <KpiStrip
-        contacts={contactsData}
-        upcomingDates={upcomingDatesData}
-        unlinked={unlinkedData}
+      {/* Panel 1: KPI strip — full width */}
+      <RelationshipKpiStrip
+        ranking={dunbarData}
+        overdueCount={overdueContacts.length}
+        totalContacts={totalContacts}
         isLoading={kpiLoading}
       />
 
-      {/* Sections 2–3: Dunbar map (2col) + Upcoming dates (1col) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2" data-testid="dunbar-map-card">
+      {/* Panels 2–3: Tier distribution (2col) + Overdue (2col) */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <Card className="lg:col-span-2" data-testid="tier-distribution-card">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Dunbar map</CardTitle>
+            <CardTitle className="text-sm font-medium">Tier distribution</CardTitle>
           </CardHeader>
           <CardContent>
-            <DunbarMap ranking={dunbarData} isLoading={dunbarLoading} />
+            <TierDistributionPanel ranking={dunbarData} isLoading={dunbarLoading} />
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-1" data-testid="upcoming-dates-card">
+        <Card className="lg:col-span-2" data-testid="overdue-card">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Upcoming dates · 60d</CardTitle>
+            <CardTitle className="text-sm font-medium">Overdue · 14d threshold</CardTitle>
           </CardHeader>
           <CardContent>
-            <UpcomingDatesPanel dates={upcomingDates60} isLoading={upcomingLoading60} />
+            <OverduePanel contacts={overdueContacts} isLoading={overdueLoading} />
           </CardContent>
         </Card>
       </div>
 
-      {/* Sections 4–5: Contact roster (3col) + Group summary (1col) */}
+      {/* Panel 4: Watchlist T1+T2 — full width, scrollable */}
+      <Card data-testid="watchlist-card">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">Watchlist · T1 + T2</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <WatchlistPanel
+            ranking={dunbarData}
+            isLoading={dunbarLoading}
+            selectedContactId={selectedContactId}
+            onSelectContact={handleSelectContact}
+          />
+        </CardContent>
+      </Card>
+
+      {/* Panels 5–6: Selected thread (3col) + Known facts (1col) */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <Card className="lg:col-span-3" data-testid="contact-roster-card">
+        <Card className="lg:col-span-3" data-testid="thread-card">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Contact roster</CardTitle>
+            <CardTitle className="text-sm font-medium">
+              {selectedContactName
+                ? `Thread · ${selectedContactName}`
+                : "Thread · select a contact"}
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <ContactRoster contacts={contactsData?.contacts} isLoading={contactsLoading} />
+            <ThreadPanel
+              contactId={selectedContactId}
+              contactName={selectedContactName}
+              isLoading={interactionsLoading}
+              interactions={interactions}
+            />
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-1" data-testid="group-summary-card">
+        <Card className="lg:col-span-1" data-testid="known-facts-card">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Groups</CardTitle>
+            <CardTitle className="text-sm font-medium">Known facts</CardTitle>
           </CardHeader>
           <CardContent>
-            <GroupSummary groups={groupsData?.groups} isLoading={groupsLoading} />
+            <KnownFactsPanel contact={selectedContact} contactName={selectedContactName} />
           </CardContent>
         </Card>
       </div>

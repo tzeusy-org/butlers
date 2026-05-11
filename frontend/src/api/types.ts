@@ -721,6 +721,7 @@ export interface ContactSummary {
   phone: string | null;
   labels: Label[];
   last_interaction_at: string | null;
+  warmth?: number | null;
 }
 
 /** A single contact_info entry (phone, email, address, etc.).
@@ -2623,6 +2624,7 @@ export interface DunbarEntry {
   dunbar_tier: number;
   dunbar_score: number;
   dunbar_tier_override: boolean;
+  warmth?: number | null;
   avatar_url?: string | null;
   aliases?: string[];
 }
@@ -2631,6 +2633,42 @@ export interface DunbarEntry {
 export interface DunbarRankingResponse {
   entries: DunbarEntry[];
   owner_entity_id: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Contact interactions (bu-iuol4.22)
+// ---------------------------------------------------------------------------
+
+/** A single interaction event for a contact (GET /contacts/{id}/interactions). */
+export interface ContactInteraction {
+  ts: string;
+  direction: "in" | "out" | "drafted";
+  text: string;
+}
+
+/** Response from GET /api/relationship/contacts/{contact_id}/interactions?limit=N */
+export interface ContactInteractionsResponse {
+  contact_id: string;
+  interactions: ContactInteraction[];
+}
+
+// ---------------------------------------------------------------------------
+// Overdue contacts (bu-iuol4.22)
+// ---------------------------------------------------------------------------
+
+/** A single overdue contact entry (GET /contacts/overdue?days=N). */
+export interface OverdueContact {
+  contact_id: string;
+  name: string;
+  tier: number;
+  owed_days: number;
+  last_contact_date: string | null;
+  target_cadence_days: number;
+}
+
+/** Response from GET /api/relationship/contacts/overdue?days=N */
+export interface OverdueContactsResponse {
+  contacts: OverdueContact[];
 }
 
 // ---------------------------------------------------------------------------
