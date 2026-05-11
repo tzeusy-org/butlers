@@ -340,8 +340,8 @@ function TrendSparkline({
           </LineChart>
         </ResponsiveContainer>
       </div>
-      {/* Screen-reader accessible label */}
-      <p className="sr-only" aria-label={`${label} trend · ${chartData.length} readings over 14 days`} />
+      {/* Screen-reader text alternative for the decorative chart */}
+      <p className="sr-only">{`${label} trend · ${chartData.length} readings over 14 days`}</p>
     </div>
   );
 }
