@@ -105,9 +105,11 @@ class Research(BaseModel):
 class LatestMeasurementEntry(BaseModel):
     """Latest measurement row for a single type.
 
-    ``value`` is the raw JSONB from the measurements table — may be a scalar
-    wrapper ``{"value": X}`` or a compound dict (e.g. blood pressure).
-    ``unit`` and ``metadata`` are absent on this table; they are ``None``.
+    Backed by the ``facts`` table (predicate ``measurement_{type}``).
+    ``value`` is extracted from ``metadata.value`` — may be a scalar or a
+    compound dict (e.g. blood pressure ``{"systolic": 120, "diastolic": 80}``).
+    ``unit`` is extracted from ``metadata.unit`` and ``metadata`` carries any
+    remaining fields (e.g. ``source``, ``notes``).
     """
 
     measured_at: str

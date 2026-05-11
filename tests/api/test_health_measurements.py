@@ -88,12 +88,22 @@ def _build_app(pool):
 
 class TestMeasurementsLatest:
     async def test_returns_requested_types(self):
-        """Returns a key per requested type; present types have data."""
+        """Returns a key per requested type; present types have data.
+
+        Rows use the facts schema: predicate = 'measurement_{type}',
+        valid_at = timestamp, metadata = JSONB with 'value' key.
+        """
         from datetime import UTC, datetime
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row({"type": "weight", "value": {"value": 70.5}, "measured_at": now}),
+            _row(
+                {
+                    "predicate": "measurement_weight",
+                    "valid_at": now,
+                    "metadata": {"value": 70.5, "unit": "kg"},
+                }
+            ),
         ]
         pool = _mock_pool(fetch_rows=rows)
         app = _build_app(pool)
@@ -108,7 +118,8 @@ class TestMeasurementsLatest:
         assert "measurements" in body
         assert "weight" in body["measurements"]
         assert body["measurements"]["weight"] is not None
-        assert body["measurements"]["weight"]["value"] == {"value": 70.5}
+        assert body["measurements"]["weight"]["value"] == 70.5
+        assert body["measurements"]["weight"]["unit"] == "kg"
         # heart_rate had no row → null
         assert body["measurements"]["heart_rate"] is None
 
@@ -153,17 +164,17 @@ class TestMeasurementsLatest:
 
         assert resp.status_code == 422
 
-    async def test_json_string_value_is_parsed(self):
-        """asyncpg may return JSONB as a string; the endpoint must parse it."""
+    async def test_compound_value_in_metadata(self):
+        """Compound JSONB values (e.g. blood pressure) are passed through from metadata."""
         from datetime import UTC, datetime
 
         now = datetime.now(tz=UTC)
         rows = [
             _row(
                 {
-                    "type": "blood_pressure",
-                    "value": json.dumps({"systolic": 120, "diastolic": 80}),
-                    "measured_at": now,
+                    "predicate": "measurement_blood_pressure",
+                    "valid_at": now,
+                    "metadata": {"value": {"systolic": 120, "diastolic": 80}},
                 }
             ),
         ]
@@ -179,6 +190,65 @@ class TestMeasurementsLatest:
         bp = resp.json()["measurements"]["blood_pressure"]
         assert bp is not None
         assert bp["value"]["systolic"] == 120
+
+    async def test_json_string_metadata_is_parsed(self):
+        """asyncpg may return JSONB metadata as a string; the endpoint must parse it."""
+        from datetime import UTC, datetime
+
+        now = datetime.now(tz=UTC)
+        rows = [
+            _row(
+                {
+                    "predicate": "measurement_heart_rate",
+                    "valid_at": now,
+                    "metadata": json.dumps({"value": 72, "unit": "bpm"}),
+                }
+            ),
+        ]
+        pool = _mock_pool(fetch_rows=rows)
+        app = _build_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health/measurements/latest?types=heart_rate")
+
+        assert resp.status_code == 200
+        hr = resp.json()["measurements"]["heart_rate"]
+        assert hr is not None
+        assert hr["value"] == 72
+        assert hr["unit"] == "bpm"
+
+    async def test_extra_metadata_fields_surfaced(self):
+        """Fields in metadata beyond value/unit are surfaced in the metadata key."""
+        from datetime import UTC, datetime
+
+        now = datetime.now(tz=UTC)
+        rows = [
+            _row(
+                {
+                    "predicate": "measurement_weight",
+                    "valid_at": now,
+                    "metadata": {"value": 80.0, "unit": "kg", "source": "manual", "notes": "AM"},
+                }
+            ),
+        ]
+        pool = _mock_pool(fetch_rows=rows)
+        app = _build_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health/measurements/latest?types=weight")
+
+        body = resp.json()
+        entry = body["measurements"]["weight"]
+        assert entry is not None
+        assert entry["value"] == 80.0
+        assert entry["unit"] == "kg"
+        # Extra metadata fields beyond value/unit should appear in the metadata dict.
+        assert entry["metadata"]["source"] == "manual"
+        assert entry["metadata"]["notes"] == "AM"
 
     async def test_503_when_pool_unavailable(self):
         """Returns HTTP 503 when the health DB pool is not available."""
@@ -308,7 +378,7 @@ class TestSleepLatest:
 
 class TestMeasurementSources:
     async def test_returns_sources_list(self):
-        """Returns aggregated source rows from measurements.value->>'source'."""
+        """Returns aggregated source rows from facts metadata->>'source'."""
         from datetime import UTC, datetime
 
         now = datetime.now(tz=UTC)
