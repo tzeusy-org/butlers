@@ -1,5 +1,3 @@
-import * as React from "react"
-
 import { cn } from "@/lib/utils"
 
 export type RangeValue = "24h" | "7d" | "30d"

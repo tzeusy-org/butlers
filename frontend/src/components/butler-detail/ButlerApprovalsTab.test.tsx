@@ -20,6 +20,7 @@ import { render, screen, cleanup } from "@testing-library/react"
 import { MemoryRouter } from "react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
+import type { ApprovalAction } from "@/api/types"
 import ButlerApprovalsTab from "./ButlerApprovalsTab"
 
 // ---------------------------------------------------------------------------
@@ -111,7 +112,7 @@ function renderTab(butlerName = "general") {
   )
 }
 
-function setupWithActions(actions: typeof HIGH_ACTION[]) {
+function setupWithActions(actions: ApprovalAction[]) {
   vi.mocked(useApprovalActions).mockReturnValue({
     data: { data: actions, meta: { total: actions.length, offset: 0, limit: 50, has_more: false } },
     isLoading: false,
