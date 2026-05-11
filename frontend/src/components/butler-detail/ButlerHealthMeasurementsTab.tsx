@@ -192,11 +192,18 @@ function KpiQuartet({
 /**
  * Build a 14-day ISO window (since/until) relative to now.
  * Returns ISO strings suitable for passing as URL query params.
+ *
+ * Timestamps are rounded to the start of the current hour so that TanStack
+ * Query's queryKey is stable across component remounts and navigation within
+ * the same hour window. Without rounding, every mount produces a unique key
+ * and the cache is never hit.
  */
 function fourteenDayWindow(): { since: string; until: string } {
   const until = new Date();
+  until.setMinutes(0, 0, 0); // round down to hour boundary
   const since = new Date(until);
   since.setDate(since.getDate() - 14);
+  since.setHours(0, 0, 0, 0); // start of day 14 days ago
   return {
     since: since.toISOString(),
     until: until.toISOString(),
@@ -398,9 +405,11 @@ function SleepStagesPanel({ sleep, isLoading }: { sleep: SleepLatestResponse | u
 function SourcesPanel({
   sources,
   isLoading,
+  isError,
 }: {
   sources: MeasurementSource[];
   isLoading: boolean;
+  isError: boolean;
 }) {
   return (
     <Card data-testid="sources-panel">
@@ -410,6 +419,8 @@ function SourcesPanel({
       <CardContent>
         {isLoading ? (
           <LoadingLine />
+        ) : isError ? (
+          <EmptyLine>Could not load sources.</EmptyLine>
         ) : sources.length === 0 ? (
           <EmptyLine>No sources connected.</EmptyLine>
         ) : (
@@ -567,7 +578,7 @@ export default function ButlerHealthMeasurementsTab() {
   const { data: sleepData, isLoading: sleepLoading } = useSleepLatest();
 
   // Row 4b: Sources
-  const { data: sourcesData, isLoading: sourcesLoading } = useMeasurementSources();
+  const { data: sourcesData, isLoading: sourcesLoading, isError: sourcesError } = useMeasurementSources();
   const sources = sourcesData ?? [];
 
   // Row 5: Medications + conditions
@@ -610,18 +621,20 @@ export default function ButlerHealthMeasurementsTab() {
           title="HRV"
           type="hrv"
           unit="ms"
+          drilldownLink="/health/measurements"
         />
         <TrendPanel
           title="Weight"
           type="weight"
           unit="kg"
+          drilldownLink="/health/measurements"
         />
       </div>
 
       {/* Row 4: Sleep stages + Sources */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <SleepStagesPanel sleep={sleepData} isLoading={sleepLoading} />
-        <SourcesPanel sources={sources} isLoading={sourcesLoading} />
+        <SourcesPanel sources={sources} isLoading={sourcesLoading} isError={sourcesError} />
       </div>
 
       {/* Row 5: Active medications + Recent conditions */}

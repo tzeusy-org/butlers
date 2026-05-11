@@ -198,6 +198,7 @@ function setupWithData() {
   vi.mocked(useMeasurementSources).mockReturnValue({
     data: SOURCES,
     isLoading: false,
+    isError: false,
   } as AnyQueryResult);
 
   vi.mocked(useMeasurements).mockReturnValue({
@@ -239,6 +240,7 @@ function setupEmpty() {
   vi.mocked(useMeasurementSources).mockReturnValue({
     data: [],
     isLoading: false,
+    isError: false,
   } as AnyQueryResult);
 
   vi.mocked(useMeasurements).mockReturnValue({
@@ -473,6 +475,19 @@ describe("ButlerHealthMeasurementsTab — sources list", () => {
     setupEmpty();
     renderTab();
     expect(screen.queryByTestId("sources-list")).toBeNull();
+  });
+
+  it("shows error message when sources query fails", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    vi.mocked(useMeasurementSources).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as AnyQueryResult);
+    renderTab();
+    expect(screen.queryByTestId("sources-list")).toBeNull();
+    expect(screen.getByText("Could not load sources.")).toBeDefined();
   });
 });
 

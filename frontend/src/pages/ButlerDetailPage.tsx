@@ -583,7 +583,7 @@ export default function ButlerDetailPage() {
 
           {showHealthTab && (
             <TabsContent value="health">
-              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
+              <Suspense fallback={<Skeleton className="h-[1000px] w-full rounded-lg" />}>
                 <ButlerHealthMeasurementsTab />
               </Suspense>
             </TabsContent>
