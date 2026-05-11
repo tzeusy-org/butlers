@@ -4,7 +4,8 @@ Each job handler:
 - Takes db_pool: asyncpg.Pool as first parameter
 - Returns a dict with a summary of work done
 - Uses async with db_pool.acquire() as conn for queries
-- Uses the health schema prefix (health.measurements, health.medications, etc.)
+- Uses health schema tables (health.medications, health.symptoms, etc.)
+  and public.facts for measurements
 - Is a no-op (returns early with zeros) when no matching data exists
 """
 
@@ -155,21 +156,34 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # 1. Measurement gap insights
     # -----------------------------------------------------------------------
-    # Get all distinct measurement types tracked in the health schema.
-    type_rows = await db_pool.fetch("SELECT DISTINCT type FROM health.measurements ORDER BY type")
-    measurement_types = [row["type"] for row in type_rows]
+    # Get all distinct measurement types tracked in the facts table.
+    # Each measurement type is encoded in the predicate as "measurement_{type}".
+    type_rows = await db_pool.fetch(
+        """
+        SELECT DISTINCT predicate
+        FROM public.facts
+        WHERE predicate LIKE 'measurement_%'
+          AND scope = 'health'
+          AND validity = 'active'
+        ORDER BY predicate
+        """
+    )
+    measurement_types = [row["predicate"].removeprefix("measurement_") for row in type_rows]
 
     for mtype in measurement_types:
         # Fetch last N measurements for this type to compute median cadence
+        predicate = f"measurement_{mtype}"
         history_rows = await db_pool.fetch(
             """
-            SELECT measured_at
-            FROM health.measurements
-            WHERE type = $1
-            ORDER BY measured_at DESC
+            SELECT valid_at AS measured_at
+            FROM public.facts
+            WHERE predicate = $1
+              AND scope = 'health'
+              AND validity = 'active'
+            ORDER BY valid_at DESC
             LIMIT $2
             """,
-            mtype,
+            predicate,
             _GAP_HISTORY_LIMIT,
         )
 
@@ -391,21 +405,31 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # Check consecutive-day logging streaks for each measurement type.
     # A "streak" is consecutive calendar days with at least one measurement of that type.
     streak_type_rows = await db_pool.fetch(
-        "SELECT DISTINCT type FROM health.measurements ORDER BY type"
+        """
+        SELECT DISTINCT predicate
+        FROM public.facts
+        WHERE predicate LIKE 'measurement_%'
+          AND scope = 'health'
+          AND validity = 'active'
+        ORDER BY predicate
+        """
     )
 
     for type_row in streak_type_rows:
-        mtype = type_row["type"]
+        mtype = type_row["predicate"].removeprefix("measurement_")
+        predicate = f"measurement_{mtype}"
 
         # Fetch all distinct calendar days for this type, most recent first
         streak_rows = await db_pool.fetch(
             """
-            SELECT DISTINCT DATE(measured_at AT TIME ZONE 'UTC') AS day
-            FROM health.measurements
-            WHERE type = $1
+            SELECT DISTINCT DATE(valid_at AT TIME ZONE 'UTC') AS day
+            FROM public.facts
+            WHERE predicate = $1
+              AND scope = 'health'
+              AND validity = 'active'
             ORDER BY day DESC
             """,
-            mtype,
+            predicate,
         )
 
         if not streak_rows:

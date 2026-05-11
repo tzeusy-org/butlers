@@ -29,14 +29,40 @@ def _today() -> date:
 CREATE_HEALTH_SCHEMA = "CREATE SCHEMA IF NOT EXISTS health"
 SET_HEALTH_SEARCH_PATH = "SET search_path TO health, public"
 
-CREATE_MEASUREMENTS_SQL = """
-CREATE TABLE IF NOT EXISTS health.measurements (
+# public.facts stores health measurements via predicate = "measurement_{type}".
+# This is the canonical write path; the old health.measurements table is no longer used.
+CREATE_FACTS_SQL = """
+CREATE TABLE IF NOT EXISTS public.facts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type TEXT NOT NULL,
-    value JSONB NOT NULL,
-    measured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    notes TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT,
+    search_vector TSVECTOR,
+    importance FLOAT NOT NULL DEFAULT 5.0,
+    confidence FLOAT NOT NULL DEFAULT 1.0,
+    decay_rate FLOAT NOT NULL DEFAULT 0.008,
+    permanence TEXT NOT NULL DEFAULT 'standard',
+    source_butler TEXT,
+    source_episode_id UUID,
+    supersedes_id UUID,
+    validity TEXT NOT NULL DEFAULT 'active',
+    scope TEXT NOT NULL DEFAULT 'global',
+    reference_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_confirmed_at TIMESTAMPTZ,
+    tags JSONB DEFAULT '[]'::jsonb,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    entity_id UUID,
+    object_entity_id UUID,
+    valid_at TIMESTAMPTZ DEFAULT NULL,
+    tenant_id TEXT NOT NULL DEFAULT 'owner',
+    request_id TEXT,
+    retention_class TEXT NOT NULL DEFAULT 'operational',
+    sensitivity TEXT NOT NULL DEFAULT 'normal',
+    idempotency_key TEXT,
+    observed_at TIMESTAMPTZ DEFAULT now(),
+    invalid_at TIMESTAMPTZ
 )
 """
 
@@ -81,7 +107,7 @@ CREATE TABLE IF NOT EXISTS health.symptoms (
 async def _setup_health_schema(pool) -> None:
     """Create the health schema and all required tables."""
     await pool.execute(CREATE_HEALTH_SCHEMA)
-    await pool.execute(CREATE_MEASUREMENTS_SQL)
+    await pool.execute(CREATE_FACTS_SQL)
     await pool.execute(CREATE_MEDICATIONS_SQL)
     await pool.execute(CREATE_MEDICATION_DOSES_SQL)
     await pool.execute(CREATE_SYMPTOMS_SQL)
@@ -106,23 +132,32 @@ async def _insert_measurement(
     value: dict | None = None,
     measured_at: datetime | None = None,
 ) -> str:
-    """Insert a measurement and return its UUID string."""
+    """Insert a measurement fact into public.facts and return its UUID string.
+
+    Measurements are stored as temporal facts with predicate = "measurement_{type}",
+    scope = "health", validity = "active", and valid_at = measured_at.
+    """
+    import json
+
     if value is None:
         value = {"value": 70.0}
     if measured_at is None:
         measured_at = _utcnow()
     mid = str(uuid.uuid4())
-    import json
+    predicate = f"measurement_{mtype}"
+    metadata = {"value": value.get("value", value) if isinstance(value, dict) else value}
 
     await pool.execute(
         """
-        INSERT INTO health.measurements (id, type, value, measured_at)
-        VALUES ($1::uuid, $2, $3::jsonb, $4)
+        INSERT INTO public.facts
+            (id, subject, predicate, content, validity, scope, valid_at, metadata)
+        VALUES ($1::uuid, 'owner', $2, $3, 'active', 'health', $4, $5::jsonb)
         """,
         mid,
-        mtype,
-        json.dumps(value),
+        predicate,
+        f"{mtype}: {metadata['value']}",
         measured_at,
+        json.dumps(metadata),
     )
     return mid
 
