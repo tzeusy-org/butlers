@@ -410,6 +410,25 @@ describe("ButlerHealthMeasurementsTab — trend panels empty states", () => {
     // 4 trend panels (glucose, heart rate, HRV, weight) → 4 empty-state lines
     expect(noReadingsLines.length).toBe(4);
   });
+
+  it("shows error state when trend data fetch fails", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    vi.mocked(useMeasurements).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as AnyQueryResult);
+    renderTab();
+    // Trend sparklines are replaced by error messages; no trend-chart present
+    expect(screen.queryByTestId("trend-chart")).toBeNull();
+    // Error messages contain "Could not load … trend."
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    const errorLines = emptyLines.filter((el) =>
+      el.textContent?.includes("Could not load"),
+    );
+    expect(errorLines.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe("ButlerHealthMeasurementsTab — trend panels with data", () => {

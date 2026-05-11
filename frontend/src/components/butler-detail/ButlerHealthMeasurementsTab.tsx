@@ -227,7 +227,7 @@ interface TrendPoint {
 
 /**
  * Custom tooltip styled with design tokens.
- * Matches the pattern used in ButlerFinanceFinancesTab (token-only bg/border).
+ * Uses popover/border token classes (border-border, bg-popover, text-popover-foreground).
  */
 function TrendTooltip({
   active,
@@ -261,17 +261,19 @@ function TrendTooltip({
 function TrendSparkline({
   measurements,
   isLoading,
+  isError,
   label,
   valueKey,
   unit,
 }: {
   measurements: Measurement[];
   isLoading: boolean;
+  isError?: boolean;
   label: string;
   valueKey?: string;
   unit?: string;
 }) {
-  const { chartData, latestEntry } = useMemo(() => {
+  const chartData = useMemo(() => {
     const sorted = measurements
       .slice()
       .sort((a, b) => new Date(a.measured_at).getTime() - new Date(b.measured_at).getTime());
@@ -287,26 +289,25 @@ function TrendSparkline({
       return [{ ts: m.measured_at, value: num, label: raw }];
     });
 
-    return {
-      chartData: points,
-      latestEntry: sorted.length > 0 ? sorted[sorted.length - 1] : null,
-    };
+    return points;
   }, [measurements, valueKey]);
 
   if (isLoading) {
     return <LoadingLine />;
   }
 
+  if (isError) {
+    return <EmptyLine>{`Could not load ${label.toLowerCase()} trend.`}</EmptyLine>;
+  }
+
   if (chartData.length === 0) {
     return <EmptyLine>No readings in window</EmptyLine>;
   }
 
-  const latestValue = latestEntry
-    ? extractScalar(
-        { measured_at: latestEntry.measured_at, value: latestEntry.value, unit: null, metadata: null },
-        valueKey,
-      )
-    : "—";
+  // Derive latest value from the last valid chartData point so the KPI always
+  // matches the chart (the unfiltered sorted array may end on a non-numeric reading).
+  const lastPoint = chartData[chartData.length - 1];
+  const latestValue = lastPoint?.label ?? "—";
 
   return (
     <div data-testid="trend-chart">
@@ -364,7 +365,7 @@ function TrendPanel({
   drilldownLink?: string;
 }) {
   const { since, until } = useMemo(() => fourteenDayWindow(), []);
-  const { data, isLoading } = useMeasurements({ type, since, until, limit: 50 });
+  const { data, isLoading, isError } = useMeasurements({ type, since, until, limit: 50 });
   const measurements = data?.data ?? [];
 
   return (
@@ -383,6 +384,7 @@ function TrendPanel({
         <TrendSparkline
           measurements={measurements}
           isLoading={isLoading}
+          isError={isError}
           label={title}
           valueKey={valueKey}
           unit={unit}
