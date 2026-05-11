@@ -407,10 +407,10 @@ describe("ButlerFinanceFinancesTab — KPI strip", () => {
 
   afterEach(() => cleanup());
 
-  it("renders three KPI values", () => {
+  it("renders four KPI value cells (redesigned 4-col strip)", () => {
     renderTab();
     const kpiValues = screen.getAllByTestId("kpi-value");
-    expect(kpiValues.length).toBeGreaterThanOrEqual(3);
+    expect(kpiValues.length).toBeGreaterThanOrEqual(4);
   });
 
   it("renders 'Monthly spend' label", () => {
@@ -426,6 +426,20 @@ describe("ButlerFinanceFinancesTab — KPI strip", () => {
   it("renders 'Next bill' label", () => {
     renderTab();
     expect(screen.getByText("Next bill")).toBeDefined();
+  });
+
+  it("renders 'Top category · 30d' label as the 4th KPI cell", () => {
+    renderTab();
+    // MonoLabel renders text in DOM; CSS uppercase does not change DOM text content.
+    expect(screen.getByText("Top category · 30d")).toBeDefined();
+  });
+
+  it("shows top category value when spend data is available", () => {
+    renderTab();
+    // CATEGORY_SUMMARY has groceries as the top category ($760). The KPI cell
+    // sub-label should contain the category name; the value shows the amount.
+    const kpiStrip = screen.getByTestId("finance-kpi-strip");
+    expect(kpiStrip.textContent).toContain("Groceries");
   });
 });
 
@@ -479,7 +493,10 @@ describe("ButlerFinanceFinancesTab — upcoming bills", () => {
 
   it("shows Electric Company in the bills list", () => {
     renderTab();
-    expect(screen.getByText("Electric Company")).toBeDefined();
+    // "Electric Company" may appear in the KPI next-bill sub-label and in the bills list;
+    // verify it appears at least once inside the bills list container.
+    const billsList = screen.getByTestId("upcoming-bills-list");
+    expect(billsList.textContent).toContain("Electric Company");
   });
 
   it("renders the upcoming bills list", () => {

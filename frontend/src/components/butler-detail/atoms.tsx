@@ -95,7 +95,9 @@ export interface PanelProps {
   scroll?: boolean
   height?: string
   accent?: boolean
-  children: React.ReactNode
+  /** Forwarded to the outer wrapper div as data-testid. */
+  testId?: string
+  children?: React.ReactNode
   className?: string
 }
 
@@ -113,6 +115,7 @@ export function Panel({
   scroll = false,
   height,
   accent = false,
+  testId,
   children,
   className,
 }: PanelProps) {
@@ -123,6 +126,7 @@ export function Panel({
         spanClass[span],
         className,
       )}
+      data-testid={testId}
     >
       {/* Left-edge accent stripe — only when accent=true */}
       {accent ? (
