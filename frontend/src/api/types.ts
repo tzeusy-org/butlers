@@ -4155,3 +4155,32 @@ export interface HomeCommandLogEntry {
   context_id: string | null;
   issued_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Butler logs (bu-iuol4.17)
+// ---------------------------------------------------------------------------
+
+/** Severity level for butler log lines. */
+export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+/** A single structured log line from GET /api/butlers/{name}/logs. */
+export interface ButlerLogLine {
+  ts: string;
+  level: LogLevel;
+  msg: string;
+  source: string | null;
+  request_id: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/** Query parameters for the butler logs endpoint. */
+export interface ButlerLogsParams {
+  level?: LogLevel;
+  since?: string;
+  limit?: number;
+}
+
+/** Response shape for GET /api/butlers/{name}/logs. */
+export interface ButlerLogsResponse {
+  lines: ButlerLogLine[];
+}

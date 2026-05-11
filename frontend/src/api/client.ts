@@ -271,6 +271,8 @@ import type {
   HomeCommandLogEntry,
   ContactInteractionsResponse,
   OverdueContactsResponse,
+  ButlerLogsParams,
+  ButlerLogsResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -625,6 +627,31 @@ export function getButlerSkills(name: string): Promise<ApiResponse<ButlerSkill[]
   return apiFetch<ApiResponse<ButlerSkill[]>>(
     `/butlers/${encodeURIComponent(name)}/skills`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Logs (bu-iuol4.17)
+// ---------------------------------------------------------------------------
+
+/** Fetch recent log lines for a specific butler.
+ *
+ * @param name   Butler name.
+ * @param params Optional filter/limit params.
+ *               - level: minimum severity filter (DEBUG < INFO < WARN < ERROR)
+ *               - since: ISO 8601 start timestamp
+ *               - limit: maximum number of lines (default 100)
+ */
+export function getButlerLogs(
+  name: string,
+  params?: ButlerLogsParams,
+): Promise<ButlerLogsResponse> {
+  const sp = new URLSearchParams();
+  if (params?.level) sp.set("level", params.level);
+  if (params?.since) sp.set("since", params.since);
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  const path = `/butlers/${encodeURIComponent(name)}/logs${qs ? `?${qs}` : ""}`;
+  return apiFetch<ButlerLogsResponse>(path);
 }
 
 // ---------------------------------------------------------------------------
