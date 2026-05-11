@@ -31,6 +31,7 @@ class ApprovalAction(BaseModel):
     """
 
     id: str
+    butler: str
     tool_name: str
     tool_args: dict[str, Any]
     status: str

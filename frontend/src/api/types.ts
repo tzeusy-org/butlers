@@ -1385,6 +1385,7 @@ export interface TargetContact {
 
 export interface ApprovalAction {
   id: string;
+  butler: string;
   tool_name: string;
   tool_args: Record<string, unknown>;
   status: string;
