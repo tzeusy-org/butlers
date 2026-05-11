@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 /**
- * ButlerTravelTripsTab — RTL tests pinning four sections.
+ * ButlerTravelTripsTab — RTL tests pinning the redesigned 4-col panel grid.
  *
  * Tests:
- *  - Renders four sections (KPI strip, pre-trip actions, trip roster, no drawer by default)
+ *  - Renders three rows (KPI strip, week ahead + checklist, trips roster; no drawer by default)
  *  - Loading state shows placeholders, not empty-state text
  *  - Empty states are shown explicitly (no infinite spinner)
  *  - KPI values reflect data
- *  - Pre-trip actions list renders with severity badges
+ *  - Week ahead schedule renders legs and check-ins within 7 days
+ *  - Week ahead schedule shows empty state when no near-term legs
+ *  - Upcoming checklist renders pre-trip actions ranked by urgency
  *  - Trip roster rows render with status badges
  *  - Trip detail drawer opens on row-click
  *  - Trip detail drawer closes on close button
  *
- * bead: bu-0eac9
+ * bead: bu-iuol4.36 (redesign)
+ * original bead: bu-0eac9
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -42,6 +45,12 @@ import {
 // Fixture data
 // ---------------------------------------------------------------------------
 
+// Departure in 2 days from "now" so it appears in week-ahead. Test-local date
+// string computed relative to a fixed offset from today is not needed since
+// we control the hook return value directly.
+const NEAR_DEPARTURE_AT = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+const FAR_DEPARTURE_AT = "2026-06-10T11:00:00Z"; // Fixed far-future date — outside 7d window
+
 const UPCOMING_DATA = {
   upcoming_trips: [
     {
@@ -56,7 +65,26 @@ const UPCOMING_DATA = {
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
-      legs: [],
+      legs: [
+        {
+          id: "leg-near",
+          trip_id: "trip-1",
+          type: "flight",
+          carrier: "ANA",
+          departure_airport_station: "SFO",
+          departure_city: "San Francisco",
+          departure_at: NEAR_DEPARTURE_AT,
+          arrival_airport_station: "NRT",
+          arrival_city: "Tokyo",
+          arrival_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+          confirmation_number: "ABC123",
+          pnr: "XYZ",
+          seat: null,
+          metadata: {},
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
       accommodations: [],
       days_until_departure: 31,
     },
@@ -147,7 +175,7 @@ const TRIP_SUMMARY = {
       carrier: "ANA",
       departure_airport_station: "SFO",
       departure_city: "San Francisco",
-      departure_at: "2026-06-10T11:00:00Z",
+      departure_at: FAR_DEPARTURE_AT,
       arrival_airport_station: "NRT",
       arrival_city: "Tokyo",
       arrival_at: "2026-06-11T15:00:00Z",
@@ -180,7 +208,7 @@ const TRIP_SUMMARY = {
     {
       entity_type: "leg",
       entity_id: "leg-1",
-      sort_key: "2026-06-10T11:00:00Z",
+      sort_key: FAR_DEPARTURE_AT,
       summary: "Flight San Francisco → Tokyo (ANA)",
     },
     {
@@ -266,7 +294,7 @@ function setupLoading() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: four sections are rendered
+// Tests: sections present
 // ---------------------------------------------------------------------------
 
 describe("ButlerTravelTripsTab — sections present", () => {
@@ -287,14 +315,14 @@ describe("ButlerTravelTripsTab — sections present", () => {
     expect(screen.getByTestId("travel-kpi-strip")).toBeDefined();
   });
 
-  it("renders the pre-trip actions panel", () => {
+  it("renders the pre-trip actions list (checklist panel)", () => {
     renderTab();
-    expect(screen.getByTestId("pre-trip-actions-panel")).toBeDefined();
+    expect(screen.getByTestId("pre-trip-actions-list")).toBeDefined();
   });
 
   it("renders the trip roster", () => {
     renderTab();
-    expect(screen.getByTestId("trip-roster")).toBeDefined();
+    expect(screen.getByTestId("trip-roster-list")).toBeDefined();
   });
 
   it("does not render the trip detail drawer by default", () => {
@@ -315,7 +343,7 @@ describe("ButlerTravelTripsTab — KPI values", () => {
 
   afterEach(() => cleanup());
 
-  it("renders four KPI cards", () => {
+  it("renders four KPI cells", () => {
     renderTab();
     expect(screen.getByTestId("kpi-next-departure")).toBeDefined();
     expect(screen.getByTestId("kpi-active-count")).toBeDefined();
@@ -323,11 +351,10 @@ describe("ButlerTravelTripsTab — KPI values", () => {
     expect(screen.getByTestId("kpi-open-actions")).toBeDefined();
   });
 
-  it("shows next departure trip name with days until", () => {
+  it("shows next departure trip name", () => {
     renderTab();
     const kpi = screen.getByTestId("kpi-next-departure");
     expect(kpi.textContent).toContain("Tokyo Adventure");
-    expect(kpi.textContent).toContain("31d");
   });
 
   it("shows active trip count", () => {
@@ -344,13 +371,20 @@ describe("ButlerTravelTripsTab — KPI values", () => {
     renderTab();
     expect(screen.getByTestId("kpi-open-actions").textContent).toBe("2");
   });
+
+  it("shows '—' for next departure KPI when no upcoming trips", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    renderTab();
+    expect(screen.getByTestId("kpi-next-departure").textContent).toBe("—");
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Pre-trip actions
+// Tests: Week ahead schedule
 // ---------------------------------------------------------------------------
 
-describe("ButlerTravelTripsTab — pre-trip actions", () => {
+describe("ButlerTravelTripsTab — week ahead schedule", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
@@ -358,17 +392,78 @@ describe("ButlerTravelTripsTab — pre-trip actions", () => {
 
   afterEach(() => cleanup());
 
-  it("renders pre-trip action items", () => {
+  it("renders week-ahead entries when legs are within 7 days", () => {
+    renderTab();
+    const entries = screen.getAllByTestId("week-ahead-entry");
+    // UPCOMING_DATA has one leg with departure NEAR_DEPARTURE_AT (2 days away)
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows the route label for a near-term leg", () => {
+    renderTab();
+    const list = screen.getByTestId("week-ahead-list");
+    // Route includes "San Francisco → Tokyo" from departure_city and arrival_city
+    expect(list.textContent).toContain("San Francisco");
+    expect(list.textContent).toContain("Tokyo");
+  });
+
+  it("shows empty state when no legs or check-ins are within 7 days", () => {
+    // Use empty data (no legs at all)
+    vi.resetAllMocks();
+    setupEmpty();
+    renderTab();
+    // At least one empty-state-line should appear (from week-ahead and/or checklist)
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
+    // The week-ahead specific message
+    const found = emptyLines.some((el) =>
+      el.textContent?.includes("No legs or check-ins in the next 7 days"),
+    );
+    expect(found).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Upcoming checklist (pre-trip actions)
+// ---------------------------------------------------------------------------
+
+describe("ButlerTravelTripsTab — upcoming checklist", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("renders pre-trip action items ranked by urgency", () => {
     renderTab();
     const items = screen.getAllByTestId("pre-trip-action-item");
     expect(items.length).toBe(2);
   });
 
-  it("shows high-severity action message", () => {
+  it("shows the high-severity action first (urgency_rank 1)", () => {
     renderTab();
-    expect(
-      screen.getByText("No boarding pass attached — upload or link boarding pass before departure"),
-    ).toBeDefined();
+    const items = screen.getAllByTestId("pre-trip-action-item");
+    // First item should contain the high-severity message
+    expect(items[0].textContent).toContain("No boarding pass attached");
+  });
+
+  it("shows the low-severity action second (urgency_rank 2)", () => {
+    renderTab();
+    const items = screen.getAllByTestId("pre-trip-action-item");
+    expect(items[1].textContent).toContain("no seat assigned");
+  });
+
+  it("shows empty state when no actions", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    renderTab();
+    expect(screen.queryByTestId("pre-trip-actions-list")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    const found = emptyLines.some((el) =>
+      el.textContent?.includes("All clear"),
+    );
+    expect(found).toBe(true);
   });
 });
 
@@ -392,14 +487,23 @@ describe("ButlerTravelTripsTab — trip roster", () => {
 
   it("shows trip names in the roster", () => {
     renderTab();
-    // Use getAllByText since "Tokyo Adventure" also appears in pre-trip actions panel
+    // Use getAllByText since "Tokyo Adventure" also appears in other panels
     expect(screen.getAllByText("Tokyo Adventure").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Paris Weekend")).toBeDefined();
+  });
+
+  it("shows empty state for trip roster when no trips", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    renderTab();
+    expect(screen.queryByTestId("trip-roster-list")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Trip detail drawer
+// Tests: Trip detail drawer — open/close
 // ---------------------------------------------------------------------------
 
 describe("ButlerTravelTripsTab — trip detail drawer", () => {
@@ -420,9 +524,7 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
   it("shows the trip name in the drawer header", () => {
     renderTab();
     fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
-    // "Tokyo Adventure" appears in roster, actions, and drawer header — just confirm drawer is there
     expect(screen.getByTestId("trip-detail-drawer")).toBeDefined();
-    // The drawer header shows the trip name
     const drawer = screen.getByTestId("trip-detail-drawer");
     expect(drawer.textContent).toContain("Tokyo Adventure");
   });
@@ -440,39 +542,6 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     expect(screen.getByTestId("trip-detail-drawer")).toBeDefined();
     fireEvent.click(screen.getByTestId("trip-drawer-close"));
     expect(screen.queryByTestId("trip-detail-drawer")).toBeNull();
-  });
-
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Empty states
-// ---------------------------------------------------------------------------
-
-describe("ButlerTravelTripsTab — empty states", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupEmpty();
-  });
-
-  afterEach(() => cleanup());
-
-  it("shows empty state for pre-trip actions when no actions", () => {
-    renderTab();
-    expect(screen.queryByTestId("pre-trip-actions-list")).toBeNull();
-    const emptyLines = screen.getAllByTestId("empty-state-line");
-    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("shows empty state for trip roster when no trips", () => {
-    renderTab();
-    expect(screen.queryByTestId("trip-roster-list")).toBeNull();
-    const emptyLines = screen.getAllByTestId("empty-state-line");
-    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("shows '—' for next departure KPI when no upcoming trips", () => {
-    renderTab();
-    expect(screen.getByTestId("kpi-next-departure").textContent).toBe("—");
   });
 });
 

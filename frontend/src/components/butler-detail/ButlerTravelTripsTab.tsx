@@ -5,13 +5,16 @@
  * bespoke tab on the travel butler detail page. Consumes existing hooks only —
  * no new HTTP routes are added.
  *
- * Four sections:
+ * Three rows (4-col panel grid):
  *  1. KPI strip        — next departure, active count, planned count, open actions.
- *  2. Pre-trip actions — urgency-ranked action list (high / medium / low severity).
- *  3. Trip roster      — paginated card list; row-click opens detail drawer.
- *  4. Trip detail      — drawer with full trip timeline on row-click.
+ *  2. Week ahead (span 2) + upcoming checklist (span 2).
+ *  3. Trips roster (span 4) — paginated card list; row-click opens detail drawer.
  *
- * bead: bu-0eac9
+ * Document-expiry alert: no dedicated endpoint exists yet. A follow-up is filed
+ * as a discovered gap — see DISCOVERED_FOLLOW_UPS below.
+ *
+ * bead: bu-iuol4.36 (redesign)
+ * original bead: bu-0eac9
  */
 
 import { useState } from "react";
@@ -20,13 +23,6 @@ import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
-import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -34,8 +30,12 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Time } from "@/components/ui/time";
+import { KpiCell, Panel } from "@/components/butler-detail/atoms";
 import { useUpcomingTravel, useTravelTrips, useTravelTripSummary } from "@/hooks/use-travel";
 import type {
+  TravelLeg,
+  TravelAccommodation,
   TravelPreTripAction,
   TravelTimelineEntry,
   TravelTrip,
@@ -58,7 +58,7 @@ function EmptyStateLine({ children }: { children: ReactNode }) {
   );
 }
 
-/** Skeleton loading placeholder (non-spinner). */
+/** Non-spinner loading placeholder. */
 function LoadingLine() {
   return (
     <p className="text-sm text-muted-foreground" data-testid="loading-line">
@@ -67,13 +67,13 @@ function LoadingLine() {
   );
 }
 
-/** Severity chip for pre-trip actions and alerts. */
+/** Severity badge for pre-trip actions and alerts. Maps to design token variants only. */
 function SeverityBadge({ severity }: { severity: string }) {
   const variant =
     severity === "high"
       ? "destructive"
       : severity === "medium"
-        ? "secondary"
+        ? "default"
         : "outline";
   return (
     <Badge variant={variant} className="text-xs shrink-0">
@@ -82,7 +82,7 @@ function SeverityBadge({ severity }: { severity: string }) {
   );
 }
 
-/** Status chip for trips. */
+/** Status badge for trips. Maps to design token variants only. */
 function StatusBadge({ status }: { status: string }) {
   const variant =
     status === "active"
@@ -100,37 +100,23 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /**
- * Safely format a timeline sort_key for display.
+ * Normalise a timeline sort_key for use with the <Time> primitive.
  *
  * The backend can emit:
  *   - ISO datetime:        "2025-06-01T14:00:00+00:00"
  *   - Date-only:           "2025-06-01"  (accommodations)
  *   - Space-separated UTC: "2025-06-01 14:00:00+00:00" (str(datetime))
  *
- * Returns "—" when sortKey is null/undefined, or the raw sortKey when parsing
- * fails (avoids "Invalid Date" leaking to the UI).
+ * Returns null when sortKey is null/undefined so callers can show "—" instead.
  */
-function formatSortKey(sortKey: string | null | undefined): string {
-  if (!sortKey) return "—";
-  // Normalise space-separated datetime (Python str(datetime)) to ISO T-form
-  const iso = sortKey.includes("T") ? sortKey : sortKey.replace(" ", "T");
-  const dateOnly = /^\d{4}-\d{2}-\d{2}(T00:00:00.*)?$/.test(iso);
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return sortKey;
-  if (dateOnly) {
-    // Render date-only strings without a time component to avoid TZ shifts
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function normaliseSortKey(sortKey: string | null | undefined): string | null {
+  if (!sortKey) return null;
+  // Normalise Python str(datetime) space to ISO T-separator.
+  return sortKey.includes("T") ? sortKey : sortKey.replace(" ", "T");
 }
 
 // ---------------------------------------------------------------------------
-// Section 1: KPI strip
+// Section 1: KPI strip (full 4-col width)
 // ---------------------------------------------------------------------------
 
 interface KpiStripProps {
@@ -147,85 +133,217 @@ function KpiStrip({ upcoming, isLoading }: KpiStripProps) {
   const plannedCount = upcomingTrips.filter((ut) => ut.trip.status === "planned").length;
   const highSeverityCount = actions.filter((a) => a.severity === "high").length;
 
-  const nextDeparture =
+  const nextDepartureName =
     nextTrip != null
-      ? `${nextTrip.trip.name}${nextTrip.days_until_departure != null ? ` · ${nextTrip.days_until_departure}d` : ""}`
+      ? nextTrip.trip.name
       : "—";
-
-  const kpis = [
-    { label: "Next departure", value: isLoading ? "…" : nextDeparture, testId: "kpi-next-departure" },
-    { label: "Active trips", value: isLoading ? "…" : activeCount, testId: "kpi-active-count" },
-    { label: "Planned trips", value: isLoading ? "…" : plannedCount, testId: "kpi-planned-count" },
-    { label: "Open actions", value: isLoading ? "…" : actions.length, testId: "kpi-open-actions", highlight: highSeverityCount > 0 },
-  ];
+  const nextDepartureSub =
+    nextTrip?.days_until_departure != null
+      ? `${nextTrip.days_until_departure}d away`
+      : undefined;
 
   return (
     <div
-      className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+      className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60"
       data-testid="travel-kpi-strip"
     >
-      {kpis.map((kpi) => (
-        <Card key={kpi.label}>
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">{kpi.label}</p>
-            <p
-              className={`text-2xl font-bold font-mono truncate ${kpi.highlight ? "text-destructive" : ""}`}
-              data-testid={kpi.testId}
-            >
-              {kpi.value}
-            </p>
-          </CardContent>
-        </Card>
-      ))}
+      <Panel>
+        {isLoading ? (
+          <KpiCell label="Next departure" value="…" />
+        ) : (
+          <KpiCell
+            label="Next departure"
+            value={<span data-testid="kpi-next-departure">{nextDepartureName}</span>}
+            sub={nextDepartureSub}
+          />
+        )}
+      </Panel>
+
+      <Panel>
+        <KpiCell
+          label="Active trips"
+          value={
+            <span data-testid="kpi-active-count" className="tnum">
+              {isLoading ? "…" : activeCount}
+            </span>
+          }
+        />
+      </Panel>
+
+      <Panel>
+        <KpiCell
+          label="Planned trips"
+          value={
+            <span data-testid="kpi-planned-count" className="tnum">
+              {isLoading ? "…" : plannedCount}
+            </span>
+          }
+        />
+      </Panel>
+
+      <Panel>
+        <KpiCell
+          label="Open actions"
+          tone={highSeverityCount > 0 ? "red" : "fg"}
+          value={
+            <span data-testid="kpi-open-actions" className="tnum">
+              {isLoading ? "…" : actions.length}
+            </span>
+          }
+          sub={highSeverityCount > 0 ? `${highSeverityCount} high severity` : undefined}
+        />
+      </Panel>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Section 2: Pre-trip actions panel
+// Section 2a: Week ahead schedule (span 2)
+//
+// Shows legs (flights/trains) and accommodation check-ins occurring within the
+// next 7 days across all upcoming trips.
 // ---------------------------------------------------------------------------
 
-interface PreTripActionsPanelProps {
-  actions: TravelPreTripAction[];
+interface WeekAheadEntry {
+  date: string;       // ISO date or datetime for <Time>
+  label: string;      // Human-readable one-liner
+  kind: "leg" | "checkin";
+}
+
+function buildWeekAheadEntries(upcomingTrips: TravelUpcomingTrip[]): WeekAheadEntry[] {
+  const now = Date.now();
+  const sevenDays = 7 * 24 * 60 * 60 * 1000;
+  const entries: WeekAheadEntry[] = [];
+
+  for (const ut of upcomingTrips) {
+    // Legs: use departure_at for date
+    for (const leg of ut.legs as TravelLeg[]) {
+      const ms = new Date(leg.departure_at).getTime();
+      if (!isNaN(ms) && ms >= now && ms <= now + sevenDays) {
+        const from = leg.departure_city ?? leg.departure_airport_station ?? "?";
+        const to = leg.arrival_city ?? leg.arrival_airport_station ?? "?";
+        const carrier = leg.carrier ? ` (${leg.carrier})` : "";
+        entries.push({
+          date: leg.departure_at,
+          label: `${from} → ${to}${carrier}`,
+          kind: "leg",
+        });
+      }
+    }
+
+    // Accommodations: use check_in for date
+    for (const acc of ut.accommodations as TravelAccommodation[]) {
+      if (!acc.check_in) continue;
+      // Date-only: anchor to noon UTC to avoid TZ shifting issues
+      const ms = new Date(acc.check_in + "T12:00:00.000Z").getTime();
+      if (!isNaN(ms) && ms >= now && ms <= now + sevenDays) {
+        const name = acc.name ?? acc.type;
+        entries.push({
+          date: acc.check_in,
+          label: `Check-in: ${name}`,
+          kind: "checkin",
+        });
+      }
+    }
+  }
+
+  // Sort by date ascending
+  entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  return entries;
+}
+
+interface WeekAheadScheduleProps {
+  upcoming: ReturnType<typeof useUpcomingTravel>["data"];
   isLoading: boolean;
 }
 
-function PreTripActionsPanel({ actions, isLoading }: PreTripActionsPanelProps) {
+function WeekAheadSchedule({ upcoming, isLoading }: WeekAheadScheduleProps) {
+  const entries = buildWeekAheadEntries(upcoming?.upcoming_trips ?? []);
+
   return (
-    <Card data-testid="pre-trip-actions-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Pre-trip actions</CardTitle>
-        <CardDescription>Urgency-ranked items requiring attention</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
-          <LoadingLine />
-        ) : actions.length === 0 ? (
-          <EmptyStateLine>All clear — no pre-trip actions required.</EmptyStateLine>
-        ) : (
-          <ul className="divide-y" data-testid="pre-trip-actions-list">
-            {actions.map((action) => (
-              <li
-                key={`${action.trip_id}-${action.type}`}
-                className="flex items-start justify-between gap-2 py-2"
-                data-testid="pre-trip-action-item"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{action.message}</p>
-                  <p className="text-xs text-muted-foreground truncate">{action.trip_name}</p>
-                </div>
-                <SeverityBadge severity={action.severity} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+    <Panel title="Week ahead" sub="next 7 days" span={2} scroll height="280px">
+      {isLoading ? (
+        <LoadingLine />
+      ) : entries.length === 0 ? (
+        <EmptyStateLine>No legs or check-ins in the next 7 days.</EmptyStateLine>
+      ) : (
+        <ol
+          className="space-y-2"
+          aria-label="Week ahead schedule"
+          data-testid="week-ahead-list"
+        >
+          {entries.map((entry, idx) => (
+            <li
+              key={`${entry.date}-${idx}`}
+              className="flex items-start gap-3 text-sm"
+              data-testid="week-ahead-entry"
+            >
+              <span className="shrink-0 w-24 text-xs text-muted-foreground font-mono tnum pt-0.5">
+                <Time value={entry.date} mode="absolute" precision="day" compact />
+              </span>
+              <span className="min-w-0 flex-1">
+                {entry.label}
+                <span className="ml-2">
+                  <Badge
+                    variant={entry.kind === "leg" ? "secondary" : "outline"}
+                    className="text-[10px] py-0 px-1"
+                  >
+                    {entry.kind === "leg" ? "flight" : "hotel"}
+                  </Badge>
+                </span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Panel>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Section 3: Trip roster
+// Section 2b: Upcoming checklist (span 2)
+//
+// Pre-trip actions ranked by urgency_rank ascending (high urgency first).
+// ---------------------------------------------------------------------------
+
+interface UpcomingChecklistProps {
+  actions: TravelPreTripAction[];
+  isLoading: boolean;
+}
+
+function UpcomingChecklist({ actions, isLoading }: UpcomingChecklistProps) {
+  // Sort by urgency_rank ascending — lowest rank = highest urgency.
+  const ranked = [...actions].sort((a, b) => a.urgency_rank - b.urgency_rank);
+
+  return (
+    <Panel title="Upcoming checklist" sub="ranked by urgency" span={2} scroll height="280px">
+      {isLoading ? (
+        <LoadingLine />
+      ) : ranked.length === 0 ? (
+        <EmptyStateLine>All clear — no pre-trip actions required.</EmptyStateLine>
+      ) : (
+        <ul className="divide-y divide-border/40" data-testid="pre-trip-actions-list">
+          {ranked.map((action) => (
+            <li
+              key={`${action.trip_id}-${action.type}`}
+              className="flex items-start justify-between gap-2 py-2"
+              data-testid="pre-trip-action-item"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium truncate">{action.message}</p>
+                <p className="text-xs text-muted-foreground truncate">{action.trip_name}</p>
+              </div>
+              <SeverityBadge severity={action.severity} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Section 3: Trips roster (span 4, paginated)
 // ---------------------------------------------------------------------------
 
 const TRIPS_PAGE_SIZE = 10;
@@ -249,77 +367,71 @@ function TripRoster({ onTripClick }: TripRosterProps) {
   const currentPage = page + 1;
 
   return (
-    <Card data-testid="trip-roster">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Trip roster</CardTitle>
-        <CardDescription>All trips — click a row for details</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 3 }, (_, i) => (
-              <Skeleton key={i} className="h-14 w-full" />
+    <Panel title="Trips roster" sub="all trips" span={4}>
+      {isLoading ? (
+        <div className="space-y-2" data-testid="trip-roster-loading">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className="h-14 w-full" />
+          ))}
+        </div>
+      ) : trips.length === 0 ? (
+        <EmptyStateLine>No trips found.</EmptyStateLine>
+      ) : (
+        <>
+          <ul className="divide-y divide-border/40" data-testid="trip-roster-list">
+            {trips.map((trip) => (
+              <li key={trip.id}>
+                <button
+                  type="button"
+                  className="w-full flex items-center justify-between gap-2 py-2 text-left hover:bg-muted/50 rounded px-1 -mx-1 transition-colors"
+                  onClick={() => onTripClick(trip)}
+                  data-testid="trip-roster-row"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{trip.name}</p>
+                    <p className="text-xs text-muted-foreground truncate font-mono tnum">
+                      {trip.destination} · {trip.start_date} – {trip.end_date}
+                    </p>
+                  </div>
+                  <StatusBadge status={trip.status} />
+                </button>
+              </li>
             ))}
-          </div>
-        ) : trips.length === 0 ? (
-          <EmptyStateLine>No trips found.</EmptyStateLine>
-        ) : (
-          <>
-            <ul className="divide-y" data-testid="trip-roster-list">
-              {trips.map((trip) => (
-                <li key={trip.id}>
-                  <button
-                    type="button"
-                    className="w-full flex items-center justify-between gap-2 py-2 text-left hover:bg-muted/50 rounded px-1 -mx-1 transition-colors"
-                    onClick={() => onTripClick(trip)}
-                    data-testid="trip-roster-row"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{trip.name}</p>
-                      <p className="text-xs text-muted-foreground truncate">
-                        {trip.destination} · {trip.start_date} – {trip.end_date}
-                      </p>
-                    </div>
-                    <StatusBadge status={trip.status} />
-                  </button>
-                </li>
-              ))}
-            </ul>
+          </ul>
 
-            {total > TRIPS_PAGE_SIZE && (
-              <div className="flex items-center justify-between pt-3">
-                <p className="text-xs text-muted-foreground">
-                  Page {currentPage} of {totalPages}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page === 0}
-                    onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={!hasMore}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    Next
-                  </Button>
-                </div>
+          {total > TRIPS_PAGE_SIZE && (
+            <div className="flex items-center justify-between pt-3">
+              <p className="text-xs text-muted-foreground tnum">
+                Page {currentPage} of {totalPages}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!hasMore}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
               </div>
-            )}
-          </>
-        )}
-      </CardContent>
-    </Card>
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Section 4: Trip detail drawer
+// Trip detail drawer
 // ---------------------------------------------------------------------------
 
 /** Format a timeline entry into a readable one-liner. */
@@ -378,7 +490,7 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                 <p className="text-xs text-muted-foreground mb-1">Destination</p>
                 <p className="text-sm font-medium">{summary.trip.destination}</p>
                 <p className="text-xs text-muted-foreground mt-2 mb-1">Dates</p>
-                <p className="text-sm">
+                <p className="text-sm font-mono tnum">
                   {summary.trip.start_date} – {summary.trip.end_date}
                 </p>
                 <div className="mt-2">
@@ -412,18 +524,25 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                   <EmptyStateLine>No timeline entries yet.</EmptyStateLine>
                 ) : (
                   <ol className="space-y-2">
-                    {summary.timeline.map((entry) => (
-                      <li
-                        key={`${entry.entity_type}-${entry.entity_id}`}
-                        className="flex gap-2 items-start"
-                        data-testid="timeline-entry"
-                      >
-                        <span className="text-xs text-muted-foreground w-28 shrink-0 pt-0.5">
-                          {formatSortKey(entry.sort_key)}
-                        </span>
-                        <span className="text-sm">{timelineLabel(entry)}</span>
-                      </li>
-                    ))}
+                    {summary.timeline.map((entry) => {
+                      const iso = normaliseSortKey(entry.sort_key);
+                      return (
+                        <li
+                          key={`${entry.entity_type}-${entry.entity_id}`}
+                          className="flex gap-2 items-start"
+                          data-testid="timeline-entry"
+                        >
+                          <span className="text-xs text-muted-foreground w-28 shrink-0 pt-0.5 font-mono tnum">
+                            {iso ? (
+                              <Time value={iso} mode="absolute" precision="day" compact />
+                            ) : (
+                              "—"
+                            )}
+                          </span>
+                          <span className="text-sm">{timelineLabel(entry)}</span>
+                        </li>
+                      );
+                    })}
                   </ol>
                 )}
               </div>
@@ -439,7 +558,7 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                       <li key={acc.id} className="text-sm">
                         <span className="font-medium">{acc.name ?? acc.type}</span>
                         {acc.check_in && acc.check_out && (
-                          <span className="text-muted-foreground text-xs ml-2">
+                          <span className="text-muted-foreground text-xs ml-2 font-mono tnum">
                             {acc.check_in} – {acc.check_out}
                           </span>
                         )}
@@ -464,7 +583,6 @@ export default function ButlerTravelTripsTab() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
   const { data: upcoming, isLoading: upcomingLoading } = useUpcomingTravel(90);
-
   const actions = upcoming?.actions ?? [];
 
   function handleTripClick(trip: TravelTrip) {
@@ -476,17 +594,22 @@ export default function ButlerTravelTripsTab() {
   }
 
   return (
-    <div className="space-y-4 pt-4" data-testid="travel-trips-tab">
-      {/* Section 1: KPI strip */}
+    <div className="pt-4" data-testid="travel-trips-tab">
+      {/* Row 1: KPI strip — full 4-col width */}
       <KpiStrip upcoming={upcoming} isLoading={upcomingLoading} />
 
-      {/* Section 2: Pre-trip actions */}
-      <PreTripActionsPanel actions={actions} isLoading={upcomingLoading} />
+      {/* Row 2: Week ahead (span 2) + Upcoming checklist (span 2) */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 border-l border-border/60">
+        <WeekAheadSchedule upcoming={upcoming} isLoading={upcomingLoading} />
+        <UpcomingChecklist actions={actions} isLoading={upcomingLoading} />
+      </div>
 
-      {/* Section 3: Trip roster */}
-      <TripRoster onTripClick={handleTripClick} />
+      {/* Row 3: Trips roster (span 4) */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 border-l border-border/60">
+        <TripRoster onTripClick={handleTripClick} />
+      </div>
 
-      {/* Section 4: Trip detail drawer (Sheet / Radix Dialog for a11y) */}
+      {/* Trip detail drawer */}
       <TripDetailDrawer tripId={selectedTripId} onClose={handleDrawerClose} />
     </div>
   );
