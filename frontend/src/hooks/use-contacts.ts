@@ -15,9 +15,11 @@ import {
   deleteContactInfo,
   getContact,
   getContacts,
+  getContactInteractions,
   getEntitySuggestions,
   getGroups,
   getLabels,
+  getOverdueContacts,
   getPendingContacts,
   getUnlinkedContacts,
   linkEntity,
@@ -284,5 +286,34 @@ export function useCreateAndLinkEntity() {
     onError: (err) => {
       toast.error(`Create failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// New hooks from bu-iuol4.22 backend endpoints
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch chronological interaction thread for a contact.
+ * Wraps GET /api/relationship/contacts/{contact_id}/interactions?limit=N
+ */
+export function useContactInteractions(contactId: string | undefined, limit?: number) {
+  return useQuery({
+    queryKey: ["contact-interactions", contactId, limit],
+    queryFn: () => getContactInteractions(contactId!, limit),
+    enabled: !!contactId,
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * Fetch contacts overdue on their Dunbar tier cadence.
+ * Wraps GET /api/relationship/contacts/overdue?days=N
+ */
+export function useOverdueContacts(days?: number) {
+  return useQuery({
+    queryKey: ["overdue-contacts", days],
+    queryFn: () => getOverdueContacts(days),
+    staleTime: 60_000,
   });
 }

@@ -269,6 +269,8 @@ import type {
   HomeEnergyDataPoint,
   HomeTopConsumer,
   HomeCommandLogEntry,
+  ContactInteractionsResponse,
+  OverdueContactsResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +1029,29 @@ export function patchContactInfo(
   return apiFetch<ContactInfoEntry>(
     `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info/${encodeURIComponent(infoId)}`,
     { method: "PATCH", body: JSON.stringify(request) },
+  );
+}
+
+/** Fetch chronological interaction thread for a contact (bu-iuol4.22). */
+export function getContactInteractions(
+  contactId: string,
+  limit?: number,
+): Promise<ContactInteractionsResponse> {
+  const sp = new URLSearchParams();
+  if (limit != null) sp.set("limit", String(limit));
+  const qs = sp.toString();
+  return apiFetch<ContactInteractionsResponse>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/interactions${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Fetch contacts that are overdue on their Dunbar tier cadence (bu-iuol4.22). */
+export function getOverdueContacts(days?: number): Promise<OverdueContactsResponse> {
+  const sp = new URLSearchParams();
+  if (days != null) sp.set("days", String(days));
+  const qs = sp.toString();
+  return apiFetch<OverdueContactsResponse>(
+    `/relationship/contacts/overdue${qs ? `?${qs}` : ""}`,
   );
 }
 

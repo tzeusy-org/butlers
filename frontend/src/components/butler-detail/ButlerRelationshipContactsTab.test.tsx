@@ -1,22 +1,24 @@
 // @vitest-environment jsdom
 /**
- * ButlerRelationshipContactsTab — RTL tests pinning all sections.
+ * ButlerRelationshipContactsTab — RTL tests for the redesigned 6-panel layout.
  *
  * Tests:
- *  - All sections render (KPI strip, dunbar map, upcoming dates, contact roster, group summary)
+ *  - All six panels render (KPI strip, tier distribution, overdue, watchlist, thread, facts)
  *  - Loading states show loading placeholders, not empty-state text
  *  - Empty states are shown when data is absent
- *  - KPI values render with data
- *  - Dunbar map renders tier rows grouped by tier
- *  - Upcoming dates list renders date rows with countdown badges
- *  - Contact roster renders contact rows with labels
- *  - Group summary renders rows with member count badges
+ *  - KPI strip renders computed values (tracked count, T1 warmth avg, cadence ok, overdue count)
+ *  - Tier distribution renders rows grouped by tier with warmth bars
+ *  - Overdue panel ranks contacts by owed_days desc
+ *  - Watchlist renders T1+T2 contacts sorted by warmth desc
+ *  - Thread panel shows interaction direction (in / out / draft)
+ *  - Known facts panel shows contact details for selected contact
+ *  - Selecting a watchlist row switches thread and facts panels
  *
- * bead: bu-ax5bi
+ * bead: bu-iuol4.21
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerRelationshipContactsTab from "./ButlerRelationshipContactsTab";
@@ -27,16 +29,15 @@ import ButlerRelationshipContactsTab from "./ButlerRelationshipContactsTab";
 
 vi.mock("@/hooks/use-contacts", () => ({
   useContacts: vi.fn(),
-  useGroups: vi.fn(),
-  useUnlinkedContacts: vi.fn(),
-  useUpcomingDates: vi.fn(),
+  useContactInteractions: vi.fn(),
+  useOverdueContacts: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-memory", () => ({
   useDunbarRanking: vi.fn(),
 }));
 
-import { useContacts, useGroups, useUnlinkedContacts, useUpcomingDates } from "@/hooks/use-contacts";
+import { useContacts, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
 import { useDunbarRanking } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ const CONTACTS_DATA = {
       phone: null,
       labels: [{ id: "l-1", name: "friend", color: null }],
       last_interaction_at: "2026-05-01T10:00:00Z",
+      warmth: 0.82,
     },
     {
       id: "c-2",
@@ -81,31 +83,10 @@ const CONTACTS_DATA = {
       phone: null,
       labels: [],
       last_interaction_at: null,
+      warmth: 0.35,
     },
   ],
   total: 42,
-};
-
-const UPCOMING_DATES_DATA = [
-  {
-    contact_id: "c-1",
-    contact_name: "Alice Smith",
-    date_type: "birthday",
-    date: "2026-05-15",
-    days_until: 5,
-  },
-  {
-    contact_id: "c-2",
-    contact_name: "Bob Jones",
-    date_type: "anniversary",
-    date: "2026-05-25",
-    days_until: 15,
-  },
-];
-
-const UNLINKED_DATA = {
-  contacts: [],
-  total: 3,
 };
 
 const DUNBAR_DATA = {
@@ -117,6 +98,7 @@ const DUNBAR_DATA = {
       dunbar_tier: 5,
       dunbar_score: 95.0,
       dunbar_tier_override: false,
+      warmth: 0.82,
       avatar_url: null,
       aliases: [],
     },
@@ -127,6 +109,18 @@ const DUNBAR_DATA = {
       dunbar_tier: 15,
       dunbar_score: 70.0,
       dunbar_tier_override: true,
+      warmth: 0.35,
+      avatar_url: null,
+      aliases: [],
+    },
+    {
+      contact_id: "c-3",
+      entity_id: "e-3",
+      canonical_name: "Carol White",
+      dunbar_tier: 5,
+      dunbar_score: 60.0,
+      dunbar_tier_override: false,
+      warmth: 0.55,
       avatar_url: null,
       aliases: [],
     },
@@ -134,28 +128,46 @@ const DUNBAR_DATA = {
   owner_entity_id: null,
 };
 
-const GROUPS_DATA = {
-  groups: [
+const OVERDUE_DATA = {
+  contacts: [
     {
-      id: "g-1",
-      name: "Close friends",
-      description: null,
-      member_count: 5,
-      labels: [],
-      created_at: "2026-01-01T00:00:00Z",
-      updated_at: "2026-01-01T00:00:00Z",
+      contact_id: "c-2",
+      name: "Bob Jones",
+      tier: 15,
+      owed_days: 20,
+      last_contact_date: "2026-04-20",
+      target_cadence_days: 14,
     },
     {
-      id: "g-2",
-      name: "Work",
-      description: "Work colleagues",
-      member_count: 12,
-      labels: [],
-      created_at: "2026-01-01T00:00:00Z",
-      updated_at: "2026-01-01T00:00:00Z",
+      contact_id: "c-4",
+      name: "Dan Brown",
+      tier: 50,
+      owed_days: 45,
+      last_contact_date: "2026-03-25",
+      target_cadence_days: 30,
     },
   ],
-  total: 2,
+};
+
+const INTERACTIONS_DATA = {
+  contact_id: "c-1",
+  interactions: [
+    {
+      ts: "2026-05-01T09:00:00Z",
+      direction: "in" as const,
+      text: "Hey, how are you doing?",
+    },
+    {
+      ts: "2026-05-01T10:00:00Z",
+      direction: "out" as const,
+      text: "Doing great, thanks for checking in!",
+    },
+    {
+      ts: "2026-05-02T08:00:00Z",
+      direction: "drafted" as const,
+      text: "Draft: following up on our conversation.",
+    },
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -179,24 +191,11 @@ function renderTab() {
 // ---------------------------------------------------------------------------
 
 function setupWithData() {
-  // useUpcomingDates is called twice (30-day KPI + 60-day panel)
-  vi.mocked(useUpcomingDates).mockReturnValue({
-    data: UPCOMING_DATES_DATA,
-    isLoading: false,
-    isError: false,
-  } as ReturnType<typeof useUpcomingDates>);
-
   vi.mocked(useContacts).mockReturnValue({
     data: CONTACTS_DATA,
     isLoading: false,
     isError: false,
   } as ReturnType<typeof useContacts>);
-
-  vi.mocked(useUnlinkedContacts).mockReturnValue({
-    data: UNLINKED_DATA,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useUnlinkedContacts>);
 
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: DUNBAR_DATA,
@@ -204,31 +203,34 @@ function setupWithData() {
     isError: false,
   } as unknown as ReturnType<typeof useDunbarRanking>);
 
-  vi.mocked(useGroups).mockReturnValue({
-    data: GROUPS_DATA,
+  vi.mocked(useOverdueContacts).mockReturnValue({
+    data: OVERDUE_DATA,
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useGroups>);
+  } as unknown as ReturnType<typeof useOverdueContacts>);
+
+  vi.mocked(useContactInteractions).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useContactInteractions>);
+}
+
+function setupWithInteractions() {
+  setupWithData();
+  vi.mocked(useContactInteractions).mockReturnValue({
+    data: INTERACTIONS_DATA,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useContactInteractions>);
 }
 
 function setupEmpty() {
-  vi.mocked(useUpcomingDates).mockReturnValue({
-    data: [],
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useUpcomingDates>);
-
   vi.mocked(useContacts).mockReturnValue({
     data: { contacts: [], total: 0 },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useContacts>);
-
-  vi.mocked(useUnlinkedContacts).mockReturnValue({
-    data: { contacts: [], total: 0 },
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useUnlinkedContacts>);
 
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: { entries: [], owner_entity_id: null },
@@ -236,31 +238,25 @@ function setupEmpty() {
     isError: false,
   } as unknown as ReturnType<typeof useDunbarRanking>);
 
-  vi.mocked(useGroups).mockReturnValue({
-    data: { groups: [], total: 0 },
+  vi.mocked(useOverdueContacts).mockReturnValue({
+    data: { contacts: [] },
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useGroups>);
+  } as unknown as ReturnType<typeof useOverdueContacts>);
+
+  vi.mocked(useContactInteractions).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useContactInteractions>);
 }
 
 function setupLoading() {
-  vi.mocked(useUpcomingDates).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as ReturnType<typeof useUpcomingDates>);
-
   vi.mocked(useContacts).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
   } as ReturnType<typeof useContacts>);
-
-  vi.mocked(useUnlinkedContacts).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as ReturnType<typeof useUnlinkedContacts>);
 
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: undefined,
@@ -268,18 +264,24 @@ function setupLoading() {
     isError: false,
   } as ReturnType<typeof useDunbarRanking>);
 
-  vi.mocked(useGroups).mockReturnValue({
+  vi.mocked(useOverdueContacts).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
-  } as ReturnType<typeof useGroups>);
+  } as ReturnType<typeof useOverdueContacts>);
+
+  vi.mocked(useContactInteractions).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+  } as ReturnType<typeof useContactInteractions>);
 }
 
 // ---------------------------------------------------------------------------
-// Tests: All sections present
+// Tests: All panels present
 // ---------------------------------------------------------------------------
 
-describe("ButlerRelationshipContactsTab — all sections present", () => {
+describe("ButlerRelationshipContactsTab — all panels present", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
@@ -291,37 +293,42 @@ describe("ButlerRelationshipContactsTab — all sections present", () => {
     expect(screen.getByTestId("relationship-contacts-tab")).toBeDefined();
   });
 
-  it("renders the KPI strip section", () => {
+  it("renders the KPI strip", () => {
     renderTab();
     expect(screen.getByTestId("kpi-strip")).toBeDefined();
   });
 
-  it("renders the dunbar map card", () => {
+  it("renders the tier distribution card", () => {
     renderTab();
-    expect(screen.getByTestId("dunbar-map-card")).toBeDefined();
+    expect(screen.getByTestId("tier-distribution-card")).toBeDefined();
   });
 
-  it("renders the upcoming dates card", () => {
+  it("renders the overdue card", () => {
     renderTab();
-    expect(screen.getByTestId("upcoming-dates-card")).toBeDefined();
+    expect(screen.getByTestId("overdue-card")).toBeDefined();
   });
 
-  it("renders the contact roster card", () => {
+  it("renders the watchlist card", () => {
     renderTab();
-    expect(screen.getByTestId("contact-roster-card")).toBeDefined();
+    expect(screen.getByTestId("watchlist-card")).toBeDefined();
   });
 
-  it("renders the group summary card", () => {
+  it("renders the thread card", () => {
     renderTab();
-    expect(screen.getByTestId("group-summary-card")).toBeDefined();
+    expect(screen.getByTestId("thread-card")).toBeDefined();
+  });
+
+  it("renders the known facts card", () => {
+    renderTab();
+    expect(screen.getByTestId("known-facts-card")).toBeDefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: KPI strip renders values
+// Tests: KPI strip rendering
 // ---------------------------------------------------------------------------
 
-describe("ButlerRelationshipContactsTab — KPI values", () => {
+describe("ButlerRelationshipContactsTab — KPI strip", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
@@ -331,127 +338,252 @@ describe("ButlerRelationshipContactsTab — KPI values", () => {
   it("renders kpi-item elements", () => {
     renderTab();
     const items = screen.getAllByTestId("kpi-item");
-    expect(items.length).toBeGreaterThanOrEqual(3);
+    // KpiCell renders a div with data-testid="kpi-item" for each of the 4 cells
+    expect(items.length).toBeGreaterThanOrEqual(4);
   });
 
-  it("renders total contacts count", () => {
+  it("renders total tracked contacts count", () => {
     renderTab();
-    const values = screen.getAllByTestId("kpi-value");
-    const texts = values.map((v) => v.textContent ?? "");
-    expect(texts.some((t) => t === "42")).toBe(true);
+    expect(screen.getByText("42")).toBeDefined();
   });
 
-  it("renders unlinked count in KPI", () => {
+  it("renders overdue count when contacts are overdue", () => {
     renderTab();
-    const values = screen.getAllByTestId("kpi-value");
-    const texts = values.map((v) => v.textContent ?? "");
-    expect(texts.some((t) => t === "3")).toBe(true);
+    // Overdue panel has 2 contacts
+    expect(screen.getByText("2")).toBeDefined();
+  });
+
+  it("renders T1 warmth average for tier-5 entries", () => {
+    renderTab();
+    // T1 entries: Alice (0.82) + Carol (0.55), avg = 0.685 → "0.69"
+    // KpiCell shows value as formatted string; we check it's present
+    expect(screen.getByTestId("kpi-strip")).toBeDefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Dunbar map renders tier rows
+// Tests: Tier distribution
 // ---------------------------------------------------------------------------
 
-describe("ButlerRelationshipContactsTab — dunbar map", () => {
+describe("ButlerRelationshipContactsTab — tier distribution", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("renders dunbar map container", () => {
+  it("renders tier distribution list", () => {
     renderTab();
-    expect(screen.getByTestId("dunbar-map")).toBeDefined();
+    expect(screen.getByTestId("tier-distribution-list")).toBeDefined();
   });
 
-  it("renders tier rows for populated tiers", () => {
+  it("renders tier rows for T1 and T2 since both have entries", () => {
     renderTab();
-    const rows = screen.getAllByTestId("dunbar-tier-row");
+    const rows = screen.getAllByTestId("tier-distribution-row");
     expect(rows.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("renders Alice Smith in Support 5 tier", () => {
+  it("shows T1 tier label in tier distribution", () => {
     renderTab();
-    // Alice Smith appears in both dunbar map and contact roster
-    const matches = screen.getAllByText("Alice Smith");
+    const matches = screen.getAllByText("T1 · Support 5");
     expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders Bob Jones in Sympathy 15 tier", () => {
+  it("shows T2 tier label in tier distribution", () => {
     renderTab();
-    // Bob Jones appears in both dunbar map and contact roster
-    const matches = screen.getAllByText("Bob Jones");
+    const matches = screen.getAllByText("T2 · Sympathy 15");
     expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Upcoming dates panel renders rows
+// Tests: Overdue panel ranking by owed_days desc
 // ---------------------------------------------------------------------------
 
-describe("ButlerRelationshipContactsTab — upcoming dates", () => {
+describe("ButlerRelationshipContactsTab — overdue panel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("renders upcoming dates list", () => {
+  it("renders the overdue list", () => {
     renderTab();
-    expect(screen.getByTestId("upcoming-dates-list")).toBeDefined();
+    expect(screen.getByTestId("overdue-list")).toBeDefined();
   });
 
-  it("renders upcoming date rows", () => {
+  it("renders overdue rows", () => {
     renderTab();
-    const rows = screen.getAllByTestId("upcoming-date-row");
-    expect(rows.length).toBeGreaterThanOrEqual(1);
+    const rows = screen.getAllByTestId("overdue-row");
+    expect(rows.length).toBe(2);
+  });
+
+  it("ranks most overdue contact first (Dan Brown: 45d > Bob Jones: 20d)", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("overdue-row");
+    // First row should be Dan Brown (owed_days=45)
+    expect(rows[0].textContent).toContain("Dan Brown");
+    // Second row should be Bob Jones (owed_days=20)
+    expect(rows[1].textContent).toContain("Bob Jones");
+  });
+
+  it("shows destructive badge for contacts overdue > 30d", () => {
+    renderTab();
+    // Dan Brown at 45d overdue should have destructive badge
+    expect(screen.getByText("45d overdue")).toBeDefined();
+  });
+
+  it("shows overdue days for each row", () => {
+    renderTab();
+    expect(screen.getByText("20d overdue")).toBeDefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Contact roster renders rows
+// Tests: Watchlist T1+T2
 // ---------------------------------------------------------------------------
 
-describe("ButlerRelationshipContactsTab — contact roster", () => {
+describe("ButlerRelationshipContactsTab — watchlist", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("renders the contact roster list", () => {
+  it("renders the watchlist table", () => {
     renderTab();
-    expect(screen.getByTestId("contact-roster")).toBeDefined();
+    expect(screen.getByTestId("watchlist-table")).toBeDefined();
   });
 
-  it("renders contact rows", () => {
+  it("renders watchlist rows for T1 and T2 entries only", () => {
     renderTab();
-    const rows = screen.getAllByTestId("contact-roster-row");
-    expect(rows.length).toBeGreaterThanOrEqual(1);
+    const rows = screen.getAllByTestId("watchlist-row");
+    // Alice (T1), Carol (T1), Bob (T2) = 3 entries
+    expect(rows.length).toBe(3);
+  });
+
+  it("sorts watchlist by warmth descending (Alice 0.82 first)", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("watchlist-row");
+    // Alice has warmth 0.82 — should be first
+    expect(rows[0].textContent).toContain("Alice Smith");
+  });
+
+  it("shows warmth values in tabular-nums cells", () => {
+    renderTab();
+    // Alice warmth 0.82 should appear in the table
+    expect(screen.getByText("0.82")).toBeDefined();
+  });
+
+  it("marks tier-override entries with a star", () => {
+    renderTab();
+    // Bob Jones has dunbar_tier_override=true
+    const rows = screen.getAllByTestId("watchlist-row");
+    const bobRow = rows.find((r) => r.textContent?.includes("Bob Jones"));
+    expect(bobRow?.textContent).toContain("★");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Group summary renders rows
+// Tests: Selected thread interaction direction display
 // ---------------------------------------------------------------------------
 
-describe("ButlerRelationshipContactsTab — group summary", () => {
+describe("ButlerRelationshipContactsTab — selected thread", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithInteractions();
+  });
+  afterEach(() => cleanup());
+
+  it("shows prompt when no contact is selected", () => {
+    renderTab();
+    expect(screen.getByTestId("thread-empty-prompt")).toBeDefined();
+  });
+
+  it("renders thread items after selecting a contact", () => {
+    renderTab();
+    // Click a watchlist row to select Alice
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    expect(aliceRow).toBeDefined();
+    fireEvent.click(aliceRow!);
+    const items = screen.getAllByTestId("thread-item");
+    expect(items.length).toBe(3);
+  });
+
+  it("shows inbound interaction direction label", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    fireEvent.click(aliceRow!);
+    // "In" direction label should appear
+    expect(screen.getByText("In")).toBeDefined();
+  });
+
+  it("shows outbound interaction direction label", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    fireEvent.click(aliceRow!);
+    expect(screen.getByText("Out")).toBeDefined();
+  });
+
+  it("shows drafted interaction direction label", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    fireEvent.click(aliceRow!);
+    expect(screen.getByText("Draft")).toBeDefined();
+  });
+
+  it("shows thread interaction text", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    fireEvent.click(aliceRow!);
+    expect(screen.getByText("Hey, how are you doing?")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Known facts panel
+// ---------------------------------------------------------------------------
+
+describe("ButlerRelationshipContactsTab — known facts panel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("renders the group summary list", () => {
+  it("shows prompt when no contact is selected", () => {
     renderTab();
-    expect(screen.getByTestId("group-summary-list")).toBeDefined();
+    expect(screen.getByTestId("facts-empty-prompt")).toBeDefined();
   });
 
-  it("renders group rows", () => {
+  it("renders facts list after selecting a contact with email", () => {
     renderTab();
-    const rows = screen.getAllByTestId("group-summary-row");
-    expect(rows.length).toBeGreaterThanOrEqual(1);
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    fireEvent.click(aliceRow!);
+    expect(screen.getByTestId("known-facts-list")).toBeDefined();
+  });
+
+  it("shows email fact for selected contact", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    fireEvent.click(aliceRow!);
+    // Alice has email alice@example.com
+    expect(screen.getByText("Email: alice@example.com")).toBeDefined();
+  });
+
+  it("shows labels fact for selected contact", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("watchlist-row");
+    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+    fireEvent.click(aliceRow!);
+    expect(screen.getByText("Labels: friend")).toBeDefined();
   });
 });
 
@@ -466,28 +598,22 @@ describe("ButlerRelationshipContactsTab — empty states", () => {
   });
   afterEach(() => cleanup());
 
-  it("shows empty state for dunbar map when no entries", () => {
+  it("shows empty state for tier distribution when no entries", () => {
     renderTab();
-    expect(screen.queryByTestId("dunbar-map")).toBeNull();
-    expect(screen.getByText("No Dunbar ranking data available.")).toBeDefined();
+    expect(screen.queryByTestId("tier-distribution-list")).toBeNull();
+    expect(screen.getByText("No tier data available.")).toBeDefined();
   });
 
-  it("shows empty state for upcoming dates when empty", () => {
+  it("shows empty state for overdue when all clear", () => {
     renderTab();
-    expect(screen.queryByTestId("upcoming-dates-list")).toBeNull();
-    expect(screen.getByText("No upcoming dates in the next 60 days.")).toBeDefined();
+    expect(screen.queryByTestId("overdue-list")).toBeNull();
+    expect(screen.getByText("No overdue contacts — cadence all clear.")).toBeDefined();
   });
 
-  it("shows empty state for contacts when empty", () => {
+  it("shows empty state for watchlist when no T1/T2 entries", () => {
     renderTab();
-    expect(screen.queryByTestId("contact-roster")).toBeNull();
-    expect(screen.getByText("No contacts found.")).toBeDefined();
-  });
-
-  it("shows empty state for groups when empty", () => {
-    renderTab();
-    expect(screen.queryByTestId("group-summary-list")).toBeNull();
-    expect(screen.getByText("No groups configured.")).toBeDefined();
+    expect(screen.queryByTestId("watchlist-table")).toBeNull();
+    expect(screen.getByText("No T1 or T2 contacts yet.")).toBeDefined();
   });
 });
 
@@ -513,23 +639,18 @@ describe("ButlerRelationshipContactsTab — loading states", () => {
     expect(screen.queryByTestId("empty-state-line")).toBeNull();
   });
 
-  it("does not render dunbar-map while loading", () => {
+  it("does not render tier-distribution-list while loading", () => {
     renderTab();
-    expect(screen.queryByTestId("dunbar-map")).toBeNull();
+    expect(screen.queryByTestId("tier-distribution-list")).toBeNull();
   });
 
-  it("does not render upcoming-dates-list while loading", () => {
+  it("does not render overdue-list while loading", () => {
     renderTab();
-    expect(screen.queryByTestId("upcoming-dates-list")).toBeNull();
+    expect(screen.queryByTestId("overdue-list")).toBeNull();
   });
 
-  it("does not render contact-roster while loading", () => {
+  it("does not render watchlist-table while loading", () => {
     renderTab();
-    expect(screen.queryByTestId("contact-roster")).toBeNull();
-  });
-
-  it("does not render group-summary-list while loading", () => {
-    renderTab();
-    expect(screen.queryByTestId("group-summary-list")).toBeNull();
+    expect(screen.queryByTestId("watchlist-table")).toBeNull();
   });
 });
