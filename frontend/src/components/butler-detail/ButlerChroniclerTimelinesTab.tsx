@@ -25,6 +25,7 @@
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react";
+import { AlertTriangle } from "lucide-react";
 
 import type {
   ChroniclesKpi,
@@ -374,6 +375,8 @@ function SourcesPanel({ rows, isLoading, nowMs }: SourcesPanelProps) {
         const label = taxonomy?.label ?? row.source_name;
         const variant = SOURCE_STATUS_VARIANT[status];
 
+        const hasError = Boolean(row.last_error);
+
         return (
           <li
             key={row.source_name}
@@ -381,7 +384,18 @@ function SourcesPanel({ rows, isLoading, nowMs }: SourcesPanelProps) {
             data-testid="source-health-row"
           >
             <div className="min-w-0">
-              <p className="font-medium truncate">{label}</p>
+              <p className="flex items-center gap-1 font-medium min-w-0">
+                <span className="truncate">{label}</span>
+                {hasError && (
+                  <AlertTriangle
+                    className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+                    aria-label={`Source error: ${row.last_error}`}
+                    title={row.last_error ?? undefined}
+                    role="img"
+                    data-testid="source-error-icon"
+                  />
+                )}
+              </p>
               {row.last_run_at && (
                 <p className="text-xs text-muted-foreground tnum">
                   <Time value={row.last_run_at} mode="relative-compact" />
