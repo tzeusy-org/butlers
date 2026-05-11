@@ -152,9 +152,9 @@ async def list_measurements(
                 id=str(r["id"]),
                 type=mtype,
                 value=raw_value,
-                measured_at=str(r["valid_at"]),
+                measured_at=r["valid_at"].isoformat(),
                 notes=meta.get("notes"),
-                created_at=str(r["created_at"]),
+                created_at=r["created_at"].isoformat(),
             )
         )
 
@@ -211,8 +211,8 @@ async def list_medications(
             schedule=list(r["schedule"]) if r["schedule"] else [],
             active=r["active"],
             notes=r["notes"],
-            created_at=str(r["created_at"]),
-            updated_at=str(r["updated_at"]),
+            created_at=r["created_at"].isoformat(),
+            updated_at=r["updated_at"].isoformat(),
         )
         for r in rows
     ]
@@ -265,10 +265,10 @@ async def list_medication_doses(
         Dose(
             id=str(r["id"]),
             medication_id=str(r["medication_id"]),
-            taken_at=str(r["taken_at"]),
+            taken_at=r["taken_at"].isoformat(),
             skipped=r["skipped"],
             notes=r["notes"],
-            created_at=str(r["created_at"]),
+            created_at=r["created_at"].isoformat(),
         )
         for r in rows
     ]
@@ -304,10 +304,10 @@ async def list_conditions(
             id=str(r["id"]),
             name=r["name"],
             status=r["status"],
-            diagnosed_at=str(r["diagnosed_at"]) if r["diagnosed_at"] else None,
+            diagnosed_at=r["diagnosed_at"].isoformat() if r["diagnosed_at"] else None,
             notes=r["notes"],
-            created_at=str(r["created_at"]),
-            updated_at=str(r["updated_at"]),
+            created_at=r["created_at"].isoformat(),
+            updated_at=r["updated_at"].isoformat(),
         )
         for r in rows
     ]
@@ -374,9 +374,9 @@ async def list_symptoms(
             name=r["name"],
             severity=r["severity"],
             condition_id=str(r["condition_id"]) if r["condition_id"] else None,
-            occurred_at=str(r["occurred_at"]),
+            occurred_at=r["occurred_at"].isoformat(),
             notes=r["notes"],
-            created_at=str(r["created_at"]),
+            created_at=r["created_at"].isoformat(),
         )
         for r in rows
     ]
@@ -474,9 +474,9 @@ async def list_meals(
                 type=meal_type,
                 description=r["content"],
                 nutrition=_meal_nutrition_from_metadata(meta),
-                eaten_at=str(r["valid_at"]),
+                eaten_at=r["valid_at"].isoformat(),
                 notes=meta.get("notes"),
-                created_at=str(r["created_at"]),
+                created_at=r["created_at"].isoformat(),
             )
         )
 
@@ -540,8 +540,8 @@ async def list_research(
             tags=list(r["tags"]) if r["tags"] else [],
             source_url=r["source_url"],
             condition_id=str(r["condition_id"]) if r["condition_id"] else None,
-            created_at=str(r["created_at"]),
-            updated_at=str(r["updated_at"]),
+            created_at=r["created_at"].isoformat(),
+            updated_at=r["updated_at"].isoformat(),
         )
         for r in rows
     ]
@@ -598,7 +598,7 @@ async def get_measurements_latest(
         meta = _as_json_object(r["metadata"])
         raw_value = meta.get("value")
         result[mtype] = LatestMeasurementEntry(
-            measured_at=str(r["valid_at"]),
+            measured_at=r["valid_at"].isoformat(),
             value=raw_value,
             unit=meta.get("unit"),
             metadata={k: v for k, v in meta.items() if k not in ("value", "unit")},
@@ -681,7 +681,7 @@ async def get_sleep_latest(
 
     stages = _parse_sleep_stages(meta.get("stages"))
 
-    session_start = str(row["valid_at"])
+    session_start = row["valid_at"].isoformat()
     end_time = meta.get("end_time")
     session_end = str(end_time) if end_time else None
 
@@ -732,7 +732,7 @@ async def get_measurements_sources(
     sources = [
         MeasurementSource(
             name=r["name"],
-            last_sample_at=str(r["last_sample_at"]),
+            last_sample_at=r["last_sample_at"].isoformat(),
             sample_count=int(r["sample_count"]),
         )
         for r in rows
