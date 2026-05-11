@@ -3,10 +3,11 @@
 // (bu-iuol4.13)
 //
 // Exports:
-//   <MonoLabel> — uppercase mono 9px eyebrow label with letter-spacing
-//   <Panel>     — panel with mono eyebrow header, grid-span support
-//   <KpiCell>   — KPI card with tonal value display
-//   <KV>        — key-value row for Config and similar tabs
+//   <MonoLabel>  — uppercase mono 9px eyebrow label with letter-spacing
+//   <Panel>      — panel with mono eyebrow header, grid-span support
+//   <KpiCell>    — KPI card with tonal value display
+//   <KV>         — key-value row for Config and similar tabs
+//   <ErrorLine>  — icon + destructive-tone error message row
 //
 // Doctrine (non-negotiable):
 //   - No raw oklch in JSX. No hex. No inline style except typed-primitive
@@ -16,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import React from "react"
+import { AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
@@ -244,5 +246,36 @@ export function KV({ k, v, mono = false, className }: KVProps) {
         {v}
       </span>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ErrorLine
+//
+// Error state indicator: AlertTriangle icon + destructive-tone message text.
+// Used inside panels to surface data-fetch failures without full-page errors.
+//
+// Props:
+//   children  — error message text
+//   className — additional wrapper classes
+// ---------------------------------------------------------------------------
+
+export interface ErrorLineProps {
+  children: React.ReactNode
+  className?: string
+}
+
+export function ErrorLine({ children, className }: ErrorLineProps) {
+  return (
+    <p
+      className={cn(
+        "flex items-center gap-1.5 text-sm text-destructive min-w-0",
+        className,
+      )}
+      data-testid="error-state-line"
+    >
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="truncate">{children}</span>
+    </p>
   )
 }

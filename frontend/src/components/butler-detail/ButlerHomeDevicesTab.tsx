@@ -28,7 +28,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
-import { Panel, KpiCell } from "@/components/butler-detail/atoms";
+import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
 import {
   useHomeSnapshotStatus,
   useHomeDevices,
@@ -52,14 +52,6 @@ import type {
 function EmptyLine({ children }: { children: React.ReactNode }) {
   return (
     <p className="text-sm text-muted-foreground italic" data-testid="empty-state-line">
-      {children}
-    </p>
-  );
-}
-
-function ErrorLine({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-sm text-destructive" data-testid="error-state-line">
       {children}
     </p>
   );

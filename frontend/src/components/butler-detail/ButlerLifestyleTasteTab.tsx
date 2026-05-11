@@ -18,15 +18,11 @@
 // Tracked in bu-4q6hg for future enhancement (digest persistence in lifestyle butler).
 // ---------------------------------------------------------------------------
 
-import type { ReactNode } from "react";
-
-import { AlertTriangle } from "lucide-react";
-
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell } from "./atoms";
+import { KpiCell, ErrorLine } from "./atoms";
 import { useMemoryRecall, useMemorySearch } from "@/hooks/use-memory";
 
 import type { Fact } from "@/api/types";
@@ -60,19 +56,6 @@ const CONSUMPTION_PREDICATES = ["watches", "reads", "plays"];
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/** Error state: icon + destructive-tone text. */
-function ErrorLine({ children }: { children: ReactNode }) {
-  return (
-    <p
-      className="flex items-center gap-1.5 text-sm text-destructive min-w-0"
-      data-testid="error-state-line"
-    >
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{children}</span>
-    </p>
-  );
-}
 
 /** Loading skeleton rows. */
 function LoadingRows({ count = 4 }: { count?: number }) {
