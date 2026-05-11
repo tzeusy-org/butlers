@@ -64,6 +64,8 @@ export interface ButlerSummary {
   description?: string | null;
   /** Number of sessions started in the last 24 hours. Always present; 0 when none. */
   sessions_24h: number;
+  /** ISO-8601 timestamp of the most recent session start. Null when no sessions exist. */
+  last_session_started_at?: string | null;
 }
 
 /**

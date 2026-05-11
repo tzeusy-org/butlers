@@ -193,6 +193,35 @@ async def list_butlers(
     return ApiResponse[list[ButlerSummary]](data=list(summaries))
 
 
+async def _fetch_last_session_started_at(
+    db: DatabaseManager,
+    butler_name: str,
+) -> datetime | None:
+    """Return the MAX ``started_at`` timestamp from the butler's ``sessions`` table.
+
+    Uses the butler-scoped pool so no ``butler_name`` column filter is needed.
+    Returns ``None`` when the sessions table does not exist, the butler has no
+    sessions, or the DB is unavailable.
+    """
+    query = (
+        "SELECT CASE WHEN to_regclass('sessions') IS NOT NULL"
+        " THEN (SELECT MAX(started_at) FROM sessions)"
+        " ELSE NULL END"
+    )
+    try:
+        pool = db.pool(butler_name)
+        value = await asyncio.wait_for(
+            pool.fetchval(query),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to fetch last_session_started_at for butler %s", butler_name, exc_info=True
+        )
+        return None
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Process facts helpers
 # ---------------------------------------------------------------------------
@@ -308,6 +337,7 @@ async def get_butler_detail(
     skills = _discover_skills(butler_dir)
     status = await _get_live_status(name, mcp_manager)
     sessions_map = await _fetch_sessions_24h(db, butler_names=[name])
+    last_session_started_at = await _fetch_last_session_started_at(db, name)
     registered_duration = await _fetch_registered_duration(db, name)
     process_facts = _build_process_facts(connection_info, roster_dir, registered_duration)
 
@@ -323,6 +353,7 @@ async def get_butler_detail(
         schedules=schedules,
         skills=skills,
         sessions_24h=sessions_map.get(name, 0),
+        last_session_started_at=last_session_started_at,
         process_facts=process_facts,
     )
 
