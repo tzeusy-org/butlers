@@ -351,8 +351,7 @@ async def get_butler_session(
 _SESSION_KINDS_SQL = """
 SELECT trigger_source, COUNT(*) AS count
 FROM sessions
-WHERE butler_name = $1
-  AND started_at >= NOW() - ($2 * INTERVAL '1 day')
+WHERE started_at >= NOW() - ($1 * INTERVAL '1 day')
 GROUP BY trigger_source
 """
 
@@ -382,7 +381,7 @@ async def get_butler_session_kinds(
             detail=f"Butler '{name}' database is not available",
         )
 
-    rows = await pool.fetch(_SESSION_KINDS_SQL, name, window_days)
+    rows = await pool.fetch(_SESSION_KINDS_SQL, window_days)
 
     kinds = [SessionKindItem(kind=row["trigger_source"], count=int(row["count"])) for row in rows]
 

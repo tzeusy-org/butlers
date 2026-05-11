@@ -7,7 +7,7 @@ Verifies:
 - window_days is forwarded to the SQL as an integer (not a string).
 - Empty result (no sessions) returns kinds=[].
 - Missing butler DB returns 503.
-- butler_name is passed as $1 to the SQL.
+- window_days is forwarded to the SQL as the sole bound parameter.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ async def test_session_kinds_default_window_days() -> None:
 
 
 async def test_session_kinds_window_days_forwarded_as_int() -> None:
-    """window_days and butler_name are forwarded to the SQL correctly."""
+    """window_days is forwarded to the SQL as the sole bound parameter."""
     captured_args: list = []
 
     async def _fetch(_sql: str, *args):
@@ -128,10 +128,9 @@ async def test_session_kinds_window_days_forwarded_as_int() -> None:
         resp = await client.get("/api/butlers/atlas/analytics/session-kinds?window_days=30")
 
     assert resp.status_code == 200
-    # $1 = butler_name, $2 = window_days as int
-    assert captured_args[0] == "atlas"
-    assert captured_args[1] == 30
-    assert isinstance(captured_args[1], int)
+    # $1 = window_days as int (pool is already scoped to the butler via db.pool(name))
+    assert captured_args[0] == 30
+    assert isinstance(captured_args[0], int)
 
 
 async def test_session_kinds_empty_result() -> None:
