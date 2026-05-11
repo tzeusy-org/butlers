@@ -182,8 +182,9 @@ async def test_list_measurements_type_filter_uses_predicate():
     assert first_arg == "measurement_weight"
 
 
-async def test_list_measurements_no_type_filter_uses_all_predicates():
-    """GET /api/health/measurements with no type filter sends all measurement predicates."""
+async def test_list_measurements_no_type_filter_uses_like_prefix():
+    """GET /api/health/measurements with no type filter uses a LIKE prefix rather than a
+    hardcoded allowlist, so wellness-ingest facts (measurement_spo2, etc.) are included."""
     app, pool = _make_app(fetch_rows=[], fetchval_result=0)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -194,10 +195,9 @@ async def test_list_measurements_no_type_filter_uses_all_predicates():
     assert len(fetchval_calls) >= 1
     sql = fetchval_calls[0][0][0]
     assert "facts" in sql
-    # Without a type filter the endpoint uses ANY($1) with a list of all predicates.
-    first_arg = fetchval_calls[0][0][1]
-    assert isinstance(first_arg, list)
-    assert all(p.startswith("measurement_") for p in first_arg)
+    # Without a type filter the endpoint uses a LIKE prefix — no list parameter is passed.
+    assert "LIKE" in sql
+    assert "measurement~_%" in sql
 
 
 async def test_list_measurements_since_until_passed_to_query():

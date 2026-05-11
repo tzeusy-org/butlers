@@ -98,16 +98,19 @@ async def list_measurements(
     """
     pool = _pool(db)
 
-    # Base predicate filter — either a specific type or the set of all known types.
-    _VALID_TYPES = ("weight", "blood_pressure", "heart_rate", "blood_sugar", "temperature")
+    # Base predicate filter — either a specific type or all measurement facts.
+    # When no type is specified, use a prefix LIKE filter so that wellness-ingest
+    # measurements (measurement_spo2, measurement_steps, etc.) are included
+    # alongside the core tool types.  This matches the approach used by
+    # GET /measurements/sources.
     if type is not None:
         predicate_cond = "predicate = $1"
         args: list[object] = [f"measurement_{type}"]
         idx = 2
     else:
-        predicate_cond = "predicate = ANY($1)"
-        args = [[f"measurement_{t}" for t in _VALID_TYPES]]
-        idx = 2
+        predicate_cond = "predicate LIKE 'measurement~_%' ESCAPE '~'"
+        args = []
+        idx = 1
 
     base_where = f"{predicate_cond} AND scope = 'health' AND validity = 'active'"
     extra: list[str] = []
