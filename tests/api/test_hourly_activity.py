@@ -1,10 +1,10 @@
 """Tests for GET /api/butlers/{name}/analytics/hourly-activity.
 
 Verifies:
-- Default window_hours=24 returns correct buckets ordered newest-first.
-- Custom window_hours=6 returns 6 buckets.
+- Default window_hours=24 returns 24 buckets (dense series, all hours present).
+- Custom window_hours=6 returns 6 buckets including zero-count hours.
 - hour_index=0 is the newest hour; hour_index increases backward in time.
-- Butler with no sessions in window returns empty buckets list.
+- Butler with no sessions in window returns 24 zero-count buckets.
 - Missing butler DB returns 503.
 - window_hours outside [1, 24] is rejected with 422.
 - SQL uses a single positional arg (window_hours) with no butler_name filter.
@@ -74,14 +74,16 @@ def _make_app_missing_butler() -> object:
 
 
 async def test_hourly_activity_default_window() -> None:
-    """Default window_hours=24 returns buckets for each hour with sessions."""
+    """Default window_hours=24 returns 24 buckets (dense series, newest-first)."""
     now = datetime.datetime(2026, 5, 11, 14, 0, 0, tzinfo=datetime.UTC)
-    # Simulate 3 non-consecutive hours with activity (oldest first, as DB returns)
+    # Dense series: SQL returns all 24 hours newest-first, zero-count hours included.
     rows = [
-        _make_hourly_row(hour_start=now - datetime.timedelta(hours=5), sessions_count=2),
-        _make_hourly_row(hour_start=now - datetime.timedelta(hours=2), sessions_count=4),
-        _make_hourly_row(hour_start=now, sessions_count=1),
+        _make_hourly_row(hour_start=now - datetime.timedelta(hours=i), sessions_count=0)
+        for i in range(24)
     ]
+    rows[0] = _make_hourly_row(hour_start=now, sessions_count=1)
+    rows[2] = _make_hourly_row(hour_start=now - datetime.timedelta(hours=2), sessions_count=4)
+    rows[5] = _make_hourly_row(hour_start=now - datetime.timedelta(hours=5), sessions_count=2)
     app = _make_app_with_rows(rows)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE) as client:
@@ -91,16 +93,19 @@ async def test_hourly_activity_default_window() -> None:
     data = resp.json()["data"]
     assert "buckets" in data
     buckets = data["buckets"]
-    assert len(buckets) == 3
+    assert len(buckets) == 24
 
 
 async def test_hourly_activity_window_hours_6() -> None:
-    """window_hours=6 is accepted and returns the correct number of buckets."""
+    """window_hours=6 returns exactly 6 buckets including zero-count hours."""
     now = datetime.datetime(2026, 5, 11, 14, 0, 0, tzinfo=datetime.UTC)
+    # Dense series: SQL returns all 6 hours newest-first, zero-count hours included.
     rows = [
-        _make_hourly_row(hour_start=now - datetime.timedelta(hours=3), sessions_count=3),
-        _make_hourly_row(hour_start=now - datetime.timedelta(hours=1), sessions_count=5),
+        _make_hourly_row(hour_start=now - datetime.timedelta(hours=i), sessions_count=0)
+        for i in range(6)
     ]
+    rows[1] = _make_hourly_row(hour_start=now - datetime.timedelta(hours=1), sessions_count=5)
+    rows[3] = _make_hourly_row(hour_start=now - datetime.timedelta(hours=3), sessions_count=3)
     app = _make_app_with_rows(rows)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE) as client:
@@ -108,30 +113,31 @@ async def test_hourly_activity_window_hours_6() -> None:
 
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
-    assert len(buckets) == 2
+    assert len(buckets) == 6
 
 
 async def test_hourly_activity_hour_index_ordering() -> None:
     """hour_index=0 is the newest (current) hour; higher indexes go back in time.
 
     Verifies the midnight boundary case: rows spanning two calendar days are
-    still ordered correctly by hour_index.
+    still ordered correctly by hour_index.  The dense-series SQL orders rows
+    newest-first so hour_index equals the enumeration position directly.
     """
-    # Midnight boundary: rows span 2026-05-10 23:00 → 2026-05-11 00:00
+    # Midnight boundary: rows span 2026-05-10 22:00 → 2026-05-11 00:00
     h0 = datetime.datetime(2026, 5, 11, 0, 0, 0, tzinfo=datetime.UTC)  # newest
     h1 = datetime.datetime(2026, 5, 10, 23, 0, 0, tzinfo=datetime.UTC)
     h2 = datetime.datetime(2026, 5, 10, 22, 0, 0, tzinfo=datetime.UTC)
 
-    # DB returns oldest-first
+    # Dense-series SQL returns newest-first (window_hours=3)
     rows = [
-        _make_hourly_row(hour_start=h2, sessions_count=1),
-        _make_hourly_row(hour_start=h1, sessions_count=3),
         _make_hourly_row(hour_start=h0, sessions_count=2),
+        _make_hourly_row(hour_start=h1, sessions_count=3),
+        _make_hourly_row(hour_start=h2, sessions_count=1),
     ]
     app = _make_app_with_rows(rows)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE) as client:
-        resp = await client.get(_URL)
+        resp = await client.get(f"{_URL}?window_hours=3")
 
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
@@ -151,15 +157,23 @@ async def test_hourly_activity_hour_index_ordering() -> None:
 
 
 async def test_hourly_activity_empty_butler() -> None:
-    """When the butler has no sessions in the window, returns empty buckets list."""
-    app = _make_app_with_rows([])
+    """When the butler has no sessions, returns 24 zero-count buckets (dense series)."""
+    now = datetime.datetime(2026, 5, 11, 14, 0, 0, tzinfo=datetime.UTC)
+    # Dense-series SQL always returns N rows even with no sessions.
+    rows = [
+        _make_hourly_row(hour_start=now - datetime.timedelta(hours=i), sessions_count=0)
+        for i in range(24)
+    ]
+    app = _make_app_with_rows(rows)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE) as client:
         resp = await client.get(_URL)
 
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["buckets"] == []
+    buckets = data["buckets"]
+    assert len(buckets) == 24
+    assert all(b["sessions_count"] == 0 for b in buckets)
 
 
 async def test_hourly_activity_missing_butler_db_returns_503() -> None:

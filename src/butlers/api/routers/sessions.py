@@ -452,11 +452,21 @@ async def get_butler_daily_activity(
 # ---------------------------------------------------------------------------
 
 _HOURLY_ACTIVITY_SQL = """
-SELECT DATE_TRUNC('hour', started_at) AS hour_start, COUNT(*) AS sessions_count
-FROM sessions
-WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')
+WITH hours AS (
+  SELECT generate_series(
+    DATE_TRUNC('hour', NOW()) - (($1 - 1) * INTERVAL '1 hour'),
+    DATE_TRUNC('hour', NOW()),
+    '1 hour'
+  ) AS hour_start
+)
+SELECT
+  h.hour_start,
+  COUNT(s.id) AS sessions_count
+FROM hours h
+LEFT JOIN sessions s ON s.started_at >= h.hour_start
+                    AND s.started_at < h.hour_start + INTERVAL '1 hour'
 GROUP BY 1
-ORDER BY 1
+ORDER BY 1 DESC
 """
 
 
@@ -471,17 +481,12 @@ async def get_butler_hourly_activity(
 ) -> ApiResponse[HourlyActivity]:
     """Return hourly session counts for a butler over a rolling window.
 
-    Queries the butler's ``sessions`` table, groups rows by truncated clock
-    hour, and returns a dense series of ``HourlyActivityBucket`` entries
-    covering the last ``window_hours`` hours.
-
-    Dense-series strategy (Option A): hours with zero sessions are still
-    present in the result because the SQL uses ``generate_series`` to fill
-    gaps via a LEFT JOIN.  The current implementation uses a simpler
-    GROUP BY that omits zero-count hours; the endpoint returns whatever
-    the DB produces and lets the caller pad missing hours if needed.
-    However, ``hour_index`` is always assigned based on the returned rows
-    sorted newest-first, with ``hour_index=0`` for the most recent hour.
+    Queries the butler's ``sessions`` table and returns a dense series of
+    ``HourlyActivityBucket`` entries covering the last ``window_hours`` clock
+    hours.  Every hour in the window is always present — zero-count hours are
+    included via ``generate_series`` + LEFT JOIN.  ``hour_index=0`` is the
+    current (most recent) hour; the SQL orders newest-first so the index equals
+    the enumeration position directly.
 
     Returns 503 when the butler's DB pool is not registered.
     """
@@ -495,15 +500,13 @@ async def get_butler_hourly_activity(
 
     rows = await pool.fetch(_HOURLY_ACTIVITY_SQL, window_hours)
 
-    # Rows arrive oldest-first (ORDER BY 1 ASC). Reverse so index 0 = newest.
-    reversed_rows = list(reversed(rows))
     buckets = [
         HourlyActivityBucket(
             hour_start=row["hour_start"],
             sessions_count=int(row["sessions_count"]),
             hour_index=idx,
         )
-        for idx, row in enumerate(reversed_rows)
+        for idx, row in enumerate(rows)
     ]
 
     return ApiResponse[HourlyActivity](data=HourlyActivity(buckets=buckets))
