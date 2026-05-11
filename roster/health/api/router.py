@@ -39,6 +39,8 @@ if _spec is not None and _spec.loader is not None:
     SleepSessionResponse = _models.SleepSessionResponse
     SleepStage = _models.SleepStage
     Symptom = _models.Symptom
+    TrendBucket = _models.TrendBucket
+    TrendResponse = _models.TrendResponse
 
 logger = logging.getLogger(__name__)
 
@@ -739,3 +741,91 @@ async def get_measurements_sources(
     ]
 
     return MeasurementSourcesResponse(sources=sources)
+
+
+# ---------------------------------------------------------------------------
+# GET /measurements/trend — hourly/daily aggregation for dashboard sparklines
+#
+# Aggregates facts rows for a single measurement type into time buckets.
+# Designed for high-frequency biosensors (e.g. CGM at 5-min intervals) where
+# the 50-row default on /measurements is insufficient for trend visualisation.
+#
+# Pool is butler-scoped — no butler_name filter is applied.
+# ---------------------------------------------------------------------------
+
+_TREND_WINDOW_DAYS_ALLOWED = {1, 7, 14, 30, 90}
+
+
+@router.get("/measurements/trend", response_model=TrendResponse)
+async def get_measurements_trend(
+    type: str = Query(..., description="Measurement type (e.g. 'glucose', 'weight')"),
+    window_days: int = Query(14, description="Lookback window in days (1, 7, 14, 30, or 90)"),
+    bucket: str = Query("daily", description="Bucket granularity: 'hourly' or 'daily'"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> TrendResponse:
+    """Return aggregated trend buckets for a single measurement type.
+
+    Reads from the ``facts`` table using ``predicate = 'measurement_{type}'``.
+    Results are grouped by hour or day within the requested window.  Returns
+    an empty ``buckets`` list when no data exists.
+
+    Allowed ``window_days`` values: 1, 7, 14, 30, 90.
+    Allowed ``bucket`` values: ``'hourly'``, ``'daily'``.
+
+    The pool is butler-scoped — no butler_name filter is applied.
+    """
+    if window_days not in _TREND_WINDOW_DAYS_ALLOWED:
+        raise HTTPException(
+            status_code=422,
+            detail=f"window_days must be one of {sorted(_TREND_WINDOW_DAYS_ALLOWED)}",
+        )
+    if bucket not in ("hourly", "daily"):
+        raise HTTPException(
+            status_code=422,
+            detail="bucket must be 'hourly' or 'daily'",
+        )
+
+    pool = _pool(db)
+
+    trunc_unit = "hour" if bucket == "hourly" else "day"
+    predicate = f"measurement_{type}"
+
+    rows = await pool.fetch(
+        f"""
+        SELECT
+          date_trunc('{trunc_unit}', valid_at) AS bucket_start,
+          AVG((metadata->>'value')::float)      AS value_mean,
+          MIN((metadata->>'value')::float)      AS value_min,
+          MAX((metadata->>'value')::float)      AS value_max,
+          COUNT(*)                              AS sample_count
+        FROM facts
+        WHERE predicate = $1
+          AND scope = 'health'
+          AND validity = 'active'
+          AND valid_at IS NOT NULL
+          AND valid_at >= NOW() - ($2 * INTERVAL '1 day')
+          AND metadata ? 'value'
+        GROUP BY bucket_start
+        ORDER BY bucket_start ASC
+        """,
+        predicate,
+        window_days,
+    )
+
+    buckets = [
+        TrendBucket(
+            bucket_start=r["bucket_start"],
+            value_mean=float(r["value_mean"]),
+            value_min=float(r["value_min"]),
+            value_max=float(r["value_max"]),
+            sample_count=int(r["sample_count"]),
+        )
+        for r in rows
+    ]
+
+    return TrendResponse(
+        type=type,
+        window_days=window_days,
+        bucket=bucket,
+        buckets=buckets,
+    )

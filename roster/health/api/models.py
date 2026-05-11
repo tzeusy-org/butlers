@@ -7,7 +7,8 @@ endpoints.
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -162,3 +163,35 @@ class MeasurementSourcesResponse(BaseModel):
     """Response for GET /measurements/sources."""
 
     sources: list[MeasurementSource]
+
+
+# ---------------------------------------------------------------------------
+# Measurements — trend aggregation
+# ---------------------------------------------------------------------------
+
+
+class TrendBucket(BaseModel):
+    """A single time bucket in a measurement trend response.
+
+    Backed by ``date_trunc('day' | 'hour', valid_at)`` aggregation over the
+    ``facts`` table.  ``bucket_start`` is the start of the bucket in UTC.
+    """
+
+    bucket_start: datetime
+    value_mean: float
+    value_min: float
+    value_max: float
+    sample_count: int
+
+
+class TrendResponse(BaseModel):
+    """Response for GET /measurements/trend.
+
+    Aggregates ``facts`` rows for a single measurement type into hourly or
+    daily buckets over a requested window.
+    """
+
+    type: str
+    window_days: int
+    bucket: Literal["hourly", "daily"]
+    buckets: list[TrendBucket]
