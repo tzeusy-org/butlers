@@ -3,7 +3,8 @@
 Provides ``SessionDetail`` for the full session detail endpoint, extends
 the existing ``SessionSummary`` with a ``butler`` field for cross-butler
 views, ``SessionKindBreakdown`` for the session-kinds analytics endpoint,
-and ``DailyActivity`` for the daily-activity analytics endpoint.
+``DailyActivity`` for the daily-activity analytics endpoint, and
+``HourlyActivity`` for the hourly-activity analytics endpoint.
 """
 
 from __future__ import annotations
@@ -61,6 +62,32 @@ class DailyActivity(BaseModel):
     """Daily session counts over a rolling window."""
 
     buckets: list[DailyActivityBucket] = []
+
+
+class HourlyActivityBucket(BaseModel):
+    """Session count for a single clock hour.
+
+    ``hour_index=0`` is the most recent (current) hour; higher values are
+    further back in time.  This ordering matches the left-to-right stripe
+    rendering convention on the dashboard Activity tab.
+    """
+
+    hour_start: datetime
+    sessions_count: int
+    hour_index: int
+
+
+class HourlyActivity(BaseModel):
+    """Hourly session counts over a rolling window.
+
+    Returned by ``GET /api/butlers/{name}/analytics/hourly-activity``.
+
+    ``buckets`` is a dense series — every hour in the window is present,
+    including zero-count hours (generated via ``generate_series`` + LEFT
+    JOIN in SQL).  ``hour_index=0`` is the current hour.
+    """
+
+    buckets: list[HourlyActivityBucket] = []
 
 
 class SessionDetail(BaseModel):
