@@ -1157,6 +1157,38 @@ export function getMeals(params?: MealParams): Promise<PaginatedResponse<Meal>> 
   return apiFetch<PaginatedResponse<Meal>>(qs ? `/health/meals?${qs}` : "/health/meals");
 }
 
+/** Fetch the latest measurement value for each requested type.
+ *
+ * GET /api/health/measurements/latest?types=glucose,hrv,steps
+ * Returns { measurements: { "<type>": { measured_at, value, unit, metadata } | null } }
+ */
+export function getMeasurementsLatest(
+  types: string[],
+): Promise<import("./types").MeasurementsLatestResponse> {
+  const sp = new URLSearchParams();
+  if (types.length > 0) sp.set("types", types.join(","));
+  const qs = sp.toString();
+  return apiFetch<import("./types").MeasurementsLatestResponse>(
+    qs ? `/health/measurements/latest?${qs}` : "/health/measurements/latest",
+  );
+}
+
+/** Fetch the latest sleep session with stage breakdown.
+ *
+ * GET /api/health/measurements/sleep/latest
+ */
+export function getSleepLatest(): Promise<import("./types").SleepLatestResponse> {
+  return apiFetch<import("./types").SleepLatestResponse>("/health/measurements/sleep/latest");
+}
+
+/** Fetch all active measurement sources with their last-sample timestamps.
+ *
+ * GET /api/health/measurements/sources
+ */
+export function getMeasurementSources(): Promise<import("./types").MeasurementSourcesResponse> {
+  return apiFetch<import("./types").MeasurementSourcesResponse>("/health/measurements/sources");
+}
+
 /** Fetch a paginated list of health research notes. */
 export function getResearch(params?: ResearchParams): Promise<PaginatedResponse<HealthResearch>> {
   const sp = new URLSearchParams();
