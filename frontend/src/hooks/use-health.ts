@@ -8,9 +8,12 @@ import {
   getConditions,
   getMeals,
   getMeasurements,
+  getMeasurementsLatest,
+  getMeasurementSources,
   getMedicationDoses,
   getMedications,
   getResearch,
+  getSleepLatest,
   getSymptoms,
 } from "@/api/index.ts";
 import type {
@@ -84,5 +87,45 @@ export function useResearch(params?: ResearchParams) {
     queryKey: ["health-research", params],
     queryFn: () => getResearch(params),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Fetch the latest measurement value for each requested type.
+ *
+ * Wraps GET /api/health/measurements/latest?types=X,Y,Z
+ */
+export function useMeasurementsLatest(types: string[]) {
+  return useQuery({
+    queryKey: ["health-measurements-latest", types],
+    queryFn: () => getMeasurementsLatest(types),
+    refetchInterval: 60_000,
+    enabled: types.length > 0,
+  });
+}
+
+/**
+ * Fetch the latest sleep session with stage breakdown.
+ *
+ * Wraps GET /api/health/measurements/sleep/latest
+ */
+export function useSleepLatest() {
+  return useQuery({
+    queryKey: ["health-sleep-latest"],
+    queryFn: () => getSleepLatest(),
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * Fetch all active measurement sources with their last-sample timestamps.
+ *
+ * Wraps GET /api/health/measurements/sources
+ */
+export function useMeasurementSources() {
+  return useQuery({
+    queryKey: ["health-measurement-sources"],
+    queryFn: () => getMeasurementSources(),
+    refetchInterval: 60_000,
   });
 }

@@ -1035,6 +1035,58 @@ export interface GeneralEntity {
   updated_at: string;
 }
 
+// ---------------------------------------------------------------------------
+// Health — new endpoints (bu-iuol4.24)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single latest-measurement entry as returned by
+ * GET /api/health/measurements/latest?types=X,Y.
+ * `null` means no measurement of that type has been recorded yet.
+ */
+export interface LatestMeasurementEntry {
+  measured_at: string;
+  value: Record<string, unknown>;
+  unit: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/**
+ * Response shape for GET /api/health/measurements/latest?types=X,Y,Z.
+ * Keys are measurement type slugs; values are the latest entry or null.
+ */
+export interface MeasurementsLatestResponse {
+  measurements: Record<string, LatestMeasurementEntry | null>;
+}
+
+/** A single stage within a sleep session. */
+export interface SleepStage {
+  stage: string; // "awake" | "light" | "deep" | "rem"
+  duration_minutes: number;
+  start_time: string | null;
+}
+
+/**
+ * Response shape for GET /api/health/measurements/sleep/latest.
+ * `null` means no sleep session has been recorded yet.
+ */
+export interface SleepLatestResponse {
+  session_date: string | null;
+  total_minutes: number | null;
+  stages: SleepStage[] | null;
+  source: string | null;
+}
+
+/** A single data source as returned by GET /api/health/measurements/sources. */
+export interface MeasurementSource {
+  name: string;
+  last_sample_at: string | null;
+  sample_count: number;
+}
+
+/** Response shape for GET /api/health/measurements/sources. */
+export type MeasurementSourcesResponse = MeasurementSource[];
+
 /** Query parameters for measurement endpoints. */
 export interface MeasurementParams {
   type?: string;

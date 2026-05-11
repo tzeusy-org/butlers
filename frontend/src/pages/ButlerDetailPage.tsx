@@ -102,6 +102,11 @@ const ButlerApprovalsTab = lazy(
   () => import("@/components/butler-detail/ButlerApprovalsTab.tsx"),
 );
 
+// Health butler tabs (lazy)
+const ButlerHealthMeasurementsTab = lazy(
+  () => import("@/components/butler-detail/ButlerHealthMeasurementsTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Page-local constants
 // ---------------------------------------------------------------------------
@@ -328,76 +333,7 @@ function ButlerCrmTab({ butlerName }: { butlerName: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Health Tab sub-component
-// ---------------------------------------------------------------------------
-
-function ButlerHealthTab({ butlerName }: { butlerName: string }) {
-  const isHealth = butlerName === "health";
-
-  if (!isHealth) {
-    return (
-      <Card>
-        <CardContent className="py-12">
-          <p className="text-muted-foreground text-center text-sm">
-            Health features are only available for the health butler.
-          </p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const sections = [
-    {
-      title: "Measurements",
-      description: "Track weight, blood pressure, heart rate, and more.",
-      link: "/health/measurements",
-    },
-    {
-      title: "Medications",
-      description: "Manage medications and track dose adherence.",
-      link: "/health/medications",
-    },
-    {
-      title: "Conditions",
-      description: "View and manage health conditions.",
-      link: "/health/conditions",
-    },
-    {
-      title: "Symptoms",
-      description: "Track symptoms with severity ratings.",
-      link: "/health/symptoms",
-    },
-    {
-      title: "Meals",
-      description: "Log meals and monitor nutrition.",
-      link: "/health/meals",
-    },
-    {
-      title: "Research",
-      description: "Health research notes and references.",
-      link: "/health/research",
-    },
-  ];
-
-  return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {sections.map((section) => (
-        <Card key={section.title}>
-          <CardHeader>
-            <CardTitle className="text-base">{section.title}</CardTitle>
-            <CardDescription>{section.description}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button variant="outline" size="sm" asChild>
-              <Link to={section.link}>View</Link>
-            </Button>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
+// (ButlerHealthTab removed — replaced by lazy ButlerHealthMeasurementsTab)
 
 // ---------------------------------------------------------------------------
 // ButlerDetailPage
@@ -647,7 +583,9 @@ export default function ButlerDetailPage() {
 
           {showHealthTab && (
             <TabsContent value="health">
-              <ButlerHealthTab butlerName={name} />
+              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
+                <ButlerHealthMeasurementsTab />
+              </Suspense>
             </TabsContent>
           )}
 
