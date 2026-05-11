@@ -173,8 +173,10 @@ class MeasurementSourcesResponse(BaseModel):
 class TrendBucket(BaseModel):
     """A single time bucket in a measurement trend response.
 
-    Backed by ``date_trunc('day' | 'hour', valid_at)`` aggregation over the
-    ``facts`` table.  ``bucket_start`` is the start of the bucket in UTC.
+    Backed by ``date_trunc('day' | 'hour', valid_at AT TIME ZONE 'UTC')``
+    aggregation over the ``facts`` table.  ``bucket_start`` is the start of
+    the bucket in UTC.  Only rows with scalar numeric ``metadata.value`` are
+    included.
     """
 
     bucket_start: datetime

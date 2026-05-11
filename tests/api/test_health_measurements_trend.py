@@ -420,3 +420,61 @@ class TestTrend503:
             )
 
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Tests — scalar-only filter (object-valued metadata excluded from SQL)
+# ---------------------------------------------------------------------------
+
+
+class TestTrendScalarFilter:
+    async def test_sql_filters_out_object_valued_metadata(self):
+        """SQL must exclude compound JSON object values (e.g. blood_pressure).
+
+        The trend SQL must include a guard so that rows whose ``metadata.value``
+        is a JSON object (not a scalar number) are excluded at the database
+        level.  This prevents Postgres cast errors when e.g. weight or
+        blood_pressure rows store ``{kg: ...}`` / ``{systolic: ..., diastolic:
+        ...}`` as the value.
+        """
+        pool = _mock_pool(fetch_rows=[])
+        app = _build_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get(
+                "/api/health/measurements/trend",
+                params={"type": "blood_pressure", "bucket": "daily"},
+            )
+
+        fetch_calls = pool.fetch.call_args_list
+        assert len(fetch_calls) == 1
+        sql = fetch_calls[0][0][0]
+        # The SQL must guard against non-numeric JSON values before casting.
+        # Either jsonb_typeof or a numeric regex guard must be present.
+        has_type_guard = "jsonb_typeof" in sql
+        has_regex_guard = "~ '^-?" in sql or "regexp_like" in sql
+        assert has_type_guard or has_regex_guard, (
+            "SQL must guard against non-numeric metadata.value before casting to float"
+        )
+
+    async def test_sql_truncates_in_utc(self):
+        """date_trunc must use UTC explicitly so bucket boundaries are deterministic."""
+        pool = _mock_pool(fetch_rows=[])
+        app = _build_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get(
+                "/api/health/measurements/trend",
+                params={"type": "glucose", "bucket": "daily"},
+            )
+
+        fetch_calls = pool.fetch.call_args_list
+        assert len(fetch_calls) == 1
+        sql = fetch_calls[0][0][0]
+        assert "AT TIME ZONE 'UTC'" in sql, (
+            "date_trunc must include AT TIME ZONE 'UTC' to guarantee UTC bucket boundaries"
+        )

@@ -793,11 +793,11 @@ async def get_measurements_trend(
     rows = await pool.fetch(
         f"""
         SELECT
-          date_trunc('{trunc_unit}', valid_at) AS bucket_start,
-          AVG((metadata->>'value')::float)      AS value_mean,
-          MIN((metadata->>'value')::float)      AS value_min,
-          MAX((metadata->>'value')::float)      AS value_max,
-          COUNT(*)                              AS sample_count
+          date_trunc('{trunc_unit}', valid_at AT TIME ZONE 'UTC') AS bucket_start,
+          AVG((metadata->>'value')::float8)      AS value_mean,
+          MIN((metadata->>'value')::float8)      AS value_min,
+          MAX((metadata->>'value')::float8)      AS value_max,
+          COUNT(*)                               AS sample_count
         FROM facts
         WHERE predicate = $1
           AND scope = 'health'
@@ -805,6 +805,8 @@ async def get_measurements_trend(
           AND valid_at IS NOT NULL
           AND valid_at >= NOW() - ($2 * INTERVAL '1 day')
           AND metadata ? 'value'
+          AND jsonb_typeof(metadata->'value') IN ('number', 'string')
+          AND (metadata->>'value') ~ '^-?[0-9]+(\\.[0-9]+)?$'
         GROUP BY bucket_start
         ORDER BY bucket_start ASC
         """,
