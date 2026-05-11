@@ -74,9 +74,9 @@ function EmptyStateLine({ children }: { children: ReactNode }) {
 /** Error state: icon + destructive-tone text. */
 function ErrorLine({ children }: { children: ReactNode }) {
   return (
-    <p className="flex items-center gap-1.5 text-sm text-destructive" data-testid="error-state-line">
-      <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
-      {children}
+    <p className="flex items-center gap-1.5 text-sm text-destructive min-w-0" data-testid="error-state-line">
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="truncate">{children}</span>
     </p>
   );
 }
