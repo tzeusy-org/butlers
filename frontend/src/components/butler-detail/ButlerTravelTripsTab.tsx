@@ -11,13 +11,13 @@
  *  3. Trips roster (span 4) — paginated card list; row-click opens detail drawer.
  *
  * Document-expiry alert: no dedicated endpoint exists yet. A follow-up is filed
- * as a discovered gap — see DISCOVERED_FOLLOW_UPS below.
+ * as a discovered gap (see DISCOVERED_FOLLOW_UPS below).
  *
  * bead: bu-iuol4.36 (redesign)
  * original bead: bu-0eac9
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -148,15 +148,15 @@ function KpiStrip({ upcoming, isLoading }: KpiStripProps) {
       data-testid="travel-kpi-strip"
     >
       <Panel>
-        {isLoading ? (
-          <KpiCell label="Next departure" value="…" />
-        ) : (
-          <KpiCell
-            label="Next departure"
-            value={<span data-testid="kpi-next-departure">{nextDepartureName}</span>}
-            sub={nextDepartureSub}
-          />
-        )}
+        <KpiCell
+          label="Next departure"
+          value={
+            <span data-testid="kpi-next-departure">
+              {isLoading ? "…" : nextDepartureName}
+            </span>
+          }
+          sub={isLoading ? undefined : nextDepartureSub}
+        />
       </Panel>
 
       <Panel>
@@ -208,6 +208,7 @@ interface WeekAheadEntry {
   date: string;       // ISO date or datetime for <Time>
   label: string;      // Human-readable one-liner
   kind: "leg" | "checkin";
+  kindLabel: string;  // Display label derived from leg.type or "hotel"
 }
 
 function buildWeekAheadEntries(upcomingTrips: TravelUpcomingTrip[]): WeekAheadEntry[] {
@@ -227,6 +228,7 @@ function buildWeekAheadEntries(upcomingTrips: TravelUpcomingTrip[]): WeekAheadEn
           date: leg.departure_at,
           label: `${from} → ${to}${carrier}`,
           kind: "leg",
+          kindLabel: leg.type ?? "leg",
         });
       }
     }
@@ -242,6 +244,7 @@ function buildWeekAheadEntries(upcomingTrips: TravelUpcomingTrip[]): WeekAheadEn
           date: acc.check_in,
           label: `Check-in: ${name}`,
           kind: "checkin",
+          kindLabel: acc.type ?? "hotel",
         });
       }
     }
@@ -255,15 +258,21 @@ function buildWeekAheadEntries(upcomingTrips: TravelUpcomingTrip[]): WeekAheadEn
 interface WeekAheadScheduleProps {
   upcoming: ReturnType<typeof useUpcomingTravel>["data"];
   isLoading: boolean;
+  error: Error | null;
 }
 
-function WeekAheadSchedule({ upcoming, isLoading }: WeekAheadScheduleProps) {
-  const entries = buildWeekAheadEntries(upcoming?.upcoming_trips ?? []);
+function WeekAheadSchedule({ upcoming, isLoading, error }: WeekAheadScheduleProps) {
+  const entries = useMemo(
+    () => buildWeekAheadEntries(upcoming?.upcoming_trips ?? []),
+    [upcoming],
+  );
 
   return (
     <Panel title="Week ahead" sub="next 7 days" span={2} scroll height="280px">
       {isLoading ? (
         <LoadingLine />
+      ) : error ? (
+        <EmptyStateLine>{error.message || "Error loading schedule."}</EmptyStateLine>
       ) : entries.length === 0 ? (
         <EmptyStateLine>No legs or check-ins in the next 7 days.</EmptyStateLine>
       ) : (
@@ -288,7 +297,7 @@ function WeekAheadSchedule({ upcoming, isLoading }: WeekAheadScheduleProps) {
                     variant={entry.kind === "leg" ? "secondary" : "outline"}
                     className="text-[10px] py-0 px-1"
                   >
-                    {entry.kind === "leg" ? "flight" : "hotel"}
+                    {entry.kindLabel}
                   </Badge>
                 </span>
               </span>
@@ -307,20 +316,26 @@ function WeekAheadSchedule({ upcoming, isLoading }: WeekAheadScheduleProps) {
 // ---------------------------------------------------------------------------
 
 interface UpcomingChecklistProps {
-  actions: TravelPreTripAction[];
+  upcoming: ReturnType<typeof useUpcomingTravel>["data"];
   isLoading: boolean;
+  error: Error | null;
 }
 
-function UpcomingChecklist({ actions, isLoading }: UpcomingChecklistProps) {
+function UpcomingChecklist({ upcoming, isLoading, error }: UpcomingChecklistProps) {
   // Sort by urgency_rank ascending — lowest rank = highest urgency.
-  const ranked = [...actions].sort((a, b) => a.urgency_rank - b.urgency_rank);
+  const ranked = useMemo(
+    () => [...(upcoming?.actions ?? [])].sort((a, b) => a.urgency_rank - b.urgency_rank),
+    [upcoming],
+  );
 
   return (
     <Panel title="Upcoming checklist" sub="ranked by urgency" span={2} scroll height="280px">
       {isLoading ? (
         <LoadingLine />
+      ) : error ? (
+        <EmptyStateLine>{error.message || "Error loading checklist."}</EmptyStateLine>
       ) : ranked.length === 0 ? (
-        <EmptyStateLine>All clear — no pre-trip actions required.</EmptyStateLine>
+        <EmptyStateLine>All clear. No pre-trip actions required.</EmptyStateLine>
       ) : (
         <ul className="divide-y divide-border/40" data-testid="pre-trip-actions-list">
           {ranked.map((action) => (
@@ -582,8 +597,7 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
 export default function ButlerTravelTripsTab() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
-  const { data: upcoming, isLoading: upcomingLoading } = useUpcomingTravel(90);
-  const actions = upcoming?.actions ?? [];
+  const { data: upcoming, isLoading: upcomingLoading, error: upcomingError } = useUpcomingTravel(90);
 
   function handleTripClick(trip: TravelTrip) {
     setSelectedTripId(trip.id);
@@ -600,8 +614,8 @@ export default function ButlerTravelTripsTab() {
 
       {/* Row 2: Week ahead (span 2) + Upcoming checklist (span 2) */}
       <div className="grid grid-cols-1 lg:grid-cols-4 border-l border-border/60">
-        <WeekAheadSchedule upcoming={upcoming} isLoading={upcomingLoading} />
-        <UpcomingChecklist actions={actions} isLoading={upcomingLoading} />
+        <WeekAheadSchedule upcoming={upcoming} isLoading={upcomingLoading} error={upcomingError} />
+        <UpcomingChecklist upcoming={upcoming} isLoading={upcomingLoading} error={upcomingError} />
       </div>
 
       {/* Row 3: Trips roster (span 4) */}
