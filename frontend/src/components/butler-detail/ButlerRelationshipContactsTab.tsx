@@ -344,6 +344,7 @@ function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact
           <tr className="border-b text-xs text-muted-foreground">
             <th className="py-1.5 pr-4 text-left font-medium">Name</th>
             <th className="py-1.5 pr-4 text-left font-medium">Tier</th>
+            <th className="py-1.5 pr-4 text-left font-medium">Last contact</th>
             <th className="py-1.5 text-right font-medium tnum">Warmth</th>
           </tr>
         </thead>
@@ -373,6 +374,12 @@ function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact
                 </td>
                 <td className="py-2 pr-4 text-xs text-muted-foreground">
                   {TIER_META[entry.dunbar_tier]?.label ?? `T${entry.dunbar_tier}`}
+                </td>
+                <td
+                  className="py-2 pr-4 text-xs text-muted-foreground tnum"
+                  data-testid="watchlist-last-contact"
+                >
+                  {relativeDate(entry.last_interaction_at)}
                 </td>
                 <td className="py-2 text-right tnum font-mono text-xs">
                   {fmtWarmth(entry.warmth)}

@@ -102,6 +102,7 @@ const DUNBAR_DATA = {
       warmth: 0.82,
       avatar_url: null,
       aliases: [],
+      last_interaction_at: "2026-05-01T10:00:00Z",
     },
     {
       contact_id: "c-2",
@@ -113,6 +114,7 @@ const DUNBAR_DATA = {
       warmth: 0.35,
       avatar_url: null,
       aliases: [],
+      last_interaction_at: null,
     },
     {
       contact_id: "c-3",
@@ -124,6 +126,7 @@ const DUNBAR_DATA = {
       warmth: 0.55,
       avatar_url: null,
       aliases: [],
+      last_interaction_at: "2026-04-20T08:00:00Z",
     },
   ],
   owner_entity_id: null,
@@ -509,6 +512,27 @@ describe("ButlerRelationshipContactsTab — watchlist", () => {
     const rows = screen.getAllByTestId("watchlist-row");
     const bobRow = rows.find((r) => r.textContent?.includes("Bob Jones"));
     expect(bobRow?.textContent).toContain("★");
+  });
+
+  it("renders Last contact column header", () => {
+    renderTab();
+    expect(screen.getByText("Last contact")).toBeDefined();
+  });
+
+  it("shows relative date in Last contact cells for contacts with interactions", () => {
+    // Fixed clock is 2026-05-10T08:00:00Z, Alice last seen 2026-05-01T10:00:00Z = 8d ago
+    renderTab();
+    const cells = screen.getAllByTestId("watchlist-last-contact");
+    const aliceCell = cells.find((c) => c.textContent?.includes("d ago") || c.textContent === "today");
+    expect(aliceCell).toBeDefined();
+  });
+
+  it("shows dash in Last contact cell for contacts with no interactions (never-contacted)", () => {
+    // Bob Jones has last_interaction_at: null → should render "—"
+    renderTab();
+    const cells = screen.getAllByTestId("watchlist-last-contact");
+    const neverCell = cells.find((c) => c.textContent === "—");
+    expect(neverCell).toBeDefined();
   });
 });
 

@@ -197,3 +197,63 @@ class TestDunbarRankingAliases:
         body = resp.json()
         assert body["owner_entity_id"] == str(owner_entity_id)
         assert body["entries"] == []
+
+
+class TestDunbarRankingLastInteractionAt:
+    """GET /dunbar/ranking — last_interaction_at field is exposed per entry."""
+
+    async def test_last_interaction_at_populated_when_present(self):
+        """last_interaction_at from the scoring engine is included in each DunbarEntry."""
+        from datetime import UTC, datetime
+
+        contact_id = uuid4()
+        entity_id = uuid4()
+        last_seen = datetime(2026, 4, 20, 10, 0, 0, tzinfo=UTC)
+
+        ranked = [
+            {
+                "contact_id": contact_id,
+                "entity_id": entity_id,
+                "dunbar_tier": 5,
+                "dunbar_score": 2.5,
+                "dunbar_tier_override": False,
+                "last_interaction_at": last_seen,
+            }
+        ]
+
+        entity_row = _row(id=entity_id, canonical_name="Alice Nguyen", aliases=[])
+        avatar_row = _row(id=contact_id, avatar_url=None)
+
+        app = _build_app(ranked, [entity_row], [avatar_row], None)
+        resp = await _get_ranking(app)
+
+        assert resp.status_code == 200
+        entry = resp.json()["entries"][0]
+        assert entry["last_interaction_at"] is not None
+        assert "2026-04-20" in entry["last_interaction_at"]
+
+    async def test_last_interaction_at_null_when_no_interactions(self):
+        """last_interaction_at is null in DunbarEntry when the contact has no interactions."""
+        contact_id = uuid4()
+        entity_id = uuid4()
+
+        ranked = [
+            {
+                "contact_id": contact_id,
+                "entity_id": entity_id,
+                "dunbar_tier": 1500,
+                "dunbar_score": 0.0,
+                "dunbar_tier_override": False,
+                "last_interaction_at": None,
+            }
+        ]
+
+        entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[])
+        avatar_row = _row(id=contact_id, avatar_url=None)
+
+        app = _build_app(ranked, [entity_row], [avatar_row], None)
+        resp = await _get_ranking(app)
+
+        assert resp.status_code == 200
+        entry = resp.json()["entries"][0]
+        assert entry["last_interaction_at"] is None
