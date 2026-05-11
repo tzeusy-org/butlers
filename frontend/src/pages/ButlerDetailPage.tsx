@@ -112,6 +112,11 @@ const ButlerQaInvestigationsTab = lazy(
   () => import("@/components/butler-detail/ButlerQaInvestigationsTab.tsx"),
 );
 
+// Resident-mode core tabs (lazy)
+const ButlerLogsTab = lazy(
+  () => import("@/components/butler-detail/ButlerLogsTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Page-local constants
 // ---------------------------------------------------------------------------
@@ -515,13 +520,9 @@ export default function ButlerDetailPage() {
           </TabsContent>
 
           <TabsContent value="logs">
-            <Card>
-              <CardContent className="py-12">
-                <p className="text-muted-foreground text-center text-sm">
-                  Logs view coming soon.
-                </p>
-              </CardContent>
-            </Card>
+            <Suspense fallback={<TabFallback label="logs" />}>
+              <ButlerLogsTab butlerName={name} />
+            </Suspense>
           </TabsContent>
 
           <TabsContent value="approvals">

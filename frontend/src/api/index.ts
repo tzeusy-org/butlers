@@ -25,6 +25,7 @@ export {
   getButler,
   getButlerConfig,
   getButlerModules,
+  getButlerLogs,
   getButlerMcpTools,
   getButlerNotifications,
   getButlerSchedules,
@@ -826,4 +827,15 @@ export type {
   HomeTopConsumer,
   HomeMaintenanceItem,
   HomeCommandLogEntry,
+} from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Butler logs (bu-iuol4.17)
+// ---------------------------------------------------------------------------
+
+export type {
+  LogLevel,
+  ButlerLogLine,
+  ButlerLogsParams,
+  ButlerLogsResponse,
 } from "./types.ts";
