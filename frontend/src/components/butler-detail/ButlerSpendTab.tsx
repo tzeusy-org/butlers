@@ -5,9 +5,9 @@
 //
 // Layout (4-col panel grid, 3 rows):
 //   Row 1: KPI strip (4 cells, full width):
-//     spend today | spend 30d | cost/session | tokens 24h (in / out)
+//     spend today | spend 30d | cost/session (30d) | tokens today (in / out)
 //   Row 2: full-width bar trend — DayBars per RangeToggle (24h / 7d / 30d)
-//   Row 3: model breakdown KV list — model name, $X · Y% of calls
+//   Row 3: model breakdown KV list — model name, $X · Y% of total cost
 //
 // ?butler= filter status:
 //   The backend /api/costs/summary and /api/costs/daily endpoints do NOT
@@ -15,11 +15,12 @@
 //   Until that lands:
 //   - KPI cells: today/30d costs are derived from `by_butler[butlerName]`
 //     so they are already per-butler scoped.
-//   - tokens 24h, cost/session: derived from the global summary filtered
-//     by butlerName — only cost is scoped; token counts are global estimates.
+//   - tokens today, cost/session: derived from the global summary; both are
+//     all-butler totals (no per-butler token or session breakdown available).
 //   - Bar trend: uses /api/costs/daily which returns merged all-butler
 //     data. Values are degraded (all butlers).
 //   - Model breakdown: from summary `by_model` — all-butler data, degraded.
+//     Percentage shown is share of total cost, not share of calls.
 //   Degraded panels carry an "(all butlers)" note in their panel subtitle.
 //
 // Currency formatter:
@@ -29,13 +30,15 @@
 
 import { useState, useMemo } from "react";
 import type { ReactNode } from "react";
-import { AlertTriangle } from "lucide-react";
+import { subDays } from "date-fns";
 
 import { useCostSummary, useDailyCosts } from "@/hooks/use-costs";
+import { startOfDayInTz, endOfDayInTz } from "@/components/chronicles/tz-format";
+import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { DayBars } from "@/components/butlers/DayBars";
 import { RangeToggle } from "@/components/ui/range-toggle";
 import type { RangeValue } from "@/components/ui/range-toggle";
-import { Panel, KpiCell } from "@/components/butler-detail/atoms";
+import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
 
 // ---------------------------------------------------------------------------
 // Format helpers
@@ -82,18 +85,6 @@ function EmptyLine({ children }: { children: ReactNode }) {
       data-testid="empty-state-line"
     >
       {children}
-    </p>
-  );
-}
-
-function ErrorLine({ children }: { children: ReactNode }) {
-  return (
-    <p
-      className="flex items-center gap-1.5 text-sm text-destructive min-w-0"
-      data-testid="error-state-line"
-    >
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{children}</span>
     </p>
   );
 }
@@ -179,7 +170,7 @@ function ModelBreakdownPanel({ byModel, totalCost, isLoading, isError }: ModelBr
             return (
               <li
                 key={model}
-                className="flex items-center justify-between py-2 gap-4"
+                className="flex items-center justify-between py-2 gap-4 min-w-0"
                 data-testid="model-breakdown-row"
               >
                 <span className="text-sm font-mono truncate min-w-0">{model}</span>
@@ -208,7 +199,9 @@ interface ButlerSpendTabProps {
 export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   const [range, setRange] = useState<RangeValue>("7d");
 
-  const today = new Date();
+  // Stable "today" end-of-day in owner TZ — avoids both render-time drift and
+  // the need to suppress react-hooks/exhaustive-deps on the trendFrom memo.
+  const todayEnd = useMemo(() => endOfDayInTz(new Date(), OWNER_TZ_DEFAULT), []);
 
   // "today" period for KPI cell 1
   const {
@@ -224,33 +217,26 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     isError: error30d,
   } = useCostSummary("30d");
 
-  // Date window for the bar trend
+  // Date window for the bar trend — owner-TZ day boundaries
   const trendFrom = useMemo(() => {
-    const d = new Date(today);
-    if (range === "24h") {
-      d.setDate(d.getDate() - 1);
-    } else if (range === "7d") {
-      d.setDate(d.getDate() - 6);
-    } else {
-      d.setDate(d.getDate() - 29);
-    }
-    return d;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+    const days = range === "24h" ? 1 : range === "7d" ? 6 : 29;
+    return startOfDayInTz(subDays(todayEnd, days), OWNER_TZ_DEFAULT);
+  }, [range, todayEnd]);
 
   const {
     data: dailyCostsResp,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailyCosts(trendFrom, today);
+  } = useDailyCosts(trendFrom, todayEnd);
 
   // ---------------------------------------------------------------------------
   // Derived KPI values — per-butler where available, all-butler fallback
   // ---------------------------------------------------------------------------
 
-  // KPI 1: Spend today (per-butler via by_butler)
-  const spendToday =
-    todaySummary?.data?.by_butler?.[butlerName] ?? null;
+  // KPI 1: Spend today (per-butler via by_butler; missing entry means $0)
+  const spendToday = todaySummary
+    ? (todaySummary.data?.by_butler?.[butlerName] ?? 0)
+    : null;
   const spendTodayValue = todayLoading
     ? "..."
     : todayError
@@ -259,9 +245,10 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         ? formatCurrency(spendToday)
         : "—";
 
-  // KPI 2: Spend 30d (per-butler via by_butler)
-  const spend30d =
-    summary30d?.data?.by_butler?.[butlerName] ?? null;
+  // KPI 2: Spend 30d (per-butler via by_butler; missing entry means $0)
+  const spend30d = summary30d
+    ? (summary30d.data?.by_butler?.[butlerName] ?? 0)
+    : null;
   const spend30dValue = loading30d
     ? "..."
     : error30d
@@ -283,7 +270,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         ? formatCurrency(costPerSession)
         : "—";
 
-  // KPI 4: Tokens 24h in / out (global — no per-butler breakdown until bu-iuol4.12)
+  // KPI 4: Tokens today in / out (global — no per-butler breakdown until bu-iuol4.12)
   const inputTokens = todaySummary?.data?.total_input_tokens ?? 0;
   const outputTokens = todaySummary?.data?.total_output_tokens ?? 0;
   const tokenValue = todayLoading
@@ -345,7 +332,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         <Panel>
           <div data-testid="kpi-value">
             <KpiCell
-              label="Tokens 24h"
+              label="Tokens today"
               value={tokenValue}
               sub={kpiLoading ? undefined : "all butlers"}
             />

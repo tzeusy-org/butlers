@@ -36,6 +36,11 @@ vi.mock("@/hooks/use-time-window", () => ({
   OWNER_TZ_DEFAULT: "UTC",
 }));
 
+vi.mock("@/components/chronicles/tz-format", () => ({
+  startOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()),
+  endOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999),
+}));
+
 // Mock DayBars to avoid DOM complexity
 vi.mock("@/components/butlers/DayBars", () => ({
   DayBars: ({ data, className }: { data: number[]; className?: string }) =>
@@ -299,15 +304,15 @@ describe("ButlerSpendTab — KPI strip labels and values", () => {
     expect(screen.getByText("Cost / session · 30d")).toBeDefined();
   });
 
-  it("renders 'Tokens 24h' label", () => {
+  it("renders 'Tokens today' label", () => {
     renderTab();
-    expect(screen.getByText("Tokens 24h")).toBeDefined();
+    expect(screen.getByText("Tokens today")).toBeDefined();
   });
 
   it("shows per-butler today spend formatted as currency", () => {
     renderTab();
     const strip = screen.getByTestId("spend-kpi-strip");
-    // COST_SUMMARY_TODAY by_butler[test-butler] = 0.18 → "$0.1800"
+    // COST_SUMMARY_TODAY by_butler[test-butler] = 0.18 → "$0.18"
     expect(strip.textContent).toContain("$0.18");
   });
 
@@ -417,10 +422,12 @@ describe("ButlerSpendTab — empty butler (no spend data)", () => {
   });
   afterEach(() => cleanup());
 
-  it("shows '—' for spend today when butler has no cost data", () => {
+  it("shows $0.00 for spend today when butler has no cost data (missing = zero)", () => {
     renderTab("unknown-butler");
     const strip = screen.getByTestId("spend-kpi-strip");
-    expect(strip.textContent).toContain("—");
+    // by_butler has no entry for "unknown-butler"; backend omits zeros, so
+    // missing entry is treated as $0.00 (not "—") once data loads.
+    expect(strip.textContent).toContain("$0.00");
   });
 
   it("shows empty state for model breakdown when no models", () => {
