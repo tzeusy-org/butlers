@@ -88,7 +88,19 @@ async def _find_all_approvals_pools(
     butlers (e.g. switchboard vs home) may each have their own copy of the
     table in their respective schemas.
     """
-    pools: list[asyncpg.Pool] = []
+    return [pool for _name, pool in await _find_named_approvals_pools(db_mgr, table_name)]
+
+
+async def _find_named_approvals_pools(
+    db_mgr: DatabaseManager, table_name: str = "pending_actions"
+) -> list[tuple[str, asyncpg.Pool]]:
+    """Find ALL butler pools that have the specified approvals table, with butler names.
+
+    Returns a list of ``(butler_name, pool)`` pairs so callers can associate
+    each result row with the owning butler.  Uses the same ``to_regclass``
+    cache as ``_find_all_approvals_pools``.
+    """
+    named_pools: list[tuple[str, asyncpg.Pool]] = []
     seen: set[int] = set()  # track pool identity to avoid duplicates
     for butler_name in db_mgr.butler_names:
         cache_key = (butler_name, table_name)
@@ -99,7 +111,7 @@ async def _find_all_approvals_pools(
                 try:
                     p = db_mgr.pool(butler_name)
                     if id(p) not in seen:
-                        pools.append(p)
+                        named_pools.append((butler_name, p))
                         seen.add(id(p))
                 except KeyError:
                     del _TABLE_CACHE[cache_key]
@@ -115,21 +127,24 @@ async def _find_all_approvals_pools(
                 )
                 _TABLE_CACHE[cache_key] = table_check
                 if table_check and id(pool) not in seen:
-                    pools.append(pool)
+                    named_pools.append((butler_name, pool))
                     seen.add(id(pool))
         except KeyError:
             continue
-    return pools
+    return named_pools
 
 
-async def _find_action_pool(db_mgr: DatabaseManager, action_id: UUID) -> asyncpg.Pool | None:
+async def _find_action_pool(
+    db_mgr: DatabaseManager, action_id: UUID
+) -> tuple[str, asyncpg.Pool] | None:
     """Find the pool that contains a specific pending_action by ID.
 
-    Searches all pools that have the pending_actions table and returns the
-    first one where the action exists, or None.
+    Searches all pools that have the pending_actions table and returns a
+    ``(butler_name, pool)`` pair for the first pool where the action exists,
+    or None if not found.
     """
-    pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
-    for pool in pools:
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -137,7 +152,7 @@ async def _find_action_pool(db_mgr: DatabaseManager, action_id: UUID) -> asyncpg
                     action_id,
                 )
                 if exists:
-                    return pool
+                    return (butler_name, pool)
         except Exception:
             continue
     return None
@@ -145,11 +160,13 @@ async def _find_action_pool(db_mgr: DatabaseManager, action_id: UUID) -> asyncpg
 
 def _pending_action_to_api(
     action: PendingAction,
+    butler_name: str,
     target_contact: TargetContact | None = None,
 ) -> ApprovalAction:
     """Convert a PendingAction to API representation with redacted sensitive data."""
     return ApprovalAction(
         id=str(action.id),
+        butler=butler_name,
         tool_name=action.tool_name,
         tool_args=redact_tool_args(action.tool_name, action.tool_args),
         status=action.status.value,
@@ -240,12 +257,26 @@ async def list_actions(
     tool_name: str | None = Query(default=None),
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
+    butler: str | None = Query(default=None),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalAction]:
-    """List pending actions with filtering and pagination."""
-    target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
+    """List pending actions with filtering and pagination.
 
-    if not target_pools:
+    When ``butler`` is supplied, only that butler's actions are returned.
+    Without it, actions are aggregated across all butlers that have the
+    ``pending_actions`` table.
+
+    Every returned ``ApprovalAction`` includes a ``butler`` field indicating
+    which butler owns the action.
+    """
+    # Resolve target (butler_name, pool) pairs — filter to one butler when set.
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    if butler is not None:
+        named_target_pools = [(n, p) for n, p in named_pools if n == butler]
+    else:
+        named_target_pools = named_pools
+
+    if not named_target_pools:
         return PaginatedResponse(
             data=[],
             meta=PaginationMeta(total=0, offset=offset, limit=limit),
@@ -286,10 +317,10 @@ async def list_actions(
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    # Aggregate across all pools that have the table
-    all_rows: list[asyncpg.Record] = []
+    # Aggregate across target pools, tracking butler name per row
+    all_rows: list[tuple[str, asyncpg.Record]] = []
     total = 0
-    for pool in target_pools:
+    for butler_name, pool in named_target_pools:
         try:
             async with pool.acquire() as conn:
                 total += await conn.fetchval(
@@ -300,19 +331,19 @@ async def list_actions(
                     f"SELECT * FROM pending_actions{where_clause} ORDER BY requested_at DESC",
                     *args,
                 )
-                all_rows.extend(rows)
+                all_rows.extend((butler_name, row) for row in rows)
         except Exception:
             logger.warning("Failed to query pending_actions from a pool", exc_info=True)
 
     # Sort combined results and apply pagination in Python
-    all_rows.sort(key=lambda r: r["requested_at"], reverse=True)
+    all_rows.sort(key=lambda pair: pair[1]["requested_at"], reverse=True)
     page_rows = all_rows[offset : offset + limit]
 
-    pending_actions_list = [PendingAction.from_row(row) for row in page_rows]
     actions = []
-    for pa in pending_actions_list:
+    for butler_name, row in page_rows:
+        pa = PendingAction.from_row(row)
         tc = await _resolve_target_contact(db_mgr, pa)
-        actions.append(_pending_action_to_api(pa, tc))
+        actions.append(_pending_action_to_api(pa, butler_name, tc))
 
     return PaginatedResponse(
         data=actions,
@@ -331,9 +362,9 @@ async def list_executed_actions(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalAction]:
     """List executed actions for audit review."""
-    target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
+    named_target_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
 
-    if not target_pools:
+    if not named_target_pools:
         return PaginatedResponse(
             data=[],
             meta=PaginationMeta(total=0, offset=offset, limit=limit),
@@ -376,10 +407,9 @@ async def list_executed_actions(
             raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
 
     where_clause = " WHERE " + " AND ".join(conditions)
-
-    all_rows: list[asyncpg.Record] = []
+    all_rows: list[tuple[str, asyncpg.Record]] = []
     total = 0
-    for pool in target_pools:
+    for butler_name, pool in named_target_pools:
         try:
             async with pool.acquire() as conn:
                 total += await conn.fetchval(
@@ -390,18 +420,18 @@ async def list_executed_actions(
                     f"SELECT * FROM pending_actions{where_clause} ORDER BY decided_at DESC",
                     *args,
                 )
-                all_rows.extend(rows)
+                all_rows.extend((butler_name, row) for row in rows)
         except Exception:
             logger.warning("Failed to query executed actions from a pool", exc_info=True)
 
-    all_rows.sort(key=lambda r: r["decided_at"] or datetime.min, reverse=True)
+    all_rows.sort(key=lambda pair: pair[1]["decided_at"] or datetime.min, reverse=True)
     page_rows = all_rows[offset : offset + limit]
 
-    pending_actions_list = [PendingAction.from_row(row) for row in page_rows]
     actions = []
-    for pa in pending_actions_list:
+    for butler_name, row in page_rows:
+        pa = PendingAction.from_row(row)
         tc = await _resolve_target_contact(db_mgr, pa)
-        actions.append(_pending_action_to_api(pa, tc))
+        actions.append(_pending_action_to_api(pa, butler_name, tc))
 
     return PaginatedResponse(
         data=actions,
@@ -421,16 +451,18 @@ async def get_action(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
-    if not target_pools:
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    if not named_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
     row = None
-    for pool in target_pools:
+    found_butler = ""
+    for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
             if row is not None:
+                found_butler = butler_name
                 break
         except Exception:
             continue
@@ -440,7 +472,7 @@ async def get_action(
 
     pa = PendingAction.from_row(row)
     tc = await _resolve_target_contact(db_mgr, pa)
-    action = _pending_action_to_api(pa, tc)
+    action = _pending_action_to_api(pa, found_butler, tc)
     return ApiResponse(data=action)
 
 
@@ -457,9 +489,10 @@ async def approve_action(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_action_pool(db_mgr, parsed_id)
-    if target_pool is None:
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    action_butler, target_pool = found
 
     # Read the action before approval so we have tool_name/args for dispatch
     async with target_pool.acquire() as conn:
@@ -494,7 +527,8 @@ async def approve_action(
         if dispatch_result is not None:
             result = dispatch_result
 
-    # Build the ApprovalAction from the result dict
+    # Build the ApprovalAction from the result dict, injecting the butler name
+    result.setdefault("butler", action_butler)
     action_resp = ApprovalAction(
         **{k: result[k] for k in ApprovalAction.model_fields if k in result}
     )
@@ -606,9 +640,10 @@ async def retry_action(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_action_pool(db_mgr, parsed_id)
-    if target_pool is None:
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    action_butler, target_pool = found
 
     async with target_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
@@ -645,7 +680,7 @@ async def retry_action(
         updated_row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
     pa = PendingAction.from_row(updated_row or row)
     tc = await _resolve_target_contact(db_mgr, pa)
-    return ApiResponse(data=_pending_action_to_api(pa, tc))
+    return ApiResponse(data=_pending_action_to_api(pa, action_butler, tc))
 
 
 @router.post("/actions/{action_id}/reject")
@@ -660,9 +695,10 @@ async def reject_action(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_action_pool(db_mgr, parsed_id)
-    if target_pool is None:
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    action_butler, target_pool = found
 
     async with target_pool.acquire() as conn:
         result = await approvals_ops.reject_action(
@@ -679,6 +715,7 @@ async def reject_action(
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
 
+    result.setdefault("butler", action_butler)
     action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
     return ApiResponse(data=action)
 
