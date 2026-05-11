@@ -29,6 +29,7 @@ import ButlerRelationshipContactsTab from "./ButlerRelationshipContactsTab";
 
 vi.mock("@/hooks/use-contacts", () => ({
   useContacts: vi.fn(),
+  useContact: vi.fn(),
   useContactInteractions: vi.fn(),
   useOverdueContacts: vi.fn(),
 }));
@@ -37,7 +38,7 @@ vi.mock("@/hooks/use-memory", () => ({
   useDunbarRanking: vi.fn(),
 }));
 
-import { useContacts, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
+import { useContacts, useContact, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
 import { useDunbarRanking } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,22 @@ function setupWithData() {
     isError: false,
   } as ReturnType<typeof useContacts>);
 
+  vi.mocked(useContact).mockReturnValue({
+    data: {
+      ...CONTACTS_DATA.contacts[0],
+      notes: null,
+      birthday: null,
+      company: null,
+      job_title: null,
+      address: null,
+      metadata: {},
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-05-10T00:00:00Z",
+    },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useContact>);
+
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: DUNBAR_DATA,
     isLoading: false,
@@ -232,6 +249,12 @@ function setupEmpty() {
     isError: false,
   } as unknown as ReturnType<typeof useContacts>);
 
+  vi.mocked(useContact).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useContact>);
+
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: { entries: [], owner_entity_id: null },
     isLoading: false,
@@ -257,6 +280,12 @@ function setupLoading() {
     isLoading: true,
     isError: false,
   } as ReturnType<typeof useContacts>);
+
+  vi.mocked(useContact).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+  } as unknown as ReturnType<typeof useContact>);
 
   vi.mocked(useDunbarRanking).mockReturnValue({
     data: undefined,
@@ -356,8 +385,7 @@ describe("ButlerRelationshipContactsTab — KPI strip", () => {
   it("renders T1 warmth average for tier-5 entries", () => {
     renderTab();
     // T1 entries: Alice (0.82) + Carol (0.55), avg = 0.685 → "0.69"
-    // KpiCell shows value as formatted string; we check it's present
-    expect(screen.getByTestId("kpi-strip")).toBeDefined();
+    expect(screen.getByText("0.69")).toBeDefined();
   });
 });
 
@@ -607,7 +635,7 @@ describe("ButlerRelationshipContactsTab — empty states", () => {
   it("shows empty state for overdue when all clear", () => {
     renderTab();
     expect(screen.queryByTestId("overdue-list")).toBeNull();
-    expect(screen.getByText("No overdue contacts — cadence all clear.")).toBeDefined();
+    expect(screen.getByText("No overdue contacts. Cadence all clear.")).toBeDefined();
   });
 
   it("shows empty state for watchlist when no T1/T2 entries", () => {

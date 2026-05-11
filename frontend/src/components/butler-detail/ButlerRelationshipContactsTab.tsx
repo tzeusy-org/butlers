@@ -24,7 +24,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 
 import type {
-  ContactSummary,
+  ContactDetail,
   DunbarEntry,
   DunbarRankingResponse,
   ContactInteraction,
@@ -34,7 +34,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KpiCell } from "./atoms";
-import { useContacts, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
+import { useContacts, useContact, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
 import { useDunbarRanking } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
@@ -90,6 +90,7 @@ function relativeDate(isoStr: string | null | undefined): string {
   if (isNaN(d.getTime())) return "—";
   const diffMs = Date.now() - d.getTime();
   const diffDays = Math.floor(diffMs / 86_400_000);
+  if (diffDays < 0) return `in ${-diffDays}d`;
   if (diffDays === 0) return "today";
   if (diffDays === 1) return "1d ago";
   if (diffDays < 365) return `${diffDays}d ago`;
@@ -142,14 +143,15 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading 
     );
   }
 
-  // Compute T1 warmth average
+  // Compute T1 warmth average over entries that actually have a warmth score.
   const t1Entries = ranking?.entries.filter((e) => e.dunbar_tier === 5) ?? [];
+  const t1ScoredEntries = t1Entries.filter((e) => e.warmth != null);
   const t1WarmthAvg =
-    t1Entries.length > 0 && t1Entries.some((e) => e.warmth != null)
-      ? t1Entries.reduce((sum, e) => sum + (e.warmth ?? 0), 0) / t1Entries.length
+    t1ScoredEntries.length > 0
+      ? t1ScoredEntries.reduce((sum, e) => sum + e.warmth!, 0) / t1ScoredEntries.length
       : null;
 
-  // Cadence ok count: entries where warmth >= 0.5 (proxy for "on cadence")
+  // Cadence ok count: tracked contacts not overdue (warmth >= 0.5 proxy).
   const trackedEntries = ranking?.entries.filter((e) => TRACKED_TIERS.includes(e.dunbar_tier)) ?? [];
   const cadenceOkCount = trackedEntries.filter((e) => (e.warmth ?? 0) >= 0.5).length;
 
@@ -175,7 +177,7 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading 
           </div>
           <div data-testid="kpi-item">
             <KpiCell
-              label="Cadence ok / tracked"
+              label="Warm / tracked"
               value={`${cadenceOkCount} / ${trackedEntries.length}`}
               tone={cadenceOkCount === trackedEntries.length ? "green" : "fg"}
             />
@@ -183,7 +185,7 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading 
           <div data-testid="kpi-item">
             <KpiCell
               label="Overdue"
-              value={overdueCount === 0 ? "—" : String(overdueCount)}
+              value={String(overdueCount)}
               tone={overdueCount > 0 ? "amber" : "fg"}
             />
           </div>
@@ -223,16 +225,17 @@ function TierDistributionPanel({ ranking, isLoading }: TierDistributionProps) {
         const members = byTier.get(tier) ?? [];
         if (members.length === 0) return null;
         const meta = TIER_META[tier];
+        const scoredMembers = members.filter((m) => m.warmth != null);
         const avgWarmth =
-          members.some((m) => m.warmth != null)
-            ? members.reduce((s, m) => s + (m.warmth ?? 0), 0) / members.length
+          scoredMembers.length > 0
+            ? scoredMembers.reduce((s, m) => s + m.warmth!, 0) / scoredMembers.length
             : null;
 
         return (
           <li key={tier} className="space-y-1" data-testid="tier-distribution-row">
             <div className="flex items-center justify-between text-xs">
               <span className="font-medium text-foreground">{meta.label}</span>
-              <span className="tabular-nums text-muted-foreground">
+              <span className="tnum text-muted-foreground">
                 {members.length} · {fmtWarmth(avgWarmth)}
               </span>
             </div>
@@ -266,7 +269,7 @@ function OverduePanel({ contacts, isLoading }: OverduePanelProps) {
   }
 
   if (contacts.length === 0) {
-    return <EmptyStateLine>No overdue contacts — cadence all clear.</EmptyStateLine>;
+    return <EmptyStateLine>No overdue contacts. Cadence all clear.</EmptyStateLine>;
   }
 
   // Sort descending by owed_days (most overdue first)
@@ -283,7 +286,7 @@ function OverduePanel({ contacts, isLoading }: OverduePanelProps) {
           <span className="truncate font-medium">{c.name}</span>
           <Badge
             variant={c.owed_days > 30 ? "destructive" : "outline"}
-            className="shrink-0 tabular-nums text-xs"
+            className="shrink-0 tnum text-xs"
           >
             {c.owed_days}d overdue
           </Badge>
@@ -341,8 +344,7 @@ function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact
           <tr className="border-b text-xs text-muted-foreground">
             <th className="py-1.5 pr-4 text-left font-medium">Name</th>
             <th className="py-1.5 pr-4 text-left font-medium">Tier</th>
-            <th className="py-1.5 pr-4 text-right font-medium tabular-nums">Warmth</th>
-            <th className="py-1.5 text-right font-medium">Last contact</th>
+            <th className="py-1.5 text-right font-medium tnum">Warmth</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -352,8 +354,16 @@ function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact
               <tr
                 key={entry.contact_id}
                 data-testid="watchlist-row"
-                className={`cursor-pointer hover:bg-muted/50 transition-colors ${isSelected ? "bg-muted" : ""}`}
+                role="button"
+                tabIndex={0}
+                className={`cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${isSelected ? "bg-muted" : ""}`}
                 onClick={() => onSelectContact(entry.contact_id, entry.canonical_name)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelectContact(entry.contact_id, entry.canonical_name);
+                  }
+                }}
               >
                 <td className="py-2 pr-4 font-medium truncate max-w-[180px]">
                   {entry.canonical_name}
@@ -364,11 +374,8 @@ function WatchlistPanel({ ranking, isLoading, selectedContactId, onSelectContact
                 <td className="py-2 pr-4 text-xs text-muted-foreground">
                   {TIER_META[entry.dunbar_tier]?.label ?? `T${entry.dunbar_tier}`}
                 </td>
-                <td className="py-2 pr-4 text-right tabular-nums font-mono text-xs">
+                <td className="py-2 text-right tnum font-mono text-xs">
                   {fmtWarmth(entry.warmth)}
-                </td>
-                <td className="py-2 text-right text-xs text-muted-foreground tabular-nums">
-                  {relativeDate(undefined)}
                 </td>
               </tr>
             );
@@ -391,9 +398,9 @@ interface ThreadPanelProps {
 }
 
 const DIRECTION_META: Record<ContactInteraction["direction"], { label: string; tone: string }> = {
-  in:      { label: "In",      tone: "text-blue-500"    },
-  out:     { label: "Out",     tone: "text-emerald-500" },
-  drafted: { label: "Draft",   tone: "text-amber-500"   },
+  in:      { label: "In",    tone: "text-primary"          },
+  out:     { label: "Out",   tone: "text-emerald-500"      },
+  drafted: { label: "Draft", tone: "text-amber-500"        },
 };
 
 function ThreadPanel({ contactId, contactName, isLoading, interactions }: ThreadPanelProps) {
@@ -415,15 +422,15 @@ function ThreadPanel({ contactId, contactName, isLoading, interactions }: Thread
 
   return (
     <ol className="space-y-3" data-testid="thread-list" aria-label={`Interactions with ${contactName}`}>
-      {interactions.map((ix, idx) => {
+      {interactions.map((ix) => {
         const meta = DIRECTION_META[ix.direction] ?? { label: ix.direction, tone: "text-muted-foreground" };
         return (
-          <li key={idx} className="flex gap-2 text-sm" data-testid="thread-item">
-            <span className={`shrink-0 font-mono text-xs tabular-nums ${meta.tone}`}>
+          <li key={`${ix.ts}:${ix.direction}`} className="flex gap-2 text-sm" data-testid="thread-item">
+            <span className={`shrink-0 font-mono text-xs tnum ${meta.tone}`}>
               {meta.label}
             </span>
             <div className="min-w-0">
-              <p className="text-xs text-muted-foreground tabular-nums">
+              <p className="text-xs text-muted-foreground tnum">
                 {new Date(ix.ts).toLocaleDateString()}
               </p>
               <p className="truncate text-sm leading-snug">{ix.text}</p>
@@ -440,12 +447,12 @@ function ThreadPanel({ contactId, contactName, isLoading, interactions }: Thread
 // ---------------------------------------------------------------------------
 
 interface KnownFactsPanelProps {
-  contact: ContactSummary | undefined;
+  contact: ContactDetail | undefined;
   contactName: string | null;
 }
 
 function KnownFactsPanel({ contact, contactName }: KnownFactsPanelProps) {
-  if (!contactName && !contact) {
+  if (!contactName) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="facts-empty-prompt">
         Select a contact to see facts.
@@ -501,13 +508,8 @@ export default function ButlerRelationshipContactsTab() {
     4,
   );
 
-  // --- Panel 6: Facts for selected contact
-  const { data: contactDetailData } = useContacts(
-    selectedContactId ? { limit: 200 } : undefined,
-  );
-  const selectedContact = contactDetailData?.contacts.find(
-    (c: ContactSummary) => c.id === selectedContactId,
-  );
+  // --- Panel 6: Facts for selected contact (fetch single record; enabled only when selected)
+  const { data: selectedContact } = useContact(selectedContactId ?? undefined);
 
   const overdueContacts = overdueData?.contacts ?? [];
   const interactions = interactionsData?.interactions ?? [];
