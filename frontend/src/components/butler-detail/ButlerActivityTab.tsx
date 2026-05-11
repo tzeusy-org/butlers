@@ -193,7 +193,7 @@ function ActivityPanel({ butlerName, range, onRangeChange }: ActivityPanelProps)
     const now = new Date()
     for (const b of buckets) {
       const bDate = new Date(b.date + "T00:00:00Z")
-      const daysAgo = Math.round((now.getTime() - bDate.getTime()) / (1000 * 60 * 60 * 24))
+      const daysAgo = Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - new Date(bDate.getFullYear(), bDate.getMonth(), bDate.getDate()).getTime()) / (1000 * 60 * 60 * 24))
       const idx = windowDays - 1 - daysAgo
       if (idx >= 0 && idx < windowDays) {
         counts[idx] = b.sessions_count
@@ -210,7 +210,7 @@ function ActivityPanel({ butlerName, range, onRangeChange }: ActivityPanelProps)
       <div className="flex-1 p-4">
         {isLoading ? (
           <div data-testid="loading-line">
-            <Skeleton className="h-8 w-full rounded" />
+            <Skeleton className="h-[48px] w-full rounded" />
           </div>
         ) : isError ? (
           <ErrorLine>Could not load daily activity.</ErrorLine>
@@ -238,9 +238,13 @@ function KindBreakdownPanel({ butlerName, windowDays }: KindBreakdownPanelProps)
   return (
     <Panel title="By kind" span={4} testId="activity-kind-panel" className="border-r-0">
       {isLoading ? (
-        <div className="space-y-2">
+        <div>
           {Array.from({ length: 4 }, (_, i) => (
-            <div key={i} className="flex items-center gap-2" data-testid="loading-line">
+            <div
+              key={i}
+              className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-b-0"
+              data-testid="loading-line"
+            >
               <Skeleton className="h-3 w-28 rounded" />
               <Skeleton className="h-3 w-10 rounded" />
             </div>
@@ -260,7 +264,7 @@ function KindBreakdownPanel({ butlerName, windowDays }: KindBreakdownPanelProps)
           {kinds.map((item) => (
             <li
               key={item.kind}
-              className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-b-0"
+              className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-b-0 min-w-0"
               data-testid="kind-breakdown-row"
             >
               <span className="text-sm text-foreground truncate" data-testid="kind-label">
