@@ -1000,7 +1000,7 @@ def _expiring_doc_row(
     *,
     id: Any = None,
     trip_id: Any = None,
-    type: str = "passport",
+    type: str = "visa",
     metadata: dict | None = None,
     expiry_date: Any = None,
 ) -> dict:
@@ -1038,13 +1038,15 @@ async def test_get_expiring_documents_default_days():
     ) as client:
         await client.get("/api/travel/documents/expiring")
 
-    # The query should have been called with a cutoff date ~180 days out
+    # The query should have been called with today + cutoff date ~180 days out
     call_args = mock_pool.fetch.call_args
     assert call_args is not None
-    # Second positional arg is the cutoff date
-    cutoff = call_args[0][1]
+    # Positional args: [0]=sql, [1]=today, [2]=cutoff
+    today_arg = call_args[0][1]
+    cutoff = call_args[0][2]
     from datetime import date, timedelta
 
+    assert today_arg == date.today()
     expected = date.today() + timedelta(days=180)
     assert cutoff == expected
 
@@ -1056,7 +1058,7 @@ async def test_get_expiring_documents_with_results():
     later = _TODAY + timedelta(days=90)
 
     rows = [
-        _expiring_doc_row(type="passport", expiry_date=soon),
+        _expiring_doc_row(type="insurance", expiry_date=soon),
         _expiring_doc_row(type="visa", expiry_date=later),
     ]
     app, _ = _make_app(fetch_rows=rows)
@@ -1080,7 +1082,7 @@ async def test_get_expiring_documents_with_results():
     assert "days_until_expiry" in item
 
     # First document expires sooner
-    assert item["type"] == "passport"
+    assert item["type"] == "insurance"
     assert docs[1]["type"] == "visa"
 
 
@@ -1088,7 +1090,7 @@ async def test_get_expiring_documents_with_results():
 async def test_get_expiring_documents_days_until_expiry_computed():
     """GET /api/travel/documents/expiring computes days_until_expiry correctly."""
     expiry = _TODAY + timedelta(days=45)
-    rows = [_expiring_doc_row(type="passport", expiry_date=expiry)]
+    rows = [_expiring_doc_row(type="visa", expiry_date=expiry)]
     app, _ = _make_app(fetch_rows=rows)
 
     async with httpx.AsyncClient(
@@ -1168,7 +1170,7 @@ async def test_get_expiring_documents_name_from_metadata():
     """GET /api/travel/documents/expiring extracts name from metadata when present."""
     rows = [
         _expiring_doc_row(
-            type="passport",
+            type="visa",
             expiry_date=_TODAY + timedelta(days=30),
             metadata={"name": "US Passport"},
         )

@@ -698,8 +698,10 @@ async def get_expiring_documents(
         "SELECT id, trip_id, type, metadata, expiry_date"
         " FROM travel.documents"
         " WHERE expiry_date IS NOT NULL"
-        "   AND expiry_date <= $1"
+        "   AND expiry_date >= $1"
+        "   AND expiry_date <= $2"
         " ORDER BY expiry_date ASC",
+        today,
         cutoff,
     )
 

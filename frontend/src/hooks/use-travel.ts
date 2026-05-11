@@ -49,11 +49,14 @@ export function useTravelTripSummary(tripId: string | null) {
   });
 }
 
+const EXPIRING_DOCS_DEFAULT_DAYS = 180;
+
 /** Fetch documents expiring within the given look-ahead window (default: 180 days). */
 export function useExpiringDocuments(days?: number) {
+  const effectiveDays = days ?? EXPIRING_DOCS_DEFAULT_DAYS;
   return useQuery({
-    queryKey: ["travel", "documents", "expiring", days],
-    queryFn: () => getTravelExpiringDocuments(days),
+    queryKey: ["travel", "documents", "expiring", effectiveDays],
+    queryFn: () => getTravelExpiringDocuments(effectiveDays),
     refetchInterval: 60_000,
   });
 }

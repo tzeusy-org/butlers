@@ -31,7 +31,8 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell, Panel } from "@/components/butler-detail/atoms";
+import { KpiCell, Panel, toneClass } from "@/components/butler-detail/atoms";
+import type { Tone } from "@/components/butler-detail/atoms";
 import {
   useUpcomingTravel,
   useTravelTrips,
@@ -46,6 +47,9 @@ import type {
   TravelTrip,
   TravelUpcomingTrip,
 } from "@/api/index.ts";
+
+// Look-ahead window for expiring-document alerts (must match hook default).
+const EXPIRING_DOCS_LOOKAHEAD_DAYS = 180;
 
 // ---------------------------------------------------------------------------
 // Shared primitives
@@ -126,13 +130,14 @@ function normaliseSortKey(sortKey: string | null | undefined): string | null {
 
 interface ExpiringDocsBannerProps {
   documents: TravelExpiringDocument[];
+  lookaheadDays: number;
 }
 
-function ExpiringDocsBanner({ documents }: ExpiringDocsBannerProps) {
+function ExpiringDocsBanner({ documents, lookaheadDays }: ExpiringDocsBannerProps) {
   if (documents.length === 0) return null;
 
   const urgentCount = documents.filter((d) => d.days_until_expiry <= 30).length;
-  const tone = urgentCount > 0 ? "text-destructive" : "text-amber-500";
+  const tone: Tone = urgentCount > 0 ? "red" : "amber";
 
   return (
     <div
@@ -140,13 +145,13 @@ function ExpiringDocsBanner({ documents }: ExpiringDocsBannerProps) {
       data-testid="expiring-docs-banner"
       role="alert"
     >
-      <span className={`font-medium tnum ${tone}`} data-testid="expiring-docs-count">
+      <span className={`font-medium tnum ${toneClass(tone)}`} data-testid="expiring-docs-count">
         {documents.length}
       </span>
       <span className="text-muted-foreground">
-        {documents.length === 1 ? "document" : "documents"} expiring within 180 days
+        {documents.length === 1 ? "document" : "documents"} expiring within {lookaheadDays} days
         {urgentCount > 0 && (
-          <span className="text-destructive font-medium ml-1">
+          <span className={`${toneClass("red")} font-medium ml-1`}>
             ({urgentCount} within 30 days)
           </span>
         )}
@@ -638,7 +643,7 @@ export default function ButlerTravelTripsTab() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
   const { data: upcoming, isLoading: upcomingLoading, error: upcomingError } = useUpcomingTravel(90);
-  const { data: expiringDocs } = useExpiringDocuments(180);
+  const { data: expiringDocs } = useExpiringDocuments(EXPIRING_DOCS_LOOKAHEAD_DAYS);
 
   const expiringDocuments = expiringDocs?.documents ?? [];
 
@@ -655,7 +660,7 @@ export default function ButlerTravelTripsTab() {
       {/* Expiring docs banner — only shown when documents are expiring */}
       {expiringDocuments.length > 0 && (
         <div className="px-4 pb-3">
-          <ExpiringDocsBanner documents={expiringDocuments} />
+          <ExpiringDocsBanner documents={expiringDocuments} lookaheadDays={EXPIRING_DOCS_LOOKAHEAD_DAYS} />
         </div>
       )}
 

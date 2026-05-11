@@ -25,9 +25,9 @@ import { cn } from "@/lib/utils"
 // lives; do not inline these strings at call sites.
 // ---------------------------------------------------------------------------
 
-type Tone = "amber" | "red" | "green" | "dim" | "fg"
+export type Tone = "amber" | "red" | "green" | "dim" | "fg"
 
-function toneClass(tone: Tone): string {
+export function toneClass(tone: Tone): string {
   switch (tone) {
     case "amber": return "text-amber-500"
     case "red":   return "text-destructive"
