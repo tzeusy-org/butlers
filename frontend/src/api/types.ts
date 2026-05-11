@@ -2218,6 +2218,37 @@ export interface PendingReviewNode {
   mastery_status: string;
 }
 
+/** One snapshot entry in an analytics trend time-series (from /analytics/trend). */
+export interface AnalyticsTrendEntry {
+  id: string | null;
+  mind_map_id: string;
+  snapshot_date: string;
+  metrics: Record<string, unknown>;
+  created_at: string | null;
+}
+
+/** Analytics trend time-series for a mind map (from /analytics/trend). */
+export interface AnalyticsTrendResponse {
+  mind_map_id: string;
+  days: number;
+  trend: AnalyticsTrendEntry[];
+}
+
+/** A concept node identified as struggling (from /struggling-nodes). */
+export interface StrugglingNodeEntry {
+  node_id: string;
+  node_label: string;
+  mastery_score: number;
+  mastery_status: string;
+  reason: string;
+}
+
+/** List of struggling nodes for a mind map (from /struggling-nodes). */
+export interface StrugglingNodesResponse {
+  mind_map_id: string;
+  nodes: StrugglingNodeEntry[];
+}
+
 /** Request body for submitting a new curriculum request. */
 export interface CurriculumRequestBody {
   topic: string;
