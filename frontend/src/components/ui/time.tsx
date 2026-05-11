@@ -42,10 +42,7 @@
 //   - ms:         millisecond-precision time-only (24-hour clock), e.g. "08:30:42.123"
 //                 Used for log entry timestamps where sub-second resolution matters.
 //                 compact flag ignored. Timezone label intentionally suppressed.
-//                 Note: date-fns-tz does not support sub-second tokens, so milliseconds
-//                 are extracted from the Date object's local time components and
-//                 appended manually. The formatted time is TZ-correct via
-//                 formatInTimeZone() for the HH:mm:ss portion.
+//                 Uses the SSS token via formatInTimeZone() for full TZ-correct output.
 //   All precisions still use the owner timezone via formatInTimeZone().
 //
 // Date-only strings (YYYY-MM-DD):
@@ -155,10 +152,6 @@ export interface TimeProps {
 // `short-date` renders a brief header date (e.g. "Sun 3 May 2026"); `ms` renders
 // a log timestamp where space is tight. All four still consume the owner timezone
 // via formatInTimeZone() so output is TZ-correct.
-//
-// `ms` uses a sentinel value ("HH:mm:ss") because date-fns-tz does not support
-// sub-second tokens. formatAbsolute() detects this precision and appends the
-// milliseconds manually after calling formatInTimeZone() for the HH:mm:ss part.
 const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   second:     "MMM d, yyyy 'at' h:mm:ss a zzz",
   minute:     "MMM d, yyyy 'at' h:mm a zzz",
@@ -167,7 +160,7 @@ const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   weekday:    "EEEE, MMMM d, yyyy",
   time:       "HH:mm",
   "short-date": "EEE d MMM yyyy",
-  ms:         "HH:mm:ss", // sentinel — milliseconds appended manually below
+  ms:         "HH:mm:ss.SSS",
 }
 
 // Compact format omits year and timezone — used in dense table cells.
@@ -179,7 +172,7 @@ const COMPACT_FORMAT: Record<TimePrecision, string> = {
   weekday:    "EEEE, MMMM d",
   time:       "HH:mm",      // compact has no effect, same format
   "short-date": "EEE d MMM", // compact omits year: "Sun 3 May"
-  ms:         "HH:mm:ss",   // compact has no effect; milliseconds appended manually
+  ms:         "HH:mm:ss.SSS",  // compact has no effect; same format
 }
 
 // 24-hour threshold in ms — smart mode crossover point.
@@ -208,18 +201,7 @@ function formatAbsolute(date: Date, precision: TimePrecision, tz: string, compac
     const fmt = compact ? COMPACT_FORMAT[precision] : ABSOLUTE_FORMAT[precision]
     // Compact format does not embed a timezone token, so tz is still passed to
     // formatInTimeZone to ensure the rendered local time is correct.
-    const formatted = formatInTimeZone(date, tz, fmt)
-
-    // `ms` precision: date-fns-tz has no sub-second token, so we format the
-    // HH:mm:ss part via formatInTimeZone() above and append the milliseconds
-    // component manually. Milliseconds are timezone-agnostic (they are the same
-    // in all timezones), so we read them directly from the Date object.
-    if (precision === "ms") {
-      const ms = String(date.getMilliseconds()).padStart(3, "0")
-      return `${formatted}.${ms}`
-    }
-
-    return formatted
+    return formatInTimeZone(date, tz, fmt)
   } catch {
     return date.toISOString()
   }
