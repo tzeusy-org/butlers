@@ -31,6 +31,7 @@ from butlers.api.deps import (
 )
 from butlers.api.middleware import ApiKeyMiddleware, register_error_handlers
 from butlers.api.router_discovery import discover_butler_routers
+from butlers.api.routers.activity_feed import router as activity_feed_router
 from butlers.api.routers.approvals import router as approvals_router
 from butlers.api.routers.audit import router as audit_router
 from butlers.api.routers.blob_storage import router as blob_storage_router
@@ -235,6 +236,7 @@ def create_app(
     app.include_router(costs_router)
     app.include_router(sessions_router)
     app.include_router(butler_sessions_router)
+    app.include_router(activity_feed_router)
     app.include_router(schedules_router)
     app.include_router(modules_router)
     app.include_router(secrets_router)

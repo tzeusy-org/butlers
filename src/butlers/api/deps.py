@@ -464,6 +464,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         Each module is scanned for a _get_db_manager stub function.
     """
     from butlers.api.routers import (
+        activity_feed,
         approvals,
         audit,
         blob_storage,
@@ -501,6 +502,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
 
     # Wire static routers (existing core routers)
     for module in [
+        activity_feed,
         approvals,
         audit,
         blob_storage,
