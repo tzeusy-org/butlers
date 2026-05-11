@@ -21,6 +21,36 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 
 // ---------------------------------------------------------------------------
+// Mock recharts — avoids SVG/canvas complexity in jsdom
+// ---------------------------------------------------------------------------
+
+import { createElement, type ReactNode } from "react";
+
+vi.mock("recharts", () => {
+  const LineChart = ({
+    children,
+  }: {
+    data?: Array<Record<string, unknown>>;
+    children?: ReactNode;
+  }) => createElement("div", { "data-testid": "recharts-line-chart" }, children);
+
+  const Line = ({ dataKey }: { dataKey: string }) =>
+    createElement("div", { "data-testid": `recharts-line-${dataKey}` });
+
+  const XAxis = () => null;
+  const YAxis = () => null;
+  const Tooltip = () => null;
+  const ResponsiveContainer = ({ children }: { children?: ReactNode }) =>
+    createElement(
+      "div",
+      { "data-testid": "recharts-responsive-container" },
+      children,
+    );
+
+  return { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer };
+});
+
+// ---------------------------------------------------------------------------
 // Mock hooks
 // ---------------------------------------------------------------------------
 
@@ -366,9 +396,38 @@ describe("ButlerHealthMeasurementsTab — trend panels empty states", () => {
     expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("does not render trend-list when empty", () => {
+  it("does not render sparkline chart when empty", () => {
     renderTab();
-    expect(screen.queryByTestId("trend-list")).toBeNull();
+    expect(screen.queryByTestId("trend-chart")).toBeNull();
+  });
+
+  it("shows 'No readings in window' for each empty trend panel", () => {
+    renderTab();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    const noReadingsLines = emptyLines.filter(
+      (el) => el.textContent === "No readings in window",
+    );
+    // 4 trend panels (glucose, heart rate, HRV, weight) → 4 empty-state lines
+    expect(noReadingsLines.length).toBe(4);
+  });
+
+  it("shows error state when trend data fetch fails", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    vi.mocked(useMeasurements).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as AnyQueryResult);
+    renderTab();
+    // Trend sparklines are replaced by error messages; no trend-chart present
+    expect(screen.queryByTestId("trend-chart")).toBeNull();
+    // Error messages contain "Could not load … trend."
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    const errorLines = emptyLines.filter((el) =>
+      el.textContent?.includes("Could not load"),
+    );
+    expect(errorLines.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -379,16 +438,25 @@ describe("ButlerHealthMeasurementsTab — trend panels with data", () => {
   });
   afterEach(() => cleanup());
 
-  it("renders trend lists", () => {
+  it("renders sparkline charts when trend data is present", () => {
     renderTab();
-    const trendLists = screen.getAllByTestId("trend-list");
-    expect(trendLists.length).toBeGreaterThanOrEqual(1);
+    const charts = screen.getAllByTestId("trend-chart");
+    // 4 trend panels — all receive the same mocked measurement data
+    expect(charts.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders trend rows", () => {
+  it("renders sparkline containers (recharts ResponsiveContainer)", () => {
     renderTab();
-    const trendRows = screen.getAllByTestId("trend-row");
-    expect(trendRows.length).toBeGreaterThanOrEqual(1);
+    const containers = screen.getAllByTestId("recharts-responsive-container");
+    expect(containers.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders the latest value prominently in each trend panel", () => {
+    renderTab();
+    const latestValues = screen.getAllByTestId("trend-latest-value");
+    expect(latestValues.length).toBeGreaterThanOrEqual(1);
+    // MEASUREMENTS_TREND has value 95 as the most recent reading
+    expect(latestValues.some((el) => el.textContent === "95")).toBe(true);
   });
 });
 

@@ -22,6 +22,14 @@
 
 import { useMemo } from "react";
 import { Link } from "react-router";
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from "recharts";
 
 import type {
   LatestMeasurementEntry,
@@ -210,63 +218,132 @@ function fourteenDayWindow(): { since: string; until: string } {
   };
 }
 
-/** Summarise a list of Measurement records as sparkline-like text. */
-function TrendSummary({
+/** Shape of a chart data point for the trend sparkline. */
+interface TrendPoint {
+  ts: string;    // ISO timestamp (XAxis dataKey)
+  value: number; // numeric reading
+  label: string; // formatted display value for tooltip
+}
+
+/**
+ * Custom tooltip styled with design tokens.
+ * Uses popover/border token classes (border-border, bg-popover, text-popover-foreground).
+ */
+function TrendTooltip({
+  active,
+  payload,
+  unit,
+}: {
+  active?: boolean;
+  payload?: Array<{ value: number; payload: TrendPoint }>;
+  unit?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0].payload;
+  return (
+    <div
+      className="rounded border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
+      data-testid="trend-tooltip"
+    >
+      <p className="text-muted-foreground">{point.ts.slice(0, 10)}</p>
+      <p className="font-mono tnum font-medium">
+        {point.label}
+        {unit ? <span className="ml-1 text-muted-foreground">{unit}</span> : null}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Sparkline (LineChart) for a 14-day trend panel.
+ * Shows latest value prominently above the chart; empty state below when no data.
+ */
+function TrendSparkline({
   measurements,
   isLoading,
+  isError,
   label,
   valueKey,
   unit,
 }: {
   measurements: Measurement[];
   isLoading: boolean;
+  isError?: boolean;
   label: string;
   valueKey?: string;
   unit?: string;
 }) {
-  const points = useMemo(() => {
-    return measurements
+  const chartData = useMemo(() => {
+    const sorted = measurements
       .slice()
-      .sort((a, b) => new Date(a.measured_at).getTime() - new Date(b.measured_at).getTime())
-      .slice(-5); // last 5 readings
-  }, [measurements]);
+      .sort((a, b) => new Date(a.measured_at).getTime() - new Date(b.measured_at).getTime());
+
+    const points: TrendPoint[] = sorted.flatMap((m) => {
+      const raw = extractScalar(
+        { measured_at: m.measured_at, value: m.value, unit: null, metadata: null },
+        valueKey,
+      );
+      if (raw === "—") return [];
+      const num = parseFloat(raw);
+      if (isNaN(num)) return [];
+      return [{ ts: m.measured_at, value: num, label: raw }];
+    });
+
+    return points;
+  }, [measurements, valueKey]);
 
   if (isLoading) {
     return <LoadingLine />;
   }
 
-  if (points.length === 0) {
-    return <EmptyLine>No {label.toLowerCase()} readings in the last 14 days.</EmptyLine>;
+  if (isError) {
+    return <EmptyLine>{`Could not load ${label.toLowerCase()} trend.`}</EmptyLine>;
   }
 
+  if (chartData.length === 0) {
+    return <EmptyLine>No readings in window</EmptyLine>;
+  }
+
+  // Derive latest value from the last valid chartData point so the KPI always
+  // matches the chart (the unfiltered sorted array may end on a non-numeric reading).
+  const lastPoint = chartData[chartData.length - 1];
+  const latestValue = lastPoint?.label ?? "—";
+
   return (
-    <ol
-      className="divide-y text-sm"
-      aria-label={`${label} trend · last ${points.length} readings`}
-      data-testid="trend-list"
-    >
-      {points.map((m) => {
-        const val = extractScalar(
-          { measured_at: m.measured_at, value: m.value, unit: null, metadata: null },
-          valueKey,
-        );
-        return (
-          <li
-            key={m.id}
-            className="flex items-center justify-between py-1.5 gap-2"
-            data-testid="trend-row"
-          >
-            <span className="text-muted-foreground text-xs">
-              <Time value={m.measured_at} mode="absolute" precision="day" compact />
-            </span>
-            <span className="font-mono tnum font-medium">
-              {val}
-              {unit && val !== "—" ? <span className="ml-1 text-xs text-muted-foreground">{unit}</span> : null}
-            </span>
-          </li>
-        );
-      })}
-    </ol>
+    <div data-testid="trend-chart">
+      {/* Latest reading — prominent KPI number */}
+      <div className="flex items-baseline gap-1 mb-2">
+        <span className="text-2xl font-bold font-mono tnum" data-testid="trend-latest-value">
+          {latestValue}
+        </span>
+        {unit && latestValue !== "—" && (
+          <span className="text-xs text-muted-foreground">{unit}</span>
+        )}
+      </div>
+      {/* Sparkline */}
+      <div data-testid="trend-sparkline">
+        <ResponsiveContainer width="100%" height={80}>
+          <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
+            <XAxis dataKey="ts" hide />
+            <YAxis hide domain={["auto", "auto"]} />
+            <Tooltip
+              content={<TrendTooltip unit={unit} />}
+              isAnimationActive={false}
+            />
+            <Line
+              dataKey="value"
+              type="monotone"
+              stroke="hsl(var(--primary))"
+              dot={false}
+              strokeWidth={1.5}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      {/* Screen-reader text alternative for the decorative chart */}
+      <p className="sr-only">{`${label} trend · ${chartData.length} readings over 14 days`}</p>
+    </div>
   );
 }
 
@@ -288,7 +365,7 @@ function TrendPanel({
   drilldownLink?: string;
 }) {
   const { since, until } = useMemo(() => fourteenDayWindow(), []);
-  const { data, isLoading } = useMeasurements({ type, since, until, limit: 50 });
+  const { data, isLoading, isError } = useMeasurements({ type, since, until, limit: 50 });
   const measurements = data?.data ?? [];
 
   return (
@@ -304,9 +381,10 @@ function TrendPanel({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <TrendSummary
+        <TrendSparkline
           measurements={measurements}
           isLoading={isLoading}
+          isError={isError}
           label={title}
           valueKey={valueKey}
           unit={unit}
