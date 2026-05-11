@@ -515,10 +515,10 @@ describe("ButlerActivityTab — KPI values", () => {
     expect(screen.getByTestId("kpi-p95").textContent).toBe("—")
   })
 
-  it("shows '—' for errors count when no error kind in session-kinds", () => {
+  it("shows '0' for errors count when no error kind in session-kinds", () => {
     renderTab()
-    // SESSION_KINDS_DATA has no 'error' kind
-    expect(screen.getByTestId("kpi-errors").textContent).toBe("—")
+    // SESSION_KINDS_DATA has no 'error' kind — 0 is the correct value, not "—"
+    expect(screen.getByTestId("kpi-errors").textContent).toBe("0")
   })
 
   it("shows errors count when error kind is present in session-kinds", () => {

@@ -115,7 +115,6 @@ function KpiQuartet({
           label="Errors"
           value={<span data-testid="kpi-errors">{errorsValue}</span>}
           tone={errorsTone}
-          sub={errorsCount == null && !isLoading ? "unavailable" : undefined}
         />
       </div>
     </Panel>
@@ -302,9 +301,13 @@ export default function ButlerActivityTab({ butlerName }: ButlerActivityTabProps
   // Derive sessions count as the sum across all kinds
   const sessionsCount = kindsQuery.data?.data?.kinds.reduce((s, k) => s + k.count, 0) ?? null
 
-  // Derive error sessions count from trigger_source = "error" kind if available
-  // (graceful: null when not available)
-  const errorsCount = kindsQuery.data?.data?.kinds.find((k) => k.kind === "error")?.count ?? null
+  // Derive error sessions count from trigger_source = "error" kind.
+  // When kinds data is loaded and there is no "error" entry, zero errors is
+  // the correct interpretation (not "unavailable"). null only when not loaded.
+  const errorsCount =
+    kindsQuery.data?.data != null
+      ? (kindsQuery.data.data.kinds.find((k) => k.kind === "error")?.count ?? 0)
+      : null
 
   return (
     <div

@@ -29,7 +29,7 @@ import {
  */
 export function useButlerHourlyActivity(butlerName: string, windowHours: number = 24) {
   return useQuery({
-    queryKey: ["butler-analytics", butlerName, "hourly-activity", windowHours],
+    queryKey: ["butlers", butlerName, "analytics", "hourly-activity", windowHours],
     queryFn: () => getButlerHourlyActivity(butlerName, { window_hours: windowHours }),
     enabled: !!butlerName,
     staleTime: 60_000,
@@ -48,7 +48,7 @@ export function useButlerHourlyActivity(butlerName: string, windowHours: number 
  */
 export function useButlerDailyActivity(butlerName: string, windowDays: 7 | 30 = 7) {
   return useQuery({
-    queryKey: ["butler-analytics", butlerName, "daily-activity", windowDays],
+    queryKey: ["butlers", butlerName, "analytics", "daily-activity", windowDays],
     queryFn: () => getButlerDailyActivity(butlerName, { window_days: windowDays }),
     enabled: !!butlerName,
     staleTime: 60_000,
@@ -67,7 +67,7 @@ export function useButlerDailyActivity(butlerName: string, windowDays: 7 | 30 = 
  */
 export function useButlerSessionKinds(butlerName: string, windowDays: number = 7) {
   return useQuery({
-    queryKey: ["butler-analytics", butlerName, "session-kinds", windowDays],
+    queryKey: ["butlers", butlerName, "analytics", "session-kinds", windowDays],
     queryFn: () => getButlerSessionKinds(butlerName, { window_days: windowDays }),
     enabled: !!butlerName,
     staleTime: 60_000,
