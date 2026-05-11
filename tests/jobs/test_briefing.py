@@ -21,6 +21,7 @@ from butlers.jobs.briefing import (
     combined_key,
     contribution_key,
     run_finance_briefing_contribution,
+    run_health_briefing_contribution,
     today_sgt,
     validate_contribution,
 )
@@ -36,9 +37,14 @@ _DATE_STR_2026_03_25 = "2026-03-25"
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(*, fetch_rows: list[dict[str, Any]] | None = None) -> MagicMock:
+def _make_pool(
+    *,
+    fetch_rows: list[dict[str, Any]] | None = None,
+    fetchrow_value: dict[str, Any] | None = None,
+) -> MagicMock:
     pool = MagicMock()
     pool.fetch = AsyncMock(return_value=fetch_rows or [])
+    pool.fetchrow = AsyncMock(return_value=fetchrow_value)
     pool.fetchval = AsyncMock(return_value=1)
     pool.execute = AsyncMock()
     return pool
@@ -277,3 +283,89 @@ def test_get_butler_typed_specialist_butlers():
 
     with patch("butlers.jobs.briefing.list_butlers", return_value=[]):
         assert _get_butler_typed_specialist_butlers() == frozenset(SPECIALIST_BUTLERS)
+
+
+# ---------------------------------------------------------------------------
+# run_health_briefing_contribution — weight query via public.facts
+# ---------------------------------------------------------------------------
+
+
+async def test_run_health_briefing_contribution_weight_from_facts_content():
+    """Weight is read from public.facts; content field drives the display string.
+
+    measurement_log stores content as "weight: <value> <unit>" (e.g. "weight: 82.5 kg").
+    The briefing strips the "<type>: " prefix so the highlight reads "Latest weight: 82.5 kg"
+    and the summary reads "Weight: 82.5 kg." — without the redundant type prefix.
+    """
+    # Realistic fixture: measurement_log writes "weight: 82.5 kg" as content.
+    weight_fact = {
+        "content": "weight: 82.5 kg",
+        "value": "82.5",
+        "valid_at": None,
+    }
+    # fetch() is called twice (missed doses, taken doses); both return empty lists.
+    pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
+    mock_write = AsyncMock()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
+    ):
+        result = await run_health_briefing_contribution(pool, None)
+
+    assert result["butler"] == "health"
+    assert result["has_updates"] is True
+
+    # Verify fetchrow was called and the SQL targets public.facts, not measurements.
+    call_args = pool.fetchrow.call_args
+    sql = call_args[0][0]
+    assert "public.facts" in sql
+    assert "measurement_weight" in sql
+    assert "measurements" not in sql
+    assert "valid_at IS NOT NULL" in sql
+    assert "NULLS LAST" in sql
+
+    # Verify the highlight text strips "weight: " prefix — no double-prefix.
+    envelope = mock_write.call_args[0][1]
+    weight_highlight = next(h for h in envelope["highlights"] if h["category"] == "weight")
+    assert weight_highlight["text"] == "Latest weight: 82.5 kg"
+    # Summary must not contain "weight: weight:"
+    assert "weight: weight:" not in envelope["summary"].lower()
+
+
+async def test_run_health_briefing_contribution_weight_fallback_to_metadata():
+    """When content is empty the weight text falls back to metadata->>'value' (no unit).
+
+    public.facts.content is NOT NULL, so the realistic "no useful content" scenario
+    is an empty string, not NULL. measurement_log stores only {"value": <val>} in
+    metadata — there is no "unit" key — so the fallback produces the raw value string.
+    """
+    weight_fact = {
+        "content": "",  # empty string (NOT NULL column); triggers metadata fallback
+        "value": "75.0",  # metadata->>'value'; no unit key in measurement_log metadata
+        "valid_at": None,
+    }
+    pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
+    mock_write = AsyncMock()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
+    ):
+        result = await run_health_briefing_contribution(pool, None)
+
+    assert result["has_updates"] is True
+    envelope = mock_write.call_args[0][1]
+    weight_highlight = next(h for h in envelope["highlights"] if h["category"] == "weight")
+    assert weight_highlight["text"] == "Latest weight: 75.0"
+
+
+async def test_run_health_briefing_contribution_no_weight_fact():
+    """No weight fact in the past 7 days → has_updates is False and no weight highlight."""
+    pool = _make_pool(fetch_rows=[], fetchrow_value=None)
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+    ):
+        result = await run_health_briefing_contribution(pool, None)
+
+    assert result["butler"] == "health"
+    assert result["has_updates"] is False

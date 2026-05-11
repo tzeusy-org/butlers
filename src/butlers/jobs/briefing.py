@@ -290,11 +290,14 @@ async def run_health_briefing_contribution(
     # --- Latest weight measurement (past 7 days) ---
     weight_row = await pool.fetchrow(
         """
-        SELECT value, measured_at
-        FROM measurements
-        WHERE type = 'weight'
-          AND measured_at >= $1
-        ORDER BY measured_at DESC
+        SELECT content, metadata->>'value' AS value, valid_at
+        FROM public.facts
+        WHERE predicate = 'measurement_weight'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND valid_at IS NOT NULL
+          AND valid_at >= $1
+        ORDER BY valid_at DESC NULLS LAST
         LIMIT 1
         """,
         today_start - timedelta(days=7),
@@ -302,14 +305,13 @@ async def run_health_briefing_contribution(
 
     latest_weight_text: str | None = None
     if weight_row:
-        w_val = weight_row["value"]
-        # value is JSONB; could be {"value": 70.5, "unit": "kg"} or scalar
-        if isinstance(w_val, dict):
-            val = w_val.get("value", "")
-            unit = w_val.get("unit", "")
-            latest_weight_text = f"{val} {unit}".strip()
+        # measurement_log stores content as "weight: <value> <unit>" (e.g. "weight: 82.5 kg").
+        # Strip the "<type>: " prefix to get the display value (e.g. "82.5 kg").
+        # Fall back to metadata->>'value' (raw numeric, no unit) when content is absent.
+        if weight_row["content"]:
+            latest_weight_text = weight_row["content"].split(": ", 1)[-1]
         else:
-            latest_weight_text = str(w_val)
+            latest_weight_text = weight_row["value"] or None
         highlights.append(
             {
                 "category": "weight",
