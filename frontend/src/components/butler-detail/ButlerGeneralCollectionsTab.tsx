@@ -9,7 +9,7 @@
 //       largest collection size
 //   Row 2: Collections directory (span 3, paginated table)
 //         + Recent items sidebar (span 1, last 5 entities)
-//   Row 3: Collection size histogram (span 2, stacked bar by size bracket)
+//   Row 3: Collection size histogram (span 2, bar chart by size bracket)
 //         + Quick actions card (span 2, "Create collection" + search)
 //
 // Data:
@@ -332,7 +332,7 @@ function RecentItemsSidebar({ entities, isLoading, isError }: RecentItemsSidebar
 }
 
 // ---------------------------------------------------------------------------
-// Panel 4: Collection size histogram (recharts stacked bar)
+// Panel 4: Collection size histogram (recharts bar chart)
 //
 // Each bucket from /api/general/stats.size_histogram is rendered as a bar.
 // Palette uses graduated hsl(var(--primary)) opacity rather than raw hex.
@@ -444,11 +444,20 @@ function QuickActionsCard({ onSearchChange, searchValue }: QuickActionsProps) {
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
 
+  function resetForm() {
+    setNewName("");
+    setNewDescription("");
+  }
+
+  function handleOpenChange(open: boolean) {
+    if (!open) resetForm();
+    setCreateOpen(open);
+  }
+
   function handleCreate() {
     // Stub: future backend integration — POST /api/general/collections
     // For now the dialog closes and resets state.
-    setNewName("");
-    setNewDescription("");
+    resetForm();
     setCreateOpen(false);
   }
 
@@ -481,7 +490,7 @@ function QuickActionsCard({ onSearchChange, searchValue }: QuickActionsProps) {
         </CardContent>
       </Card>
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <Dialog open={createOpen} onOpenChange={handleOpenChange}>
         <DialogContent data-testid="create-collection-dialog">
           <DialogHeader>
             <DialogTitle>Create collection</DialogTitle>
@@ -519,7 +528,7 @@ function QuickActionsCard({ onSearchChange, searchValue }: QuickActionsProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setCreateOpen(false)}
+                onClick={() => handleOpenChange(false)}
               >
                 Cancel
               </Button>

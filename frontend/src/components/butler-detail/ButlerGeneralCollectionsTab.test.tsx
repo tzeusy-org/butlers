@@ -563,6 +563,23 @@ describe("ButlerGeneralCollectionsTab — quick actions", () => {
     const lastCall = calls[calls.length - 1];
     expect(lastCall[0]?.offset).toBe(0);
   });
+
+  it("resets dialog form state when dialog is closed via Cancel", () => {
+    renderTab();
+    // Open dialog
+    fireEvent.click(screen.getByTestId("create-collection-button"));
+    // Type a name
+    const nameInput = screen.getByPlaceholderText("Collection name") as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "My collection" } });
+    expect(nameInput.value).toBe("My collection");
+    // Cancel
+    const cancelBtn = screen.getByRole("button", { name: /cancel/i });
+    fireEvent.click(cancelBtn);
+    // Reopen
+    fireEvent.click(screen.getByTestId("create-collection-button"));
+    const nameInputAfter = screen.getByPlaceholderText("Collection name") as HTMLInputElement;
+    expect(nameInputAfter.value).toBe("");
+  });
 });
 
 // ---------------------------------------------------------------------------
