@@ -1316,3 +1316,278 @@ class TestSubmitCurriculumRequest:
                 )
 
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/analytics/trend
+# ---------------------------------------------------------------------------
+
+
+def _trend_snapshot_record(*, map_id: str = _MAP_ID) -> dict:
+    return {
+        "id": uuid.uuid4(),
+        "mind_map_id": uuid.UUID(map_id),
+        "snapshot_date": date.today(),
+        "metrics": {
+            "total_nodes": 10,
+            "mastered_nodes": 3,
+            "mastery_pct": 0.3,
+        },
+        "created_at": datetime.now(UTC),
+    }
+
+
+class TestGetAnalyticsTrend:
+    async def test_returns_trend_response_shape(self):
+        """Response must have mind_map_id, days, and trend array."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        snap = _trend_snapshot_record()
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "analytics_get_trend",
+                new_callable=AsyncMock,
+                return_value=[snap],
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    f"/api/education/mind-maps/{_MAP_ID}/analytics/trend",
+                    params={"days": 7},
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "mind_map_id" in body
+        assert body["days"] == 7
+        assert "trend" in body
+        assert isinstance(body["trend"], list)
+        assert len(body["trend"]) == 1
+        entry = body["trend"][0]
+        assert "snapshot_date" in entry
+        assert "metrics" in entry
+        assert entry["metrics"]["mastery_pct"] == 0.3
+
+    async def test_returns_empty_trend_when_no_snapshots(self):
+        """When no snapshots exist in the window, trend should be an empty list."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "analytics_get_trend",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/analytics/trend")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["trend"] == []
+
+    async def test_returns_404_for_missing_map(self):
+        """Non-existent mind map should return 404."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(edu, "mind_map_get", new_callable=AsyncMock, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{uuid.uuid4()}/analytics/trend")
+
+        assert resp.status_code == 404
+
+    async def test_pool_unavailable_returns_503(self):
+        """When the education DB pool is unavailable, return 503."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool, pool_available=False)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/analytics/trend")
+
+        assert resp.status_code == 503
+
+    async def test_default_days_is_seven(self):
+        """When ?days is omitted the endpoint defaults to 7 and echoes it in the response."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "analytics_get_trend",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/analytics/trend")
+
+        assert resp.status_code == 200
+        assert resp.json()["days"] == 7
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/struggling-nodes
+# ---------------------------------------------------------------------------
+
+
+class TestGetStrugglingNodes:
+    async def test_returns_struggling_nodes_shape(self):
+        """Response must have mind_map_id and nodes array with expected fields."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        struggling = [
+            {
+                "id": _NODE_ID,
+                "label": "Closures",
+                "mastery_score": 0.15,
+                "mastery_status": "learning",
+                "reason": "consecutive_low_quality",
+            }
+        ]
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "mastery_detect_struggles",
+                new_callable=AsyncMock,
+                return_value=struggling,
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/struggling-nodes")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mind_map_id"] == _MAP_ID
+        assert isinstance(body["nodes"], list)
+        assert len(body["nodes"]) == 1
+        node = body["nodes"][0]
+        assert node["node_id"] == _NODE_ID
+        assert node["node_label"] == "Closures"
+        assert node["mastery_score"] == 0.15
+        assert node["mastery_status"] == "learning"
+        assert node["reason"] == "consecutive_low_quality"
+
+    async def test_returns_empty_nodes_when_none_struggling(self):
+        """When no nodes are struggling, nodes should be an empty list."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "mastery_detect_struggles",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/struggling-nodes")
+
+        assert resp.status_code == 200
+        assert resp.json()["nodes"] == []
+
+    async def test_returns_404_for_missing_map(self):
+        """Non-existent mind map should return 404."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(edu, "mind_map_get", new_callable=AsyncMock, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{uuid.uuid4()}/struggling-nodes")
+
+        assert resp.status_code == 404
+
+    async def test_pool_unavailable_returns_503(self):
+        """When the education DB pool is unavailable, return 503."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool, pool_available=False)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/struggling-nodes")
+
+        assert resp.status_code == 503
+
+    async def test_combined_reason_included(self):
+        """Nodes with both struggle reasons should expose the combined reason string."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        struggling = [
+            {
+                "id": _NODE_ID,
+                "label": "Generators",
+                "mastery_score": 0.1,
+                "mastery_status": "learning",
+                "reason": "consecutive_low_quality,declining_score",
+            }
+        ]
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "mastery_detect_struggles",
+                new_callable=AsyncMock,
+                return_value=struggling,
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/struggling-nodes")
+
+        assert resp.status_code == 200
+        node = resp.json()["nodes"][0]
+        assert node["reason"] == "consecutive_low_quality,declining_score"

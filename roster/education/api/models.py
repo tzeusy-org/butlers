@@ -154,3 +154,38 @@ class CurriculumRequestResponse(BaseModel):
 
     status: str
     topic: str
+
+
+class AnalyticsTrendEntry(BaseModel):
+    """One snapshot entry in an analytics trend time-series."""
+
+    id: str | None = None
+    mind_map_id: str
+    snapshot_date: str
+    metrics: dict[str, Any] = {}
+    created_at: str | None = None
+
+
+class AnalyticsTrendResponse(BaseModel):
+    """Analytics trend time-series for a mind map."""
+
+    mind_map_id: str
+    days: int
+    trend: list[AnalyticsTrendEntry] = []
+
+
+class StrugglingNodeEntry(BaseModel):
+    """A concept node identified as struggling."""
+
+    node_id: str
+    node_label: str
+    mastery_score: float
+    mastery_status: str
+    reason: str
+
+
+class StrugglingNodesResponse(BaseModel):
+    """List of struggling nodes for a mind map."""
+
+    mind_map_id: str
+    nodes: list[StrugglingNodeEntry] = []
