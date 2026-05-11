@@ -2,12 +2,13 @@
 
 Provides ``SessionDetail`` for the full session detail endpoint, extends
 the existing ``SessionSummary`` with a ``butler`` field for cross-butler
-views, and ``SessionKindBreakdown`` for the session-kinds analytics endpoint.
+views, ``SessionKindBreakdown`` for the session-kinds analytics endpoint,
+and ``DailyActivity`` for the daily-activity analytics endpoint.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -47,6 +48,19 @@ class SessionKindBreakdown(BaseModel):
     """
 
     kinds: list[SessionKindItem] = []
+
+
+class DailyActivityBucket(BaseModel):
+    """Session count for a single calendar day."""
+
+    date: date
+    sessions_count: int
+
+
+class DailyActivity(BaseModel):
+    """Daily session counts over a rolling window."""
+
+    buckets: list[DailyActivityBucket] = []
 
 
 class SessionDetail(BaseModel):

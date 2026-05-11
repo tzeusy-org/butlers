@@ -26,6 +26,8 @@ from butlers.api.models import (
     SessionSummary,
 )
 from butlers.api.models.session import (
+    DailyActivity,
+    DailyActivityBucket,
     ProcessLog,
     SessionDetail,
     SessionKindBreakdown,
@@ -386,3 +388,58 @@ async def get_butler_session_kinds(
     kinds = [SessionKindItem(kind=row["trigger_source"], count=int(row["count"])) for row in rows]
 
     return ApiResponse[SessionKindBreakdown](data=SessionKindBreakdown(kinds=kinds))
+
+
+# ---------------------------------------------------------------------------
+# Butler-scoped analytics: GET /api/butlers/{name}/analytics/daily-activity
+# ---------------------------------------------------------------------------
+
+_DAILY_ACTIVITY_SQL = """
+SELECT DATE(started_at) AS d, COUNT(*) AS sessions_count
+FROM sessions
+WHERE started_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
+GROUP BY d
+ORDER BY d
+"""
+
+_VALID_WINDOW_DAYS = {7, 30}
+
+
+@butler_sessions_router.get(
+    "/{name}/analytics/daily-activity",
+    response_model=ApiResponse[DailyActivity],
+)
+async def get_butler_daily_activity(
+    name: str,
+    window_days: int = Query(7, description="Rolling window in days; must be 7 or 30"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[DailyActivity]:
+    """Return daily session counts for a butler over a rolling 7- or 30-day window.
+
+    Queries the butler's ``sessions`` table and groups rows by calendar date.
+    Returns one ``DailyActivityBucket`` per day that had at least one session.
+    Days with no sessions are omitted; an empty window yields ``buckets: []``.
+
+    ``window_days`` must be exactly 7 or 30; other values are rejected with 422.
+    """
+    if window_days not in _VALID_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"window_days must be one of {sorted(_VALID_WINDOW_DAYS)}, got {window_days}",
+        )
+
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        )
+
+    rows = await pool.fetch(_DAILY_ACTIVITY_SQL, window_days)
+
+    buckets = [
+        DailyActivityBucket(date=row["d"], sessions_count=row["sessions_count"]) for row in rows
+    ]
+
+    return ApiResponse[DailyActivity](data=DailyActivity(buckets=buckets))

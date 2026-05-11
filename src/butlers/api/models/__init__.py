@@ -372,6 +372,8 @@ from butlers.api.models.notification import NotificationStats, NotificationSumma
 from butlers.api.models.search import SearchResponse, SearchResult  # noqa: E402
 from butlers.api.models.secrets import SecretEntry, SecretUpsertRequest  # noqa: E402
 from butlers.api.models.session import (  # noqa: E402
+    DailyActivity,
+    DailyActivityBucket,
     SessionDetail,
     SessionKindBreakdown,
     SessionKindItem,
@@ -412,6 +414,8 @@ __all__ = [
     "ConnectorStatsBucket",
     "ConnectorStatsSummary",
     "ConnectorSummary",
+    "DailyActivity",
+    "DailyActivityBucket",
     "DailyCost",
     "derive_liveness",
     "Episode",
