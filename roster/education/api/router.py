@@ -24,7 +24,7 @@ from butlers.tools.education.analytics import (
     analytics_get_snapshot,
     analytics_get_trend,
 )
-from butlers.tools.education.mastery import mastery_get_map_summary
+from butlers.tools.education.mastery import mastery_detect_struggles, mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
 from butlers.tools.education.mind_maps import mind_map_get, mind_map_list, mind_map_update_status
 from butlers.tools.education.spaced_repetition import spaced_repetition_pending_reviews
@@ -39,6 +39,8 @@ if _spec is not None and _spec.loader is not None:
     _spec.loader.exec_module(_models)
 
     AnalyticsSnapshotResponse = _models.AnalyticsSnapshotResponse
+    AnalyticsTrendEntry = _models.AnalyticsTrendEntry
+    AnalyticsTrendResponse = _models.AnalyticsTrendResponse
     CrossTopicAnalyticsResponse = _models.CrossTopicAnalyticsResponse
     CrossTopicTopicEntry = _models.CrossTopicTopicEntry
     CurriculumRequestBody = _models.CurriculumRequestBody
@@ -50,6 +52,8 @@ if _spec is not None and _spec.loader is not None:
     PendingReviewNodeResponse = _models.PendingReviewNodeResponse
     QuizResponseModel = _models.QuizResponseModel
     StatusUpdateRequest = _models.StatusUpdateRequest
+    StrugglingNodeEntry = _models.StrugglingNodeEntry
+    StrugglingNodesResponse = _models.StrugglingNodesResponse
     TeachingFlowResponse = _models.TeachingFlowResponse
 
 logger = logging.getLogger(__name__)
@@ -485,6 +489,91 @@ async def get_mastery_summary(
         avg_mastery_score=float(summary["avg_mastery_score"]),
         struggling_node_ids=[str(nid) for nid in summary.get("struggling_node_ids", [])],
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/analytics/trend — analytics trend series
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/mind-maps/{mind_map_id}/analytics/trend",
+    response_model=AnalyticsTrendResponse,
+)
+async def get_analytics_trend(
+    mind_map_id: str,
+    days: int = Query(7, ge=1, le=365, description="Number of days to look back"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> AnalyticsTrendResponse:
+    """Return a time-series of analytics snapshots for a mind map.
+
+    Snapshots are ordered oldest-first within the requested day window.
+    Returns an empty trend list when no snapshots exist for the window.
+    """
+    pool = _pool(db)
+
+    m = await mind_map_get(pool, mind_map_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
+
+    rows = await analytics_get_trend(pool, mind_map_id, days=days)
+
+    trend = [
+        AnalyticsTrendEntry(
+            id=str(row["id"]) if row.get("id") else None,
+            mind_map_id=str(row.get("mind_map_id", mind_map_id)),
+            snapshot_date=str(row["snapshot_date"]),
+            metrics=dict(row.get("metrics") or {}),
+            created_at=str(row["created_at"]) if row.get("created_at") else None,
+        )
+        for row in rows
+    ]
+
+    return AnalyticsTrendResponse(mind_map_id=mind_map_id, days=days, trend=trend)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/struggling-nodes — struggling nodes
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/mind-maps/{mind_map_id}/struggling-nodes",
+    response_model=StrugglingNodesResponse,
+)
+async def get_struggling_nodes(
+    mind_map_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> StrugglingNodesResponse:
+    """Return concept nodes with declining or consistently low mastery.
+
+    A node is flagged as struggling if its 3 most recent quiz responses all
+    have quality <= 2, or if mastery score has declined over the last 3
+    responses. Mastered nodes and nodes with fewer than 3 responses are
+    excluded.
+
+    Returns an empty nodes list when no struggling nodes are detected.
+    """
+    pool = _pool(db)
+
+    m = await mind_map_get(pool, mind_map_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
+
+    raw = await mastery_detect_struggles(pool, mind_map_id)
+
+    nodes = [
+        StrugglingNodeEntry(
+            node_id=str(item["id"]),
+            node_label=str(item["label"]),
+            mastery_score=float(item["mastery_score"]),
+            mastery_status=str(item["mastery_status"]),
+            reason=str(item["reason"]),
+        )
+        for item in raw
+    ]
+
+    return StrugglingNodesResponse(mind_map_id=mind_map_id, nodes=nodes)
 
 
 # ---------------------------------------------------------------------------
