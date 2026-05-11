@@ -123,11 +123,12 @@ function KpiStrip({
       <Panel testId="kpi-item">
         <KpiCell
           label="Last snapshot"
-          value={isLoading ? "..." : "—"}
-          sub={
-            newestCapturedAt ? (
-              <Time value={newestCapturedAt} mode="relative-compact" />
-            ) : undefined
+          value={
+            isLoading
+              ? "..."
+              : newestCapturedAt
+                ? <Time value={newestCapturedAt} mode="relative-compact" />
+                : "—"
           }
         />
       </Panel>
@@ -390,10 +391,7 @@ function EnergyAreaChart({ dataPoints, isLoading, isError }: EnergyChartProps) {
     () =>
       dataPoints
         .slice()
-        .sort(
-          (a, b) =>
-            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-        )
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
         .map((d) => ({
           date: d.timestamp.slice(0, 10),
           total_kwh: d.total_kwh,
@@ -477,7 +475,7 @@ function TopConsumersList({ consumers, isLoading, isError }: TopConsumersProps) 
       {top5.map((c) => (
         <li
           key={c.entity_id}
-          className="flex items-center justify-between gap-2"
+          className="flex items-center justify-between gap-2 min-w-0"
           data-testid="top-consumer-item"
         >
           <span className="text-sm truncate text-muted-foreground">

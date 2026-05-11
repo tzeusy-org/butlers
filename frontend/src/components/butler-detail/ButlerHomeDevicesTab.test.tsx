@@ -474,16 +474,20 @@ describe("ButlerHomeDevicesTab — KPI values", () => {
   });
 
   it("renders offline device count KPI", () => {
-    renderTab();
-    expect(screen.getByText("1")).toBeDefined();
+    const { container } = renderTab();
+    const kpiStrip = container.querySelector('[data-testid="kpi-strip"]');
+    expect(kpiStrip).not.toBeNull();
+    // Offline count is 1 — assert it appears in the strip (offline + overdue may both be 1)
+    expect(kpiStrip!.innerHTML).toContain(">1<");
   });
 
   it("renders overdue maintenance count KPI", () => {
-    renderTab();
-    // OVERDUE_MAINTENANCE has 1 item, overdue count from overdueItems?.length
-    // KPI shows overdueCount from useHomeMaintenance({status: 'overdue'}) length
-    const kpiStrip = screen.getByTestId("kpi-strip");
-    expect(kpiStrip).toBeDefined();
+    const { container } = renderTab();
+    // OVERDUE_MAINTENANCE has 1 item — assert the rendered value is exactly "1"
+    // within the KPI strip, not just that the strip exists.
+    const kpiStrip = container.querySelector('[data-testid="kpi-strip"]');
+    expect(kpiStrip).not.toBeNull();
+    expect(kpiStrip!.innerHTML).toContain(">1<");
   });
 });
 
