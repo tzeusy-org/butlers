@@ -846,3 +846,25 @@ export type {
   ButlerLogsParams,
   ButlerLogsResponse,
 } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Messenger butler (bu-iuol4.34)
+// ---------------------------------------------------------------------------
+
+export {
+  getMessengerDeliveryStats,
+  getMessengerCircuitStatus,
+  getMessengerQueueDepth,
+  getMessengerDeadLetters,
+} from "./client.ts";
+
+export type {
+  MessengerDeliveryStats,
+  MessengerDeliveryStatsParams,
+  MessengerCircuitStatus,
+  MessengerCircuitChannelEntry,
+  MessengerQueueDepth,
+  MessengerDeadLetterEntry,
+  MessengerDeadLetterSummary,
+  MessengerDeadLettersParams,
+} from "./types.ts";

@@ -4200,3 +4200,65 @@ export interface ButlerLogsParams {
 export interface ButlerLogsResponse {
   lines: ButlerLogLine[];
 }
+
+// ---------------------------------------------------------------------------
+// Messenger butler (bu-iuol4.34)
+// ---------------------------------------------------------------------------
+
+/** Aggregated delivery statistics over a time window. */
+export interface MessengerDeliveryStats {
+  window_hours: number;
+  delivered: number;
+  failed: number;
+  pending: number;
+  retried: number;
+  dead_letter: number;
+  dispatched_at: string | null;
+}
+
+/** Circuit breaker state for a single channel. */
+export interface MessengerCircuitChannelEntry {
+  name: string;
+  state: "closed" | "open" | "half_open";
+  last_state_change: string | null;
+  failure_rate_15m: number | null;
+}
+
+/** Circuit breaker state per channel. source is always 'db_approximation'. */
+export interface MessengerCircuitStatus {
+  channels: MessengerCircuitChannelEntry[];
+  /** Always 'db_approximation' — derived from DB, not live in-memory state. */
+  source: "db_approximation";
+}
+
+/** Outbound queue depth by channel and priority. */
+export interface MessengerQueueDepth {
+  total: number;
+  by_channel: Record<string, number>;
+  by_priority: Record<string, number>;
+}
+
+/** A single dead-letter entry. */
+export interface MessengerDeadLetterEntry {
+  id: string;
+  channel: string;
+  recipient_id: string | null;
+  error_message: string | null;
+  attempted_at: string | null;
+  retry_count: number;
+}
+
+/** Response shape for GET /api/messenger/dead-letters. */
+export interface MessengerDeadLetterSummary {
+  letters: MessengerDeadLetterEntry[];
+}
+
+/** Query params for GET /api/messenger/delivery-stats. */
+export interface MessengerDeliveryStatsParams {
+  window_hours?: number;
+}
+
+/** Query params for GET /api/messenger/dead-letters. */
+export interface MessengerDeadLettersParams {
+  limit?: number;
+}

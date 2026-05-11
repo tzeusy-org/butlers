@@ -274,6 +274,12 @@ import type {
   OverdueContactsResponse,
   ButlerLogsParams,
   ButlerLogsResponse,
+  MessengerDeliveryStats,
+  MessengerDeliveryStatsParams,
+  MessengerCircuitStatus,
+  MessengerQueueDepth,
+  MessengerDeadLetterSummary,
+  MessengerDeadLettersParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -4070,4 +4076,38 @@ export function getHomeCommandLog(params?: {
   return apiFetch<{ data: HomeCommandLogEntry[]; meta?: Record<string, unknown> }>(
     `/home/command-log${qs ? `?${qs}` : ""}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Messenger butler (bu-iuol4.34)
+// ---------------------------------------------------------------------------
+
+/** GET /api/messenger/delivery-stats — aggregated delivery counts over a window. */
+export function getMessengerDeliveryStats(
+  params?: MessengerDeliveryStatsParams,
+): Promise<MessengerDeliveryStats> {
+  const sp = new URLSearchParams();
+  if (params?.window_hours != null) sp.set("window_hours", String(params.window_hours));
+  const qs = sp.toString();
+  return apiFetch<MessengerDeliveryStats>(`/messenger/delivery-stats${qs ? `?${qs}` : ""}`);
+}
+
+/** GET /api/messenger/circuit-status — per-channel circuit breaker state (DB approximation). */
+export function getMessengerCircuitStatus(): Promise<MessengerCircuitStatus> {
+  return apiFetch<MessengerCircuitStatus>("/messenger/circuit-status");
+}
+
+/** GET /api/messenger/queue-depth — outbound queue depth by channel and priority. */
+export function getMessengerQueueDepth(): Promise<MessengerQueueDepth> {
+  return apiFetch<MessengerQueueDepth>("/messenger/queue-depth");
+}
+
+/** GET /api/messenger/dead-letters — recent dead-letter entries. */
+export function getMessengerDeadLetters(
+  params?: MessengerDeadLettersParams,
+): Promise<MessengerDeadLetterSummary> {
+  const sp = new URLSearchParams();
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<MessengerDeadLetterSummary>(`/messenger/dead-letters${qs ? `?${qs}` : ""}`);
 }
