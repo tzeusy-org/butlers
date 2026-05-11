@@ -440,6 +440,8 @@ describe("ButlerFinanceFinancesTab — KPI strip", () => {
     // sub-label should contain the category name; the value shows the amount.
     const kpiStrip = screen.getByTestId("finance-kpi-strip");
     expect(kpiStrip.textContent).toContain("Groceries");
+    // KPI value: $760.00 formatted by Intl.NumberFormat
+    expect(kpiStrip.textContent).toContain("$760.00");
   });
 });
 

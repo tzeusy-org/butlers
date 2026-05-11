@@ -29,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react";
+import type { ReactNode } from "react";
 import { formatInTimeZone } from "date-fns-tz";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
@@ -75,6 +76,16 @@ function titleCase(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Direction → class mapping (single source of truth for debit/credit colour)
+// Token names only — never inline oklch/hex.
+// ---------------------------------------------------------------------------
+
+const DIRECTION_CLASS: Record<string, string> = {
+  debit: "text-destructive",
+  credit: "text-emerald-500",
+};
+
+// ---------------------------------------------------------------------------
 // Urgency chip colours — preserved from original implementation
 // ---------------------------------------------------------------------------
 
@@ -102,7 +113,7 @@ function UrgencyChip({ urgency }: { urgency: string }) {
 // Empty and loading primitives
 // ---------------------------------------------------------------------------
 
-function EmptyLine({ children }: { children: React.ReactNode }) {
+function EmptyLine({ children }: { children: ReactNode }) {
   return (
     <p
       className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
@@ -187,8 +198,7 @@ function CategorySpendPanel({
 }) {
   const chartData = useMemo(
     () =>
-      [...groups]
-        .sort((a, b) => parseFloat(b.amount) - parseFloat(a.amount))
+      groups
         .slice(0, 8)
         .map((g) => ({
           category: titleCase(g.key),
@@ -288,11 +298,9 @@ function TransactionsPanel({
                     {titleCase(tx.inferred_category ?? tx.category)}
                   </td>
                   <td
-                    className={`py-2 text-right font-mono tnum text-xs ${
-                      tx.direction === "debit" ? "text-destructive" : "text-emerald-500"
-                    }`}
+                    className={`py-2 text-right font-mono tnum text-xs ${DIRECTION_CLASS[tx.direction] ?? ""}`}
                   >
-                    {tx.direction === "debit" ? "-" : "+"}
+                    {tx.direction === "debit" ? "−" : "+"}
                     {formatCurrency(tx.amount, tx.currency)}
                   </td>
                 </tr>
@@ -412,19 +420,15 @@ export default function ButlerFinanceFinancesTab() {
   const nextBill = upcomingBills[0] ?? null;
   const totalSpend = monthlySummary?.total_spend ?? "0";
   const currency = monthlySummary?.currency ?? "USD";
-  const categoryGroups = useMemo(
-    () => categorySummary?.groups ?? [],
-    [categorySummary],
-  );
+  // Sort once at the parent so children receive a stable, ordered reference.
+  const categoryGroups = useMemo(() => {
+    const groups = categorySummary?.groups ?? [];
+    return [...groups].sort((a, b) => parseFloat(b.amount) - parseFloat(a.amount));
+  }, [categorySummary]);
   const chartCurrency = categorySummary?.currency ?? "USD";
 
-  // Top category (4th KPI cell): largest spend group over 30-day window
-  const topCategory = useMemo(() => {
-    if (categoryGroups.length === 0) return null;
-    return [...categoryGroups].sort(
-      (a, b) => parseFloat(b.amount) - parseFloat(a.amount),
-    )[0];
-  }, [categoryGroups]);
+  // Top category (4th KPI cell): first element of the pre-sorted array.
+  const topCategory = categoryGroups[0] ?? null;
 
   const kpiLoading = txLoading || subLoading || upcomingLoading || monthlyLoading || categoryLoading;
 
@@ -435,24 +439,24 @@ export default function ButlerFinanceFinancesTab() {
     ? "..."
     : nextBill
       ? formatCurrency(nextBill.bill.amount, nextBill.bill.currency)
-      : "--";
+      : "—";
   const nextBillSub = nextBill ? nextBill.bill.payee : undefined;
 
   const topCategoryValue = kpiLoading
     ? "..."
     : topCategory
       ? formatCurrency(topCategory.amount, chartCurrency)
-      : "--";
+      : "—";
   const topCategorySub = topCategory ? titleCase(topCategory.key) : undefined;
 
   return (
     <div
-      className="grid grid-cols-4 border-t border-l border-border/60"
+      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
       data-testid="finance-finances-tab"
     >
       {/* Row 1: KPI strip — 4 cells */}
       <div
-        className="col-span-4 grid grid-cols-4"
+        className="col-span-1 lg:col-span-4 grid grid-cols-2 lg:grid-cols-4"
         data-testid="finance-kpi-strip"
       >
         <Panel>
