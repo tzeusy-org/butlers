@@ -15,7 +15,7 @@
  * bead: bu-nqepq
  */
 
-import React from "react";
+import { createElement, ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -29,18 +29,18 @@ vi.mock("recharts", () => {
     children,
   }: {
     data?: Array<Record<string, unknown>>;
-    children?: React.ReactNode;
-  }) => React.createElement("div", { "data-testid": "recharts-bar-chart" }, children);
+    children?: ReactNode;
+  }) => createElement("div", { "data-testid": "recharts-bar-chart" }, children);
 
   const Bar = ({ dataKey }: { dataKey: string }) =>
-    React.createElement("div", { "data-testid": `recharts-bar-${dataKey}` });
+    createElement("div", { "data-testid": `recharts-bar-${dataKey}` });
 
   const XAxis = () => null;
   const YAxis = () => null;
   const Tooltip = () => null;
   const Legend = () => null;
-  const ResponsiveContainer = ({ children }: { children?: React.ReactNode }) =>
-    React.createElement(
+  const ResponsiveContainer = ({ children }: { children?: ReactNode }) =>
+    createElement(
       "div",
       { "data-testid": "recharts-responsive-container" },
       children,
