@@ -11,6 +11,11 @@
       in the spec.
 - [x] 1.5 Add bespoke-tab-label scenario to the resident-tab list.
 - [x] 1.6 Run `openspec validate add-bespoke-butler-tab-capability --strict`.
+- [x] 1.7 Add per-butler bespoke tab label registry (bu-iuol4.3): enumerated
+      canonical labels for all 11 domain butlers (chronicler, education, finance,
+      general, health, home, lifestyle, messenger, qa, relationship, travel) with
+      manifesto justifications. Switchboard remains explicitly absent.
+- [x] 1.8 Update Rule 3 to reference the canonical label registry.
 
 ## 2. Per-Butler Implementation Checklists (owned by sub-beads under bu-iuol4)
 
@@ -23,7 +28,7 @@ checklist tracks the skeleton; actual panel content is per-butler scope.
       bu-iuol4.1 visual contract.
 - [ ] 2.3 finance / Finances tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.
-- [ ] 2.4 health / Health tab: implement Panel grid conforming to
+- [ ] 2.4 health / Measurements tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.
 - [ ] 2.5 home / Devices tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.
@@ -31,6 +36,16 @@ checklist tracks the skeleton; actual panel content is per-butler scope.
       bu-iuol4.1 visual contract.
 - [ ] 2.7 travel / Trips tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.
+- [ ] 2.8 general / Collections tab: implement Panel grid conforming to
+      bu-iuol4.1 visual contract.
+- [ ] 2.9 lifestyle / Taste tab: implement Panel grid conforming to
+      bu-iuol4.1 visual contract.
+- [ ] 2.10 messenger / Conversations tab (delivery health surface, NOT user chat):
+      implement Panel grid conforming to bu-iuol4.1 visual contract.
+- [ ] 2.11 qa / Investigations tab: implement Panel grid conforming to
+      bu-iuol4.1 visual contract.
+- [ ] 2.12 health / Measurements tab: relabel from "Health" to "Measurements"
+      per the canonical registry; no content change required at this stage.
 
 ## 3. Verification
 

@@ -50,6 +50,11 @@ bu-iuol4.1.
   existing operator-only Routing Log and Registry tabs are unchanged.
 - Add a scenario to the resident-tab list confirming that bespoke tab labels
   appear alongside resident base tab labels.
+- Add a **Per-butler bespoke tab label registry** (bu-iuol4.3): a normative
+  table enumerating canonical sentence-case labels for all 11 domain butlers,
+  with manifesto-grounded justifications. Includes four new butlers (general,
+  lifestyle, messenger, qa) and renames the health butler tab from "Health" to
+  "Measurements". Switchboard is explicitly absent.
 
 ## Capabilities
 
@@ -60,15 +65,18 @@ bu-iuol4.1.
 ### Modified Capabilities
 
 - `dashboard-butler-management`: Adds nine bespoke-tab rules to the Butler
-  detail page resident mode contract.
+  detail page resident mode contract, plus a normative per-butler label registry
+  for all 11 domain butlers.
 
 ## Impact
 
 - **Specs**: One delta spec under `dashboard-butler-management`.
 - **Frontend**: `frontend/src/pages/ButlerDetailPage.tsx` and
   `frontend/src/pages/butler-detail-tabs.ts` already implement the bespoke
-  pattern hardcoded by butler name. This spec codifies that pattern. No new
-  tabs are introduced by this change; per-butler panel content is owned by
+  pattern hardcoded by butler name. This spec codifies that pattern and
+  establishes canonical labels for four new tabs (general/Collections,
+  lifestyle/Taste, messenger/Conversations, qa/Investigations) and one rename
+  (health: "Health" → "Measurements"). Per-butler panel content is owned by
   implementation beads under bu-iuol4.
 - **APIs / database / dependencies**: No API, database, or dependency changes.
 
