@@ -543,6 +543,26 @@ describe("ButlerGeneralCollectionsTab — quick actions", () => {
     fireEvent.change(input, { target: { value: "books" } });
     expect(input.value).toBe("books");
   });
+
+  it("passes search query to useGeneralCollections hook", () => {
+    renderTab();
+    const input = screen.getByTestId("collection-search-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "recipes" } });
+    // After typing, the hook should be called with q param
+    const calls = vi.mocked(useGeneralCollections).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[0]?.q).toBe("recipes");
+  });
+
+  it("resets page to 0 when search query changes", () => {
+    renderTab();
+    const input = screen.getByTestId("collection-search-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "ideas" } });
+    // The hook is called with offset 0 after search
+    const calls = vi.mocked(useGeneralCollections).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[0]?.offset).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

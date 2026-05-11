@@ -1298,6 +1298,7 @@ export function getGeneralStats(): Promise<GeneralStats> {
 }
 
 export interface GeneralCollectionsParams {
+  q?: string;
   offset?: number;
   limit?: number;
 }
@@ -1307,6 +1308,7 @@ export function getGeneralCollections(
   params?: GeneralCollectionsParams,
 ): Promise<PaginatedResponse<GeneralCollection>> {
   const sp = new URLSearchParams();
+  if (params?.q) sp.set("q", params.q);
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();

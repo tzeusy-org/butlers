@@ -21,7 +21,7 @@
 // the user in context; collect modal for future backend integration).
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { AlertTriangle, Plus, Search } from "lucide-react";
 
 import type { GeneralCollection, GeneralEntity } from "@/api/types";
@@ -111,7 +111,7 @@ function CollectionsKpiStrip({
           <CardTitle className="text-sm font-medium">Collections overview</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 px-4 py-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
             {Array.from({ length: 4 }, (_, i) => (
               <div key={i} className="space-y-1" data-testid="loading-line">
                 <Skeleton className="h-2.5 w-20 rounded" />
@@ -547,6 +547,11 @@ export default function ButlerGeneralCollectionsTab() {
   const [collectionsPage, setCollectionsPage] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
 
+  const handleSearchChange = useCallback((q: string) => {
+    setSearchQuery(q);
+    setCollectionsPage(0);
+  }, []);
+
   const {
     data: stats,
     isLoading: statsLoading,
@@ -558,6 +563,7 @@ export default function ButlerGeneralCollectionsTab() {
     isLoading: collectionsLoading,
     isError: collectionsError,
   } = useGeneralCollections({
+    q: searchQuery || undefined,
     offset: collectionsPage * COLLECTIONS_PAGE_SIZE,
     limit: COLLECTIONS_PAGE_SIZE,
   });
@@ -620,7 +626,7 @@ export default function ButlerGeneralCollectionsTab() {
         />
         <QuickActionsCard
           searchValue={searchQuery}
-          onSearchChange={setSearchQuery}
+          onSearchChange={handleSearchChange}
         />
       </div>
     </div>
