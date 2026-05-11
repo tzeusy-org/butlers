@@ -537,9 +537,9 @@ async def get_measurements_latest(
     Types are provided as a comma-separated query string, e.g.
     ``?types=weight,heart_rate``.  Types with no data map to ``null``.
 
-    SQL uses ``DISTINCT ON (type)`` to retrieve one row per type in a
-    single round-trip.  The pool is butler-scoped — no butler_name filter
-    is applied.
+    SQL uses ``DISTINCT ON (predicate)`` to retrieve one row per type in a
+    single round-trip against the ``facts`` table.  The pool is
+    butler-scoped — no butler_name filter is applied.
     """
     pool = _pool(db)
 
@@ -547,27 +547,30 @@ async def get_measurements_latest(
     if not type_list:
         return LatestMeasurementsResponse(measurements={})
 
+    predicate_list = [f"measurement_{t}" for t in type_list]
+
     rows = await pool.fetch(
         """
-        SELECT DISTINCT ON (type) type, value, measured_at
-        FROM measurements
-        WHERE type = ANY($1::text[])
-        ORDER BY type, measured_at DESC
+        SELECT DISTINCT ON (predicate) predicate, valid_at, metadata
+        FROM public.facts
+        WHERE predicate = ANY($1::text[])
+          AND scope = 'health'
+          AND validity = 'active'
+        ORDER BY predicate, valid_at DESC
         """,
-        type_list,
+        predicate_list,
     )
 
     result: dict[str, LatestMeasurementEntry | None] = {t: None for t in type_list}
     for r in rows:
-        raw_value = r["value"]
-        if isinstance(raw_value, str):
-            try:
-                raw_value = json.loads(raw_value)
-            except json.JSONDecodeError:
-                raw_value = {}
-        result[r["type"]] = LatestMeasurementEntry(
-            measured_at=str(r["measured_at"]),
+        mtype = r["predicate"].removeprefix("measurement_")
+        meta = _as_json_object(r["metadata"])
+        raw_value = meta.get("value")
+        result[mtype] = LatestMeasurementEntry(
+            measured_at=str(r["valid_at"]),
             value=raw_value,
+            unit=meta.get("unit"),
+            metadata={k: v for k, v in meta.items() if k not in ("value", "unit")},
         )
 
     return LatestMeasurementsResponse(measurements=result)
@@ -660,7 +663,7 @@ async def get_sleep_latest(
 
 
 # ---------------------------------------------------------------------------
-# GET /measurements/sources — data sources observed in measurements.value
+# GET /measurements/sources — data sources observed in facts metadata
 # ---------------------------------------------------------------------------
 
 
@@ -670,9 +673,9 @@ async def get_measurements_sources(
 ) -> MeasurementSourcesResponse:
     """Return all data sources observed across measurements.
 
-    The ``measurements`` table stores compound JSONB values.  When a row's
-    ``value`` JSONB contains a ``"source"`` key, that value is treated as the
-    source name.  Rows without a ``"source"`` key are excluded.
+    Reads from the ``facts`` table — facts with predicates of the form
+    ``measurement_*`` store their source in ``metadata->>'source'``.  Rows
+    with a missing or empty source are excluded.
 
     The pool is butler-scoped — no butler_name filter is applied.
     """
@@ -681,14 +684,16 @@ async def get_measurements_sources(
     rows = await pool.fetch(
         """
         SELECT
-            value->>'source'  AS name,
-            MAX(measured_at)  AS last_sample_at,
-            COUNT(*)          AS sample_count
-        FROM measurements
-        WHERE value ? 'source'
-          AND value->>'source' IS NOT NULL
-          AND value->>'source' <> ''
-        GROUP BY value->>'source'
+            metadata->>'source'  AS name,
+            MAX(valid_at)        AS last_sample_at,
+            COUNT(*)             AS sample_count
+        FROM public.facts
+        WHERE predicate LIKE 'measurement_%'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND metadata->>'source' IS NOT NULL
+          AND metadata->>'source' <> ''
+        GROUP BY metadata->>'source'
         ORDER BY last_sample_at DESC
         """
     )
