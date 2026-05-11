@@ -618,8 +618,8 @@ async def get_sleep_latest(
 
     Sleep data is stored in the ``facts`` table by the Google Health
     connector using predicate ``sleep_session``.  ``total_duration_minutes``
-    is derived from ``metadata.duration_ms``.  Returns ``null`` (HTTP 204)
-    when no sleep session exists yet.
+    is derived from ``metadata.duration_ms``.  Returns HTTP 200 with a JSON
+    ``null`` body when no sleep session exists yet.
 
     The pool is butler-scoped — no butler_name filter is applied.
     """
@@ -640,12 +640,7 @@ async def get_sleep_latest(
     if row is None:
         return None
 
-    meta = row["metadata"] or {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except json.JSONDecodeError:
-            meta = {}
+    meta = _as_json_object(row["metadata"])
 
     duration_ms = int(meta.get("duration_ms") or 0)
     total_duration_minutes = duration_ms // 60_000 if duration_ms > 0 else 0
@@ -691,6 +686,8 @@ async def get_measurements_sources(
             COUNT(*)          AS sample_count
         FROM measurements
         WHERE value ? 'source'
+          AND value->>'source' IS NOT NULL
+          AND value->>'source' <> ''
         GROUP BY value->>'source'
         ORDER BY last_sample_at DESC
         """
