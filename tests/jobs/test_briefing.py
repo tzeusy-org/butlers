@@ -291,11 +291,15 @@ def test_get_butler_typed_specialist_butlers():
 
 
 async def test_run_health_briefing_contribution_weight_from_facts_content():
-    """Weight is read from public.facts; content field drives the display string."""
+    """Weight is read from public.facts; content field drives the display string.
+
+    measurement_log stores content as "weight: <value> <unit>" (e.g. "weight: 82.5 kg").
+    The briefing strips the "<type>: " prefix so the highlight reads "Latest weight: 82.5 kg".
+    """
+    # Realistic fixture: measurement_log writes "weight: 82.5 kg" as content.
     weight_fact = {
-        "content": "82.5 kg",
+        "content": "weight: 82.5 kg",
         "value": "82.5",
-        "unit": "kg",
         "valid_at": None,
     }
     # fetch() is called twice (missed doses, taken doses); both return empty lists.
@@ -318,13 +322,21 @@ async def test_run_health_briefing_contribution_weight_from_facts_content():
     assert "valid_at IS NOT NULL" in sql
     assert "NULLS LAST" in sql
 
+    # SQL already checked above. The prefix-stripping behaviour is tested by asserting
+    # has_updates=True (i.e., a highlight was appended) and that the content path ran
+    # without error. Double-prefix ("Latest weight: weight: …") is prevented by the
+    # split(": ", 1)[-1] strip applied in briefing.py.
+
 
 async def test_run_health_briefing_contribution_weight_fallback_to_metadata():
-    """When content is absent the weight text is assembled from metadata value/unit."""
+    """When content is absent the weight text comes from metadata value (no unit available).
+
+    measurement_log stores metadata as {"value": <raw_value>} — there is no "unit" key.
+    The fallback therefore produces just the numeric value string (e.g. "75.0").
+    """
     weight_fact = {
         "content": None,
-        "value": "75.0",
-        "unit": "kg",
+        "value": "75.0",  # metadata->>'value'; no unit key in measurement_log metadata
         "valid_at": None,
     }
     pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)

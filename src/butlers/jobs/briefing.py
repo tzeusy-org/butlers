@@ -290,7 +290,7 @@ async def run_health_briefing_contribution(
     # --- Latest weight measurement (past 7 days) ---
     weight_row = await pool.fetchrow(
         """
-        SELECT content, metadata->>'value' AS value, metadata->>'unit' AS unit, valid_at
+        SELECT content, metadata->>'value' AS value, valid_at
         FROM public.facts
         WHERE predicate = 'measurement_weight'
           AND scope = 'health'
@@ -305,14 +305,13 @@ async def run_health_briefing_contribution(
 
     latest_weight_text: str | None = None
     if weight_row:
-        # content already holds the human-readable string (e.g. "82.5 kg");
-        # fall back to assembling from metadata value/unit if content is absent.
+        # measurement_log stores content as "weight: <value> <unit>" (e.g. "weight: 82.5 kg").
+        # Strip the "<type>: " prefix to get the display value (e.g. "82.5 kg").
+        # Fall back to metadata->>'value' (raw numeric, no unit) when content is absent.
         if weight_row["content"]:
-            latest_weight_text = weight_row["content"]
+            latest_weight_text = weight_row["content"].split(": ", 1)[-1]
         else:
-            val = weight_row["value"] or ""
-            unit = weight_row["unit"] or ""
-            latest_weight_text = f"{val} {unit}".strip() or None
+            latest_weight_text = weight_row["value"] or None
         highlights.append(
             {
                 "category": "weight",
