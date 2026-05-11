@@ -487,6 +487,78 @@ describe("precision=time", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// 11b. precision=ms (bu-2tlvh)
+//      Millisecond-precision time-only for log entry timestamps.
+//      Format: "HH:mm:ss.SSS" — 24-hour clock + 3-digit milliseconds.
+//      compact flag is a no-op (same as precision=time).
+//      Timezone is respected for the HH:mm:ss portion; milliseconds are TZ-agnostic.
+// ---------------------------------------------------------------------------
+
+describe("precision=ms (bu-2tlvh)", () => {
+  const SGT = "Asia/Singapore"
+  // 2026-05-03T00:00:00.000Z = 08:00:00.000 SGT (UTC+8)
+  // Use a timestamp with a distinctive millisecond value for verification.
+  const MS_ISO = "2026-05-03T00:00:42.123Z"
+
+  it("renders HH:mm:ss.SSS matching the expected pattern", () => {
+    const { text } = parseTime(
+      render({ value: MS_ISO, mode: "absolute", precision: "ms" }, SGT),
+    )
+    // 2026-05-03T00:00:42.123Z = 08:00:42.123 SGT
+    expect(text).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/)
+  })
+
+  it("renders the correct milliseconds for a known timestamp", () => {
+    const { text } = parseTime(
+      render({ value: MS_ISO, mode: "absolute", precision: "ms" }, SGT),
+    )
+    // 2026-05-03T00:00:42.123Z = 08:00:42.123 SGT
+    expect(text).toBe("08:00:42.123")
+  })
+
+  it("reflects the correct timezone for the HH:mm:ss portion", () => {
+    // 2026-05-03T00:00:42.123Z = 20:00:42.123 EDT (America/New_York, UTC-4)
+    const { text } = parseTime(
+      render({ value: MS_ISO, mode: "absolute", precision: "ms", timezone: "America/New_York" }),
+    )
+    expect(text).toBe("20:00:42.123")
+  })
+
+  it("zero-pads milliseconds to 3 digits", () => {
+    // 2026-05-03T00:00:42.007Z — milliseconds are 7, must render as "007"
+    const { text } = parseTime(
+      render({ value: "2026-05-03T00:00:42.007Z", mode: "absolute", precision: "ms" }, SGT),
+    )
+    expect(text).toMatch(/\.007$/)
+  })
+
+  it("does not include date or year", () => {
+    const { text } = parseTime(
+      render({ value: MS_ISO, mode: "absolute", precision: "ms" }, SGT),
+    )
+    expect(text).not.toContain("May")
+    expect(text).not.toContain("2026")
+  })
+
+  it("does not include a timezone abbreviation", () => {
+    const { text } = parseTime(
+      render({ value: MS_ISO, mode: "absolute", precision: "ms" }, SGT),
+    )
+    expect(text).not.toMatch(/SGT|GMT/)
+  })
+
+  it("compact flag is a no-op for ms precision (same output)", () => {
+    const { text: plain } = parseTime(
+      render({ value: MS_ISO, mode: "absolute", precision: "ms" }, SGT),
+    )
+    const { text: compactText } = parseTime(
+      render({ value: MS_ISO, mode: "absolute", precision: "ms", compact: true }, SGT),
+    )
+    expect(plain).toBe(compactText)
+  })
+})
+
 describe("compact flag (mode=smart)", () => {
   beforeEach(() => {
     vi.useFakeTimers()

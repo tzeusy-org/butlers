@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // <Time> — semantic time primitive with absolute / relative / smart modes
-// (bu-v1tt2.2, bu-fv4vy, bu-5j7p9, bu-hb7dh.4)
+// (bu-v1tt2.2, bu-fv4vy, bu-5j7p9, bu-hb7dh.4, bu-2tlvh)
 //
 // Renders a <time> element with a datetime attribute (a11y / machine-readable)
 // and human-readable text according to the chosen mode.
@@ -28,7 +28,7 @@
 //     precision=day:     "May 3"
 //   compact has no effect on relative or relative-compact output.
 //
-// precision extensions (bu-5j7p9, bu-hb7dh.4):
+// precision extensions (bu-5j7p9, bu-hb7dh.4, bu-2tlvh):
 //   - weekday:    full weekday + date, e.g. "Sunday, May 3, 2026"
 //                 Compact form omits year: "Sunday, May 3"
 //                 Timezone label intentionally suppressed (date headings need none).
@@ -39,6 +39,13 @@
 //                 e.g. "Sun 3 May 2026". Used in BoardHeader date cluster.
 //                 Compact form omits year: "Sun 3 May".
 //                 Timezone label intentionally suppressed (calendar dates need none).
+//   - ms:         millisecond-precision time-only (24-hour clock), e.g. "08:30:42.123"
+//                 Used for log entry timestamps where sub-second resolution matters.
+//                 compact flag ignored. Timezone label intentionally suppressed.
+//                 Note: date-fns-tz does not support sub-second tokens, so milliseconds
+//                 are extracted from the Date object's local time components and
+//                 appended manually. The formatted time is TZ-correct via
+//                 formatInTimeZone() for the HH:mm:ss portion.
 //   All precisions still use the owner timezone via formatInTimeZone().
 //
 // Date-only strings (YYYY-MM-DD):
@@ -65,7 +72,7 @@ import { useTimezone } from "@/components/ui/timezone-context"
 // ---------------------------------------------------------------------------
 
 export type TimeMode = "absolute" | "relative" | "smart" | "clock-24h-mono" | "relative-compact"
-export type TimePrecision = "second" | "minute" | "hour" | "day" | "weekday" | "time" | "short-date"
+export type TimePrecision = "second" | "minute" | "hour" | "day" | "weekday" | "time" | "short-date" | "ms"
 
 export interface TimeProps {
   /** The date value to render. Accepts an ISO 8601 string or a Date object. */
@@ -106,6 +113,9 @@ export interface TimeProps {
    *   - time:       "08:30"  (24-hour clock, time-only; compact has no effect; no tz label)
    *   - short-date: "Sun 3 May 2026"  (3-letter weekday + day + 3-letter month + year;
    *                 compact: "Sun 3 May"; no tz label). Used in BoardHeader date cluster.
+   *   - ms:         "08:30:42.123"  (24-hour clock with milliseconds, time-only;
+   *                 compact has no effect; no tz label). Used for log entry timestamps
+   *                 where sub-second resolution matters.
    * @default "minute"
    */
   precision?: TimePrecision
@@ -139,11 +149,16 @@ export interface TimeProps {
 // Format strings per precision
 // ---------------------------------------------------------------------------
 
-// Note: `weekday`, `time`, and `short-date` precisions intentionally omit the
-// timezone abbreviation (zzz). `weekday` renders a calendar-date heading where
+// Note: `weekday`, `time`, `short-date`, and `ms` precisions intentionally omit
+// the timezone abbreviation (zzz). `weekday` renders a calendar-date heading where
 // the tz label adds no value; `time` renders a compact 24-hour column cell;
-// `short-date` renders a brief header date (e.g. "Sun 3 May 2026"). All three
-// still consume the owner timezone via formatInTimeZone() so output is TZ-correct.
+// `short-date` renders a brief header date (e.g. "Sun 3 May 2026"); `ms` renders
+// a log timestamp where space is tight. All four still consume the owner timezone
+// via formatInTimeZone() so output is TZ-correct.
+//
+// `ms` uses a sentinel value ("HH:mm:ss") because date-fns-tz does not support
+// sub-second tokens. formatAbsolute() detects this precision and appends the
+// milliseconds manually after calling formatInTimeZone() for the HH:mm:ss part.
 const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   second:     "MMM d, yyyy 'at' h:mm:ss a zzz",
   minute:     "MMM d, yyyy 'at' h:mm a zzz",
@@ -152,6 +167,7 @@ const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   weekday:    "EEEE, MMMM d, yyyy",
   time:       "HH:mm",
   "short-date": "EEE d MMM yyyy",
+  ms:         "HH:mm:ss", // sentinel — milliseconds appended manually below
 }
 
 // Compact format omits year and timezone — used in dense table cells.
@@ -163,6 +179,7 @@ const COMPACT_FORMAT: Record<TimePrecision, string> = {
   weekday:    "EEEE, MMMM d",
   time:       "HH:mm",      // compact has no effect, same format
   "short-date": "EEE d MMM", // compact omits year: "Sun 3 May"
+  ms:         "HH:mm:ss",   // compact has no effect; milliseconds appended manually
 }
 
 // 24-hour threshold in ms — smart mode crossover point.
@@ -191,7 +208,18 @@ function formatAbsolute(date: Date, precision: TimePrecision, tz: string, compac
     const fmt = compact ? COMPACT_FORMAT[precision] : ABSOLUTE_FORMAT[precision]
     // Compact format does not embed a timezone token, so tz is still passed to
     // formatInTimeZone to ensure the rendered local time is correct.
-    return formatInTimeZone(date, tz, fmt)
+    const formatted = formatInTimeZone(date, tz, fmt)
+
+    // `ms` precision: date-fns-tz has no sub-second token, so we format the
+    // HH:mm:ss part via formatInTimeZone() above and append the milliseconds
+    // component manually. Milliseconds are timezone-agnostic (they are the same
+    // in all timezones), so we read them directly from the Date object.
+    if (precision === "ms") {
+      const ms = String(date.getMilliseconds()).padStart(3, "0")
+      return `${formatted}.${ms}`
+    }
+
+    return formatted
   } catch {
     return date.toISOString()
   }
@@ -324,6 +352,10 @@ function resolveSmartMode(date: Date): { useRelative: boolean } {
  * @example
  * // StatusBoardCell KPI 'last' field — "6m ago", "2h ago", "3d ago"
  * <Time value={kpi.last_updated_at} mode="relative-compact" />
+ *
+ * @example
+ * // Log entry timestamp with millisecond precision — "08:30:42.123"
+ * <Time value={entry.logged_at} mode="absolute" precision="ms" />
  */
 export function Time({
   value,
