@@ -21,6 +21,7 @@ from butlers.jobs.briefing import (
     combined_key,
     contribution_key,
     run_finance_briefing_contribution,
+    run_health_briefing_contribution,
     today_sgt,
     validate_contribution,
 )
@@ -36,9 +37,14 @@ _DATE_STR_2026_03_25 = "2026-03-25"
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(*, fetch_rows: list[dict[str, Any]] | None = None) -> MagicMock:
+def _make_pool(
+    *,
+    fetch_rows: list[dict[str, Any]] | None = None,
+    fetchrow_value: dict[str, Any] | None = None,
+) -> MagicMock:
     pool = MagicMock()
     pool.fetch = AsyncMock(return_value=fetch_rows or [])
+    pool.fetchrow = AsyncMock(return_value=fetchrow_value)
     pool.fetchval = AsyncMock(return_value=1)
     pool.execute = AsyncMock()
     return pool
@@ -277,3 +283,68 @@ def test_get_butler_typed_specialist_butlers():
 
     with patch("butlers.jobs.briefing.list_butlers", return_value=[]):
         assert _get_butler_typed_specialist_butlers() == frozenset(SPECIALIST_BUTLERS)
+
+
+# ---------------------------------------------------------------------------
+# run_health_briefing_contribution — weight query via public.facts
+# ---------------------------------------------------------------------------
+
+
+async def test_run_health_briefing_contribution_weight_from_facts_content():
+    """Weight is read from public.facts; content field drives the display string."""
+    weight_fact = {
+        "content": "82.5 kg",
+        "value": "82.5",
+        "unit": "kg",
+        "valid_at": None,
+    }
+    # fetch() is called twice (missed doses, taken doses); both return empty lists.
+    pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+    ):
+        result = await run_health_briefing_contribution(pool, None)
+
+    assert result["butler"] == "health"
+    assert result["has_updates"] is True
+
+    # Verify fetchrow was called and the SQL targets public.facts, not measurements.
+    call_args = pool.fetchrow.call_args
+    sql = call_args[0][0]
+    assert "public.facts" in sql
+    assert "measurement_weight" in sql
+    assert "measurements" not in sql
+    assert "valid_at IS NOT NULL" in sql
+    assert "NULLS LAST" in sql
+
+
+async def test_run_health_briefing_contribution_weight_fallback_to_metadata():
+    """When content is absent the weight text is assembled from metadata value/unit."""
+    weight_fact = {
+        "content": None,
+        "value": "75.0",
+        "unit": "kg",
+        "valid_at": None,
+    }
+    pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+    ):
+        result = await run_health_briefing_contribution(pool, None)
+
+    assert result["has_updates"] is True
+
+
+async def test_run_health_briefing_contribution_no_weight_fact():
+    """No weight fact in the past 7 days → has_updates is False and no weight highlight."""
+    pool = _make_pool(fetch_rows=[], fetchrow_value=None)
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+    ):
+        result = await run_health_briefing_contribution(pool, None)
+
+    assert result["butler"] == "health"
+    assert result["has_updates"] is False
