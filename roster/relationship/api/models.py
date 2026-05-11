@@ -584,12 +584,15 @@ class ContactInteractionThreadResponse(BaseModel):
 class OverdueContactItem(BaseModel):
     """One overdue contact entry with cadence context.
 
-    ``owed_days`` is the number of days the contact is overdue:
-        owed_days = days_since_last_contact - target_cadence_days
+    ``owed_days`` is the number of days past the effective threshold:
+        owed_days = max(1, int(days_since_last_contact - target_cadence_days))
 
-    A positive value means the contact is overdue beyond their cadence;
-    zero is clamped to 1 (any contact returned here is at least 1 day overdue).
+    Contacts with no recorded interactions are sorted at the top with a large
+    sentinel value (never-contacted = highest urgency).
     ``last_contact_date`` is null for contacts with no recorded interactions.
+    ``target_cadence_days`` is the effective cadence used for filtering (the
+    shorter of the ``days`` query parameter and the contact's Dunbar tier
+    cadence, or their explicit ``stay_in_touch_days`` override).
     """
 
     contact_id: UUID

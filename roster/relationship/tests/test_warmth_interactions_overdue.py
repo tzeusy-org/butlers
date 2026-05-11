@@ -365,6 +365,44 @@ class TestContactInteractions:
         assert items[2]["direction"] == "drafted"
         assert items[0]["text"] == "Hi from contact"
 
+    async def test_legacy_incoming_outgoing_mapped(self):
+        """Legacy interaction_log() directions 'incoming'/'outgoing' are mapped to 'in'/'out'."""
+        ts1 = datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC)
+        ts2 = datetime(2026, 5, 5, 14, 0, 0, tzinfo=UTC)
+        ts3 = datetime(2026, 5, 7, 9, 0, 0, tzinfo=UTC)
+
+        rows = [
+            _row(
+                id=uuid4(),
+                content="Incoming message",
+                metadata={"direction": "incoming"},
+                valid_at=ts1,
+            ),
+            _row(
+                id=uuid4(),
+                content="Outgoing message",
+                metadata={"direction": "outgoing"},
+                valid_at=ts2,
+            ),
+            _row(
+                id=uuid4(),
+                content="Mutual exchange",
+                metadata={"direction": "mutual"},
+                valid_at=ts3,
+            ),
+        ]
+
+        app, cid = self._build_app(interaction_rows=rows)
+        resp = await _get(app, f"/api/relationship/contacts/{cid}/interactions")
+
+        assert resp.status_code == 200
+        items = resp.json()["interactions"]
+        assert len(items) == 3
+        assert items[0]["direction"] == "in"
+        assert items[1]["direction"] == "out"
+        # "mutual" has no clean in/out mapping — rendered as null
+        assert items[2]["direction"] is None
+
     async def test_unknown_direction_rendered_as_null(self):
         """An unrecognised direction value maps to null, not an error."""
         rows = [
@@ -434,10 +472,14 @@ class TestContactsOverdue:
         self,
         *,
         contact_rows: list | None = None,
-        scores: list | None = None,
-        overrides: dict | None = None,
+        ranked: list | None = None,
     ) -> FastAPI:
-        """Wire app with controlled dunbar engine and DB pool."""
+        """Wire app with controlled dunbar engine and DB pool.
+
+        ``ranked`` is the pre-computed tier ranking output from
+        ``compute_tier_ranking`` — each entry must include
+        ``contact_id``, ``dunbar_tier``, and ``last_interaction_at``.
+        """
         mock_pool = AsyncMock()
         mock_pool.fetch = AsyncMock(return_value=contact_rows or [])
 
@@ -446,8 +488,7 @@ class TestContactsOverdue:
 
         from butlers.tools.relationship import dunbar as _dunbar_mod
 
-        _dunbar_mod.compute_dunbar_scores = AsyncMock(return_value=scores or [])
-        _dunbar_mod._fetch_overrides = AsyncMock(return_value=overrides or {})
+        _dunbar_mod.compute_tier_ranking = AsyncMock(return_value=ranked or [])
 
         return app
 
@@ -469,15 +510,20 @@ class TestContactsOverdue:
                 full_name="Alice Fresh",
                 entity_id=eid,
                 stay_in_touch_days=None,
-                last_interaction_at=last_at,
             )
         ]
         # tier-5 cadence=14 days; contact touched 5 days ago → not overdue
-        scores = [
-            {"contact_id": cid, "entity_id": eid, "score": 5.0, "last_interaction_at": last_at}
+        ranked = [
+            {
+                "contact_id": cid,
+                "entity_id": eid,
+                "dunbar_tier": 5,
+                "dunbar_score": 5.0,
+                "last_interaction_at": last_at,
+            }
         ]
 
-        app = self._build_app(contact_rows=contact_rows, scores=scores)
+        app = self._build_app(contact_rows=contact_rows, ranked=ranked)
         resp = await _get(app, "/api/relationship/contacts/overdue", days=30)
         assert resp.status_code == 200
         body = resp.json()
@@ -496,14 +542,19 @@ class TestContactsOverdue:
                 full_name="Bob Overdue",
                 entity_id=eid,
                 stay_in_touch_days=None,
-                last_interaction_at=last_at,
             )
         ]
-        scores = [
-            {"contact_id": cid, "entity_id": eid, "score": 3.0, "last_interaction_at": last_at}
+        ranked = [
+            {
+                "contact_id": cid,
+                "entity_id": eid,
+                "dunbar_tier": 5,
+                "dunbar_score": 3.0,
+                "last_interaction_at": last_at,
+            }
         ]
 
-        app = self._build_app(contact_rows=contact_rows, scores=scores)
+        app = self._build_app(contact_rows=contact_rows, ranked=ranked)
         # days=30 but tier-5 cadence=14 → effective threshold=14 → contact is overdue
         resp = await _get(app, "/api/relationship/contacts/overdue", days=30)
         assert resp.status_code == 200
@@ -513,6 +564,7 @@ class TestContactsOverdue:
         assert c["name"] == "Bob Overdue"
         assert c["tier"] == "tier-5"
         assert c["owed_days"] >= 1
+        # effective_threshold = min(days=30, tier_cadence=14) = 14
         assert c["target_cadence_days"] == 14
         assert c["last_contact_date"] is not None
 
@@ -520,8 +572,9 @@ class TestContactsOverdue:
         """Contact with no interaction history is always overdue.
 
         Uses stay_in_touch_days to ensure a cadence target exists independent
-        of the Dunbar tier computation (score=0 → tier 1500, which has no
+        of the Dunbar tier computation (dunbar_tier=1500, which has no
         default cadence, so stay_in_touch_days overrides it).
+        Never-contacted contacts get a large sentinel owed_days value.
         """
         cid = uuid4()
         eid = uuid4()
@@ -532,19 +585,28 @@ class TestContactsOverdue:
                 full_name="Carol Unmet",
                 entity_id=eid,
                 stay_in_touch_days=14,  # explicit cadence override
-                last_interaction_at=None,
             )
         ]
-        # score=0 → tier 1500, but stay_in_touch_days=14 forces a cadence
-        scores = [{"contact_id": cid, "entity_id": eid, "score": 0.0, "last_interaction_at": None}]
+        # tier 1500 (no score), but stay_in_touch_days=14 forces a cadence
+        ranked = [
+            {
+                "contact_id": cid,
+                "entity_id": eid,
+                "dunbar_tier": 1500,
+                "dunbar_score": 0.0,
+                "last_interaction_at": None,
+            }
+        ]
 
-        app = self._build_app(contact_rows=contact_rows, scores=scores)
+        app = self._build_app(contact_rows=contact_rows, ranked=ranked)
         resp = await _get(app, "/api/relationship/contacts/overdue", days=30)
         assert resp.status_code == 200
         contacts = resp.json()["contacts"]
         assert len(contacts) == 1
         assert contacts[0]["last_contact_date"] is None
-        assert contacts[0]["owed_days"] >= 1
+        # Never-contacted → large sentinel value
+        assert contacts[0]["owed_days"] > 1000
+        # effective_threshold = min(days=30, stay_in_touch=14) = 14
         assert contacts[0]["target_cadence_days"] == 14
 
     async def test_response_fields_complete(self):
@@ -559,14 +621,19 @@ class TestContactsOverdue:
                 full_name="Dave Fields",
                 entity_id=eid,
                 stay_in_touch_days=None,
-                last_interaction_at=last_at,
             )
         ]
-        scores = [
-            {"contact_id": cid, "entity_id": eid, "score": 2.0, "last_interaction_at": last_at}
+        ranked = [
+            {
+                "contact_id": cid,
+                "entity_id": eid,
+                "dunbar_tier": 5,
+                "dunbar_score": 2.0,
+                "last_interaction_at": last_at,
+            }
         ]
 
-        app = self._build_app(contact_rows=contact_rows, scores=scores)
+        app = self._build_app(contact_rows=contact_rows, ranked=ranked)
         resp = await _get(app, "/api/relationship/contacts/overdue", days=14)
         assert resp.status_code == 200
         contacts = resp.json()["contacts"]
@@ -586,7 +653,6 @@ class TestContactsOverdue:
         """Tier 1500 contacts with no stay_in_touch_days are excluded (no cadence)."""
         cid = uuid4()
         eid = uuid4()
-        last_at = datetime.now(UTC) - timedelta(days=365)
 
         contact_rows = [
             _row(
@@ -594,13 +660,12 @@ class TestContactsOverdue:
                 full_name="Eve Distant",
                 entity_id=eid,
                 stay_in_touch_days=None,
-                last_interaction_at=last_at,
             )
         ]
-        # Zero score → assigned tier 1500
-        scores = []  # empty scores → all contacts get tier 1500
+        # Empty ranked → contact defaults to dunbar_tier=1500 via fallback dict
+        ranked: list = []
 
-        app = self._build_app(contact_rows=contact_rows, scores=scores)
+        app = self._build_app(contact_rows=contact_rows, ranked=ranked)
         resp = await _get(app, "/api/relationship/contacts/overdue", days=14)
         assert resp.status_code == 200
         assert resp.json()["contacts"] == []

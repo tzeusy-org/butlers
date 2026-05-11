@@ -1010,58 +1010,53 @@ async def list_overdue_contacts(
 
     now = datetime.now(UTC)
 
-    # Fetch all listed contacts with their last interaction timestamp
+    # Fetch all listed contacts (metadata only — no facts join needed; last_interaction_at
+    # comes from the Dunbar ranking result below for entity-linked contacts).
     contact_rows = await pool.fetch(
         """
         SELECT
             c.id,
             c.name AS full_name,
             c.entity_id,
-            c.stay_in_touch_days,
-            MAX(f.valid_at) AS last_interaction_at
+            c.stay_in_touch_days
         FROM contacts c
-        LEFT JOIN facts f
-            ON f.subject = 'contact:' || c.id::text
-           AND f.predicate LIKE 'interaction_%'
-           AND f.scope = 'relationship'
-           AND f.validity = 'active'
         WHERE c.listed = true
           AND c.archived_at IS NULL
-        GROUP BY c.id
         """
     )
 
     if not contact_rows:
         return OverdueContactsResponse(contacts=[])
 
-    # Compute tier ranking for all contacts in one pass
-    all_scores = await _dunbar.compute_dunbar_scores(pool)
-    overrides = await _dunbar._fetch_overrides(pool)
-    ranked = _dunbar.get_tier_ranking(all_scores, overrides)
+    # Compute tier ranking for all contacts in one pass via the public wrapper.
+    ranked = await _dunbar.compute_tier_ranking(pool)
     dunbar_by_cid: dict[UUID, dict[str, Any]] = {entry["contact_id"]: entry for entry in ranked}
 
     results: list[OverdueContactItem] = []
     for row in contact_rows:
         cid = row["id"]
         full_name = row["full_name"] or ""
-        last_at = row["last_interaction_at"]
         stay_in_touch = row["stay_in_touch_days"]
 
         dunbar_info = dunbar_by_cid.get(cid, {"dunbar_tier": 1500})
         dunbar_tier = dunbar_info["dunbar_tier"]
 
-        # Determine effective cadence from tier or explicit override
+        # Determine effective cadence from explicit override or tier default.
         if stay_in_touch is not None:
             tier_cadence = int(stay_in_touch)
         else:
             tier_cadence = _dunbar.TIER_CADENCE.get(dunbar_tier)
 
         if tier_cadence is None:
-            # Tier 1500 with no stay_in_touch_days — no cadence target, skip
+            # Tier 1500 with no stay_in_touch_days — no cadence target, skip.
             continue
 
-        # Effective threshold is the shorter of the two
+        # Effective threshold is the shorter of the two (tier cadence vs. query param).
         effective_threshold = min(days, tier_cadence)
+
+        # last_interaction_at comes from the Dunbar engine for entity-linked contacts;
+        # contacts with no entity link have no canonical interaction facts.
+        last_at = dunbar_info.get("last_interaction_at")
 
         if last_at is None:
             days_since: float = float("inf")
@@ -1076,9 +1071,10 @@ async def list_overdue_contacts(
             continue
 
         if days_since == float("inf"):
-            owed_days = tier_cadence  # No interactions — owed the full cadence
+            # Never contacted — sort above all contacts with a measured overdue period.
+            owed_days = 365 * 100
         else:
-            owed_days = max(1, int(days_since - effective_threshold) + 1)
+            owed_days = max(1, int(days_since - effective_threshold))
 
         results.append(
             OverdueContactItem(
@@ -1087,7 +1083,7 @@ async def list_overdue_contacts(
                 tier=f"tier-{dunbar_tier}",
                 owed_days=owed_days,
                 last_contact_date=last_contact_date,
-                target_cadence_days=tier_cadence,
+                target_cadence_days=effective_threshold,
             )
         )
 
@@ -1157,6 +1153,12 @@ async def list_contact_interactions(
     )
 
     _VALID_DIRECTIONS = frozenset({"in", "out", "drafted"})
+    # Map legacy interaction_log() direction values to the API discriminator.
+    _DIRECTION_MAP: dict[str, str] = {
+        "incoming": "in",
+        "outgoing": "out",
+        # "mutual" has no clean in/out mapping; render as null.
+    }
 
     def _direction(meta: dict | None) -> str | None:
         if not meta:
@@ -1164,7 +1166,7 @@ async def list_contact_interactions(
         raw = meta.get("direction")
         if raw in _VALID_DIRECTIONS:
             return raw
-        return None
+        return _DIRECTION_MAP.get(raw)
 
     items = [
         ContactInteractionItem(
