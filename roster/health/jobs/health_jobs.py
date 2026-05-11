@@ -3,7 +3,7 @@
 Each job handler:
 - Takes db_pool: asyncpg.Pool as first parameter
 - Returns a dict with a summary of work done
-- Uses async with db_pool.acquire() as conn for queries
+- Issues queries directly via db_pool.fetch() / db_pool.fetchrow() / db_pool.execute()
 - Uses health schema tables (health.medications, health.symptoms, etc.)
   and public.facts for measurements
 - Is a no-op (returns early with zeros) when no matching data exists
@@ -162,7 +162,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         """
         SELECT DISTINCT predicate
         FROM public.facts
-        WHERE predicate LIKE 'measurement_%'
+        WHERE predicate LIKE 'measurement~_%' ESCAPE '~'
           AND scope = 'health'
           AND validity = 'active'
         ORDER BY predicate
@@ -180,7 +180,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             WHERE predicate = $1
               AND scope = 'health'
               AND validity = 'active'
-            ORDER BY valid_at DESC
+              AND valid_at IS NOT NULL
+            ORDER BY valid_at DESC NULLS LAST
             LIMIT $2
             """,
             predicate,
@@ -404,19 +405,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # Check consecutive-day logging streaks for each measurement type.
     # A "streak" is consecutive calendar days with at least one measurement of that type.
-    streak_type_rows = await db_pool.fetch(
-        """
-        SELECT DISTINCT predicate
-        FROM public.facts
-        WHERE predicate LIKE 'measurement_%'
-          AND scope = 'health'
-          AND validity = 'active'
-        ORDER BY predicate
-        """
-    )
-
-    for type_row in streak_type_rows:
-        mtype = type_row["predicate"].removeprefix("measurement_")
+    # Reuse measurement_types from the gap-detection query above — no second round-trip needed.
+    for mtype in measurement_types:
         predicate = f"measurement_{mtype}"
 
         # Fetch all distinct calendar days for this type, most recent first
@@ -427,6 +417,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             WHERE predicate = $1
               AND scope = 'health'
               AND validity = 'active'
+              AND valid_at IS NOT NULL
             ORDER BY day DESC
             """,
             predicate,

@@ -23,7 +23,7 @@ def _today() -> date:
 
 
 # ---------------------------------------------------------------------------
-# Schema setup helpers (matches health migration exactly)
+# Schema setup helpers (health schema tables + public.facts from memory schema)
 # ---------------------------------------------------------------------------
 
 CREATE_HEALTH_SCHEMA = "CREATE SCHEMA IF NOT EXISTS health"
