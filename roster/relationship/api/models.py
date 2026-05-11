@@ -8,7 +8,7 @@ dashboard endpoints.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -40,7 +40,20 @@ class ContactInfoEntry(BaseModel):
 
 
 class ContactSummary(BaseModel):
-    """Compact contact representation for list views."""
+    """Compact contact representation for list views.
+
+    The ``warmth`` field is a recency/frequency blend scored 0.0–1.0:
+
+        recency_score  = max(0, 1 - days_since_last_contact / tier_cadence_days)
+        frequency_score = min(1, interactions_in_last_30d / tier_target_per_30d)
+        warmth = 0.6 * recency_score + 0.4 * frequency_score
+
+    where ``tier_cadence_days`` and ``tier_target_per_30d`` are derived from
+    the contact's Dunbar tier (TIER_CADENCE in the dunbar engine).
+    ``tier_target_per_30d = 30 / tier_cadence_days`` (expected touches per
+    30-day window).  A None value means warmth was not computed for this
+    request (e.g. bulk list without Dunbar context).
+    """
 
     id: UUID
     full_name: str
@@ -51,6 +64,7 @@ class ContactSummary(BaseModel):
     phone: str | None = None
     labels: list[Label] = Field(default_factory=list)
     last_interaction_at: datetime | None = None
+    warmth: float | None = None
 
 
 class ContactDetail(ContactSummary):
@@ -350,7 +364,12 @@ class OwnerEntityInfoResponse(BaseModel):
 
 
 class DunbarEntry(BaseModel):
-    """Dunbar tier ranking entry for a single contact/entity."""
+    """Dunbar tier ranking entry for a single contact/entity.
+
+    The ``warmth`` field uses the same formula as ``ContactSummary.warmth``
+    (see docstring there) but is always computed in the ranking endpoint since
+    Dunbar tier context is already available.
+    """
 
     contact_id: UUID
     entity_id: UUID
@@ -360,6 +379,7 @@ class DunbarEntry(BaseModel):
     dunbar_tier_override: bool
     avatar_url: str | None = None
     aliases: list[str] = Field(default_factory=list)
+    warmth: float | None = None
 
 
 class DunbarRankingResponse(BaseModel):
@@ -525,3 +545,62 @@ class MessageThreadSummary(BaseModel):
     last_received_at: datetime | None = None
     last_direction: str | None = None
     last_snippet: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Contact interaction thread models
+# ---------------------------------------------------------------------------
+
+
+class ContactInteractionItem(BaseModel):
+    """A single interaction event in a contact's chronological thread.
+
+    ``direction`` discriminates the flow of the interaction:
+    - ``'in'``      — contact reached out to the owner
+    - ``'out'``     — owner reached out to the contact
+    - ``'drafted'`` — a drafted but unsent message (LLM suggestion, etc.)
+
+    ``text`` is the raw interaction content (summary or message body).
+    Absent in the DB becomes an empty string, not null, to keep the
+    consumer contract simple.
+    """
+
+    ts: datetime | None = None
+    direction: Literal["in", "out", "drafted"] | None = None
+    text: str
+
+
+class ContactInteractionThreadResponse(BaseModel):
+    """Response for GET /contacts/{contact_id}/interactions."""
+
+    interactions: list[ContactInteractionItem]
+
+
+# ---------------------------------------------------------------------------
+# Overdue contacts models
+# ---------------------------------------------------------------------------
+
+
+class OverdueContactItem(BaseModel):
+    """One overdue contact entry with cadence context.
+
+    ``owed_days`` is the number of days the contact is overdue:
+        owed_days = days_since_last_contact - target_cadence_days
+
+    A positive value means the contact is overdue beyond their cadence;
+    zero is clamped to 1 (any contact returned here is at least 1 day overdue).
+    ``last_contact_date`` is null for contacts with no recorded interactions.
+    """
+
+    contact_id: UUID
+    name: str
+    tier: str
+    owed_days: int
+    last_contact_date: date | None = None
+    target_cadence_days: int
+
+
+class OverdueContactsResponse(BaseModel):
+    """Response for GET /contacts/overdue."""
+
+    contacts: list[OverdueContactItem]

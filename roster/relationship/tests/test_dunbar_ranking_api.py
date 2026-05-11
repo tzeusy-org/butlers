@@ -42,10 +42,11 @@ def _build_app(
     mock_pool = AsyncMock()
 
     # compute_tier_ranking is called first and returns the ranked list.
-    # The pool is then used in asyncio.gather for three queries:
-    #   1. pool.fetch(entities query)   -> entity_rows
-    #   2. pool.fetch(contacts query)   -> avatar_rows
-    #   3. pool.fetchrow(owner query)   -> owner_row
+    # The pool is then used in asyncio.gather for four queries:
+    #   1. pool.fetch(entities query)            -> entity_rows
+    #   2. pool.fetch(contacts/avatar query)     -> avatar_rows
+    #   3. pool.fetchrow(owner query)            -> owner_row
+    #   4. pool.fetch(30d interaction count)     -> [] (empty — warmth not tested here)
     # We'll patch compute_tier_ranking to avoid any real DB call and
     # configure pool.fetch to return the correct rows per call.
     fetch_call_count = [0]
@@ -54,7 +55,12 @@ def _build_app(
         fetch_call_count[0] += 1
         if fetch_call_count[0] == 1:
             return entity_rows
-        return avatar_rows
+        elif fetch_call_count[0] == 2:
+            return avatar_rows
+        else:
+            # 30-day interaction count query — return empty list (warmth=None for tier-1500
+            # or warmth computed from 0 interactions for others)
+            return []
 
     mock_pool.fetch = _fetch
     mock_pool.fetchrow = AsyncMock(return_value=owner_row)

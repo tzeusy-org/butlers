@@ -12,7 +12,7 @@ import importlib.util
 import json
 import logging
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -82,6 +82,10 @@ if _models_path.exists():
         DunbarTierOverrideRequest = _models_module.DunbarTierOverrideRequest
         DunbarTierOverrideResponse = _models_module.DunbarTierOverrideResponse
         MessageThreadSummary = _models_module.MessageThreadSummary
+        ContactInteractionItem = _models_module.ContactInteractionItem
+        ContactInteractionThreadResponse = _models_module.ContactInteractionThreadResponse
+        OverdueContactItem = _models_module.OverdueContactItem
+        OverdueContactsResponse = _models_module.OverdueContactsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +208,53 @@ def _is_credential_error(payload: object, raw_text: str | None) -> bool:
         "missing",
     )
     return any(marker in joined for marker in markers)
+
+
+# ---------------------------------------------------------------------------
+# Warmth computation helper
+# ---------------------------------------------------------------------------
+
+
+def _compute_warmth(
+    last_interaction_at: datetime | None,
+    interactions_in_last_30d: int,
+    tier_cadence_days: int,
+) -> float:
+    """Compute a 0.0–1.0 warmth score for a contact.
+
+    Formula::
+
+        recency_score   = max(0, 1 - days_since_last_contact / tier_cadence_days)
+        tier_target_per_30d = 30 / tier_cadence_days
+        frequency_score = min(1, interactions_in_last_30d / tier_target_per_30d)
+        warmth = 0.6 * recency_score + 0.4 * frequency_score
+
+    ``tier_cadence_days`` is the expected contact cadence for the contact's
+    Dunbar tier (e.g. tier-5 = 14 days, tier-15 = 21 days, etc.).
+    ``tier_target_per_30d`` is derived from the cadence so both components
+    share the same time scale.
+
+    Edge cases:
+    - If ``last_interaction_at`` is None, recency_score = 0.
+    - ``tier_cadence_days`` must be > 0 (enforced by TIER_CADENCE constants).
+    - Result is clamped to [0.0, 1.0].
+    """
+    now = datetime.now(UTC)
+
+    if last_interaction_at is None:
+        days_since = float("inf")
+    else:
+        # Make tz-aware if naive
+        if last_interaction_at.tzinfo is None:
+            last_interaction_at = last_interaction_at.replace(tzinfo=UTC)
+        days_since = max((now - last_interaction_at).total_seconds() / 86400.0, 0.0)
+
+    recency_score = max(0.0, 1.0 - days_since / tier_cadence_days)
+    tier_target_per_30d = 30.0 / tier_cadence_days
+    frequency_score = min(1.0, interactions_in_last_30d / max(tier_target_per_30d, 1e-9))
+
+    warmth = 0.6 * recency_score + 0.4 * frequency_score
+    return round(max(0.0, min(1.0, warmth)), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -924,6 +975,206 @@ async def create_and_link_entity(
         entity_id=entity_id,
         canonical_name=canonical_name,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /contacts/overdue — contacts overdue by days threshold or tier cadence
+# ---------------------------------------------------------------------------
+
+
+@router.get("/contacts/overdue", response_model=OverdueContactsResponse)
+async def list_overdue_contacts(
+    days: int = Query(14, ge=1, le=3650, description="Fallback threshold in days"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> OverdueContactsResponse:
+    """Return contacts whose last contact is overdue.
+
+    A contact is overdue when ``days_since_last_contact`` exceeds either the
+    ``days`` query parameter **or** their Dunbar tier's target cadence —
+    whichever threshold is *shorter*.  This means a tier-5 contact with a
+    14-day cadence is flagged even if ``days=30``.
+
+    Response fields:
+    - ``tier`` — human-readable tier label (e.g. ``'tier-5'``).
+    - ``owed_days`` — how many days past the effective threshold.
+    - ``last_contact_date`` — date of most recent interaction, or null.
+    - ``target_cadence_days`` — the effective cadence used (min of ``days``
+      and the tier cadence).
+
+    Tier 1500 contacts (outermost acquaintances) with no explicit
+    ``stay_in_touch_days`` override are excluded — they have no cadence target.
+    """
+    from butlers.tools.relationship import dunbar as _dunbar
+
+    pool = _pool(db)
+
+    now = datetime.now(UTC)
+
+    # Fetch all listed contacts with their last interaction timestamp
+    contact_rows = await pool.fetch(
+        """
+        SELECT
+            c.id,
+            c.name AS full_name,
+            c.entity_id,
+            c.stay_in_touch_days,
+            MAX(f.valid_at) AS last_interaction_at
+        FROM contacts c
+        LEFT JOIN facts f
+            ON f.subject = 'contact:' || c.id::text
+           AND f.predicate LIKE 'interaction_%'
+           AND f.scope = 'relationship'
+           AND f.validity = 'active'
+        WHERE c.listed = true
+          AND c.archived_at IS NULL
+        GROUP BY c.id
+        """
+    )
+
+    if not contact_rows:
+        return OverdueContactsResponse(contacts=[])
+
+    # Compute tier ranking for all contacts in one pass
+    all_scores = await _dunbar.compute_dunbar_scores(pool)
+    overrides = await _dunbar._fetch_overrides(pool)
+    ranked = _dunbar.get_tier_ranking(all_scores, overrides)
+    dunbar_by_cid: dict[UUID, dict[str, Any]] = {entry["contact_id"]: entry for entry in ranked}
+
+    results: list[OverdueContactItem] = []
+    for row in contact_rows:
+        cid = row["id"]
+        full_name = row["full_name"] or ""
+        last_at = row["last_interaction_at"]
+        stay_in_touch = row["stay_in_touch_days"]
+
+        dunbar_info = dunbar_by_cid.get(cid, {"dunbar_tier": 1500})
+        dunbar_tier = dunbar_info["dunbar_tier"]
+
+        # Determine effective cadence from tier or explicit override
+        if stay_in_touch is not None:
+            tier_cadence = int(stay_in_touch)
+        else:
+            tier_cadence = _dunbar.TIER_CADENCE.get(dunbar_tier)
+
+        if tier_cadence is None:
+            # Tier 1500 with no stay_in_touch_days — no cadence target, skip
+            continue
+
+        # Effective threshold is the shorter of the two
+        effective_threshold = min(days, tier_cadence)
+
+        if last_at is None:
+            days_since: float = float("inf")
+            last_contact_date = None
+        else:
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=UTC)
+            days_since = max((now - last_at).total_seconds() / 86400.0, 0.0)
+            last_contact_date = last_at.date()
+
+        if days_since < effective_threshold:
+            continue
+
+        if days_since == float("inf"):
+            owed_days = tier_cadence  # No interactions — owed the full cadence
+        else:
+            owed_days = max(1, int(days_since - effective_threshold) + 1)
+
+        results.append(
+            OverdueContactItem(
+                contact_id=cid,
+                name=full_name,
+                tier=f"tier-{dunbar_tier}",
+                owed_days=owed_days,
+                last_contact_date=last_contact_date,
+                target_cadence_days=tier_cadence,
+            )
+        )
+
+    # Sort by owed_days descending (most overdue first)
+    results.sort(key=lambda r: r.owed_days, reverse=True)
+    return OverdueContactsResponse(contacts=results)
+
+
+# ---------------------------------------------------------------------------
+# GET /contacts/{contact_id}/interactions — chronological interaction thread
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/contacts/{contact_id}/interactions",
+    response_model=ContactInteractionThreadResponse,
+)
+async def list_contact_interactions(
+    contact_id: UUID,
+    limit: int = Query(20, ge=1, le=100, description="Max interactions to return"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactInteractionThreadResponse:
+    """Return a chronological list of interactions for a contact.
+
+    Source: ``facts`` table with ``predicate LIKE 'interaction_%'`` joined via
+    the contact's ``entity_id``.  Results are ordered chronologically
+    (oldest first) so the caller sees the conversation thread in natural order.
+
+    Direction values:
+    - ``'in'``      — contact-to-owner (incoming)
+    - ``'out'``     — owner-to-contact (outgoing)
+    - ``'drafted'`` — drafted but unsent
+
+    Returns 404 if the contact does not exist.
+    Returns an empty interactions list if the contact has no recorded interactions.
+    """
+    pool = _pool(db)
+
+    # Resolve contact → entity_id
+    contact_row = await pool.fetchrow(
+        "SELECT id, entity_id FROM contacts WHERE id = $1",
+        contact_id,
+    )
+    if contact_row is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    entity_id = contact_row["entity_id"]
+
+    if entity_id is None:
+        # Contact exists but has no entity link — no facts to return
+        return ContactInteractionThreadResponse(interactions=[])
+
+    # Fetch interaction facts ordered chronologically (oldest first)
+    rows = await pool.fetch(
+        """
+        SELECT id, content, metadata, valid_at
+        FROM facts
+        WHERE entity_id = $1
+          AND predicate LIKE 'interaction_%'
+          AND validity = 'active'
+          AND scope = 'relationship'
+        ORDER BY valid_at ASC NULLS LAST, created_at ASC
+        LIMIT $2
+        """,
+        entity_id,
+        limit,
+    )
+
+    _VALID_DIRECTIONS = frozenset({"in", "out", "drafted"})
+
+    def _direction(meta: dict | None) -> str | None:
+        if not meta:
+            return None
+        raw = meta.get("direction")
+        if raw in _VALID_DIRECTIONS:
+            return raw
+        return None
+
+    items = [
+        ContactInteractionItem(
+            ts=row["valid_at"],
+            direction=_direction(row["metadata"]),
+            text=row["content"] or "",
+        )
+        for row in rows
+    ]
+    return ContactInteractionThreadResponse(interactions=items)
 
 
 # ---------------------------------------------------------------------------
@@ -2967,6 +3218,9 @@ async def get_dunbar_ranking(
     manual tier overrides.  Also returns the owner entity ID for centering the
     concentric circles visualization.
 
+    Each entry includes a ``warmth`` score (0.0–1.0) computed from recency and
+    30-day interaction frequency relative to the contact's tier cadence.
+
     This endpoint is used by the social map visualization in the entities page.
     """
     from butlers.tools.relationship import dunbar as _dunbar
@@ -2979,7 +3233,7 @@ async def get_dunbar_ranking(
     # Fetch canonical names for all entity IDs returned by the ranking.
     entity_ids = [r["entity_id"] for r in ranked if r["entity_id"] is not None]
     contact_ids = [r["contact_id"] for r in ranked if r["entity_id"] is not None]
-    entity_name_rows, avatar_rows, owner_row = await asyncio.gather(
+    entity_name_rows, avatar_rows, owner_row, interaction_30d_rows = await asyncio.gather(
         pool.fetch(
             """
             SELECT e.id, e.canonical_name, e.aliases
@@ -3003,6 +3257,22 @@ async def get_dunbar_ranking(
             LIMIT 1
             """
         ),
+        pool.fetch(
+            """
+            SELECT
+                c.id AS contact_id,
+                COUNT(f.id) AS interaction_count_30d
+            FROM contacts c
+            JOIN facts f ON f.entity_id = c.entity_id
+            WHERE c.id = ANY($1::uuid[])
+              AND f.predicate LIKE 'interaction_%'
+              AND f.validity = 'active'
+              AND f.scope = 'relationship'
+              AND f.valid_at >= now() - INTERVAL '30 days'
+            GROUP BY c.id
+            """,
+            contact_ids,
+        ),
     )
 
     entity_names: dict[UUID, str] = {row["id"]: row["canonical_name"] for row in entity_name_rows}
@@ -3010,21 +3280,39 @@ async def get_dunbar_ranking(
         row["id"]: list(row["aliases"]) if row["aliases"] else [] for row in entity_name_rows
     }
     contact_avatars: dict[UUID, str | None] = {row["id"]: row["avatar_url"] for row in avatar_rows}
+    interaction_30d: dict[UUID, int] = {
+        row["contact_id"]: int(row["interaction_count_30d"]) for row in interaction_30d_rows
+    }
 
-    entries: list[DunbarEntry] = [
-        DunbarEntry(
-            contact_id=r["contact_id"],
-            entity_id=r["entity_id"],
-            canonical_name=entity_names.get(r["entity_id"], "Unknown"),
-            dunbar_tier=r["dunbar_tier"],
-            dunbar_score=r["dunbar_score"],
-            dunbar_tier_override=r.get("dunbar_tier_override", False),
-            avatar_url=contact_avatars.get(r["contact_id"]),
-            aliases=entity_aliases.get(r["entity_id"], []),
+    entries: list[DunbarEntry] = []
+    for r in ranked:
+        if r["entity_id"] is None:
+            continue
+        cid = r["contact_id"]
+        tier = r["dunbar_tier"]
+        tier_cadence = _dunbar.TIER_CADENCE.get(tier)
+        if tier_cadence is not None:
+            warmth = _compute_warmth(
+                last_interaction_at=r.get("last_interaction_at"),
+                interactions_in_last_30d=interaction_30d.get(cid, 0),
+                tier_cadence_days=tier_cadence,
+            )
+        else:
+            warmth = None  # Tier 1500 — no cadence target, warmth undefined
+
+        entries.append(
+            DunbarEntry(
+                contact_id=cid,
+                entity_id=r["entity_id"],
+                canonical_name=entity_names.get(r["entity_id"], "Unknown"),
+                dunbar_tier=tier,
+                dunbar_score=r["dunbar_score"],
+                dunbar_tier_override=r.get("dunbar_tier_override", False),
+                avatar_url=contact_avatars.get(cid),
+                aliases=entity_aliases.get(r["entity_id"], []),
+                warmth=warmth,
+            )
         )
-        for r in ranked
-        if r["entity_id"] is not None
-    ]
 
     owner_entity_id = owner_row["id"] if owner_row else None
 
