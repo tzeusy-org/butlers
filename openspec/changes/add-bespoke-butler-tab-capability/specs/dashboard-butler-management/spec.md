@@ -19,12 +19,12 @@ Config, Memory, <Bespoke>). In operator mode it appears at position 11
 (Overview, Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM,
 Memory, <Bespoke>).
 
-**Rule 3 — Label.** The bespoke tab label is butler-specific. Labels MUST be
-sentence-case, single-word preferred, and contain no punctuation. Examples:
-Contacts (relationship), Timelines (chronicler), Finances (finance), Devices
-(home), Trips (travel), Reviews (education), Health (health). Multi-word labels
-are permitted only when no single-word label is accurate (e.g., a hypothetical
-"Task list" would be acceptable; "task-list" or "Task List" would not).
+**Rule 3 — Label.** The bespoke tab label is butler-specific and registered in
+the canonical per-butler label table (see Requirement: Per-butler bespoke tab
+label registry below). Labels MUST be sentence-case, single-word preferred, and
+contain no punctuation. Multi-word labels are permitted only when no single-word
+label is accurate (e.g., a hypothetical "Task list" would be acceptable;
+"task-list" or "Task List" would not).
 
 **Rule 4 — Discovery mechanism.** Bespoke tab presence is determined by a
 hardcoded conditional on the butler name in
@@ -118,6 +118,60 @@ and are not reclassified as bespoke.
 - **THEN** at most one tab beyond Memory SHALL be present that is classified as
   a bespoke tab for that butler
 - **AND** no butler SHALL render two or more bespoke tabs simultaneously
+
+## ADDED Requirements
+
+### Requirement: Per-butler bespoke tab label registry
+
+Each domain butler that carries a bespoke tab SHALL use the label registered in
+the table below. The labels in this table are normative; any implementation that
+uses a different label for a listed butler is non-conformant. Switchboard is
+explicitly absent — it carries no resident bespoke tab (Rule 9).
+
+| Butler       | Bespoke tab label | Justification                                                                   |
+|-------------|-------------------|---------------------------------------------------------------------------------|
+| chronicler  | Timelines         | Core identity: "retrospective time butler" that projects events and episodes.   |
+| education   | Reviews           | Spaced-repetition review sessions are the primary user action; Anki integration is explicitly rejected by the manifesto ("We do not connect to Coursera, Anki, Canvas…"), so "Decks" is ruled out. |
+| finance     | Finances          | Direct mapping to the butler's domain: financial clarity over inbox noise.      |
+| general     | Collections       | The manifesto's organizing metaphor: "Collections let you group related things together." |
+| health      | Measurements      | Health butler leads with measurement tracking; the existing "Health" label is generic and collides with the butler name — "Measurements" is the primary tracking surface. |
+| home        | Devices           | Device orchestration and monitoring is the bespoke surface: "Monitor device health." |
+| lifestyle   | Taste             | Manifesto central concept: "Taste is autobiography" — the butler is the keeper of your taste. |
+| messenger   | Conversations     | Delivery health surface showing per-conversation send/receive outcomes; NOT a user-facing chat UI. |
+| qa          | Investigations    | Primary operator surface: active and historical investigation dispatch records. |
+| relationship| Contacts          | Contact management is the primary bespoke surface: "A living database of the people in your life." |
+| travel      | Trips             | Trip-centric organization: "See your complete trip timeline" is the core value proposition. |
+
+Labels are sentence-case. No em-dashes. No exclamation marks. No title-case.
+Switchboard is absent from this table because it carries no resident bespoke tab.
+
+#### Scenario: Each butler renders its registered bespoke tab label
+
+- **GIVEN** the per-butler bespoke tab label registry above
+- **WHEN** a domain butler from the registry is viewed in resident mode or
+  operator mode
+- **THEN** the bespoke tab trigger SHALL display exactly the label registered
+  for that butler (e.g., `Timelines` for chronicler, `Investigations` for qa)
+- **AND** the label MUST be sentence-case and contain no punctuation
+- **AND** no butler in the table SHALL use a label that differs from the one
+  registered here
+
+#### Scenario: Switchboard does not render a bespoke tab from the registry
+
+- **WHEN** the butler name is `switchboard`
+- **THEN** the tab bar SHALL NOT contain any label from the per-butler registry
+- **AND** the only tabs beyond the base set are the existing operator-oriented
+  tabs: Routing Log and Registry
+
+#### Scenario: New butlers (general, lifestyle, messenger, qa) include bespoke tabs
+
+- **WHEN** any of `general`, `lifestyle`, `messenger`, or `qa` is viewed
+- **THEN** the bespoke tab SHALL appear at position 8 in resident mode
+  (immediately after Memory, before any operator-only tabs)
+- **AND** the labels SHALL be exactly: `Collections` (general), `Taste`
+  (lifestyle), `Conversations` (messenger), `Investigations` (qa)
+- **AND** the health butler bespoke tab SHALL be relabeled from `Health` to
+  `Measurements` to match the registry
 
 ## Source References
 
