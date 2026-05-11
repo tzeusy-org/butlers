@@ -552,11 +552,12 @@ async def get_measurements_latest(
     rows = await pool.fetch(
         """
         SELECT DISTINCT ON (predicate) predicate, valid_at, metadata
-        FROM public.facts
+        FROM facts
         WHERE predicate = ANY($1::text[])
           AND scope = 'health'
           AND validity = 'active'
-        ORDER BY predicate, valid_at DESC
+          AND valid_at IS NOT NULL
+        ORDER BY predicate, valid_at DESC NULLS LAST
         """,
         predicate_list,
     )
@@ -687,8 +688,8 @@ async def get_measurements_sources(
             metadata->>'source'  AS name,
             MAX(valid_at)        AS last_sample_at,
             COUNT(*)             AS sample_count
-        FROM public.facts
-        WHERE predicate LIKE 'measurement_%'
+        FROM facts
+        WHERE predicate LIKE 'measurement~_%' ESCAPE '~'
           AND scope = 'health'
           AND validity = 'active'
           AND metadata->>'source' IS NOT NULL
