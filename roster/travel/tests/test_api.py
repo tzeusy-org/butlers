@@ -964,7 +964,7 @@ def test_router_prefix():
 
 
 def test_router_has_all_endpoints():
-    """The travel router defines all 7 required endpoints."""
+    """The travel router defines all 8 required endpoints."""
     routes = {route.path for route in _travel_router_mod.router.routes}  # type: ignore[union-attr]
     assert "/api/travel/trips" in routes
     assert "/api/travel/trips/{trip_id}" in routes
@@ -973,6 +973,7 @@ def test_router_has_all_endpoints():
     assert "/api/travel/trips/{trip_id}/reservations" in routes
     assert "/api/travel/trips/{trip_id}/documents" in routes
     assert "/api/travel/upcoming" in routes
+    assert "/api/travel/documents/expiring" in routes
 
 
 def test_butler_db_constant():
@@ -988,3 +989,217 @@ def test_router_discovery_finds_travel():
     routers = discover_butler_routers(roster_dir=roster_dir)
     butler_names = [name for name, _ in routers]
     assert "travel" in butler_names
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/travel/documents/expiring
+# ---------------------------------------------------------------------------
+
+
+def _expiring_doc_row(
+    *,
+    id: Any = None,
+    trip_id: Any = None,
+    type: str = "passport",
+    metadata: dict | None = None,
+    expiry_date: Any = None,
+) -> dict:
+    return {
+        "id": uuid.UUID(id) if id else uuid.uuid4(),
+        "trip_id": uuid.UUID(trip_id) if trip_id else uuid.uuid4(),
+        "type": type,
+        "metadata": metadata or {},
+        "expiry_date": expiry_date or (_TODAY + timedelta(days=60)),
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_empty():
+    """GET /api/travel/documents/expiring returns empty list when no expiring documents."""
+    app, _ = _make_app(fetch_rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/documents/expiring")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["documents"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_default_days():
+    """GET /api/travel/documents/expiring uses 180-day default window."""
+    app, mock_pool = _make_app(fetch_rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get("/api/travel/documents/expiring")
+
+    # The query should have been called with a cutoff date ~180 days out
+    call_args = mock_pool.fetch.call_args
+    assert call_args is not None
+    # Second positional arg is the cutoff date
+    cutoff = call_args[0][1]
+    from datetime import date, timedelta
+
+    expected = date.today() + timedelta(days=180)
+    assert cutoff == expected
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_with_results():
+    """GET /api/travel/documents/expiring returns documents sorted by expiry_date."""
+    soon = _TODAY + timedelta(days=30)
+    later = _TODAY + timedelta(days=90)
+
+    rows = [
+        _expiring_doc_row(type="passport", expiry_date=soon),
+        _expiring_doc_row(type="visa", expiry_date=later),
+    ]
+    app, _ = _make_app(fetch_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/documents/expiring")
+
+    assert response.status_code == 200
+    body = response.json()
+    docs = body["documents"]
+    assert len(docs) == 2
+
+    # Fields present
+    item = docs[0]
+    assert "id" in item
+    assert "trip_id" in item
+    assert "type" in item
+    assert "expiry_date" in item
+    assert "days_until_expiry" in item
+
+    # First document expires sooner
+    assert item["type"] == "passport"
+    assert docs[1]["type"] == "visa"
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_days_until_expiry_computed():
+    """GET /api/travel/documents/expiring computes days_until_expiry correctly."""
+    expiry = _TODAY + timedelta(days=45)
+    rows = [_expiring_doc_row(type="passport", expiry_date=expiry)]
+    app, _ = _make_app(fetch_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/documents/expiring")
+
+    assert response.status_code == 200
+    body = response.json()
+    doc = body["documents"][0]
+    assert doc["days_until_expiry"] == 45
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_mixed_windows():
+    """GET /api/travel/documents/expiring: documents at different expiry distances."""
+    soon = _TODAY + timedelta(days=15)
+    medium = _TODAY + timedelta(days=90)
+    far = _TODAY + timedelta(days=170)
+
+    rows = [
+        _expiring_doc_row(type="boarding_pass", expiry_date=soon),
+        _expiring_doc_row(type="visa", expiry_date=medium),
+        _expiring_doc_row(type="insurance", expiry_date=far),
+    ]
+    app, _ = _make_app(fetch_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/documents/expiring?days=180")
+
+    assert response.status_code == 200
+    body = response.json()
+    docs = body["documents"]
+    assert len(docs) == 3
+
+    # Verify all three expiry windows are represented
+    types = [d["type"] for d in docs]
+    assert "boarding_pass" in types
+    assert "visa" in types
+    assert "insurance" in types
+
+    # Verify ascending sort by days_until_expiry
+    expiry_days = [d["days_until_expiry"] for d in docs]
+    assert expiry_days == sorted(expiry_days)
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_invalid_days():
+    """GET /api/travel/documents/expiring returns 422 for invalid days param."""
+    app, _ = _make_app()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/documents/expiring?days=45")
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_valid_days_values():
+    """GET /api/travel/documents/expiring accepts all valid days values."""
+    app, _ = _make_app(fetch_rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for days in [30, 60, 90, 180, 365]:
+            response = await client.get(f"/api/travel/documents/expiring?days={days}")
+            assert response.status_code == 200, f"days={days} should be valid"
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_name_from_metadata():
+    """GET /api/travel/documents/expiring extracts name from metadata when present."""
+    rows = [
+        _expiring_doc_row(
+            type="passport",
+            expiry_date=_TODAY + timedelta(days=30),
+            metadata={"name": "US Passport"},
+        )
+    ]
+    app, _ = _make_app(fetch_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/documents/expiring")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["documents"][0]["name"] == "US Passport"
+
+
+@pytest.mark.asyncio
+async def test_get_expiring_documents_503_on_missing_pool():
+    """GET /api/travel/documents/expiring returns 503 when pool is unavailable."""
+    from fastapi import FastAPI
+
+    mock_db = MagicMock()
+    mock_db.pool.side_effect = KeyError("travel")
+
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/documents/expiring")
+
+    assert response.status_code == 503

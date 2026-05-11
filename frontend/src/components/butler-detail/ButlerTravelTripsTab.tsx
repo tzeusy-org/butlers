@@ -32,8 +32,14 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { KpiCell, Panel } from "@/components/butler-detail/atoms";
-import { useUpcomingTravel, useTravelTrips, useTravelTripSummary } from "@/hooks/use-travel";
+import {
+  useUpcomingTravel,
+  useTravelTrips,
+  useTravelTripSummary,
+  useExpiringDocuments,
+} from "@/hooks/use-travel";
 import type {
+  TravelExpiringDocument,
   TravelLeg,
   TravelAccommodation,
   TravelTimelineEntry,
@@ -112,6 +118,41 @@ function normaliseSortKey(sortKey: string | null | undefined): string | null {
   if (!sortKey) return null;
   // Normalise Python str(datetime) space to ISO T-separator.
   return sortKey.includes("T") ? sortKey : sortKey.replace(" ", "T");
+}
+
+// ---------------------------------------------------------------------------
+// Expiring docs banner (rendered above KPI strip when count > 0)
+// ---------------------------------------------------------------------------
+
+interface ExpiringDocsBannerProps {
+  documents: TravelExpiringDocument[];
+}
+
+function ExpiringDocsBanner({ documents }: ExpiringDocsBannerProps) {
+  if (documents.length === 0) return null;
+
+  const urgentCount = documents.filter((d) => d.days_until_expiry <= 30).length;
+  const tone = urgentCount > 0 ? "text-destructive" : "text-amber-500";
+
+  return (
+    <div
+      className="flex items-center gap-2 px-4 py-2 border border-border/60 bg-muted/30 rounded text-sm"
+      data-testid="expiring-docs-banner"
+      role="alert"
+    >
+      <span className={`font-medium tnum ${tone}`} data-testid="expiring-docs-count">
+        {documents.length}
+      </span>
+      <span className="text-muted-foreground">
+        {documents.length === 1 ? "document" : "documents"} expiring within 180 days
+        {urgentCount > 0 && (
+          <span className="text-destructive font-medium ml-1">
+            ({urgentCount} within 30 days)
+          </span>
+        )}
+      </span>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +638,9 @@ export default function ButlerTravelTripsTab() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
   const { data: upcoming, isLoading: upcomingLoading, error: upcomingError } = useUpcomingTravel(90);
+  const { data: expiringDocs } = useExpiringDocuments(180);
+
+  const expiringDocuments = expiringDocs?.documents ?? [];
 
   function handleTripClick(trip: TravelTrip) {
     setSelectedTripId(trip.id);
@@ -608,6 +652,13 @@ export default function ButlerTravelTripsTab() {
 
   return (
     <div className="pt-4" data-testid="travel-trips-tab">
+      {/* Expiring docs banner — only shown when documents are expiring */}
+      {expiringDocuments.length > 0 && (
+        <div className="px-4 pb-3">
+          <ExpiringDocsBanner documents={expiringDocuments} />
+        </div>
+      )}
+
       {/* Row 1: KPI strip — full 4-col width */}
       <KpiStrip upcoming={upcoming} isLoading={upcomingLoading} />
 

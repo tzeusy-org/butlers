@@ -801,12 +801,19 @@ export type {
 // Travel butler (bu-0eac9)
 // ---------------------------------------------------------------------------
 
-export { getTravelTrips, getTravelTripSummary, getTravelUpcoming } from "./client.ts";
+export {
+  getTravelTrips,
+  getTravelTripSummary,
+  getTravelUpcoming,
+  getTravelExpiringDocuments,
+} from "./client.ts";
 
 export type {
   TravelAccommodation,
   TravelAlert,
   TravelDocument,
+  TravelExpiringDocument,
+  TravelExpiringDocumentsResponse,
   TravelLeg,
   TravelPreTripAction,
   TravelReservation,

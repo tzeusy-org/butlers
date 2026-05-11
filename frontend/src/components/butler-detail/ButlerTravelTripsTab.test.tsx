@@ -33,12 +33,14 @@ vi.mock("@/hooks/use-travel", () => ({
   useUpcomingTravel: vi.fn(),
   useTravelTrips: vi.fn(),
   useTravelTripSummary: vi.fn(),
+  useExpiringDocuments: vi.fn(),
 }));
 
 import {
   useUpcomingTravel,
   useTravelTrips,
   useTravelTripSummary,
+  useExpiringDocuments,
 } from "@/hooks/use-travel";
 
 // ---------------------------------------------------------------------------
@@ -257,6 +259,11 @@ function setupWithData() {
   vi.mocked(useTravelTripSummary).mockReturnValue(
     { data: TRIP_SUMMARY, isLoading: false } as unknown as ReturnType<typeof useTravelTripSummary>,
   );
+
+  // Default: no expiring documents (banner hidden)
+  vi.mocked(useExpiringDocuments).mockReturnValue(
+    { data: { documents: [] }, isLoading: false } as unknown as ReturnType<typeof useExpiringDocuments>,
+  );
 }
 
 function setupEmpty() {
@@ -277,6 +284,10 @@ function setupEmpty() {
   vi.mocked(useTravelTripSummary).mockReturnValue(
     { data: undefined, isLoading: false } as unknown as ReturnType<typeof useTravelTripSummary>,
   );
+
+  vi.mocked(useExpiringDocuments).mockReturnValue(
+    { data: { documents: [] }, isLoading: false } as unknown as ReturnType<typeof useExpiringDocuments>,
+  );
 }
 
 function setupLoading() {
@@ -290,6 +301,10 @@ function setupLoading() {
 
   vi.mocked(useTravelTripSummary).mockReturnValue(
     { data: undefined, isLoading: false } as unknown as ReturnType<typeof useTravelTripSummary>,
+  );
+
+  vi.mocked(useExpiringDocuments).mockReturnValue(
+    { data: undefined, isLoading: true } as unknown as ReturnType<typeof useExpiringDocuments>,
   );
 }
 
@@ -573,6 +588,102 @@ describe("ButlerTravelTripsTab — loading state", () => {
     for (const testId of ["kpi-next-departure", "kpi-active-count", "kpi-planned-count", "kpi-open-actions"]) {
       expect(screen.getByTestId(testId).textContent).toBe("…");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Expiring docs banner
+// ---------------------------------------------------------------------------
+
+const EXPIRING_DOC_SOON = {
+  id: "doc-1",
+  trip_id: "trip-1",
+  type: "passport",
+  name: "US Passport",
+  expiry_date: "2026-06-01",
+  days_until_expiry: 21,
+};
+
+const EXPIRING_DOC_MEDIUM = {
+  id: "doc-2",
+  trip_id: "trip-2",
+  type: "visa",
+  name: null,
+  expiry_date: "2026-10-01",
+  days_until_expiry: 143,
+};
+
+describe("ButlerTravelTripsTab — expiring docs banner", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("does not render banner when no expiring documents", () => {
+    // setupWithData already sets empty expiring docs
+    renderTab();
+    expect(screen.queryByTestId("expiring-docs-banner")).toBeNull();
+  });
+
+  it("renders banner when documents are expiring", () => {
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      {
+        data: { documents: [EXPIRING_DOC_MEDIUM] },
+        isLoading: false,
+      } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+    renderTab();
+    expect(screen.getByTestId("expiring-docs-banner")).toBeDefined();
+  });
+
+  it("shows the count of expiring documents", () => {
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      {
+        data: { documents: [EXPIRING_DOC_SOON, EXPIRING_DOC_MEDIUM] },
+        isLoading: false,
+      } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+    renderTab();
+    const count = screen.getByTestId("expiring-docs-count");
+    expect(count.textContent).toBe("2");
+  });
+
+  it("applies destructive tone when urgent document is expiring within 30 days", () => {
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      {
+        data: { documents: [EXPIRING_DOC_SOON] },
+        isLoading: false,
+      } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+    renderTab();
+    const count = screen.getByTestId("expiring-docs-count");
+    expect(count.className).toContain("text-destructive");
+  });
+
+  it("applies amber tone when no document is expiring within 30 days", () => {
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      {
+        data: { documents: [EXPIRING_DOC_MEDIUM] },
+        isLoading: false,
+      } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+    renderTab();
+    const count = screen.getByTestId("expiring-docs-count");
+    expect(count.className).toContain("text-amber-500");
+  });
+
+  it("banner has role=alert for accessibility", () => {
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      {
+        data: { documents: [EXPIRING_DOC_MEDIUM] },
+        isLoading: false,
+      } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+    renderTab();
+    const banner = screen.getByTestId("expiring-docs-banner");
+    expect(banner.getAttribute("role")).toBe("alert");
   });
 });
 

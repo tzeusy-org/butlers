@@ -14,7 +14,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getTravelTrips, getTravelTripSummary, getTravelUpcoming } from "@/api/index.ts";
+import {
+  getTravelTrips,
+  getTravelTripSummary,
+  getTravelUpcoming,
+  getTravelExpiringDocuments,
+} from "@/api/index.ts";
 import type { TravelTripsParams } from "@/api/index.ts";
 
 /** Fetch upcoming travel overview with urgency-ranked pre-trip actions. */
@@ -41,5 +46,14 @@ export function useTravelTripSummary(tripId: string | null) {
     queryKey: ["travel", "trip-summary", tripId],
     queryFn: () => getTravelTripSummary(tripId!),
     enabled: !!tripId,
+  });
+}
+
+/** Fetch documents expiring within the given look-ahead window (default: 180 days). */
+export function useExpiringDocuments(days?: number) {
+  return useQuery({
+    queryKey: ["travel", "documents", "expiring", days],
+    queryFn: () => getTravelExpiringDocuments(days),
+    refetchInterval: 60_000,
   });
 }
