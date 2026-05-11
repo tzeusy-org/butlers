@@ -384,6 +384,71 @@ describe("ButlerApprovalsTab -- row content", () => {
 })
 
 // ---------------------------------------------------------------------------
+// Tests: has_more indicator
+// ---------------------------------------------------------------------------
+
+describe("ButlerApprovalsTab -- has_more indicator", () => {
+  beforeEach(() => vi.resetAllMocks())
+  afterEach(() => cleanup())
+
+  it("shows has-more indicator when meta.has_more is true", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: { data: [HIGH_ACTION], meta: { total: 120, offset: 0, limit: 50, has_more: true } },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+    renderTab()
+    expect(screen.getByTestId("approvals-has-more")).toBeDefined()
+  })
+
+  it("hides has-more indicator when meta.has_more is false", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: { data: [HIGH_ACTION], meta: { total: 1, offset: 0, limit: 50, has_more: false } },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+    renderTab()
+    expect(screen.queryByTestId("approvals-has-more")).toBeNull()
+  })
+
+  it("hides has-more indicator when meta is undefined", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+    renderTab()
+    expect(screen.queryByTestId("approvals-has-more")).toBeNull()
+  })
+
+  it("view-all link in has-more indicator points to /approvals", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: { data: [HIGH_ACTION], meta: { total: 120, offset: 0, limit: 50, has_more: true } },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+    renderTab()
+    const link = screen.getByTestId("approvals-view-all-link") as HTMLAnchorElement
+    expect(link.getAttribute("href")).toBe("/approvals")
+  })
+
+  it("has-more indicator shows correct counts", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: {
+        data: [HIGH_ACTION, MEDIUM_ACTION],
+        meta: { total: 75, offset: 0, limit: 50, has_more: true },
+      },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+    renderTab()
+    const indicator = screen.getByTestId("approvals-has-more")
+    expect(indicator.textContent).toMatch(/Showing first\s+2\s+of\s+75/)
+
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Tests: error state
 // ---------------------------------------------------------------------------
 

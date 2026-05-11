@@ -136,6 +136,7 @@ export default function ButlerApprovalsTab({ butlerName }: ButlerApprovalsTabPro
   const { data, isLoading, error } = useApprovalActions({ status: "pending", butler: butlerName })
 
   const actions = data?.data ?? []
+  const meta = data?.meta
 
   return (
     <div data-testid="butler-approvals-tab">
@@ -168,11 +169,26 @@ export default function ButlerApprovalsTab({ butlerName }: ButlerApprovalsTabPro
             No items pending review.
           </p>
         ) : (
-          <ul data-testid="approvals-list">
-            {actions.map((action) => (
-              <ApprovalRow key={action.id} action={action} />
-            ))}
-          </ul>
+          <>
+            <ul data-testid="approvals-list">
+              {actions.map((action) => (
+                <ApprovalRow key={action.id} action={action} />
+              ))}
+            </ul>
+            {meta?.has_more && (
+              <div
+                className="mt-2 text-xs text-muted-foreground tnum"
+                data-testid="approvals-has-more"
+              >
+                Showing first{" "}
+                <span>{actions.length}</span> of{" "}
+                <span>{meta.total}</span>.{" "}
+                <Link to="/approvals" className="underline" data-testid="approvals-view-all-link">
+                  View all approvals →
+                </Link>
+              </div>
+            )}
+          </>
         )}
       </Panel>
     </div>
