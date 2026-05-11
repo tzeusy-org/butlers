@@ -120,8 +120,7 @@ async def test_episodes_butler_filter_applied_in_sql(app):
     # _fan_out_memory_queries — check at least one call carried the bound value.
     call_args_list = mock_db.pool.return_value.fetch.call_args_list
     assert any(
-        "butler = $1" in call.args[0] and "atlas" in call.args[1:]
-        for call in call_args_list
+        "butler = $1" in call.args[0] and "atlas" in call.args[1:] for call in call_args_list
     )
 
 
@@ -157,10 +156,8 @@ async def test_episodes_butler_filter_combined_with_consolidated(app):
     # Both args should appear in the fetch call — check positional args directly.
     call_args_list = mock_db.pool.return_value.fetch.call_args_list
     assert any(
-        "butler = $1" in call.args[0] and "atlas" in call.args[1:]
-        for call in call_args_list
+        "butler = $1" in call.args[0] and "atlas" in call.args[1:] for call in call_args_list
     )
     assert any(
-        "consolidated = $2" in call.args[0] and False in call.args[1:]
-        for call in call_args_list
+        "consolidated = $2" in call.args[0] and False in call.args[1:] for call in call_args_list
     )
