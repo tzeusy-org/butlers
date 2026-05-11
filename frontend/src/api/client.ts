@@ -283,6 +283,12 @@ import type {
   GeneralCollection,
   GeneralEntity,
   GeneralStats,
+  HourlyActivity,
+  HourlyActivityParams,
+  DailyActivity,
+  DailyActivityParams,
+  SessionKindBreakdown,
+  SessionKindsParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -447,6 +453,43 @@ export function getButlerSession(
   return apiFetch<ApiResponse<SessionDetail>>(
     `/butlers/${encodeURIComponent(name)}/sessions/${encodeURIComponent(id)}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Butler analytics (bu-iuol4.16)
+// ---------------------------------------------------------------------------
+
+/** GET /api/butlers/{name}/analytics/hourly-activity */
+export function getButlerHourlyActivity(
+  name: string,
+  params?: HourlyActivityParams,
+): Promise<ApiResponse<HourlyActivity>> {
+  const qs = new URLSearchParams();
+  if (params?.window_hours != null) qs.set("window_hours", String(params.window_hours));
+  const base = `/butlers/${encodeURIComponent(name)}/analytics/hourly-activity`;
+  return apiFetch<ApiResponse<HourlyActivity>>(qs.toString() ? `${base}?${qs}` : base);
+}
+
+/** GET /api/butlers/{name}/analytics/daily-activity */
+export function getButlerDailyActivity(
+  name: string,
+  params?: DailyActivityParams,
+): Promise<ApiResponse<DailyActivity>> {
+  const qs = new URLSearchParams();
+  if (params?.window_days != null) qs.set("window_days", String(params.window_days));
+  const base = `/butlers/${encodeURIComponent(name)}/analytics/daily-activity`;
+  return apiFetch<ApiResponse<DailyActivity>>(qs.toString() ? `${base}?${qs}` : base);
+}
+
+/** GET /api/butlers/{name}/analytics/session-kinds */
+export function getButlerSessionKinds(
+  name: string,
+  params?: SessionKindsParams,
+): Promise<ApiResponse<SessionKindBreakdown>> {
+  const qs = new URLSearchParams();
+  if (params?.window_days != null) qs.set("window_days", String(params.window_days));
+  const base = `/butlers/${encodeURIComponent(name)}/analytics/session-kinds`;
+  return apiFetch<ApiResponse<SessionKindBreakdown>>(qs.toString() ? `${base}?${qs}` : base);
 }
 
 // ---------------------------------------------------------------------------

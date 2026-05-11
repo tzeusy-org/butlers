@@ -871,6 +871,9 @@ export {
   getMessengerCircuitStatus,
   getMessengerQueueDepth,
   getMessengerDeadLetters,
+  getButlerHourlyActivity,
+  getButlerDailyActivity,
+  getButlerSessionKinds,
 } from "./client.ts";
 
 export type {
@@ -882,4 +885,20 @@ export type {
   MessengerDeadLetterEntry,
   MessengerDeadLetterSummary,
   MessengerDeadLettersParams,
+} from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Butler analytics (bu-iuol4.16)
+// ---------------------------------------------------------------------------
+
+export type {
+  HourlyActivity,
+  HourlyActivityBucket,
+  HourlyActivityParams,
+  DailyActivity,
+  DailyActivityBucket,
+  DailyActivityParams,
+  SessionKindItem,
+  SessionKindBreakdown,
+  SessionKindsParams,
 } from "./types.ts";
