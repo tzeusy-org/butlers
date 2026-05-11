@@ -19,7 +19,6 @@
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import { AlertTriangle } from "lucide-react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -39,7 +38,7 @@ import {
   useAllFrontierNodes,
   useMindMapAnalyticsTrend,
 } from "@/hooks/use-education";
-import { toneClass } from "@/components/butler-detail/atoms";
+import { ErrorLine, toneClass } from "@/components/butler-detail/atoms";
 import type { PendingReviewNode, MindMapNode, MasterySummary, AnalyticsTrendEntry } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -178,19 +177,6 @@ function useReviewsTabData(): AggregatedData {
 // ---------------------------------------------------------------------------
 // Shared UI primitives
 // ---------------------------------------------------------------------------
-
-/** Error state: icon + destructive-tone text. */
-function ErrorLine({ children }: { children: ReactNode }) {
-  return (
-    <p
-      className="flex items-center gap-1.5 text-sm text-destructive min-w-0"
-      data-testid="error-state-line"
-    >
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{children}</span>
-    </p>
-  );
-}
 
 /** Empty-state text: serif italic per Dispatch typography guidelines. */
 function EmptyStateLine({ children }: { children: ReactNode }) {

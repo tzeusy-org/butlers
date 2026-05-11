@@ -269,12 +269,13 @@ export function ErrorLine({ children, className }: ErrorLineProps) {
   return (
     <p
       className={cn(
-        "flex items-center gap-1.5 text-sm text-destructive min-w-0",
+        "flex items-center gap-1.5 text-sm min-w-0",
+        toneClass("red"),
         className,
       )}
       data-testid="error-state-line"
     >
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span className="truncate">{children}</span>
     </p>
   )
