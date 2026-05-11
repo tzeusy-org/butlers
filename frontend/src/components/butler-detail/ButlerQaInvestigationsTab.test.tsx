@@ -506,9 +506,7 @@ describe("ButlerQaInvestigationsTab — empty state", () => {
 
   it("shows empty state for patrol stripe", () => {
     renderTab();
-    expect(
-      screen.getByText("No patrols recorded in the last 24 hours."),
-    ).toBeDefined();
+    expect(screen.getByText("No patrols recorded.")).toBeDefined();
   });
 
   it("does not render detail panel in empty state", () => {
@@ -585,5 +583,65 @@ describe("ButlerQaInvestigationsTab — circuit breaker", () => {
     renderTab();
     expect(screen.getByTestId("circuit-breaker-tripped")).toBeDefined();
     expect(screen.queryByTestId("circuit-breaker-closed")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Error state
+// ---------------------------------------------------------------------------
+
+describe("ButlerQaInvestigationsTab — error state", () => {
+  afterEach(() => cleanup());
+
+  it("shows error banner when investigations query fails", () => {
+    vi.resetAllMocks();
+    vi.mocked(useQaSummary).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useQaSummary>);
+    vi.mocked(useQaInvestigations).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useQaInvestigations>);
+    vi.mocked(useQaPatrols).mockReturnValue({
+      data: { data: [], meta: { total: 0, has_more: false, offset: 0, limit: 24 } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useQaPatrols>);
+    vi.mocked(useQaCircuitBreaker).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useQaCircuitBreaker>);
+    renderTab();
+    expect(screen.getByTestId("qa-load-error")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Keyboard accessibility
+// ---------------------------------------------------------------------------
+
+describe("ButlerQaInvestigationsTab — keyboard accessibility", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+  afterEach(() => cleanup());
+
+  it("opens detail panel on Enter keypress on a row", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("investigation-row");
+    fireEvent.keyDown(rows[0], { key: "Enter" });
+    expect(screen.getByTestId("investigation-detail-panel")).toBeDefined();
+  });
+
+  it("opens detail panel on Space keypress on a row", () => {
+    renderTab();
+    const rows = screen.getAllByTestId("investigation-row");
+    fireEvent.keyDown(rows[0], { key: " " });
+    expect(screen.getByTestId("investigation-detail-panel")).toBeDefined();
   });
 });

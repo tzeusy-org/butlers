@@ -12,7 +12,7 @@
 // All data comes from existing hooks. No new HTTP routes.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router";
 
 import type { QaInvestigation, QaPatrolSummary } from "@/api/types";
@@ -30,18 +30,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Compact relative age — e.g. "just now", "5m ago", "2h ago", "3d ago". */
-function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const diff = Date.now() - new Date(iso).getTime();
-  const minutes = Math.round(diff / 60_000);
-  if (minutes < 2) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 /** Format seconds to a human-readable MTTR string (e.g. "4h 12m"). */
 function formatMttr(seconds: number | null | undefined): string {
@@ -217,7 +205,7 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
     return (
       <Card data-testid="patrol-cadence-stripe">
         <CardHeader>
-          <CardTitle className="text-sm font-medium">Recent patrols · 24h</CardTitle>
+          <CardTitle className="text-sm font-medium">Recent patrols</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2" data-testid="patrol-stripe-loading">
@@ -237,12 +225,12 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
   return (
     <Card data-testid="patrol-cadence-stripe">
       <CardHeader>
-        <CardTitle className="text-sm font-medium">Recent patrols · 24h</CardTitle>
+        <CardTitle className="text-sm font-medium">Recent patrols</CardTitle>
       </CardHeader>
       <CardContent>
         {patrols.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="empty-state-line">
-            No patrols recorded in the last 24 hours.
+            No patrols recorded.
           </p>
         ) : (
           <ul className="divide-y" data-testid="patrol-stripe-list" aria-label="Patrol cadence">
@@ -253,7 +241,7 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
                 data-testid="patrol-stripe-row"
               >
                 <span className="text-xs text-muted-foreground tabular-nums min-w-[72px]">
-                  {formatRelative(patrol.started_at)}
+                  <Time value={patrol.started_at} mode="relative" />
                 </span>
                 <PatrolStatusChip status={patrol.status} />
                 <span className="text-xs text-muted-foreground tabular-nums">
@@ -337,8 +325,17 @@ function RecentInvestigationsTable({
                       selectedId === inv.id ? "bg-muted" : ""
                     }`}
                     onClick={() => onSelect(inv)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelect(inv);
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
                     data-testid="investigation-row"
                     aria-selected={selectedId === inv.id}
+                    aria-label={`Investigation ${inv.id.slice(0, 8)}: ${inv.exception_type}`}
                   >
                     <td className="py-2 pr-3">
                       <span className="font-mono text-xs text-muted-foreground tabular-nums">
@@ -526,13 +523,6 @@ function computeInvestigationKpis(investigations: QaInvestigation[]) {
 
   const openCount = investigations.filter((inv) => OPEN_STATUSES.has(inv.status)).length;
 
-  const closedIn24h = investigations.filter(
-    (inv) =>
-      CLOSED_STATUSES.has(inv.status) &&
-      inv.closed_at &&
-      new Date(inv.closed_at).getTime() >= cutoff24h,
-  ).length;
-
   // Rough MTTR: mean resolution time (closed_at - created_at) for items closed in 24h
   const resolvedItems = investigations.filter(
     (inv) =>
@@ -540,6 +530,8 @@ function computeInvestigationKpis(investigations: QaInvestigation[]) {
       CLOSED_STATUSES.has(inv.status) &&
       new Date(inv.closed_at).getTime() >= cutoff24h,
   );
+
+  const closedIn24h = resolvedItems.length;
 
   let mttrSeconds: number | null = null;
   if (resolvedItems.length > 0) {
@@ -561,18 +553,35 @@ function computeInvestigationKpis(investigations: QaInvestigation[]) {
 export default function ButlerQaInvestigationsTab() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data: summaryResp, isLoading: summaryLoading } = useQaSummary();
-  const { data: investigationsResp, isLoading: invLoading } = useQaInvestigations({ limit: 50 });
-  const { data: patrolsResp, isLoading: patrolsLoading } = useQaPatrols({ limit: 24 });
+  const {
+    data: summaryResp,
+    isLoading: summaryLoading,
+    isError: summaryError,
+  } = useQaSummary();
+  const {
+    data: investigationsResp,
+    isLoading: invLoading,
+    isError: invError,
+  } = useQaInvestigations({ limit: 50 });
+  const {
+    data: patrolsResp,
+    isLoading: patrolsLoading,
+    isError: patrolsError,
+  } = useQaPatrols({ limit: 24 });
 
   const summary = summaryResp?.data;
-  const investigations = investigationsResp?.data ?? [];
+  const investigationsData = investigationsResp?.data;
+  const investigations = useMemo(() => investigationsData ?? [], [investigationsData]);
   const patrols = patrolsResp?.data ?? [];
 
-  const { openCount, closedIn24h, mttrSeconds } = computeInvestigationKpis(investigations);
+  const { openCount, closedIn24h, mttrSeconds } = useMemo(
+    () => computeInvestigationKpis(investigations),
+    [investigations],
+  );
   const patrolsIn24h = summary?.stats_24h.patrols_completed ?? 0;
 
   const kpiLoading = summaryLoading || invLoading;
+  const hasError = summaryError || invError || patrolsError;
 
   const selectedInvestigation = selectedId
     ? (investigations.find((inv) => inv.id === selectedId) ?? null)
@@ -588,6 +597,13 @@ export default function ButlerQaInvestigationsTab() {
 
   return (
     <div className="space-y-4 pt-4" data-testid="qa-investigations-tab">
+      {/* Error banner */}
+      {hasError && (
+        <p className="text-sm text-destructive" data-testid="qa-load-error">
+          Some data failed to load. Displayed values may be incomplete.
+        </p>
+      )}
+
       {/* Row 1: KPI quartet */}
       <KpiQuartet
         openCount={openCount}
@@ -602,7 +618,7 @@ export default function ButlerQaInvestigationsTab() {
         <CircuitBreakerChip />
       </div>
 
-      {/* Row 2: Patrol cadence stripe (full-width, 24h) */}
+      {/* Row 2: Patrol cadence stripe (recent patrols) */}
       <PatrolCadenceStripe patrols={patrols} isLoading={patrolsLoading} />
 
       {/* Row 3: Recent investigations table (5 rows) */}
