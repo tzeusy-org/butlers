@@ -22,7 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { useCallback, useState } from "react";
-import { AlertTriangle, Plus, Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 
 import type { GeneralCollection, GeneralEntity } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -38,7 +38,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell } from "./atoms";
+import { KpiCell, ErrorLine } from "./atoms";
 import {
   useGeneralCollections,
   useGeneralEntities,
@@ -57,18 +57,6 @@ import {
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-function ErrorLine({ children }: { children: React.ReactNode }) {
-  return (
-    <p
-      className="flex items-center gap-1.5 text-sm text-destructive min-w-0"
-      data-testid="error-state-line"
-    >
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{children}</span>
-    </p>
-  );
-}
 
 function LoadingRows({ count = 4 }: { count?: number }) {
   return (

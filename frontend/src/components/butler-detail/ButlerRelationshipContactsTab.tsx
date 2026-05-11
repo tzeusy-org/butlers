@@ -22,9 +22,6 @@
 
 import { useState } from "react";
 import type { ReactNode } from "react";
-
-import { AlertTriangle } from "lucide-react";
-
 import type {
   ContactDetail,
   DunbarEntry,
@@ -35,7 +32,7 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { KpiCell } from "./atoms";
+import { KpiCell, ErrorLine } from "./atoms";
 import { useContacts, useContact, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
 import { useDunbarRanking } from "@/hooks/use-memory";
 
@@ -67,16 +64,6 @@ function EmptyStateLine({ children }: { children: ReactNode }) {
       data-testid="empty-state-line"
     >
       {children}
-    </p>
-  );
-}
-
-/** Error state: icon + destructive-tone text. */
-function ErrorLine({ children }: { children: ReactNode }) {
-  return (
-    <p className="flex items-center gap-1.5 text-sm text-destructive min-w-0" data-testid="error-state-line">
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{children}</span>
     </p>
   );
 }

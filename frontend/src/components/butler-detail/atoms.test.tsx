@@ -4,16 +4,17 @@
 // (bu-iuol4.13)
 //
 // Coverage:
-//   MonoLabel — color prop (all tones)
-//   Panel     — span 1/2/3/4, scroll prop, height prop, accent flag
-//   KpiCell   — tone variants (amber/red/green/dim/fg), big vs default size
-//   KV        — mono prop
+//   MonoLabel  — color prop (all tones)
+//   Panel      — span 1/2/3/4, scroll prop, height prop, accent flag
+//   KpiCell    — tone variants (amber/red/green/dim/fg), big vs default size
+//   KV         — mono prop
+//   ErrorLine  — renders children, icon, destructive tone, data-testid
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
-import { MonoLabel, Panel, KpiCell, KV } from "./atoms"
+import { MonoLabel, Panel, KpiCell, KV, ErrorLine } from "./atoms"
 
 // ---------------------------------------------------------------------------
 // MonoLabel
@@ -328,5 +329,49 @@ describe("KV", () => {
   it("passes through className to the row", () => {
     const html = renderToStaticMarkup(<KV k="k" v="v" className="custom-row" />)
     expect(html).toContain("custom-row")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ErrorLine
+// ---------------------------------------------------------------------------
+
+describe("ErrorLine", () => {
+  it("renders children text", () => {
+    const html = renderToStaticMarkup(<ErrorLine>Could not load data.</ErrorLine>)
+    expect(html).toContain("Could not load data.")
+  })
+
+  it("applies text-destructive", () => {
+    const html = renderToStaticMarkup(<ErrorLine>Error</ErrorLine>)
+    expect(html).toContain("text-destructive")
+  })
+
+  it("sets data-testid=error-state-line", () => {
+    const html = renderToStaticMarkup(<ErrorLine>Error</ErrorLine>)
+    expect(html).toContain('data-testid="error-state-line"')
+  })
+
+  it("includes flex layout classes for icon alignment", () => {
+    const html = renderToStaticMarkup(<ErrorLine>Error</ErrorLine>)
+    expect(html).toContain("flex")
+    expect(html).toContain("items-center")
+    expect(html).toContain("gap-1.5")
+  })
+
+  it("wraps children in a truncate span", () => {
+    const html = renderToStaticMarkup(<ErrorLine>Error</ErrorLine>)
+    expect(html).toContain("truncate")
+  })
+
+  it("passes through className", () => {
+    const html = renderToStaticMarkup(<ErrorLine className="custom-err">Error</ErrorLine>)
+    expect(html).toContain("custom-err")
+  })
+
+  it("does not render raw oklch or hex", () => {
+    const html = renderToStaticMarkup(<ErrorLine>Error</ErrorLine>)
+    expect(html).not.toMatch(/oklch/)
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}/)
   })
 })
