@@ -115,11 +115,14 @@ async def test_episodes_butler_filter_applied_in_sql(app):
     body = resp.json()
     assert body["data"][0]["butler"] == "atlas"
 
-    # Verify the SQL passed to the pool included a WHERE clause with the
-    # butler argument.  The pool is called once per butler_name in
-    # _fan_out_memory_queries — check at least one call carried 'atlas'.
+    # Verify the SQL passed to the pool included a parameterised WHERE clause
+    # with the butler argument.  The pool is called once per butler_name in
+    # _fan_out_memory_queries — check at least one call carried the bound value.
     call_args_list = mock_db.pool.return_value.fetch.call_args_list
-    assert any("atlas" in str(call) for call in call_args_list)
+    assert any(
+        "butler = $1" in call.args[0] and "atlas" in call.args[1:]
+        for call in call_args_list
+    )
 
 
 async def test_episodes_unknown_butler_returns_empty_200(app):
@@ -151,8 +154,13 @@ async def test_episodes_butler_filter_combined_with_consolidated(app):
         )
 
     assert resp.status_code == 200
-    # Both args should appear in the fetch call
+    # Both args should appear in the fetch call — check positional args directly.
     call_args_list = mock_db.pool.return_value.fetch.call_args_list
-    all_calls = str(call_args_list)
-    assert "atlas" in all_calls
-    assert "False" in all_calls or "false" in all_calls.lower()
+    assert any(
+        "butler = $1" in call.args[0] and "atlas" in call.args[1:]
+        for call in call_args_list
+    )
+    assert any(
+        "consolidated = $2" in call.args[0] and False in call.args[1:]
+        for call in call_args_list
+    )
