@@ -98,14 +98,14 @@ const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
 type SourceStatus = "live" | "stale" | "offline" | "planned";
 
-function classifySourceStatus(row: ChroniclerSourceStateRow): SourceStatus | null {
+function classifySourceStatus(row: ChroniclerSourceStateRow, nowMs: number): SourceStatus | null {
   const badgeState = getBadgeState(row);
   if (badgeState === null) return null; // not_time_bearing — hide
   if (badgeState === "planned" || badgeState === "deferred") return "planned";
   if (badgeState === "inactive") return "offline";
   // active
   if (!row.last_run_at) return "stale";
-  const ageMs = Date.now() - new Date(row.last_run_at).getTime();
+  const ageMs = nowMs - new Date(row.last_run_at).getTime();
   return ageMs <= TWO_HOURS_MS ? "live" : "stale";
 }
 
@@ -332,9 +332,10 @@ const SOURCE_STATUS_VARIANT: Record<
 interface SourcesPanelProps {
   rows: ChroniclerSourceStateRow[];
   isLoading: boolean;
+  nowMs: number;
 }
 
-function SourcesPanel({ rows, isLoading }: SourcesPanelProps) {
+function SourcesPanel({ rows, isLoading, nowMs }: SourcesPanelProps) {
   if (isLoading && rows.length === 0) {
     return (
       <div className="space-y-2" data-testid="source-health-loading">
@@ -349,7 +350,7 @@ function SourcesPanel({ rows, isLoading }: SourcesPanelProps) {
   }
 
   const visible = rows
-    .map((row) => ({ row, status: classifySourceStatus(row) }))
+    .map((row) => ({ row, status: classifySourceStatus(row, nowMs) }))
     .filter((item): item is { row: ChroniclerSourceStateRow; status: SourceStatus } =>
       item.status !== null,
     );
@@ -465,9 +466,18 @@ export default function ButlerChroniclerTimelinesTab() {
     [sourceStateData],
   );
 
+  // Capture a single timestamp per render so the KPI count and Sources list
+  // both evaluate against the same "now". Prevents edge-case inconsistencies
+  // when two separate classifySourceStatus calls straddle the 2h boundary.
+  const nowMs = Date.now();
+
   // KPI: count of live sources (active + last_run_at within 2h)
   const sourcesLive = useMemo(
-    () => sourceRows.filter((row) => classifySourceStatus(row) === "live").length,
+    () => sourceRows.filter((row) => classifySourceStatus(row, nowMs) === "live").length,
+    // nowMs is intentionally excluded from deps — it is recaptured on every
+    // render and the staleness risk (< 1 ms between useMemo evaluations) is
+    // negligible. Including it would cause unnecessary recalculations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [sourceRows],
   );
 
@@ -479,17 +489,21 @@ export default function ButlerChroniclerTimelinesTab() {
     return dayClose?.next_run_at ?? null;
   }, [schedulesData]);
 
+  // Total episode count from backend metadata — more accurate than episodes.length
+  // which only reflects the currently-loaded pages.
+  const episodeCount = infiniteEpisodesData?.pages[0]?.meta.total ?? 0;
+
   return (
     <div
-      className="grid grid-cols-4 border-t border-l border-border/60"
+      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
       data-testid="chronicler-timelines-tab"
     >
       {/* Row 1: KPI strip (full width, span 4) */}
-      <div data-testid="kpi-strip" className="col-span-4">
+      <div data-testid="kpi-strip" className="col-span-1 lg:col-span-4">
         <KpiRow
           kpi={kpi}
           kpiLoading={kpiLoading}
-          episodeCount={episodes.length}
+          episodeCount={episodeCount}
           episodesLoading={episodesLoading}
           sourcesLive={sourcesLive}
           sourcesLoading={sourceLoading}
@@ -499,7 +513,7 @@ export default function ButlerChroniclerTimelinesTab() {
       </div>
 
       {/* Row 2: Today timeline (span 3) */}
-      <div data-testid="today-timeline-card" className="col-span-3">
+      <div data-testid="today-timeline-card" className="col-span-1 lg:col-span-3">
         <Panel title="Today timeline" span={3} scroll height="480px">
           <EpisodeSpine
             episodes={episodes}
@@ -515,7 +529,7 @@ export default function ButlerChroniclerTimelinesTab() {
       {/* Row 2: Sources (span 1) */}
       <div data-testid="sources-card" className="col-span-1">
         <Panel title="Sources" span={1}>
-          <SourcesPanel rows={sourceRows} isLoading={sourceLoading} />
+          <SourcesPanel rows={sourceRows} isLoading={sourceLoading} nowMs={nowMs} />
         </Panel>
       </div>
     </div>

@@ -13,7 +13,7 @@
  *  - Episode spine renders items with privacy masking for sensitive episodes
  *  - Pagination: "Load more" button shown when hasNextPage=true, hidden when false
  *  - Pagination: clicking "Load more" calls fetchNextPage
- *  - Pagination: button shows "Loading..." while isFetchingNextPage
+ *  - Pagination: button shows "Loading…" while isFetchingNextPage
  *  - Multi-page live update: all loaded pages remain active after Load more
  *
  * bead: bu-iuol4.25
@@ -427,6 +427,16 @@ describe("ButlerChroniclerTimelinesTab — KPI rendering", () => {
     const items = screen.getAllByTestId("kpi-item");
     const assemblyText = items[3].textContent ?? "";
     expect(assemblyText).toContain("—");
+  });
+
+  it("renders a relative time value for next assembly when schedule data is present", () => {
+    renderTab();
+    // setupWithData provides SCHEDULES_DATA with next_run_at 17h in the future
+    // The 4th KPI item should contain a <time> element (rendered by <Time>)
+    const items = screen.getAllByTestId("kpi-item");
+    const assemblyCell = items[3];
+    const timeEl = assemblyCell.querySelector("time");
+    expect(timeEl).not.toBeNull();
   });
 });
 
