@@ -42,6 +42,7 @@ import { useApprovalActions } from "@/hooks/use-approvals"
 /** An action that expires in 30 minutes -- HIGH severity */
 const HIGH_ACTION = {
   id: "action-high-001",
+  butler: "general",
   tool_name: "send_telegram",
   tool_args: { message: "Hello" },
   status: "pending",
@@ -59,6 +60,7 @@ const HIGH_ACTION = {
 /** An action that expires in 6 hours -- MEDIUM severity */
 const MEDIUM_ACTION = {
   id: "action-med-002",
+  butler: "general",
   tool_name: "notify",
   tool_args: { contact_id: "c-123" },
   status: "pending",
@@ -76,6 +78,7 @@ const MEDIUM_ACTION = {
 /** An action with no expiry -- LOW severity */
 const LOW_ACTION = {
   id: "action-low-003",
+  butler: "general",
   tool_name: "archive_email",
   tool_args: { email_id: "e-456" },
   status: "pending",
