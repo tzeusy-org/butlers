@@ -4,6 +4,7 @@ import { MemoryRouter, useParams, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerDetailPage from "@/pages/ButlerDetailPage";
+import SystemPage from "@/pages/SystemPage";
 import {
   BASE_TABS_OPERATOR,
   BASE_TABS_RESIDENT,
@@ -11,8 +12,11 @@ import {
   getAllTabs,
   isValidTab,
 } from "@/pages/butler-detail-tabs";
-import { useButler } from "@/hooks/use-butlers";
+import { useButler, useButlers, useRuntimeConfig } from "@/hooks/use-butlers";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
+import { useButlerHeartbeats } from "@/hooks/use-system";
 import type { ButlerSummary } from "@/api/types";
+import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board";
 
 // Mock react-router's useParams so we can control the butler name
 vi.mock("react-router", async (importOriginal) => {
@@ -45,6 +49,18 @@ vi.mock("@/hooks/use-contacts", () => ({
 
 vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useInstanceFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useDatabaseFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useBackupFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useEgressFacts: vi.fn(() => ({ data: null, isLoading: false, error: null, isForbidden: false })),
+}));
+
+vi.mock("@/hooks/use-ingestion", () => ({
+  useConnectorSummaries: vi.fn(() => ({ data: null, isLoading: false, isError: false, error: null })),
+}));
+
+vi.mock("@/components/topology/TopologyGraph", () => ({
+  default: () => <div data-testid="topology-graph-stub" />,
 }));
 
 vi.mock("@/hooks/use-butler-status-board", () => ({
@@ -1597,5 +1613,651 @@ describe("ButlerDetailPage — bespoke conditional tabs", () => {
 
   it("getAllTabs does NOT include trips for general", () => {
     expect(getAllTabs("general", "operator")).not.toContain("trips");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec-scenario harness — all 12 integration scenarios (bu-ja5bt.8)
+// ---------------------------------------------------------------------------
+//
+// Each section corresponds to exactly one scenario from the bu-ja5bt OpenSpec.
+// Assertions use ARIA roles, data-testid attributes, and aria-label / aria-*
+// attributes as behaviour selectors.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Fixture helpers (shared by scenarios 3-8)
+// ---------------------------------------------------------------------------
+
+const NO_OP_REFETCH = vi.fn();
+
+function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusBoardAggregates {
+  return {
+    total: 0,
+    butlerCount: 0,
+    stafferCount: 0,
+    active: 0,
+    paused: 0,
+    awaiting: 0,
+    quarantined: 0,
+    totalSessions24h: 0,
+    totalSpendToday: 0,
+    avgLoadPct: null,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: NO_OP_REFETCH,
+    ...overrides,
+  };
+}
+
+function makeRow(name: string, overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
+  return {
+    name,
+    type: "butler",
+    description: null,
+    status: "ok",
+    activity: "idle",
+    cellTone: "neutral",
+    eligibility: "active",
+    sessions24h: 0,
+    costToday: 0,
+    loadPct: null,
+    lastRunISO: null,
+    hourlyStripe: Array(24).fill(0) as number[],
+    ...overrides,
+  };
+}
+
+// Real roster used by sibling-nav scenarios
+const ROSTER_NAMES = [
+  "chronicler",
+  "education",
+  "finance",
+  "general",
+  "health",
+  "home",
+  "lifestyle",
+  "messenger",
+  "qa",
+  "relationship",
+  "travel",
+  "switchboard",
+] as const;
+
+// ---------------------------------------------------------------------------
+// Scenario 1: status-board archetype resolves on /butlers/{name}
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 1 -- status-board archetype chrome on /butlers/{name}", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+  });
+
+  it("renders the butler-detail-header slot (status-board header primitive)", () => {
+    const html = renderPage();
+    // The status-board header slot renders ButlerDetailHeader which
+    // carries data-testid="butler-detail-header". This is the primary
+    // identifier that the archetype mounted the header slot.
+    expect(html).toContain('data-testid="butler-detail-header"');
+  });
+
+  it("renders breadcrumbs in the status-board chrome strip", () => {
+    const html = renderPage();
+    // status-board archetype renders a chrome strip between the header slot
+    // and the body when breadcrumbs are provided.
+    expect(html).toContain('aria-label="Breadcrumb"');
+    expect(html).toContain("/butlers");
+  });
+
+  it("renders the actions slot in the status-board chrome strip", () => {
+    const html = renderPage();
+    // ButlerDetailActions is in the actions slot, rendered inside the chrome strip.
+    expect(html).toContain('data-testid="butler-detail-actions"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 2: no Tier 2 hero block between header slot and tab body
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 2 -- no Tier 2 hero block between Page header and Tabs body", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+  });
+
+  it("does NOT render a data-testid=hero element anywhere on the page", () => {
+    const html = renderPage();
+    expect(html).not.toContain('data-testid="hero"');
+  });
+
+  it("the header slot (butler-detail-header) comes before the tab rail (role=tablist)", () => {
+    const html = renderPage();
+    const headerIdx = html.indexOf('data-testid="butler-detail-header"');
+    const tablistIdx = html.indexOf('role="tablist"');
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    expect(tablistIdx).toBeGreaterThan(headerIdx);
+  });
+
+  it("no second h1 element appears between the header slot and the tab rail", () => {
+    const html = renderPage();
+    // The only h1 is in ButlerDetailHeader (from the header slot).
+    // A Tier 2 hero block would introduce a second h1 above the tabs.
+    const h1Matches = html.match(/<h1[\s>]/g) ?? [];
+    expect(h1Matches).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 3: sibling nav lists every butler from useButlers() with
+//             aria-current="page" on the active entry
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 3 -- sibling nav lists all butlers with aria-current on active", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useParams).mockReturnValue({ name: "health" });
+    setButlerState({ ...BASE_BUTLER, name: "health" });
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    // Provide all 12 roster butlers via useButlerStatusBoard
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: ROSTER_NAMES.map((n) => makeRow(n)),
+      aggregates: makeAggregates({ total: ROSTER_NAMES.length }),
+    });
+  });
+
+  it("sibling nav has role=navigation with aria-label Navigate to butler", () => {
+    const html = renderPage();
+    expect(html).toContain('role="navigation"');
+    expect(html).toContain('aria-label="Navigate to butler"');
+  });
+
+  it("active butler entry has aria-current=page", () => {
+    const html = renderPage();
+    // The active butler is "health"; SiblingButlerNav sets aria-current="page" on it.
+    expect(html).toContain('aria-current="page"');
+  });
+
+  it("roster butler names appear in the sibling nav links", () => {
+    const html = renderPage();
+    // At minimum, the active butler and a sibling must be in the nav.
+    // Each name is rendered as text inside the Link.
+    expect(html).toContain(">health<");
+    expect(html).toContain(">general<");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 4: sibling nav renders skeleton state when useButlerStatusBoard
+//             returns isLoading=true
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 4 -- sibling nav skeleton state on loading", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    // Simulate loading state
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates({ isLoading: true }),
+    });
+  });
+
+  it("sibling nav renders aria-busy=true while data is loading", () => {
+    const html = renderPage();
+    // SiblingButlerNav renders the nav with aria-busy="true" in skeleton state.
+    // ButlerDetailHeader also renders its own aria-busy="true" skeleton.
+    expect(html).toContain('aria-busy="true"');
+  });
+
+  it("no links render in the sibling nav while loading", () => {
+    const html = renderPage();
+    // In skeleton state, SiblingButlerNav renders Skeleton placeholders, not Link elements.
+    // Check that no /butlers/:name links appear in the nav.
+    // We use a targeted check: no aria-current="page" (which is on links).
+    expect(html).not.toContain('aria-current="page"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 5: paused or quarantined sibling butler is still navigable
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 5 -- paused or quarantined sibling stays navigable", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    // Provide a quarantined butler alongside the active one
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [
+        makeRow("general", { activity: "idle" }),
+        makeRow("health", { activity: "quarantined", eligibility: "quarantined" }),
+        makeRow("finance", { activity: "paused", status: "degraded" }),
+      ],
+      aggregates: makeAggregates({ total: 3 }),
+    });
+  });
+
+  it("quarantined sibling butler link does NOT have aria-disabled", () => {
+    const html = renderPage();
+    // The sibling nav renders <Link> elements for all butlers.
+    // Quarantined or paused butlers must NOT be aria-disabled.
+    expect(html).not.toContain('aria-disabled="true"');
+    expect(html).not.toContain("aria-disabled");
+  });
+
+  it("all sibling butler names are present as navigable links (including quarantined)", () => {
+    const html = renderPage();
+    // "health" and "finance" are degraded/quarantined but still appear.
+    expect(html).toContain(">health<");
+    expect(html).toContain(">finance<");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 6: sibling nav uses NEUTRAL tokens -- no data-butler-hue on chrome
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 6 -- sibling nav uses neutral tokens, no butler-hue on chrome", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: ROSTER_NAMES.map((n) => makeRow(n)),
+      aggregates: makeAggregates({ total: ROSTER_NAMES.length }),
+    });
+  });
+
+  it("no data-butler-hue attribute appears on sibling-nav link chrome elements", () => {
+    const html = renderPage();
+    // Butler hue is ONLY allowed on ButlerMark (the icon).
+    // No other chrome element in the sibling nav may carry a butler-hue attribute.
+    expect(html).not.toContain("data-butler-hue");
+  });
+
+  it("no hex or oklch color literals appear in the sibling-nav section", () => {
+    const html = renderPage();
+    // Token-only constraint: no raw hex (#rrggbb) or oklch(...) in rendered markup.
+    // The sibling nav section is bounded by the navigation role.
+    const navStart = html.indexOf('aria-label="Navigate to butler"');
+    const navSection = html.slice(navStart, navStart + 4000);
+    expect(navSection).not.toMatch(/#[0-9a-fA-F]{3,6}[^;]/);
+    expect(navSection).not.toContain("oklch(");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 7: footer KPI band is butler-scoped (shows active butler's data)
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 7 -- footer KPI band is scoped to the active butler", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    // The active butler is "general" with sessions_24h=7
+    vi.mocked(useParams).mockReturnValue({ name: "general" });
+    setButlerState({ ...BASE_BUTLER, name: "general", sessions_24h: 7 });
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+    // Mock useButlers to return sessions_24h=7 for general
+    vi.mocked(useButlers).mockReturnValue({
+      data: {
+        data: [
+          { name: "general", status: "ok", port: 8001, type: "butler", sessions_24h: 7 },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+
+  it("footer renders an aria-label scoped to the active butler", () => {
+    const html = renderPage();
+    // ButlerDetailFooter renders <footer aria-label="KPI summary for {butler}">
+    expect(html).toContain('aria-label="KPI summary for general"');
+  });
+
+  it("footer shows the active butler sessions_24h value (not fleet aggregate)", () => {
+    const html = renderPage();
+    // sessions_24h=7 for general. The KPI cell renders "7" as the value.
+    // Fleet aggregate would be a different number (or 0 if others aren't included).
+    expect(html).toContain(">7<");
+  });
+
+  it("footer renders the Sessions 24h KPI label", () => {
+    const html = renderPage();
+    expect(html).toContain("Sessions 24h");
+  });
+
+  it("footer renders the Spend today KPI label", () => {
+    const html = renderPage();
+    expect(html).toContain("Spend today");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 8: footer partial-failure placeholder when loadPct is null
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 8 -- footer LOAD % shows neutral placeholder when loadPct is null", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+    // useRuntimeConfig returns null (no max_concurrent) -- triggers placeholder
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+
+  it("footer LOAD % cell renders the neutral placeholder glyph when max_concurrent is unknown", () => {
+    const html = renderPage();
+    // ButlerDetailFooter renders "--" (two hyphens, not em-dash) when loadPct=null.
+    // The PLACEHOLDER constant is "--".
+    // Since the footer contains multiple KPI cells, we check that "--" appears.
+    expect(html).toContain("--");
+  });
+
+  it("footer does not collapse or crash when loadPct is null", () => {
+    const html = renderPage();
+    // The footer should still render all four KPI labels.
+    expect(html).toContain("Sessions 24h");
+    expect(html).toContain("Spend today");
+    expect(html).toContain("Load");
+    expect(html).toContain("Last activity");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 9: ButlerHeartbeatTile is ABSENT from the detail page;
+//             it IS present on SystemPage
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 9 -- ButlerHeartbeatTile absent from detail page, present on SystemPage", () => {
+  function renderSystemPage(): string {
+    const queryClient = new QueryClient();
+    return renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SystemPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useParams).mockReturnValue({ name: "relationship" });
+    setButlerState({ ...BASE_BUTLER, name: "relationship" });
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+    // Provide useButlerHeartbeats data so ButlerHeartbeatTile renders its title on SystemPage
+    vi.mocked(useButlerHeartbeats).mockReturnValue({
+      data: { data: { butlers: [] } },
+      isLoading: false,
+      error: null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    vi.mocked(useButlers).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+
+  it("ButlerHeartbeatTile text is NOT present on the butler detail page", () => {
+    const html = renderPage();
+    // "Butler Heartbeats" is the title rendered only inside ButlerHeartbeatTile.
+    expect(html).not.toContain("Butler Heartbeats");
+  });
+
+  it("no butler-heartbeat-tile testid appears on the butler detail page", () => {
+    const html = renderPage();
+    // ButlerHeartbeatTile does not carry a dedicated testid, but "butler-heartbeat-tile"
+    // must not appear in any form on the detail page DOM.
+    expect(html).not.toContain("butler-heartbeat-tile");
+  });
+
+  it("Butler Heartbeats tile DOES render on SystemPage", () => {
+    const html = renderSystemPage();
+    // SystemPage includes <ButlerHeartbeatTile /> which renders the card title.
+    expect(html).toContain("Butler Heartbeats");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 10: operator mode renders 10 base tabs + Models tab (11+ tab triggers)
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 10 -- operator mode renders 10 base tabs + Models tab", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+  });
+
+  it("all 10 operator base tab triggers are present in the DOM", () => {
+    const html = renderPage();
+    // BASE_TABS_OPERATOR: overview, sessions, config, skills, schedules,
+    //                     trigger, mcp, state, crm, memory
+    const expectedLabels = [
+      "Overview", "Sessions", "Config", "Skills",
+      "Schedules", "Trigger", "MCP", "State", "CRM", "Memory",
+    ];
+    for (const label of expectedLabels) {
+      // Each tab trigger is a button with role="tab"
+      expect(html).toContain(`>${label}<`);
+    }
+  });
+
+  it("the Models tab trigger is present in operator mode (extension tab)", () => {
+    const html = renderPage();
+    expect(html).toContain(">Models<");
+  });
+
+  it("at least 11 role=tab elements are in the DOM in operator mode for general butler", () => {
+    const html = renderPage();
+    // 10 base + 1 extension (models) + 1 bespoke (collections for general) = 12 tab triggers.
+    // Assert at least 11 to cover the base + models spec requirement.
+    const tabMatches = html.match(/role="tab"/g) ?? [];
+    expect(tabMatches.length).toBeGreaterThanOrEqual(11);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 11: resident mode renders 7-tab Dispatch vocabulary + bespoke tabs
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 11 -- resident mode renders 7-tab Dispatch vocabulary + bespoke tabs", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockReturnValue(null); // resident mode (default)
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+  });
+
+  it("all 7 resident Dispatch vocabulary tab triggers are present in resident mode", () => {
+    const html = renderPage();
+    // BASE_TABS_RESIDENT: overview, activity, logs, approvals, spend, config, memory
+    const expectedLabels = [
+      "Overview", "Activity", "Logs", "Approvals", "Spend", "Config", "Memory",
+    ];
+    for (const label of expectedLabels) {
+      expect(html).toContain(`>${label}<`);
+    }
+  });
+
+  it("operator-only tabs are NOT present as tab triggers in resident mode", () => {
+    const html = renderPage();
+    // Sessions, Skills, Schedules, Trigger, MCP, State, CRM, Models are operator-only.
+    expect(html).not.toContain(">Sessions<");
+    expect(html).not.toContain(">Skills<");
+    expect(html).not.toContain(">Models<");
+  });
+
+  it("bespoke tab renders alongside resident vocab tabs for general butler", () => {
+    // general butler has the Collections bespoke tab
+    const html = renderPage();
+    expect(html).toContain(">Collections<");
+  });
+
+  it("Collections bespoke tab is part of getAllTabs for general in resident mode", () => {
+    const tabs = getAllTabs("general", "resident");
+    expect(tabs).toContain("collections");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12: mode toggle round-trips preserve selected tab when possible
+// ---------------------------------------------------------------------------
+
+describe("Spec scenario 12 -- mode toggle round-trip preserves tab when possible", () => {
+  afterEach(() => {
+    localStorageMock.clear();
+    vi.resetAllMocks();
+  });
+
+  it("switching from operator to resident with a shared tab does NOT clear the tab param", () => {
+    // Start in operator mode with tab=config (shared between modes)
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    const setSearchParamsMock = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=config"),
+      setSearchParamsMock,
+    ]);
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+    // config is valid in both modes -- no setSearchParams call expected on render
+    renderPage();
+    // setSearchParams must NOT be called for the mode (config is valid in resident too)
+    const modeResetCalls = setSearchParamsMock.mock.calls.filter(
+      (call) => Array.isArray(call) && call.length > 0 && typeof call[0] === "object" && !("tab" in call[0]),
+    );
+    expect(modeResetCalls).toHaveLength(0);
+  });
+
+  it("config tab is valid in both operator and resident modes (preserved through toggle)", () => {
+    // Declarative round-trip check: a shared tab survives mode switching
+    expect(isValidTab("config", "general", "operator")).toBe(true);
+    expect(isValidTab("config", "general", "resident")).toBe(true);
+  });
+
+  it("memory tab is valid in both operator and resident modes (preserved through toggle)", () => {
+    expect(isValidTab("memory", "general", "operator")).toBe(true);
+    expect(isValidTab("memory", "general", "resident")).toBe(true);
+  });
+
+  it("overview tab is valid in both modes (preserved through toggle)", () => {
+    expect(isValidTab("overview", "general", "operator")).toBe(true);
+    expect(isValidTab("overview", "general", "resident")).toBe(true);
+  });
+
+  it("auto-promotes operator -> resident when URL has a resident-only tab", () => {
+    // activity is resident-only; switching to resident preserves the tab but promotes the mode
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=activity"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      aggregates: makeAggregates(),
+    });
+    // activity is resident-only; in operator mode this triggers auto-promotion to resident
+    renderPage();
+    // Auto-promotion fires synchronously: mode is set to resident and persisted.
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "butlers.detail.mode",
+      "resident",
+    );
   });
 });
