@@ -568,8 +568,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         span={3}
         testId="panel-recent-sessions"
       >
-        <div className="flex items-center justify-between mb-2">
-          <span />
+        <div className="flex items-center justify-end mb-2">
           <Button variant="link" size="sm" asChild className="h-auto p-0 text-xs">
             <Link to={`/butlers/${encodeURIComponent(butlerName)}/sessions`}>
               View all
