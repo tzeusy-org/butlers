@@ -50,24 +50,22 @@ export function useCostSummary(period?: string, from?: Date, to?: Date, butler?:
 }
 
 /**
- * Fetch daily cost breakdown, optionally scoped to a date range.
+ * Fetch daily cost breakdown, optionally scoped to a date range and/or a butler.
  * Accepts Date objects; converts to YYYY-MM-DD for the API.
  * Falls back to the API default (last 7 days) when from/to are omitted.
- *
- * When `butler` is provided the param is forwarded to the API for forward
- * compatibility. The backend `/api/costs/daily` endpoint does not yet filter
- * by butler (tracked in bu-lryu6); the filter will take effect once that
- * lands. `butler` is intentionally omitted from the query key until the
- * backend supports it — including it would fragment the cache across butlers
- * with no benefit while the param is ignored.
+ * Pass `butler` to scope the query to a single butler (cache is partitioned per butler).
  */
-export function useDailyCosts(from?: Date, to?: Date, refetchInterval?: number | false, butler?: string) {
+export function useDailyCosts(
+  from?: Date,
+  to?: Date,
+  refetchInterval?: number | false,
+  butler?: string,
+) {
   const fromStr = from ? formatCostDate(from) : undefined;
   const toStr = to ? formatCostDate(to) : undefined;
 
   return useQuery({
-    // butler intentionally excluded from queryKey until bu-lryu6 lands
-    queryKey: ["daily-costs", fromStr, toStr],
+    queryKey: ["daily-costs", fromStr, toStr, butler],
     queryFn: () => getDailyCosts(fromStr, toStr, butler),
     refetchInterval: refetchInterval ?? 60_000,
   });
