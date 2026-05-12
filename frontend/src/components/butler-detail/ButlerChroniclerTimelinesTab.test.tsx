@@ -23,6 +23,16 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } 
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+// jsdom does not implement ResizeObserver. Radix Tooltip uses it via
+// @radix-ui/react-use-size. Provide a no-op stub so tooltip rendering works.
+const _originalResizeObserver = (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver;
+(globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver =
+  class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
 import ButlerChroniclerTimelinesTab from "./ButlerChroniclerTimelinesTab";
 
@@ -64,6 +74,7 @@ beforeAll(() => {
 
 afterAll(() => {
   vi.useRealTimers();
+  (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver = _originalResizeObserver;
 });
 
 // ---------------------------------------------------------------------------
@@ -599,10 +610,13 @@ describe("ButlerChroniclerTimelinesTab — sources last_error warning icon", () 
     expect(ariaLabel).toContain("Auth error");
   });
 
-  it("warning icon title attribute matches the error string", () => {
+  it("clicking the warning icon shows a tooltip with the error string (touch support)", () => {
     renderTab();
     const icon = screen.getAllByTestId("source-error-icon")[0];
-    expect(icon.getAttribute("title")).toBe("Auth error");
+    fireEvent.click(icon);
+    // Tooltip content should be visible after clicking (touch-tap pattern)
+    const matches = screen.getAllByText("Auth error");
+    expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 });
 

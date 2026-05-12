@@ -24,7 +24,7 @@
 // /api/chronicler/kpi beyond its existing usage.
 // ---------------------------------------------------------------------------
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 
 import type {
@@ -36,6 +36,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { Panel, KpiCell } from "@/components/butler-detail/atoms";
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
@@ -320,6 +326,27 @@ function EpisodeSpine({
 // Sources panel — source list with live/stale/offline status badges
 // ---------------------------------------------------------------------------
 
+// Tooltip-backed error icon — works on both hover (desktop) and tap (touch).
+// Controlled open state lets touch users tap the icon to show/dismiss the error.
+function SourceErrorIcon({ message }: { message: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Tooltip open={open} onOpenChange={setOpen}>
+      <TooltipTrigger asChild>
+        <AlertTriangle
+          className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-label={`Source error: ${message}`}
+          role="img"
+          data-testid="source-error-icon"
+          onClick={() => setOpen((v) => !v)}
+        />
+      </TooltipTrigger>
+      <TooltipContent>{message}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 const SOURCE_STATUS_VARIANT: Record<
   SourceStatus,
   "default" | "secondary" | "outline" | "destructive"
@@ -365,54 +392,48 @@ function SourcesPanel({ rows, isLoading, nowMs }: SourcesPanelProps) {
   }
 
   return (
-    <ul
-      className="space-y-2"
-      aria-label="Source health"
-      data-testid="source-health-list"
-    >
-      {visible.map(({ row, status }) => {
-        const taxonomy = LANE_TAXONOMY[row.source_name as Category];
-        const label = taxonomy?.label ?? row.source_name;
-        const variant = SOURCE_STATUS_VARIANT[status];
+    <TooltipProvider>
+      <ul
+        className="space-y-2"
+        aria-label="Source health"
+        data-testid="source-health-list"
+      >
+        {visible.map(({ row, status }) => {
+          const taxonomy = LANE_TAXONOMY[row.source_name as Category];
+          const label = taxonomy?.label ?? row.source_name;
+          const variant = SOURCE_STATUS_VARIANT[status];
 
-        const hasError = Boolean(row.last_error);
+          const hasError = Boolean(row.last_error);
 
-        return (
-          <li
-            key={row.source_name}
-            className="flex items-start justify-between gap-2 text-sm"
-            data-testid="source-health-row"
-          >
-            <div className="min-w-0">
-              <p className="flex items-center gap-1 font-medium min-w-0">
-                <span className="truncate">{label}</span>
-                {hasError && (
-                  <AlertTriangle
-                    className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
-                    aria-label={`Source error: ${row.last_error}`}
-                    title={row.last_error ?? undefined}
-                    role="img"
-                    data-testid="source-error-icon"
-                  />
-                )}
-              </p>
-              {row.last_run_at && (
-                <p className="text-xs text-muted-foreground tnum">
-                  <Time value={row.last_run_at} mode="relative-compact" />
-                </p>
-              )}
-            </div>
-            <Badge
-              variant={variant}
-              className="shrink-0 font-mono text-xs"
-              data-testid={`source-status-badge-${status}`}
+          return (
+            <li
+              key={row.source_name}
+              className="flex items-start justify-between gap-2 text-sm"
+              data-testid="source-health-row"
             >
-              {status}
-            </Badge>
-          </li>
-        );
-      })}
-    </ul>
+              <div className="min-w-0">
+                <p className="flex items-center gap-1 font-medium min-w-0">
+                  <span className="truncate">{label}</span>
+                  {hasError && <SourceErrorIcon message={row.last_error!} />}
+                </p>
+                {row.last_run_at && (
+                  <p className="text-xs text-muted-foreground tnum">
+                    <Time value={row.last_run_at} mode="relative-compact" />
+                  </p>
+                )}
+              </div>
+              <Badge
+                variant={variant}
+                className="shrink-0 font-mono text-xs"
+                data-testid={`source-status-badge-${status}`}
+              >
+                {status}
+              </Badge>
+            </li>
+          );
+        })}
+      </ul>
+    </TooltipProvider>
   );
 }
 
