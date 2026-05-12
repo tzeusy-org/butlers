@@ -555,7 +555,8 @@ interface RetentionPoint {
  *
  * The backend (roster/education/tools/analytics.py) has always emitted `mastery_pct`
  * exclusively; fallback aliases (mastered_pct, mastery_percent) were never emitted and
- * have been removed to prevent silent chart gaps from future schema drift.
+ * have been removed to surface schema drift immediately (empty state) rather than
+ * silently accepting alternate keys.
  *
  * Returns null when `mastery_pct` is absent or not a number, which causes the entry to
  * be excluded from chartData (fail-fast over silent fallback).
