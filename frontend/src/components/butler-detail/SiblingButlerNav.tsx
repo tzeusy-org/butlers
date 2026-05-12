@@ -108,12 +108,12 @@ export function SiblingButlerNav({ activeButlerName }: SiblingButlerNavProps) {
         role="navigation"
         aria-label="Navigate to butler"
         aria-busy="true"
-        className="flex items-center gap-1 overflow-x-auto scroll-smooth scrollbar-none px-1 py-1"
+        className="flex items-center gap-0.5 overflow-x-auto scroll-smooth scrollbar-none py-0.5"
       >
         {Array.from({ length: 6 }).map((_, i) => (
           <Skeleton
             key={i}
-            className="h-7 w-20 shrink-0 rounded-sm"
+            className="h-6 w-20 shrink-0 rounded-sm"
           />
         ))}
       </nav>
@@ -126,12 +126,12 @@ export function SiblingButlerNav({ activeButlerName }: SiblingButlerNavProps) {
       <nav
         role="navigation"
         aria-label="Navigate to butler"
-        className="flex items-center gap-1 overflow-x-auto scroll-smooth scrollbar-none px-1 py-1"
+        className="flex items-center gap-0.5 overflow-x-auto scroll-smooth scrollbar-none py-0.5"
       >
         {Array.from({ length: 6 }).map((_, i) => (
           <Skeleton
             key={i}
-            className="h-7 w-20 shrink-0 rounded-sm opacity-50"
+            className="h-6 w-20 shrink-0 rounded-sm opacity-50"
           />
         ))}
       </nav>
