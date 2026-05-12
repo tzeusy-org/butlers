@@ -1,29 +1,44 @@
+// ---------------------------------------------------------------------------
+// ButlerOverviewTab — bu-t0n03 (epic bu-hdavr F.1), bu-yzllz (F.2)
+//
+// Overview tab body for the butler detail page. Uses the 4-column panel-grid
+// frame from finish-butler-detail-body-panel-grid.
+//
+// Layout (4 columns, 4 rows):
+//   Row 1: identity (span=2)   | process (span=2)
+//   Row 2: heartbeat (span=2)  | modules (span=2)
+//   Row 3: cost (span=1)       | recent sessions (span=3)
+//   Row 4: activity feed (span=4, scroll, height="320px")
+//
+// The Recent Notifications card has been removed (bu-yzllz F.2). Notification
+// content is covered by the activity-feed panel, which merges session_completed,
+// approval_raised, and memory_write event sources.
+//
+// Doctrine:
+//   - All panel borders via --border token (Panel atom, border-t border-l frame).
+//   - No hex/oklch/rgb literals.
+//   - No pid field anywhere.
+//   - All timestamps via <Time>.
+//   - No em-dashes in copy.
+// ---------------------------------------------------------------------------
+
 import { Link } from "react-router";
 
-import { NotificationFeed } from "@/components/notifications/notification-feed";
-import { NotificationTableSkeleton } from "@/components/skeletons";
 import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
+import { Panel, ErrorLine } from "@/components/butler-detail/atoms";
 import { Badge } from "@/components/ui/badge";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import EligibilityTimeline from "@/components/butler-detail/EligibilityTimeline";
 import { useButler, useButlerModules } from "@/hooks/use-butlers";
+import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
-import { useButlerNotifications } from "@/hooks/use-notifications";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useButlerSessions } from "@/hooks/use-sessions";
-import type { ModuleStatus, ProcessFacts, SessionSummary } from "@/api/types";
+import type { ActivityEventType, ModuleStatus, ProcessFacts, SessionSummary } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -191,69 +206,325 @@ function sessionStatusBadge(success: boolean | null) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Process facts card
-// ---------------------------------------------------------------------------
-
-interface ProcessFactsCardProps {
-  processFacts: ProcessFacts | null | undefined;
-}
-
-function ProcessFactsCard({ processFacts }: ProcessFactsCardProps) {
-  const unavailable = "--";
-  return (
-    <Card aria-label="Process facts">
-      <CardHeader>
-        <CardTitle>Process Facts</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm font-mono">
-          <dt className="text-muted-foreground font-medium font-sans">Container</dt>
-          <dd>{processFacts?.container_name ?? unavailable}</dd>
-          <dt className="text-muted-foreground font-medium font-sans">Port</dt>
-          <dd>{processFacts?.port ?? unavailable}</dd>
-          <dt className="text-muted-foreground font-medium font-sans">Registered</dt>
-          <dd>
-            {processFacts?.registered_duration_seconds != null
-              ? formatDuration(processFacts.registered_duration_seconds)
-              : unavailable}
-          </dd>
-          <dt className="text-muted-foreground font-medium font-sans">Config</dt>
-          <dd>{processFacts?.config_path ?? unavailable}</dd>
-        </dl>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Cost card
-// ---------------------------------------------------------------------------
-
-interface CostCardProps {
-  costToday: number | undefined;
-  cost7d: number | undefined;
-  globalTotalToday: number | undefined;
-  isLoading: boolean;
-}
-
 /** Format a percentage share, rounded to one decimal place. */
 function formatPercent(share: number, total: number): string {
   if (total === 0) return "0.0%";
   return `${((share / total) * 100).toFixed(1)}%`;
 }
 
-function CostCard({ costToday, cost7d, globalTotalToday, isLoading }: CostCardProps) {
+/** Map activity event type to a compact badge label. */
+function activityEventBadge(eventType: ActivityEventType) {
+  switch (eventType) {
+    case "session_completed":
+      return (
+        <Badge variant="secondary" className="text-xs shrink-0 w-[80px] justify-center">
+          session
+        </Badge>
+      );
+    case "approval_raised":
+      return (
+        <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs shrink-0 w-[80px] justify-center">
+          approval
+        </Badge>
+      );
+    case "memory_write":
+      return (
+        <Badge variant="secondary" className="text-xs shrink-0 w-[80px] justify-center text-muted-foreground">
+          memory
+        </Badge>
+      );
+    default:
+      return (
+        <Badge variant="secondary" className="text-xs shrink-0 w-[80px] justify-center">
+          {eventType}
+        </Badge>
+      );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Process facts panel body
+// ---------------------------------------------------------------------------
+
+interface ProcessFactsPanelBodyProps {
+  processFacts: ProcessFacts | null | undefined;
+}
+
+function ProcessFactsPanelBody({ processFacts }: ProcessFactsPanelBodyProps) {
+  const unavailable = "--";
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm font-mono">
+      <dt className="text-muted-foreground font-medium font-sans">Container</dt>
+      <dd>{processFacts?.container_name ?? unavailable}</dd>
+      <dt className="text-muted-foreground font-medium font-sans">Port</dt>
+      <dd>{processFacts?.port ?? unavailable}</dd>
+      <dt className="text-muted-foreground font-medium font-sans">Registered</dt>
+      <dd>
+        {processFacts?.registered_duration_seconds != null
+          ? formatDuration(processFacts.registered_duration_seconds)
+          : unavailable}
+      </dd>
+      <dt className="text-muted-foreground font-medium font-sans">Config</dt>
+      <dd>{processFacts?.config_path ?? unavailable}</dd>
+    </dl>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Loading skeleton (panel grid shape)
+// ---------------------------------------------------------------------------
+
+function OverviewSkeleton() {
+  return (
+    <div
+      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+      data-testid="overview-skeleton"
+    >
+      {/* identity span=2 */}
+      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="h-4 w-64" />
+        <Skeleton className="h-4 w-32" />
+      </div>
+      {/* process span=2 */}
+      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-4 w-24" />
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-4 w-56" />
+      </div>
+      {/* heartbeat span=2 */}
+      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-4 w-40" />
+      </div>
+      {/* modules span=2 */}
+      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <Skeleton className="h-16 rounded-md" />
+          <Skeleton className="h-16 rounded-md" />
+          <Skeleton className="h-16 rounded-md" />
+        </div>
+      </div>
+      {/* cost span=1 */}
+      <div className="col-span-1 border-r border-b border-border/60 p-4 space-y-2">
+        <Skeleton className="h-6 w-24" />
+        <Skeleton className="h-6 w-24" />
+      </div>
+      {/* recent sessions span=3 */}
+      <div className="col-span-1 sm:col-span-2 md:col-span-3 border-r border-b border-border/60 p-4 space-y-3">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-10 w-full" />
+        ))}
+      </div>
+      {/* activity feed span=4 */}
+      <div className="col-span-1 sm:col-span-2 md:col-span-4 border-r border-b border-border/60 p-4 space-y-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-8 w-full" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ButlerOverviewTab
+// ---------------------------------------------------------------------------
+
+export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
+  const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName);
+  const { data: costTodayResponse, isLoading: costTodayLoading } = useCostSummary("today");
+  const { data: cost7dResponse, isLoading: cost7dLoading } = useCostSummary("7d");
+  const { data: sessionsResponse, isLoading: sessionsLoading } = useButlerSessions(butlerName, {
+    limit: 5,
+  });
+  const { data: registryResponse } = useRegistry();
+  const setEligibility = useSetEligibility();
+  const { data: heartbeatsResponse, isLoading: heartbeatsLoading } = useButlerHeartbeats();
+  const { data: modulesResponse, isLoading: modulesLoading } = useButlerModules(butlerName);
+  const {
+    data: activityFeedData,
+    isLoading: activityFeedLoading,
+    isError: activityFeedError,
+  } = useButlerActivityFeed(butlerName);
+
+  if (butlerLoading) {
+    return <OverviewSkeleton />;
+  }
+
+  const butler = butlerResponse?.data;
+  // Derive per-butler costs. A value of undefined means the summary wasn't available
+  // (loading or error); 0 means the summary loaded but this butler had no spend.
+  const costTodaySummary = costTodayResponse?.data;
+  const cost7dSummary = cost7dResponse?.data;
+  const costToday = costTodaySummary ? (costTodaySummary.by_butler?.[butlerName] ?? 0) : undefined;
+  const cost7d = cost7dSummary ? (cost7dSummary.by_butler?.[butlerName] ?? 0) : undefined;
+  const globalTotalToday = costTodaySummary?.total_cost_usd;
+  const costLoading = costTodayLoading || cost7dLoading;
+  const recentSessions = sessionsResponse?.data ?? [];
+
+  // Find this butler's registry entry for eligibility state
+  const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
+
+  // Find this butler's heartbeat entry
+  const heartbeatEntry = heartbeatsResponse?.data?.butlers?.find((b) => b.name === butlerName);
+  const freshness = heartbeatFreshness(heartbeatEntry?.heartbeat_age_seconds);
+
+  // Per-module health from dedicated endpoint
+  const modules = modulesResponse?.data ?? [];
+
+  // Activity feed events
+  const activityEvents = activityFeedData?.events ?? [];
+
   const showShareRow =
     costToday != null && globalTotalToday != null && globalTotalToday > 0;
 
   return (
-    <Card aria-label="Cost summary">
-      <CardHeader>
-        <CardTitle>Cost</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
+    <div
+      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+      data-testid="overview-panel-grid"
+    >
+      {/* ----------------------------------------------------------------- */}
+      {/* Row 1: identity (span=2) | process (span=2)                        */}
+      {/* ----------------------------------------------------------------- */}
+
+      {/* Identity panel */}
+      <Panel
+        title="identity"
+        span={2}
+        testId="panel-identity"
+      >
+        {/* Butler mark + name + status */}
+        <div className="flex items-center gap-3 mb-2">
+          <ButlerMark name={butlerName} tone="fill" />
+          <span className="font-semibold text-foreground">
+            {butler?.name ?? butlerName}
+          </span>
+          {butler && <ButlerStatusBadge status={butler.status} />}
+        </div>
+        {butler?.description && (
+          <p className="italic font-[family-name:var(--font-serif,serif)] text-sm text-muted-foreground mb-3">
+            {butler.description}
+          </p>
+        )}
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+          <dt className="text-muted-foreground font-medium">Port</dt>
+          <dd>{butler?.port ?? "--"}</dd>
+          <dt className="text-muted-foreground font-medium">Status</dt>
+          <dd className="capitalize">{butler?.status ?? "unknown"}</dd>
+        </dl>
+      </Panel>
+
+      {/* Process panel */}
+      <Panel
+        title="process"
+        span={2}
+        testId="panel-process"
+      >
+        <ProcessFactsPanelBody processFacts={butler?.process_facts ?? null} />
+      </Panel>
+
+      {/* ----------------------------------------------------------------- */}
+      {/* Row 2: heartbeat (span=2) | modules (span=2)                       */}
+      {/* ----------------------------------------------------------------- */}
+
+      {/* Heartbeat and eligibility panel */}
+      <Panel
+        title="heartbeat"
+        span={2}
+        testId="panel-heartbeat"
+      >
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+          <dt className="text-muted-foreground font-medium">Last heartbeat</dt>
+          <dd className="flex items-center gap-2" data-testid="heartbeat-row">
+            {heartbeatsLoading ? (
+              <Skeleton className="h-5 w-16" />
+            ) : (
+              <>
+                <HeartbeatFreshnessPill freshness={freshness} />
+                {heartbeatEntry?.last_heartbeat_at ? (
+                  <span className="text-xs text-muted-foreground">
+                    <Time value={heartbeatEntry.last_heartbeat_at} mode="relative" />
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">No heartbeat recorded</span>
+                )}
+              </>
+            )}
+          </dd>
+          {heartbeatEntry?.heartbeat_age_seconds != null && (
+            <>
+              <dt className="text-muted-foreground font-medium">Age</dt>
+              <dd className="text-sm font-mono">
+                {formatDuration(heartbeatEntry.heartbeat_age_seconds)}
+              </dd>
+            </>
+          )}
+          {registryEntry && (
+            <>
+              <dt className="text-muted-foreground font-medium">Eligibility</dt>
+              <dd>
+                {eligibilityBadge(
+                  registryEntry.eligibility_state,
+                  () =>
+                    setEligibility.mutate({
+                      name: butlerName,
+                      state: "active",
+                    }),
+                  setEligibility.isPending,
+                )}
+                {registryEntry.quarantine_reason && (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {registryEntry.quarantine_reason}
+                  </span>
+                )}
+              </dd>
+              <dt className="text-muted-foreground font-medium">24h History</dt>
+              <dd className="pt-1">
+                <EligibilityTimeline butlerName={butlerName} />
+              </dd>
+            </>
+          )}
+        </dl>
+      </Panel>
+
+      {/* Modules panel */}
+      <Panel
+        title="modules"
+        span={2}
+        testId="panel-modules"
+      >
+        {modulesLoading ? (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <Skeleton className="h-16 rounded-md" />
+            <Skeleton className="h-16 rounded-md" />
+            <Skeleton className="h-16 rounded-md" />
+          </div>
+        ) : modules.length > 0 ? (
+          <div
+            className="grid grid-cols-2 gap-2 sm:grid-cols-3"
+            data-testid="module-health-grid"
+          >
+            {modules.map((mod) => (
+              <ModuleCell key={mod.name} mod={mod} />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No modules registered</p>
+        )}
+      </Panel>
+
+      {/* ----------------------------------------------------------------- */}
+      {/* Row 3: cost (span=1) | recent sessions (span=3)                    */}
+      {/* ----------------------------------------------------------------- */}
+
+      {/* Cost panel */}
+      <Panel
+        title="cost today"
+        span={1}
+        testId="panel-cost"
+      >
+        {costLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-6 w-24" />
             <Skeleton className="h-6 w-24" />
@@ -282,46 +553,32 @@ function CostCard({ costToday, cost7d, globalTotalToday, isLoading }: CostCardPr
             )}
           </dl>
         )}
-      </CardContent>
-    </Card>
-  );
-}
+      </Panel>
 
-// ---------------------------------------------------------------------------
-// Recent sessions card
-// ---------------------------------------------------------------------------
-
-interface RecentSessionsCardProps {
-  butlerName: string;
-  sessions: SessionSummary[];
-  isLoading: boolean;
-}
-
-function RecentSessionsCard({ butlerName, sessions, isLoading }: RecentSessionsCardProps) {
-  return (
-    <Card aria-label="Recent sessions">
-      <CardHeader>
-        <CardTitle>Recent Sessions</CardTitle>
-        <CardAction>
-          <Button variant="link" size="sm" asChild>
+      {/* Recent sessions panel */}
+      <Panel
+        title="recent sessions"
+        span={3}
+        testId="panel-recent-sessions"
+      >
+        <div className="flex items-center justify-end mb-2">
+          <Button variant="link" size="sm" asChild className="h-auto p-0 text-xs">
             <Link to={`/butlers/${encodeURIComponent(butlerName)}/sessions`}>
               View all
             </Link>
           </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
+        </div>
+        {sessionsLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 5 }).map((_, i) => (
               <Skeleton key={i} className="h-10 w-full" />
             ))}
           </div>
-        ) : sessions.length === 0 ? (
+        ) : recentSessions.length === 0 ? (
           <p className="text-sm text-muted-foreground">No sessions yet</p>
         ) : (
           <ul className="divide-y divide-border" aria-label="sessions list">
-            {sessions.map((session) => (
+            {recentSessions.map((session: SessionSummary) => (
               <li key={session.id} className="py-2 flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm truncate text-foreground" title={session.prompt}>
@@ -336,276 +593,55 @@ function RecentSessionsCard({ butlerName, sessions, isLoading }: RecentSessionsC
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
-  );
-}
+      </Panel>
 
-// ---------------------------------------------------------------------------
-// Loading skeleton
-// ---------------------------------------------------------------------------
+      {/* ----------------------------------------------------------------- */}
+      {/* Row 4: activity feed (span=4)                                      */}
+      {/* ----------------------------------------------------------------- */}
 
-function OverviewSkeleton() {
-  return (
-    <div className="space-y-6">
-      {/* Identity card skeleton */}
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-40" />
-          <Skeleton className="h-4 w-64" />
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="h-4 w-40" />
-        </CardContent>
-      </Card>
-
-      {/* Process facts skeleton */}
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-36" />
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-4 w-56" />
-        </CardContent>
-      </Card>
-
-      {/* Module health skeleton */}
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-32" />
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            <Skeleton className="h-16 rounded-md" />
-            <Skeleton className="h-16 rounded-md" />
-            <Skeleton className="h-16 rounded-md" />
+      <Panel
+        title="activity"
+        span={4}
+        scroll
+        height="320px"
+        testId="panel-activity-feed"
+      >
+        {activityFeedLoading ? (
+          <div className="space-y-2" data-testid="activity-feed-loading">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-8 w-full" />
+            ))}
           </div>
-        </CardContent>
-      </Card>
+        ) : activityFeedError ? (
+          <ErrorLine>Could not load activity feed.</ErrorLine>
+        ) : activityEvents.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]">
+            No recent activity.
+          </p>
+        ) : (
+          <div data-testid="activity-feed-list">
+            {activityEvents.map((event, idx) => (
+              <div
+                key={`${event.ts}-${idx}`}
+                className="flex items-baseline gap-3 py-1.5 border-b border-border/40 last:border-b-0 min-w-0"
+                data-testid="activity-feed-row"
+              >
+                {/* Timestamp — 80px, relative */}
+                <span className="shrink-0 w-[80px] text-xs text-muted-foreground">
+                  <Time value={event.ts} mode="relative" />
+                </span>
+                {/* Event type badge — 80px */}
+                {activityEventBadge(event.event_type)}
+                {/* Summary text — flex, truncated */}
+                <span className="flex-1 text-xs text-foreground min-w-0 truncate">
+                  {event.summary}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
 
-      {/* Cost card skeleton */}
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-28" />
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <Skeleton className="h-6 w-24" />
-          <Skeleton className="h-6 w-24" />
-        </CardContent>
-      </Card>
-
-      {/* Recent sessions skeleton */}
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-36" />
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 w-full" />
-          ))}
-        </CardContent>
-      </Card>
-
-      {/* Notifications skeleton */}
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-44" />
-        </CardHeader>
-        <CardContent>
-          <NotificationTableSkeleton rows={5} />
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ButlerOverviewTab
-// ---------------------------------------------------------------------------
-
-export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
-  const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName);
-  const { data: costTodayResponse, isLoading: costTodayLoading } = useCostSummary("today");
-  const { data: cost7dResponse, isLoading: cost7dLoading } = useCostSummary("7d");
-  const { data: sessionsResponse, isLoading: sessionsLoading } = useButlerSessions(butlerName, {
-    limit: 5,
-  });
-  const {
-    data: notificationsResponse,
-    isLoading: notificationsLoading,
-  } = useButlerNotifications(butlerName, { limit: 5 });
-  const { data: registryResponse } = useRegistry();
-  const setEligibility = useSetEligibility();
-  const { data: heartbeatsResponse, isLoading: heartbeatsLoading } = useButlerHeartbeats();
-  const { data: modulesResponse, isLoading: modulesLoading } = useButlerModules(butlerName);
-
-  if (butlerLoading) {
-    return <OverviewSkeleton />;
-  }
-
-  const butler = butlerResponse?.data;
-  // Derive per-butler costs. A value of undefined means the summary wasn't available
-  // (loading or error); 0 means the summary loaded but this butler had no spend.
-  const costTodaySummary = costTodayResponse?.data;
-  const cost7dSummary = cost7dResponse?.data;
-  const costToday = costTodaySummary ? (costTodaySummary.by_butler?.[butlerName] ?? 0) : undefined;
-  const cost7d = cost7dSummary ? (cost7dSummary.by_butler?.[butlerName] ?? 0) : undefined;
-  const globalTotalToday = costTodaySummary?.total_cost_usd;
-  const costLoading = costTodayLoading || cost7dLoading;
-  const recentSessions = sessionsResponse?.data ?? [];
-  const notifications = notificationsResponse?.data ?? [];
-
-  // Find this butler's registry entry for eligibility state
-  const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
-
-  // Find this butler's heartbeat entry
-  const heartbeatEntry = heartbeatsResponse?.data?.butlers?.find((b) => b.name === butlerName);
-  const freshness = heartbeatFreshness(heartbeatEntry?.heartbeat_age_seconds);
-
-  // Per-module health from dedicated endpoint
-  const modules = modulesResponse?.data ?? [];
-
-  return (
-    <div className="space-y-6">
-      {/* Identity Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-3">
-            <ButlerMark name={butlerName} tone="fill" />
-            {butler?.name ?? butlerName}
-            {butler && <ButlerStatusBadge status={butler.status} />}
-          </CardTitle>
-          {butler?.description && (
-            <CardDescription className="italic font-[family-name:var(--font-serif,serif)]">
-              {butler.description}
-            </CardDescription>
-          )}
-        </CardHeader>
-        <CardContent>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground font-medium">Port</dt>
-            <dd>{butler?.port ?? "--"}</dd>
-            <dt className="text-muted-foreground font-medium">Status</dt>
-            <dd className="capitalize">{butler?.status ?? "unknown"}</dd>
-            <dt className="text-muted-foreground font-medium">Heartbeat</dt>
-            <dd className="flex items-center gap-2" data-testid="heartbeat-row">
-              {heartbeatsLoading ? (
-                <Skeleton className="h-5 w-16" />
-              ) : (
-                <>
-                  <HeartbeatFreshnessPill freshness={freshness} />
-                  {heartbeatEntry?.last_heartbeat_at ? (
-                    <span className="text-xs text-muted-foreground">
-                      <Time value={heartbeatEntry.last_heartbeat_at} mode="relative" />
-                    </span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">No heartbeat recorded</span>
-                  )}
-                </>
-              )}
-            </dd>
-            {registryEntry && (
-              <>
-                <dt className="text-muted-foreground font-medium">Eligibility</dt>
-                <dd>
-                  {eligibilityBadge(
-                    registryEntry.eligibility_state,
-                    () =>
-                      setEligibility.mutate({
-                        name: butlerName,
-                        state: "active",
-                      }),
-                    setEligibility.isPending,
-                  )}
-                  {registryEntry.quarantine_reason && (
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {registryEntry.quarantine_reason}
-                    </span>
-                  )}
-                </dd>
-                <dt className="text-muted-foreground font-medium">24h History</dt>
-                <dd className="pt-1">
-                  <EligibilityTimeline butlerName={butlerName} />
-                </dd>
-              </>
-            )}
-          </dl>
-        </CardContent>
-      </Card>
-
-      {/* Process Facts */}
-      <ProcessFactsCard processFacts={butler?.process_facts ?? null} />
-
-      {/* Module Health */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Module Health</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {modulesLoading ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              <Skeleton className="h-16 rounded-md" />
-              <Skeleton className="h-16 rounded-md" />
-              <Skeleton className="h-16 rounded-md" />
-            </div>
-          ) : modules.length > 0 ? (
-            <div
-              className="grid grid-cols-2 gap-2 sm:grid-cols-3"
-              data-testid="module-health-grid"
-            >
-              {modules.map((mod) => (
-                <ModuleCell key={mod.name} mod={mod} />
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No modules registered</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Cost Card */}
-      <CostCard
-        costToday={costToday}
-        cost7d={cost7d}
-        globalTotalToday={globalTotalToday}
-        isLoading={costLoading}
-      />
-
-      {/* Recent Sessions */}
-      <RecentSessionsCard
-        butlerName={butlerName}
-        sessions={recentSessions}
-        isLoading={sessionsLoading}
-      />
-
-      {/* Recent Notifications */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Recent Notifications</CardTitle>
-          <CardDescription>
-            Last {notifications.length || 5} notifications from this butler
-          </CardDescription>
-          <CardAction>
-            <Button variant="link" size="sm" asChild>
-              <Link to={`/notifications?butler=${encodeURIComponent(butlerName)}`}>
-                View all
-              </Link>
-            </Button>
-          </CardAction>
-        </CardHeader>
-        <CardContent>
-          {notificationsLoading ? (
-            <NotificationTableSkeleton rows={5} />
-          ) : (
-            <NotificationFeed notifications={notifications} isLoading={false} />
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

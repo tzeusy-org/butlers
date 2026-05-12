@@ -1,29 +1,33 @@
 /**
- * ButlerOverviewTab — identity card, heartbeat row, and module health card tests.
+ * ButlerOverviewTab — Panel-grid restyle tests (bu-t0n03, epic bu-hdavr F.1;
+ * bu-yzllz F.2 removes Recent Notifications card).
  *
- * Pins the required elements:
- *   Identity card:
- *   1. ButlerMark glyph (bu-1ryg6)
- *   2. Butler name
- *   3. Status badge
- *   4. Description (serif italic, when present)
- *   5. Port
- *   6. Eligibility state (with quarantine reason when quarantined)
- *   7. 24h eligibility timeline (EligibilityTimeline)
- *   Heartbeat row (bu-8hbph.3):
- *   8. Heartbeat row visible with freshness pill
- *   9. Timestamp shown when heartbeat exists
- *   10. "No heartbeat recorded" when no heartbeat
- *   Module health card (bu-8hbph.3):
- *   11. Per-module grid rendered when modules exist
- *   12. "No modules registered" when empty
+ * Verifies the 7-panel grid layout:
+ *   1. identity panel (span=2)    — ButlerMark, name, status badge, description
+ *   2. process panel (span=2)     — container, port, duration, config path; no pid
+ *   3. heartbeat panel (span=2)   — last heartbeat via <Time>, eligibility badge
+ *   4. modules panel (span=2)     — module health badge list
+ *   5. cost panel (span=1)        — today's USD cost
+ *   6. recent sessions panel (span=3) — up to 5 sessions
+ *   7. activity feed panel (span=4)   — event stream from useButlerActivityFeed
  *
- * Beads: bu-8hbph.1, bu-8hbph.3, bu-1ryg6
+ * Key assertions:
+ *   - All 7 Panel atoms present by data-testid.
+ *   - No <Card> wrapper elements (no data-slot="card").
+ *   - No Recent Notifications card (removed in F.2).
+ *   - No pid field in DOM.
+ *   - Timestamps use <Time> (mocked to expose data-testid="time-value").
+ *   - Activity feed renders event rows from mocked hook.
+ *   - Loading state: skeleton per panel.
+ *   - Error state: graceful per-panel fallback.
+ *
+ * Beads: bu-t0n03, bu-yzllz
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 
@@ -45,16 +49,16 @@ vi.mock("@/hooks/use-costs", () => ({
   useCostSummary: vi.fn(),
 }));
 
-vi.mock("@/hooks/use-notifications", () => ({
-  useButlerNotifications: vi.fn(),
-}));
-
 vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-sessions", () => ({
   useButlerSessions: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-butler-analytics", () => ({
+  useButlerActivityFeed: vi.fn(),
 }));
 
 // Stub EligibilityTimeline to avoid additional hook chains in SSR tests
@@ -69,17 +73,12 @@ vi.mock("@/components/ui/time", () => ({
   Time: ({ value }: { value: string }) => <span data-testid="time-value">{value}</span>,
 }));
 
-// Stub NotificationFeed to avoid dependency chain
-vi.mock("@/components/notifications/notification-feed", () => ({
-  NotificationFeed: () => <div data-testid="notification-feed" />,
-}));
-
 import { useButler, useButlerModules } from "@/hooks/use-butlers";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useCostSummary } from "@/hooks/use-costs";
-import { useButlerNotifications } from "@/hooks/use-notifications";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useButlerSessions } from "@/hooks/use-sessions";
+import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
 
 // ---------------------------------------------------------------------------
 // Shared mock data
@@ -134,6 +133,23 @@ const MODULES_WITH_ERROR = [
   { name: "telegram", enabled: true, status: "error", error: "Connection refused" },
 ];
 
+const ACTIVITY_EVENTS = [
+  {
+    event_type: "session_completed" as const,
+    ts: "2026-05-10T12:00:00Z",
+    summary: "Checked emails and replied to 3 messages",
+    entity_id: null,
+    metadata: {},
+  },
+  {
+    event_type: "memory_write" as const,
+    ts: "2026-05-10T11:30:00Z",
+    summary: "Saved contact preference for Alice",
+    entity_id: "ent-001",
+    metadata: {},
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Setup helpers
 // ---------------------------------------------------------------------------
@@ -163,11 +179,6 @@ function setupDefaultMocks() {
     isLoading: false,
   } as ReturnType<typeof useCostSummary>);
 
-  vi.mocked(useButlerNotifications).mockReturnValue({
-    data: { data: [], meta: {} },
-    isLoading: false,
-  } as unknown as ReturnType<typeof useButlerNotifications>);
-
   vi.mocked(useButlerHeartbeats).mockReturnValue({
     data: { data: { butlers: [HEARTBEAT_FRESH] }, meta: {} },
     isLoading: false,
@@ -188,61 +199,99 @@ function setupDefaultMocks() {
     isError: false,
     error: null,
   } as unknown as ReturnType<typeof useButlerSessions>);
+
+  vi.mocked(useButlerActivityFeed).mockReturnValue({
+    data: { events: ACTIVITY_EVENTS },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as unknown as ReturnType<typeof useButlerActivityFeed>);
 }
 
 function renderTab(butlerName = "general"): string {
+  const queryClient = new QueryClient();
   return renderToStaticMarkup(
-    <MemoryRouter>
-      <ButlerOverviewTab butlerName={butlerName} />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ButlerOverviewTab butlerName={butlerName} />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// 7-panel grid structure
 // ---------------------------------------------------------------------------
 
-describe("ButlerOverviewTab — identity card", () => {
+describe("ButlerOverviewTab — panel grid structure", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupDefaultMocks();
   });
 
-  // -------------------------------------------------------------------------
-  // Element 1: ButlerMark glyph (bu-1ryg6)
-  // -------------------------------------------------------------------------
-
-  it("renders the ButlerMark glyph in the identity card header", () => {
+  it("renders all 7 Panel atoms by testid", () => {
     const html = renderTab();
-    // ButlerMark renders a <span> with aria-label set to the butler name
-    // and title set to the butler name. The initial "G" (from "general") should
-    // appear as content within the glyph element.
+    expect(html).toContain('data-testid="panel-identity"');
+    expect(html).toContain('data-testid="panel-process"');
+    expect(html).toContain('data-testid="panel-heartbeat"');
+    expect(html).toContain('data-testid="panel-modules"');
+    expect(html).toContain('data-testid="panel-cost"');
+    expect(html).toContain('data-testid="panel-recent-sessions"');
+    expect(html).toContain('data-testid="panel-activity-feed"');
+  });
+
+  it("renders the outer panel-grid frame container", () => {
+    const html = renderTab();
+    expect(html).toContain('data-testid="overview-panel-grid"');
+  });
+
+  it("renders NO legacy Card wrappers (no data-slot=card)", () => {
+    const html = renderTab();
+    expect(html).not.toContain('data-slot="card"');
+  });
+
+  it("renders NO Recent Notifications card (removed in F.2)", () => {
+    const html = renderTab();
+    expect(html).not.toContain("Recent Notifications");
+    expect(html).not.toContain('data-testid="notification-feed"');
+  });
+
+  it("renders NO pid field anywhere in the DOM", () => {
+    const html = renderTab();
+    // Should not contain the literal text "pid" as a field label
+    expect(html.toLowerCase()).not.toMatch(/>\s*pid\s*<\/dt/);
+    expect(html.toLowerCase()).not.toMatch(/>\s*pid\s*<\/dt/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity panel (span=2)
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab — identity panel", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultMocks();
+  });
+
+  it("renders the ButlerMark glyph with butler name", () => {
+    const html = renderTab();
     expect(html).toContain('aria-label="general"');
     expect(html).toContain('title="general"');
   });
 
-  it("renders ButlerMark with fill tone in the identity card header", () => {
+  it("renders ButlerMark with fill tone (white color style)", () => {
     const html = renderTab();
-    // fill tone renders with white text color (React serialises inline styles without spaces)
     expect(html).toContain("color:white");
   });
 
-  // -------------------------------------------------------------------------
-  // Element 2: Butler name
-  // -------------------------------------------------------------------------
-
-  it("renders the butler name in the identity card", () => {
+  it("renders the butler name", () => {
     const html = renderTab();
     expect(html).toContain("general");
   });
 
-  // -------------------------------------------------------------------------
-  // Element 2: Status badge
-  // -------------------------------------------------------------------------
-
   it("renders the status badge (ButlerStatusBadge) for an ok butler", () => {
     const html = renderTab();
-    // ButlerStatusBadge renders "Up" for status=ok
     expect(html).toContain("Up");
   });
 
@@ -259,19 +308,13 @@ describe("ButlerOverviewTab — identity card", () => {
     expect(html).toContain("Down");
   });
 
-  // -------------------------------------------------------------------------
-  // Element 3: Description (serif italic when present)
-  // -------------------------------------------------------------------------
-
   it("renders the description when present", () => {
     const html = renderTab();
     expect(html).toContain("Your everyday assistant for general tasks");
   });
 
-  it("renders description with serif italic styling", () => {
+  it("renders description with italic serif styling", () => {
     const html = renderTab();
-    // CardDescription receives className="italic font-[family-name:var(--font-serif,serif)]"
-    // which ends up in the rendered class attribute
     expect(html).toContain("italic");
     expect(html).toContain("font-serif");
   });
@@ -289,119 +332,83 @@ describe("ButlerOverviewTab — identity card", () => {
     expect(html).not.toContain("Your everyday assistant for general tasks");
   });
 
-  // -------------------------------------------------------------------------
-  // Element 4: Port
-  // -------------------------------------------------------------------------
-
-  it("renders the port number in the identity card", () => {
+  it("renders the port number in the identity panel", () => {
     const html = renderTab();
     expect(html).toContain("Port");
     expect(html).toContain("40101");
   });
+});
 
-  // -------------------------------------------------------------------------
-  // Element 5: Eligibility state
-  // -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Process panel (span=2) — no pid
+// ---------------------------------------------------------------------------
 
-  it("renders Active eligibility badge when state is active", () => {
-    const html = renderTab();
-    expect(html).toContain("Active");
+describe("ButlerOverviewTab — process panel", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultMocks();
   });
 
-  it("renders Quarantined eligibility badge when state is quarantined", () => {
-    vi.mocked(useRegistry).mockReturnValue({
-      data: { data: [REGISTRY_QUARANTINED], meta: {} },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useRegistry>);
-
+  it("renders process panel with container, port, registered, config labels", () => {
     const html = renderTab();
-    expect(html).toContain("Quarantined");
+    expect(html).toContain("Container");
+    expect(html).toContain("Registered");
+    expect(html).toContain("Config");
   });
 
-  it("renders quarantine reason as muted text when present", () => {
-    vi.mocked(useRegistry).mockReturnValue({
-      data: { data: [REGISTRY_QUARANTINED], meta: {} },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useRegistry>);
-
-    const html = renderTab();
-    expect(html).toContain("Health check failed: timeout after 30s");
-  });
-
-  it("omits quarantine reason when state is active", () => {
-    const html = renderTab();
-    // No quarantine_reason on the active registry entry
-    expect(html).not.toContain("Health check failed");
-  });
-
-  it("omits eligibility row when no registry entry exists for this butler", () => {
-    vi.mocked(useRegistry).mockReturnValue({
-      data: { data: [{ name: "other", eligibility_state: "active", quarantine_reason: null }], meta: {} },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useRegistry>);
-
-    const html = renderTab();
-    // No eligibility row should render when registry entry is missing
-    expect(html).not.toContain("Eligibility");
-  });
-
-  // -------------------------------------------------------------------------
-  // Element 6: 24h eligibility timeline
-  // -------------------------------------------------------------------------
-
-  it("renders the EligibilityTimeline when registry entry exists", () => {
-    const html = renderTab();
-    expect(html).toContain('data-testid="eligibility-timeline"');
-    expect(html).toContain('data-butler="general"');
-  });
-
-  it("omits EligibilityTimeline when no registry entry exists for this butler", () => {
-    vi.mocked(useRegistry).mockReturnValue({
-      data: { data: [], meta: {} },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useRegistry>);
-
-    const html = renderTab();
-    expect(html).not.toContain('data-testid="eligibility-timeline"');
-  });
-
-  // -------------------------------------------------------------------------
-  // Loading state
-  // -------------------------------------------------------------------------
-
-  it("renders loading skeleton when butler data is loading", () => {
+  it("renders process_facts values when present", () => {
     vi.mocked(useButler).mockReturnValue({
-      data: undefined,
-      isLoading: true,
+      data: {
+        data: {
+          ...BUTLER_OK,
+          process_facts: {
+            container_name: "butlers-general",
+            port: 40101,
+            registered_duration_seconds: 3600,
+            config_path: "/app/roster/general/butler.toml",
+          },
+        },
+        meta: {},
+      },
+      isLoading: false,
       isError: false,
       error: null,
       refetch: vi.fn().mockResolvedValue(undefined),
     } as unknown as ReturnType<typeof useButler>);
 
     const html = renderTab();
-    // The skeleton renders without crashing; content elements are absent
-    expect(html).not.toContain("40101");
-    expect(html).not.toContain("Your everyday assistant");
+    expect(html).toContain("butlers-general");
+    expect(html).toContain("/app/roster/general/butler.toml");
+  });
+
+  it("does NOT render a pid field in the process panel", () => {
+    // Even if butler data contained a pid, it should never appear
+    const html = renderTab();
+    // No dt element containing just "pid" (case-insensitive)
+    expect(html).not.toContain(">pid<");
+    expect(html).not.toContain(">Pid<");
+    expect(html).not.toContain(">PID<");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Heartbeat row (bu-8hbph.3)
+// Heartbeat panel (span=2)
 // ---------------------------------------------------------------------------
 
-describe("ButlerOverviewTab — heartbeat row", () => {
+describe("ButlerOverviewTab — heartbeat panel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupDefaultMocks();
   });
 
-  it("renders the Heartbeat label in the identity card", () => {
+  it("renders the Heartbeat panel", () => {
     const html = renderTab();
-    expect(html).toContain("Heartbeat");
+    expect(html).toContain('data-testid="panel-heartbeat"');
+  });
+
+  it("renders 'Last heartbeat' label", () => {
+    const html = renderTab();
+    expect(html).toContain("Last heartbeat");
   });
 
   it("renders Fresh pill for a recently-heartbeating butler", () => {
@@ -421,7 +428,7 @@ describe("ButlerOverviewTab — heartbeat row", () => {
     expect(html).toContain("Stale");
   });
 
-  it("renders Unknown pill when no heartbeat entry exists for this butler", () => {
+  it("renders Unknown pill when no heartbeat entry exists", () => {
     vi.mocked(useButlerHeartbeats).mockReturnValue({
       data: { data: { butlers: [] }, meta: {} },
       isLoading: false,
@@ -433,10 +440,11 @@ describe("ButlerOverviewTab — heartbeat row", () => {
     expect(html).toContain("Unknown");
   });
 
-  it("renders timestamp when last_heartbeat_at is present", () => {
+  it("renders heartbeat timestamp via <Time> when last_heartbeat_at is present", () => {
     const html = renderTab();
-    // Stubbed Time renders the raw value
+    // Stubbed Time renders the raw ISO value
     expect(html).toContain("2026-05-10T12:00:00Z");
+    expect(html).toContain('data-testid="time-value"');
   });
 
   it("renders 'No heartbeat recorded' when last_heartbeat_at is null", () => {
@@ -466,21 +474,77 @@ describe("ButlerOverviewTab — heartbeat row", () => {
     const html = renderTab();
     expect(html).toContain('data-testid="heartbeat-row"');
   });
+
+  // Eligibility rows live in the heartbeat panel
+  it("renders Active eligibility badge when state is active", () => {
+    const html = renderTab();
+    expect(html).toContain("Active");
+  });
+
+  it("renders Quarantined eligibility badge when state is quarantined", () => {
+    vi.mocked(useRegistry).mockReturnValue({
+      data: { data: [REGISTRY_QUARANTINED], meta: {} },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useRegistry>);
+
+    const html = renderTab();
+    expect(html).toContain("Quarantined");
+  });
+
+  it("renders quarantine reason as muted text when present", () => {
+    vi.mocked(useRegistry).mockReturnValue({
+      data: { data: [REGISTRY_QUARANTINED], meta: {} },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useRegistry>);
+
+    const html = renderTab();
+    expect(html).toContain("Health check failed: timeout after 30s");
+  });
+
+  it("omits eligibility row when no registry entry exists for this butler", () => {
+    vi.mocked(useRegistry).mockReturnValue({
+      data: { data: [{ name: "other", eligibility_state: "active", quarantine_reason: null }], meta: {} },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useRegistry>);
+
+    const html = renderTab();
+    expect(html).not.toContain("Eligibility");
+  });
+
+  it("renders the EligibilityTimeline when registry entry exists", () => {
+    const html = renderTab();
+    expect(html).toContain('data-testid="eligibility-timeline"');
+    expect(html).toContain('data-butler="general"');
+  });
+
+  it("omits EligibilityTimeline when no registry entry exists", () => {
+    vi.mocked(useRegistry).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useRegistry>);
+
+    const html = renderTab();
+    expect(html).not.toContain('data-testid="eligibility-timeline"');
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Module health card (bu-8hbph.3)
+// Modules panel (span=2)
 // ---------------------------------------------------------------------------
 
-describe("ButlerOverviewTab — module health card", () => {
+describe("ButlerOverviewTab — modules panel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupDefaultMocks();
   });
 
-  it("renders Module Health card heading", () => {
+  it("renders the modules panel", () => {
     const html = renderTab();
-    expect(html).toContain("Module Health");
+    expect(html).toContain('data-testid="panel-modules"');
   });
 
   it("renders module-health-grid when modules exist", () => {
@@ -496,7 +560,6 @@ describe("ButlerOverviewTab — module health card", () => {
 
   it("renders the module status in each cell", () => {
     const html = renderTab();
-    // Both modules have status "connected"
     const count = (html.match(/connected/g) ?? []).length;
     expect(count).toBeGreaterThanOrEqual(2);
   });
@@ -536,8 +599,141 @@ describe("ButlerOverviewTab — module health card", () => {
     } as ReturnType<typeof useButlerModules>);
 
     const html = renderTab();
-    // Skeleton renders without the grid testid
     expect(html).not.toContain('data-testid="module-health-grid"');
     expect(html).not.toContain("No modules registered");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activity feed panel (span=4)
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab — activity feed panel", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultMocks();
+  });
+
+  it("renders the activity feed panel", () => {
+    const html = renderTab();
+    expect(html).toContain('data-testid="panel-activity-feed"');
+  });
+
+  it("renders event rows from mocked useButlerActivityFeed", () => {
+    const html = renderTab();
+    expect(html).toContain('data-testid="activity-feed-list"');
+    expect(html).toContain('data-testid="activity-feed-row"');
+  });
+
+  it("renders event summary text", () => {
+    const html = renderTab();
+    expect(html).toContain("Checked emails and replied to 3 messages");
+    expect(html).toContain("Saved contact preference for Alice");
+  });
+
+  it("renders event type badges for session and memory events", () => {
+    const html = renderTab();
+    expect(html).toContain("session");
+    expect(html).toContain("memory");
+  });
+
+  it("renders timestamps via <Time> for each event", () => {
+    const html = renderTab();
+    // Stubbed Time renders raw ISO value
+    expect(html).toContain("2026-05-10T12:00:00Z");
+    expect(html).toContain("2026-05-10T11:30:00Z");
+  });
+
+  it("renders 'No recent activity.' empty state when events list is empty", () => {
+    vi.mocked(useButlerActivityFeed).mockReturnValue({
+      data: { events: [] },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useButlerActivityFeed>);
+
+    const html = renderTab();
+    expect(html).toContain("No recent activity.");
+    expect(html).not.toContain('data-testid="activity-feed-list"');
+  });
+
+  it("empty state has no em-dash", () => {
+    vi.mocked(useButlerActivityFeed).mockReturnValue({
+      data: { events: [] },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useButlerActivityFeed>);
+
+    const html = renderTab();
+    expect(html).not.toContain("—"); // em-dash
+    expect(html).not.toContain("&mdash;");
+  });
+
+  it("renders loading skeleton when activity feed is loading", () => {
+    vi.mocked(useButlerActivityFeed).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useButlerActivityFeed>);
+
+    const html = renderTab();
+    expect(html).toContain('data-testid="activity-feed-loading"');
+    expect(html).not.toContain('data-testid="activity-feed-list"');
+  });
+
+  it("renders error fallback when activity feed request fails", () => {
+    vi.mocked(useButlerActivityFeed).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Network error"),
+    } as unknown as ReturnType<typeof useButlerActivityFeed>);
+
+    const html = renderTab();
+    expect(html).toContain("Could not load activity feed.");
+    expect(html).toContain('data-testid="error-state-line"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loading state
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab — loading state", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultMocks();
+  });
+
+  it("renders overview-skeleton when butler data is loading", () => {
+    vi.mocked(useButler).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+      refetch: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useButler>);
+
+    const html = renderTab();
+    expect(html).toContain('data-testid="overview-skeleton"');
+    // No live content should appear
+    expect(html).not.toContain("40101");
+    expect(html).not.toContain("Your everyday assistant");
+  });
+
+  it("skeleton does not render Panel grid or panel testids", () => {
+    vi.mocked(useButler).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+      refetch: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useButler>);
+
+    const html = renderTab();
+    expect(html).not.toContain('data-testid="panel-identity"');
+    expect(html).not.toContain('data-testid="overview-panel-grid"');
   });
 });
