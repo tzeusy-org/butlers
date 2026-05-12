@@ -2504,11 +2504,11 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
     expect(triggers.length).toBeGreaterThanOrEqual(11);
   });
 
-  it("operator mode with a plain butler has exactly 11 tab triggers (10 base + Models)", () => {
+  it("operator mode with a plain butler has 11+ tab triggers (10 base + Models + bespoke)", () => {
     localStorageMock.getItem.mockImplementation((key: string) =>
       key === "butlers.detail.mode" ? "operator" : null,
     );
-    // Use a butler name that has no bespoke tabs
+    // Use a butler name that has one bespoke tab (finances)
     vi.mocked(useParams).mockReturnValue({ name: "finance" });
     setButlerState({ ...BASE_BUTLER, name: "finance" });
 
@@ -2590,7 +2590,7 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
     expect(triggers.length).toBeGreaterThanOrEqual(7);
   });
 
-  it("resident mode with a plain butler has exactly 7 tab triggers (Dispatch vocabulary)", () => {
+  it("resident mode with chronicler butler has exactly 8 tab triggers (7 base + timelines)", () => {
     localStorageMock.getItem.mockReturnValue(null); // no stored mode -> resident
     vi.mocked(useParams).mockReturnValue({ name: "chronicler" });
     setButlerState({ ...BASE_BUTLER, name: "chronicler" });
@@ -2599,7 +2599,7 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
     const triggers = screen.getAllByRole("tab");
     // chronicler butler: 7 resident base + timelines bespoke = 8
     // The spec says resident fits without scroll at md+; count confirms no operator bloat.
-    expect(triggers.length).toBeGreaterThanOrEqual(7);
+    expect(triggers.length).toBe(8);
     // Must not include operator-only tabs
     const triggerLabels = triggers.map((t) => t.textContent?.trim());
     expect(triggerLabels).not.toContain("Sessions");
