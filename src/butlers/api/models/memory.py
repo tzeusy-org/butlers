@@ -173,3 +173,16 @@ class MemoryActivity(BaseModel):
     summary: str
     butler: str | None = None
     created_at: str
+
+
+class ButlerMemoryStats(BaseModel):
+    """Per-butler memory subsystem counts with 24-hour deltas."""
+
+    total_episodes: int = 0
+    episodes_24h: int = 0
+    total_facts: int = 0
+    facts_24h: int = 0
+    total_entities: int = 0
+    entities_24h: int = 0
+    total_rules: int = 0
+    rules_24h: int = 0
