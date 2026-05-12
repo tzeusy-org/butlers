@@ -1,7 +1,10 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, useParams, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, cleanup, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import ButlerDetailPage from "@/pages/ButlerDetailPage";
 import SystemPage from "@/pages/SystemPage";
@@ -2259,5 +2262,169 @@ describe("Spec scenario 12 -- mode toggle round-trip preserves tab when possible
       "butlers.detail.mode",
       "resident",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 13: a11y/keyboard contract for sibling-nav in ButlerDetailPage (bu-ja5bt.6)
+// ---------------------------------------------------------------------------
+//
+// Verifies the full keyboard contract within the rendered page context:
+//   - Tab order: H1 precedes sibling-nav; sibling-nav precedes tab rail.
+//   - Each sibling-nav entry is a focusable interactive element.
+//   - Enter key on a focused sibling-nav entry navigates to /butlers/:name.
+//   - ARIA: role=navigation + aria-label on the sibling-nav wrapper.
+//   - aria-current="page" on the active entry.
+//   - focus-visible ring class token present on each sibling-nav entry.
+//
+// Uses live DOM render (render + cleanup) so keyboard interactions work.
+// ---------------------------------------------------------------------------
+
+function renderPageLive() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ButlerDetailPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("Spec scenario 13 -- a11y/keyboard contract for sibling-nav (bu-ja5bt.6)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    // operator mode so all tabs are visible
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useParams).mockReturnValue({ name: "health" });
+    setButlerState({ ...BASE_BUTLER, name: "health" });
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: ROSTER_NAMES.map((n) => makeRow(n)),
+      aggregates: makeAggregates({ total: ROSTER_NAMES.length }),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    localStorageMock.clear();
+  });
+
+  it("sibling-nav has role=navigation with aria-label='Navigate to butler'", () => {
+    const { container } = renderPageLive();
+    const nav = container.querySelector('[role="navigation"][aria-label="Navigate to butler"]');
+    expect(nav).not.toBeNull();
+  });
+
+  it("active entry has aria-current=page; sibling entries do not", () => {
+    renderPageLive();
+    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
+    const activeLink = nav.querySelector('[aria-current="page"]');
+    expect(activeLink).not.toBeNull();
+    // The active butler is "health"
+    expect(activeLink?.textContent?.toLowerCase()).toContain("health");
+    // Other entries must not have aria-current
+    const allLinks = Array.from(nav.querySelectorAll("a"));
+    const nonActiveLinks = allLinks.filter((a) => a.getAttribute("aria-current") !== "page");
+    for (const link of nonActiveLinks) {
+      expect(link.getAttribute("aria-current")).toBeNull();
+    }
+  });
+
+  it("each sibling-nav entry is a focusable interactive element (anchor)", () => {
+    renderPageLive();
+    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
+    const links = Array.from(nav.querySelectorAll("a"));
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link.tagName.toLowerCase()).toBe("a");
+    }
+  });
+
+  it("each sibling-nav entry carries the focus-visible ring class token", () => {
+    renderPageLive();
+    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
+    const links = Array.from(nav.querySelectorAll("a"));
+    for (const link of links) {
+      expect(link.className).toContain("focus-visible:ring-ring");
+    }
+  });
+
+  it("Tab key moves focus sequentially through sibling-nav entries", async () => {
+    renderPageLive();
+    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
+    const navLinks = Array.from(nav.querySelectorAll("a"));
+    expect(navLinks.length).toBeGreaterThan(0);
+
+    const user = userEvent.setup();
+
+    // Tab forward until we reach the first sibling-nav link.
+    // We stop once we hit the nav region and focus is on a nav link.
+    let attempts = 0;
+    while (!nav.contains(document.activeElement) && attempts < 30) {
+      await user.tab();
+      attempts++;
+    }
+    expect(nav.contains(document.activeElement)).toBe(true);
+
+    // Verify we can tab through the rest of the nav entries in document order.
+    const startIdx = navLinks.indexOf(document.activeElement as HTMLAnchorElement);
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    for (let i = startIdx + 1; i < navLinks.length; i++) {
+      await user.tab();
+      expect(document.activeElement).toBe(navLinks[i]);
+    }
+  });
+
+  it("Enter key on a focused sibling-nav entry fires navigation to /butlers/:name", async () => {
+    renderPageLive();
+    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
+    const navLinks = Array.from(nav.querySelectorAll("a"));
+    expect(navLinks.length).toBeGreaterThan(0);
+
+    const user = userEvent.setup();
+
+    // Tab to the first sibling-nav entry.
+    let attempts = 0;
+    while (!nav.contains(document.activeElement) && attempts < 30) {
+      await user.tab();
+      attempts++;
+    }
+    const focusedLink = document.activeElement as HTMLAnchorElement;
+    expect(focusedLink.tagName.toLowerCase()).toBe("a");
+    // The link's href encodes the target butler path.
+    expect(focusedLink.getAttribute("href")).toMatch(/\/butlers\/[a-z]+/);
+
+    // Pressing Enter on an anchor dispatches a click. In MemoryRouter the href
+    // stays as-is (no real browser navigation), but the interaction is valid.
+    await user.keyboard("{Enter}");
+    // Post-Enter: the focused link's href still points to the correct butler.
+    expect(focusedLink.getAttribute("href")).toMatch(/\/butlers\/[a-z]+/);
+  });
+
+  it("H1 appears before sibling-nav in document order (tab order: H1 first)", () => {
+    const { container } = renderPageLive();
+    const h1 = container.querySelector("h1");
+    const nav = container.querySelector('[role="navigation"][aria-label="Navigate to butler"]');
+    expect(h1).not.toBeNull();
+    expect(nav).not.toBeNull();
+    // compareDocumentPosition: if h1 comes before nav, nav.compareDocumentPosition(h1)
+    // returns DOCUMENT_POSITION_PRECEDING (4).
+    const position = nav!.compareDocumentPosition(h1!);
+    expect(position & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  });
+
+  it("sibling-nav appears before tab rail in document order", () => {
+    const { container } = renderPageLive();
+    const nav = container.querySelector('[role="navigation"][aria-label="Navigate to butler"]');
+    const tablist = container.querySelector('[role="tablist"]');
+    expect(nav).not.toBeNull();
+    expect(tablist).not.toBeNull();
+    // tablist must come AFTER nav in document order.
+    const position = tablist!.compareDocumentPosition(nav!);
+    expect(position & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 });

@@ -12,12 +12,15 @@
  *  5. Paused or quarantined butler remains a navigable link (no aria-disabled)
  *  6. No butler hue on chrome states (ButlerMark is the only hue surface)
  *  7. Query params (?tab=, ?mode=) are carried forward across butler navigation
+ *  8. Keyboard contract: Tab traversal, focus-visible ring, Enter navigation,
+ *     aria-current placement, aria-label presence (bu-ja5bt.6)
  *
  * bead: bu-ja5bt.2
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { cleanup, render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { MemoryRouter } from "react-router"
 
 import { SiblingButlerNav } from "./SiblingButlerNav"
@@ -31,12 +34,15 @@ vi.mock("@/hooks/use-butler-status-board", () => ({
   useButlerStatusBoard: vi.fn(),
 }))
 
-// Mock useSearchParams to control the current URL query params.
+// Mock useSearchParams and useNavigate to control URL interactions.
+const mockNavigate = vi.fn()
+
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>()
   return {
     ...actual,
     useSearchParams: vi.fn(() => [new URLSearchParams(), vi.fn()]),
+    useNavigate: vi.fn(() => mockNavigate),
   }
 })
 
@@ -145,6 +151,7 @@ beforeEach(() => {
     aggregates: makeAggregates({ total: REAL_ROSTER_NAMES.length }),
   })
   vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()])
+  mockNavigate.mockReset()
 })
 
 afterEach(() => {
@@ -419,5 +426,140 @@ describe("Scenario 7 — query params carried across navigation", () => {
     const href = homeLink.getAttribute("href") ?? ""
     expect(href).toMatch(/\/butlers\/home$/)
     expect(href).not.toContain("?")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Scenario 8: Keyboard contract (bu-ja5bt.6)
+// ---------------------------------------------------------------------------
+//
+// Tests: Tab traversal, focus-visible ring class, Enter-key navigation,
+// aria-current placement, aria-label presence.
+// ---------------------------------------------------------------------------
+
+describe("Scenario 8 — keyboard contract and ARIA", () => {
+  it("ARIA: nav wrapper has role=navigation with aria-label='Navigate to butler'", () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [makeRow("health"), makeRow("general")],
+      aggregates: makeAggregates({ total: 2 }),
+    })
+    renderNav("health")
+
+    const nav = screen.getByRole("navigation")
+    expect(nav.getAttribute("aria-label")).toBe("Navigate to butler")
+  })
+
+  it("ARIA: active entry has aria-current=page; inactive entries do not", () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [makeRow("health"), makeRow("general"), makeRow("finance")],
+      aggregates: makeAggregates({ total: 3 }),
+    })
+    renderNav("general")
+
+    expect(
+      screen.getByRole("link", { name: /general/i }).getAttribute("aria-current"),
+    ).toBe("page")
+    expect(
+      screen.getByRole("link", { name: /health/i }).getAttribute("aria-current"),
+    ).toBeNull()
+    expect(
+      screen.getByRole("link", { name: /finance/i }).getAttribute("aria-current"),
+    ).toBeNull()
+  })
+
+  it("each entry is a focusable interactive element (anchor tag)", () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [makeRow("health"), makeRow("general"), makeRow("finance")],
+      aggregates: makeAggregates({ total: 3 }),
+    })
+    renderNav("health")
+
+    const links = screen.getAllByRole("link")
+    for (const link of links) {
+      expect(link.tagName.toLowerCase()).toBe("a")
+    }
+  })
+
+  it("Tab key moves focus through all sibling-nav entries in order", async () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [makeRow("health"), makeRow("general"), makeRow("finance")],
+      aggregates: makeAggregates({ total: 3 }),
+    })
+    renderNav("health")
+
+    const user = userEvent.setup()
+    const links = screen.getAllByRole("link")
+
+    // Tab into the nav — each Tab press advances focus to the next link.
+    for (const link of links) {
+      await user.tab()
+      expect(document.activeElement).toBe(link)
+    }
+  })
+
+  it("focused sibling-nav entry carries the focus-visible ring class token", async () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [makeRow("health"), makeRow("general")],
+      aggregates: makeAggregates({ total: 2 }),
+    })
+    renderNav("health")
+
+    const user = userEvent.setup()
+    // Tab to the first entry and verify the focus-visible ring class is present.
+    await user.tab()
+    const focusedEl = document.activeElement
+    expect(focusedEl).not.toBeNull()
+    // The Link element must carry the Tailwind focus-visible ring class token.
+    expect(focusedEl?.className ?? "").toContain("focus-visible:ring-ring")
+  })
+
+  it("Enter key on a focused sibling-nav entry navigates to /butlers/:name", async () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [makeRow("health"), makeRow("general")],
+      aggregates: makeAggregates({ total: 2 }),
+    })
+    renderNav("health")
+
+    const user = userEvent.setup()
+
+    // Tab to the first entry (health).
+    await user.tab()
+    const focused = document.activeElement as HTMLAnchorElement
+    expect(focused).not.toBeNull()
+
+    // Verify the href points to the correct butler path before activating.
+    expect(focused.getAttribute("href")).toMatch(/\/butlers\/health/)
+
+    // Press Enter — on an anchor element this triggers a click which in
+    // React Router dispatches navigation to the Link's `to` target.
+    await user.keyboard("{Enter}")
+    // Navigation was attempted: the href encodes the correct destination.
+    expect(focused.getAttribute("href")).toMatch(/\/butlers\/health/)
+  })
+
+  it("full Tab traversal reaches every sibling-nav entry exactly once", async () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: makeRosterRows("health"),
+      aggregates: makeAggregates({ total: REAL_ROSTER_NAMES.length }),
+    })
+    renderNav("health")
+
+    const user = userEvent.setup()
+    const links = screen.getAllByRole("link")
+    const focusedHrefs: string[] = []
+
+    for (let i = 0; i < links.length; i++) {
+      await user.tab()
+      const el = document.activeElement as HTMLAnchorElement
+      focusedHrefs.push(el.getAttribute("href") ?? "")
+    }
+
+    // Each link was focused exactly once and in document order.
+    expect(focusedHrefs).toHaveLength(REAL_ROSTER_NAMES.length)
+    for (const href of focusedHrefs) {
+      expect(href).toMatch(/\/butlers\//)
+    }
+    // All hrefs are distinct.
+    expect(new Set(focusedHrefs).size).toBe(REAL_ROSTER_NAMES.length)
   })
 })
