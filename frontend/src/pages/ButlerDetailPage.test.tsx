@@ -2488,6 +2488,38 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
   });
 
   // -------------------------------------------------------------------------
+  // Operator mode: tab triggers have snap-start for functional scroll-snap (bu-0ofvc)
+  // -------------------------------------------------------------------------
+
+  it("operator tab triggers each have snap-start class (scroll-snap alignment)", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useParams).mockReturnValue({ name: "general" });
+    setButlerState({ ...BASE_BUTLER, name: "general" });
+
+    const { container } = renderPageLive();
+    const triggers = Array.from(container.querySelectorAll('[role="tab"]'));
+    expect(triggers.length).toBeGreaterThan(0);
+    for (const trigger of triggers) {
+      expect((trigger as HTMLElement).className).toContain("snap-start");
+    }
+  });
+
+  it("resident mode tab triggers each have snap-start class (horizontal orientation applies)", () => {
+    localStorageMock.getItem.mockReturnValue(null); // resident mode
+    vi.mocked(useParams).mockReturnValue({ name: "general" });
+    setButlerState({ ...BASE_BUTLER, name: "general" });
+
+    const { container } = renderPageLive();
+    const triggers = Array.from(container.querySelectorAll('[role="tab"]'));
+    expect(triggers.length).toBeGreaterThan(0);
+    for (const trigger of triggers) {
+      expect((trigger as HTMLElement).className).toContain("snap-start");
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // Operator mode: 11+ tab triggers present (10 base + Models + bespoke)
   // -------------------------------------------------------------------------
 
