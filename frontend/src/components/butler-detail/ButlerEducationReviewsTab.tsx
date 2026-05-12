@@ -38,7 +38,8 @@ import {
   useAllFrontierNodes,
   useMindMapAnalyticsTrend,
 } from "@/hooks/use-education";
-import { ErrorLine, toneClass } from "@/components/butler-detail/atoms";
+import { ErrorLine } from "@/components/butler-detail/atoms";
+import { toneClass } from "@/components/butler-detail/atoms-utils";
 import type { PendingReviewNode, MindMapNode, MasterySummary, AnalyticsTrendEntry } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
