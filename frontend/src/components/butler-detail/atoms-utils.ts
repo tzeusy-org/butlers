@@ -1,14 +1,21 @@
 // ---------------------------------------------------------------------------
 // atoms-utils.ts — non-component utilities for butler detail atoms
-// (bu-zsnuh)
+// (bu-zsnuh, bu-f4no2)
 //
 // Exports:
-//   Tone        — semantic tone token type
-//   toneClass   — maps a Tone token to a Tailwind text utility class
+//   Tone            — semantic tone token type
+//   toneClass       — maps a Tone token to a Tailwind text utility class
+//   MonoLabelProps  — props for <MonoLabel>
+//   PanelProps      — props for <Panel>
+//   KpiCellProps    — props for <KpiCell>
+//   KVProps         — props for <KV>
+//   ErrorLineProps  — props for <ErrorLine>
 //
 // Split from atoms.tsx to satisfy react-refresh/only-export-components:
-// fast-refresh requires component-only files; utilities live here.
+// fast-refresh requires component-only files; utilities and types live here.
 // ---------------------------------------------------------------------------
+
+import type React from "react"
 
 export type Tone = "amber" | "red" | "green" | "dim" | "fg"
 
@@ -20,4 +27,48 @@ export function toneClass(tone: Tone): string {
     case "dim":   return "text-muted-foreground"
     case "fg":    return "text-foreground"
   }
+}
+
+// ---------------------------------------------------------------------------
+// Component prop interfaces — declared here so atoms.tsx stays component-only
+// ---------------------------------------------------------------------------
+
+export interface MonoLabelProps {
+  children: React.ReactNode
+  color?: Tone
+  className?: string
+}
+
+export interface PanelProps {
+  title?: string
+  sub?: string
+  span?: 1 | 2 | 3 | 4
+  scroll?: boolean
+  height?: string
+  accent?: boolean
+  /** Forwarded to the outer wrapper div as data-testid. */
+  testId?: string
+  children?: React.ReactNode
+  className?: string
+}
+
+export interface KpiCellProps {
+  label: string
+  value: React.ReactNode
+  sub?: React.ReactNode
+  tone?: Tone
+  big?: boolean
+  className?: string
+}
+
+export interface KVProps {
+  k: string
+  v: React.ReactNode
+  mono?: boolean
+  className?: string
+}
+
+export interface ErrorLineProps {
+  children: React.ReactNode
+  className?: string
 }
