@@ -238,6 +238,82 @@ def test_required_indexes_exist(postgres_container):
         "idx_delivery_dead_letter_error_class should exist"
     )
 
+    # priority index (msg_002)
+    assert index_exists(db_url, "idx_delivery_requests_priority_status"), (
+        "idx_delivery_requests_priority_status should exist"
+    )
+
+
+def test_delivery_requests_priority_column(postgres_container):
+    """After msg_002, delivery_requests.priority exists with correct default and constraint."""
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+
+    asyncio.run(run_migrations(db_url, chain="messenger"))
+
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        # Default priority 'medium' should be applied when omitted.
+        conn.execute(
+            text(
+                """
+                INSERT INTO delivery_requests
+                (idempotency_key, origin_butler, channel, intent, target_identity,
+                 message_content, request_envelope)
+                VALUES ('prio-default-1', 'health', 'telegram', 'send',
+                        'user1', 'Hello', '{}')
+                """
+            )
+        )
+        conn.commit()
+
+        row = conn.execute(
+            text("SELECT priority FROM delivery_requests WHERE idempotency_key = 'prio-default-1'")
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "medium", f"Expected default priority 'medium', got {row[0]!r}"
+
+        # Explicit 'high' priority round-trips correctly.
+        conn.execute(
+            text(
+                """
+                INSERT INTO delivery_requests
+                (idempotency_key, origin_butler, channel, intent, target_identity,
+                 message_content, request_envelope, priority)
+                VALUES ('prio-high-1', 'health', 'telegram', 'send',
+                        'user2', 'Urgent', '{}', 'high')
+                """
+            )
+        )
+        conn.commit()
+
+        row = conn.execute(
+            text("SELECT priority FROM delivery_requests WHERE idempotency_key = 'prio-high-1'")
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "high", f"Expected priority 'high', got {row[0]!r}"
+
+        # Invalid priority value should be rejected by CHECK constraint.
+        with pytest.raises(Exception) as exc_info:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO delivery_requests
+                    (idempotency_key, origin_butler, channel, intent, target_identity,
+                     message_content, request_envelope, priority)
+                    VALUES ('prio-invalid-1', 'health', 'telegram', 'send',
+                            'user3', 'Hi', '{}', 'urgent')
+                    """
+                )
+            )
+            conn.commit()
+
+        assert "check" in str(exc_info.value).lower(), "Should fail with CHECK constraint violation"
+
+    engine.dispose()
+
 
 def test_migrations_idempotent(postgres_container):
     """Running migrations twice should not raise errors."""
@@ -274,3 +350,4 @@ def test_alembic_version_tracking(postgres_container):
     engine.dispose()
 
     assert "msg_001" in versions, f"Expected revision 'msg_001' in {versions}"
+    assert "msg_002" in versions, f"Expected revision 'msg_002' in {versions}"

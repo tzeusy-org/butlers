@@ -288,6 +288,7 @@ async def messenger_dead_letter_replay(
                     message_content,
                     subject,
                     request_envelope,
+                    priority,
                     status
                 )
                 SELECT
@@ -300,6 +301,7 @@ async def messenger_dead_letter_replay(
                     message_content,
                     subject,
                     request_envelope,
+                    priority,
                     'pending'
                 FROM delivery_requests
                 WHERE id = $2
