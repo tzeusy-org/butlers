@@ -1,20 +1,82 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
 // atoms.test.tsx — unit tests for shared butler-detail atom primitives
-// (bu-iuol4.13)
+// (bu-iuol4.13, bu-hdavr.3)
 //
 // Coverage:
-//   MonoLabel  — color prop (all tones)
-//   Panel      — span 1/2/3/4, scroll prop, height prop, accent flag
-//   KpiCell    — tone variants (amber/red/green/dim/fg), big vs default size
-//   KV         — mono prop
-//   ErrorLine  — renders children, icon, destructive tone, data-testid
+//   ButlerPanelGrid — canonical container classes, className merge, data-testid
+//   MonoLabel       — color prop (all tones)
+//   Panel           — span 1/2/3/4 (responsive), scroll prop, height prop, accent flag
+//   KpiCell         — tone variants (amber/red/green/dim/fg), big vs default size
+//   KV              — mono prop
+//   ErrorLine       — renders children, icon, destructive tone, data-testid
+//   LoadingLine     — renders loading text, data-testid
+//   EmptyLine       — renders children, serif italic, data-testid
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
-import { MonoLabel, Panel, KpiCell, KV, ErrorLine } from "./atoms"
+import { ButlerPanelGrid, MonoLabel, Panel, KpiCell, KV, ErrorLine, LoadingLine, EmptyLine } from "./atoms"
+
+// ---------------------------------------------------------------------------
+// ButlerPanelGrid
+// ---------------------------------------------------------------------------
+
+describe("ButlerPanelGrid", () => {
+  it("renders children", () => {
+    const html = renderToStaticMarkup(<ButlerPanelGrid><div>child</div></ButlerPanelGrid>)
+    expect(html).toContain("child")
+  })
+
+  it("includes grid class", () => {
+    const html = renderToStaticMarkup(<ButlerPanelGrid><span /></ButlerPanelGrid>)
+    expect(html).toContain("grid")
+  })
+
+  it("includes grid-cols-1 as base", () => {
+    const html = renderToStaticMarkup(<ButlerPanelGrid><span /></ButlerPanelGrid>)
+    expect(html).toContain("grid-cols-1")
+  })
+
+  it("includes lg:grid-cols-4 for the 4-column layout", () => {
+    const html = renderToStaticMarkup(<ButlerPanelGrid><span /></ButlerPanelGrid>)
+    expect(html).toContain("lg:grid-cols-4")
+  })
+
+  it("includes border-t and border-l frame classes", () => {
+    const html = renderToStaticMarkup(<ButlerPanelGrid><span /></ButlerPanelGrid>)
+    expect(html).toContain("border-t")
+    expect(html).toContain("border-l")
+  })
+
+  it("includes border-border/60 token", () => {
+    const html = renderToStaticMarkup(<ButlerPanelGrid><span /></ButlerPanelGrid>)
+    expect(html).toContain("border-border/60")
+  })
+
+  it("forwards data-testid to the outer div", () => {
+    const html = renderToStaticMarkup(
+      <ButlerPanelGrid data-testid="my-grid"><span /></ButlerPanelGrid>
+    )
+    expect(html).toContain('data-testid="my-grid"')
+  })
+
+  it("merges additional className", () => {
+    const html = renderToStaticMarkup(
+      <ButlerPanelGrid className="sm:grid-cols-2 md:grid-cols-4"><span /></ButlerPanelGrid>
+    )
+    expect(html).toContain("sm:grid-cols-2")
+    expect(html).toContain("md:grid-cols-4")
+    expect(html).toContain("lg:grid-cols-4")
+  })
+
+  it("does not contain raw oklch or hex", () => {
+    const html = renderToStaticMarkup(<ButlerPanelGrid><span /></ButlerPanelGrid>)
+    expect(html).not.toMatch(/oklch/)
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}/)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // MonoLabel
@@ -76,28 +138,37 @@ describe("MonoLabel", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Panel — span
+// Panel — span (responsive)
+//
+// span=1 stays col-span-1 only (no lg: prefix needed — already mobile-first).
+// span=2/3/4 use col-span-1 as base + lg:col-span-X to avoid forcing implicit
+// multi-column layout on viewports narrower than lg (1024px).
 // ---------------------------------------------------------------------------
 
 describe("Panel: span", () => {
-  it("span=1 renders col-span-1", () => {
+  it("span=1 renders col-span-1 only (no lg: prefix)", () => {
     const html = renderToStaticMarkup(<Panel span={1}>body</Panel>)
     expect(html).toContain("col-span-1")
+    expect(html).not.toContain("lg:col-span-1")
   })
 
-  it("span=2 renders col-span-2", () => {
+  it("span=2 renders col-span-1 base and lg:col-span-2", () => {
     const html = renderToStaticMarkup(<Panel span={2}>body</Panel>)
-    expect(html).toContain("col-span-2")
+    expect(html).toContain("col-span-1")
+    expect(html).toContain("lg:col-span-2")
+    expect(html).not.toContain("col-span-2 ")  // no bare col-span-2 (only lg-prefixed)
   })
 
-  it("span=3 renders col-span-3", () => {
+  it("span=3 renders col-span-1 base and lg:col-span-3", () => {
     const html = renderToStaticMarkup(<Panel span={3}>body</Panel>)
-    expect(html).toContain("col-span-3")
+    expect(html).toContain("col-span-1")
+    expect(html).toContain("lg:col-span-3")
   })
 
-  it("span=4 renders col-span-4", () => {
+  it("span=4 renders col-span-1 base and lg:col-span-4", () => {
     const html = renderToStaticMarkup(<Panel span={4}>body</Panel>)
-    expect(html).toContain("col-span-4")
+    expect(html).toContain("col-span-1")
+    expect(html).toContain("lg:col-span-4")
   })
 
   it("defaults to col-span-1 when span is omitted", () => {
@@ -371,6 +442,85 @@ describe("ErrorLine", () => {
 
   it("does not render raw oklch or hex", () => {
     const html = renderToStaticMarkup(<ErrorLine>Error</ErrorLine>)
+    expect(html).not.toMatch(/oklch/)
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// LoadingLine
+// ---------------------------------------------------------------------------
+
+describe("LoadingLine", () => {
+  it("renders 'Loading...' text", () => {
+    const html = renderToStaticMarkup(<LoadingLine />)
+    expect(html).toContain("Loading...")
+  })
+
+  it("sets data-testid=loading-line", () => {
+    const html = renderToStaticMarkup(<LoadingLine />)
+    expect(html).toContain('data-testid="loading-line"')
+  })
+
+  it("applies text-muted-foreground", () => {
+    const html = renderToStaticMarkup(<LoadingLine />)
+    expect(html).toContain("text-muted-foreground")
+  })
+
+  it("applies text-sm", () => {
+    const html = renderToStaticMarkup(<LoadingLine />)
+    expect(html).toContain("text-sm")
+  })
+
+  it("passes through className", () => {
+    const html = renderToStaticMarkup(<LoadingLine className="my-loading" />)
+    expect(html).toContain("my-loading")
+  })
+
+  it("does not render raw oklch or hex", () => {
+    const html = renderToStaticMarkup(<LoadingLine />)
+    expect(html).not.toMatch(/oklch/)
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// EmptyLine
+// ---------------------------------------------------------------------------
+
+describe("EmptyLine", () => {
+  it("renders children text", () => {
+    const html = renderToStaticMarkup(<EmptyLine>No data yet.</EmptyLine>)
+    expect(html).toContain("No data yet.")
+  })
+
+  it("sets data-testid=empty-state-line", () => {
+    const html = renderToStaticMarkup(<EmptyLine>Nothing here.</EmptyLine>)
+    expect(html).toContain('data-testid="empty-state-line"')
+  })
+
+  it("applies text-muted-foreground", () => {
+    const html = renderToStaticMarkup(<EmptyLine>Nothing.</EmptyLine>)
+    expect(html).toContain("text-muted-foreground")
+  })
+
+  it("applies italic", () => {
+    const html = renderToStaticMarkup(<EmptyLine>Nothing.</EmptyLine>)
+    expect(html).toContain("italic")
+  })
+
+  it("applies serif font-family utility", () => {
+    const html = renderToStaticMarkup(<EmptyLine>Nothing.</EmptyLine>)
+    expect(html).toContain("font-serif")
+  })
+
+  it("passes through className", () => {
+    const html = renderToStaticMarkup(<EmptyLine className="my-empty">Empty.</EmptyLine>)
+    expect(html).toContain("my-empty")
+  })
+
+  it("does not render raw oklch or hex", () => {
+    const html = renderToStaticMarkup(<EmptyLine>Nothing.</EmptyLine>)
     expect(html).not.toMatch(/oklch/)
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}/)
   })

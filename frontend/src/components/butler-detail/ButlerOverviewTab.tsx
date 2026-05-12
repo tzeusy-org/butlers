@@ -25,7 +25,7 @@
 import { Link } from "react-router";
 
 import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
-import { Panel, ErrorLine } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel, ErrorLine } from "@/components/butler-detail/atoms";
 import { Badge } from "@/components/ui/badge";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Button } from "@/components/ui/button";
@@ -276,8 +276,8 @@ function ProcessFactsPanelBody({ processFacts }: ProcessFactsPanelBodyProps) {
 
 function OverviewSkeleton() {
   return (
-    <div
-      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+    <ButlerPanelGrid
+      className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-skeleton"
     >
       {/* identity span=2 */}
@@ -323,7 +323,7 @@ function OverviewSkeleton() {
           <Skeleton key={i} className="h-8 w-full" />
         ))}
       </div>
-    </div>
+    </ButlerPanelGrid>
   );
 }
 
@@ -380,8 +380,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     costToday != null && globalTotalToday != null && globalTotalToday > 0;
 
   return (
-    <div
-      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+    <ButlerPanelGrid
+      className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-panel-grid"
     >
       {/* ----------------------------------------------------------------- */}
@@ -392,6 +392,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="identity"
         span={2}
+        className="sm:col-span-2"
         testId="panel-identity"
       >
         {/* Butler mark + name + status */}
@@ -419,6 +420,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="process"
         span={2}
+        className="sm:col-span-2"
         testId="panel-process"
       >
         <ProcessFactsPanelBody processFacts={butler?.process_facts ?? null} />
@@ -432,6 +434,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="heartbeat"
         span={2}
+        className="sm:col-span-2"
         testId="panel-heartbeat"
       >
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
@@ -492,6 +495,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="modules"
         span={2}
+        className="sm:col-span-2"
         testId="panel-modules"
       >
         {modulesLoading ? (
@@ -559,6 +563,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="recent sessions"
         span={3}
+        className="sm:col-span-2 md:col-span-3"
         testId="panel-recent-sessions"
       >
         <div className="flex items-center justify-end mb-2">
@@ -604,6 +609,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         span={4}
         scroll
         height="320px"
+        className="sm:col-span-2 md:col-span-4"
         testId="panel-activity-feed"
       >
         {activityFeedLoading ? (
@@ -642,6 +648,6 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         )}
       </Panel>
 
-    </div>
+    </ButlerPanelGrid>
   );
 }

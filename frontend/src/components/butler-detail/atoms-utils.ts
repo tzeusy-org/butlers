@@ -1,21 +1,25 @@
 // ---------------------------------------------------------------------------
 // atoms-utils.ts — non-component utilities for butler detail atoms
-// (bu-zsnuh, bu-f4no2)
+// (bu-zsnuh, bu-f4no2, bu-hdavr.3)
 //
 // Exports:
-//   Tone            — semantic tone token type
-//   toneClass       — maps a Tone token to a Tailwind text utility class
-//   MonoLabelProps  — props for <MonoLabel>
-//   PanelProps      — props for <Panel>
-//   KpiCellProps    — props for <KpiCell>
-//   KVProps         — props for <KV>
-//   ErrorLineProps  — props for <ErrorLine>
+//   Tone                 — semantic tone token type
+//   toneClass            — maps a Tone token to a Tailwind text utility class
+//   MonoLabelProps       — props for <MonoLabel>
+//   PanelProps           — props for <Panel>
+//   KpiCellProps         — props for <KpiCell>
+//   KVProps              — props for <KV>
+//   ErrorLineProps       — props for <ErrorLine>
+//   LoadingLineProps     — props for <LoadingLine>
+//   EmptyLineProps       — props for <EmptyLine>
+//   ButlerPanelGridProps — props for <ButlerPanelGrid>
 //
 // Split from atoms.tsx to satisfy react-refresh/only-export-components:
 // fast-refresh requires component-only files; utilities and types live here.
 // ---------------------------------------------------------------------------
 
 import type React from "react"
+import type { HTMLAttributes } from "react"
 
 export type Tone = "amber" | "red" | "green" | "dim" | "fg"
 
@@ -71,4 +75,17 @@ export interface KVProps {
 export interface ErrorLineProps {
   children: React.ReactNode
   className?: string
+}
+
+export interface LoadingLineProps {
+  className?: string
+}
+
+export interface EmptyLineProps {
+  children: React.ReactNode
+  className?: string
+}
+
+export interface ButlerPanelGridProps extends HTMLAttributes<HTMLDivElement> {
+  children: React.ReactNode
 }

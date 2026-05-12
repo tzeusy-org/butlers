@@ -21,7 +21,6 @@
 // ---------------------------------------------------------------------------
 
 import { useState, useMemo } from "react";
-import type { ReactNode } from "react";
 import { subDays } from "date-fns";
 
 import { useCostSummary, useDailyCosts } from "@/hooks/use-costs";
@@ -30,7 +29,7 @@ import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { DayBars } from "@/components/butlers/DayBars";
 import { RangeToggle } from "@/components/ui/range-toggle";
 import type { RangeValue } from "@/components/ui/range-toggle";
-import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel, KpiCell, ErrorLine, LoadingLine, EmptyLine } from "@/components/butler-detail/atoms";
 
 // ---------------------------------------------------------------------------
 // Format helpers
@@ -56,29 +55,6 @@ function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
-}
-
-// ---------------------------------------------------------------------------
-// Shared primitives
-// ---------------------------------------------------------------------------
-
-function LoadingLine() {
-  return (
-    <p className="text-sm text-muted-foreground" data-testid="loading-line">
-      Loading...
-    </p>
-  );
-}
-
-function EmptyLine({ children }: { children: ReactNode }) {
-  return (
-    <p
-      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
-      data-testid="empty-state-line"
-    >
-      {children}
-    </p>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -282,10 +258,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   const modelBreakdownError = error30d;
 
   return (
-    <div
-      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
-      data-testid="spend-tab"
-    >
+    <ButlerPanelGrid data-testid="spend-tab">
       {/* Row 1: KPI strip — 4 cells */}
       <div
         className="col-span-1 lg:col-span-4 grid grid-cols-2 sm:grid-cols-4"
@@ -343,6 +316,6 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         isLoading={modelBreakdownLoading}
         isError={modelBreakdownError}
       />
-    </div>
+    </ButlerPanelGrid>
   );
 }
