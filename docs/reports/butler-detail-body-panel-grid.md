@@ -111,14 +111,14 @@ Tests are in:
 |---|---|---|---|---|
 | Routing log uses Panel atom: table wrapped in Panel span={4}, no Card wrapper | bu-pllml | `ButlerRoutingLogTab.test.tsx` | "renders the routing log Panel atom" (line 69); "does NOT use a Card wrapper" (line 85) | pass |
 | Routing log scroll region: panel body scrollable when entries exceed height | bu-pllml | `ButlerRoutingLogTab.test.tsx` | "Panel has 'routing log' eyebrow title" (line 74); "renders RoutingLogTable inside the Panel" (line 80) | pass |
-| Routing log empty state: "No routing activity." with no em-dash | bu-pllml | `ButlerRoutingLogTab.test.tsx` | Covered by Panel atom's EmptyLine contract (`atoms.test.tsx` "does not render raw oklch or hex" line 443) | pass |
+| Routing log empty state: "No routing activity." with no em-dash | bu-pllml | `frontend/src/components/switchboard/RoutingLogTable.tsx` | Empty state owned by `RoutingLogTable` (renders `EmptyRoutingLogState` which uses `EmptyState` component; actual text: "No routing log entries found."; no em-dash). `ButlerRoutingLogTab.test.tsx` mocks `RoutingLogTable` entirely; no dedicated tab-level empty-state test exists. No coverage gap in the panel-wrap work (bu-pllml), but empty-state text verification remains at the component boundary. | partial |
 
 ### MODIFIED Requirement: Switchboard Registry Tab
 
 | OpenSpec Scenario | Implementing Bead | Test File | Test Name / Line | Status |
 |---|---|---|---|---|
 | Registry uses Panel atom: table wrapped in Panel span={4}, no Card wrapper | bu-b9jpn | `ButlerRegistryTab.test.tsx` | "renders the butler registry Panel atom" (line 69); "does NOT use a Card wrapper" (line 85) | pass |
-| Registry empty state: empty state message with no em-dash | bu-b9jpn | `ButlerRegistryTab.test.tsx` | "Panel has 'butler registry' eyebrow title" (line 74); "renders RegistryTable inside the Panel" (line 80) | pass |
+| Registry empty state: empty state message with no em-dash | bu-b9jpn | `frontend/src/components/switchboard/RegistryTable.tsx` | Empty state owned by `RegistryTable` (renders `EmptyState` with title "No butlers registered in the switchboard."; no em-dash). `ButlerRegistryTab.test.tsx` mocks `RegistryTable` entirely; no dedicated tab-level empty-state test exists. No coverage gap in the panel-wrap work (bu-b9jpn), but empty-state text verification remains at the component boundary. | partial |
 
 ### ADDED Requirement: API and client contracts for tab data
 
