@@ -104,12 +104,10 @@ function KpiQuartet({
         <KpiCell
           label="p50 ms"
           value={<span data-testid="kpi-p50">{p50Value}</span>}
-          sub={p50Ms == null && !isLoading ? "awaiting endpoint" : undefined}
         />
         <KpiCell
           label="p95 ms"
           value={<span data-testid="kpi-p95">{p95Value}</span>}
-          sub={p95Ms == null && !isLoading ? "awaiting endpoint" : undefined}
         />
         <KpiCell
           label="Errors"
