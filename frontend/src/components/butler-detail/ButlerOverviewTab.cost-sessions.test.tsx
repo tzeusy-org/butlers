@@ -58,6 +58,15 @@ vi.mock("@/hooks/use-sessions", () => ({
   useButlerSessions: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-butler-analytics", () => ({
+  useButlerActivityFeed: vi.fn(() => ({
+    data: { events: [] },
+    isLoading: false,
+    isError: false,
+    error: null,
+  })),
+}));
+
 // Stub heavy child components not under test here.
 vi.mock("@/components/notifications/notification-feed", () => ({
   NotificationFeed: () => <div data-testid="notification-feed" />,
@@ -282,10 +291,10 @@ describe("ButlerOverviewTab — cost card", () => {
     expect(html.toLowerCase()).toContain("skeleton");
   });
 
-  it("renders the cost card aria-label", () => {
+  it("renders the cost panel testid", () => {
     setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain('aria-label="Cost summary"');
+    expect(html).toContain('data-testid="panel-cost"');
   });
 
   it("renders global total and percentage share when butler is a fraction of total", () => {
@@ -341,10 +350,11 @@ describe("ButlerOverviewTab — recent sessions card", () => {
     vi.resetAllMocks();
   });
 
-  it("renders the recent sessions card heading", () => {
+  it("renders the recent sessions panel", () => {
     setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
     const html = renderTab();
-    expect(html).toContain("Recent Sessions");
+    expect(html).toContain('data-testid="panel-recent-sessions"');
+    expect(html).toContain("recent sessions");
   });
 
   it("renders session prompt text", () => {
@@ -419,10 +429,10 @@ describe("ButlerOverviewTab — recent sessions card", () => {
     expect(html).toContain("View all");
   });
 
-  it("renders the session card aria-label", () => {
+  it("renders the sessions panel testid", () => {
     setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
     const html = renderTab();
-    expect(html).toContain('aria-label="Recent sessions"');
+    expect(html).toContain('data-testid="panel-recent-sessions"');
   });
 
   it("renders the started_at timestamp via Time component", () => {
