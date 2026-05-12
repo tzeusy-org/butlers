@@ -132,10 +132,12 @@ function makeRosterRows(
 function renderNav(
   activeButlerName = "health",
   searchParams = new URLSearchParams(),
+  basename?: string,
 ) {
   vi.mocked(useSearchParams).mockReturnValue([searchParams, vi.fn()])
+  const initialEntries = basename ? [`${basename}/butlers/${activeButlerName}`] : undefined
   return render(
-    <MemoryRouter>
+    <MemoryRouter basename={basename} initialEntries={initialEntries}>
       <SiblingButlerNav activeButlerName={activeButlerName} />
     </MemoryRouter>,
   )
@@ -156,6 +158,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllEnvs()
 })
 
 // ---------------------------------------------------------------------------
@@ -235,6 +238,21 @@ describe("Scenario 3 — navigation ARIA contract", () => {
     const generalLink = screen.getByRole("link", { name: /general/i })
     // href may include a base path; must end with /butlers/general.
     expect(generalLink.getAttribute("href")).toMatch(/\/butlers\/general$/)
+  })
+
+  it("does not double-prefix links when the app is mounted under /butlers-dev", () => {
+    vi.stubEnv("BASE_URL", "/butlers-dev/")
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [makeRow("switchboard"), makeRow("lifestyle")],
+      aggregates: makeAggregates({ total: 2 }),
+    })
+
+    renderNav("switchboard", new URLSearchParams(), "/butlers-dev")
+
+    const lifestyleLink = screen.getByRole("link", { name: /lifestyle/i })
+    const href = lifestyleLink.getAttribute("href") ?? ""
+    expect(href).toBe("/butlers-dev/butlers/lifestyle")
+    expect(href).not.toContain("/butlers-dev/butlers-dev/")
   })
 })
 

@@ -95,9 +95,6 @@ export function SiblingButlerNav({ activeButlerName }: SiblingButlerNavProps) {
     return str ? `?${str}` : ""
   }, [searchParams])
 
-  // Construct base path (respects Vite's BASE_URL for path-prefixed deploys).
-  const basePath = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "")
-
   // ---------------------------------------------------------------------------
   // Skeleton state
   // ---------------------------------------------------------------------------
@@ -150,7 +147,7 @@ export function SiblingButlerNav({ activeButlerName }: SiblingButlerNavProps) {
     >
       {rows.map((row) => {
         const isActive = row.name === activeButlerName
-        const href = `${basePath}/butlers/${row.name}${carriedParams}`
+        const href = `/butlers/${row.name}${carriedParams}`
 
         return (
           <Link
