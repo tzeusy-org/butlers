@@ -2314,9 +2314,9 @@ describe("Spec scenario 13 -- a11y/keyboard contract for sibling-nav (bu-ja5bt.6
   });
 
   it("sibling-nav has role=navigation with aria-label='Navigate to butler'", () => {
-    const { container } = renderPageLive();
-    const nav = container.querySelector('[role="navigation"][aria-label="Navigate to butler"]');
-    expect(nav).not.toBeNull();
+    renderPageLive();
+    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
+    expect(nav).toBeTruthy();
   });
 
   it("active entry has aria-current=page; sibling entries do not", () => {
@@ -2401,8 +2401,8 @@ describe("Spec scenario 13 -- a11y/keyboard contract for sibling-nav (bu-ja5bt.6
     // Pressing Enter on an anchor dispatches a click. In MemoryRouter the href
     // stays as-is (no real browser navigation), but the interaction is valid.
     await user.keyboard("{Enter}");
-    // Post-Enter: the focused link's href still points to the correct butler.
-    expect(focusedLink.getAttribute("href")).toMatch(/\/butlers\/[a-z]+/);
+    // Focus should remain on the link after Enter (no unexpected focus loss).
+    expect(document.activeElement).toBe(focusedLink);
   });
 
   it("H1 appears before sibling-nav in document order (tab order: H1 first)", () => {
