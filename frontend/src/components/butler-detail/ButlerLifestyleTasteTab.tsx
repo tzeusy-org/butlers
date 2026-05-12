@@ -12,7 +12,7 @@
 //   Row 3: Recent additions (span 2) + Weekly digest archive (span 2)
 //     — last 10 facts logged | list of past digest titles + dates (stub)
 //
-// No backend changes. Uses useMemoryRecall + useMemorySearch hooks.
+// No backend changes. Uses useButlerFacts hook (single shared fetch, select-derived slices).
 //
 // Weekly digest archive: stub — no historical digest storage exists yet.
 // Tracked in bu-4q6hg for future enhancement (digest persistence in lifestyle butler).
@@ -23,13 +23,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { KpiCell, ErrorLine } from "./atoms";
-import { useMemoryRecall, useMemorySearch } from "@/hooks/use-memory";
+import { useButlerFacts } from "@/hooks/use-memory";
 
 import type { Fact } from "@/api/types";
-
-// ---------------------------------------------------------------------------
-// Predicates
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // KPI computation helpers (pure functions, moved out of render path so that
@@ -44,14 +40,23 @@ function computeRecentlyLoggedCount(facts: Fact[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Predicates
+// Predicate selectors — stable module-level functions so that React Query
+// does not treat them as changed references on every render. Each selector
+// derives a panel-specific slice from the shared cache entry produced by
+// useButlerFacts.
 // ---------------------------------------------------------------------------
 
-/** Predicates that represent user preferences / tastes. */
-const PREFERENCE_PREDICATES = ["likes_"];
+/** All facts (identity — used by KPI and recent-additions panels). */
+const selectAll = (facts: Fact[]) => facts;
 
-/** Predicates that represent current consumption state. */
-const CONSUMPTION_PREDICATES = ["watches", "reads", "plays"];
+/** Preference facts: predicates starting with "likes_". */
+const selectPreferences = (facts: Fact[]) =>
+  facts.filter((f) => f.predicate.startsWith("likes_"));
+
+/** Consumption facts: predicates watches / reads / plays. */
+const CONSUMPTION_SET = new Set(["watches", "reads", "plays"]);
+const selectConsumption = (facts: Fact[]) =>
+  facts.filter((f) => CONSUMPTION_SET.has(f.predicate));
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -340,47 +345,36 @@ function WeeklyDigestArchivePanel() {
 // ---------------------------------------------------------------------------
 
 export default function ButlerLifestyleTasteTab() {
-  // Recall all active user facts from the lifestyle butler scope.
+  // Single fetch for all active user facts from the lifestyle butler scope.
+  // Three panel-specific slices are derived via stable selector functions so
+  // React Query serves all subscribers from one shared cache entry.
   const {
-    data: recallData,
-    isLoading: recallLoading,
-    isError: recallError,
-  } = useMemoryRecall({ butler: "lifestyle", subject: "user" });
+    data: allFacts = [],
+    isLoading,
+    isError,
+  } = useButlerFacts({ butler: "lifestyle", subject: "user", select: selectAll });
 
-  // Search for preference facts (likes_*).
-  const {
-    facts: preferenceFacts,
-    isLoading: prefLoading,
-    isError: prefError,
-  } = useMemorySearch({
+  const { data: preferenceFacts = [] } = useButlerFacts({
     butler: "lifestyle",
     subject: "user",
-    predicates: PREFERENCE_PREDICATES,
+    select: selectPreferences,
   });
 
-  // Search for consumption state facts (watches, reads, plays).
-  const {
-    facts: consumptionFacts,
-    isLoading: consumptionLoading,
-    isError: consumptionError,
-  } = useMemorySearch({
+  const { data: consumptionFacts = [] } = useButlerFacts({
     butler: "lifestyle",
     subject: "user",
-    predicates: CONSUMPTION_PREDICATES,
+    select: selectConsumption,
   });
-
-  // All recalled facts (for recent additions).
-  const allFacts = recallData?.data ?? [];
 
   // KPI computations.
   const activePrefCount = preferenceFacts.length;
   const consumingCount = consumptionFacts.length;
   const recentlyLoggedCount = computeRecentlyLoggedCount(allFacts);
 
-  const kpiLoading = recallLoading || prefLoading || consumptionLoading;
-  const kpiError = recallError || prefError || consumptionError;
+  const kpiLoading = isLoading;
+  const kpiError = isError;
 
-  const hasError = recallError || prefError || consumptionError;
+  const hasError = isError;
 
   return (
     <div className="space-y-4 pt-4" data-testid="lifestyle-taste-tab">
@@ -409,8 +403,8 @@ export default function ButlerLifestyleTasteTab() {
           <CardContent>
             <TasteSummaryPanel
               facts={preferenceFacts}
-              isLoading={prefLoading}
-              isError={prefError}
+              isLoading={isLoading}
+              isError={isError}
             />
           </CardContent>
         </Card>
@@ -422,8 +416,8 @@ export default function ButlerLifestyleTasteTab() {
           <CardContent>
             <ConsumptionPanel
               facts={consumptionFacts}
-              isLoading={consumptionLoading}
-              isError={consumptionError}
+              isLoading={isLoading}
+              isError={isError}
             />
           </CardContent>
         </Card>
@@ -438,8 +432,8 @@ export default function ButlerLifestyleTasteTab() {
           <CardContent>
             <RecentAdditionsPanel
               facts={allFacts}
-              isLoading={recallLoading}
-              isError={recallError}
+              isLoading={isLoading}
+              isError={isError}
             />
           </CardContent>
         </Card>

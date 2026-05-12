@@ -34,6 +34,7 @@ import type {
   EntityDetailParams,
   EntityParams,
   EpisodeParams,
+  Fact,
   FactParams,
   RuleParams,
   UpdateEntityInfoRequest,
@@ -342,11 +343,51 @@ export function useDunbarRanking(enabled: boolean = false) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Fetch ALL active facts for a butler/subject pair with a single stable cache
+ * key. Callers supply a `select` predicate to derive a panel-specific slice
+ * from the shared cache entry — React Query caches the full network response
+ * once and applies each subscriber's `select` independently, so multiple
+ * calls with different `select` functions share the same network request.
+ *
+ * Cache key: ["butler-facts", butler, subject, limit]
+ * Endpoint:  GET /memory/facts?subject=<subject>&scope=<butler>&validity=active&limit=<limit>
+ *
+ * @param butler  Butler name (e.g. "lifestyle"). Partitions the cache per butler.
+ * @param subject Fact subject (e.g. "user").
+ * @param select  Optional predicate to filter/transform the raw Fact[]. When
+ *                omitted, returns all facts unchanged.
+ * @param limit   Maximum facts to fetch (default 200).
+ */
+export function useButlerFacts({
+  butler,
+  subject,
+  select,
+  limit = 200,
+}: {
+  butler: string;
+  subject: string;
+  select?: (facts: Fact[]) => Fact[];
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: ["butler-facts", butler, subject, limit],
+    queryFn: async () => {
+      const res = await getFacts({ subject, scope: butler, validity: "active", limit });
+      return res.data ?? [];
+    },
+    select,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
  * Recall all active facts for a given subject from a specific butler's scope.
  *
  * Maps to GET /memory/facts?subject=<subject>&scope=<butler>&validity=active.
  * The `butler` param targets the specific butler schema's fact scope.
  * Returns up to `limit` facts (default 100).
+ *
+ * @deprecated Use useButlerFacts instead for shared-cache efficiency.
  */
 export function useMemoryRecall({
   butler,
@@ -374,6 +415,8 @@ export function useMemoryRecall({
  *
  * Returns the raw query result (isLoading / isError / data) plus a filtered
  * `facts` array with only the predicate-matched entries.
+ *
+ * @deprecated Use useButlerFacts instead for shared-cache efficiency.
  */
 export function useMemorySearch({
   butler,
