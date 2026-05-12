@@ -2238,8 +2238,8 @@ describe("Spec scenario 12 -- mode toggle round-trip preserves tab when possible
     expect(isValidTab("overview", "general", "resident")).toBe(true);
   });
 
-  it("switching from operator with an operator-only tab clears the tab param (tab NOT preserved)", () => {
-    // sessions is operator-only; switching to resident clears the stale tab
+  it("auto-promotes operator -> resident when URL has a resident-only tab", () => {
+    // activity is resident-only; switching to resident preserves the tab but promotes the mode
     localStorageMock.getItem.mockImplementation((key: string) =>
       key === "butlers.detail.mode" ? "operator" : null,
     );
