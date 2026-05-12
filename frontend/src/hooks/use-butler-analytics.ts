@@ -105,7 +105,7 @@ export function useButlerLatencyStats(butlerName: string, windowDays: number = 7
 // useButlerActivityFeed (bu-y7lo7)
 // ---------------------------------------------------------------------------
 
-export { type ActivityFeed, type ActivityEvent, type ActivityEventType } from "@/api/index.ts";
+export { type ActivityFeed, type ButlerActivityEvent, type ActivityEventType } from "@/api/index.ts";
 
 /**
  * Fetch the merged activity feed for a butler.

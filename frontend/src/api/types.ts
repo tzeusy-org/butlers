@@ -4393,7 +4393,7 @@ export interface LatencyStatsParams {
 export type ActivityEventType = "session_completed" | "approval_raised" | "memory_write";
 
 /** A single event in the butler activity feed. */
-export interface ActivityEvent {
+export interface ButlerActivityEvent {
   /** Discriminator field identifying the event source. */
   event_type: ActivityEventType;
   /** ISO 8601 timestamp of the event. */
@@ -4409,7 +4409,7 @@ export interface ActivityEvent {
 /** Response model for GET /api/butlers/{name}/activity-feed. */
 export interface ActivityFeed {
   /** Time-ordered list of activity events, newest first. */
-  events: ActivityEvent[];
+  events: ButlerActivityEvent[];
 }
 
 /** Query params for GET /api/butlers/{name}/activity-feed. */

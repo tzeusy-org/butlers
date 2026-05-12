@@ -43,13 +43,13 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
 import { useQuery } from "@tanstack/react-query";
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
 import { getButlerActivityFeed } from "@/api/index.ts";
-import type { ActivityFeed, ActivityEvent } from "@/api/index.ts";
+import type { ActivityFeed, ButlerActivityEvent } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeEvent(overrides: Partial<ActivityEvent> = {}): ActivityEvent {
+function makeEvent(overrides: Partial<ButlerActivityEvent> = {}): ButlerActivityEvent {
   return {
     event_type: "session_completed",
     ts: "2026-05-12T10:00:00Z",
@@ -60,7 +60,7 @@ function makeEvent(overrides: Partial<ActivityEvent> = {}): ActivityEvent {
   };
 }
 
-function makeActivityFeed(events: ActivityEvent[] = []): ActivityFeed {
+function makeActivityFeed(events: ButlerActivityEvent[] = []): ActivityFeed {
   return { events };
 }
 

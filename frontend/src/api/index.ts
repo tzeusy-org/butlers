@@ -916,7 +916,7 @@ export type {
 export { getButlerActivityFeed } from "./client.ts";
 
 export type {
-  ActivityEvent,
+  ButlerActivityEvent,
   ActivityEventType,
   ActivityFeed,
   ActivityFeedParams,
