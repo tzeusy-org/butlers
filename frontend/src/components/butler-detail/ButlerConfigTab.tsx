@@ -163,7 +163,7 @@ function SchedulePanelBody({ schedules, isLoading }: SchedulePanelBodyProps) {
       {schedules.map((s) => (
         <li
           key={s.name}
-          className="flex flex-col gap-0.5 py-1.5 border-b border-border/40 last:border-b-0"
+          className="flex flex-col min-w-0 gap-0.5 py-1.5 border-b border-border/40 last:border-b-0"
         >
           <span className="text-xs font-medium text-foreground truncate">{s.name}</span>
           <span className="font-mono text-xs text-muted-foreground">{s.cron}</span>
@@ -246,7 +246,7 @@ function ScopesOauthPanelBody({ modules, isLoading, isError }: ScopesOauthPanelB
       {modules.map((mod) => (
         <li
           key={mod.name}
-          className="flex items-center justify-between gap-2 py-1 border-b border-border/40 last:border-b-0"
+          className="flex items-center justify-between min-w-0 gap-2 py-1 border-b border-border/40 last:border-b-0"
         >
           <span className="text-xs text-foreground truncate">{mod.name}</span>
           <OAuthStatusBadge status={mod.oauth_status} />
