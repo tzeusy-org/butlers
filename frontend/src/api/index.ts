@@ -893,6 +893,7 @@ export {
   getButlerDailyActivity,
   getButlerSessionKinds,
   getButlerLatencyStats,
+  getButlerMemoryStats,
 } from "./client.ts";
 
 export type {
@@ -907,6 +908,7 @@ export type {
   SessionKindsParams,
   LatencyStats,
   LatencyStatsParams,
+  ButlerMemoryStats,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------

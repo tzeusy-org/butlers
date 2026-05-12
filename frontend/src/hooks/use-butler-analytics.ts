@@ -18,6 +18,7 @@ import {
   getButlerSessionKinds,
   getButlerLatencyStats,
   getButlerActivityFeed,
+  getButlerMemoryStats,
 } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -122,6 +123,27 @@ export function useButlerActivityFeed(butlerName: string, limit?: number) {
     queryFn: () => getButlerActivityFeed(butlerName, limit != null ? { limit } : undefined),
     enabled: !!butlerName,
     staleTime: 30_000,
+    select: (response) => response.data,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useButlerMemoryStats
+// ---------------------------------------------------------------------------
+
+export { type ButlerMemoryStats } from "@/api/index.ts";
+
+/**
+ * Fetch per-butler memory subsystem KPI counts and 24-hour deltas.
+ *
+ * @param butlerName - Butler identifier
+ */
+export function useButlerMemoryStats(butlerName: string) {
+  return useQuery({
+    queryKey: ["butlers", butlerName, "memory", "stats"],
+    queryFn: () => getButlerMemoryStats(butlerName),
+    enabled: !!butlerName,
+    staleTime: 60_000,
     select: (response) => response.data,
   });
 }

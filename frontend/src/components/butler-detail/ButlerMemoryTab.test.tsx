@@ -4,14 +4,16 @@
  *
  * Tests cover:
  *  - Root container renders
- *  - KPI quartet renders with all 4 counts populated
+ *  - KPI quartet renders using <Panel> atoms (not <Card>)
+ *  - Per-butler hook (useButlerMemoryStats) is called, NOT useMemoryStats
+ *  - All 4 counts populated from per-butler stats
+ *  - "+N today" sub-lines from *_24h fields
  *  - Recent writes panel renders with ordered episodes
- *  - Empty state: empty-state line shown when no episodes
+ *  - Empty state: zeros in KPIs + "+0 today" sub-lines + empty-state text
  *  - isError state: ErrorLine shown in KPI and recent-writes panels
  *  - Loading state: skeletons shown, no data displayed
- *  - Sub-labels for facts (active) and rules (active) shown when available
  *
- * bead: bu-iuol4.20
+ * bead: bu-9l25l (epic bu-hdavr F.4)
  */
 
 import {
@@ -35,10 +37,12 @@ import ButlerMemoryTab from "./ButlerMemoryTab";
 // Mock hooks
 // ---------------------------------------------------------------------------
 
+vi.mock("@/hooks/use-butler-analytics", () => ({
+  useButlerMemoryStats: vi.fn(),
+}));
+
 vi.mock("@/hooks/use-memory", () => ({
-  useMemoryStats: vi.fn(),
   useMemoryRecentWrites: vi.fn(),
-  useEntities: vi.fn(),
 }));
 
 // Stub <Time> to avoid timezone / date-fns complexity in jsdom
@@ -47,11 +51,8 @@ vi.mock("@/components/ui/time", () => ({
     createElement("time", { dateTime: value }, value),
 }));
 
-import {
-  useMemoryStats,
-  useMemoryRecentWrites,
-  useEntities,
-} from "@/hooks/use-memory";
+import { useButlerMemoryStats } from "@/hooks/use-butler-analytics";
+import { useMemoryRecentWrites } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
 // Fixed clock
@@ -77,22 +78,16 @@ const MIN5_AGO = new Date(NOW - 5 * 60 * 1_000).toISOString();
 const MIN10_AGO = new Date(NOW - 10 * 60 * 1_000).toISOString();
 const MIN20_AGO = new Date(NOW - 20 * 60 * 1_000).toISOString();
 
-const MEMORY_STATS = {
+/** Per-butler memory stats fixture matching ButlerMemoryStats shape. */
+const BUTLER_MEMORY_STATS = {
   total_episodes: 42,
-  unconsolidated_episodes: 8,
+  episodes_24h: 7,
   total_facts: 215,
-  active_facts: 190,
-  fading_facts: 25,
+  facts_24h: 12,
+  total_entities: 64,
+  entities_24h: 3,
   total_rules: 30,
-  candidate_rules: 5,
-  established_rules: 18,
-  proven_rules: 7,
-  anti_pattern_rules: 0,
-};
-
-const ENTITIES_RESPONSE = {
-  data: [],
-  meta: { total: 64, offset: 0, limit: 1, has_more: true },
+  rules_24h: 2,
 };
 
 const EPISODES = [
@@ -165,17 +160,11 @@ function renderTab(butlerName = "memory") {
 // ---------------------------------------------------------------------------
 
 function setupWithData() {
-  vi.mocked(useMemoryStats).mockReturnValue({
-    data: { data: MEMORY_STATS },
+  vi.mocked(useButlerMemoryStats).mockReturnValue({
+    data: BUTLER_MEMORY_STATS,
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useMemoryStats>);
-
-  vi.mocked(useEntities).mockReturnValue({
-    data: ENTITIES_RESPONSE,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useEntities>);
+  } as unknown as ReturnType<typeof useButlerMemoryStats>);
 
   vi.mocked(useMemoryRecentWrites).mockReturnValue({
     data: RECENT_WRITES_RESPONSE,
@@ -185,30 +174,20 @@ function setupWithData() {
 }
 
 function setupEmpty() {
-  vi.mocked(useMemoryStats).mockReturnValue({
+  vi.mocked(useButlerMemoryStats).mockReturnValue({
     data: {
-      data: {
-        total_episodes: 0,
-        unconsolidated_episodes: 0,
-        total_facts: 0,
-        active_facts: 0,
-        fading_facts: 0,
-        total_rules: 0,
-        candidate_rules: 0,
-        established_rules: 0,
-        proven_rules: 0,
-        anti_pattern_rules: 0,
-      },
+      total_episodes: 0,
+      episodes_24h: 0,
+      total_facts: 0,
+      facts_24h: 0,
+      total_entities: 0,
+      entities_24h: 0,
+      total_rules: 0,
+      rules_24h: 0,
     },
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useMemoryStats>);
-
-  vi.mocked(useEntities).mockReturnValue({
-    data: { data: [], meta: { total: 0, offset: 0, limit: 1, has_more: false } },
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useEntities>);
+  } as unknown as ReturnType<typeof useButlerMemoryStats>);
 
   vi.mocked(useMemoryRecentWrites).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 10, has_more: false } },
@@ -218,17 +197,11 @@ function setupEmpty() {
 }
 
 function setupLoading() {
-  vi.mocked(useMemoryStats).mockReturnValue({
+  vi.mocked(useButlerMemoryStats).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
-  } as unknown as ReturnType<typeof useMemoryStats>);
-
-  vi.mocked(useEntities).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as unknown as ReturnType<typeof useEntities>);
+  } as unknown as ReturnType<typeof useButlerMemoryStats>);
 
   vi.mocked(useMemoryRecentWrites).mockReturnValue({
     data: undefined,
@@ -238,17 +211,11 @@ function setupLoading() {
 }
 
 function setupError() {
-  vi.mocked(useMemoryStats).mockReturnValue({
+  vi.mocked(useButlerMemoryStats).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: true,
-  } as unknown as ReturnType<typeof useMemoryStats>);
-
-  vi.mocked(useEntities).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: true,
-  } as unknown as ReturnType<typeof useEntities>);
+  } as unknown as ReturnType<typeof useButlerMemoryStats>);
 
   vi.mocked(useMemoryRecentWrites).mockReturnValue({
     data: undefined,
@@ -280,61 +247,91 @@ describe("ButlerMemoryTab", () => {
     expect(screen.getByTestId("butler-memory-tab")).toBeDefined();
   });
 
-  describe("KPI quartet — all 4 counts populated", () => {
-    it("renders all 4 KPI cells", () => {
+  describe("Per-butler hook contract", () => {
+    it("calls useButlerMemoryStats with the butler name", () => {
+      setupWithData();
+      renderTab("memory");
+      expect(vi.mocked(useButlerMemoryStats)).toHaveBeenCalledWith("memory");
+    });
+
+    it("does NOT call the global useMemoryStats", () => {
+      // If useMemoryStats were called it would throw (not mocked).
+      // This test simply verifies useButlerMemoryStats is the data source.
+      setupWithData();
+      renderTab();
+      expect(vi.mocked(useButlerMemoryStats)).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("KPI quartet -- Panel atoms (not Card)", () => {
+    it("renders exactly 4 kpi-item panels", () => {
       setupWithData();
       renderTab();
       const kpiItems = screen.getAllByTestId("kpi-item");
       expect(kpiItems.length).toBe(4);
     });
 
-    it("shows episode count", () => {
+    it("shows episode count from per-butler stats", () => {
       setupWithData();
       renderTab();
       const quartet = screen.getByTestId("kpi-quartet");
       expect(quartet.textContent).toContain("42");
     });
 
-    it("shows fact count", () => {
+    it("shows fact count from per-butler stats", () => {
       setupWithData();
       renderTab();
       const quartet = screen.getByTestId("kpi-quartet");
       expect(quartet.textContent).toContain("215");
     });
 
-    it("shows entity count from entities meta.total", () => {
+    it("shows entity count from per-butler stats", () => {
       setupWithData();
       renderTab();
       const quartet = screen.getByTestId("kpi-quartet");
       expect(quartet.textContent).toContain("64");
     });
 
-    it("shows rule count", () => {
+    it("shows rule count from per-butler stats", () => {
       setupWithData();
       renderTab();
       const quartet = screen.getByTestId("kpi-quartet");
       expect(quartet.textContent).toContain("30");
     });
+  });
 
-    it("shows active facts sub-label", () => {
+  describe('"+N today" sub-lines from *_24h fields', () => {
+    it('shows "+7 today" for episodes (episodes_24h=7)', () => {
       setupWithData();
       renderTab();
-      // active_facts = 190 → sub "+190 active"
       const quartet = screen.getByTestId("kpi-quartet");
-      expect(quartet.textContent).toContain("+190 active");
+      expect(quartet.textContent).toContain("+7 today");
     });
 
-    it("shows active rules sub-label (established + proven)", () => {
+    it('shows "+12 today" for facts (facts_24h=12)', () => {
       setupWithData();
       renderTab();
-      // established_rules (18) + proven_rules (7) = 25
       const quartet = screen.getByTestId("kpi-quartet");
-      expect(quartet.textContent).toContain("+25 active");
+      expect(quartet.textContent).toContain("+12 today");
+    });
+
+    it('shows "+3 today" for entities (entities_24h=3)', () => {
+      setupWithData();
+      renderTab();
+      const quartet = screen.getByTestId("kpi-quartet");
+      expect(quartet.textContent).toContain("+3 today");
+    });
+
+    it('shows "+2 today" for rules (rules_24h=2)', () => {
+      setupWithData();
+      renderTab();
+      const quartet = screen.getByTestId("kpi-quartet");
+      expect(quartet.textContent).toContain("+2 today");
     });
   });
 
   describe("Recent writes panel", () => {
-    it("renders recent writes card", () => {
+    it("renders recent writes panel", () => {
       setupWithData();
       renderTab();
       expect(screen.getByTestId("recent-writes-card")).toBeDefined();
@@ -360,7 +357,6 @@ describe("ButlerMemoryTab", () => {
       setupWithData();
       renderTab();
       const timeEls = screen.getAllByRole("time");
-      // Three episodes = three time elements
       expect(timeEls.length).toBeGreaterThanOrEqual(3);
       expect(timeEls[0].getAttribute("dateTime")).toBe(MIN5_AGO);
       expect(timeEls[1].getAttribute("dateTime")).toBe(MIN10_AGO);
@@ -371,14 +367,13 @@ describe("ButlerMemoryTab", () => {
       setupWithData();
       renderTab();
       const rows = screen.getAllByTestId("recent-write-row");
-      // First row should contain content of first episode
       expect(rows[0].textContent).toContain("User asked about travel plans to Japan.");
       expect(rows[1].textContent).toContain("Discussed upcoming health check appointment.");
       expect(rows[2].textContent).toContain("Preference noted: prefers concise summaries.");
     });
   });
 
-  describe("Empty state — no episodes", () => {
+  describe("Empty state — all counts zero", () => {
     it("shows empty-state message when there are no recent writes", () => {
       setupEmpty();
       renderTab();
@@ -387,15 +382,31 @@ describe("ButlerMemoryTab", () => {
       expect(emptyLine.textContent).toContain("No memory writes recorded yet.");
     });
 
-    it("shows zero counts in KPIs", () => {
+    it("shows zero counts in all 4 KPI cells", () => {
       setupEmpty();
       renderTab();
-      // All four KPI cells should show 0
       const kpiItems = screen.getAllByTestId("kpi-item");
       expect(kpiItems.length).toBe(4);
       kpiItems.forEach((item) => {
         expect(item.textContent).toContain("0");
       });
+    });
+
+    it('shows "+0 today" on all 4 KPI cells when all 24h fields are zero', () => {
+      setupEmpty();
+      renderTab();
+      const quartet = screen.getByTestId("kpi-quartet");
+      const matches = quartet.textContent?.match(/\+0 today/g) ?? [];
+      // 4 KPI cells each with "+0 today"
+      expect(matches.length).toBe(4);
+    });
+
+    it("does not render NaN or undefined in KPI quartet", () => {
+      setupEmpty();
+      renderTab();
+      const quartet = screen.getByTestId("kpi-quartet");
+      expect(quartet.textContent).not.toContain("NaN");
+      expect(quartet.textContent).not.toContain("undefined");
     });
   });
 
@@ -404,7 +415,6 @@ describe("ButlerMemoryTab", () => {
       setupError();
       renderTab();
       const errorLines = screen.getAllByTestId("error-state-line");
-      // At minimum one ErrorLine from KPI
       expect(errorLines.length).toBeGreaterThanOrEqual(1);
     });
 
@@ -419,18 +429,11 @@ describe("ButlerMemoryTab", () => {
     });
 
     it("shows ErrorLine for recent writes when writes query fails", () => {
-      // Only make recent writes fail
-      vi.mocked(useMemoryStats).mockReturnValue({
-        data: { data: MEMORY_STATS },
+      vi.mocked(useButlerMemoryStats).mockReturnValue({
+        data: BUTLER_MEMORY_STATS,
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useMemoryStats>);
-
-      vi.mocked(useEntities).mockReturnValue({
-        data: ENTITIES_RESPONSE,
-        isLoading: false,
-        isError: false,
-      } as unknown as ReturnType<typeof useEntities>);
+      } as unknown as ReturnType<typeof useButlerMemoryStats>);
 
       vi.mocked(useMemoryRecentWrites).mockReturnValue({
         data: undefined,
