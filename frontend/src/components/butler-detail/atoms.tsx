@@ -282,7 +282,7 @@ export function ErrorLine({ children, className }: ErrorLineProps) {
 export function LoadingLine({ className }: LoadingLineProps) {
   return (
     <p
-      className={cn("text-sm text-muted-foreground", className)}
+      className={cn("text-sm", toneClass("dim"), className)}
       data-testid="loading-line"
     >
       Loading...
@@ -306,7 +306,8 @@ export function EmptyLine({ children, className }: EmptyLineProps) {
   return (
     <p
       className={cn(
-        "text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]",
+        "text-sm italic font-[family-name:var(--font-serif,serif)]",
+        toneClass("dim"),
         className,
       )}
       data-testid="empty-state-line"

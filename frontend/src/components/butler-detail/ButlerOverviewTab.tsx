@@ -280,49 +280,54 @@ function OverviewSkeleton() {
       className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-skeleton"
     >
-      {/* identity span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-5 w-40" />
-        <Skeleton className="h-4 w-64" />
-        <Skeleton className="h-4 w-32" />
-      </div>
-      {/* process span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-4 w-40" />
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-4 w-56" />
-      </div>
-      {/* heartbeat span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-4 w-40" />
-      </div>
-      {/* modules span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4">
+      <Panel title="identity" span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-5 w-40" />
+          <Skeleton className="h-4 w-64" />
+          <Skeleton className="h-4 w-32" />
+        </div>
+      </Panel>
+      <Panel title="process" span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-56" />
+        </div>
+      </Panel>
+      <Panel title="heartbeat" span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-40" />
+        </div>
+      </Panel>
+      <Panel title="modules" span={2} className="sm:col-span-2">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           <Skeleton className="h-16 rounded-md" />
           <Skeleton className="h-16 rounded-md" />
           <Skeleton className="h-16 rounded-md" />
         </div>
-      </div>
-      {/* cost span=1 */}
-      <div className="col-span-1 border-r border-b border-border/60 p-4 space-y-2">
-        <Skeleton className="h-6 w-24" />
-        <Skeleton className="h-6 w-24" />
-      </div>
-      {/* recent sessions span=3 */}
-      <div className="col-span-1 sm:col-span-2 md:col-span-3 border-r border-b border-border/60 p-4 space-y-3">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-10 w-full" />
-        ))}
-      </div>
-      {/* activity feed span=4 */}
-      <div className="col-span-1 sm:col-span-2 md:col-span-4 border-r border-b border-border/60 p-4 space-y-2">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Skeleton key={i} className="h-8 w-full" />
-        ))}
-      </div>
+      </Panel>
+      <Panel title="cost" span={1}>
+        <div className="space-y-2">
+          <Skeleton className="h-6 w-24" />
+          <Skeleton className="h-6 w-24" />
+        </div>
+      </Panel>
+      <Panel title="recent sessions" span={3} className="sm:col-span-2 md:col-span-3">
+        <div className="space-y-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      </Panel>
+      <Panel title="activity" span={4} className="sm:col-span-2 md:col-span-4">
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-8 w-full" />
+          ))}
+        </div>
+      </Panel>
     </ButlerPanelGrid>
   );
 }
