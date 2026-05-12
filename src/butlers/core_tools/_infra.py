@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -18,6 +19,8 @@ from butlers.core.scheduler import tick as _tick
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
+
+logger = logging.getLogger(__name__)
 
 
 def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -37,9 +40,20 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         for mod in daemon._modules:
             ms = daemon._module_statuses.get(mod.name)
             if ms is None or ms.status == "active":
-                modules_dict[mod.name] = {"status": "active"}
+                entry: dict[str, Any] = {"status": "active"}
+                try:
+                    extra = await mod.extra_status_fields()
+                    if extra:
+                        entry.update(extra)
+                        # Re-assert lifecycle status so modules cannot clobber it.
+                        entry["status"] = "active"
+                except Exception:
+                    logger.debug(
+                        "extra_status_fields() failed for module %r", mod.name, exc_info=True
+                    )
+                modules_dict[mod.name] = entry
             else:
-                entry: dict[str, Any] = {"status": ms.status}
+                entry = {"status": ms.status}
                 if ms.phase:
                     entry["phase"] = ms.phase
                 if ms.error:
