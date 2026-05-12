@@ -441,9 +441,20 @@ export function Page({
   // For status-board archetype, children are the body grid. The header and
   // footer slots are rendered by ArchetypeWrapper. No HeadingBlock or h1 is
   // rendered here; the consumer's BoardHeader carries its own title display.
+  // An optional breadcrumbs+actions chrome strip renders between the header slot
+  // and the body when either prop is provided (e.g. butler detail page).
   if (archetype === "status-board") {
+    const hasChromeStrip = (breadcrumbs != null && breadcrumbs.length > 0) || actions != null;
     return (
       <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
+        {hasChromeStrip && (
+          <div className="flex min-w-0 items-center justify-between gap-4 px-7 pt-4 pb-2">
+            {breadcrumbs && breadcrumbs.length > 0 && (
+              <Breadcrumbs items={breadcrumbs} />
+            )}
+            {actions && <div className="shrink-0">{actions}</div>}
+          </div>
+        )}
         {children}
       </ArchetypeWrapper>
     );
