@@ -508,7 +508,7 @@ describe("ButlerActivityTab — KPI values", () => {
     expect(screen.getByTestId("kpi-p95").textContent).toBe("—")
   })
 
-  it("shows real p50 value when latency-stats data is available", () => {
+  it("shows real p50 and p95 values when latency-stats data is available", () => {
     vi.mocked(useButlerLatencyStats).mockReturnValue({
       data: { p50_ms: 1234, p95_ms: 5678, mean_ms: 2000, count: 10, model: "claude-sonnet-4-6" },
       isLoading: false,
@@ -517,16 +517,6 @@ describe("ButlerActivityTab — KPI values", () => {
 
     renderTab()
     expect(screen.getByTestId("kpi-p50").textContent).toBe("1234")
-  })
-
-  it("shows real p95 value when latency-stats data is available", () => {
-    vi.mocked(useButlerLatencyStats).mockReturnValue({
-      data: { p50_ms: 1234, p95_ms: 5678, mean_ms: 2000, count: 10, model: "claude-sonnet-4-6" },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useButlerLatencyStats>)
-
-    renderTab()
     expect(screen.getByTestId("kpi-p95").textContent).toBe("5678")
   })
 
