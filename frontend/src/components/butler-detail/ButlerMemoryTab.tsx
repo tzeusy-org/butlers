@@ -73,7 +73,10 @@ function KpiQuartet({
 }: KpiQuartetProps) {
   if (isLoading) {
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-4" data-testid="kpi-quartet">
+      <div
+        className="col-span-1 lg:col-span-4 grid grid-cols-2 sm:grid-cols-4"
+        data-testid="kpi-quartet"
+      >
         <KpiPanelSkeleton testId="kpi-item" />
         <KpiPanelSkeleton testId="kpi-item" />
         <KpiPanelSkeleton testId="kpi-item" />
@@ -91,7 +94,10 @@ function KpiQuartet({
   }
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4" data-testid="kpi-quartet">
+    <div
+      className="col-span-1 lg:col-span-4 grid grid-cols-2 sm:grid-cols-4"
+      data-testid="kpi-quartet"
+    >
       <Panel title="episodes" testId="kpi-item">
         <KpiCell
           label="Episodes"
@@ -238,8 +244,11 @@ export default function ButlerMemoryTab({ butlerName }: ButlerMemoryTabProps) {
   const episodes = recentWritesResponse?.data ?? [];
 
   return (
-    <div className="space-y-0 pt-4" data-testid="butler-memory-tab">
-      {/* Row 1: KPI quartet */}
+    <div
+      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
+      data-testid="butler-memory-tab"
+    >
+      {/* Row 1: KPI quartet — span full width, inner 4-col grid */}
       <KpiQuartet
         totalEpisodes={totalEpisodes}
         totalFacts={totalFacts}
