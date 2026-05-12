@@ -76,9 +76,27 @@ async def _fan_out_memory_queries(
     *,
     query_name: str,
     query_fn: Callable[[str, object], Awaitable[object | None]],
+    butler_filter: str | None = None,
 ) -> list[object]:
-    """Run a query across candidate pools and skip pools without memory schema."""
-    pools = _memory_pools(db)
+    """Run a query across candidate pools and skip pools without memory schema.
+
+    When *butler_filter* is provided the fan-out is restricted to the single
+    pool owned by that butler.  If that butler is unknown the function returns
+    immediately with an empty list, avoiding unnecessary pool probing.
+    """
+    if butler_filter is not None:
+        # Narrow to exactly one pool; return early when the butler is unknown.
+        try:
+            pools: list[tuple[str, object]] = [(butler_filter, db.pool(butler_filter))]
+        except KeyError:
+            logger.debug(
+                "Butler %r not found in pool registry; returning empty for query %s",
+                butler_filter,
+                query_name,
+            )
+            return []
+    else:
+        pools = _memory_pools(db)
     if not pools:
         logger.info("No database pools available for memory query: %s", query_name)
         return []
@@ -272,6 +290,7 @@ async def list_episodes(
         db,
         query_name="episodes",
         query_fn=_query_pool,
+        butler_filter=butler,
     )
     total = sum(pool_total for pool_total, _ in per_pool)
     merged_rows: list[object] = []
