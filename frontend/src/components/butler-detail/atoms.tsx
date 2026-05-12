@@ -19,7 +19,6 @@
 // file stays component-only (react-refresh/only-export-components).
 // ---------------------------------------------------------------------------
 
-import React from "react"
 import { AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { MonoLabelProps, PanelProps, KpiCellProps, KVProps, ErrorLineProps } from "./atoms-utils"

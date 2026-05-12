@@ -99,6 +99,10 @@ const BASE_FACT = {
   validity: "active",
   scope: "lifestyle",
   reference_count: 1,
+  last_referenced_at: null,
+  last_confirmed_at: null,
+  tags: [],
+  metadata: {},
 };
 
 const PREFERENCE_FACTS = [

@@ -70,6 +70,10 @@ _BUTLER_SCHEMAS: tuple[str, ...] = (
 
 def upgrade() -> None:
     for schema in _BUTLER_SCHEMAS:
+        # Guard against schemas that were not provisioned by core_001 (e.g.
+        # ``qa`` was added to the butler roster after the foundation migration
+        # shipped). Idempotent — no-op when the schema already exists.
+        op.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
         op.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {schema}.butler_logs (

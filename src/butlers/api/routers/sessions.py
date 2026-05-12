@@ -1,12 +1,13 @@
 """Session history endpoints — paginated, filterable session log.
 
-Provides three routers:
+Provides two routers:
 
 - ``router`` — cross-butler endpoint at ``GET /api/sessions``
-- ``butler_sessions_router`` — butler-scoped list at
-  ``GET /api/butlers/{name}/sessions``
-- ``butler_sessions_router`` — butler-scoped detail at
-  ``GET /api/butlers/{name}/sessions/{session_id}``
+- ``butler_sessions_router`` — butler-scoped endpoints:
+
+  - ``GET /api/butlers/{name}/sessions``
+  - ``GET /api/butlers/{name}/sessions/{session_id}``
+  - ``GET /api/butlers/{name}/analytics/latency-stats``
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from butlers.api.models.session import (
     DailyActivityBucket,
     HourlyActivity,
     HourlyActivityBucket,
+    LatencyStats,
     ProcessLog,
     SessionDetail,
     SessionKindBreakdown,
@@ -510,3 +512,66 @@ async def get_butler_hourly_activity(
     ]
 
     return ApiResponse[HourlyActivity](data=HourlyActivity(buckets=buckets))
+
+
+# ---------------------------------------------------------------------------
+# Butler-scoped analytics: GET /api/butlers/{name}/analytics/latency-stats
+# ---------------------------------------------------------------------------
+
+_LATENCY_STATS_SQL = """
+SELECT
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
+    percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_ms,
+    AVG(duration_ms) AS mean_ms,
+    COUNT(*) AS count,
+    mode() WITHIN GROUP (ORDER BY model) AS model
+FROM sessions
+WHERE started_at >= NOW() - ($1 * INTERVAL '1 day')
+  AND duration_ms IS NOT NULL
+"""
+
+
+@butler_sessions_router.get(
+    "/{name}/analytics/latency-stats",
+    response_model=ApiResponse[LatencyStats],
+)
+async def get_butler_latency_stats(
+    name: str,
+    window_days: int = Query(7, ge=1, le=365, description="Rolling window in days (default 7)"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[LatencyStats]:
+    """Return latency percentile statistics for a butler over a rolling window.
+
+    Queries the butler's ``sessions`` table for rows with a recorded
+    ``duration_ms`` within the last ``window_days`` days and returns p50, p95,
+    mean, count, and the most-frequently-used model.
+
+    When no matching sessions exist, returns ``count=0`` and ``None`` for all
+    duration fields.
+    """
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        )
+
+    row = await pool.fetchrow(_LATENCY_STATS_SQL, window_days)
+
+    if row is None or row["count"] == 0:
+        return ApiResponse[LatencyStats](data=LatencyStats())
+
+    p50 = row["p50_ms"]
+    p95 = row["p95_ms"]
+    mean = row["mean_ms"]
+
+    return ApiResponse[LatencyStats](
+        data=LatencyStats(
+            p50_ms=float(p50) if p50 is not None else None,
+            p95_ms=float(p95) if p95 is not None else None,
+            mean_ms=float(mean) if mean is not None else None,
+            count=int(row["count"]),
+            model=row["model"],
+        )
+    )
