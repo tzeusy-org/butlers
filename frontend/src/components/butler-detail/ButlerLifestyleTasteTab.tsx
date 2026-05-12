@@ -381,7 +381,7 @@ export default function ButlerLifestyleTasteTab() {
       {/* Error banner */}
       {hasError && (
         <p className="text-sm text-destructive" data-testid="taste-load-error">
-          Some data failed to load. Displayed values may be incomplete.
+          Lifestyle data failed to load. All panels are unavailable until the next successful fetch.
         </p>
       )}
 

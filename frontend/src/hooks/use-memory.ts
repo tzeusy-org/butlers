@@ -343,19 +343,20 @@ export function useDunbarRanking(enabled: boolean = false) {
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch ALL active facts for a butler/subject pair with a single stable cache
- * key. Callers supply a `select` predicate to derive a panel-specific slice
- * from the shared cache entry — React Query caches the full network response
- * once and applies each subscriber's `select` independently, so multiple
- * calls with different `select` functions share the same network request.
+ * Fetch up to `limit` active facts for a butler/subject pair with a single
+ * stable cache key. Callers supply a `select` function to derive a
+ * panel-specific slice from the shared cache entry — React Query caches the
+ * full network response once and applies each subscriber's `select`
+ * independently, so multiple calls with different `select` functions share the
+ * same network request.
  *
- * Cache key: ["butler-facts", butler, subject, limit]
+ * Cache key: ["memory-butler-facts", butler, subject, limit]
  * Endpoint:  GET /memory/facts?subject=<subject>&scope=<butler>&validity=active&limit=<limit>
  *
  * @param butler  Butler name (e.g. "lifestyle"). Partitions the cache per butler.
  * @param subject Fact subject (e.g. "user").
- * @param select  Optional predicate to filter/transform the raw Fact[]. When
- *                omitted, returns all facts unchanged.
+ * @param select  Optional filter returning a subset of Fact[]. When omitted,
+ *                returns all facts unchanged.
  * @param limit   Maximum facts to fetch (default 200).
  */
 export function useButlerFacts({
@@ -370,7 +371,7 @@ export function useButlerFacts({
   limit?: number;
 }) {
   return useQuery({
-    queryKey: ["butler-facts", butler, subject, limit],
+    queryKey: ["memory-butler-facts", butler, subject, limit],
     queryFn: async () => {
       const res = await getFacts({ subject, scope: butler, validity: "active", limit });
       return res.data ?? [];
