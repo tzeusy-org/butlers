@@ -286,7 +286,7 @@ def test_get_butler_typed_specialist_butlers():
 
 
 # ---------------------------------------------------------------------------
-# run_health_briefing_contribution — weight query via public.facts
+# run_health_briefing_contribution — weight query via search-path scoped facts
 # ---------------------------------------------------------------------------
 
 
@@ -315,10 +315,12 @@ async def test_run_health_briefing_contribution_weight_from_facts_content():
     assert result["butler"] == "health"
     assert result["has_updates"] is True
 
-    # Verify fetchrow was called and the SQL targets public.facts, not measurements.
+    # Verify fetchrow was called and the SQL targets the butler-scoped facts table,
+    # not the legacy measurements table.
     call_args = pool.fetchrow.call_args
     sql = call_args[0][0]
-    assert "public.facts" in sql
+    assert "FROM facts" in sql
+    assert "public.facts" not in sql
     assert "measurement_weight" in sql
     assert "measurements" not in sql
     assert "valid_at IS NOT NULL" in sql
