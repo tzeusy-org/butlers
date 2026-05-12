@@ -1,9 +1,9 @@
 """Regression tests for ?butler= filter on /api/memory/episodes.
 
 Verifies:
-- Filter present + matching butler → only that butler's rows returned
+- Filter present + matching butler → fan-out restricted to that pool only
 - Filter absent → all rows across pools returned (existing behaviour)
-- Filter present + unknown butler → empty 200 (rows filtered by SQL WHERE, pool still queried)
+- Filter present + unknown butler → empty 200 (pool never queried; early exit)
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.db import DatabaseManager
 from butlers.api.routers.memory import _get_db_manager
 
 pytestmark = pytest.mark.unit
@@ -51,21 +50,58 @@ def _make_mock_record(row: dict) -> MagicMock:
     return m
 
 
-def _wire_memory_db(app, *, rows: list[dict], total: int | None = None) -> MagicMock:
-    """Wire app with a mock DatabaseManager returning the given episode rows."""
+class _MockDB:
+    """Minimal DatabaseManager stand-in for fan-out tests.
+
+    Attributes
+    ----------
+    pool_mock:
+        The single AsyncMock pool returned for any known butler.
+    pool_lookup:
+        MagicMock wrapping the pool() method, used to assert which butler
+        names were queried.
+    """
+
+    def __init__(self, *, rows: list[dict], total: int, known_butlers: list[str]) -> None:
+        mock_records = [_make_mock_record(r) for r in rows]
+
+        self.pool_mock = AsyncMock()
+        self.pool_mock.fetchval = AsyncMock(return_value=total)
+        self.pool_mock.fetch = AsyncMock(return_value=mock_records)
+
+        self._known = known_butlers
+        self.butler_names = known_butlers
+
+        def _pool(name: str):
+            if name not in self._known:
+                raise KeyError(f"No pool for butler: {name}")
+            return self.pool_mock
+
+        self.pool_lookup = MagicMock(side_effect=_pool)
+
+    def pool(self, name: str):  # type: ignore[override]
+        return self.pool_lookup(name)
+
+
+def _wire_memory_db(
+    app,
+    *,
+    rows: list[dict],
+    total: int | None = None,
+    known_butlers: list[str] | None = None,
+) -> _MockDB:
+    """Wire app with a mock DatabaseManager returning the given episode rows.
+
+    *known_butlers* sets db.butler_names (default: ["atlas", "memory"]).
+    db.pool() raises KeyError for any name not in known_butlers, mirroring
+    real DatabaseManager behaviour.
+    """
     if total is None:
         total = len(rows)
+    if known_butlers is None:
+        known_butlers = ["atlas", "memory"]
 
-    mock_records = [_make_mock_record(r) for r in rows]
-
-    mock_pool = AsyncMock()
-    mock_pool.fetchval = AsyncMock(return_value=total)
-    mock_pool.fetch = AsyncMock(return_value=mock_records)
-
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.butler_names = ["atlas", "memory"]
-    mock_db.pool = MagicMock(return_value=mock_pool)
-
+    mock_db = _MockDB(rows=rows, total=total, known_butlers=known_butlers)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     return mock_db
 
@@ -75,13 +111,13 @@ def _wire_memory_db(app, *, rows: list[dict], total: int | None = None) -> Magic
 # ---------------------------------------------------------------------------
 
 
-async def test_episodes_no_filter_returns_all_rows(app):
-    """Omitting ?butler returns aggregated rows from all pools."""
+async def test_episodes_no_filter_fans_out_to_all_pools(app):
+    """Omitting ?butler fans out to all pools and aggregates rows."""
     rows = [
         _make_episode_row(butler="atlas", content="atlas ep"),
         _make_episode_row(butler="memory", content="memory ep"),
     ]
-    _wire_memory_db(app, rows=rows)
+    mock_db = _wire_memory_db(app, rows=rows)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -94,14 +130,16 @@ async def test_episodes_no_filter_returns_all_rows(app):
     assert "meta" in body
     # Two pools each return 2 rows → 4 total (fan-out merges)
     assert len(body["data"]) == 4
+    # pool() should have been called for both registered butlers
+    queried_names = {call.args[0] for call in mock_db.pool_lookup.call_args_list}
+    assert queried_names == {"atlas", "memory"}
 
 
-async def test_episodes_butler_filter_applied_in_sql(app):
-    """?butler=atlas passes the filter into the SQL WHERE clause.
+async def test_episodes_butler_filter_narrows_fan_out_to_single_pool(app):
+    """?butler=atlas restricts fan-out to the atlas pool only.
 
-    The mock pool returns rows matching the filter — we verify the query
-    param is accepted, the response is 200, and the returned items have
-    the correct butler value.
+    The mock returns one row; the response is 200 with that row, and only the
+    atlas pool is queried — the memory pool is never touched.
     """
     rows = [_make_episode_row(butler="atlas", content="atlas only")]
     mock_db = _wire_memory_db(app, rows=rows)
@@ -115,19 +153,22 @@ async def test_episodes_butler_filter_applied_in_sql(app):
     body = resp.json()
     assert body["data"][0]["butler"] == "atlas"
 
-    # Verify the SQL passed to the pool included a parameterised WHERE clause
-    # with the butler argument.  The pool is called once per butler_name in
-    # _fan_out_memory_queries — check at least one call carried the bound value.
-    call_args_list = mock_db.pool.return_value.fetch.call_args_list
-    assert any(
-        "butler = $1" in call.args[0] and "atlas" in call.args[1:] for call in call_args_list
-    )
+    # Only the atlas pool should have been looked up — not the memory pool.
+    queried_names = {call.args[0] for call in mock_db.pool_lookup.call_args_list}
+    assert queried_names == {"atlas"}
+
+    # The SQL WHERE clause bound the butler value as the first positional arg.
+    fetch_calls = mock_db.pool_mock.fetch.call_args_list
+    assert any("butler = $1" in call.args[0] and "atlas" in call.args[1:] for call in fetch_calls)
 
 
-async def test_episodes_unknown_butler_returns_empty_200(app):
-    """?butler=nonexistent passes the filter through; SQL returns no rows → empty 200."""
-    # The pool returns no rows because the WHERE clause matched nothing.
-    _wire_memory_db(app, rows=[], total=0)
+async def test_episodes_unknown_butler_returns_empty_200_without_querying_any_pool(app):
+    """?butler=nonexistent returns 200 + empty without hitting any pool.
+
+    With the fan-out optimisation, an unknown butler triggers an early exit
+    before any pool connection is used.
+    """
+    mock_db = _wire_memory_db(app, rows=[], total=0)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -138,6 +179,9 @@ async def test_episodes_unknown_butler_returns_empty_200(app):
     body = resp.json()
     assert body["data"] == []
     assert body["meta"]["total"] == 0
+    # pool() raised KeyError → no fetch/fetchval calls on any pool
+    mock_db.pool_mock.fetch.assert_not_called()
+    mock_db.pool_mock.fetchval.assert_not_called()
 
 
 async def test_episodes_butler_filter_combined_with_consolidated(app):
@@ -153,11 +197,12 @@ async def test_episodes_butler_filter_combined_with_consolidated(app):
         )
 
     assert resp.status_code == 200
+    # Only the atlas pool should have been queried.
+    queried_names = {call.args[0] for call in mock_db.pool_lookup.call_args_list}
+    assert queried_names == {"atlas"}
     # Both args should appear in the fetch call — check positional args directly.
-    call_args_list = mock_db.pool.return_value.fetch.call_args_list
+    fetch_calls = mock_db.pool_mock.fetch.call_args_list
+    assert any("butler = $1" in call.args[0] and "atlas" in call.args[1:] for call in fetch_calls)
     assert any(
-        "butler = $1" in call.args[0] and "atlas" in call.args[1:] for call in call_args_list
-    )
-    assert any(
-        "consolidated = $2" in call.args[0] and False in call.args[1:] for call in call_args_list
+        "consolidated = $2" in call.args[0] and False in call.args[1:] for call in fetch_calls
     )
