@@ -560,11 +560,15 @@ export function getIssues(): Promise<ApiResponse<Issue[]>> {
  * over `period` and the server computes the summary over [from, to] inclusive.
  * Callers are responsible for formatting dates in the intended timezone before
  * passing them here.
+ *
+ * When `butler` is provided, only that butler's data is included. Supported by
+ * the backend since bu-iuol4.12.
  */
 export function getCostSummary(
   period?: string,
   from?: string,
   to?: string,
+  butler?: string,
 ): Promise<ApiResponse<CostSummary>> {
   const sp = new URLSearchParams();
   if (from && to) {
@@ -573,15 +577,28 @@ export function getCostSummary(
   } else if (period) {
     sp.set("period", period);
   }
+  if (butler) sp.set("butler", butler);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<ApiResponse<CostSummary>>(`/costs/summary${qs}`);
 }
 
-/** Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD). */
-export function getDailyCosts(from?: string, to?: string): Promise<ApiResponse<DailyCost[]>> {
+/**
+ * Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD).
+ *
+ * When `butler` is provided the param is forwarded to the server. The backend
+ * `/api/costs/daily` endpoint does not yet support `?butler=` (tracked in
+ * bu-lryu6); the param is wired here for forward compatibility so callers can
+ * pass it now and the filter will take effect once the backend ships.
+ */
+export function getDailyCosts(
+  from?: string,
+  to?: string,
+  butler?: string,
+): Promise<ApiResponse<DailyCost[]>> {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
+  if (butler) params.set("butler", butler);
   const query = params.toString() ? `?${params.toString()}` : "";
   return apiFetch<ApiResponse<DailyCost[]>>(`/costs/daily${query}`);
 }

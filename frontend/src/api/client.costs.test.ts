@@ -1,11 +1,14 @@
 /**
- * Tests for cost API client functions — date-range params [bu-j1fbt].
+ * Tests for cost API client functions — date-range params [bu-j1fbt],
+ * butler scoping [bu-wyami].
  *
  * Verifies:
  * - getCostSummary builds correct query string for preset period
  * - getCostSummary sends from/to params when custom range is provided
+ * - getCostSummary includes butler= when provided (supported since bu-iuol4.12)
  * - getDailyCosts sends from/to params when provided
  * - getDailyCosts omits params when called without arguments
+ * - getDailyCosts includes butler= when provided (forwarded for bu-lryu6 compat)
  *
  * Note: getCostSummary and getDailyCosts both accept YYYY-MM-DD strings.
  * Timezone-aware formatting is the caller's responsibility (use formatCostDate
@@ -109,6 +112,67 @@ describe("getDailyCosts — date range params", () => {
     await getDailyCosts("2026-04-01");
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("from=2026-04-01");
+    expect(url).not.toContain("to=");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getCostSummary — butler param (bu-wyami / bu-iuol4.12)
+// ---------------------------------------------------------------------------
+
+describe("getCostSummary — butler param", () => {
+  it("includes butler= when provided alongside period", async () => {
+    mockResponse({ data: { period: "30d", total_cost_usd: 0, total_sessions: 0, total_input_tokens: 0, total_output_tokens: 0, by_butler: {}, by_model: {} } });
+    await getCostSummary("30d", undefined, undefined, "my-butler");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("period=30d");
+    expect(url).toContain("butler=my-butler");
+  });
+
+  it("includes butler= when provided alongside from/to", async () => {
+    mockResponse({ data: { period: "2026-04-01/2026-04-30", total_cost_usd: 0, total_sessions: 0, total_input_tokens: 0, total_output_tokens: 0, by_butler: {}, by_model: {} } });
+    await getCostSummary(undefined, "2026-04-01", "2026-04-30", "my-butler");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("from=2026-04-01");
+    expect(url).toContain("to=2026-04-30");
+    expect(url).toContain("butler=my-butler");
+  });
+
+  it("omits butler= when not provided", async () => {
+    mockResponse({ data: { period: "7d", total_cost_usd: 0, total_sessions: 0, total_input_tokens: 0, total_output_tokens: 0, by_butler: {}, by_model: {} } });
+    await getCostSummary("7d");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).not.toContain("butler=");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getDailyCosts — butler param (bu-wyami / forward compat for bu-lryu6)
+// ---------------------------------------------------------------------------
+
+describe("getDailyCosts — butler param", () => {
+  it("includes butler= in URL when provided", async () => {
+    mockResponse({ data: [] });
+    await getDailyCosts("2026-04-01", "2026-04-30", "my-butler");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("butler=my-butler");
+    expect(url).toContain("from=2026-04-01");
+    expect(url).toContain("to=2026-04-30");
+  });
+
+  it("omits butler= when not provided", async () => {
+    mockResponse({ data: [] });
+    await getDailyCosts("2026-04-01", "2026-04-30");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).not.toContain("butler=");
+  });
+
+  it("includes butler= alongside no date params when only butler is given", async () => {
+    mockResponse({ data: [] });
+    await getDailyCosts(undefined, undefined, "my-butler");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("butler=my-butler");
+    expect(url).not.toContain("from=");
     expect(url).not.toContain("to=");
   });
 });

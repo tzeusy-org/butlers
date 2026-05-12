@@ -4,17 +4,19 @@
  *
  * Tests cover:
  *  - All 3 range toggle states (24h / 7d / 30d) wired through UI
- *  - Empty butler (no data in by_butler)
+ *  - Empty butler (no spend data)
  *  - Model breakdown rendering
  *  - Error state for each panel
  *  - Loading state (all panels)
  *
  * ?butler= filter note:
- *   The backend does not yet scope /api/costs by butler (bu-iuol4.12 open).
- *   The spend tab derives per-butler cost via by_butler[butlerName] where
- *   possible. Trend and model breakdown panels show all-butler data.
+ *   All /api/costs/summary calls pass ?butler= since bu-iuol4.12.
+ *   /api/costs/daily does not yet filter by butler (bu-lryu6 tracks that);
+ *   the param is wired through for forward compatibility.
+ *   The trend panel retains an "all butlers" subtitle until bu-lryu6 lands.
+ *   Model breakdown and KPI panels are fully butler-scoped via summary.
  *
- * bead: bu-iuol4.19
+ * bead: bu-wyami
  */
 
 import { createElement } from "react";
@@ -97,20 +99,21 @@ import ButlerSpendTab from "./ButlerSpendTab";
 
 const BUTLER_NAME = "test-butler";
 
+// Fixtures represent butler-scoped responses (as if ?butler=test-butler was applied).
+// total_cost_usd is the per-butler total since the backend filters by butler.
 const COST_SUMMARY_TODAY = {
   data: {
     period: "today",
-    total_cost_usd: 0.52,
-    total_sessions: 8,
-    total_input_tokens: 45_000,
-    total_output_tokens: 12_000,
+    total_cost_usd: 0.18,
+    total_sessions: 3,
+    total_input_tokens: 14_000,
+    total_output_tokens: 4_200,
     by_butler: {
       "test-butler": 0.18,
-      "other-butler": 0.34,
     },
     by_model: {
-      "claude-sonnet-4-5": 0.45,
-      "claude-haiku-3": 0.07,
+      "claude-sonnet-4-5": 0.14,
+      "claude-haiku-3": 0.04,
     },
   },
 };
@@ -118,17 +121,16 @@ const COST_SUMMARY_TODAY = {
 const COST_SUMMARY_30D = {
   data: {
     period: "30d",
-    total_cost_usd: 12.44,
-    total_sessions: 180,
-    total_input_tokens: 1_200_000,
-    total_output_tokens: 340_000,
+    total_cost_usd: 4.80,
+    total_sessions: 62,
+    total_input_tokens: 450_000,
+    total_output_tokens: 120_000,
     by_butler: {
       "test-butler": 4.80,
-      "other-butler": 7.64,
     },
     by_model: {
-      "claude-sonnet-4-5": 10.22,
-      "claude-haiku-3": 2.22,
+      "claude-sonnet-4-5": 3.92,
+      "claude-haiku-3": 0.88,
     },
   },
 };
@@ -312,14 +314,14 @@ describe("ButlerSpendTab — KPI strip labels and values", () => {
   it("shows per-butler today spend formatted as currency", () => {
     renderTab();
     const strip = screen.getByTestId("spend-kpi-strip");
-    // COST_SUMMARY_TODAY by_butler[test-butler] = 0.18 → "$0.18"
+    // COST_SUMMARY_TODAY total_cost_usd = 0.18 (butler-scoped response)
     expect(strip.textContent).toContain("$0.18");
   });
 
   it("shows per-butler 30d spend formatted as currency", () => {
     renderTab();
     const strip = screen.getByTestId("spend-kpi-strip");
-    // COST_SUMMARY_30D by_butler[test-butler] = 4.80
+    // COST_SUMMARY_30D total_cost_usd = 4.80 (butler-scoped response)
     expect(strip.textContent).toContain("$4.80");
   });
 });
@@ -399,14 +401,14 @@ describe("ButlerSpendTab — model breakdown", () => {
   it("shows formatted cost for the top model", () => {
     renderTab();
     const list = screen.getByTestId("model-breakdown-list");
-    // claude-sonnet-4-5 cost is $10.22
-    expect(list.textContent).toContain("$10.22");
+    // claude-sonnet-4-5 cost is $3.92 (butler-scoped)
+    expect(list.textContent).toContain("$3.92");
   });
 
   it("shows percentage share in the model row", () => {
     renderTab();
     const list = screen.getByTestId("model-breakdown-list");
-    // 10.22 / 12.44 ≈ 82.2%
+    // 3.92 / 4.80 ≈ 81.7%
     expect(list.textContent).toContain("%");
   });
 });
@@ -422,11 +424,10 @@ describe("ButlerSpendTab — empty butler (no spend data)", () => {
   });
   afterEach(() => cleanup());
 
-  it("shows $0.00 for spend today when butler has no cost data (missing = zero)", () => {
+  it("shows $0.00 for spend today when butler has no cost data", () => {
     renderTab("unknown-butler");
     const strip = screen.getByTestId("spend-kpi-strip");
-    // by_butler has no entry for "unknown-butler"; backend omits zeros, so
-    // missing entry is treated as $0.00 (not "—") once data loads.
+    // Backend returns total_cost_usd: 0 for an unknown butler (empty 200).
     expect(strip.textContent).toContain("$0.00");
   });
 
@@ -514,26 +515,43 @@ describe("ButlerSpendTab — error state", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: "all butlers" degraded note in panel subtitles
+// Tests: per-butler scoping labels
 // ---------------------------------------------------------------------------
 
-describe("ButlerSpendTab — degraded 'all butlers' notes", () => {
+describe("ButlerSpendTab — scoping labels", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("shows 'all butlers' note on trend panel subtitle", () => {
+  it("shows 'all butlers' note on trend panel (daily backend not yet butler-scoped)", () => {
     renderTab();
     const trendPanel = screen.getByTestId("spend-trend-section");
     expect(trendPanel.textContent).toContain("all butlers");
   });
 
-  it("shows 'all butlers' note on model breakdown panel subtitle", () => {
+  it("does NOT show 'all butlers' note on model breakdown panel (butler-scoped summary)", () => {
     renderTab();
     const modelPanel = screen.getByTestId("spend-model-breakdown-section");
-    expect(modelPanel.textContent).toContain("all butlers");
+    expect(modelPanel.textContent).not.toContain("all butlers");
+  });
+
+  it("does NOT show 'all butlers' note in the KPI strip", () => {
+    renderTab();
+    const strip = screen.getByTestId("spend-kpi-strip");
+    expect(strip.textContent).not.toContain("all butlers");
+  });
+
+  it("passes butlerName to useCostSummary as the butler param", () => {
+    renderTab();
+    // useCostSummary should have been called with butlerName as 4th arg
+    const calls = vi.mocked(useCostSummary).mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    // All calls should include the butler name as the 4th argument
+    calls.forEach((args) => {
+      expect(args[3]).toBe(BUTLER_NAME);
+    });
   });
 });
 

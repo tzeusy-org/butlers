@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// ButlerSpendTab — bu-iuol4.19
+// ButlerSpendTab — bu-iuol4.19, updated bu-wyami
 //
 // Spend & token usage bespoke tab for per-butler detail pages.
 //
@@ -10,18 +10,14 @@
 //   Row 3: model breakdown KV list — model name, $X · Y% of total cost
 //
 // ?butler= filter status:
-//   The backend /api/costs/summary and /api/costs/daily endpoints do NOT
-//   yet support a ?butler= scoping parameter (tracked in bu-iuol4.12).
-//   Until that lands:
-//   - KPI cells: today/30d costs are derived from `by_butler[butlerName]`
-//     so they are already per-butler scoped.
-//   - tokens today, cost/session: derived from the global summary; both are
-//     all-butler totals (no per-butler token or session breakdown available).
-//   - Bar trend: uses /api/costs/daily which returns merged all-butler
-//     data. Values are degraded (all butlers).
-//   - Model breakdown: from summary `by_model` — all-butler data, degraded.
-//     Percentage shown is share of total cost, not share of calls.
-//   Degraded panels carry an "(all butlers)" note in their panel subtitle.
+//   - /api/costs/summary: supports ?butler= since bu-iuol4.12. All summary
+//     calls (today + 30d) pass butlerName for per-butler scoping.
+//   - /api/costs/daily: does NOT yet support ?butler= (tracked in bu-lryu6).
+//     The butler param is wired through getDailyCosts/useDailyCosts for
+//     forward compatibility; trend data is still all-butler until bu-lryu6
+//     lands. The trend panel carries an "all butlers" subtitle to make clear
+//     the chart is not yet butler-scoped. Remove it when bu-lryu6 ships.
+//   - tokens today, cost/session: derived from butler-scoped summary.
 //
 // Currency formatter:
 //   Uses Intl.NumberFormat for locale-aware USD display — same approach as
@@ -152,7 +148,6 @@ function ModelBreakdownPanel({ byModel, totalCost, isLoading, isError }: ModelBr
   return (
     <Panel
       title="Model breakdown"
-      sub="all butlers"
       span={4}
       testId="spend-model-breakdown-section"
     >
@@ -203,19 +198,19 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   // the need to suppress react-hooks/exhaustive-deps on the trendFrom memo.
   const todayEnd = useMemo(() => endOfDayInTz(new Date(), OWNER_TZ_DEFAULT), []);
 
-  // "today" period for KPI cell 1
+  // "today" period for KPI cell 1 — scoped to this butler via ?butler=
   const {
     data: todaySummary,
     isLoading: todayLoading,
     isError: todayError,
-  } = useCostSummary("today");
+  } = useCostSummary("today", undefined, undefined, butlerName);
 
-  // "30d" period for KPI cell 2 + model breakdown
+  // "30d" period for KPI cell 2 + model breakdown — scoped to this butler
   const {
     data: summary30d,
     isLoading: loading30d,
     isError: error30d,
-  } = useCostSummary("30d");
+  } = useCostSummary("30d", undefined, undefined, butlerName);
 
   // Date window for the bar trend — owner-TZ day boundaries
   const trendFrom = useMemo(() => {
@@ -223,19 +218,20 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     return startOfDayInTz(subDays(todayEnd, days), OWNER_TZ_DEFAULT);
   }, [range, todayEnd]);
 
+  // Trend — butler param wired for forward compat; /daily filter lands in bu-lryu6
   const {
     data: dailyCostsResp,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailyCosts(trendFrom, todayEnd);
+  } = useDailyCosts(trendFrom, todayEnd, undefined, butlerName);
 
   // ---------------------------------------------------------------------------
-  // Derived KPI values — per-butler where available, all-butler fallback
+  // Derived KPI values — all per-butler (summary queries pass ?butler=)
   // ---------------------------------------------------------------------------
 
-  // KPI 1: Spend today (per-butler via by_butler; missing entry means $0)
+  // KPI 1: Spend today — total_cost_usd from butler-scoped summary
   const spendToday = todaySummary
-    ? (todaySummary.data?.by_butler?.[butlerName] ?? 0)
+    ? (todaySummary.data?.total_cost_usd ?? 0)
     : null;
   const spendTodayValue = todayLoading
     ? "..."
@@ -245,9 +241,9 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         ? formatCurrency(spendToday)
         : "—";
 
-  // KPI 2: Spend 30d (per-butler via by_butler; missing entry means $0)
+  // KPI 2: Spend 30d — total_cost_usd from butler-scoped summary
   const spend30d = summary30d
-    ? (summary30d.data?.by_butler?.[butlerName] ?? 0)
+    ? (summary30d.data?.total_cost_usd ?? 0)
     : null;
   const spend30dValue = loading30d
     ? "..."
@@ -257,7 +253,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         ? formatCurrency(spend30d)
         : "—";
 
-  // KPI 3: Cost per session (global 30d — no per-butler session count available yet)
+  // KPI 3: Cost per session — per-butler 30d cost / per-butler session count
   const total30dCost = summary30d?.data?.total_cost_usd ?? 0;
   const total30dSessions = summary30d?.data?.total_sessions ?? 0;
   const costPerSession =
@@ -270,7 +266,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         ? formatCurrency(costPerSession)
         : "—";
 
-  // KPI 4: Tokens today in / out (global — no per-butler breakdown until bu-iuol4.12)
+  // KPI 4: Tokens today in / out — per-butler via butler-scoped today summary
   const inputTokens = todaySummary?.data?.total_input_tokens ?? 0;
   const outputTokens = todaySummary?.data?.total_output_tokens ?? 0;
   const tokenValue = todayLoading
@@ -285,12 +281,10 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     return days.map((d) => d.cost_usd);
   }, [dailyCostsResp]);
 
-  // Model breakdown from 30d summary (all-butler data)
+  // Model breakdown from butler-scoped 30d summary
   const byModel = summary30d?.data?.by_model ?? {};
   const modelBreakdownLoading = loading30d;
   const modelBreakdownError = error30d;
-
-  const kpiLoading = todayLoading || loading30d;
 
   return (
     <div
@@ -325,7 +319,6 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
             <KpiCell
               label="Cost / session · 30d"
               value={costPerSessionValue}
-              sub={kpiLoading ? undefined : "all butlers"}
             />
           </div>
         </Panel>
@@ -334,7 +327,6 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
             <KpiCell
               label="Tokens today"
               value={tokenValue}
-              sub={kpiLoading ? undefined : "all butlers"}
             />
           </div>
         </Panel>
