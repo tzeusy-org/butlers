@@ -1544,3 +1544,81 @@ class TestProjectionEventHelpers:
         fetchrow_args = mock_pool.fetchrow.await_args.args
         assert fetchrow_args[-2] == "general"
         assert fetchrow_args[-1] is None
+
+
+class TestCalendarModuleExtraStatusFields:
+    """extra_status_fields() emits OAuth/credential health based on google_accounts."""
+
+    async def test_no_db_returns_empty(self) -> None:
+        """Without a DB object, extra_status_fields returns {} (graceful degradation)."""
+        mod = CalendarModule()
+        assert mod._db is None
+        result = await mod.extra_status_fields()
+        assert result == {}
+
+    async def test_no_pool_on_db_returns_empty(self) -> None:
+        """DB with no pool attribute returns {} gracefully."""
+        mod = CalendarModule()
+        mod._db = SimpleNamespace()  # no pool attribute
+        result = await mod.extra_status_fields()
+        assert result == {}
+
+    async def test_active_primary_account_returns_granted(self) -> None:
+        """Active primary account → oauth_status='granted', credential_health='ok'."""
+        mod = CalendarModule()
+        mock_pool = MagicMock()
+        mock_pool.fetchrow = AsyncMock(return_value={"status": "active"})
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        result = await mod.extra_status_fields()
+
+        assert result["oauth_status"] == "granted"
+        assert result["credential_health"] == "ok"
+        mock_pool.fetchrow.assert_awaited_once()
+
+    async def test_revoked_account_returns_reauth_needed(self) -> None:
+        """Revoked primary account → oauth_status='reauth_needed', credential_health='error'."""
+        mod = CalendarModule()
+        mock_pool = MagicMock()
+        mock_pool.fetchrow = AsyncMock(return_value={"status": "revoked"})
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        result = await mod.extra_status_fields()
+
+        assert result["oauth_status"] == "reauth_needed"
+        assert result["credential_health"] == "error"
+
+    async def test_expired_account_returns_reauth_needed(self) -> None:
+        """Expired primary account → oauth_status='reauth_needed', credential_health='error'."""
+        mod = CalendarModule()
+        mock_pool = MagicMock()
+        mock_pool.fetchrow = AsyncMock(return_value={"status": "expired"})
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        result = await mod.extra_status_fields()
+
+        assert result["oauth_status"] == "reauth_needed"
+        assert result["credential_health"] == "error"
+
+    async def test_no_primary_account_returns_not_configured(self) -> None:
+        """No primary account row → oauth_status='not_configured', credential_health='warning'."""
+        mod = CalendarModule()
+        mock_pool = MagicMock()
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        result = await mod.extra_status_fields()
+
+        assert result["oauth_status"] == "not_configured"
+        assert result["credential_health"] == "warning"
+
+    async def test_db_query_error_returns_empty(self) -> None:
+        """DB query failure returns {} without propagating exception."""
+        mod = CalendarModule()
+        mock_pool = MagicMock()
+        mock_pool.fetchrow = AsyncMock(side_effect=Exception("connection refused"))
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        result = await mod.extra_status_fields()
+
+        assert result == {}

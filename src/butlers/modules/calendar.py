@@ -5172,6 +5172,54 @@ class CalendarModule(Module):
         """Store the switchboard audit pool for google_calendar_write egress audit entries."""
         self._audit_pool = audit_pool
 
+    async def extra_status_fields(self) -> dict[str, Any]:
+        """Return OAuth/credential health fields for the calendar module status entry.
+
+        Queries ``public.google_accounts`` for the primary account's OAuth
+        status and maps it to the ``oauth_status`` and ``credential_health``
+        fields consumed by the dashboard Config tab.
+
+        Returns ``{}`` gracefully when the DB pool is unavailable or the
+        google_accounts table does not exist (e.g. during tests or early
+        bootstrap).
+
+        Mapping from ``public.google_accounts.status``:
+
+        - ``'active'``         → ``oauth_status='granted'``, ``credential_health='ok'``
+        - ``'revoked'``/``'expired'`` → ``oauth_status='reauth_needed'``,
+          ``credential_health='error'``
+        - no primary account  → ``oauth_status='not_configured'``,
+          ``credential_health='warning'``
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return {}
+        try:
+            row = await pool.fetchrow(
+                "SELECT status FROM public.google_accounts WHERE is_primary = true LIMIT 1"
+            )
+        except Exception:
+            logger.debug("extra_status_fields: google_accounts query failed", exc_info=True)
+            return {}
+
+        if row is None:
+            return {
+                "oauth_status": "not_configured",
+                "credential_health": "warning",
+            }
+
+        account_status = row["status"]
+        if account_status == "active":
+            return {
+                "oauth_status": "granted",
+                "credential_health": "ok",
+            }
+        # 'revoked' or 'expired' → needs re-auth
+        return {
+            "oauth_status": "reauth_needed",
+            "credential_health": "error",
+        }
+
     async def _emit_calendar_audit(
         self,
         action: str,
