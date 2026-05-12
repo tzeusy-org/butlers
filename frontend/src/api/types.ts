@@ -4416,3 +4416,23 @@ export interface ActivityFeed {
 export interface ActivityFeedParams {
   limit?: number;
 }
+
+/** Response from GET /api/butlers/{name}/memory/stats. */
+export interface ButlerMemoryStats {
+  /** Total episodes written by this butler. */
+  total_episodes: number;
+  /** Episodes written in the last 24 hours. */
+  episodes_24h: number;
+  /** Total facts attributed to this butler. */
+  total_facts: number;
+  /** Facts created in the last 24 hours. */
+  facts_24h: number;
+  /** Total entities created by this butler. */
+  total_entities: number;
+  /** Entities created in the last 24 hours. */
+  entities_24h: number;
+  /** Total rules attributed to this butler. */
+  total_rules: number;
+  /** Rules created in the last 24 hours. */
+  rules_24h: number;
+}

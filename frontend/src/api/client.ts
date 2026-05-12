@@ -293,6 +293,7 @@ import type {
   LatencyStatsParams,
   ActivityFeed,
   ActivityFeedParams,
+  ButlerMemoryStats,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -516,6 +517,15 @@ export function getButlerActivityFeed(
   if (params?.limit != null) qs.set("limit", String(params.limit));
   const base = `/butlers/${encodeURIComponent(name)}/activity-feed`;
   return apiFetch<ApiResponse<ActivityFeed>>(qs.toString() ? `${base}?${qs}` : base);
+}
+
+/** GET /api/butlers/{name}/memory/stats */
+export function getButlerMemoryStats(
+  name: string,
+): Promise<ApiResponse<ButlerMemoryStats>> {
+  return apiFetch<ApiResponse<ButlerMemoryStats>>(
+    `/butlers/${encodeURIComponent(name)}/memory/stats`,
+  );
 }
 
 // ---------------------------------------------------------------------------
