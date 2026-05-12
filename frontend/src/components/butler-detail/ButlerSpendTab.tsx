@@ -218,7 +218,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     data: dailyCostsResp,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailyCosts(trendFrom, todayEnd, undefined, butlerName);
+  } = useDailyCosts(trendFrom, todayEnd, { butler: butlerName });
 
   // ---------------------------------------------------------------------------
   // Derived KPI values — all per-butler (summary queries pass ?butler=)

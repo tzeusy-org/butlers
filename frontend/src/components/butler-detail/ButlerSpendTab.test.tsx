@@ -519,13 +519,13 @@ describe("ButlerSpendTab — butler-scoped useDailyCosts [bu-u1c02]", () => {
   });
   afterEach(() => cleanup());
 
-  it("calls useDailyCosts with butlerName as the fourth argument", () => {
+  it("calls useDailyCosts with butlerName in the options object", () => {
     renderTab(BUTLER_NAME);
     const calls = vi.mocked(useDailyCosts).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
-    // Fourth argument is butler
+    // Third argument is the options object; butler is inside it
     const lastCall = calls[calls.length - 1];
-    expect(lastCall[3]).toBe(BUTLER_NAME);
+    expect(lastCall[2]).toMatchObject({ butler: BUTLER_NAME });
   });
 
   it("trend panel does NOT show 'all butlers' subtitle (scoped to butler)", () => {
