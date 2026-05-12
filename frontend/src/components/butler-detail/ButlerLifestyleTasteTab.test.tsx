@@ -15,7 +15,15 @@
  *  - Error banner appears when any query fails
  *  - Error state shows error line in individual panels
  *
- * bead: bu-iuol4.33
+ * Consolidation note (bu-h7q85):
+ *  - Three panels previously made 3 separate network requests (useMemoryRecall +
+ *    2×useMemorySearch). Now a single useButlerFacts hook fetches all facts
+ *    once; panel-specific slices are derived via stable `select` predicates so
+ *    React Query shares one cache entry across all three subscribers.
+ *  - The mock below intercepts useButlerFacts and applies the caller's `select`
+ *    function to the fixture data, verifying that the selectors work correctly.
+ *
+ * bead: bu-iuol4.33 / bu-h7q85
  */
 
 import {
@@ -39,8 +47,7 @@ import ButlerLifestyleTasteTab from "./ButlerLifestyleTasteTab";
 // ---------------------------------------------------------------------------
 
 vi.mock("@/hooks/use-memory", () => ({
-  useMemoryRecall: vi.fn(),
-  useMemorySearch: vi.fn(),
+  useButlerFacts: vi.fn(),
 }));
 
 // Stub <Time> to avoid date-formatting complexity
@@ -50,7 +57,7 @@ vi.mock("@/components/ui/time", () => ({
   ),
 }));
 
-import { useMemoryRecall, useMemorySearch } from "@/hooks/use-memory";
+import { useButlerFacts } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
 // Fixed clock
@@ -189,81 +196,46 @@ function renderTab() {
 
 // ---------------------------------------------------------------------------
 // Default mock setups
+//
+// useButlerFacts is called 3 times per render — once per panel slice — each
+// with a different `select` function. The mock applies the caller's `select`
+// to the fixture data so that predicate-based filtering is exercised end-to-end,
+// verifying that the selectors work correctly even in the test environment.
 // ---------------------------------------------------------------------------
 
 function setupWithData() {
-  vi.mocked(useMemoryRecall).mockReturnValue({
-    data: {
-      data: ALL_RECALL_FACTS,
-      meta: { total: ALL_RECALL_FACTS.length, has_more: false, offset: 0, limit: 100 },
-    },
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useMemoryRecall>);
-
-  vi.mocked(useMemorySearch).mockImplementation(({ predicates }) => {
-    const matchPref = predicates.some((p) => p.startsWith("likes_"));
-    const matchCons = predicates.some((p) => ["watches", "reads", "plays"].includes(p));
-    const facts = matchPref
-      ? PREFERENCE_FACTS
-      : matchCons
-        ? CONSUMPTION_FACTS
-        : [];
+  vi.mocked(useButlerFacts).mockImplementation(({ select }) => {
+    const selected = select ? select(ALL_RECALL_FACTS) : ALL_RECALL_FACTS;
     return {
-      data: {
-        data: ALL_RECALL_FACTS,
-        meta: { total: ALL_RECALL_FACTS.length, has_more: false, offset: 0, limit: 200 },
-      },
+      data: selected,
       isLoading: false,
       isError: false,
-      facts,
-    } as unknown as ReturnType<typeof useMemorySearch>;
+    } as unknown as ReturnType<typeof useButlerFacts>;
   });
 }
 
 function setupEmpty() {
-  vi.mocked(useMemoryRecall).mockReturnValue({
-    data: { data: [], meta: { total: 0, has_more: false, offset: 0, limit: 100 } },
+  vi.mocked(useButlerFacts).mockReturnValue({
+    data: [],
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useMemoryRecall>);
-
-  vi.mocked(useMemorySearch).mockReturnValue({
-    data: { data: [], meta: { total: 0, has_more: false, offset: 0, limit: 200 } },
-    isLoading: false,
-    isError: false,
-    facts: [],
-  } as unknown as ReturnType<typeof useMemorySearch>);
+  } as unknown as ReturnType<typeof useButlerFacts>);
 }
 
 function setupLoading() {
-  vi.mocked(useMemoryRecall).mockReturnValue({
+  vi.mocked(useButlerFacts).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
-  } as unknown as ReturnType<typeof useMemoryRecall>);
-
-  vi.mocked(useMemorySearch).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-    facts: [],
-  } as unknown as ReturnType<typeof useMemorySearch>);
+  } as unknown as ReturnType<typeof useButlerFacts>);
 }
 
 function setupError() {
-  vi.mocked(useMemoryRecall).mockReturnValue({
+  vi.mocked(useButlerFacts).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: true,
-  } as unknown as ReturnType<typeof useMemoryRecall>);
-
-  vi.mocked(useMemorySearch).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: true,
-    facts: [],
-  } as unknown as ReturnType<typeof useMemorySearch>);
+  } as unknown as ReturnType<typeof useButlerFacts>);
 }
 
 // ---------------------------------------------------------------------------
@@ -579,22 +551,14 @@ describe("ButlerLifestyleTasteTab — error state", () => {
     expect(errorLines.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("shows error lines in taste summary and consumption panels when search fails", () => {
+  it("shows error lines in all data panels when the consolidated fetch fails", () => {
     vi.resetAllMocks();
-    // Recall succeeds but search fails
-    vi.mocked(useMemoryRecall).mockReturnValue({
-      data: { data: ALL_RECALL_FACTS, meta: { total: 7, has_more: false, offset: 0, limit: 100 } },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useMemoryRecall>);
-    vi.mocked(useMemorySearch).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-      facts: [],
-    } as unknown as ReturnType<typeof useMemorySearch>);
+    // All three panel subscribers read from the same cache entry — a single
+    // fetch failure propagates to all panels simultaneously.
+    setupError();
     renderTab();
     const errorLines = screen.getAllByTestId("error-state-line");
-    expect(errorLines.length).toBeGreaterThanOrEqual(2); // taste + consumption
+    // KPI strip + taste summary + consumption state each render an error line.
+    expect(errorLines.length).toBeGreaterThanOrEqual(3);
   });
 });
