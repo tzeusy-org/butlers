@@ -448,7 +448,7 @@ export function Page({
     return (
       <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
         {hasChromeStrip && (
-          <div className="flex items-center justify-between gap-4 px-7 pt-4 pb-2">
+          <div className="flex min-w-0 items-center justify-between gap-4 px-7 pt-4 pb-2">
             {breadcrumbs && breadcrumbs.length > 0 && (
               <Breadcrumbs items={breadcrumbs} />
             )}

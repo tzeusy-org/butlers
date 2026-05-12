@@ -851,4 +851,54 @@ describe("Page -- status-board archetype", () => {
     // cannot produce a false-positive.
     expect(html).toContain("flex min-h-full flex-col");
   });
+
+  it("chrome strip: renders breadcrumbs and actions strip when both are provided", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      breadcrumbs: [{ label: "Home", href: "/" }, { label: "Detail" }],
+      actions: <button>Action</button>,
+      children: <div>Grid</div>,
+    });
+    expect(html).toContain('aria-label="Breadcrumb"');
+    expect(html).toContain("Action");
+    // Strip must appear before the body children
+    const stripPos = html.indexOf('aria-label="Breadcrumb"');
+    const gridPos = html.indexOf("Grid");
+    expect(stripPos).toBeLessThan(gridPos);
+  });
+
+  it("chrome strip: renders actions-only strip when breadcrumbs is empty and actions present", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      breadcrumbs: [],
+      actions: <button data-testid="act">Go</button>,
+      children: <div>Grid</div>,
+    });
+    expect(html).toContain('data-testid="act"');
+    expect(html).not.toContain('aria-label="Breadcrumb"');
+  });
+
+  it("chrome strip: not rendered when neither breadcrumbs nor actions are supplied", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      children: <div data-testid="grid">Grid</div>,
+    });
+    expect(html).not.toContain('aria-label="Breadcrumb"');
+    // Strip container uses min-w-0; absent means the strip is not rendered
+    expect(html).not.toContain("min-w-0");
+  });
+
+  it("chrome strip: strip container carries min-w-0 for truncation safety", () => {
+    const html = render({
+      title: "Butlers",
+      archetype: "status-board",
+      breadcrumbs: [{ label: "Very Long Butler Name Section", href: "/" }],
+      actions: <button>Act</button>,
+      children: <div>Grid</div>,
+    });
+    expect(html).toContain("min-w-0");
+  });
 });
