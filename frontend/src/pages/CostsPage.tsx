@@ -80,11 +80,9 @@ export default function CostsPage() {
     data: dailyResponse,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailyCosts(
-    timeWindow.from,
-    timeWindow.to,
-    timeWindow.pollingDisabled ? false : 60_000,
-  )
+  } = useDailyCosts(timeWindow.from, timeWindow.to, {
+    refetchInterval: timeWindow.pollingDisabled ? false : 60_000,
+  })
 
   const summary = summaryResponse?.data
   const dailyData = dailyResponse?.data ?? []

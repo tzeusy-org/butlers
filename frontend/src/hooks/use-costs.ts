@@ -53,16 +53,20 @@ export function useCostSummary(period?: string, from?: Date, to?: Date, butler?:
  * Fetch daily cost breakdown, optionally scoped to a date range and/or a butler.
  * Accepts Date objects; converts to YYYY-MM-DD for the API.
  * Falls back to the API default (last 7 days) when from/to are omitted.
- * Pass `butler` to scope the query to a single butler (cache is partitioned per butler).
+ *
+ * @param from - Start of the date range (inclusive).
+ * @param to   - End of the date range (inclusive).
+ * @param options.butler         - Butler name to scope the query (cache is partitioned per butler).
+ * @param options.refetchInterval - Override the default 60s polling interval. Pass `false` to disable.
  */
 export function useDailyCosts(
   from?: Date,
   to?: Date,
-  refetchInterval?: number | false,
-  butler?: string,
+  options?: { refetchInterval?: number | false; butler?: string },
 ) {
   const fromStr = from ? formatCostDate(from) : undefined;
   const toStr = to ? formatCostDate(to) : undefined;
+  const { refetchInterval, butler } = options ?? {};
 
   return useQuery({
     queryKey: ["daily-costs", fromStr, toStr, butler],
