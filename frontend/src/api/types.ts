@@ -4384,3 +4384,35 @@ export interface LatencyStats {
 export interface LatencyStatsParams {
   window_days?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Activity feed (bu-y7lo7)
+// ---------------------------------------------------------------------------
+
+/** Discriminated event type for activity feed entries. */
+export type ActivityEventType = "session_completed" | "approval_raised" | "memory_write";
+
+/** A single event in the butler activity feed. */
+export interface ButlerActivityEvent {
+  /** Discriminator field identifying the event source. */
+  event_type: ActivityEventType;
+  /** ISO 8601 timestamp of the event. */
+  ts: string;
+  /** Human-readable one-line summary of the event. */
+  summary: string;
+  /** Optional identifier for the originating entity as a string. */
+  entity_id: string | null;
+  /** Source-specific payload with additional context. */
+  metadata: Record<string, unknown>;
+}
+
+/** Response model for GET /api/butlers/{name}/activity-feed. */
+export interface ActivityFeed {
+  /** Time-ordered list of activity events, newest first. */
+  events: ButlerActivityEvent[];
+}
+
+/** Query params for GET /api/butlers/{name}/activity-feed. */
+export interface ActivityFeedParams {
+  limit?: number;
+}
