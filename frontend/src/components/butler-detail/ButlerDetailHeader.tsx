@@ -74,9 +74,10 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
         aria-busy="true"
       >
         {/* Identity skeleton — mirrors loaded identity block height */}
+        {/* ButlerMark is h-6 (24px); H1 text-2xl has line-height 2rem (h-8=32px) */}
         <div className="flex items-center gap-2 py-0.5">
           <Skeleton className="h-6 w-6 shrink-0 rounded" />
-          <Skeleton className="h-6 w-32 rounded-sm" />
+          <Skeleton className="h-8 w-32 rounded-sm" />
         </div>
         {/* Nav skeleton — matches SiblingButlerNav skeleton pattern */}
         <div className="flex items-center gap-0.5 overflow-x-auto scroll-smooth scrollbar-none py-0.5">
@@ -124,7 +125,8 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
       className="flex flex-col gap-2 border-b border-border px-7 pb-4"
     >
       {/* Identity block: butler hue ONLY on ButlerMark */}
-      <div className="flex items-center gap-2 py-0.5">
+      {/* min-w-0 allows flex children to shrink below intrinsic width, enabling truncation */}
+      <div className="flex min-w-0 items-center gap-2 py-0.5">
         {/* Butler hue appears ONLY on this ButlerMark element */}
         <ButlerMark name={butler} size={24} tone="fill" />
         <h1 className="text-2xl font-bold tracking-tight capitalize">{butler}</h1>
