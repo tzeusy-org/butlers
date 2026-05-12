@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 
 import type { AuditLogParams } from "@/api/types";
 import AuditLogTable from "@/components/audit/AuditLogTable";
@@ -52,12 +53,27 @@ const EMPTY_FILTERS: FilterState = {
   until: "",
 };
 
+const VALID_OPERATIONS = new Set<string>(OPERATION_OPTIONS);
+
+function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
+  const op = searchParams.get("operation") ?? "";
+  return {
+    butler: searchParams.get("butler") || "all",
+    operation: VALID_OPERATIONS.has(op) ? op : "all",
+    since: searchParams.get("since") ?? "",
+    until: searchParams.get("until") ?? "",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // AuditLogPage
 // ---------------------------------------------------------------------------
 
 export default function AuditLogPage() {
-  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
+  const [searchParams] = useSearchParams();
+  const [filters, setFilters] = useState<FilterState>(() =>
+    filtersFromSearchParams(searchParams),
+  );
   const [page, setPage] = useState(0);
 
   // Fetch butler names for the dropdown

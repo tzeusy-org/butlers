@@ -11,6 +11,8 @@
  * Doctrine: about/heart-and-soul/design-language.md §Attention list
  */
 
+import { Link } from "react-router";
+
 import type { Issue } from "@/api/types";
 
 interface AttentionListProps {
@@ -117,8 +119,8 @@ export function AttentionList({ items }: AttentionListProps) {
 
             {/* Action column: arrow link if available */}
             {item.link ? (
-              <a
-                href={item.link}
+              <Link
+                to={item.link}
                 aria-label={`View: ${item.description}`}
                 style={{
                   color: "var(--muted-foreground)",
@@ -129,7 +131,7 @@ export function AttentionList({ items }: AttentionListProps) {
                 }}
               >
                 →
-              </a>
+              </Link>
             ) : (
               <span aria-hidden="true" />
             )}

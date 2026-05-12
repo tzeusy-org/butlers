@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re
 from datetime import UTC, datetime
+from urllib.parse import urlencode
 
 import anyio
 from fastapi import APIRouter, Depends
@@ -106,12 +107,20 @@ def _issue_from_audit_group_row(row) -> Issue:
             description = f"{error_message} ({len(butlers)} butlers)"
 
     butler = butlers[0] if len(butlers) == 1 else "multiple"
+
+    link_params: dict[str, str] = {}
+    if len(butlers) == 1:
+        link_params["butler"] = butlers[0]
+    if has_schedule:
+        link_params["operation"] = "session"
+    link = f"/audit-log?{urlencode(link_params)}" if link_params else "/audit-log"
+
     return Issue(
         severity=severity,
         type=issue_type,
         butler=butler,
         description=description,
-        link="/audit-log",
+        link=link,
         error_message=error_message,
         occurrences=int(row["occurrences"] or 1),
         first_seen_at=row["first_seen_at"],
