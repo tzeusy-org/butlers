@@ -1,30 +1,21 @@
 /**
  * ButlerRegistryTab — Registry tab for the Switchboard butler detail page.
  *
- * Wraps the RegistryTable component in a card.
+ * Wraps the RegistryTable component in a Panel atom (bu-b9jpn).
  */
 
 import RegistryTable from "@/components/switchboard/RegistryTable.tsx";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Panel } from "@/components/butler-detail/atoms";
 
 export default function ButlerRegistryTab() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Butler Registry</CardTitle>
-        <CardDescription>
-          All butlers registered in the Switchboard
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+    <div
+      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
+      data-testid="butler-registry-tab"
+    >
+      <Panel title="butler registry" span={4} testId="butler-registry-panel">
         <RegistryTable />
-      </CardContent>
-    </Card>
+      </Panel>
+    </div>
   );
 }

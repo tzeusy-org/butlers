@@ -1,30 +1,21 @@
 /**
  * ButlerRoutingLogTab — Routing Log tab for the Switchboard butler detail page.
  *
- * Wraps the RoutingLogTable component in a card.
+ * Wraps the RoutingLogTable component in a Panel atom (bu-pllml).
  */
 
 import RoutingLogTable from "@/components/switchboard/RoutingLogTable.tsx";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Panel } from "@/components/butler-detail/atoms";
 
 export default function ButlerRoutingLogTab() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Routing Log</CardTitle>
-        <CardDescription>
-          Inter-butler routing activity through the Switchboard
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+    <div
+      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
+      data-testid="butler-routing-log-tab"
+    >
+      <Panel title="routing log" span={4} scroll={true} height="480px" testId="routing-log-panel">
         <RoutingLogTable />
-      </CardContent>
-    </Card>
+      </Panel>
+    </div>
   );
 }
