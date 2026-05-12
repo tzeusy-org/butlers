@@ -54,10 +54,10 @@ export function useCostSummary(period?: string, from?: Date, to?: Date, butler?:
  * Accepts Date objects; converts to YYYY-MM-DD for the API.
  * Falls back to the API default (last 7 days) when from/to are omitted.
  *
- * @param from - Start of the date range (inclusive).
- * @param to   - End of the date range (inclusive).
- * @param options.butler         - Butler name to scope the query (cache is partitioned per butler).
- * @param options.refetchInterval - Override the default 60s polling interval. Pass `false` to disable.
+ * @param [from] - Start of the date range (inclusive). Omit to fall back to the API default (last 7 days).
+ * @param [to]   - End of the date range (inclusive). Omit to fall back to the API default (last 7 days).
+ * @param [options.butler]          - Butler name to scope the query (cache is partitioned per butler).
+ * @param [options.refetchInterval] - Override the default 60s polling interval. Pass `false` to disable.
  */
 export function useDailyCosts(
   from?: Date,
