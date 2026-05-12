@@ -551,20 +551,22 @@ interface RetentionPoint {
 }
 
 /**
- * Extract retention (mastery_pct) from an AnalyticsTrendEntry.
+ * Extract retention from an AnalyticsTrendEntry using the canonical key `mastery_pct`.
  *
- * The metrics dict may carry mastery_pct, mastered_pct, or mastery_percent —
- * fall back through all known keys and clamp to [0, 100].
+ * The backend (roster/education/tools/analytics.py) has always emitted `mastery_pct`
+ * exclusively; fallback aliases (mastered_pct, mastery_percent) were never emitted and
+ * have been removed to surface schema drift immediately (empty state) rather than
+ * silently accepting alternate keys.
+ *
+ * Returns null when `mastery_pct` is absent or not a number, which causes the entry to
+ * be excluded from chartData (fail-fast over silent fallback).
  */
 function extractMasteryPct(entry: AnalyticsTrendEntry): number | null {
-  const m = entry.metrics;
-  for (const key of ["mastery_pct", "mastered_pct", "mastery_percent"]) {
-    const v = m[key];
-    if (typeof v === "number") {
-      return Math.max(0, Math.min(100, Math.round(v * (v <= 1 ? 100 : 1))));
-    }
+  const v = entry.metrics["mastery_pct"];
+  if (typeof v !== "number") {
+    return null;
   }
-  return null;
+  return Math.max(0, Math.min(100, Math.round(v * (v <= 1 ? 100 : 1))));
 }
 
 function RetentionTrendPanel({
