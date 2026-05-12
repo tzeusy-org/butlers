@@ -23,15 +23,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } 
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-// jsdom does not implement ResizeObserver. Radix Tooltip uses it via
-// @radix-ui/react-use-size. Provide a no-op stub so tooltip rendering works.
-const _originalResizeObserver = (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver;
-(globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver =
-  class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
+// ResizeObserver no-op stub is provided globally by src/test/setup.ts.
 
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
 import ButlerChroniclerTimelinesTab from "./ButlerChroniclerTimelinesTab";
@@ -74,7 +66,6 @@ beforeAll(() => {
 
 afterAll(() => {
   vi.useRealTimers();
-  (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver = _originalResizeObserver;
 });
 
 // ---------------------------------------------------------------------------

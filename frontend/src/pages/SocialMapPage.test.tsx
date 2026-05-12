@@ -9,9 +9,10 @@ import SocialMapPage from "@/pages/SocialMapPage";
 import { useDunbarRanking } from "@/hooks/use-memory";
 import type { DunbarEntry, DunbarRankingResponse } from "@/api/types";
 
-// jsdom does not implement ResizeObserver. Stub it so useElementSize fires
-// immediately and returns non-zero dimensions before the component mounts.
-const _originalResizeObserver = (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver;
+// The global no-op ResizeObserver stub from src/test/setup.ts is not enough
+// here: SocialMapPage uses useElementSize to determine canvas dimensions, and
+// the canvas only renders when width > 0 && height > 0. Override with a stub
+// that fires the callback immediately so tests see a non-zero stage size.
 (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver =
   class {
     private _cb: ResizeObserverCallback;
@@ -34,8 +35,8 @@ Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true
 Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
 
 afterAll(() => {
-  // Restore globals so this file's module-scope stubs don't leak into other workers.
-  (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver = _originalResizeObserver;
+  // ResizeObserver is managed by the global setup (src/test/setup.ts); no
+  // restore needed here — each test file gets a fresh jsdom context.
   if (_originalClientWidthDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "clientWidth", _originalClientWidthDescriptor);
   } else {

@@ -5,6 +5,11 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
+  test: {
+    // Installs global browser API stubs (e.g. ResizeObserver) before each test
+    // file so that jsdom-incompatible primitives work without per-file boilerplate.
+    setupFiles: ["./src/test/setup.ts"],
+  },
   plugins: [tailwindcss(), react()],
   resolve: {
     alias: {
