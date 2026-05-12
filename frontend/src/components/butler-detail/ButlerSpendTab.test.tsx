@@ -8,15 +8,9 @@
  *  - Model breakdown rendering
  *  - Error state for each panel
  *  - Loading state (all panels)
+ *  - useDailyCosts is called with butlerName for cache partitioning [bu-u1c02]
  *
- * ?butler= filter note:
- *   All /api/costs/summary calls pass ?butler= since bu-iuol4.12.
- *   /api/costs/daily does not yet filter by butler (bu-lryu6 tracks that);
- *   the param is wired through for forward compatibility.
- *   The trend panel retains an "all butlers" subtitle until bu-lryu6 lands.
- *   Model breakdown and KPI panels are fully butler-scoped via summary.
- *
- * bead: bu-wyami
+ * bead: bu-iuol4.19 / bu-u1c02
  */
 
 import { createElement } from "react";
@@ -515,23 +509,32 @@ describe("ButlerSpendTab — error state", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: per-butler scoping labels
+// Tests: butler-scoped daily costs and "all butlers" residual notes [bu-u1c02]
 // ---------------------------------------------------------------------------
 
-describe("ButlerSpendTab — scoping labels", () => {
+describe("ButlerSpendTab — butler-scoped useDailyCosts [bu-u1c02]", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("shows 'all butlers' note on trend panel (daily backend not yet butler-scoped)", () => {
-    renderTab();
-    const trendPanel = screen.getByTestId("spend-trend-section");
-    expect(trendPanel.textContent).toContain("all butlers");
+  it("calls useDailyCosts with butlerName as the fourth argument", () => {
+    renderTab(BUTLER_NAME);
+    const calls = vi.mocked(useDailyCosts).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    // Fourth argument is butler
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[3]).toBe(BUTLER_NAME);
   });
 
-  it("does NOT show 'all butlers' note on model breakdown panel (butler-scoped summary)", () => {
+  it("trend panel does NOT show 'all butlers' subtitle (scoped to butler)", () => {
+    renderTab();
+    const trendPanel = screen.getByTestId("spend-trend-section");
+    expect(trendPanel.textContent).not.toContain("all butlers");
+  });
+
+  it("shows 'all butlers' note on model breakdown panel (global by_model data)", () => {
     renderTab();
     const modelPanel = screen.getByTestId("spend-model-breakdown-section");
     expect(modelPanel.textContent).not.toContain("all butlers");

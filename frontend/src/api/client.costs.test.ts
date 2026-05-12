@@ -8,7 +8,7 @@
  * - getCostSummary includes butler= when provided (supported since bu-iuol4.12)
  * - getDailyCosts sends from/to params when provided
  * - getDailyCosts omits params when called without arguments
- * - getDailyCosts includes butler= when provided (forwarded for bu-lryu6 compat)
+ * - getDailyCosts sends butler param for per-butler scoping
  *
  * Note: getCostSummary and getDailyCosts both accept YYYY-MM-DD strings.
  * Timezone-aware formatting is the caller's responsibility (use formatCostDate
@@ -113,6 +113,22 @@ describe("getDailyCosts — date range params", () => {
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("from=2026-04-01");
     expect(url).not.toContain("to=");
+  });
+
+  it("sends butler param when butler is provided", async () => {
+    mockResponse({ data: [] });
+    await getDailyCosts("2026-04-01", "2026-04-30", "my-butler");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("from=2026-04-01");
+    expect(url).toContain("to=2026-04-30");
+    expect(url).toContain("butler=my-butler");
+  });
+
+  it("omits butler param when butler is undefined", async () => {
+    mockResponse({ data: [] });
+    await getDailyCosts("2026-04-01", "2026-04-30", undefined);
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).not.toContain("butler=");
   });
 });
 

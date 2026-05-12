@@ -582,14 +582,7 @@ export function getCostSummary(
   return apiFetch<ApiResponse<CostSummary>>(`/costs/summary${qs}`);
 }
 
-/**
- * Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD).
- *
- * When `butler` is provided the param is forwarded to the server. The backend
- * `/api/costs/daily` endpoint does not yet support `?butler=` (tracked in
- * bu-lryu6); the param is wired here for forward compatibility so callers can
- * pass it now and the filter will take effect once the backend ships.
- */
+/** Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD) and/or a butler. */
 export function getDailyCosts(
   from?: string,
   to?: string,
