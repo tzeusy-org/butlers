@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.memory import (
+    ButlerMemoryStats,
     EntityDetail,
     EntityInfoEntry,
     EntitySummary,
@@ -1605,3 +1606,97 @@ def _row_to_rule(r) -> Rule:
         tags=_parse_tags(r["tags"]),
         metadata=_parse_jsonb(r["metadata"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# Butler-scoped memory stats: GET /api/butlers/{name}/memory/stats
+# ---------------------------------------------------------------------------
+
+butler_memory_router = APIRouter(prefix="/api/butlers", tags=["butlers", "memory"])
+
+
+@butler_memory_router.get("/{name}/memory/stats", response_model=ApiResponse[ButlerMemoryStats])
+async def get_butler_memory_stats(
+    name: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ButlerMemoryStats]:
+    """Return per-butler memory subsystem counts with 24-hour deltas.
+
+    Queries the butler's own schema tables (episodes, facts, rules) and the
+    shared public.entities table filtered by butler_name.  Returns all-zero
+    counts when the butler exists but has no memory tables (e.g. memory module
+    not enabled).
+
+    Errors:
+    - 404: Butler is not registered in the DatabaseManager.
+    - 200 with zeros: Butler exists but memory tables are absent.
+    - 500: Unexpected database error.
+    """
+    if name not in db.butler_names:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    stats = ButlerMemoryStats()
+
+    # --- Episodes ---
+    try:
+        stats.total_episodes = await pool.fetchval("SELECT count(*) FROM episodes") or 0
+        stats.episodes_24h = (
+            await pool.fetchval(
+                "SELECT count(*) FROM episodes WHERE created_at > NOW() - INTERVAL '1 day'"
+            )
+            or 0
+        )
+    except Exception:
+        logger.debug("episodes table not available for butler '%s'; returning zeros", name)
+
+    # --- Facts ---
+    try:
+        stats.total_facts = await pool.fetchval("SELECT count(*) FROM facts") or 0
+        stats.facts_24h = (
+            await pool.fetchval(
+                "SELECT count(*) FROM facts WHERE created_at > NOW() - INTERVAL '1 day'"
+            )
+            or 0
+        )
+    except Exception:
+        logger.debug("facts table not available for butler '%s'; returning zeros", name)
+
+    # --- Entities (public schema, filtered by butler_name) ---
+    try:
+        stats.total_entities = (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.entities WHERE metadata->>'source_butler' = $1",
+                name,
+            )
+            or 0
+        )
+        stats.entities_24h = (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.entities"
+                " WHERE metadata->>'source_butler' = $1"
+                " AND created_at > NOW() - INTERVAL '1 day'",
+                name,
+            )
+            or 0
+        )
+    except Exception:
+        logger.debug("public.entities not available for butler '%s'; returning zeros", name)
+
+    # --- Rules ---
+    try:
+        stats.total_rules = await pool.fetchval("SELECT count(*) FROM rules") or 0
+        stats.rules_24h = (
+            await pool.fetchval(
+                "SELECT count(*) FROM rules WHERE created_at > NOW() - INTERVAL '1 day'"
+            )
+            or 0
+        )
+    except Exception:
+        logger.debug("rules table not available for butler '%s'; returning zeros", name)
+
+    return ApiResponse[ButlerMemoryStats](data=stats)

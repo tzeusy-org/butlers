@@ -357,6 +357,7 @@ from butlers.api.models.conversation import (  # noqa: E402
     MessageCreateRequest,
 )
 from butlers.api.models.memory import (  # noqa: E402
+    ButlerMemoryStats,
     Episode,
     Fact,
     MemoryActivity,
@@ -399,6 +400,7 @@ __all__ = [
     "AutonomySuggestionVelocity",
     "ApiMeta",
     "ApiResponse",
+    "ButlerMemoryStats",
     "ButlerConfigResponse",
     "CostSummary",
     "ButlerDetail",
