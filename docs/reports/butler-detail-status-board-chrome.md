@@ -1,6 +1,6 @@
 # Epic Report: Butler Detail Status-Board Chrome (bu-ja5bt)
 
-**Epic:** bu-ja5bt — Extend Claude Design status-board chrome from /butlers/ index to /butlers/{name} detail page
+**Epic:** bu-ja5bt: Extend Claude Design status-board chrome from /butlers/ index to /butlers/{name} detail page
 **Date:** 2026-05-13
 **OpenSpec change:** `extend-butler-detail-status-board-chrome`
 **Archived at:** `openspec/changes/archive/2026-05-13-extend-butler-detail-status-board-chrome/`
@@ -11,8 +11,8 @@
 ## 1. Executive Summary
 
 Epic bu-ja5bt extended the Claude Design status-board archetype from the `/butlers/` index page to
-the `/butlers/:name` detail page. Three new UI primitives shipped — `<SiblingButlerNav>`,
-`<ButlerDetailHeader>`, and `<ButlerDetailFooter>` — alongside the `ButlerDetailPage` wiring that
+the `/butlers/:name` detail page. Three new UI primitives shipped: `<SiblingButlerNav>`,
+`<ButlerDetailHeader>`, and `<ButlerDetailFooter>`, alongside the `ButlerDetailPage` wiring that
 mounts them in the correct `<Page archetype="status-board">` header and footer slots. A full test
 suite covers the ARIA keyboard contract, responsive tab rail overflow, and integration scenarios
 against all 12 real-roster butlers. A doctrine audit (bu-ja5bt.9) confirmed all four doctrine checks
@@ -23,8 +23,8 @@ from the prior bu-iuol4 epic are fully preserved; no new API endpoints or databa
 introduced.
 
 Two pre-existing follow-up items were filed as separate beads and are not blocking this epic close:
-`bu-2ks6c` (P2 bug — pre-existing TypeScript build errors on main involving `atoms.tsx`,
-`ButlerLifestyleTasteTab.test.tsx`, and `vite.config.ts`) and `bu-0ofvc` (P3 polish task — add
+`bu-2ks6c` (P2 bug: pre-existing TypeScript build errors on main involving `atoms.tsx`,
+`ButlerLifestyleTasteTab.test.tsx`, and `vite.config.ts`) and `bu-0ofvc` (P3 polish task: add
 `snap-start` to TabsTrigger to engage scroll-snap on the tab rail).
 
 ---
@@ -59,9 +59,9 @@ Tests are in:
 
 | OpenSpec Scenario | Implementing Bead | Test File | Test Name | Status |
 |---|---|---|---|---|
-| Status-board archetype renders on every butler detail page | bu-ja5bt.5 | `ButlerDetailPage.test.tsx` | "Spec scenario 1 -- status-board archetype chrome on /butlers/{name}" (line 1695) — "renders the butler-detail-header slot (status-board header primitive)" | pass |
+| Status-board archetype renders on every butler detail page | bu-ja5bt.5 | `ButlerDetailPage.test.tsx` | "Spec scenario 1 -- status-board archetype chrome on /butlers/{name}" (line 1695): "renders the butler-detail-header slot (status-board header primitive)" | pass |
 | Header slot is the sibling-butler nav and detail header | bu-ja5bt.3 / bu-ja5bt.5 | `ButlerDetailPage.test.tsx` | "renders the butler-detail-header slot (ButlerDetailHeader data-testid)" (line 269); "the header slot (butler-detail-header) comes before the tab rail (role=tablist)" (line 1755) | pass |
-| Footer slot is the per-butler KPI band | bu-ja5bt.4 / bu-ja5bt.5 | `ButlerDetailPage.test.tsx` | "Spec scenario 7 -- footer KPI band is scoped to the active butler" (line 1933) — four tests | pass |
+| Footer slot is the per-butler KPI band | bu-ja5bt.4 / bu-ja5bt.5 | `ButlerDetailPage.test.tsx` | "Spec scenario 7 -- footer KPI band is scoped to the active butler" (line 1933), four tests | pass |
 | Heartbeat tile is absent from detail page | bu-ja5bt.5 | `ButlerDetailPage.test.tsx` | "does NOT render ButlerHeartbeatTile on the butler detail page" (line 274); "Spec scenario 9 -- ButlerHeartbeatTile absent from detail page" (line 2037) | pass |
 | Heartbeat tile is preserved on SystemPage | bu-ja5bt.5 | `ButlerDetailPage.test.tsx` | "Butler Heartbeats tile DOES render on SystemPage" (line 2092) | pass |
 
@@ -90,7 +90,7 @@ Tests are in:
 
 | OpenSpec Scenario | Implementing Bead | Test File | Test Name | Status |
 |---|---|---|---|---|
-| Operator mode tab rail scrolls horizontally | bu-ja5bt.7 | `ButlerDetailPage.test.tsx` | "Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)" (line 2444) — "operator tab rail container has overflow-x-auto class" (line 2464) | pass |
+| Operator mode tab rail scrolls horizontally | bu-ja5bt.7 | `ButlerDetailPage.test.tsx` | "Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)" (line 2444): "operator tab rail container has overflow-x-auto class" (line 2464) | pass |
 | Resident mode tab rail fits without scroll at md+ | bu-ja5bt.7 | `ButlerDetailPage.test.tsx` | "resident mode tab rail has overflow-x-auto from TabsList" (line 2566); "resident mode has 7 tab triggers for a plain butler" (line 2581) | pass |
 
 ### ADDED Requirement: Chrome components SHALL comply with the token policy
@@ -118,9 +118,9 @@ butler identity (H1 + ButlerMark); no `<Hero>` component or body-level identity 
 
 **`<ButlerHeartbeatTile />` NOT in detail-page DOM; IS in SystemPage DOM**
 
-PASS — confirmed by static grep:
-- `rg -n "ButlerHeartbeatTile" frontend/src/pages/ButlerDetailPage.tsx` — zero matches
-- `rg -n "ButlerHeartbeatTile" frontend/src/pages/SystemPage.tsx` — 2 matches (import at line 10, render at line 102)
+PASS, confirmed by static grep:
+- `rg -n "ButlerHeartbeatTile" frontend/src/pages/ButlerDetailPage.tsx`: zero matches
+- `rg -n "ButlerHeartbeatTile" frontend/src/pages/SystemPage.tsx`: 2 matches (import at line 10, render at line 102)
 
 **All chrome tokens are CSS variables (zero hex/oklch/rgb across the three primitive files)**
 
@@ -150,7 +150,7 @@ line 131). `ButlerDetailFooter.tsx` contains no `<ButlerMark>` and no butler-hue
 kind. All surrounding chrome uses only neutral token classes (`text-foreground`,
 `text-muted-foreground`, `border-border`, etc.).
 
-**Real roster — SiblingButlerNav iterates `useButlerStatusBoard()` data; no hardcoded butler names**
+**Real roster: SiblingButlerNav iterates `useButlerStatusBoard()` data; no hardcoded butler names**
 
 PASS. `SiblingButlerNav.tsx` calls `useButlerStatusBoard()` (line 82) and iterates `rows.map()`
 (line 151). `ButlerDetailHeader.tsx` calls `useButlerStatusBoard()` (line 58) and resolves the
@@ -179,8 +179,8 @@ The 12 real-roster butlers (from `roster/*/butler.toml`) are:
 | `relationship` | Yes | aria-current test in SiblingButlerNav.test.tsx (line 192); ButlerDetailHeader.test.tsx happy path; ButlerDetailFooter.test.tsx all scenarios |
 | `chronicler` | Yes | Bespoke tab tests (line 1110–1118); integration test (line 2593–2602) with 8 tab triggers |
 | `switchboard` | Yes | Bespoke tab tests for routing-log and registry (lines 694–698, 1080–1103) |
-| `home` | Yes | Bespoke tab tests — devices tab (line 1130, 1559–1572); ROSTER_NAMES array |
-| `travel` | Yes | Bespoke tab tests — trips tab (line 1600–1614); query param carry test (line 375) |
+| `home` | Yes | Bespoke tab tests: devices tab (line 1130, 1559-1572); ROSTER_NAMES array |
+| `travel` | Yes | Bespoke tab tests: trips tab (line 1600-1614); query param carry test (line 375) |
 | `messenger` | Yes | ROSTER_NAMES array in integration harness |
 | `education` | Yes | ROSTER_NAMES array; query param carry test (line 407) |
 | `lifestyle` | Yes | ROSTER_NAMES array in integration harness |
@@ -210,7 +210,7 @@ openspec/changes/archive/2026-05-13-extend-butler-detail-status-board-chrome/
 This matches the established convention (`YYYY-MM-DD-<slug>`) as used by prior entries such as
 `2026-05-10-redesign-butlers-page-status-board` and `2026-05-05-dashboard-hero-contract`.
 
-The archived directory contains `design.md`, `proposal.md`, `specs/`, and `tasks.md` — all files
+The archived directory contains `design.md`, `proposal.md`, `specs/`, and `tasks.md`; all files
 from the active change are preserved verbatim under the archive path.
 
 ---
@@ -237,10 +237,10 @@ Two follow-up items were filed during the epic and are not blocking the close:
 - `frontend/src/components/butler-detail/SiblingButlerNav.test.tsx` (bu-ja5bt.2 / bu-ja5bt.6)
 - `frontend/src/components/butler-detail/ButlerDetailHeader.test.tsx` (bu-ja5bt.3)
 - `frontend/src/components/butler-detail/ButlerDetailFooter.test.tsx` (bu-ja5bt.4)
-- `frontend/src/pages/ButlerDetailPage.test.tsx` — extended with scenarios 1–14 (bu-ja5bt.8)
+- `frontend/src/pages/ButlerDetailPage.test.tsx` (extended with scenarios 1-14, bu-ja5bt.8)
 
 **Modified files:**
-- `frontend/src/pages/ButlerDetailPage.tsx` — archetype swap, header/footer slot wiring, ButlerHeartbeatTile removal
+- `frontend/src/pages/ButlerDetailPage.tsx` (archetype swap, header/footer slot wiring, ButlerHeartbeatTile removal)
 
 **Reports:**
 - `docs/reports/butler-detail-status-board-chrome-audit.md` (doctrine audit, bu-ja5bt.9)
