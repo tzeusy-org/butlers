@@ -25,7 +25,7 @@
 import { Link } from "react-router";
 
 import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
-import { Panel, ErrorLine } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel, ErrorLine } from "@/components/butler-detail/atoms";
 import { Badge } from "@/components/ui/badge";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Button } from "@/components/ui/button";
@@ -276,54 +276,59 @@ function ProcessFactsPanelBody({ processFacts }: ProcessFactsPanelBodyProps) {
 
 function OverviewSkeleton() {
   return (
-    <div
-      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+    <ButlerPanelGrid
+      className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-skeleton"
     >
-      {/* identity span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-5 w-40" />
-        <Skeleton className="h-4 w-64" />
-        <Skeleton className="h-4 w-32" />
-      </div>
-      {/* process span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-4 w-40" />
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-4 w-56" />
-      </div>
-      {/* heartbeat span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-4 w-40" />
-      </div>
-      {/* modules span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4">
+      <Panel title="identity" span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-5 w-40" />
+          <Skeleton className="h-4 w-64" />
+          <Skeleton className="h-4 w-32" />
+        </div>
+      </Panel>
+      <Panel title="process" span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-56" />
+        </div>
+      </Panel>
+      <Panel title="heartbeat" span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-40" />
+        </div>
+      </Panel>
+      <Panel title="modules" span={2} className="sm:col-span-2">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           <Skeleton className="h-16 rounded-md" />
           <Skeleton className="h-16 rounded-md" />
           <Skeleton className="h-16 rounded-md" />
         </div>
-      </div>
-      {/* cost span=1 */}
-      <div className="col-span-1 border-r border-b border-border/60 p-4 space-y-2">
-        <Skeleton className="h-6 w-24" />
-        <Skeleton className="h-6 w-24" />
-      </div>
-      {/* recent sessions span=3 */}
-      <div className="col-span-1 sm:col-span-2 md:col-span-3 border-r border-b border-border/60 p-4 space-y-3">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-10 w-full" />
-        ))}
-      </div>
-      {/* activity feed span=4 */}
-      <div className="col-span-1 sm:col-span-2 md:col-span-4 border-r border-b border-border/60 p-4 space-y-2">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Skeleton key={i} className="h-8 w-full" />
-        ))}
-      </div>
-    </div>
+      </Panel>
+      <Panel title="cost" span={1}>
+        <div className="space-y-2">
+          <Skeleton className="h-6 w-24" />
+          <Skeleton className="h-6 w-24" />
+        </div>
+      </Panel>
+      <Panel title="recent sessions" span={3} className="sm:col-span-2 md:col-span-3">
+        <div className="space-y-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      </Panel>
+      <Panel title="activity" span={4} className="sm:col-span-2 md:col-span-4">
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-8 w-full" />
+          ))}
+        </div>
+      </Panel>
+    </ButlerPanelGrid>
   );
 }
 
@@ -380,8 +385,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     costToday != null && globalTotalToday != null && globalTotalToday > 0;
 
   return (
-    <div
-      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+    <ButlerPanelGrid
+      className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-panel-grid"
     >
       {/* ----------------------------------------------------------------- */}
@@ -392,6 +397,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="identity"
         span={2}
+        className="sm:col-span-2"
         testId="panel-identity"
       >
         {/* Butler mark + name + status */}
@@ -419,6 +425,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="process"
         span={2}
+        className="sm:col-span-2"
         testId="panel-process"
       >
         <ProcessFactsPanelBody processFacts={butler?.process_facts ?? null} />
@@ -432,6 +439,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="heartbeat"
         span={2}
+        className="sm:col-span-2"
         testId="panel-heartbeat"
       >
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
@@ -492,6 +500,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="modules"
         span={2}
+        className="sm:col-span-2"
         testId="panel-modules"
       >
         {modulesLoading ? (
@@ -559,6 +568,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Panel
         title="recent sessions"
         span={3}
+        className="sm:col-span-2 md:col-span-3"
         testId="panel-recent-sessions"
       >
         <div className="flex items-center justify-end mb-2">
@@ -604,6 +614,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         span={4}
         scroll
         height="320px"
+        className="sm:col-span-2 md:col-span-4"
         testId="panel-activity-feed"
       >
         {activityFeedLoading ? (
@@ -642,6 +653,6 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         )}
       </Panel>
 
-    </div>
+    </ButlerPanelGrid>
   );
 }

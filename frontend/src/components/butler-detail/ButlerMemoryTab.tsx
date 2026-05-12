@@ -25,7 +25,7 @@
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { ErrorLine, KpiCell, Panel } from "./atoms";
+import { ButlerPanelGrid, ErrorLine, KpiCell, Panel } from "./atoms";
 import { useButlerMemoryStats } from "@/hooks/use-butler-analytics";
 import { useMemoryRecentWrites } from "@/hooks/use-memory";
 import type { Episode } from "@/api/types";
@@ -244,10 +244,7 @@ export default function ButlerMemoryTab({ butlerName }: ButlerMemoryTabProps) {
   const episodes = recentWritesResponse?.data ?? [];
 
   return (
-    <div
-      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
-      data-testid="butler-memory-tab"
-    >
+    <ButlerPanelGrid data-testid="butler-memory-tab">
       {/* Row 1: KPI quartet — span full width, inner 4-col grid */}
       <KpiQuartet
         totalEpisodes={totalEpisodes}
@@ -276,6 +273,6 @@ export default function ButlerMemoryTab({ butlerName }: ButlerMemoryTabProps) {
           isError={recentWritesError}
         />
       </Panel>
-    </div>
+    </ButlerPanelGrid>
   );
 }

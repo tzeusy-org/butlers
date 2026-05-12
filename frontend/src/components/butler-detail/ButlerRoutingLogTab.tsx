@@ -5,17 +5,14 @@
  */
 
 import RoutingLogTable from "@/components/switchboard/RoutingLogTable.tsx";
-import { Panel } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel } from "@/components/butler-detail/atoms";
 
 export default function ButlerRoutingLogTab() {
   return (
-    <div
-      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
-      data-testid="butler-routing-log-tab"
-    >
+    <ButlerPanelGrid data-testid="butler-routing-log-tab">
       <Panel title="routing log" span={4} scroll={true} height="480px" testId="routing-log-panel">
         <RoutingLogTable />
       </Panel>
-    </div>
+    </ButlerPanelGrid>
   );
 }

@@ -1,13 +1,16 @@
 // ---------------------------------------------------------------------------
 // atoms.tsx — shared primitive atoms for butler detail resident tabs
-// (bu-iuol4.13)
+// (bu-iuol4.13, bu-hdavr.3)
 //
 // Exports:
-//   <MonoLabel>  — uppercase mono 9px eyebrow label with letter-spacing
-//   <Panel>      — panel with mono eyebrow header, grid-span support
-//   <KpiCell>    — KPI card with tonal value display
-//   <KV>         — key-value row for Config and similar tabs
-//   <ErrorLine>  — icon + destructive-tone error message row
+//   <ButlerPanelGrid> — canonical 4-col panel-grid frame wrapper
+//   <MonoLabel>       — uppercase mono 9px eyebrow label with letter-spacing
+//   <Panel>           — panel with mono eyebrow header, responsive grid-span
+//   <KpiCell>         — KPI card with tonal value display
+//   <KV>              — key-value row for Config and similar tabs
+//   <ErrorLine>       — icon + destructive-tone error message row
+//   <LoadingLine>     — standard loading placeholder text
+//   <EmptyLine>       — standard italic empty-state text
 //
 // Doctrine (non-negotiable):
 //   - No raw oklch in JSX. No hex. No inline style except typed-primitive
@@ -21,8 +24,45 @@
 
 import { AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
-import type { MonoLabelProps, PanelProps, KpiCellProps, KVProps, ErrorLineProps } from "./atoms-utils"
+import type {
+  MonoLabelProps,
+  PanelProps,
+  KpiCellProps,
+  KVProps,
+  ErrorLineProps,
+  LoadingLineProps,
+  EmptyLineProps,
+  ButlerPanelGridProps,
+} from "./atoms-utils"
 import { toneClass } from "./atoms-utils"
+
+// ---------------------------------------------------------------------------
+// ButlerPanelGrid
+//
+// Canonical outer container for the 4-column butler-detail panel grid.
+// Owns: grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60.
+// Additional className props are merged in (e.g. for tabs that also need
+// sm/md intermediate breakpoints like the Overview tab).
+//
+// Props:
+//   children  — panel cells
+//   className — additional wrapper classes (merged via cn)
+//   ...props  — forwarded to the outer div (e.g. data-testid)
+// ---------------------------------------------------------------------------
+
+export function ButlerPanelGrid({ children, className, ...props }: ButlerPanelGridProps) {
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // MonoLabel
@@ -69,11 +109,14 @@ export function MonoLabel({ children, color = "dim", className }: MonoLabelProps
 //   className — additional wrapper classes
 // ---------------------------------------------------------------------------
 
+// Responsive span classes: base is col-span-1 (mobile stacks); the lg: prefix
+// activates the multi-column span only when the grid has 4 columns (lg+).
+// This prevents implicit horizontal overflow on narrower viewports.
 const spanClass: Record<number, string> = {
   1: "col-span-1",
-  2: "col-span-2",
-  3: "col-span-3",
-  4: "col-span-4",
+  2: "col-span-1 lg:col-span-2",
+  3: "col-span-1 lg:col-span-3",
+  4: "col-span-1 lg:col-span-4",
 }
 
 export function Panel({
@@ -222,6 +265,54 @@ export function ErrorLine({ children, className }: ErrorLineProps) {
     >
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span className="truncate">{children}</span>
+    </p>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// LoadingLine
+//
+// Standard in-panel loading placeholder text. Replaces private per-tab
+// LoadingLine definitions so the pattern is consistent across all tabs.
+//
+// Props:
+//   className — additional wrapper classes
+// ---------------------------------------------------------------------------
+
+export function LoadingLine({ className }: LoadingLineProps) {
+  return (
+    <p
+      className={cn("text-sm", toneClass("dim"), className)}
+      data-testid="loading-line"
+    >
+      Loading...
+    </p>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// EmptyLine
+//
+// Standard in-panel empty-state text. Rendered in serif italic to signal
+// that there is nothing to show (not an error). Replaces private per-tab
+// EmptyLine definitions so the pattern is consistent across all tabs.
+//
+// Props:
+//   children  — descriptive empty-state message
+//   className — additional wrapper classes
+// ---------------------------------------------------------------------------
+
+export function EmptyLine({ children, className }: EmptyLineProps) {
+  return (
+    <p
+      className={cn(
+        "text-sm italic font-[family-name:var(--font-serif,serif)]",
+        toneClass("dim"),
+        className,
+      )}
+      data-testid="empty-state-line"
+    >
+      {children}
     </p>
   )
 }
