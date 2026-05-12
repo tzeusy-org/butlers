@@ -133,6 +133,23 @@ async def test_status_empty_extra_fields_leaves_entry_unchanged():
     assert result["modules"]["email"] == {"status": "active"}
 
 
+async def test_status_extra_fields_cannot_clobber_lifecycle_status():
+    """extra_status_fields() returning a 'status' key cannot overwrite the lifecycle status."""
+    mod = _make_module(
+        "email",
+        extra_fields={"status": "reauth_needed", "oauth_status": "granted"},
+    )
+    status = _register_and_grab_status([mod])
+
+    result = await status()
+
+    email_entry = result["modules"]["email"]
+    # Lifecycle status must remain "active" even though extra_fields tried to overwrite it.
+    assert email_entry["status"] == "active"
+    # Other extra fields are still merged.
+    assert email_entry["oauth_status"] == "granted"
+
+
 async def test_status_failed_module_does_not_call_extra_fields():
     """Modules in failed/cascade_failed state skip extra_status_fields()."""
     from butlers.module_state import ModuleStartupStatus

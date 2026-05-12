@@ -252,6 +252,7 @@ class EmailModule(Module):
                 "SELECT status FROM public.google_accounts WHERE is_primary = true LIMIT 1"
             )
         except Exception:
+            logger.debug("extra_status_fields: google_accounts query failed", exc_info=True)
             return {}
 
         if row is None:
