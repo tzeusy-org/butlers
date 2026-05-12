@@ -2502,7 +2502,11 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
     const triggers = Array.from(container.querySelectorAll('[role="tab"]'));
     expect(triggers.length).toBeGreaterThan(0);
     for (const trigger of triggers) {
-      expect((trigger as HTMLElement).className).toContain("snap-start");
+      expect(
+        (trigger as HTMLElement).classList.contains(
+          "group-data-[orientation=horizontal]/tabs:snap-start",
+        ),
+      ).toBe(true);
     }
   });
 
@@ -2515,7 +2519,11 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
     const triggers = Array.from(container.querySelectorAll('[role="tab"]'));
     expect(triggers.length).toBeGreaterThan(0);
     for (const trigger of triggers) {
-      expect((trigger as HTMLElement).className).toContain("snap-start");
+      expect(
+        (trigger as HTMLElement).classList.contains(
+          "group-data-[orientation=horizontal]/tabs:snap-start",
+        ),
+      ).toBe(true);
     }
   });
 
