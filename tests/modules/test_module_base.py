@@ -206,6 +206,13 @@ async def test_on_shutdown_signature():
     await mod.on_shutdown()
 
 
+async def test_extra_status_fields_default_returns_empty():
+    """Module base class extra_status_fields() returns {} by default."""
+    mod = MinimalModule()
+    result = await mod.extra_status_fields()
+    assert result == {}
+
+
 # ---------------------------------------------------------------------------
 # Tool group filtering
 # ---------------------------------------------------------------------------

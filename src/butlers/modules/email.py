@@ -115,6 +115,8 @@ class EmailModule(Module):
         # Credentials cached at startup: user-scope from owner entity_info,
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
+        # DB pool for OAuth status queries (public.google_accounts).
+        self._pool: Any = None
 
     @property
     def name(self) -> str:
@@ -199,6 +201,7 @@ class EmailModule(Module):
 
         # --- User-scope: resolve exclusively from owner entity_info ----------
         pool = getattr(db, "pool", None) if db is not None else None
+        self._pool = pool  # Retained for OAuth status queries (public.google_accounts).
         if pool is not None:
             user_cfg = self._config.user
             # contact_info type → env var key used by _get_credentials
@@ -222,6 +225,52 @@ class EmailModule(Module):
 
     async def on_shutdown(self) -> None:
         """No persistent connections to clean up."""
+
+    async def extra_status_fields(self) -> dict[str, Any]:
+        """Return OAuth/credential health fields for the email module status entry.
+
+        Queries ``public.google_accounts`` for the primary account's OAuth
+        status and maps it to the ``oauth_status`` and ``credential_health``
+        fields consumed by the dashboard Config tab.
+
+        Returns ``{}`` gracefully when the DB pool is unavailable or the
+        google_accounts table does not exist (e.g. during tests or early
+        bootstrap).
+
+        Mapping from ``public.google_accounts.status``:
+
+        - ``'active'``         → ``oauth_status='granted'``, ``credential_health='ok'``
+        - ``'revoked'``/``'expired'`` → ``oauth_status='reauth_needed'``,
+          ``credential_health='error'``
+        - no primary account  → ``oauth_status='not_configured'``,
+          ``credential_health='warning'``
+        """
+        if self._pool is None:
+            return {}
+        try:
+            row = await self._pool.fetchrow(
+                "SELECT status FROM public.google_accounts WHERE is_primary = true LIMIT 1"
+            )
+        except Exception:
+            return {}
+
+        if row is None:
+            return {
+                "oauth_status": "not_configured",
+                "credential_health": "warning",
+            }
+
+        account_status = row["status"]
+        if account_status == "active":
+            return {
+                "oauth_status": "granted",
+                "credential_health": "ok",
+            }
+        # 'revoked' or 'expired' → needs re-auth
+        return {
+            "oauth_status": "reauth_needed",
+            "credential_health": "error",
+        }
 
     def wire_audit_pool(self, audit_pool: Any) -> None:
         """Store the switchboard audit pool for gmail_send egress audit entries."""

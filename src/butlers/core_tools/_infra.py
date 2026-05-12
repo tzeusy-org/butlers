@@ -37,9 +37,16 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         for mod in daemon._modules:
             ms = daemon._module_statuses.get(mod.name)
             if ms is None or ms.status == "active":
-                modules_dict[mod.name] = {"status": "active"}
+                entry: dict[str, Any] = {"status": "active"}
+                try:
+                    extra = await mod.extra_status_fields()
+                    if extra:
+                        entry.update(extra)
+                except Exception:
+                    pass
+                modules_dict[mod.name] = entry
             else:
-                entry: dict[str, Any] = {"status": ms.status}
+                entry = {"status": ms.status}
                 if ms.phase:
                     entry["phase"] = ms.phase
                 if ms.error:

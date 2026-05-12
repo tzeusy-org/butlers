@@ -169,3 +169,17 @@ class Module(abc.ABC):
         approvals subsystem will fall back to heuristic classification.
         """
         return {}
+
+    async def extra_status_fields(self) -> dict[str, Any]:
+        """Return optional extra fields to merge into this module's status() entry.
+
+        Called by the ``status()`` core tool for each active module.  The
+        returned dict is merged into the module's entry in the ``modules``
+        section of the status response (e.g. ``oauth_status``,
+        ``oauth_expires_at``, ``credential_health``).
+
+        The default implementation returns an empty dict.  Modules that track
+        OAuth or external credential health should override this method to
+        surface live credential state to the dashboard.
+        """
+        return {}
