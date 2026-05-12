@@ -221,7 +221,7 @@ describe("useButlerActivityFeed -- limit parameter", () => {
     const calls = vi.mocked(useQuery).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
 
-    const opts = calls[0][0] as { queryFn: () => unknown };
+    const opts = calls[0][0] as unknown as { queryFn: () => unknown };
     opts.queryFn();
 
     expect(vi.mocked(getButlerActivityFeed)).toHaveBeenCalledWith("my-butler", undefined);
@@ -233,7 +233,7 @@ describe("useButlerActivityFeed -- limit parameter", () => {
     const calls = vi.mocked(useQuery).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
 
-    const opts = calls[0][0] as { queryFn: () => unknown };
+    const opts = calls[0][0] as unknown as { queryFn: () => unknown };
     opts.queryFn();
 
     expect(vi.mocked(getButlerActivityFeed)).toHaveBeenCalledWith("my-butler", { limit: 25 });
