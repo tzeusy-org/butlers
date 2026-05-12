@@ -19,25 +19,8 @@
 import React from "react"
 import { AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-// ---------------------------------------------------------------------------
-// Tone → className helper
-//
-// Token name → Tailwind text utility. This is the ONLY place the mapping
-// lives; do not inline these strings at call sites.
-// ---------------------------------------------------------------------------
-
-export type Tone = "amber" | "red" | "green" | "dim" | "fg"
-
-export function toneClass(tone: Tone): string {
-  switch (tone) {
-    case "amber": return "text-amber-500"
-    case "red":   return "text-destructive"
-    case "green": return "text-emerald-500"
-    case "dim":   return "text-muted-foreground"
-    case "fg":    return "text-foreground"
-  }
-}
+import type { Tone } from "./atoms-utils"
+import { toneClass } from "./atoms-utils"
 
 // ---------------------------------------------------------------------------
 // MonoLabel
