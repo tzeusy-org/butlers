@@ -19,6 +19,8 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
+VALID_PRIORITIES: frozenset[str] = frozenset({"high", "medium", "low"})
+
 
 @dataclass(frozen=True)
 class IdempotencyKey:
@@ -371,10 +373,10 @@ class IdempotencyEngine:
         Raises
         ------
         ValueError
-            If a delivery with this idempotency key already exists.
+            If a delivery with this idempotency key already exists, or if
+            ``priority`` is not one of ``'high'``, ``'medium'``, or ``'low'``.
         """
-        _VALID_PRIORITIES = frozenset({"high", "medium", "low"})
-        if priority not in _VALID_PRIORITIES:
+        if priority not in VALID_PRIORITIES:
             raise ValueError(f"Invalid priority {priority!r}. Allowed values: high, medium, low")
 
         # Parse request_id to UUID if present
