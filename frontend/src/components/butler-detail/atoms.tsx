@@ -14,12 +14,15 @@
 //     exemption (§2.b in about/heart-and-soul/design-language.md).
 //   - Tailwind tokens only: text-amber-500, text-destructive, etc.
 //   - All numeric values use the .tnum utility (font-variant-numeric).
+//
+// Note: prop interfaces and utility types live in atoms-utils.ts so this
+// file stays component-only (react-refresh/only-export-components).
 // ---------------------------------------------------------------------------
 
 import React from "react"
 import { AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
-import type { Tone } from "./atoms-utils"
+import type { MonoLabelProps, PanelProps, KpiCellProps, KVProps, ErrorLineProps } from "./atoms-utils"
 import { toneClass } from "./atoms-utils"
 
 // ---------------------------------------------------------------------------
@@ -33,12 +36,6 @@ import { toneClass } from "./atoms-utils"
 //   color    — optional tone token (defaults to "dim" = text-muted-foreground)
 //   className — additional classes
 // ---------------------------------------------------------------------------
-
-export interface MonoLabelProps {
-  children: React.ReactNode
-  color?: Tone
-  className?: string
-}
 
 export function MonoLabel({ children, color = "dim", className }: MonoLabelProps) {
   return (
@@ -72,19 +69,6 @@ export function MonoLabel({ children, color = "dim", className }: MonoLabelProps
 //   children — body content
 //   className — additional wrapper classes
 // ---------------------------------------------------------------------------
-
-export interface PanelProps {
-  title?: string
-  sub?: string
-  span?: 1 | 2 | 3 | 4
-  scroll?: boolean
-  height?: string
-  accent?: boolean
-  /** Forwarded to the outer wrapper div as data-testid. */
-  testId?: string
-  children?: React.ReactNode
-  className?: string
-}
 
 const spanClass: Record<number, string> = {
   1: "col-span-1",
@@ -155,15 +139,6 @@ export function Panel({
 //   className — additional wrapper classes
 // ---------------------------------------------------------------------------
 
-export interface KpiCellProps {
-  label: string
-  value: React.ReactNode
-  sub?: React.ReactNode
-  tone?: Tone
-  big?: boolean
-  className?: string
-}
-
 export function KpiCell({
   label,
   value,
@@ -207,13 +182,6 @@ export function KpiCell({
 //   className — additional row classes
 // ---------------------------------------------------------------------------
 
-export interface KVProps {
-  k: string
-  v: React.ReactNode
-  mono?: boolean
-  className?: string
-}
-
 export function KV({ k, v, mono = false, className }: KVProps) {
   return (
     <div className={cn("flex items-baseline gap-4 py-1.5 border-b border-border/40 last:border-b-0", className)}>
@@ -242,11 +210,6 @@ export function KV({ k, v, mono = false, className }: KVProps) {
 //   children  — error message text
 //   className — additional wrapper classes
 // ---------------------------------------------------------------------------
-
-export interface ErrorLineProps {
-  children: React.ReactNode
-  className?: string
-}
 
 export function ErrorLine({ children, className }: ErrorLineProps) {
   return (
