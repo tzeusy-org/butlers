@@ -7,6 +7,7 @@
  *   useButlerDailyActivity   — GET /api/butlers/{name}/analytics/daily-activity
  *   useButlerSessionKinds    — GET /api/butlers/{name}/analytics/session-kinds
  *   useButlerLatencyStats    — GET /api/butlers/{name}/analytics/latency-stats
+ *   useButlerActivityFeed    — GET /api/butlers/{name}/activity-feed (bu-y7lo7)
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -16,6 +17,7 @@ import {
   getButlerDailyActivity,
   getButlerSessionKinds,
   getButlerLatencyStats,
+  getButlerActivityFeed,
 } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -97,4 +99,29 @@ export function useButlerLatencyStats(butlerName: string, windowDays: number = 7
   });
 
   return query;
+}
+
+// ---------------------------------------------------------------------------
+// useButlerActivityFeed (bu-y7lo7)
+// ---------------------------------------------------------------------------
+
+export { type ActivityFeed, type ActivityEvent, type ActivityEventType } from "@/api/index.ts";
+
+/**
+ * Fetch the merged activity feed for a butler.
+ *
+ * Merges session completions, approval requests, and memory writes into a
+ * single time-ordered list from the backend.
+ *
+ * @param butlerName - Butler identifier
+ * @param limit      - Max events to return (default 10, max 50)
+ */
+export function useButlerActivityFeed(butlerName: string, limit?: number) {
+  return useQuery({
+    queryKey: ["butlers", butlerName, "activity-feed", { limit }],
+    queryFn: () => getButlerActivityFeed(butlerName, limit != null ? { limit } : undefined),
+    enabled: !!butlerName,
+    staleTime: 30_000,
+    select: (response) => response.data,
+  });
 }

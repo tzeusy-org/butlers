@@ -908,3 +908,16 @@ export type {
   LatencyStats,
   LatencyStatsParams,
 } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Activity feed (bu-y7lo7)
+// ---------------------------------------------------------------------------
+
+export { getButlerActivityFeed } from "./client.ts";
+
+export type {
+  ActivityEvent,
+  ActivityEventType,
+  ActivityFeed,
+  ActivityFeedParams,
+} from "./types.ts";
