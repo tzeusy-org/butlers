@@ -75,6 +75,12 @@ interface KpiStripProps {
   overdueCount: number | undefined;
   newestCapturedAt: string | null | undefined;
   isLoading: boolean;
+  /** isError for snapshot-based cells (Total devices, Last snapshot) */
+  snapshotError: boolean;
+  /** isError for offline device count cell */
+  offlineError: boolean;
+  /** isError for overdue maintenance count cell */
+  overdueError: boolean;
 }
 
 function KpiStrip({
@@ -83,6 +89,9 @@ function KpiStrip({
   overdueCount,
   newestCapturedAt,
   isLoading,
+  snapshotError,
+  offlineError,
+  overdueError,
 }: KpiStripProps) {
   const kpiValue = (v: number | undefined) =>
     isLoading ? "..." : v != null ? String(v) : "—";
@@ -93,36 +102,52 @@ function KpiStrip({
       data-testid="kpi-strip"
     >
       <Panel testId="kpi-item">
-        <KpiCell
-          label="Total devices"
-          value={kpiValue(totalDevices)}
-        />
+        {snapshotError ? (
+          <ErrorLine>Failed to load device count.</ErrorLine>
+        ) : (
+          <KpiCell
+            label="Total devices"
+            value={kpiValue(totalDevices)}
+          />
+        )}
       </Panel>
       <Panel testId="kpi-item">
-        <KpiCell
-          label="Offline"
-          value={kpiValue(offlineCount)}
-          tone={offlineCount != null && offlineCount > 0 ? "red" : "fg"}
-        />
+        {offlineError ? (
+          <ErrorLine>Failed to load offline count.</ErrorLine>
+        ) : (
+          <KpiCell
+            label="Offline"
+            value={kpiValue(offlineCount)}
+            tone={offlineCount != null && offlineCount > 0 ? "red" : "fg"}
+          />
+        )}
       </Panel>
       <Panel testId="kpi-item">
-        <KpiCell
-          label="Overdue maintenance"
-          value={kpiValue(overdueCount)}
-          tone={overdueCount != null && overdueCount > 0 ? "amber" : "fg"}
-        />
+        {overdueError ? (
+          <ErrorLine>Failed to load maintenance count.</ErrorLine>
+        ) : (
+          <KpiCell
+            label="Overdue maintenance"
+            value={kpiValue(overdueCount)}
+            tone={overdueCount != null && overdueCount > 0 ? "amber" : "fg"}
+          />
+        )}
       </Panel>
       <Panel testId="kpi-item">
-        <KpiCell
-          label="Last snapshot"
-          value={
-            isLoading
-              ? "..."
-              : newestCapturedAt
-                ? <Time value={newestCapturedAt} mode="relative-compact" />
-                : "—"
-          }
-        />
+        {snapshotError ? (
+          <ErrorLine>Failed to load snapshot time.</ErrorLine>
+        ) : (
+          <KpiCell
+            label="Last snapshot"
+            value={
+              isLoading
+                ? "..."
+                : newestCapturedAt
+                  ? <Time value={newestCapturedAt} mode="relative-compact" />
+                  : "—"
+            }
+          />
+        )}
       </Panel>
     </div>
   );
@@ -489,17 +514,29 @@ function TopConsumersList({ consumers, isLoading, isError }: TopConsumersProps) 
 
 export default function ButlerHomeDevicesTab() {
   // Row 1: KPI strip — snapshot status
-  const { data: snapshotStatus, isLoading: snapshotLoading } = useHomeSnapshotStatus();
+  const {
+    data: snapshotStatus,
+    isLoading: snapshotLoading,
+    isError: snapshotError,
+  } = useHomeSnapshotStatus();
 
   // Row 1 KPI: offline device count
-  const { data: offlineDevices, isLoading: offlineLoading } = useHomeDevices({
+  const {
+    data: offlineDevices,
+    isLoading: offlineLoading,
+    isError: offlineError,
+  } = useHomeDevices({
     health: "offline",
     page: 1,
     page_size: 1,
   });
 
   // Row 1 KPI: overdue maintenance count
-  const { data: overdueItems, isLoading: overdueLoading } = useHomeMaintenance({
+  const {
+    data: overdueItems,
+    isLoading: overdueLoading,
+    isError: overdueError,
+  } = useHomeMaintenance({
     status: "overdue",
   });
 
@@ -560,6 +597,9 @@ export default function ButlerHomeDevicesTab() {
         overdueCount={overdueCount}
         newestCapturedAt={snapshotStatus?.newest_captured_at}
         isLoading={kpiLoading}
+        snapshotError={snapshotError}
+        offlineError={offlineError}
+        overdueError={overdueError}
       />
 
       {/* Row 2: Active devices (span 2) | Maintenance (span 1) | Commands (span 1) */}
