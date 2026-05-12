@@ -148,11 +148,10 @@ function setupWithData() {
   } as unknown as ReturnType<typeof useButlerSessionKinds>)
 
   vi.mocked(useButlerLatencyStats).mockReturnValue({
-    data: null,
+    data: undefined,
     isLoading: false,
     isError: false,
-    isAvailable: false,
-  })
+  } as unknown as ReturnType<typeof useButlerLatencyStats>)
 }
 
 function setupLoading() {
@@ -175,11 +174,10 @@ function setupLoading() {
   } as unknown as ReturnType<typeof useButlerSessionKinds>)
 
   vi.mocked(useButlerLatencyStats).mockReturnValue({
-    data: null,
-    isLoading: false,
+    data: undefined,
+    isLoading: true,
     isError: false,
-    isAvailable: false,
-  })
+  } as unknown as ReturnType<typeof useButlerLatencyStats>)
 }
 
 function setupEmpty() {
@@ -202,11 +200,10 @@ function setupEmpty() {
   } as unknown as ReturnType<typeof useButlerSessionKinds>)
 
   vi.mocked(useButlerLatencyStats).mockReturnValue({
-    data: null,
+    data: undefined,
     isLoading: false,
     isError: false,
-    isAvailable: false,
-  })
+  } as unknown as ReturnType<typeof useButlerLatencyStats>)
 }
 
 // ---------------------------------------------------------------------------
@@ -348,11 +345,10 @@ describe("ButlerActivityTab — 7d range", () => {
     } as unknown as ReturnType<typeof useButlerSessionKinds>)
 
     vi.mocked(useButlerLatencyStats).mockReturnValue({
-      data: null,
+      data: undefined,
       isLoading: false,
       isError: false,
-      isAvailable: false,
-    })
+    } as unknown as ReturnType<typeof useButlerLatencyStats>)
   })
   afterEach(() => cleanup())
 
@@ -392,11 +388,10 @@ describe("ButlerActivityTab — 30d range", () => {
     } as unknown as ReturnType<typeof useButlerSessionKinds>)
 
     vi.mocked(useButlerLatencyStats).mockReturnValue({
-      data: null,
+      data: undefined,
       isLoading: false,
       isError: false,
-      isAvailable: false,
-    })
+    } as unknown as ReturnType<typeof useButlerLatencyStats>)
   })
   afterEach(() => cleanup())
 
@@ -438,11 +433,10 @@ describe("ButlerActivityTab — error state (session-kinds fails)", () => {
     } as unknown as ReturnType<typeof useButlerSessionKinds>)
 
     vi.mocked(useButlerLatencyStats).mockReturnValue({
-      data: null,
+      data: undefined,
       isLoading: false,
       isError: false,
-      isAvailable: false,
-    })
+    } as unknown as ReturnType<typeof useButlerLatencyStats>)
 
     renderTab()
     const errorLines = screen.getAllByTestId("error-state-line")
@@ -475,11 +469,10 @@ describe("ButlerActivityTab — error state (hourly-activity fails)", () => {
     } as unknown as ReturnType<typeof useButlerSessionKinds>)
 
     vi.mocked(useButlerLatencyStats).mockReturnValue({
-      data: null,
+      data: undefined,
       isLoading: false,
       isError: false,
-      isAvailable: false,
-    })
+    } as unknown as ReturnType<typeof useButlerLatencyStats>)
 
     renderTab()
     // Should show the ErrorLine for activity panel
@@ -505,14 +498,26 @@ describe("ButlerActivityTab — KPI values", () => {
     expect(screen.getByTestId("kpi-sessions").textContent).toBe("20")
   })
 
-  it("shows '—' for p50 when latency-stats endpoint is unavailable", () => {
+  it("shows '—' for p50 when latency-stats returns no data", () => {
     renderTab()
     expect(screen.getByTestId("kpi-p50").textContent).toBe("—")
   })
 
-  it("shows '—' for p95 when latency-stats endpoint is unavailable", () => {
+  it("shows '—' for p95 when latency-stats returns no data", () => {
     renderTab()
     expect(screen.getByTestId("kpi-p95").textContent).toBe("—")
+  })
+
+  it("shows real p50 and p95 values when latency-stats data is available", () => {
+    vi.mocked(useButlerLatencyStats).mockReturnValue({
+      data: { p50_ms: 1234, p95_ms: 5678, mean_ms: 2000, count: 10, model: "claude-sonnet-4-6" },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerLatencyStats>)
+
+    renderTab()
+    expect(screen.getByTestId("kpi-p50").textContent).toBe("1234")
+    expect(screen.getByTestId("kpi-p95").textContent).toBe("5678")
   })
 
   it("shows '0' for errors count when no error kind in session-kinds", () => {

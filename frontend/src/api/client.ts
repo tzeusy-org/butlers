@@ -289,6 +289,8 @@ import type {
   DailyActivityParams,
   SessionKindBreakdown,
   SessionKindsParams,
+  LatencyStats,
+  LatencyStatsParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -490,6 +492,17 @@ export function getButlerSessionKinds(
   if (params?.window_days != null) qs.set("window_days", String(params.window_days));
   const base = `/butlers/${encodeURIComponent(name)}/analytics/session-kinds`;
   return apiFetch<ApiResponse<SessionKindBreakdown>>(qs.toString() ? `${base}?${qs}` : base);
+}
+
+/** GET /api/butlers/{name}/analytics/latency-stats */
+export function getButlerLatencyStats(
+  name: string,
+  params?: LatencyStatsParams,
+): Promise<ApiResponse<LatencyStats>> {
+  const qs = new URLSearchParams();
+  if (params?.window_days != null) qs.set("window_days", String(params.window_days));
+  const base = `/butlers/${encodeURIComponent(name)}/analytics/latency-stats`;
+  return apiFetch<ApiResponse<LatencyStats>>(qs.toString() ? `${base}?${qs}` : base);
 }
 
 // ---------------------------------------------------------------------------

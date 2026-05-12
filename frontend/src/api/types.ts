@@ -4365,3 +4365,22 @@ export interface SessionKindBreakdown {
 export interface SessionKindsParams {
   window_days?: number;
 }
+
+/** Response from GET /api/butlers/{name}/analytics/latency-stats. */
+export interface LatencyStats {
+  /** Median session duration in ms, or null when no data in the window. */
+  p50_ms: number | null;
+  /** 95th-percentile session duration in ms, or null when no data in the window. */
+  p95_ms: number | null;
+  /** Mean session duration in ms, or null when no data in the window. */
+  mean_ms: number | null;
+  /** Number of sessions with a recorded duration in the window. */
+  count: number;
+  /** Most-frequently-used model in the window, or null when no data. */
+  model: string | null;
+}
+
+/** Query params for GET /api/butlers/{name}/analytics/latency-stats. */
+export interface LatencyStatsParams {
+  window_days?: number;
+}
