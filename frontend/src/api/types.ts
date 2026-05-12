@@ -90,6 +90,10 @@ export interface ModuleStatus {
   status: string;
   phase?: string | null;
   error?: string | null;
+  /** OAuth authorization status added by bu-iuol4.11. Present when the module has OAuth. */
+  oauth_status?: "granted" | "reauth_needed" | "not_configured" | null;
+  /** ISO-8601 expiry of the OAuth token, if applicable. */
+  oauth_expires_at?: string | null;
 }
 
 /** Extended butler representation returned by GET /api/butlers/:name. */
