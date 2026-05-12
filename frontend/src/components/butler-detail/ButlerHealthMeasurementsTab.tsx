@@ -51,6 +51,7 @@ import {
   useMedications,
   useConditions,
 } from "@/hooks/use-health";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 
 // ---------------------------------------------------------------------------
 // Shared UI helpers — loading / empty
@@ -273,6 +274,7 @@ function TrendSparkline({
   valueKey?: string;
   unit?: string;
 }) {
+  const prefersReducedMotion = usePrefersReducedMotion();
   const chartData = useMemo(() => {
     const sorted = measurements
       .slice()
@@ -328,7 +330,7 @@ function TrendSparkline({
             <YAxis hide domain={["auto", "auto"]} />
             <Tooltip
               content={<TrendTooltip unit={unit} />}
-              isAnimationActive={false}
+              isAnimationActive={!prefersReducedMotion}
             />
             <Line
               dataKey="value"
@@ -336,7 +338,7 @@ function TrendSparkline({
               stroke="hsl(var(--primary))"
               dot={false}
               strokeWidth={1.5}
-              isAnimationActive={false}
+              isAnimationActive={!prefersReducedMotion}
             />
           </LineChart>
         </ResponsiveContainer>

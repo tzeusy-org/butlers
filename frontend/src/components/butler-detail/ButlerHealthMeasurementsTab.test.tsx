@@ -11,6 +11,7 @@
  *  - Active medications list renders
  *  - Recent conditions list renders
  *  - Drilldown links resolve to correct routes
+ *  - TrendSparkline respects prefers-reduced-motion [bu-gnna7]
  *
  * bead: bu-iuol4.23
  */
@@ -34,8 +35,17 @@ vi.mock("recharts", () => {
     children?: ReactNode;
   }) => createElement("div", { "data-testid": "recharts-line-chart" }, children);
 
-  const Line = ({ dataKey }: { dataKey: string }) =>
-    createElement("div", { "data-testid": `recharts-line-${dataKey}` });
+  const Line = ({
+    dataKey,
+    isAnimationActive,
+  }: {
+    dataKey: string;
+    isAnimationActive?: boolean;
+  }) =>
+    createElement("div", {
+      "data-testid": `recharts-line-${dataKey}`,
+      "data-animation-active": String(isAnimationActive ?? true),
+    });
 
   const XAxis = () => null;
   const YAxis = () => null;
@@ -63,6 +73,10 @@ vi.mock("@/hooks/use-health", () => ({
   useConditions: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-prefers-reduced-motion", () => ({
+  usePrefersReducedMotion: vi.fn().mockReturnValue(false),
+}));
+
 // Suppress the timezone context — use UTC for tests
 vi.mock("@/components/ui/timezone-context", () => ({
   useTimezone: () => "UTC",
@@ -76,6 +90,7 @@ import {
   useMedications,
   useConditions,
 } from "@/hooks/use-health";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 
 import ButlerHealthMeasurementsTab from "./ButlerHealthMeasurementsTab";
 
@@ -713,5 +728,37 @@ describe("ButlerDetailPage — health tab in getAllTabs", () => {
   it("'health' is NOT a valid tab for non-health butlers", () => {
     expect(isValidTab("health", "finance", "operator")).toBe(false);
     expect(isValidTab("health", "general", "resident")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: TrendSparkline animation — prefers-reduced-motion [bu-gnna7]
+// ---------------------------------------------------------------------------
+
+describe("TrendSparkline — prefers-reduced-motion", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+  afterEach(() => cleanup());
+
+  it("enables animation when user has no reduced-motion preference", () => {
+    vi.mocked(usePrefersReducedMotion).mockReturnValue(false);
+    renderTab();
+    const lines = screen.getAllByTestId("recharts-line-value");
+    // At least one sparkline line must be present with animation enabled
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    expect(lines[0].getAttribute("data-animation-active")).toBe("true");
+  });
+
+  it("disables animation when user prefers reduced motion", () => {
+    vi.mocked(usePrefersReducedMotion).mockReturnValue(true);
+    renderTab();
+    const lines = screen.getAllByTestId("recharts-line-value");
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    // All sparkline lines must have animation disabled
+    lines.forEach((line) => {
+      expect(line.getAttribute("data-animation-active")).toBe("false");
+    });
   });
 });
