@@ -1,5 +1,6 @@
 /**
- * ButlerOverviewTab — Panel-grid restyle tests (bu-t0n03, epic bu-hdavr F.1).
+ * ButlerOverviewTab — Panel-grid restyle tests (bu-t0n03, epic bu-hdavr F.1;
+ * bu-yzllz F.2 removes Recent Notifications card).
  *
  * Verifies the 7-panel grid layout:
  *   1. identity panel (span=2)    — ButlerMark, name, status badge, description
@@ -13,13 +14,14 @@
  * Key assertions:
  *   - All 7 Panel atoms present by data-testid.
  *   - No <Card> wrapper elements (no data-slot="card").
+ *   - No Recent Notifications card (removed in F.2).
  *   - No pid field in DOM.
  *   - Timestamps use <Time> (mocked to expose data-testid="time-value").
  *   - Activity feed renders event rows from mocked hook.
  *   - Loading state: skeleton per panel.
  *   - Error state: graceful per-panel fallback.
  *
- * Bead: bu-t0n03
+ * Beads: bu-t0n03, bu-yzllz
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -47,10 +49,6 @@ vi.mock("@/hooks/use-costs", () => ({
   useCostSummary: vi.fn(),
 }));
 
-vi.mock("@/hooks/use-notifications", () => ({
-  useButlerNotifications: vi.fn(),
-}));
-
 vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(),
 }));
@@ -75,15 +73,9 @@ vi.mock("@/components/ui/time", () => ({
   Time: ({ value }: { value: string }) => <span data-testid="time-value">{value}</span>,
 }));
 
-// Stub NotificationFeed to avoid dependency chain
-vi.mock("@/components/notifications/notification-feed", () => ({
-  NotificationFeed: () => <div data-testid="notification-feed" />,
-}));
-
 import { useButler, useButlerModules } from "@/hooks/use-butlers";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useCostSummary } from "@/hooks/use-costs";
-import { useButlerNotifications } from "@/hooks/use-notifications";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useButlerSessions } from "@/hooks/use-sessions";
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
@@ -187,11 +179,6 @@ function setupDefaultMocks() {
     isLoading: false,
   } as ReturnType<typeof useCostSummary>);
 
-  vi.mocked(useButlerNotifications).mockReturnValue({
-    data: { data: [], meta: {} },
-    isLoading: false,
-  } as unknown as ReturnType<typeof useButlerNotifications>);
-
   vi.mocked(useButlerHeartbeats).mockReturnValue({
     data: { data: { butlers: [HEARTBEAT_FRESH] }, meta: {} },
     isLoading: false,
@@ -261,6 +248,12 @@ describe("ButlerOverviewTab — panel grid structure", () => {
   it("renders NO legacy Card wrappers (no data-slot=card)", () => {
     const html = renderTab();
     expect(html).not.toContain('data-slot="card"');
+  });
+
+  it("renders NO Recent Notifications card (removed in F.2)", () => {
+    const html = renderTab();
+    expect(html).not.toContain("Recent Notifications");
+    expect(html).not.toContain('data-testid="notification-feed"');
   });
 
   it("renders NO pid field anywhere in the DOM", () => {

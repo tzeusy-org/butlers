@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// ButlerOverviewTab — bu-t0n03 (epic bu-hdavr F.1)
+// ButlerOverviewTab — bu-t0n03 (epic bu-hdavr F.1), bu-yzllz (F.2)
 //
 // Overview tab body for the butler detail page. Uses the 4-column panel-grid
 // frame from finish-butler-detail-body-panel-grid.
@@ -10,8 +10,9 @@
 //   Row 3: cost (span=1)       | recent sessions (span=3)
 //   Row 4: activity feed (span=4, scroll, height="320px")
 //
-// Recent Notifications card is preserved in place — removal is tracked by
-// bu-yzllz (F.2).
+// The Recent Notifications card has been removed (bu-yzllz F.2). Notification
+// content is covered by the activity-feed panel, which merges session_completed,
+// approval_raised, and memory_write event sources.
 //
 // Doctrine:
 //   - All panel borders via --border token (Panel atom, border-t border-l frame).
@@ -23,8 +24,6 @@
 
 import { Link } from "react-router";
 
-import { NotificationFeed } from "@/components/notifications/notification-feed";
-import { NotificationTableSkeleton } from "@/components/skeletons";
 import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
 import { Panel, ErrorLine } from "@/components/butler-detail/atoms";
 import { Badge } from "@/components/ui/badge";
@@ -37,7 +36,6 @@ import { useButler, useButlerModules } from "@/hooks/use-butlers";
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
-import { useButlerNotifications } from "@/hooks/use-notifications";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useButlerSessions } from "@/hooks/use-sessions";
 import type { ActivityEventType, ModuleStatus, ProcessFacts, SessionSummary } from "@/api/types";
@@ -340,10 +338,6 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const { data: sessionsResponse, isLoading: sessionsLoading } = useButlerSessions(butlerName, {
     limit: 5,
   });
-  const {
-    data: notificationsResponse,
-    isLoading: notificationsLoading,
-  } = useButlerNotifications(butlerName, { limit: 5 });
   const { data: registryResponse } = useRegistry();
   const setEligibility = useSetEligibility();
   const { data: heartbeatsResponse, isLoading: heartbeatsLoading } = useButlerHeartbeats();
@@ -368,7 +362,6 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const globalTotalToday = costTodaySummary?.total_cost_usd;
   const costLoading = costTodayLoading || cost7dLoading;
   const recentSessions = sessionsResponse?.data ?? [];
-  const notifications = notificationsResponse?.data ?? [];
 
   // Find this butler's registry entry for eligibility state
   const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
@@ -649,31 +642,6 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         )}
       </Panel>
 
-      {/* ----------------------------------------------------------------- */}
-      {/* Recent Notifications — preserved for F.2 (bu-yzllz) removal        */}
-      {/* ----------------------------------------------------------------- */}
-      <div className="col-span-1 sm:col-span-2 md:col-span-4 border-r border-b border-border/60">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
-          <div>
-            <p className="text-sm font-medium">Recent Notifications</p>
-            <p className="text-xs text-muted-foreground">
-              Last {notifications.length || 5} notifications from this butler
-            </p>
-          </div>
-          <Button variant="link" size="sm" asChild className="h-auto p-0 text-xs">
-            <Link to={`/notifications?butler=${encodeURIComponent(butlerName)}`}>
-              View all
-            </Link>
-          </Button>
-        </div>
-        <div className="p-4">
-          {notificationsLoading ? (
-            <NotificationTableSkeleton rows={5} />
-          ) : (
-            <NotificationFeed notifications={notifications} isLoading={false} />
-          )}
-        </div>
-      </div>
     </div>
   );
 }
