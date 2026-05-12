@@ -47,6 +47,13 @@ vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(() => ({ data: null, isLoading: false, error: null })),
 }));
 
+vi.mock("@/hooks/use-butler-status-board", () => ({
+  useButlerStatusBoard: vi.fn(() => ({
+    rows: [],
+    aggregates: { isLoading: false, isError: false, error: null, refetch: vi.fn() },
+  })),
+}));
+
 vi.mock("@/hooks/use-costs", () => ({
   useCostSummary: vi.fn(() => ({ data: null, isLoading: false })),
 }));
@@ -153,12 +160,12 @@ describe("ButlerDetailPage — single-H1 contract", () => {
     expect(h1Matches).toHaveLength(1);
   });
 
-  it("h1 contains the titleized butler name", () => {
+  it("h1 contains the butler name", () => {
     const html = renderPage();
     const h1Match = html.match(/<h1[^>]*>(.*?)<\/h1>/s);
     expect(h1Match).not.toBeNull();
-    // Title must be titleized (first letter capitalized), not raw lowercase.
-    expect(h1Match![1]).toContain("General");
+    // ButlerDetailHeader renders the raw butler name; CSS capitalize is applied at render time.
+    expect(h1Match![1]).toContain("general");
   });
 
   it("tabs block remains inside the primary content — no second h1", () => {
@@ -218,6 +225,46 @@ describe("ButlerDetailPage — ChatPanel actions slot", () => {
     expect(chatPanelIndex).toBeGreaterThanOrEqual(0);
     // actions slot renders after the heading opening tag in document order
     expect(chatPanelIndex).toBeGreaterThan(h1Index);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Status-board archetype contract (bu-ja5bt.5)
+// ---------------------------------------------------------------------------
+//
+// ButlerDetailPage must render <Page archetype='status-board'> per the wiring
+// spec. Verified via the status-board-specific skeleton landmark that only this
+// archetype produces, and the absence of DetailPage/ButlerHeartbeatTile.
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — status-board archetype", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    setButlerState(BASE_BUTLER);
+  });
+
+  it("renders the butler-detail-header slot (ButlerDetailHeader data-testid)", () => {
+    const html = renderPage();
+    expect(html).toContain('data-testid="butler-detail-header"');
+  });
+
+  it("does NOT render ButlerHeartbeatTile on the butler detail page", () => {
+    // Acceptance criterion: static grep returns zero matches for ButlerHeartbeatTile.
+    // The component is removed from ButlerDetailPage; SystemPage still has it.
+    const html = renderPage();
+    // The ButlerHeartbeatTile renders a distinctive testid; if somehow included, it would appear.
+    // We verify its absence by checking there is no heartbeat-tile testid in the detail page output.
+    expect(html).not.toContain("butler-heartbeat-tile");
+  });
+
+  it("renders ButlerDetailActions in the actions slot (single occurrence)", () => {
+    const html = renderPage();
+    const occurrences = (html.match(/data-testid="butler-detail-actions"/g) ?? []).length;
+    expect(occurrences).toBe(1);
   });
 });
 

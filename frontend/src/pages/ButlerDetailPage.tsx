@@ -5,8 +5,9 @@ import { Link, useParams, useSearchParams } from "react-router";
 import type { SessionParams, SessionSummary } from "@/api/types";
 import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
 import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
+import { ButlerDetailFooter } from "@/components/butler-detail/ButlerDetailFooter";
+import { ButlerDetailHeader } from "@/components/butler-detail/ButlerDetailHeader";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
-import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { SessionTable } from "@/components/sessions/SessionTable";
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +19,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { DetailPage } from "@/components/layout/DetailPage";
+import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useButler } from "@/hooks/use-butlers";
@@ -470,15 +471,18 @@ export default function ButlerDetailPage() {
   );
 
   return (
-    <DetailPage
-      record={{ title: titleize(name), subtitle: description }}
+    <Page
+      archetype="status-board"
+      title={titleize(name)}
+      description={description}
       breadcrumbs={breadcrumbs}
       actions={<ButlerDetailActions butlerName={name} mode={mode} onModeChange={setMode} />}
       loading={butlerLoading}
       error={butlerError}
       onRetry={handleRetry}
-      pulse={<ButlerHeartbeatTile />}
-      primary={
+      header={<ButlerDetailHeader butler={name} />}
+      footer={<ButlerDetailFooter butler={name} />}
+    >
         <Tabs value={activeTab} onValueChange={handleTabChange}>
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -721,7 +725,6 @@ export default function ButlerDetailPage() {
             </TabsContent>
           )}
         </Tabs>
-      }
-    />
+    </Page>
   );
 }
