@@ -50,6 +50,8 @@ async def db_pool(provisioned_postgres_pool):
                 message_content TEXT NOT NULL,
                 subject TEXT,
                 request_envelope JSONB NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'medium'
+                    CHECK (priority IN ('high', 'medium', 'low')),
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN (
                         'pending', 'in_progress', 'delivered', 'failed', 'dead_lettered'
@@ -595,6 +597,114 @@ class TestDuplicateDetection:
         status = await engine.check_duplicate(key.key)
         assert status is not None
         assert status.delivery_id == delivery_id
+
+
+class TestDeliveryRequestPriority:
+    """Test priority field on create_delivery_request."""
+
+    async def test_default_priority_is_medium(self, db_pool):
+        """create_delivery_request stores 'medium' priority when none is supplied."""
+        engine = IdempotencyEngine(db_pool)
+
+        key = IdempotencyEngine.derive_idempotency_key(
+            request_id=None,
+            origin_butler="health",
+            intent="send",
+            channel="telegram",
+            recipient="user_prio_default",
+            message="Default priority test",
+            subject=None,
+            request_context=None,
+        )
+
+        delivery_id = await engine.create_delivery_request(
+            idempotency_key=key.key,
+            request_id=None,
+            origin_butler="health",
+            channel="telegram",
+            intent="send",
+            target_identity="user_prio_default",
+            message_content="Default priority test",
+            subject=None,
+            request_envelope={},
+        )
+
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT priority FROM delivery_requests WHERE id = $1",
+                delivery_id,
+            )
+
+        assert row is not None
+        assert row["priority"] == "medium", (
+            f"Expected default priority 'medium', got {row['priority']!r}"
+        )
+
+    async def test_explicit_priority_high(self, db_pool):
+        """create_delivery_request stores an explicitly supplied 'high' priority."""
+        engine = IdempotencyEngine(db_pool)
+
+        key = IdempotencyEngine.derive_idempotency_key(
+            request_id=None,
+            origin_butler="health",
+            intent="send",
+            channel="telegram",
+            recipient="user_prio_high",
+            message="High priority test",
+            subject=None,
+            request_context=None,
+        )
+
+        delivery_id = await engine.create_delivery_request(
+            idempotency_key=key.key,
+            request_id=None,
+            origin_butler="health",
+            channel="telegram",
+            intent="send",
+            target_identity="user_prio_high",
+            message_content="High priority test",
+            subject=None,
+            request_envelope={},
+            priority="high",
+        )
+
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT priority FROM delivery_requests WHERE id = $1",
+                delivery_id,
+            )
+
+        assert row is not None
+        assert row["priority"] == "high"
+
+    async def test_invalid_priority_raises(self, db_pool):
+        """create_delivery_request raises ValueError for invalid priority values."""
+        engine = IdempotencyEngine(db_pool)
+
+        key = IdempotencyEngine.derive_idempotency_key(
+            request_id=None,
+            origin_butler="health",
+            intent="send",
+            channel="telegram",
+            recipient="user_prio_invalid",
+            message="Invalid priority test",
+            subject=None,
+            request_context=None,
+        )
+
+        with pytest.raises(ValueError, match="Invalid priority"):
+            await engine.create_delivery_request(
+                idempotency_key=key.key,
+                request_id=None,
+                origin_butler="health",
+                channel="telegram",
+                intent="send",
+                target_identity="user_prio_invalid",
+                message_content="Invalid priority test",
+                subject=None,
+                request_envelope={},
+                priority="urgent",
+            )
 
 
 class TestProviderKeyPropagation:

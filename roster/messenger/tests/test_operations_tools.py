@@ -652,6 +652,8 @@ async def delivery_pool():
                 message_content TEXT NOT NULL,
                 subject TEXT,
                 request_envelope JSONB NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'medium'
+                    CHECK (priority IN ('high', 'medium', 'low')),
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN (
                         'pending', 'in_progress', 'delivered', 'failed', 'dead_lettered'
@@ -762,6 +764,8 @@ async def stats_pool():
                 message_content TEXT NOT NULL,
                 subject TEXT,
                 request_envelope JSONB NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'medium'
+                    CHECK (priority IN ('high', 'medium', 'low')),
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN (
                         'pending', 'in_progress', 'delivered', 'failed', 'dead_lettered'

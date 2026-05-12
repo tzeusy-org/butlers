@@ -19,6 +19,8 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
+VALID_PRIORITIES: frozenset[str] = frozenset({"high", "medium", "low"})
+
 
 @dataclass(frozen=True)
 class IdempotencyKey:
@@ -334,6 +336,7 @@ class IdempotencyEngine:
         message_content: str,
         subject: str | None,
         request_envelope: dict[str, Any],
+        priority: str = "medium",
     ) -> UUID:
         """Create a new delivery request with idempotency protection.
 
@@ -357,6 +360,10 @@ class IdempotencyEngine:
             Optional subject.
         request_envelope:
             Full request envelope for audit.
+        priority:
+            Delivery priority: 'high', 'medium', or 'low'. Defaults to 'medium'.
+            'high' bypasses quiet hours; 'medium' and 'low' are deferred during
+            quiet hours.
 
         Returns
         -------
@@ -366,8 +373,12 @@ class IdempotencyEngine:
         Raises
         ------
         ValueError
-            If a delivery with this idempotency key already exists.
+            If a delivery with this idempotency key already exists, or if
+            ``priority`` is not one of ``'high'``, ``'medium'``, or ``'low'``.
         """
+        if priority not in VALID_PRIORITIES:
+            raise ValueError(f"Invalid priority {priority!r}. Allowed values: high, medium, low")
+
         # Parse request_id to UUID if present
         request_id_uuid = None
         if request_id:
@@ -394,11 +405,12 @@ class IdempotencyEngine:
                         message_content,
                         subject,
                         request_envelope,
+                        priority,
                         status,
                         created_at,
                         updated_at
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10, $10
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, 'pending', $11, $11
                     )
                     RETURNING id
                     """,
@@ -411,6 +423,7 @@ class IdempotencyEngine:
                     message_content,
                     subject,
                     json.dumps(request_envelope),
+                    priority,
                     datetime.now(UTC),
                 )
 

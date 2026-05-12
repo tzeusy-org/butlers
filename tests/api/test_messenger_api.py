@@ -238,17 +238,20 @@ async def test_circuit_status_pool_missing():
 async def test_queue_depth_success():
     """Returns total (derived from channel counts) and per-channel queue depth.
 
-    The priority breakdown falls back to {} because delivery_requests does not
-    currently have a priority column; the endpoint catches UndefinedColumnError
-    and logs a warning rather than failing.
+    Now that the priority column exists, by_priority is populated from the
+    second fetch which returns rows grouped by priority.
     """
     channel_rows = [
         _row(channel="telegram", cnt=8),
         _row(channel="email", cnt=3),
     ]
+    priority_rows = [
+        _row(priority="high", cnt=4),
+        _row(priority="medium", cnt=7),
+    ]
     pool = _make_pool(
         # No fetchval call — total is derived from channel-count sum.
-        fetch_results=[channel_rows, []],  # second fetch: priority query returns no rows
+        fetch_results=[channel_rows, priority_rows],
     )
     app = _make_app(pool)
 
@@ -262,8 +265,30 @@ async def test_queue_depth_success():
     assert body["total"] == 11  # sum of 8 + 3
     assert body["by_channel"]["telegram"] == 8
     assert body["by_channel"]["email"] == 3
-    # by_priority may be {} (priority column absent) or populated if column exists
-    assert isinstance(body["by_priority"], dict)
+    assert body["by_priority"]["high"] == 4
+    assert body["by_priority"]["medium"] == 7
+
+
+async def test_queue_depth_by_priority_populated():
+    """by_priority is non-empty when the priority column exists and rows are present."""
+    channel_rows = [_row(channel="telegram", cnt=5)]
+    priority_rows = [
+        _row(priority="high", cnt=2),
+        _row(priority="medium", cnt=3),
+    ]
+    pool = _make_pool(fetch_results=[channel_rows, priority_rows])
+    app = _make_app(pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/messenger/queue-depth")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["by_priority"] != {}, "by_priority should be populated when priority rows exist"
+    assert body["by_priority"]["high"] == 2
+    assert body["by_priority"]["medium"] == 3
 
 
 async def test_queue_depth_empty():
