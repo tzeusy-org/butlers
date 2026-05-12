@@ -252,6 +252,30 @@ class TestScenario1ValidCredentials:
         assert module._user_profile is not None
         assert module._user_profile["id"] == _USER_ID
 
+    async def test_token_refresh_temporarily_unavailable_keeps_tools_enabled(self) -> None:
+        """Transient token service failures should not disable configured Spotify tools."""
+        token_response = _make_http_response(
+            503,
+            {"error": "temporarily_unavailable", "error_description": ""},
+            headers={"Retry-After": "42"},
+        )
+        http_client = _make_mock_http_client([])
+        http_client.post = AsyncMock(return_value=token_response)
+        cred_store = _make_credential_store(expires_at="2000-01-01T00:00:00+00:00")
+
+        module = SpotifyModule()
+        import unittest.mock as mock
+
+        with mock.patch(
+            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            return_value=http_client,
+        ):
+            await module.on_startup(config={}, db=None, credential_store=cred_store)
+
+        assert module._client is not None
+        assert module._credentials_ok is True
+        assert module._user_profile is None
+
     async def test_butler_toml_includes_spotify_module(self) -> None:
         """roster/lifestyle/butler.toml declares [modules.spotify]."""
         from pathlib import Path

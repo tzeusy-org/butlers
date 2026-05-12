@@ -27,6 +27,7 @@ from butlers.connectors.spotify_client import (
     SpotifyAuthError,
     SpotifyClient,
     SpotifyRateLimitError,
+    SpotifyTokenRefreshUnavailableError,
 )
 from butlers.modules.base import Module, ToolMeta
 
@@ -58,6 +59,13 @@ def _premium_required_error(product: str | None) -> str:
 
 def _rate_limited_error(retry_after_s: float) -> str:
     return f"Spotify rate limited. Try again in {retry_after_s:.0f} seconds."
+
+
+def _token_refresh_unavailable_error(retry_after_s: float) -> str:
+    return (
+        "Spotify authentication is temporarily unavailable. "
+        f"Try again in {retry_after_s:.0f} seconds."
+    )
 
 
 def _api_error_message(status_code: int, body: str) -> str:
@@ -176,6 +184,12 @@ class SpotifyModule(Module):
                 profile.get("display_name") or profile.get("id"),
                 profile.get("product"),
             )
+        except SpotifyTokenRefreshUnavailableError as exc:
+            logger.warning(
+                "Spotify module: token refresh temporarily unavailable at startup — %s",
+                exc,
+            )
+            self._credentials_ok = True
         except SpotifyAuthError as exc:
             logger.warning("Spotify module: auth failed at startup — %s", exc)
             self._credentials_ok = False
@@ -241,6 +255,8 @@ class SpotifyModule(Module):
 
     def _handle_spotify_error(self, exc: Exception) -> dict[str, Any]:
         """Convert a SpotifyClient exception to an actionable error dict."""
+        if isinstance(exc, SpotifyTokenRefreshUnavailableError):
+            return {"error": _token_refresh_unavailable_error(exc.retry_after_s)}
         if isinstance(exc, SpotifyAuthError):
             return {"error": _AUTH_EXPIRED_ERROR}
         if isinstance(exc, SpotifyRateLimitError):
