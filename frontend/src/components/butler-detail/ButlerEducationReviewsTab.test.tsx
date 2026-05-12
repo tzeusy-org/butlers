@@ -539,14 +539,15 @@ describe("ButlerEducationReviewsTab — retention trend chart", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // extractMasteryPct fallback key tests (bu-8mtqt follow-up coverage)
+  // extractMasteryPct strict-accessor tests [bu-8mtqt]
   //
-  // The function tries mastery_pct → mastered_pct → mastery_percent in order.
-  // All three must produce a valid chart value; unknown keys must return null
-  // and be excluded from chartData.
+  // The function reads ONLY the canonical key `mastery_pct`.  Former aliases
+  // (mastered_pct, mastery_percent) were never emitted by the backend and the
+  // fallback loop has been removed.  Entries missing `mastery_pct` are excluded
+  // from chartData (fail-fast behaviour).
   // ---------------------------------------------------------------------------
 
-  it("renders retention value when trend uses mastered_pct key (fallback form 2)", () => {
+  it("shows empty state when trend entry uses legacy mastered_pct key (not canonical)", () => {
     vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
       data: {
         mind_map_id: "map-1",
@@ -560,11 +561,13 @@ describe("ButlerEducationReviewsTab — retention trend chart", () => {
     } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
 
     renderTab();
-    const latestValue = screen.getByTestId("retention-latest-value");
-    expect(latestValue.textContent).toBe("72%");
+    // mastered_pct is NOT the canonical key → entry excluded → empty state
+    expect(screen.queryByTestId("retention-chart")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders retention value when trend uses mastery_percent key (fallback form 3)", () => {
+  it("shows empty state when trend entry uses legacy mastery_percent key (not canonical)", () => {
     vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
       data: {
         mind_map_id: "map-1",
@@ -578,8 +581,10 @@ describe("ButlerEducationReviewsTab — retention trend chart", () => {
     } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
 
     renderTab();
-    const latestValue = screen.getByTestId("retention-latest-value");
-    expect(latestValue.textContent).toBe("88%");
+    // mastery_percent is NOT the canonical key → entry excluded → empty state
+    expect(screen.queryByTestId("retention-chart")).toBeNull();
+    const emptyLines = screen.getAllByTestId("empty-state-line");
+    expect(emptyLines.length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows empty state when metrics contain no known mastery key", () => {
