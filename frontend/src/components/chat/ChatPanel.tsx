@@ -359,9 +359,16 @@ function ChatContent({ butlerName }: ChatContentProps) {
 export interface ChatPanelProps {
   butlerName: string;
   triggerClassName?: string;
+  triggerLabel?: string;
+  showTriggerIcon?: boolean;
 }
 
-export function ChatPanel({ butlerName, triggerClassName }: ChatPanelProps) {
+export function ChatPanel({
+  butlerName,
+  triggerClassName,
+  triggerLabel = "Chat",
+  showTriggerIcon = true,
+}: ChatPanelProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -372,8 +379,8 @@ export function ChatPanel({ butlerName, triggerClassName }: ChatPanelProps) {
         className={triggerClassName ?? "gap-1.5"}
         onClick={() => setOpen(true)}
       >
-        <MessageSquareIcon className="size-4" />
-        Chat
+        {showTriggerIcon ? <MessageSquareIcon className="size-4" /> : null}
+        {triggerLabel}
       </Button>
 
       <Sheet open={open} onOpenChange={setOpen}>

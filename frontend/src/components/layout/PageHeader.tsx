@@ -44,6 +44,14 @@ function getButlerDetailName(pathname: string): string | null {
   return decodeURIComponent(match[1])
 }
 
+function titleizeSegment(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
 export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false }: PageHeaderProps) {
   const location = useLocation()
   const { theme, setTheme, resolvedTheme } = useDarkMode()
@@ -70,7 +78,18 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
     <div className="flex w-full min-w-0 items-center justify-between gap-3">
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         {activeButlerName && (
-          <SiblingButlerNav activeButlerName={activeButlerName} />
+          <div className="flex min-w-0 items-center gap-4">
+            <div className="hidden shrink-0 items-center gap-2 font-mono text-[11px] tracking-[0.06em] text-muted-foreground md:flex">
+              <Link to="/butlers" className="transition-colors hover:text-foreground">
+                &larr; /butlers
+              </Link>
+              <span>/</span>
+              <span className="text-foreground">{titleizeSegment(activeButlerName)}</span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <SiblingButlerNav activeButlerName={activeButlerName} />
+            </div>
+          </div>
         )}
 
         {/* Breadcrumbs */}

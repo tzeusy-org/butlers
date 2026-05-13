@@ -147,6 +147,29 @@ function DetailTabTrigger({
   );
 }
 
+function DetailModeSwitch({
+  mode,
+  onModeChange,
+}: {
+  mode: DetailMode;
+  onModeChange: (mode: DetailMode) => void;
+}) {
+  const nextMode = mode === "operator" ? "resident" : "operator";
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={mode === "operator"}
+      aria-label={`Switch to ${nextMode} mode`}
+      data-testid="butler-mode-toggle"
+      onClick={() => onModeChange(nextMode)}
+      className="mb-[-1px] h-auto shrink-0 border-b-2 border-transparent px-3 py-2 font-mono text-[10px] font-medium uppercase tracking-[0.10em] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {mode}
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Page-local constants
 // ---------------------------------------------------------------------------
@@ -293,68 +316,71 @@ export default function ButlerDetailPage() {
       header={
         <ButlerDetailHeader
           butler={name}
-          actions={<ButlerDetailActions butlerName={name} mode={mode} onModeChange={setMode} />}
+          actions={<ButlerDetailActions butlerName={name} onModeChange={setMode} />}
         />
       }
     >
         <Tabs value={activeTab} onValueChange={handleTabChange}>
-          <TabsList
-            variant="line"
-            className="h-auto w-full justify-start rounded-none border-b border-border bg-transparent p-0"
-          >
-            <DetailTabTrigger value="overview">Overview</DetailTabTrigger>
-            {mode === "operator" && (
-              <>
-                <DetailTabTrigger value="sessions">Sessions</DetailTabTrigger>
-              </>
-            )}
-            {mode === "resident" && (
-              <>
-                <DetailTabTrigger value="activity">Activity</DetailTabTrigger>
-                <DetailTabTrigger value="logs">Logs</DetailTabTrigger>
-                <DetailTabTrigger value="approvals">Approvals</DetailTabTrigger>
-                <DetailTabTrigger value="spend">Spend</DetailTabTrigger>
-              </>
-            )}
-            <DetailTabTrigger value="config">Config</DetailTabTrigger>
-            {mode === "operator" && (
-              <>
-                <DetailTabTrigger value="skills">Skills</DetailTabTrigger>
-                <DetailTabTrigger value="schedules">Schedules</DetailTabTrigger>
-                <DetailTabTrigger value="trigger">Trigger</DetailTabTrigger>
-                <DetailTabTrigger value="mcp">MCP</DetailTabTrigger>
-                <DetailTabTrigger value="state">State</DetailTabTrigger>
-                <DetailTabTrigger value="crm">CRM</DetailTabTrigger>
-              </>
-            )}
-            <DetailTabTrigger value="memory">Memory</DetailTabTrigger>
-            {mode === "operator" && (
-              <DetailTabTrigger value="models">Models</DetailTabTrigger>
-            )}
-            {showCollectionsTab && (
-              <DetailTabTrigger value="collections">Collections</DetailTabTrigger>
-            )}
-            {showHealthTab && <DetailTabTrigger value="health">Health</DetailTabTrigger>}
-            {isSwitchboard && (
-              <>
-                <DetailTabTrigger value="routing-log">Routing Log</DetailTabTrigger>
-                <DetailTabTrigger value="registry">Registry</DetailTabTrigger>
-              </>
-            )}
-            {showReviewsTab && <DetailTabTrigger value="reviews">Reviews</DetailTabTrigger>}
-            {showTimelinesTab && <DetailTabTrigger value="timelines">Timelines</DetailTabTrigger>}
-            {showFinancesTab && <DetailTabTrigger value="finances">Finances</DetailTabTrigger>}
-            {showDevicesTab && <DetailTabTrigger value="devices">Devices</DetailTabTrigger>}
-            {showTasteTab && <DetailTabTrigger value="taste">Taste</DetailTabTrigger>}
-            {showConversationsTab && (
-              <DetailTabTrigger value="conversations">Conversations</DetailTabTrigger>
-            )}
-            {showInvestigationsTab && (
-              <DetailTabTrigger value="investigations">Investigations</DetailTabTrigger>
-            )}
-            {showContactsTab && <DetailTabTrigger value="contacts">Contacts</DetailTabTrigger>}
-            {showTripsTab && <DetailTabTrigger value="trips">Trips</DetailTabTrigger>}
-          </TabsList>
+          <div className="flex items-center gap-3 border-b border-border">
+            <TabsList
+              variant="line"
+              className="h-auto w-full flex-1 justify-start rounded-none bg-transparent p-0"
+            >
+              <DetailTabTrigger value="overview">Overview</DetailTabTrigger>
+              {mode === "operator" && (
+                <>
+                  <DetailTabTrigger value="sessions">Sessions</DetailTabTrigger>
+                </>
+              )}
+              {mode === "resident" && (
+                <>
+                  <DetailTabTrigger value="activity">Activity</DetailTabTrigger>
+                  <DetailTabTrigger value="logs">Logs</DetailTabTrigger>
+                  <DetailTabTrigger value="approvals">Approvals</DetailTabTrigger>
+                  <DetailTabTrigger value="spend">Spend</DetailTabTrigger>
+                </>
+              )}
+              <DetailTabTrigger value="config">Config</DetailTabTrigger>
+              {mode === "operator" && (
+                <>
+                  <DetailTabTrigger value="skills">Skills</DetailTabTrigger>
+                  <DetailTabTrigger value="schedules">Schedules</DetailTabTrigger>
+                  <DetailTabTrigger value="trigger">Trigger</DetailTabTrigger>
+                  <DetailTabTrigger value="mcp">MCP</DetailTabTrigger>
+                  <DetailTabTrigger value="state">State</DetailTabTrigger>
+                  <DetailTabTrigger value="crm">CRM</DetailTabTrigger>
+                </>
+              )}
+              <DetailTabTrigger value="memory">Memory</DetailTabTrigger>
+              {mode === "operator" && (
+                <DetailTabTrigger value="models">Models</DetailTabTrigger>
+              )}
+              {showCollectionsTab && (
+                <DetailTabTrigger value="collections">Collections</DetailTabTrigger>
+              )}
+              {showHealthTab && <DetailTabTrigger value="health">Health</DetailTabTrigger>}
+              {isSwitchboard && (
+                <>
+                  <DetailTabTrigger value="routing-log">Routing Log</DetailTabTrigger>
+                  <DetailTabTrigger value="registry">Registry</DetailTabTrigger>
+                </>
+              )}
+              {showReviewsTab && <DetailTabTrigger value="reviews">Reviews</DetailTabTrigger>}
+              {showTimelinesTab && <DetailTabTrigger value="timelines">Timelines</DetailTabTrigger>}
+              {showFinancesTab && <DetailTabTrigger value="finances">Finances</DetailTabTrigger>}
+              {showDevicesTab && <DetailTabTrigger value="devices">Devices</DetailTabTrigger>}
+              {showTasteTab && <DetailTabTrigger value="taste">Taste</DetailTabTrigger>}
+              {showConversationsTab && (
+                <DetailTabTrigger value="conversations">Conversations</DetailTabTrigger>
+              )}
+              {showInvestigationsTab && (
+                <DetailTabTrigger value="investigations">Investigations</DetailTabTrigger>
+              )}
+              {showContactsTab && <DetailTabTrigger value="contacts">Contacts</DetailTabTrigger>}
+              {showTripsTab && <DetailTabTrigger value="trips">Trips</DetailTabTrigger>}
+            </TabsList>
+            <DetailModeSwitch mode={mode} onModeChange={setMode} />
+          </div>
 
           <TabsContent value="overview">
             <ButlerOverviewTab butlerName={name} />

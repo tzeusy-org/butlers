@@ -87,8 +87,8 @@ vi.mock("@/hooks/use-general", () => ({
 }));
 
 vi.mock("@/components/chat/ChatPanel", () => ({
-  ChatPanel: ({ butlerName }: { butlerName: string }) => (
-    <div data-testid="chat-panel">{butlerName}</div>
+  ChatPanel: ({ butlerName, triggerLabel }: { butlerName: string; triggerLabel?: string }) => (
+    <div data-testid="chat-panel">{triggerLabel ?? "Chat"}:{butlerName}</div>
   ),
 }));
 
@@ -229,7 +229,7 @@ describe("ButlerDetailPage — ChatPanel actions slot", () => {
     const html = renderPage();
     // The mock renders the butlerName as text content inside the stub element
     expect(html).toContain(
-      '<div data-testid="chat-panel">general</div>',
+      '<div data-testid="chat-panel">Prompt:general</div>',
     );
   });
 
@@ -327,8 +327,8 @@ describe("ButlerDetailPage — rendering", () => {
 // spec: openspec/changes/redesign-butler-detail-no-hero/tasks.md §2.4
 // bead: bu-sfeuw.3
 //
-// The Page shell `actions` slot MUST contain: ChatPanel, status pill,
-// force-run button, and pause button. NO Tier-2 hero block must appear.
+// The Page shell `actions` slot MUST contain target operational controls:
+// force-run, logs, config, prompt, and pause. NO Tier-2 hero block must appear.
 // ---------------------------------------------------------------------------
 
 describe("ButlerDetailPage — Gate-A A2 actions slot", () => {
@@ -341,9 +341,9 @@ describe("ButlerDetailPage — Gate-A A2 actions slot", () => {
     setButlerState(BASE_BUTLER);
   });
 
-  it("renders the status pill in the actions slot", () => {
+  it("does not render a duplicated status pill in the actions slot", () => {
     const html = renderPage();
-    expect(html).toContain('data-testid="butler-status-pill"');
+    expect(html).not.toContain('data-testid="butler-status-pill"');
   });
 
   it("renders the force-run button in the actions slot", () => {
@@ -356,16 +356,27 @@ describe("ButlerDetailPage — Gate-A A2 actions slot", () => {
     expect(html).toContain('data-testid="butler-pause"');
   });
 
-  it("status pill, force-run, and pause all appear after the h1 (actions slot order)", () => {
+  it("renders logs, config, and prompt actions in the actions slot", () => {
+    const html = renderPage();
+    expect(html).toContain('data-testid="butler-logs-link"');
+    expect(html).toContain('data-testid="butler-config-link"');
+    expect(html).toContain("Prompt:general");
+  });
+
+  it("force-run, logs, config, prompt, and pause all appear after the h1", () => {
     const html = renderPage();
     const h1Index = html.indexOf("<h1");
-    const statusPillIndex = html.indexOf('data-testid="butler-status-pill"');
     const forceRunIndex = html.indexOf('data-testid="butler-force-run"');
+    const logsIndex = html.indexOf('data-testid="butler-logs-link"');
+    const configIndex = html.indexOf('data-testid="butler-config-link"');
+    const promptIndex = html.indexOf('data-testid="chat-panel"');
     const pauseIndex = html.indexOf('data-testid="butler-pause"');
 
     expect(h1Index).toBeGreaterThanOrEqual(0);
-    expect(statusPillIndex).toBeGreaterThan(h1Index);
     expect(forceRunIndex).toBeGreaterThan(h1Index);
+    expect(logsIndex).toBeGreaterThan(h1Index);
+    expect(configIndex).toBeGreaterThan(h1Index);
+    expect(promptIndex).toBeGreaterThan(h1Index);
     expect(pauseIndex).toBeGreaterThan(h1Index);
   });
 
@@ -386,12 +397,10 @@ describe("ButlerDetailPage — Gate-A A2 actions slot", () => {
     expect(html).toContain("Sessions");
   });
 
-  it("status indicator shows online for ok status", () => {
+  it("status indicator stays in the header metadata, not the action cluster", () => {
     const html = renderPage();
-    // BASE_BUTLER has status: "ok" and renders a compact text indicator.
-    const pillStart = html.indexOf('data-testid="butler-status-pill"');
-    const pillRegion = html.slice(pillStart, pillStart + 200);
-    expect(pillRegion).toContain("online");
+    expect(html).not.toContain('data-testid="butler-status-pill"');
+    expect(html).toContain("unknown");
   });
 });
 
@@ -491,16 +500,16 @@ describe("ButlerDetailPage — Gate-B B2 default rendering (resident mode)", () 
     expect(html).not.toContain(">Skills<");
   });
 
-  it("renders the mode toggle pill", () => {
+  it("renders the mode toggle control", () => {
     const html = renderPage();
     expect(html).toContain('data-testid="butler-mode-toggle"');
   });
 
-  it("mode toggle pill shows Resident label in resident mode", () => {
+  it("mode toggle control shows resident label in resident mode", () => {
     const html = renderPage();
     const toggleIndex = html.indexOf('data-testid="butler-mode-toggle"');
     const pillRegion = html.slice(toggleIndex, toggleIndex + 900);
-    expect(pillRegion).toContain("Resident");
+    expect(pillRegion).toContain("resident");
   });
 });
 
@@ -539,11 +548,11 @@ describe("ButlerDetailPage — Gate-B B2 operator mode rendering", () => {
     expect(html).toContain("Models");
   });
 
-  it("mode toggle pill shows Operator label in operator mode", () => {
+  it("mode toggle control shows operator label in operator mode", () => {
     const html = renderPage();
     const toggleIndex = html.indexOf('data-testid="butler-mode-toggle"');
     const pillRegion = html.slice(toggleIndex, toggleIndex + 900);
-    expect(pillRegion).toContain("Operator");
+    expect(pillRegion).toContain("operator");
   });
 });
 
@@ -622,8 +631,8 @@ describe("ButlerDetailPage — Gate-B B2 localStorage persistence", () => {
     const html = renderPage();
     // Resident mode: no Sessions trigger
     expect(html).not.toContain(">Sessions<");
-    // Mode toggle shows Resident label
-    expect(html).toContain("Resident");
+    // Mode toggle shows resident label
+    expect(html).toContain("resident");
   });
 
   it("reads operator mode when localStorage key is set to operator", () => {
@@ -2370,7 +2379,7 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
     const tablist = container.querySelector('[role="tablist"]');
     expect(tablist).not.toBeNull();
     expect(tablist!.getAttribute("data-variant")).toBe("line");
-    expect(tablist!.className).toContain("border-b");
+    expect(tablist!.parentElement?.className).toContain("border-b");
     expect(tablist!.className).toContain("bg-transparent");
     expect(tablist!.className).not.toContain("bg-muted");
 

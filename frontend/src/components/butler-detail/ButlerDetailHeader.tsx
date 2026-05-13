@@ -169,6 +169,7 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
           <h1 className="text-2xl font-semibold tracking-tight capitalize">{titleize(butler)}</h1>
           {description ? (
             <span className="min-w-0 truncate text-sm font-normal text-muted-foreground">
+              <span aria-hidden="true">· </span>
               {description}
             </span>
           ) : null}

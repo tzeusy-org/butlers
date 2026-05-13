@@ -149,7 +149,7 @@ export function Panel({
 
       {/* Eyebrow header — only when title is provided */}
       {title ? (
-        <div className="flex items-baseline gap-2 px-4 pt-3 pb-2 border-b border-border/40">
+        <div className="flex items-baseline justify-between gap-2 px-4 pt-3">
           <MonoLabel color="dim">{title}</MonoLabel>
           {sub ? <MonoLabel color="dim" className="opacity-60">{sub}</MonoLabel> : null}
         </div>
@@ -157,7 +157,7 @@ export function Panel({
 
       {/* Body */}
       <div
-        className={cn("flex-1 p-4", scroll && "overflow-y-auto")}
+        className={cn("flex-1 px-4 pb-4 pt-2", !title && "pt-4", scroll && "overflow-y-auto")}
         style={height ? { height } : undefined}
       >
         {children}
