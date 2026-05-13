@@ -37,8 +37,6 @@ vi.mock("@/components/sessions/SessionTable", () => ({
   SessionTable: ({
     sessions,
     isLoading,
-    showButlerColumn: _showButlerColumn,
-    onSessionClick: _onSessionClick,
   }: {
     sessions: unknown[];
     isLoading: boolean;

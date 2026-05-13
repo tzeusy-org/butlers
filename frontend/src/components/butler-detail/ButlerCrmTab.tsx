@@ -95,8 +95,8 @@ function UpcomingDatesPanelBody({ upcomingDates, isLoading }: UpcomingDatesPanel
 
   return (
     <div data-testid="upcoming-dates-list">
-      {upcomingDates.map((item, idx) => (
-        <UpcomingDateRow key={`${item.contact_id}-${item.date_type}-${idx}`} item={item} />
+      {upcomingDates.map((item) => (
+        <UpcomingDateRow key={`${item.contact_id}-${item.date_type}-${item.date}`} item={item} />
       ))}
     </div>
   );
