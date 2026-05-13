@@ -128,7 +128,14 @@ def _build_conversation_history_envelope(
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {
-            "identity": "alice@example.com",
+            "identity": "multiple",
+            "participants": {
+                "owner-telegram-id": "Tze How Lee",
+                "86807245": "Chloe Wong",
+            },
+            "owner_sender_id": "owner-telegram-id",
+            "participant_count": 2,
+            "chat_type": "private",
         },
         "payload": {
             "raw": {
@@ -270,6 +277,7 @@ async def test_ingest_conversation_history_persists_payload_type(pool):
     assert conv_history[0]["message_id"] == "msg-int-1"
     assert conv_history[1]["message_id"] == "msg-int-2"
     assert conv_history[2]["message_id"] == "msg-int-3"
+    assert rp["sender"] == envelope["sender"]
 
 
 @pytest.mark.integration

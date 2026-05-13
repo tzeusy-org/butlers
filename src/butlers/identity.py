@@ -133,6 +133,33 @@ async def resolve_contact_by_channel(
         )
         return None
 
+    if row is None and channel_type == "telegram_user_client":
+        telegram_value = (
+            channel_value if channel_value.startswith("telegram:") else f"telegram:{channel_value}"
+        )
+        try:
+            row = await pool.fetchrow(
+                """
+                SELECT c.id                          AS contact_id,
+                       c.name                        AS name,
+                       COALESCE(e.roles, '{}')       AS roles,
+                       c.entity_id                   AS entity_id
+                FROM   public.contact_info ci
+                JOIN   public.contacts c ON c.id = ci.contact_id
+                LEFT JOIN public.entities e ON e.id = c.entity_id
+                WHERE  ci.type = 'telegram_user_id'
+                  AND  ci.value = $1
+                LIMIT  1
+                """,
+                telegram_value,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "resolve_contact_by_channel: telegram_user_client fallback query failed",
+                exc_info=True,
+            )
+            return None
+
     if row is None:
         # WhatsApp JID fallback: if no direct match, try phone-number cross-reference.
         # Extracts the E.164 phone prefix from "<number>@s.whatsapp.net" JIDs and

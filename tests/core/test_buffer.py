@@ -28,6 +28,7 @@ from butlers.core.buffer import (
     DurableBuffer,
     _MessageRef,
 )
+from butlers.switchboard_wiring import build_buffer_pipeline_inputs
 
 pytestmark = pytest.mark.unit
 
@@ -233,6 +234,34 @@ async def test_workers() -> None:
     await asyncio.wait_for(buf2._drain_all_queues(), timeout=2.0)
     await buf2.stop(drain_timeout_s=1.0)
     assert set(concurrent_processed) == {"r1", "r2"}
+
+
+async def test_buffer_pipeline_inputs_extract_non_owner_batch_sender() -> None:
+    """Conversation-history batches route as the non-owner participant, not 'multiple'."""
+    ref = _MessageRef(
+        request_id="r1",
+        message_inbox_id="r1",
+        message_text="msg",
+        source={"channel": "telegram_user_client", "endpoint_identity": "telegram:user:@Tzeusy"},
+        event={"external_event_id": "batch:86807245:1-2", "external_thread_id": "86807245"},
+        sender={
+            "identity": "multiple",
+            "participants": {
+                "owner-telegram-id": "Tze How Lee",
+                "86807245": "Chloe Wong",
+            },
+            "owner_sender_id": "owner-telegram-id",
+        },
+        enqueued_at=datetime.now(UTC),
+        payload_type="conversation_history",
+    )
+
+    request_context, tool_args = build_buffer_pipeline_inputs(ref)
+
+    assert request_context["source_sender_identity"] == "86807245"
+    assert tool_args["sender_identity"] == "multiple"
+    assert tool_args["source_id"] == "86807245"
+    assert tool_args["sender_name"] == "Chloe Wong"
 
 
 # ---------------------------------------------------------------------------

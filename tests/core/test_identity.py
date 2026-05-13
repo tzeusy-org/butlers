@@ -85,6 +85,27 @@ async def test_resolve_contact_by_channel():
     assert r5 is not None and isinstance(r5.contact_id, uuid.UUID) and r5.contact_id == _CONTACT_ID
 
 
+async def test_resolve_contact_by_channel_maps_telegram_user_client_id():
+    """telegram_user_client sender ids resolve against telegram_user_id contact rows."""
+    mock_row = MagicMock()
+    mock_row.__getitem__ = lambda self, k: {
+        "contact_id": _CONTACT_ID,
+        "name": "Chloe Wong",
+        "roles": [],
+        "entity_id": _ENTITY_ID,
+    }[k]
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[None, mock_row])
+
+    result = await resolve_contact_by_channel(pool, "telegram_user_client", "86807245")
+
+    assert result is not None
+    assert result.contact_id == _CONTACT_ID
+    assert result.entity_id == _ENTITY_ID
+    assert "telegram_user_id" in pool.fetchrow.await_args_list[1].args[0]
+    assert pool.fetchrow.await_args_list[1].args[1] == "telegram:86807245"
+
+
 # ---------------------------------------------------------------------------
 # build_identity_preamble
 # ---------------------------------------------------------------------------

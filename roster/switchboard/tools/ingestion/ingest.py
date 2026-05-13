@@ -742,9 +742,7 @@ async def ingest_v1(
             "external_thread_id": envelope.event.external_thread_id,
             "observed_at": envelope.event.observed_at.isoformat(),
         },
-        "sender": {
-            "identity": envelope.sender.identity,
-        },
+        "sender": envelope.sender.model_dump(exclude_none=True),
         "payload": {
             "raw": envelope.payload.raw,
             "normalized_text": envelope.payload.normalized_text,

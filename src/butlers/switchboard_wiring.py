@@ -49,6 +49,72 @@ _STALE_SWITCHBOARD_CONNECTION_ERRORS = (
 )
 
 
+def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build request context and pipeline tool args for a buffered inbox ref."""
+    channel = ref.source.get("channel", "unknown")
+    endpoint_identity = ref.source.get("endpoint_identity", "unknown")
+    external_thread_id = ref.event.get("external_thread_id")
+    addressed = bool(ref.source.get("addressed", False))
+    sender_identity = ref.sender.get("identity", "unknown")
+
+    source_id: str | None = None
+    sender_name: str | None = None
+    if sender_identity == "multiple":
+        participants = ref.sender.get("participants") or {}
+        owner_sender_id = ref.sender.get("owner_sender_id")
+        if isinstance(participants, dict):
+            non_owner = [str(sid) for sid in participants if str(sid) != str(owner_sender_id)]
+            if non_owner:
+                source_id = non_owner[0]
+                sender_name = participants.get(source_id)
+            elif participants:
+                first = str(next(iter(participants)))
+                source_id = first
+                sender_name = participants.get(first)
+    elif sender_identity not in ("unknown", ""):
+        source_id = str(sender_identity)
+
+    source_sender_identity = source_id or sender_identity
+    request_context: dict[str, Any] = {
+        "request_id": ref.request_id,
+        "received_at": ref.event.get("observed_at", ""),
+        "source_channel": channel,
+        "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+        "source_sender_identity": source_sender_identity,
+        "source_thread_identity": external_thread_id,
+        "trace_context": {},
+    }
+    if addressed:
+        request_context["addressed"] = True
+    if ref.triage_decision is not None:
+        request_context["triage_decision"] = ref.triage_decision
+    if ref.triage_target is not None:
+        request_context["triage_target"] = ref.triage_target
+    if ref.payload_type is not None:
+        request_context["payload_type"] = ref.payload_type
+
+    tool_args: dict[str, Any] = {
+        "source": channel,
+        "source_channel": channel,
+        "source_identity": endpoint_identity,
+        "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+        "sender_identity": sender_identity,
+        "external_event_id": ref.event.get("external_event_id", ""),
+        "external_thread_id": external_thread_id,
+        "source_tool": "ingest",
+        "request_id": ref.request_id,
+        "request_context": request_context,
+    }
+    if source_id is not None:
+        tool_args["source_id"] = source_id
+    if sender_name is not None:
+        tool_args["sender_name"] = sender_name
+    if ref.attachments:
+        tool_args["attachments"] = ref.attachments
+
+    return request_context, tool_args
+
+
 def wire_pipelines(daemon: Any, pool: Any) -> None:
     """Attach a MessagePipeline to modules that support set_pipeline().
 
@@ -108,26 +174,8 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         if not isinstance(ref, _MessageRef):
             return
         channel = ref.source.get("channel", "unknown")
-        endpoint_identity = ref.source.get("endpoint_identity", "unknown")
         external_thread_id = ref.event.get("external_thread_id")
-        addressed = bool(ref.source.get("addressed", False))
-        request_context: dict[str, Any] = {
-            "request_id": ref.request_id,
-            "received_at": ref.event.get("observed_at", ""),
-            "source_channel": channel,
-            "source_endpoint_identity": f"{channel}:{endpoint_identity}",
-            "source_sender_identity": ref.sender.get("identity", "unknown"),
-            "source_thread_identity": external_thread_id,
-            "trace_context": {},
-        }
-        if addressed:
-            request_context["addressed"] = True
-        if ref.triage_decision is not None:
-            request_context["triage_decision"] = ref.triage_decision
-        if ref.triage_target is not None:
-            request_context["triage_target"] = ref.triage_target
-        if ref.payload_type is not None:
-            request_context["payload_type"] = ref.payload_type
+        _, _buf_tool_args = build_buffer_pipeline_inputs(ref)
 
         # Fire reaction before pipeline processing (telegram_bot only).
         if channel == "telegram_bot" and telegram_mod is not None:
@@ -146,21 +194,6 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
 
         routing_failed = False
         _routing_error_detail: str | None = None
-        _buf_tool_args: dict[str, Any] = {
-            "source": channel,
-            "source_channel": channel,
-            "source_identity": endpoint_identity,
-            "source_endpoint_identity": f"{channel}:{endpoint_identity}",
-            "sender_identity": ref.sender.get("identity", "unknown"),
-            "external_event_id": ref.event.get("external_event_id", ""),
-            "external_thread_id": external_thread_id,
-            "source_tool": "ingest",
-            "request_id": ref.request_id,
-            "request_context": request_context,
-        }
-        if ref.attachments:
-            _buf_tool_args["attachments"] = ref.attachments
-
         try:
             result = await pipeline.process(
                 message_text=ref.message_text,
