@@ -646,9 +646,7 @@ class TestSpawnerInvocation:
         assert result.success is True
         assert captured["timeout"] == 1800
 
-    async def test_adapter_timeout_error_is_not_masked_by_spawner_guard(
-        self, tmp_path: Path
-    ):
+    async def test_adapter_timeout_error_is_not_masked_by_spawner_guard(self, tmp_path: Path):
         """Adapters own timeout cleanup and diagnostics; the spawner guard is only
         a backstop for runtimes that do not return after their timeout."""
         config_dir = tmp_path / "config"
@@ -656,7 +654,8 @@ class TestSpawnerInvocation:
         config = _make_config()
 
         class AdapterManagedTimeout(RuntimeAdapter):
-            reset_calls = 0
+            def __init__(self) -> None:
+                self.reset_calls = 0
 
             @property
             def binary_name(self) -> str:

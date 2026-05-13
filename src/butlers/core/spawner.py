@@ -1598,28 +1598,37 @@ class Spawner:
             merged_runtime_capture = False
             try:
                 invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
-                done, _pending = await asyncio.wait(
-                    {invoke_task},
-                    timeout=_runtime_timeout_guard_s(float(timeout_s)),
-                )
-                if not done:
-                    invoke_task.cancel()
-                    try:
-                        await invoke_task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        logger.debug(
-                            "Runtime task raised while handling spawner timeout "
-                            "for butler=%s",
-                            self._config.name,
-                            exc_info=True,
-                        )
-                    raise TimeoutError(
-                        f"Session timed out after {timeout_s}s "
-                        f"(model={model}, butler={self._config.name})"
+                try:
+                    done, _pending = await asyncio.wait(
+                        {invoke_task},
+                        timeout=_runtime_timeout_guard_s(float(timeout_s)),
                     )
-                result_text, tool_calls, usage = await invoke_task
+                    if not done:
+                        invoke_task.cancel()
+                        try:
+                            await asyncio.wait_for(
+                                invoke_task, timeout=_RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S
+                            )
+                        except (TimeoutError, asyncio.CancelledError):
+                            pass
+                        except Exception:
+                            logger.debug(
+                                "Runtime task raised while handling spawner timeout for butler=%s",
+                                self._config.name,
+                                exc_info=True,
+                            )
+                        raise TimeoutError(
+                            f"Session timed out after {timeout_s}s "
+                            f"(model={model}, butler={self._config.name})"
+                        )
+                    result_text, tool_calls, usage = await invoke_task
+                finally:
+                    if not invoke_task.done():
+                        invoke_task.cancel()
+                        try:
+                            await invoke_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
             except MCPToolDiscoveryError as exc:
                 executed_tool_calls = (
                     consume_runtime_session_tool_calls(runtime_session_id)
