@@ -207,17 +207,7 @@ describe("RegistryTable", () => {
   // Empty-state coverage (bu-vbizz)
   // ---------------------------------------------------------------------------
 
-  it("renders the empty state when there are no registry entries and not loading", () => {
-    setQueryState({
-      data: { data: [], meta: {} },
-      isLoading: false,
-    });
-
-    const html = renderTable();
-    expect(html).toContain("No butlers registered in the switchboard");
-  });
-
-  it("empty state title and description contain expected copy", () => {
+  it("renders the empty state with expected copy when there are no registry entries and not loading", () => {
     setQueryState({
       data: { data: [], meta: {} },
       isLoading: false,

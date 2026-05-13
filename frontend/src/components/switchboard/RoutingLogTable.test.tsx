@@ -62,41 +62,21 @@ describe("RoutingLogTable — empty state", () => {
     vi.resetAllMocks();
   });
 
-  it("renders the empty state when there are no entries and not loading", () => {
+  it("renders the empty state with expected copy when there are no entries and not loading", () => {
     setQueryState({
-      data: { data: [], meta: { total: 0, has_more: false } },
-      isLoading: false,
-    });
-
-    const html = renderTable();
-    // EmptyState renders an h2 with the title text
-    expect(html).toContain("No routing log entries found");
-  });
-
-  it("empty state title contains expected copy", () => {
-    setQueryState({
-      data: { data: [], meta: { total: 0, has_more: false } },
+      data: { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } },
       isLoading: false,
     });
 
     const html = renderTable();
     expect(html).toContain("No routing log entries found");
     expect(html).toContain("inter-butler requests");
-  });
-
-  it("empty state description mentions the switchboard", () => {
-    setQueryState({
-      data: { data: [], meta: { total: 0, has_more: false } },
-      isLoading: false,
-    });
-
-    const html = renderTable();
     expect(html).toContain("switchboard");
   });
 
   it("empty state copy contains no user-visible em-dash", () => {
     setQueryState({
-      data: { data: [], meta: { total: 0, has_more: false } },
+      data: { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } },
       isLoading: false,
     });
 
@@ -134,7 +114,7 @@ describe("RoutingLogTable — empty state", () => {
     setQueryState({
       data: {
         data: [SAMPLE_ENTRY],
-        meta: { total: 1, has_more: false },
+        meta: { total: 1, offset: 0, limit: 50, has_more: false },
       },
       isLoading: false,
     });
