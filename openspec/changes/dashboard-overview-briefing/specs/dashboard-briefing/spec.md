@@ -86,6 +86,13 @@ The endpoint SHALL compute `state.now` in the owner's configured general timezon
 
 The endpoint SHALL call the local catalog-backed runtime adapter path with a pinned prompt to produce a one-to-three sentence elaboration paragraph. The prompt MUST encode the dashboard voice rules. The runtime call MUST use the synthetic butler identity `__dashboard_briefing__`, resolve runtime/model/args/timeout from `public.model_catalog` at the `trivial` complexity tier, and run without MCP tools.
 
+#### Scenario: Prompt receives bounded dashboard context
+
+- **WHEN** the endpoint composes an LLM elaboration
+- **THEN** the user prompt includes a bounded internal state snapshot with owner-local time, attention totals, top attention item descriptions, relevant butler names, timestamps, and unhealthy butler summaries
+- **AND** the snapshot includes enough source context for the paragraph to name the most important current ecosystem fact
+- **AND** the public response still contains exactly the six required Briefing fields, with no additional metadata or context field
+
 #### Scenario: LLM happy path
 
 - **WHEN** the local runtime call returns within its configured timeout

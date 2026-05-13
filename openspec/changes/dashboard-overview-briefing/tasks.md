@@ -13,7 +13,8 @@
 - [x] 2.6 Implement the per-owner LRU+TTL cache. Cache key is owner contact id; TTL 5 minutes.
 - [x] 2.7 Owner-only access gate: HTTP 403 for non-owner sessions; HTTP 401 for unauthenticated.
 - [x] 2.8 Conservative classification fallback (D6): on any classification exception, return `state_class = "quiet"` with the quiet templated paragraph and emit an internal error metric.
-- [x] 2.9 Tests under `tests/dashboard/test_briefing.py`:
+- [x] 2.9 Enrich the internal briefing context with human-readable attention items, timestamps, notification details, and unhealthy butler summaries while preserving the six-field public response.
+- [x] 2.10 Tests under `tests/dashboard/test_briefing.py`:
   - [x] classify covers all five branches
   - [x] headline_for produces the expected string for each class (singular and plural variants)
   - [x] LLM happy path returns `source: "llm"`
@@ -22,6 +23,7 @@
   - [x] cache TTL respects 5 minutes (hit preserves `generated_at`, miss regenerates)
   - [x] 403 path covers non-owner access
   - [x] classification exception falls through to the `quiet` paragraph
+  - [x] internal context includes attention descriptions, timestamps, notification details, and health summaries
 
 ## 3. Frontend: Stub
 

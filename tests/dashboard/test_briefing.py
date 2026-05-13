@@ -27,9 +27,14 @@ from butlers.api.briefing.cache import BriefingCache
 from butlers.api.briefing.classify import classify, headline_for, time_of_day
 from butlers.api.briefing.fallback import elaborate_fallback
 from butlers.api.briefing.lint import voice_lint_passes
-from butlers.api.briefing.prompts import elaborate_llm
+from butlers.api.briefing.prompts import _build_user_message, elaborate_llm
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.dashboard_briefing import _get_db_manager, _owner_local_now, get_cache
+from butlers.api.routers.dashboard_briefing import (
+    _fetch_dashboard_state,
+    _get_db_manager,
+    _owner_local_now,
+    get_cache,
+)
 from butlers.core.model_routing import Complexity
 
 pytestmark = pytest.mark.unit
@@ -97,6 +102,115 @@ def _make_owner_pool(
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.fetch = AsyncMock(side_effect=_fetch)
     return pool
+
+
+# ---------------------------------------------------------------------------
+# Dashboard state context
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardStateContext:
+    async def test_fetch_dashboard_state_preserves_human_readable_context(self):
+        """The briefing state includes names, messages, timestamps, and health context."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            attention_items=[
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "severity": "high",
+                    "source_butler": "calendar",
+                    "channel": "telegram",
+                    "message": "Calendar sync failed for the owner account",
+                    "metadata": {"severity": "high", "kind": "oauth"},
+                    "status": "unread",
+                    "error": "Token has been expired or revoked",
+                    "session_id": None,
+                    "trace_id": "trace-123",
+                    "created_at": now,
+                }
+            ],
+            butler_statuses=[
+                {
+                    "name": "calendar",
+                    "status": "degraded",
+                    "agent_type": "butler",
+                    "eligibility_state": "stale",
+                    "last_seen_at": now,
+                    "description": "Calendar butler",
+                    "modules": ["calendar"],
+                    "capabilities": ["calendar.sync"],
+                    "quarantine_reason": None,
+                }
+            ],
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert state["attention_items"][0]["butler"] == "calendar"
+        assert state["attention_items"][0]["description"] == (
+            "Calendar sync failed for the owner account"
+        )
+        assert state["attention_items"][0]["last_seen_at"] == "2026-05-13T15:59:00+00:00"
+        assert state["notification_items"][0]["channel"] == "telegram"
+        assert state["notification_items"][0]["metadata"] == {
+            "severity": "high",
+            "kind": "oauth",
+        }
+        assert state["butler_statuses"][0]["status"] == "degraded"
+        assert state["butler_statuses"][0]["eligibility_state"] == "stale"
+        assert state["overview_totals"] == {
+            "attention_total": 1,
+            "attention_high": 1,
+            "attention_medium": 0,
+            "attention_low": 0,
+            "butlers_total": 1,
+            "butlers_unhealthy": 1,
+        }
+
+
+class TestPromptContext:
+    def test_build_user_message_summarizes_top_attention_and_health(self):
+        """The LLM prompt gets a bounded ecosystem snapshot, not raw thin rows."""
+        state = {
+            "now": datetime(2026, 5, 13, 23, 59, tzinfo=UTC),
+            "attention_items": [
+                {
+                    "severity": "high",
+                    "type": "notification",
+                    "butler": "calendar",
+                    "description": "Calendar sync failed for the owner account",
+                    "last_seen_at": "2026-05-13T15:59:00+00:00",
+                    "link": "/notifications",
+                    "source": "notification",
+                }
+            ],
+            "butler_statuses": [
+                {
+                    "name": "calendar",
+                    "status": "degraded",
+                    "type": "butler",
+                    "eligibility_state": "stale",
+                    "last_seen_at": "2026-05-13T15:59:00+00:00",
+                }
+            ],
+            "overview_totals": {
+                "attention_total": 1,
+                "attention_high": 1,
+                "attention_medium": 0,
+                "attention_low": 0,
+                "butlers_total": 1,
+                "butlers_unhealthy": 1,
+            },
+        }
+
+        message = _build_user_message(state, "urgent")
+
+        assert "attention_summary" in message
+        assert "top_attention_items" in message
+        assert "butler_health" in message
+        assert "Calendar sync failed for the owner account" in message
+        assert "2026-05-13T15:59:00+00:00" in message
+        assert "calendar" in message
 
 
 # ---------------------------------------------------------------------------

@@ -159,57 +159,279 @@ async def _assert_owner_contact(pool: Any) -> Any:
 # State fetch helper
 # ---------------------------------------------------------------------------
 
+_HIGH_SEVERITIES = {"critical", "error", "high"}
+_MEDIUM_SEVERITIES = {"warning", "warn", "medium"}
+_UNHEALTHY_STATUSES = {"degraded", "down", "error", "stale", "quarantined"}
+
+
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    """Read asyncpg records and test doubles without assuming every column exists."""
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def _isoformat_or_none(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return None
+    return str(value)
+
+
+def _normalize_severity(value: Any) -> str:
+    severity = str(value or "low").lower()
+    if severity in _HIGH_SEVERITIES:
+        return "high"
+    if severity in _MEDIUM_SEVERITIES:
+        return "medium"
+    return "low"
+
+
+def _json_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, tuple):
+        return [str(item) for item in value]
+    return []
+
+
+def _compute_overview_totals(state: dict) -> dict:
+    attention_items = state.get("attention_items", [])
+    butler_statuses = state.get("butler_statuses", [])
+    return {
+        "attention_total": len(attention_items),
+        "attention_high": sum(1 for item in attention_items if item.get("severity") == "high"),
+        "attention_medium": sum(1 for item in attention_items if item.get("severity") == "medium"),
+        "attention_low": sum(1 for item in attention_items if item.get("severity") == "low"),
+        "butlers_total": len(butler_statuses),
+        "butlers_unhealthy": sum(
+            1
+            for item in butler_statuses
+            if str(item.get("status", "")).lower() in _UNHEALTHY_STATUSES
+        ),
+    }
+
 
 async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
-    """Build a minimal dashboard state dict from DB for classification.
+    """Build the internal dashboard state used for classification and prose.
 
     Reads:
-        attention items from a notifications/issues proxy query.
-        butler statuses from the butler_registry.
+        attention items from notifications and grouped audit issues.
+        butler health from the butler_registry.
 
-    In v1 the attention_items list is derived from unread high-priority
-    notifications; butler_statuses is derived from the registry heartbeat.
-    Falls back to empty lists on any query failure (the classifier handles
-    empty state gracefully).
+    The public API still returns the six-field Briefing object. This richer
+    state is intentionally internal so the local runtime has enough context to
+    name the important current fact without exposing a second wire contract.
     """
     state: dict = {
         "now": now,
         "attention_items": [],
+        "notification_items": [],
+        "audit_issues": [],
         "butler_statuses": [],
+        "overview_totals": {
+            "attention_total": 0,
+            "attention_high": 0,
+            "attention_medium": 0,
+            "attention_low": 0,
+            "butlers_total": 0,
+            "butlers_unhealthy": 0,
+        },
     }
 
-    # Attention items: unread notifications with severity or priority set.
-    # Read from switchboard schema (cross-butler notifications table).
+    # Attention items: unread or failed recent notifications with message context.
     try:
         rows = await pool.fetch(
             """
             SELECT
                 id,
-                COALESCE(metadata->>'severity', 'low') AS severity
+                source_butler,
+                channel,
+                message,
+                metadata,
+                status,
+                error,
+                session_id,
+                trace_id,
+                created_at,
+                COALESCE(
+                    metadata->>'severity',
+                    metadata->>'priority',
+                    CASE WHEN status = 'failed' THEN 'high' ELSE 'low' END
+                ) AS severity
             FROM notifications
-            WHERE status = 'unread'
+            WHERE status IN ('unread', 'failed')
               AND created_at >= NOW() - INTERVAL '24 hours'
-            ORDER BY created_at DESC
+            ORDER BY
+                CASE LOWER(COALESCE(metadata->>'severity', metadata->>'priority', status))
+                    WHEN 'critical' THEN 0
+                    WHEN 'error' THEN 0
+                    WHEN 'high' THEN 0
+                    WHEN 'warning' THEN 1
+                    WHEN 'warn' THEN 1
+                    WHEN 'medium' THEN 1
+                    ELSE 2
+                END,
+                created_at DESC
             LIMIT 50
             """
         )
-        state["attention_items"] = [{"id": str(r["id"]), "severity": r["severity"]} for r in rows]
+        notification_items = []
+        for row in rows:
+            severity = _normalize_severity(_row_get(row, "severity"))
+            created_at = _isoformat_or_none(_row_get(row, "created_at"))
+            source_butler = str(_row_get(row, "source_butler") or "unknown")
+            message = str(_row_get(row, "message") or "Notification requires attention")
+            notification = {
+                "id": str(_row_get(row, "id")),
+                "source_butler": source_butler,
+                "channel": str(_row_get(row, "channel") or "unknown"),
+                "message": message,
+                "metadata": _row_get(row, "metadata") or {},
+                "status": str(_row_get(row, "status") or "unread"),
+                "severity": severity,
+                "error": _row_get(row, "error"),
+                "session_id": (
+                    str(_row_get(row, "session_id")) if _row_get(row, "session_id") else None
+                ),
+                "trace_id": _row_get(row, "trace_id"),
+                "created_at": created_at,
+            }
+            notification_items.append(notification)
+            state["attention_items"].append(
+                {
+                    "severity": severity,
+                    "type": "notification",
+                    "butler": source_butler,
+                    "description": message,
+                    "link": "/notifications",
+                    "error_message": _row_get(row, "error"),
+                    "occurrences": 1,
+                    "first_seen_at": created_at,
+                    "last_seen_at": created_at,
+                    "source": "notification",
+                }
+            )
+        state["notification_items"] = notification_items
     except Exception as exc:
         logger.debug("Could not fetch attention items: %s", exc)
+
+    # Group recent audit failures into issue-like attention items. This mirrors
+    # the dashboard issue surface enough for the briefing without probing MCP.
+    try:
+        rows = await pool.fetch(
+            """
+            WITH normalized_errors AS (
+                SELECT
+                    butler,
+                    created_at,
+                    COALESCE(NULLIF(BTRIM(SPLIT_PART(error, E'\n', 1)), ''), 'Unknown error')
+                        AS error_summary,
+                    (
+                        operation = 'session'
+                        AND COALESCE(request_summary->>'trigger_source', '') LIKE 'schedule:%'
+                    ) AS is_schedule,
+                    NULLIF(
+                        SPLIT_PART(COALESCE(request_summary->>'trigger_source', ''), ':', 2),
+                        ''
+                    ) AS schedule_name
+                FROM dashboard_audit_log
+                WHERE result = 'error'
+                  AND created_at >= NOW() - INTERVAL '7 days'
+            )
+            SELECT
+                error_summary,
+                MIN(created_at) AS first_seen_at,
+                MAX(created_at) AS last_seen_at,
+                COUNT(*)::int AS occurrences,
+                ARRAY_AGG(DISTINCT butler ORDER BY butler) AS butlers,
+                BOOL_OR(is_schedule) AS has_schedule,
+                ARRAY_REMOVE(
+                    ARRAY_AGG(DISTINCT schedule_name ORDER BY schedule_name),
+                    NULL
+                ) AS schedule_names
+            FROM normalized_errors
+            GROUP BY error_summary
+            ORDER BY last_seen_at DESC
+            LIMIT 20
+            """
+        )
+        audit_issues = []
+        for row in rows:
+            butlers = [str(item) for item in (_row_get(row, "butlers") or [])] or ["unknown"]
+            has_schedule = bool(_row_get(row, "has_schedule"))
+            severity = "high" if has_schedule else "medium"
+            error_summary = str(_row_get(row, "error_summary", "Unknown error"))
+            if len(butlers) == 1:
+                description = f"{error_summary} ({butlers[0]})"
+                butler = butlers[0]
+            else:
+                description = f"{error_summary} ({len(butlers)} butlers)"
+                butler = "multiple"
+            issue = {
+                "severity": severity,
+                "type": "scheduled_task_failure" if has_schedule else "audit_error_group",
+                "butler": butler,
+                "description": description,
+                "link": "/audit-log",
+                "error_message": error_summary,
+                "occurrences": int(_row_get(row, "occurrences", 1) or 1),
+                "first_seen_at": _isoformat_or_none(_row_get(row, "first_seen_at")),
+                "last_seen_at": _isoformat_or_none(_row_get(row, "last_seen_at")),
+                "butlers": butlers,
+                "source": "audit_log",
+            }
+            audit_issues.append(issue)
+            state["attention_items"].append(issue)
+        state["audit_issues"] = audit_issues
+    except Exception as exc:
+        logger.debug("Could not fetch audit-derived attention items: %s", exc)
 
     # Butler statuses from the registry.
     try:
         rows = await pool.fetch(
             """
-            SELECT name, status
+            SELECT
+                name,
+                COALESCE(agent_type, 'butler') AS agent_type,
+                description,
+                modules,
+                capabilities,
+                last_seen_at,
+                eligibility_state,
+                quarantine_reason,
+                CASE
+                    WHEN eligibility_state = 'quarantined' THEN 'error'
+                    WHEN eligibility_state = 'stale' THEN 'degraded'
+                    WHEN last_seen_at IS NULL THEN 'degraded'
+                    WHEN last_seen_at < NOW() - (liveness_ttl_seconds * INTERVAL '1 second')
+                        THEN 'degraded'
+                    ELSE 'healthy'
+                END AS status
             FROM butler_registry
             ORDER BY name ASC
             """
         )
-        state["butler_statuses"] = [{"name": r["name"], "status": r["status"]} for r in rows]
+        state["butler_statuses"] = [
+            {
+                "name": str(_row_get(row, "name") or "unknown"),
+                "status": str(_row_get(row, "status") or "unknown"),
+                "type": str(_row_get(row, "agent_type") or "butler"),
+                "eligibility_state": _row_get(row, "eligibility_state"),
+                "last_seen_at": _isoformat_or_none(_row_get(row, "last_seen_at")),
+                "description": _row_get(row, "description"),
+                "modules": _json_list(_row_get(row, "modules")),
+                "capabilities": _json_list(_row_get(row, "capabilities")),
+                "quarantine_reason": _row_get(row, "quarantine_reason"),
+            }
+            for row in rows
+        ]
     except Exception as exc:
         logger.debug("Could not fetch butler statuses: %s", exc)
 
+    state["overview_totals"] = _compute_overview_totals(state)
     return state
 
 

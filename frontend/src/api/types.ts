@@ -3800,9 +3800,9 @@ export type BriefingSource = "llm" | "fallback";
  * Server-composed briefing object the Overview page renders verbatim.
  *
  * `greet` and `headline` are deterministic templates; `elaboration` is one to
- * three sentences from Claude Haiku 4.5 with a templated fallback. `source`
- * tells the status pill which path produced the elaboration. Cached per-owner
- * for 5 minutes (the hook below mirrors that TTL).
+ * three sentences from the local catalog-backed runtime with a templated
+ * fallback. `source` tells the status pill which path produced the elaboration.
+ * Cached per-owner for 5 minutes (the hook below mirrors that TTL).
  */
 export interface Briefing {
   greet: string;

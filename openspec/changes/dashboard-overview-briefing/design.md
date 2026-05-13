@@ -69,6 +69,8 @@ The elaboration is one to three sentences, max 50 words, written by the local ca
 
 The endpoint invokes the existing no-tool, single-turn runtime dispatcher used by lightweight classification paths. It resolves runtime type, model id, extra runtime args, quota, and timeout from `public.model_catalog` using the synthetic butler identity `__dashboard_briefing__` and the `trivial` complexity tier. In a normal dev stack this means a local Codex runtime session, not a direct Anthropic API call. The briefing path does not receive MCP tools and does not create a full butler task session; it is API-side prose generation with the same adapter and catalog controls as the rest of the system.
 
+The prompt receives a bounded internal context snapshot rather than the public response body. That snapshot includes owner-local time, attention counts, the top attention items with butler/source/description/timestamps, unhealthy butler summaries, and recent notification details. This context is not exposed on the `GET /api/dashboard/briefing` wire response; it exists only so the generated elaboration can name the most important current ecosystem fact without inventing details.
+
 On any failure (timeout, exception, empty response, content rejected by the voice lint in D5), `elaborate_fallback(state, state_class)` returns a templated paragraph from `src/butlers/dashboard/briefing/fallback.py`. The Briefing object's `source` field reflects which path produced it:
 
 - `source: "llm"` if the model returned a usable paragraph that passed the lint.
