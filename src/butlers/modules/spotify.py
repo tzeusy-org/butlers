@@ -253,6 +253,24 @@ class SpotifyModule(Module):
     def _no_credentials(self) -> dict[str, Any]:
         return {"error": _NO_CREDENTIALS_ERROR}
 
+    async def _get_user_profile(self) -> dict[str, Any] | None:
+        """Return the cached user profile, fetching it lazily if not yet available.
+
+        Returns ``None`` when the client is unavailable or a transient error occurs.
+        """
+        if self._user_profile is not None:
+            return self._user_profile
+        if self._client is None:
+            return None
+        try:
+            profile = await self._client.get_me()
+            self._user_profile = profile
+            return profile
+        except SpotifyTokenRefreshUnavailableError:
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _handle_spotify_error(self, exc: Exception) -> dict[str, Any]:
         """Convert a SpotifyClient exception to an actionable error dict."""
         if isinstance(exc, SpotifyTokenRefreshUnavailableError):
@@ -586,9 +604,12 @@ class SpotifyModule(Module):
             """
             if not module._credentials_ok or module._client is None:
                 return module._no_credentials()
-            if module._user_profile is None:
-                return {"error": "User profile not available. Re-connect Spotify."}
-            user_id = module._user_profile.get("id")
+            profile = await module._get_user_profile()
+            if profile is None:
+                return {
+                    "error": "Spotify user profile is temporarily unavailable. Try again shortly."
+                }
+            user_id = profile.get("id")
             if not user_id:
                 return {"error": "Could not determine Spotify user ID."}
             try:

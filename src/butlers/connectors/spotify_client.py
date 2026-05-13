@@ -122,8 +122,7 @@ class SpotifyTokenRefreshUnavailableError(Exception):
 
     def __init__(self, retry_after_s: float) -> None:
         super().__init__(
-            "Spotify token refresh temporarily unavailable; "
-            f"retry after {retry_after_s:.1f}s"
+            f"Spotify token refresh temporarily unavailable; retry after {retry_after_s:.1f}s"
         )
         self.retry_after_s = retry_after_s
 
