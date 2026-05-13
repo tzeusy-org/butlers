@@ -38,29 +38,30 @@ def _make_pool_with_counts(
     total_rules: int = 0,
     rules_24h: int = 0,
 ) -> AsyncMock:
-    """Return a mock asyncpg pool that returns the given counts for fetchval calls."""
+    """Return a mock asyncpg pool that returns the given counts for fetchrow calls.
+
+    The optimized implementation uses a single fetchrow per table with
+    COUNT(*) FILTER (...) to fetch total and 24h counts in one round-trip.
+    SQL fragments identify which table is being queried.
+    """
     pool = AsyncMock()
 
-    # Map SQL fragments to return values so order doesn't matter.
-    count_map = {
-        "SELECT count(*) FROM episodes WHERE created_at": episodes_24h,
-        "SELECT count(*) FROM episodes": total_episodes,
-        "SELECT count(*) FROM facts WHERE created_at": facts_24h,
-        "SELECT count(*) FROM facts": total_facts,
-        "source_butler' = $1 AND created_at": entities_24h,
-        "source_butler' = $1": total_entities,
-        "SELECT count(*) FROM rules WHERE created_at": rules_24h,
-        "SELECT count(*) FROM rules": total_rules,
+    # Map SQL table fragment → (total, recent) tuple.
+    row_map = {
+        "FROM episodes": {"total": total_episodes, "recent": episodes_24h},
+        "FROM facts": {"total": total_facts, "recent": facts_24h},
+        "FROM public.entities": {"total": total_entities, "recent": entities_24h},
+        "FROM rules": {"total": total_rules, "recent": rules_24h},
     }
 
-    async def _fetchval(sql: str, *_args):
+    async def _fetchrow(sql: str, *_args):
         # Match on the most specific substring first (longer keys win).
-        for fragment in sorted(count_map, key=len, reverse=True):
+        for fragment in sorted(row_map, key=len, reverse=True):
             if fragment in sql:
-                return count_map[fragment]
-        return 0
+                return row_map[fragment]
+        return {"total": 0, "recent": 0}
 
-    pool.fetchval = AsyncMock(side_effect=_fetchval)
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     return pool
 
 
@@ -86,9 +87,9 @@ def _make_app_missing_butler(butler_names: list[str]) -> object:
 
 
 def _make_app_no_memory_tables(butler_name: str) -> object:
-    """Wire a fresh app where the butler exists but fetchval raises for every query."""
+    """Wire a fresh app where the butler exists but fetchrow raises for every query."""
     pool = AsyncMock()
-    pool.fetchval = AsyncMock(side_effect=Exception("relation does not exist"))
+    pool.fetchrow = AsyncMock(side_effect=Exception("relation does not exist"))
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = [butler_name]
