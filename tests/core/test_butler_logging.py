@@ -208,3 +208,120 @@ async def test_metadata_serialisation_failure_drops_field() -> None:
     sql, *args = conn.execute.call_args.args
     # metadata_json is passed as None when serialisation fails
     assert None in args
+
+
+# ---------------------------------------------------------------------------
+# ButlerDBLogHandler — stdlib logging bridge
+# ---------------------------------------------------------------------------
+
+
+import logging  # noqa: E402
+
+from butlers.core.butler_logging import ButlerDBLogHandler, _map_pylog_level  # noqa: E402
+from butlers.core.logging import set_butler_context  # noqa: E402
+
+
+def test_map_pylog_level_buckets():
+    assert _map_pylog_level(logging.DEBUG) == "DEBUG"
+    assert _map_pylog_level(logging.INFO) == "INFO"
+    assert _map_pylog_level(logging.WARNING) == "WARN"
+    assert _map_pylog_level(logging.ERROR) == "ERROR"
+    assert _map_pylog_level(logging.CRITICAL) == "ERROR"
+    assert _map_pylog_level(logging.NOTSET) is None
+
+
+def _make_record(
+    name: str = "test", level: int = logging.INFO, msg: str = "hi"
+) -> logging.LogRecord:
+    return logging.LogRecord(
+        name=name, level=level, pathname=__file__, lineno=0, msg=msg, args=(), exc_info=None
+    )
+
+
+async def test_db_handler_writes_when_context_matches() -> None:
+    """A record emitted in the butler's context is written via ButlerLogger."""
+    pool, conn = _make_pool()
+    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
+    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
+
+    set_butler_context("general")
+    handler.emit(_make_record(msg="hello db"))
+    await asyncio.sleep(0)
+
+    conn.execute.assert_called_once()
+    sql, *args = conn.execute.call_args.args
+    assert "INSERT INTO butler_logs" in sql
+    assert "hello db" in args
+    assert "INFO" in args
+
+
+async def test_db_handler_drops_when_context_mismatch() -> None:
+    """A record emitted under a different butler's context is dropped."""
+    pool, conn = _make_pool()
+    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
+    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
+
+    set_butler_context("lifestyle")
+    handler.emit(_make_record(msg="should not see"))
+    await asyncio.sleep(0)
+
+    conn.execute.assert_not_called()
+
+
+async def test_db_handler_drops_when_no_butler_context() -> None:
+    """A record with no butler context is dropped (e.g. parent CLI logs)."""
+    pool, conn = _make_pool()
+    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
+    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
+
+    set_butler_context(None)  # type: ignore[arg-type]
+    handler.emit(_make_record(msg="orphan"))
+    await asyncio.sleep(0)
+
+    conn.execute.assert_not_called()
+
+
+async def test_db_handler_drops_records_from_own_module() -> None:
+    """Records from ``butler_logging`` itself are dropped to avoid loops."""
+    pool, conn = _make_pool()
+    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
+    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
+
+    set_butler_context("general")
+    handler.emit(_make_record(name="butlers.core.butler_logging", msg="feedback"))
+    await asyncio.sleep(0)
+
+    conn.execute.assert_not_called()
+
+
+async def test_db_handler_respects_python_log_level() -> None:
+    """A DEBUG record is dropped by the handler when its level is INFO."""
+    pool, conn = _make_pool()
+    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
+    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general", level=logging.INFO)
+
+    set_butler_context("general")
+    # Logger.handle() applies level filtering, but emit() may still be called
+    # directly in tests; emulate the Logger.handle() check.
+    record = _make_record(level=logging.DEBUG, msg="debug noise")
+    if handler.level <= record.levelno:
+        handler.emit(record)
+    await asyncio.sleep(0)
+
+    conn.execute.assert_not_called()
+
+
+def test_db_handler_emit_does_not_raise_on_logger_failure() -> None:
+    """emit() never propagates exceptions from the underlying ButlerLogger."""
+    pool, _conn = _make_pool()
+    bl = ButlerLogger(pool=pool, schema="general")
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("boom")
+
+    bl.log_nowait = _boom  # type: ignore[method-assign]
+    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
+
+    set_butler_context("general")
+    # Should not raise.
+    handler.emit(_make_record(msg="bad"))

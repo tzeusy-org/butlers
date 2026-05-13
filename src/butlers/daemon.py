@@ -303,6 +303,10 @@ class ButlerDaemon:
         self.blob_store: S3BlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
+        # Root-logger handler that mirrors application logs into butler_logs.
+        # Attached after the DB pool is ready (lifecycle step 6b) and detached
+        # in shutdown before the pool is closed.
+        self._db_log_handler: logging.Handler | None = None
 
     @property
     def _active_modules(self) -> list[Module]:

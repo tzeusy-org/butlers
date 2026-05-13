@@ -124,6 +124,22 @@ async def run_startup(daemon: Any) -> None:
         if pool is None:
             raise RuntimeError("Injected Database must already be connected")
 
+    # 6b. Attach the butler-scoped DB log handler so /api/butlers/{name}/logs
+    # surfaces live application logs.  The handler filters by butler context
+    # (set in step 1b via configure_logging), so multi-butler-in-process does
+    # not cross-contaminate.  Migrations in step 7 will populate butler_logs
+    # the first time the schema is provisioned; until then writes will fail
+    # quietly and be swallowed by ButlerLogger.
+    from butlers.core.butler_logging import ButlerDBLogHandler, ButlerLogger
+
+    db_log_schema = daemon.config.db_schema or daemon.config.name
+    butler_db_logger = ButlerLogger(pool=pool, schema=db_log_schema)
+    daemon._db_log_handler = ButlerDBLogHandler(
+        butler_logger=butler_db_logger,
+        butler_name=daemon.config.name,
+    )
+    logging.getLogger().addHandler(daemon._db_log_handler)
+
     # 7. Run core Alembic migrations
     db_url = daemon._build_db_url()
     migration_schema = daemon.config.db_schema or None
@@ -598,6 +614,16 @@ async def run_shutdown(daemon: Any) -> None:
     if daemon.blob_store is not None:
         await daemon.blob_store.close()
         daemon.blob_store = None
+
+    # 6c. Detach the butler DB log handler before tearing down the pool so
+    # in-flight fire-and-forget writes can finish and no new writes are
+    # scheduled against a closing pool.
+    if daemon._db_log_handler is not None:
+        try:
+            logging.getLogger().removeHandler(daemon._db_log_handler)
+        except Exception:
+            logger.exception("Error while detaching DB log handler")
+        daemon._db_log_handler = None
 
     # 7. Close audit DB pool (if separate from main DB)
     if daemon._audit_db is not None:
