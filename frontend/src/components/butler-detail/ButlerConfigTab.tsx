@@ -29,7 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { ErrorLine, KV, Panel } from "./atoms";
+import { ButlerPanelGrid, ErrorLine, KV, Panel } from "./atoms";
 import { useButler, useButlerConfig, useButlerModules } from "@/hooks/use-butlers";
 import type { ModuleStatus, ProcessFacts } from "@/api/types";
 
@@ -393,33 +393,41 @@ function MarkdownAccordionItem({
 
 function ConfigSkeleton() {
   return (
-    <div
-      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+    <ButlerPanelGrid
+      className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="config-skeleton"
     >
       {/* process span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-4 w-40" />
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-4 w-56" />
-      </div>
+      <Panel span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-56" />
+        </div>
+      </Panel>
       {/* schedule span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-3">
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-4 w-40" />
-      </div>
+      <Panel span={2} className="sm:col-span-2">
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-40" />
+        </div>
+      </Panel>
       {/* scopes span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-2">
-        <Skeleton className="h-5 w-24" />
-        <Skeleton className="h-5 w-32" />
-      </div>
+      <Panel span={2} className="sm:col-span-2">
+        <div className="space-y-2">
+          <Skeleton className="h-5 w-24" />
+          <Skeleton className="h-5 w-32" />
+        </div>
+      </Panel>
       {/* integrations span=2 */}
-      <div className="col-span-1 sm:col-span-2 border-r border-b border-border/60 p-4 space-y-2">
-        <Skeleton className="h-5 w-20" />
-        <Skeleton className="h-5 w-28" />
-      </div>
-    </div>
+      <Panel span={2} className="sm:col-span-2">
+        <div className="space-y-2">
+          <Skeleton className="h-5 w-20" />
+          <Skeleton className="h-5 w-28" />
+        </div>
+      </Panel>
+    </ButlerPanelGrid>
   );
 }
 
@@ -466,19 +474,19 @@ export default function ButlerConfigTab({ butlerName }: ButlerConfigTabProps) {
   return (
     <div data-testid="butler-config-tab">
       {/* 2x2 Panel grid */}
-      <div
-        className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 border-t border-l border-border/60"
+      <ButlerPanelGrid
+        className="sm:grid-cols-2 md:grid-cols-4"
         data-testid="config-panel-grid"
       >
         {/* Row 1: process (span=2) | schedule (span=2) */}
-        <Panel title="process" span={2} testId="panel-process">
+        <Panel title="process" span={2} className="sm:col-span-2" testId="panel-process">
           <ProcessPanelBody
             processFacts={processFacts}
             isLoading={butlerLoading}
           />
         </Panel>
 
-        <Panel title="schedule" span={2} testId="panel-schedule">
+        <Panel title="schedule" span={2} className="sm:col-span-2" testId="panel-schedule">
           <SchedulePanelBody
             schedules={schedules}
             isLoading={butlerLoading}
@@ -486,7 +494,7 @@ export default function ButlerConfigTab({ butlerName }: ButlerConfigTabProps) {
         </Panel>
 
         {/* Row 2: scopes and oauth (span=2) | integrations (span=2) */}
-        <Panel title="scopes and oauth" span={2} testId="panel-scopes">
+        <Panel title="scopes and oauth" span={2} className="sm:col-span-2" testId="panel-scopes">
           <ScopesOauthPanelBody
             modules={modules}
             isLoading={modulesLoading}
@@ -494,14 +502,14 @@ export default function ButlerConfigTab({ butlerName }: ButlerConfigTabProps) {
           />
         </Panel>
 
-        <Panel title="integrations" span={2} testId="panel-integrations">
+        <Panel title="integrations" span={2} className="sm:col-span-2" testId="panel-integrations">
           <IntegrationsPanelBody
             modules={modules}
             isLoading={modulesLoading}
             isError={modulesError}
           />
         </Panel>
-      </div>
+      </ButlerPanelGrid>
 
       {/* Accordion block — collapsed by default */}
       <div
