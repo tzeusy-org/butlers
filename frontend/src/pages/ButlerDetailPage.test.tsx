@@ -1770,11 +1770,10 @@ describe("Spec scenario 2 -- no Tier 2 hero block between Page header and Tabs b
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 3: sibling nav lists every butler from useButlers() with
-//             aria-current="page" on the active entry
+// Scenario 3: sibling nav is owned by the shell PageHeader, not the page body
 // ---------------------------------------------------------------------------
 
-describe("Spec scenario 3 -- sibling nav lists all butlers with aria-current on active", () => {
+describe("Spec scenario 3 -- sibling nav is not duplicated in page body", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorageMock.clear();
@@ -1791,33 +1790,27 @@ describe("Spec scenario 3 -- sibling nav lists all butlers with aria-current on 
     });
   });
 
-  it("sibling nav has role=navigation with aria-label Navigate to butler", () => {
+  it("does not render the sibling nav inside ButlerDetailPage itself", () => {
     const html = renderPage();
-    expect(html).toContain('role="navigation"');
-    expect(html).toContain('aria-label="Navigate to butler"');
+    expect(html).not.toContain('aria-label="Navigate to butler"');
   });
 
-  it("active butler entry has aria-current=page", () => {
+  it("does not render a duplicate active sibling nav link", () => {
     const html = renderPage();
-    // The active butler is "health"; SiblingButlerNav sets aria-current="page" on it.
-    expect(html).toContain('aria-current="page"');
+    expect(html).not.toContain('aria-current="page"');
   });
 
-  it("roster butler names appear in the sibling nav links", () => {
+  it("still renders the active butler identity in the detail header", () => {
     const html = renderPage();
-    // At minimum, the active butler and a sibling must be in the nav.
-    // Each name is rendered as text inside the Link.
-    expect(html).toContain(">health<");
-    expect(html).toContain(">general<");
+    expect(html).toContain(">health</h1>");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 4: sibling nav renders skeleton state when useButlerStatusBoard
-//             returns isLoading=true
+// Scenario 4: detail header loading state after shell-nav ownership move
 // ---------------------------------------------------------------------------
 
-describe("Spec scenario 4 -- sibling nav skeleton state on loading", () => {
+describe("Spec scenario 4 -- detail header skeleton state on loading", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorageMock.clear();
@@ -1833,27 +1826,23 @@ describe("Spec scenario 4 -- sibling nav skeleton state on loading", () => {
     });
   });
 
-  it("sibling nav renders aria-busy=true while data is loading", () => {
+  it("detail header renders aria-busy=true while data is loading", () => {
     const html = renderPage();
-    // SiblingButlerNav renders the nav with aria-busy="true" in skeleton state.
-    // ButlerDetailHeader also renders its own aria-busy="true" skeleton.
     expect(html).toContain('aria-busy="true"');
   });
 
-  it("no links render in the sibling nav while loading", () => {
+  it("no shell sibling nav links render inside the page body while loading", () => {
     const html = renderPage();
-    // In skeleton state, SiblingButlerNav renders Skeleton placeholders, not Link elements.
-    // Check that no /butlers/:name links appear in the nav.
-    // We use a targeted check: no aria-current="page" (which is on links).
+    expect(html).not.toContain('aria-label="Navigate to butler"');
     expect(html).not.toContain('aria-current="page"');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 5: paused or quarantined sibling butler is still navigable
+// Scenario 5: sibling nav availability is delegated to PageHeader
 // ---------------------------------------------------------------------------
 
-describe("Spec scenario 5 -- paused or quarantined sibling stays navigable", () => {
+describe("Spec scenario 5 -- sibling nav availability is delegated to PageHeader", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorageMock.clear();
@@ -1873,27 +1862,24 @@ describe("Spec scenario 5 -- paused or quarantined sibling stays navigable", () 
     });
   });
 
-  it("quarantined sibling butler link does NOT have aria-disabled", () => {
+  it("does not render disabled sibling nav state in the page body", () => {
     const html = renderPage();
-    // The sibling nav renders <Link> elements for all butlers.
-    // Quarantined or paused butlers must NOT be aria-disabled.
     expect(html).not.toContain('aria-disabled="true"');
     expect(html).not.toContain("aria-disabled");
   });
 
-  it("all sibling butler names are present as navigable links (including quarantined)", () => {
+  it("keeps degraded sibling rows out of the detail header body", () => {
     const html = renderPage();
-    // "health" and "finance" are degraded/quarantined but still appear.
-    expect(html).toContain(">health<");
-    expect(html).toContain(">finance<");
+    expect(html).not.toContain('aria-label="Navigate to butler"');
+    expect(html).not.toContain(">finance<");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 6: sibling nav uses NEUTRAL tokens -- no data-butler-hue on chrome
+// Scenario 6: detail body remains token-only after sibling nav moves to shell
 // ---------------------------------------------------------------------------
 
-describe("Spec scenario 6 -- sibling nav uses neutral tokens, no butler-hue on chrome", () => {
+describe("Spec scenario 6 -- detail body remains token-only after shell nav move", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorageMock.clear();
@@ -1908,21 +1894,15 @@ describe("Spec scenario 6 -- sibling nav uses neutral tokens, no butler-hue on c
     });
   });
 
-  it("no data-butler-hue attribute appears on sibling-nav link chrome elements", () => {
+  it("no data-butler-hue attribute appears in the page body", () => {
     const html = renderPage();
-    // Butler hue is ONLY allowed on ButlerMark (the icon).
-    // No other chrome element in the sibling nav may carry a butler-hue attribute.
     expect(html).not.toContain("data-butler-hue");
   });
 
-  it("no hex or oklch color literals appear in the sibling-nav section", () => {
+  it("no hex or oklch color literals appear in the rendered page body", () => {
     const html = renderPage();
-    // Token-only constraint: no raw hex (#rrggbb) or oklch(...) in rendered markup.
-    // The sibling nav section is bounded by the navigation role.
-    const navStart = html.indexOf('aria-label="Navigate to butler"');
-    const navSection = html.slice(navStart, navStart + 4000);
-    expect(navSection).not.toMatch(/#[0-9a-fA-F]{3,6}[^;]/);
-    expect(navSection).not.toContain("oklch(");
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}[^;]/);
+    expect(html).not.toContain("oklch(");
   });
 });
 
@@ -2313,119 +2293,24 @@ describe("Spec scenario 13 -- a11y/keyboard contract for sibling-nav (bu-ja5bt.6
     localStorageMock.clear();
   });
 
-  it("sibling-nav has role=navigation with aria-label='Navigate to butler'", () => {
+  it("does not render the shell-owned sibling-nav inside ButlerDetailPage", () => {
     renderPageLive();
-    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
-    expect(nav).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Navigate to butler" })).toBeNull();
   });
 
-  it("active entry has aria-current=page; sibling entries do not", () => {
-    renderPageLive();
-    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
-    const activeLink = nav.querySelector('[aria-current="page"]');
-    expect(activeLink).not.toBeNull();
-    // The active butler is "health"
-    expect(activeLink?.textContent?.toLowerCase()).toContain("health");
-    // Other entries must not have aria-current
-    const allLinks = Array.from(nav.querySelectorAll("a"));
-    const nonActiveLinks = allLinks.filter((a) => a.getAttribute("aria-current") !== "page");
-    for (const link of nonActiveLinks) {
-      expect(link.getAttribute("aria-current")).toBeNull();
-    }
-  });
-
-  it("each sibling-nav entry is a focusable interactive element (anchor)", () => {
-    renderPageLive();
-    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
-    const links = Array.from(nav.querySelectorAll("a"));
-    expect(links.length).toBeGreaterThan(0);
-    for (const link of links) {
-      expect(link.tagName.toLowerCase()).toBe("a");
-    }
-  });
-
-  it("each sibling-nav entry carries the focus-visible ring class token", () => {
-    renderPageLive();
-    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
-    const links = Array.from(nav.querySelectorAll("a"));
-    for (const link of links) {
-      expect(link.className).toContain("focus-visible:ring-ring");
-    }
-  });
-
-  it("Tab key moves focus sequentially through sibling-nav entries", async () => {
-    renderPageLive();
-    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
-    const navLinks = Array.from(nav.querySelectorAll("a"));
-    expect(navLinks.length).toBeGreaterThan(0);
-
-    const user = userEvent.setup();
-
-    // Tab forward until we reach the first sibling-nav link.
-    // We stop once we hit the nav region and focus is on a nav link.
-    let attempts = 0;
-    while (!nav.contains(document.activeElement) && attempts < 30) {
-      await user.tab();
-      attempts++;
-    }
-    expect(nav.contains(document.activeElement)).toBe(true);
-
-    // Verify we can tab through the rest of the nav entries in document order.
-    const startIdx = navLinks.indexOf(document.activeElement as HTMLAnchorElement);
-    expect(startIdx).toBeGreaterThanOrEqual(0);
-    for (let i = startIdx + 1; i < navLinks.length; i++) {
-      await user.tab();
-      expect(document.activeElement).toBe(navLinks[i]);
-    }
-  });
-
-  it("Enter key on a focused sibling-nav entry fires navigation to /butlers/:name", async () => {
-    renderPageLive();
-    const nav = screen.getByRole("navigation", { name: "Navigate to butler" });
-    const navLinks = Array.from(nav.querySelectorAll("a"));
-    expect(navLinks.length).toBeGreaterThan(0);
-
-    const user = userEvent.setup();
-
-    // Tab to the first sibling-nav entry.
-    let attempts = 0;
-    while (!nav.contains(document.activeElement) && attempts < 30) {
-      await user.tab();
-      attempts++;
-    }
-    const focusedLink = document.activeElement as HTMLAnchorElement;
-    expect(focusedLink.tagName.toLowerCase()).toBe("a");
-    // The link's href encodes the target butler path.
-    expect(focusedLink.getAttribute("href")).toMatch(/\/butlers\/[a-z]+/);
-
-    // Pressing Enter on an anchor dispatches a click. In MemoryRouter the href
-    // stays as-is (no real browser navigation), but the interaction is valid.
-    await user.keyboard("{Enter}");
-    // Focus should remain on the link after Enter (no unexpected focus loss).
-    expect(document.activeElement).toBe(focusedLink);
-  });
-
-  it("H1 appears before sibling-nav in document order (tab order: H1 first)", () => {
+  it("keeps the status-board identity before the tab rail", () => {
     const { container } = renderPageLive();
     const h1 = container.querySelector("h1");
-    const nav = container.querySelector('[role="navigation"][aria-label="Navigate to butler"]');
+    const tablist = container.querySelector('[role="tablist"]');
     expect(h1).not.toBeNull();
-    expect(nav).not.toBeNull();
-    // compareDocumentPosition: if h1 comes before nav, nav.compareDocumentPosition(h1)
-    // returns DOCUMENT_POSITION_PRECEDING (4).
-    const position = nav!.compareDocumentPosition(h1!);
+    expect(tablist).not.toBeNull();
+    const position = tablist!.compareDocumentPosition(h1!);
     expect(position & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
-  it("sibling-nav appears before tab rail in document order", () => {
-    const { container } = renderPageLive();
-    const nav = container.querySelector('[role="navigation"][aria-label="Navigate to butler"]');
-    const tablist = container.querySelector('[role="tablist"]');
-    expect(nav).not.toBeNull();
-    expect(tablist).not.toBeNull();
-    // tablist must come AFTER nav in document order.
-    const position = tablist!.compareDocumentPosition(nav!);
-    expect(position & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  it("does not introduce sibling-nav tab stops inside the page body", () => {
+    renderPageLive();
+    expect(document.querySelector('[aria-label="Navigate to butler"] a')).toBeNull();
   });
 });
 

@@ -15,6 +15,18 @@ vi.mock("@/hooks/useDarkMode", () => ({
   useDarkMode: vi.fn(),
 }));
 
+vi.mock("@/components/butler-detail/SiblingButlerNav", () => ({
+  SiblingButlerNav: ({ activeButlerName }: { activeButlerName: string }) => (
+    <nav
+      aria-label="Navigate to butler"
+      data-active-butler={activeButlerName}
+      data-testid="sibling-butler-nav"
+    >
+      sibling nav
+    </nav>
+  ),
+}));
+
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
@@ -183,5 +195,21 @@ describe("PageHeader", () => {
     expect(openListener).toHaveBeenCalledTimes(1);
 
     window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, openListener);
+  });
+
+  it("renders sibling butler navigation in the shell bar on butler detail routes", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/butlers/switchboard"]}>
+          <PageHeader />
+        </MemoryRouter>,
+      );
+    });
+
+    const nav = container.querySelector("[data-testid='sibling-butler-nav']");
+    expect(nav).not.toBeNull();
+    expect(nav?.getAttribute("data-active-butler")).toBe("switchboard");
+    expect(nav?.parentElement?.textContent).not.toContain("Home");
+    expect(nav?.parentElement?.textContent).not.toContain("Butlers");
   });
 });

@@ -1,5 +1,6 @@
 import { useLocation, Link } from 'react-router'
 import { Search } from 'lucide-react'
+import { SiblingButlerNav } from '@/components/butler-detail/SiblingButlerNav'
 import { Button } from '../ui/button'
 import { useBreadcrumbsControl } from '../ui/breadcrumbs-control'
 import { useDarkMode } from '../../hooks/useDarkMode'
@@ -37,6 +38,12 @@ function buildBreadcrumbs(pathname: string): Breadcrumb[] {
   return crumbs
 }
 
+function getButlerDetailName(pathname: string): string | null {
+  const match = pathname.match(/^\/butlers\/([^/]+)\/?$/)
+  if (!match) return null
+  return decodeURIComponent(match[1])
+}
+
 export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false }: PageHeaderProps) {
   const location = useLocation()
   const { theme, setTheme, resolvedTheme } = useDarkMode()
@@ -47,6 +54,9 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
   // AND this header has no explicit breadcrumbs prop of its own. If the header
   // is given its own breadcrumbs they should always render.
   const shouldHideBreadcrumbs = hideBreadcrumbs || (isSupplyingBreadcrumbs && breadcrumbs == null)
+  const activeButlerName = title == null && breadcrumbs == null
+    ? getButlerDetailName(location.pathname)
+    : null
 
   const toggleTheme = () => {
     if (theme === 'system') {
@@ -57,10 +67,14 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
   }
 
   return (
-    <div className="flex items-center justify-between w-full">
-      <div className="flex flex-col gap-0.5">
+    <div className="flex w-full min-w-0 items-center justify-between gap-3">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        {activeButlerName && (
+          <SiblingButlerNav activeButlerName={activeButlerName} />
+        )}
+
         {/* Breadcrumbs */}
-        {!shouldHideBreadcrumbs && (
+        {!activeButlerName && !shouldHideBreadcrumbs && (
           <nav className="flex items-center gap-1.5 text-xs text-muted-foreground">
             {crumbs.map((crumb, i) => (
               <span key={i} className="flex items-center gap-1.5">
@@ -81,7 +95,7 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
         {title && <h1 className="text-lg font-semibold">{title}</h1>}
       </div>
 
-      <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
         <Button
           variant="ghost"
           size="sm"

@@ -3,8 +3,7 @@
 // (bu-ja5bt.3)
 //
 // Composes:
-//   - <SiblingButlerNav>  — sibling-butler navigation strip (already built)
-//   - Butler identity     — name (H1) and description, hue via <ButlerMark>
+//   - Butler identity — name (H1) and description, hue via <ButlerMark>
 //
 // The header does NOT render ButlerDetailActions; the Page archetype provides
 // a separate `actions` slot for that. This component covers ONLY the header
@@ -12,7 +11,7 @@
 //
 // Contract:
 //   - props: butler (active butler name)
-//   - Skeleton state while data loads (mirrors SiblingButlerNav skeleton dims)
+//   - Skeleton state while data loads
 //   - Error state mirrors loaded dimensions to avoid layout shift
 //   - Token-only chrome: no hex, oklch, rgb literals, no inline style
 //   - Butler hue appears ONLY on <ButlerMark> — never on other chrome elements
@@ -26,7 +25,6 @@
 import { ButlerMark } from "@/components/ui/ButlerMark"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
-import { SiblingButlerNav } from "@/components/butler-detail/SiblingButlerNav"
 
 // ---------------------------------------------------------------------------
 // Props
@@ -44,12 +42,13 @@ export interface ButlerDetailHeaderProps {
 /**
  * Header-slot primitive for the butler detail page.
  *
- * Renders the sibling-butler navigation strip and the active butler's identity
- * block (name + description via ButlerMark hue scope). Intended to be passed
- * as the `header` prop on `<Page archetype="status-board">`.
+ * Renders the active butler identity block (name + description via ButlerMark
+ * hue scope). Intended to be passed as the `header` prop on
+ * `<Page archetype="status-board">`.
  *
- * The actions slot (ButlerDetailActions) is provided separately by the Page
- * shell; this component does not render it.
+ * The sibling-butler navigation now lives in the shell PageHeader beside the
+ * search/theme controls. The actions slot (ButlerDetailActions) is provided
+ * separately by the Page shell; this component does not render it.
  *
  * @example
  *   <ButlerDetailHeader butler="relationship" />
@@ -63,14 +62,14 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
   const description = activeRow?.description ?? null
 
   // ---------------------------------------------------------------------------
-  // Skeleton state — mirrors SiblingButlerNav skeleton dimensions (py-0.5, h-6)
+  // Skeleton state
   // ---------------------------------------------------------------------------
 
   if (aggregates.isLoading) {
     return (
       <div
         data-testid="butler-detail-header"
-        className="flex flex-col gap-2 border-b border-border px-7 pb-4"
+        className="flex flex-col gap-2 border-b border-border px-7 py-3"
         aria-busy="true"
       >
         {/* Identity skeleton — mirrors loaded identity block height */}
@@ -78,12 +77,6 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
         <div className="flex items-center gap-2 py-0.5">
           <Skeleton className="h-6 w-6 shrink-0 rounded" />
           <Skeleton className="h-8 w-32 rounded-sm" />
-        </div>
-        {/* Nav skeleton — matches SiblingButlerNav skeleton pattern */}
-        <div className="flex items-center gap-0.5 overflow-x-auto scroll-smooth scrollbar-none py-0.5">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-6 w-20 shrink-0 rounded-sm" />
-          ))}
         </div>
       </div>
     )
@@ -97,19 +90,13 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
     return (
       <div
         data-testid="butler-detail-header"
-        className="flex flex-col gap-2 border-b border-border px-7 pb-4"
+        className="flex flex-col gap-2 border-b border-border px-7 py-3"
       >
         {/* Identity block preserved at loaded dimensions */}
         <div className="flex items-center gap-2 py-0.5">
           {/* Butler hue appears ONLY on ButlerMark */}
           <ButlerMark name={butler} size={24} tone="fill" />
           <h1 className="text-2xl font-bold tracking-tight capitalize">{butler}</h1>
-        </div>
-        {/* Nav skeleton placeholders maintain strip height */}
-        <div className="flex items-center gap-0.5 overflow-x-auto scroll-smooth scrollbar-none py-0.5">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-6 w-20 shrink-0 rounded-sm opacity-50" />
-          ))}
         </div>
       </div>
     )
@@ -122,7 +109,7 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
   return (
     <div
       data-testid="butler-detail-header"
-      className="flex flex-col gap-2 border-b border-border px-7 pb-4"
+      className="flex flex-col gap-2 border-b border-border px-7 py-3"
     >
       {/* Identity block: butler hue ONLY on ButlerMark */}
       {/* min-w-0 allows flex children to shrink below intrinsic width, enabling truncation */}
@@ -137,8 +124,6 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
         ) : null}
       </div>
 
-      {/* Sibling navigation strip (Tier 1 chrome only) */}
-      <SiblingButlerNav activeButlerName={butler} />
     </div>
   )
 }

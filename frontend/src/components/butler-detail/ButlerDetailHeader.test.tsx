@@ -5,9 +5,9 @@
 //
 // Spec scenarios covered (from MODIFIED + ADDED requirements):
 //
-//  Scenario A: Header slot is the sibling-butler nav and detail header
-//    A1. ButlerDetailHeader renders and includes SiblingButlerNav (data-testid check)
-//    A2. ButlerDetailHeader is wrapped in a container with data-testid="butler-detail-header"
+//  Scenario A: Header slot is the detail identity header
+//    A1. ButlerDetailHeader is wrapped in a container with data-testid="butler-detail-header"
+//    A2. SiblingButlerNav is not rendered here; it belongs to the shell PageHeader
 //
 //  Scenario B: Butler identity
 //    B1. Active butler name appears as an H1
@@ -17,22 +17,20 @@
 //  Scenario C: Skeleton state while loading or errored
 //    C1. Skeleton placeholders while data loads; no H1 text
 //    C2. aria-busy is set during loading
-//    C3. Error state renders ButlerMark + H1 with name but nav shows skeletons
+//    C3. Error state renders ButlerMark + H1 with name
 //    C4. Error + non-empty rows falls back to loaded state (stale data scenario)
 //
 //  Scenario D: Token policy (butler hue confined to ButlerMark)
 //    D1. No inline color/background-color style on the outer header wrapper
 //    D2. No oklch or hex color literals in rendered classNames of the wrapper
 //
-//  Scenario E: SiblingButlerNav composition
-//    E1. SiblingButlerNav receives the correct activeButlerName prop
-//    E2. nav[role=navigation] is present in the DOM (not duplicated by this component)
+//  Scenario E: SiblingButlerNav ownership
+//    E1. This component does not render navigation landmarks
 //
 // ---------------------------------------------------------------------------
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, render, screen } from "@testing-library/react"
-import { MemoryRouter } from "react-router"
 
 // ---------------------------------------------------------------------------
 // Mock hooks and sub-components BEFORE importing the component under test
@@ -41,28 +39,6 @@ import { MemoryRouter } from "react-router"
 vi.mock("@/hooks/use-butler-status-board", () => ({
   useButlerStatusBoard: vi.fn(),
 }))
-
-// Mock SiblingButlerNav so we can verify it receives the right props without
-// pulling in the full status board stack again.
-vi.mock("@/components/butler-detail/SiblingButlerNav", () => ({
-  SiblingButlerNav: ({ activeButlerName }: { activeButlerName: string }) => (
-    <nav
-      role="navigation"
-      aria-label="Navigate to butler"
-      data-testid="sibling-butler-nav"
-      data-active-butler={activeButlerName}
-    />
-  ),
-}))
-
-// Mock react-router useSearchParams (required by SiblingButlerNav but mock above overrides it)
-vi.mock("react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react-router")>()
-  return {
-    ...actual,
-    useSearchParams: vi.fn(() => [new URLSearchParams(), vi.fn()]),
-  }
-})
 
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board"
@@ -120,11 +96,7 @@ function makeRow(
 // ---------------------------------------------------------------------------
 
 function renderHeader(butlerName = "relationship") {
-  return render(
-    <MemoryRouter>
-      <ButlerDetailHeader butler={butlerName} />
-    </MemoryRouter>,
-  )
+  return render(<ButlerDetailHeader butler={butlerName} />)
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +130,9 @@ describe("Scenario A: Header slot presence and structure", () => {
     expect(header).toBeDefined()
   })
 
-  it("A2: SiblingButlerNav is rendered inside the header", () => {
+  it("A2: does not render SiblingButlerNav inside the detail header", () => {
     renderHeader("relationship")
-    const nav = screen.getByTestId("sibling-butler-nav")
-    expect(nav).toBeDefined()
+    expect(screen.queryByRole("navigation")).toBeNull()
   })
 })
 
@@ -244,8 +215,7 @@ describe("Scenario C: Skeleton and error states", () => {
     // H1 should show the butler name even in error state
     const h1 = screen.getByRole("heading", { level: 1 })
     expect(h1.textContent?.toLowerCase()).toContain("finance")
-    // SiblingButlerNav mock is not rendered in error state (skeleton is used instead)
-    // The nav from SiblingButlerNav mock would have data-testid="sibling-butler-nav"
+    // SiblingButlerNav belongs to PageHeader, not this identity header.
     expect(screen.queryByTestId("sibling-butler-nav")).toBeNull()
   })
 
@@ -261,10 +231,10 @@ describe("Scenario C: Skeleton and error states", () => {
 
     renderHeader("finance")
 
-    // Loaded state: H1 and SiblingButlerNav both present
+    // Loaded state: H1 remains present; shell PageHeader owns sibling nav.
     const h1 = screen.getByRole("heading", { level: 1 })
     expect(h1).toBeDefined()
-    expect(screen.getByTestId("sibling-butler-nav")).toBeDefined()
+    expect(screen.queryByRole("navigation")).toBeNull()
   })
 })
 
@@ -297,23 +267,21 @@ describe("Scenario D: Token policy — butler hue confined to ButlerMark", () =>
 })
 
 // ---------------------------------------------------------------------------
-// Scenario E: SiblingButlerNav composition
+// Scenario E: SiblingButlerNav ownership
 // ---------------------------------------------------------------------------
 
-describe("Scenario E: SiblingButlerNav composition", () => {
-  it("E1: SiblingButlerNav receives the correct activeButlerName prop", () => {
+describe("Scenario E: SiblingButlerNav ownership", () => {
+  it("E1: no navigation landmark is rendered by the detail header", () => {
     renderHeader("health")
-    const nav = screen.getByTestId("sibling-butler-nav")
-    expect(nav.getAttribute("data-active-butler")).toBe("health")
+    expect(screen.queryByRole("navigation")).toBeNull()
   })
 
-  it("E2: exactly one navigation landmark is rendered", () => {
+  it("E2: sibling nav test id is absent in loaded state", () => {
     renderHeader("relationship")
-    const navs = screen.getAllByRole("navigation")
-    expect(navs).toHaveLength(1)
+    expect(screen.queryByTestId("sibling-butler-nav")).toBeNull()
   })
 
-  it("E3: SiblingButlerNav is absent during loading (skeleton rendered instead)", () => {
+  it("E3: SiblingButlerNav is absent during loading", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       rows: [],
       aggregates: makeAggregates({ isLoading: true }),
