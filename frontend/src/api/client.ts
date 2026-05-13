@@ -4024,7 +4024,7 @@ export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
  * elaboration. The response is per-owner cached for 5 minutes server-side.
  */
 export function getDashboardBriefing(): Promise<Briefing> {
-  return apiFetch<Briefing>("/dashboard/briefing");
+  return apiFetch<ApiResponse<Briefing>>("/dashboard/briefing").then((response) => response.data);
 }
 
 // ---------------------------------------------------------------------------

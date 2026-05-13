@@ -93,6 +93,9 @@ class DiscretionDispatcher:
     timeout_s:
         Per-call wall-clock timeout in seconds.  Passed to
         ``asyncio.wait_for``.
+    complexity_tier:
+        Catalog complexity tier used for model resolution. Defaults to the
+        discretion tier for existing connector discretion callers.
     """
 
     def __init__(
@@ -102,11 +105,13 @@ class DiscretionDispatcher:
         butler_name: str = "__discretion__",
         max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
+        complexity_tier: Complexity = Complexity.DISCRETION,
     ) -> None:
         self._pool = pool
         self._butler_name = butler_name
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._timeout_s = timeout_s
+        self._complexity_tier = complexity_tier
         self._adapter_cache: dict[str, RuntimeAdapter] = {}
         self._adapter_cache_key: dict[str, str] = {}
 
@@ -183,11 +188,11 @@ class DiscretionDispatcher:
         asyncio.TimeoutError
             If the adapter invocation exceeds ``timeout_s``.
         """
-        catalog_result = await resolve_model(self._pool, self._butler_name, Complexity.DISCRETION)
+        catalog_result = await resolve_model(self._pool, self._butler_name, self._complexity_tier)
         if catalog_result is None:
             raise RuntimeError(
-                "No discretion model configured in public.model_catalog. "
-                "Add an enabled entry with complexity_tier='discretion'."
+                f"No {self._complexity_tier} model configured in public.model_catalog. "
+                f"Add an enabled entry with complexity_tier={self._complexity_tier.value!r}."
             )
 
         runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = catalog_result

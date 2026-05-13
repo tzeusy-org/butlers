@@ -12,7 +12,7 @@ The headline must be deterministic. The elaboration may be LLM-written. The page
 
 - Define the wire shape of `GET /api/dashboard/briefing` and the `Briefing` object the frontend renders.
 - Define `classify(state) -> state_class` and the deterministic headline table `headline_for(state_class) -> body`.
-- Define the LLM prompt, model parameters, and timeout for the elaboration sentence.
+- Define the LLM prompt and local runtime dispatch path for the elaboration sentence.
 - Define the fallback contract: what the endpoint returns when the LLM is unavailable, slow, or returns empty.
 - Define the per-owner caching contract: 5-minute TTL, cache key, and invalidation rules.
 - Define the post-generation voice lint that gates LLM responses against the dashboard voice rules.
@@ -41,7 +41,7 @@ The Briefing has two parts: a templated headline (greeting + body) and an LLM-el
 | `degraded-quiet`  | zero attention items but one or more butlers in `degraded` or `error` |
 | `quiet`           | zero attention items, all butlers `healthy`           |
 
-`time_of_day` is computed from `state.now.hour`:
+`state.now` is computed in the owner's configured general timezone before classification. `time_of_day` is computed from that owner-local `state.now.hour`:
 
 - `late-night` if hour < 5
 - `morning` if 5 <= hour < 12
@@ -63,16 +63,11 @@ Singular form fires when the count or item is exactly 1; plural form otherwise. 
 
 `greet` is `"Good {time_of_day}."`. The frontend renders `greet` muted and `body` in foreground, on two lines under the Display headline.
 
-### D2: LLM elaboration with a pinned prompt and a hard fallback
+### D2: Local-runtime LLM elaboration with a pinned prompt and a hard fallback
 
-The elaboration is one to three sentences, max 50 words, written by Claude Haiku 4.5. The prompt is pinned and versioned. Voice rules in the prompt mirror the dashboard voice rules in `about/heart-and-soul/design-language.md`: past tense for events, present tense for state, no future tense, no exclamation marks, no first person, avoid "your" when "the" works, no hedging adverbs.
+The elaboration is one to three sentences, max 50 words, written by the local catalog-backed runtime adapter path. The prompt is pinned and versioned. Voice rules in the prompt mirror the dashboard voice rules in `about/heart-and-soul/design-language.md`: past tense for events, present tense for state, no future tense, no exclamation marks, no first person, avoid "your" when "the" works, no hedging adverbs.
 
-Model parameters:
-
-- model: `claude-haiku-4-5`
-- max_tokens: 120
-- temperature: 0.4
-- timeout: 4.0 seconds
+The endpoint invokes the existing no-tool, single-turn runtime dispatcher used by lightweight classification paths. It resolves runtime type, model id, extra runtime args, quota, and timeout from `public.model_catalog` using the synthetic butler identity `__dashboard_briefing__` and the `trivial` complexity tier. In a normal dev stack this means a local Codex runtime session, not a direct Anthropic API call. The briefing path does not receive MCP tools and does not create a full butler task session; it is API-side prose generation with the same adapter and catalog controls as the rest of the system.
 
 On any failure (timeout, exception, empty response, content rejected by the voice lint in D5), `elaborate_fallback(state, state_class)` returns a templated paragraph from `src/butlers/dashboard/briefing/fallback.py`. The Briefing object's `source` field reflects which path produced it:
 
@@ -122,7 +117,7 @@ If the classification function raises (a malformed state row, missing column, sc
 ## Risks / Trade-offs
 
 - **R1: Classification simplicity.** Five classes is coarse. A page with two `medium`-severity items and a degraded butler buckets as `mild` even though the page should arguably read as `degraded-quiet`. Mitigation: revisit the table after one week of observation; add a metric for class distribution.
-- **R2: Cache coherency on first daily access.** The first owner visit of the day pays the LLM cost (about 4 seconds P95). Subsequent visits hit the cache. Mitigation: a `cron`-driven warm-up at the start of the owner's morning window pre-populates the cache. Tracked as a follow-up, not part of this change.
+- **R2: Cache coherency on first daily access.** The first owner visit of the day pays the configured local runtime cost. Subsequent visits hit the cache. Mitigation: a `cron`-driven warm-up at the start of the owner's morning window pre-populates the cache. Tracked as a follow-up, not part of this change.
 - **R3: Prompt drift.** The voice rules in the prompt may not match the doctrine after a doctrine update. Mitigation: D5's post-generation lint catches the most egregious drift; the prompt module references the design-language path so a CI check can verify the cross-link is live.
 - **R4: LLM hallucinated facts in the elaboration.** The prompt injects a state JSON the LLM is supposed to draw from, but the model might invent. Mitigation: the prompt forbids future tense and requires named items to appear in the input state; a follow-up lint stage MAY verify any quoted item title appears in the input state JSON.
 - **R5: Cache overspecification.** Cache key on owner contact id only. If a future change introduces multi-viewer dashboards, the cache key needs to expand. Documenting the assumption here.

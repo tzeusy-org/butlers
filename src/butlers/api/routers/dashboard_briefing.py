@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from prometheus_client import Counter
@@ -43,6 +44,7 @@ from butlers.api.briefing.lint import first_violation, voice_lint_passes
 from butlers.api.briefing.prompts import elaborate_llm
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
+from butlers.core.general_settings import load_general_settings
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +213,21 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
     return state
 
 
+async def _owner_local_now(pool: Any, *, utc_now: datetime | None = None) -> datetime:
+    """Return the current wall-clock time in the owner's configured timezone."""
+    current = utc_now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+
+    try:
+        settings = await load_general_settings(pool)
+        timezone_name = str(settings.get("timezone") or "UTC")
+        return current.astimezone(ZoneInfo(timezone_name))
+    except Exception as exc:
+        logger.warning("Could not resolve owner timezone for dashboard briefing: %s", exc)
+        return current.astimezone(UTC)
+
+
 # ---------------------------------------------------------------------------
 # Briefing composition
 # ---------------------------------------------------------------------------
@@ -220,6 +237,7 @@ async def _compose_briefing(
     state: dict,
     cache: BriefingCache,
     owner_id: Any,
+    pool: Any,
 ) -> dict:
     """Compose a fresh Briefing dict and populate the cache.
 
@@ -268,7 +286,7 @@ async def _compose_briefing(
     source = "fallback"
 
     try:
-        llm_text = await elaborate_llm(state, state_class)
+        llm_text = await elaborate_llm(pool, state, state_class)
         if llm_text:
             if voice_lint_passes(llm_text):
                 elaboration = llm_text
@@ -327,6 +345,10 @@ async def get_dashboard_briefing(
         sw_pool = db.pool("switchboard")
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    try:
+        settings_pool = db.credential_shared_pool()
+    except KeyError:
+        settings_pool = sw_pool
 
     # Owner-only gate (HTTP 403 for non-owner, passes 401 from middleware).
     owner_id = await _assert_owner_contact(sw_pool)
@@ -338,8 +360,8 @@ async def get_dashboard_briefing(
         return ApiResponse(data=Briefing(**cached))
 
     # Compose a fresh briefing.
-    now = datetime.now(UTC)
+    now = await _owner_local_now(settings_pool)
     state = await _fetch_dashboard_state(sw_pool, now)
 
-    briefing_dict = await _compose_briefing(state, cache, owner_id)
+    briefing_dict = await _compose_briefing(state, cache, owner_id, sw_pool)
     return ApiResponse(data=Briefing(**briefing_dict))

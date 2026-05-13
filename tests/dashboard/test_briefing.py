@@ -16,6 +16,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -26,8 +27,10 @@ from butlers.api.briefing.cache import BriefingCache
 from butlers.api.briefing.classify import classify, headline_for, time_of_day
 from butlers.api.briefing.fallback import elaborate_fallback
 from butlers.api.briefing.lint import voice_lint_passes
+from butlers.api.briefing.prompts import elaborate_llm
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.dashboard_briefing import _get_db_manager, get_cache
+from butlers.api.routers.dashboard_briefing import _get_db_manager, _owner_local_now, get_cache
+from butlers.core.model_routing import Complexity
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +53,7 @@ def _make_app(pool: AsyncMock, cache: BriefingCache | None = None) -> object:
     """Build a FastAPI test app with the briefing DB and cache overridden."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = pool
 
     app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -230,6 +234,19 @@ class TestTimeOfDay:
     def test_buckets(self, hour, expected):
         assert time_of_day(hour) == expected
 
+    async def test_owner_local_now_uses_general_settings_timezone(self):
+        pool = _make_owner_pool()
+        utc_now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+
+        with patch(
+            "butlers.api.routers.dashboard_briefing.load_general_settings",
+            new=AsyncMock(return_value={"timezone": "Asia/Singapore"}),
+        ):
+            local_now = await _owner_local_now(pool, utc_now=utc_now)
+
+        assert local_now.hour == 23
+        assert local_now.tzinfo is not None
+
 
 # ---------------------------------------------------------------------------
 # Voice lint
@@ -305,6 +322,31 @@ class TestElaborateFallback:
 
 
 class TestLlmHappyPath:
+    async def test_elaboration_uses_local_runtime_dispatcher(self):
+        """elaborate_llm uses the catalog-backed local runtime dispatcher."""
+        pool = _make_owner_pool()
+
+        dispatcher = MagicMock()
+        dispatcher.call = AsyncMock(return_value="The local runtime wrote this paragraph.")
+
+        with patch(
+            "butlers.api.briefing.prompts.DiscretionDispatcher",
+            return_value=dispatcher,
+        ) as dispatcher_cls:
+            text = await elaborate_llm(
+                pool,
+                {"attention_items": [], "butler_statuses": []},
+                "quiet",
+            )
+
+        assert text == "The local runtime wrote this paragraph."
+        dispatcher_cls.assert_called_once_with(
+            pool,
+            butler_name="__dashboard_briefing__",
+            complexity_tier=Complexity.TRIVIAL,
+        )
+        dispatcher.call.assert_awaited_once()
+
     async def test_llm_happy_path_returns_llm_source(self):
         """When LLM returns a voice-clean response, source is 'llm'."""
         pool = _make_owner_pool()
@@ -405,7 +447,7 @@ class TestCacheTTL:
 
         call_count = 0
 
-        async def _llm_stub(state, state_class):
+        async def _llm_stub(pool, state, state_class):
             nonlocal call_count
             call_count += 1
             return "The system is running without issues."
@@ -435,7 +477,7 @@ class TestCacheTTL:
 
         call_count = 0
 
-        async def _llm_stub(state, state_class):
+        async def _llm_stub(pool, state, state_class):
             nonlocal call_count
             call_count += 1
             return "The system is running without issues."

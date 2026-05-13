@@ -6,7 +6,7 @@ Provides:
 - elaborate_fallback(state, state_class) -> text
 
 Additional symbols used by the router (imported directly from submodules):
-- butlers.api.briefing.prompts.elaborate_llm(state, state_class) -> str | None
+- butlers.api.briefing.prompts.elaborate_llm(pool, state, state_class) -> str | None
 - butlers.api.briefing.lint.voice_lint_passes(text) -> bool
 - butlers.api.briefing.cache.BriefingCache (per-owner LRU+TTL)
 

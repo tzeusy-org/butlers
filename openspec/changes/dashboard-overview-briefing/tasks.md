@@ -7,7 +7,7 @@
 
 - [x] 2.1 Create `src/butlers/api/routers/dashboard_briefing.py` exposing `GET /api/dashboard/briefing`. Register it in `src/butlers/api/app.py` alongside the other dashboard routers (follow the `system_router` pattern). Distinct from `src/butlers/jobs/briefing.py`, which is the cross-butler daily aggregation job.
 - [x] 2.2 Create `src/butlers/api/briefing/__init__.py`, `classify.py`, `prompts.py`, `fallback.py`. Implement `classify(state) -> state_class` and `headline_for(state_class, n)` per the tables in `design.md`. The classifier reads from existing tables: `*.notifications`, `*.issues`, `*.sessions`, `core.butlers`.
-- [x] 2.3 Implement the LLM call against Claude Haiku 4.5 with the pinned prompt, `max_tokens=120`, `temperature=0.4`, `timeout=4.0` seconds.
+- [x] 2.3 Implement the LLM call against the local catalog-backed runtime adapter path with the pinned prompt and model/runtime/timeout resolved from `public.model_catalog` at the `trivial` tier.
 - [x] 2.4 Implement `elaborate_fallback(state, state_class)`. Cover all five `state_class` values; verify each fallback string complies with the voice rules.
 - [x] 2.5 Implement the post-generation voice lint (D5). Reject responses containing banned tokens; emit `briefing.elaboration.rejected` and `briefing.elaboration.fallback` metrics.
 - [x] 2.6 Implement the per-owner LRU+TTL cache. Cache key is owner contact id; TTL 5 minutes.
@@ -33,7 +33,7 @@
 
 - [ ] 4.1 Run `openspec validate dashboard-overview-briefing`.
 - [ ] 4.2 Run `openspec verify dashboard-overview-briefing` after backend implementation lands.
-- [ ] 4.3 Manually verify the endpoint on a running instance: each `state_class` produces the right headline; LLM happy path takes under 4 seconds; fallback path produces a coherent paragraph; cache hit preserves `generated_at`.
+- [ ] 4.3 Manually verify the endpoint on a running instance: each `state_class` produces the right headline; local-runtime happy path returns `source="llm"` within the configured timeout; fallback path produces a coherent paragraph; cache hit preserves `generated_at`.
 
 ## 5. Follow-Up
 

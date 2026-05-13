@@ -11,7 +11,7 @@ To support that opening without coupling the page to LLM latency, the dashboard 
 - **New Capability**: `dashboard-briefing` -- the dashboard SHALL expose `GET /api/dashboard/briefing` returning a `Briefing` object: a templated greeting, a templated headline that classifies the current state, an LLM elaboration paragraph (with deterministic fallback), and a `source` label the frontend renders in a status pill.
 - The endpoint is per-owner cached for 5 minutes. The briefing sets a mood, not a real-time status.
 - Classification is deterministic and lives in `src/butlers/dashboard/briefing/classify.py`. Five state classes: `urgent`, `busy`, `mild`, `degraded-quiet`, `quiet`.
-- LLM elaboration uses Claude Haiku 4.5 with a pinned prompt (max 50 words, past tense for events, present tense for state, no future tense, no first person, no hedging adverbs). A 4-second timeout falls back to a templated paragraph.
+- LLM elaboration uses the local catalog-backed runtime adapter path with a pinned prompt (max 50 words, past tense for events, present tense for state, no future tense, no first person, no hedging adverbs). Runtime/model/timeout come from `public.model_catalog` at the `trivial` tier for synthetic butler `__dashboard_briefing__`; runtime failure falls back to a templated paragraph.
 - A post-generation voice lint rejects responses that contain banned tokens (em-dashes, exclamation marks, first-person pronouns, future-tense markers, hedging adverbs). Rejected responses fall through to the templated path.
 - The endpoint does not modify or replace `dashboard-overview`. The page restructure that consumes the briefing is tracked separately.
 

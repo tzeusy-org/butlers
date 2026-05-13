@@ -63,7 +63,7 @@ The endpoint SHALL classify the current dashboard state into one of five `state_
 
 ### Requirement: Time-of-Day Greeting
 
-The endpoint SHALL compute `time_of_day` from `state.now.hour` and return a templated greeting.
+The endpoint SHALL compute `state.now` in the owner's configured general timezone, compute `time_of_day` from that owner-local `state.now.hour`, and return a templated greeting.
 
 #### Scenario: Time-of-day buckets
 
@@ -84,18 +84,18 @@ The endpoint SHALL compute `time_of_day` from `state.now.hour` and return a temp
 
 ### Requirement: LLM Elaboration
 
-The endpoint SHALL call Claude Haiku 4.5 with a pinned prompt to produce a one-to-three sentence elaboration paragraph. The prompt MUST encode the dashboard voice rules.
+The endpoint SHALL call the local catalog-backed runtime adapter path with a pinned prompt to produce a one-to-three sentence elaboration paragraph. The prompt MUST encode the dashboard voice rules. The runtime call MUST use the synthetic butler identity `__dashboard_briefing__`, resolve runtime/model/args/timeout from `public.model_catalog` at the `trivial` complexity tier, and run without MCP tools.
 
 #### Scenario: LLM happy path
 
-- **WHEN** the LLM call returns within 4 seconds
+- **WHEN** the local runtime call returns within its configured timeout
 - **AND** the response passes the post-generation voice lint
 - **THEN** `elaboration` is set to the LLM response
 - **AND** `source` is `"llm"`
 
 #### Scenario: LLM timeout
 
-- **WHEN** the LLM call exceeds 4 seconds
+- **WHEN** the local runtime call exceeds its configured timeout
 - **THEN** the endpoint cancels the call
 - **AND** `elaboration` is set to the templated fallback for the computed `state_class`
 - **AND** `source` is `"fallback"`

@@ -1,7 +1,4 @@
-"""Pinned LLM prompt for the dashboard briefing elaboration.
-
-Model: claude-haiku-4-5
-Parameters: max_tokens=120, temperature=0.4, timeout=4.0s
+"""Pinned local-runtime prompt for the dashboard briefing elaboration.
 
 The prompt encodes the dashboard voice rules from
 about/heart-and-soul/design-language.md:
@@ -20,24 +17,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+from typing import Any
 
-import httpx
+from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core.model_routing import Complexity
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Model configuration (pinned per spec D2)
+# Runtime configuration
 # ---------------------------------------------------------------------------
 
-ELABORATION_MODEL = "claude-haiku-4-5"
-ELABORATION_MAX_TOKENS = 120
-ELABORATION_TEMPERATURE = 0.4
-ELABORATION_TIMEOUT_S = 4.0
-
-# Anthropic API endpoint
-_ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-_ANTHROPIC_API_VERSION = "2023-06-01"
+BRIEFING_RUNTIME_BUTLER_NAME = "__dashboard_briefing__"
 
 # ---------------------------------------------------------------------------
 # Pinned system prompt
@@ -79,60 +70,30 @@ def _build_user_message(state: dict, state_class: str) -> str:
     )
 
 
-async def elaborate_llm(state: dict, state_class: str) -> str | None:
-    """Call claude-haiku-4-5 and return the elaboration paragraph or None.
+async def elaborate_llm(pool: Any, state: dict, state_class: str) -> str | None:
+    """Call the catalog-backed local runtime and return the paragraph or None.
 
     Returns:
-        The model response string if the call succeeded within the timeout
-        and the response is non-empty.
-        None on any failure (timeout, HTTP error, empty response, API error).
+        The model response string if the local runtime call succeeded and the
+        response is non-empty. None on any failure so the caller can use the
+        deterministic fallback path.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        logger.warning("ANTHROPIC_API_KEY is not set; LLM elaboration unavailable")
-        return None
-
-    payload = {
-        "model": ELABORATION_MODEL,
-        "max_tokens": ELABORATION_MAX_TOKENS,
-        "temperature": ELABORATION_TEMPERATURE,
-        "system": _SYSTEM_PROMPT,
-        "messages": [
-            {"role": "user", "content": _build_user_message(state, state_class)},
-        ],
-    }
-
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": _ANTHROPIC_API_VERSION,
-        "content-type": "application/json",
-    }
-
+    dispatcher = DiscretionDispatcher(
+        pool,
+        butler_name=BRIEFING_RUNTIME_BUTLER_NAME,
+        complexity_tier=Complexity.TRIVIAL,
+    )
     try:
-        async with httpx.AsyncClient(timeout=ELABORATION_TIMEOUT_S) as client:
-            response = await client.post(_ANTHROPIC_API_URL, json=payload, headers=headers)
-        response.raise_for_status()
-    except httpx.TimeoutException:
-        logger.info("LLM elaboration timed out after %.1fs", ELABORATION_TIMEOUT_S)
-        return None
-    except httpx.HTTPStatusError as exc:
-        logger.warning("LLM elaboration HTTP error: %s", exc.response.status_code)
-        return None
-    except Exception as exc:
-        logger.warning("LLM elaboration failed: %s", exc)
-        return None
-
-    try:
-        body = response.json()
-        content_blocks = body.get("content", [])
-        if not content_blocks:
-            logger.info("LLM elaboration returned empty content blocks")
-            return None
-        text = content_blocks[0].get("text", "").strip()
+        text = (
+            await dispatcher.call(
+                _build_user_message(state, state_class),
+                system_prompt=_SYSTEM_PROMPT,
+            )
+        ).strip()
         if not text:
             logger.info("LLM elaboration returned empty text")
             return None
         return text
     except Exception as exc:
-        logger.warning("LLM elaboration response parse error: %s", exc)
+        logger.warning("Local runtime elaboration failed: %s", exc)
         return None
