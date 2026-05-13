@@ -141,6 +141,15 @@ Chronicler projection adapters SHALL NOT invoke an LLM on a per-event basis.
 - **AND** the call SHALL be a single LLM invocation, not a fan-out over
   events
 
+#### Scenario: Day-close prose stays human-readable
+
+- **WHEN** the scheduled day-close interpretation sends a human-facing summary
+- **THEN** timestamps SHALL be described in the owner's configured timezone
+- **AND** raw source references, connector row IDs, truncation flags, and other
+  machine-only provenance fields SHALL NOT be printed by default
+- **AND** machine provenance SHALL remain available to the cache/staleness path
+  from tool-call results rather than depending on prose citations
+
 ### Requirement: API Surface Distinct from /api/timeline
 
 Chronicler SHALL expose its read and correction API under `/api/chronicler/*`.

@@ -37,7 +37,9 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from butlers.chronicler.interpretation import TierTwoInput, TierTwoPath
 
@@ -151,6 +153,7 @@ def _serialise_row(
     row: dict[str, Any],
     *,
     keep_fields: tuple[str, ...],
+    display_timezone: str | None = None,
 ) -> dict[str, Any]:
     """Project a storage row to its bundle representation.
 
@@ -160,7 +163,6 @@ def _serialise_row(
     JSON-serializable without relying on a custom encoder.
     """
     import enum
-    from datetime import datetime
 
     result: dict[str, Any] = {}
     for key in keep_fields:
@@ -168,6 +170,10 @@ def _serialise_row(
             val = row[key]
             if isinstance(val, datetime):
                 val = val.isoformat()
+                if display_timezone is not None:
+                    result[f"local_{key}"] = row[key].astimezone(
+                        ZoneInfo(display_timezone)
+                    ).isoformat()
             elif isinstance(val, enum.Enum):
                 val = val.value
             result[key] = val
@@ -198,6 +204,10 @@ def _make_rollup(source_name: str, items: list[dict[str, Any]], *, kind: str) ->
     timestamps: list[str] = []
     for item in items:
         for ts_key in (
+            "local_canonical_start_at",
+            "local_start_at",
+            "local_canonical_occurred_at",
+            "local_occurred_at",
             "canonical_start_at",
             "start_at",
             "canonical_occurred_at",
@@ -254,6 +264,7 @@ def _serialise_items(
     keep_fields: tuple[str, ...],
     max_items: int,
     rollup_threshold: int,
+    display_timezone: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Serialise, mask, possibly roll-up, and cap a list of rows.
 
@@ -268,7 +279,10 @@ def _serialise_items(
     visible: list[dict[str, Any]] = [r for r in rows if not _is_sensitive(r)]
 
     # --- 2. Serialise to stripped dicts ----------------------------------------
-    serialised: list[dict[str, Any]] = [_serialise_row(r, keep_fields=keep_fields) for r in visible]
+    serialised: list[dict[str, Any]] = [
+        _serialise_row(r, keep_fields=keep_fields, display_timezone=display_timezone)
+        for r in visible
+    ]
 
     # --- 3. Per-source roll-up for high-volume sources -------------------------
     by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -303,6 +317,7 @@ def assemble_day_close_bundle(
     date_label: str,
     episodes: Sequence[dict[str, Any]],
     events: Sequence[dict[str, Any]],
+    timezone: str = "UTC",
     config: BundleConfig | None = None,
 ) -> TierTwoInput:
     """Assemble a token-bounded day-close bundle.
@@ -328,18 +343,24 @@ def assemble_day_close_bundle(
     """
     if config is None:
         config = BundleConfig()
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"Invalid IANA timezone: {timezone!r}") from exc
 
     episode_items, ep_citations = _serialise_items(
         episodes,
         keep_fields=_EPISODE_KEEP_FIELDS,
         max_items=config.max_episodes,
         rollup_threshold=config.rollup_threshold,
+        display_timezone=timezone,
     )
     event_items, ev_citations = _serialise_items(
         events,
         keep_fields=_EVENT_KEEP_FIELDS,
         max_items=config.max_events,
         rollup_threshold=config.rollup_threshold,
+        display_timezone=timezone,
     )
 
     # Deduplicate citations across both groups.
@@ -352,6 +373,7 @@ def assemble_day_close_bundle(
 
     bundle_payload: dict[str, Any] = {
         "date": date_label,
+        "timezone": timezone,
         "episodes": episode_items,
         "events": event_items,
         "episodes_truncated": len([r for r in episodes if not _is_sensitive(r)])

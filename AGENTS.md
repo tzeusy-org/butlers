@@ -317,6 +317,10 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - `dev.sh` gate and runtime code both read from `public.contact_info` so shell gating and runtime behavior cannot drift.
 - `scripts/compose.sh`/`oauth-gate` only proves the refresh token row exists; a revoked/expired token still lets the stack start, then Google-backed connectors/modules log `invalid_grant`/`Token has been expired or revoked` until the account is reauthorized with forced consent.
 
+### Chronicler day-close prose/provenance contract
+- `chronicler_day_close` should keep raw `source_ref`/connector IDs internal: `chronicler_day_close_bundle` returns citations for cache provenance/staleness, but the Telegram prose should cite only human-readable sources by default.
+- Day-close summaries should use the owner timezone from General settings; pass that IANA timezone into `chronicler_day_close_bundle` so the bundle includes local display timestamps and local day boundaries.
+
 ### compose.sh dev DB role-grant contract
 - `scripts/compose.sh` can clear Tailscale/OAuth gates and still fail at `butlers-up` if the target DB user lacks runtime role membership/ACLs; the signature is repeated `InsufficientPrivilegeError: permission denied for schema public` plus per-butler failures like `permission denied for schema <butler>` or `permission denied to set role "butler_<name>_rw"`.
 - Fix the target dev DB before retrying by ensuring the connecting user has the expected role grants from `scripts/init-db.sql` (or equivalent grants done as a sufficiently privileged Postgres role); otherwise the switchboard health endpoint never comes up and all connectors remain blocked behind `butlers-up`.

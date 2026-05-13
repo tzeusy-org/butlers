@@ -29,3 +29,17 @@ def test_chronicler_mcp_module_is_selected_for_startup() -> None:
     selected_names = {module.name for module in daemon._select_startup_modules(loaded_modules)}
 
     assert "chronicler" in selected_names
+
+
+def test_day_close_prompt_keeps_prose_human_readable() -> None:
+    """Scheduled day-close prompt should not ask for raw refs in user prose."""
+    config = load_config(ROSTER_DIR)
+    task = next(t for t in config.schedules if t.name == "chronicler_day_close")
+    prompt = task.prompt or ""
+
+    assert 'timezone="<owner-IANA-timezone>"' in prompt
+    assert "Does not print raw source_ref values" in prompt
+    assert "system records provenance" in prompt
+    assert "human-facing message" in prompt
+    assert "episodes_truncated" in prompt
+    assert "cites source_ref values" not in prompt.lower()

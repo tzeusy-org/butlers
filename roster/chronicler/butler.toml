@@ -106,15 +106,24 @@ dispatch_mode = "prompt"
 complexity = "high"
 prompt = """
 Run the Chronicler day-close interpretation for yesterday:
-1. Compute yesterday's date (the day before today UTC).
-2. Call `chronicler_day_close_bundle(date_label="<yesterday>")` to fetch a
-   pre-truncated, token-bounded bundle.  Do NOT call chronicler_list_episodes
-   or chronicler_list_events directly — the bundle tool enforces the hard cap
-   and sensitive-event masking.
+1. Use the owner's configured timezone from your system prompt. Compute
+   yesterday's local date in that timezone, not in UTC.
+2. Call `chronicler_day_close_bundle(date_label="<local-yesterday>", timezone="<owner-IANA-timezone>")`
+   to fetch a pre-truncated, token-bounded bundle. Do NOT call
+   chronicler_list_episodes or chronicler_list_events directly — the bundle
+   tool enforces the hard cap and sensitive-event masking.
 3. If the bundle contains no episodes and no events, exit silently.
 4. Produce a brief day-close summary (3-10 bullet points) that:
-   - Cites source_ref values from the bundle's citations list.
+   - Uses local display timestamps from the bundle when mentioning times.
+   - Does not print raw source_ref values, connector IDs, database keys, or
+     other machine identifiers. The system records provenance from the tool
+     call; the human-facing message should cite only readable names such as
+     "Spotify", "Steam", or a conversation channel when useful.
    - Notes any roll-up entries (sources with rollup=true) by count.
+   - Does not mention bundle internals such as episodes_truncated,
+     events_truncated, "token-bounded", or "capped inventory". If the user
+     explicitly asks about completeness, explain plainly that a very busy day
+     may be condensed into representative highlights.
    - Does NOT echo or infer sensitive payloads.
 5. Send the summary via notify(channel="telegram", intent="send", message=<summary>).
 """

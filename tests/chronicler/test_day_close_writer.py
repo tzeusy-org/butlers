@@ -141,6 +141,27 @@ def test_extract_provenance_refs_from_events_tool() -> None:
     assert refs == ["owntracks.points:pt789"]
 
 
+def test_extract_provenance_refs_from_day_close_bundle_tool() -> None:
+    """Bundle citations are internal provenance and do not need prose citations."""
+    spotify_ref = (
+        "connectors.spotify_listening_sessions:spotify:spotify:tzeusii:"
+        "session:1778551516835"
+    )
+    steam_ref = "connectors.steam_play_history:76561198037633688:570:2026-05-12"
+    tool_calls = [
+        {
+            "tool": "chronicler_day_close_bundle",
+            "result": {
+                "date": "2026-05-12",
+                "citations": [spotify_ref, steam_ref],
+            },
+        }
+    ]
+
+    refs = _extract_provenance_refs(tool_calls)
+    assert refs == [spotify_ref, steam_ref]
+
+
 def test_extract_provenance_refs_deduplication() -> None:
     """Duplicate source_refs across calls are deduplicated."""
     tool_calls = [

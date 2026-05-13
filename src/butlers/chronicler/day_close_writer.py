@@ -22,11 +22,12 @@ yesterday's ISO date.
 
 Provenance extraction
 ---------------------
-The SpawnerResult carries ``tool_calls``.  The hook scans tool calls for
-``chronicler_list_episodes`` and ``chronicler_list_events`` results, extracting
-the ``source_ref`` values cited.  When no tool-call provenance is available the
-hook falls back to an empty list (the prose still persists — provenance is
-best-effort).
+The SpawnerResult carries ``tool_calls``.  The hook scans tool calls for the
+day-close bundle result first, then legacy ``chronicler_list_episodes`` and
+``chronicler_list_events`` results, extracting ``source_ref`` values for cache
+staleness.  User-facing prose does not need to print these machine refs; when no
+tool-call provenance is available the hook falls back to an empty list (the
+prose still persists — provenance is best-effort).
 """
 
 from __future__ import annotations
@@ -51,9 +52,9 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
     """Extract source_ref strings from chronicler list tool-call results.
 
     Scans the tool_calls list (from SpawnerResult) for calls to
-    ``chronicler_list_episodes`` or ``chronicler_list_events`` and pulls
-    ``source_ref`` values from their results.  Deduplicates while preserving
-    order.
+    ``chronicler_day_close_bundle``, ``chronicler_list_episodes``, or
+    ``chronicler_list_events`` and pulls ``source_ref`` values from their
+    results.  Deduplicates while preserving order.
 
     Returns an empty list if no provenance can be extracted.
     """
@@ -63,7 +64,11 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
         if not isinstance(call, dict):
             continue
         tool_name: str = call.get("tool", "") or ""
-        if tool_name not in {"chronicler_list_episodes", "chronicler_list_events"}:
+        if tool_name not in {
+            "chronicler_day_close_bundle",
+            "chronicler_list_episodes",
+            "chronicler_list_events",
+        }:
             continue
         result_raw = call.get("result")
         if result_raw is None:
@@ -74,6 +79,12 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
             except (json.JSONDecodeError, TypeError):
                 continue
         if not isinstance(result_raw, dict):
+            continue
+        if tool_name == "chronicler_day_close_bundle":
+            for ref in result_raw.get("citations") or []:
+                if isinstance(ref, str) and ref and ref not in seen:
+                    refs.append(ref)
+                    seen.add(ref)
             continue
         items = result_raw.get("data") or result_raw.get("items") or []
         if not isinstance(items, list):

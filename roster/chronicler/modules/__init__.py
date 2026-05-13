@@ -303,6 +303,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
     @mcp.tool()
     async def chronicler_day_close_bundle(
         date_label: str,
+        timezone: str = "UTC",
         max_episodes: int = 50,
         max_events: int = 100,
         rollup_threshold: int = 10,
@@ -311,7 +312,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         """Return a token-bounded day-close bundle for the given date.
 
         Fetches all non-tombstoned episodes and events for *date_label*
-        (``YYYY-MM-DD`` UTC), then applies:
+        (``YYYY-MM-DD`` in *timezone*), then applies:
 
         1. **Sensitive masking** — ``canonical_privacy='sensitive'`` rows
            are excluded from the bundle unconditionally.
@@ -326,7 +327,9 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         ``chronicler_day_close`` interpretation prompt.
 
         Args:
-            date_label: Date to close in ``YYYY-MM-DD`` format (UTC).
+            date_label: Date to close in ``YYYY-MM-DD`` format.
+            timezone: IANA timezone used for date boundaries and display
+                timestamps (default ``UTC``).
             max_episodes: Episode cap before serialization (default 50).
             max_events: Event cap before serialization (default 100).
             rollup_threshold: Per-source item count that triggers roll-up
@@ -340,16 +343,19 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             and ``citations``.
         """
         from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
 
         from butlers.chronicler.bundle_assembler import BundleConfig, assemble_day_close_bundle
         from butlers.chronicler.storage import list_episodes, list_point_events
 
-        # Parse date_label to UTC window.
+        # Parse date_label to a local calendar-day window, then query UTC instants.
         day = datetime.fromisoformat(date_label).date()
-        start_at = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        tzinfo = ZoneInfo(timezone)
+        start_at = datetime(day.year, day.month, day.day, tzinfo=tzinfo).astimezone(UTC)
         from datetime import timedelta
 
-        end_at = start_at + timedelta(days=1)
+        end_at = datetime(day.year, day.month, day.day, tzinfo=tzinfo) + timedelta(days=1)
+        end_at = end_at.astimezone(UTC)
 
         pool = module._get_pool()
 
@@ -384,6 +390,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             date_label=date_label,
             episodes=episode_dicts,
             events=event_dicts,
+            timezone=timezone,
             config=cfg,
         )
 

@@ -124,6 +124,26 @@ def test_sensitive_events_excluded_from_bundle() -> None:
     assert "owntracks.points:pt-1" in refs
 
 
+def test_day_close_bundle_includes_local_display_timestamps() -> None:
+    """Configured timezone produces local timestamp mirrors for day-close prose."""
+    start_at = datetime(2026, 5, 12, 2, 5, tzinfo=UTC)
+    event_at = datetime(2026, 5, 12, 10, 47, tzinfo=UTC)
+
+    bundle = assemble_day_close_bundle(
+        date_label="2026-05-12",
+        timezone="Asia/Singapore",
+        episodes=[_episode(source_ref="spotify:session-1", start_at=start_at)],
+        events=[_event(source_ref="spotify:event-1", occurred_at=event_at)],
+    )
+
+    episode = bundle.bundle["episodes"][0]
+    event = bundle.bundle["events"][0]
+    assert bundle.bundle["timezone"] == "Asia/Singapore"
+    assert episode["local_start_at"] == "2026-05-12T10:05:00+08:00"
+    assert episode["local_canonical_end_at"] == "2026-05-12T11:05:00+08:00"
+    assert event["local_occurred_at"] == "2026-05-12T18:47:00+08:00"
+
+
 def test_sensitive_masking_works_with_enum_member() -> None:
     """Sensitive masking works when canonical_privacy is a Privacy Enum member, not a string.
 
