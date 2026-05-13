@@ -9,6 +9,7 @@ by-schedule contract + zero-div guard.
 from __future__ import annotations
 
 import json
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -31,6 +32,7 @@ from butlers.api.pricing import (
     TieredModelPricing,
     load_pricing,
 )
+from butlers.api.routers.costs import _get_db_manager as _costs_get_db
 
 pytestmark = pytest.mark.unit
 
@@ -113,6 +115,64 @@ def _wire(app, mgr, configs, pricing):
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = lambda: pricing
     return app
+
+
+def _wire_db(app, db):
+    app.dependency_overrides[_costs_get_db] = lambda: db
+    return app
+
+
+def _mock_db_pool(*, summary: dict | None = None, daily: list[dict] | None = None):
+    pool = MagicMock()
+    if summary is not None:
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "total_sessions": summary["total_sessions"],
+                "total_input_tokens": summary["total_input_tokens"],
+                "total_output_tokens": summary["total_output_tokens"],
+            }
+        )
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "model": model,
+                    "input_tokens": stats.get("input_tokens", 0),
+                    "output_tokens": stats.get("output_tokens", 0),
+                }
+                for model, stats in summary.get("by_model", {}).items()
+            ]
+        )
+    elif daily is not None:
+        pool.fetch = AsyncMock(
+            side_effect=[
+                [
+                    {
+                        "day": date.fromisoformat(day["date"]),
+                        "sessions": day["sessions"],
+                        "input_tokens": day["input_tokens"],
+                        "output_tokens": day["output_tokens"],
+                    }
+                    for day in daily
+                ],
+                [
+                    {
+                        "day": date.fromisoformat(day["date"]),
+                        "model": model,
+                        "input_tokens": stats.get("input_tokens", 0),
+                        "output_tokens": stats.get("output_tokens", 0),
+                    }
+                    for day in daily
+                    for model, stats in day.get("by_model", {}).items()
+                ],
+            ]
+        )
+    return pool
+
+
+def _mock_db(pools: dict[str, MagicMock]):
+    db = MagicMock()
+    db.pool.side_effect = lambda name: pools[name]
+    return db
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +587,32 @@ async def test_cost_summary_butler_filter_returns_only_that_butler(app):
     CostSummary.model_validate(data)
 
 
+async def test_cost_summary_staffer_uses_db_when_session_tool_absent(app):
+    """Staffer butlers still surface spend because dashboard can read their DB pool."""
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100, type="staffer")]
+    summary = {
+        "total_sessions": 5,
+        "total_input_tokens": 10000,
+        "total_output_tokens": 5000,
+        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
+    }
+    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("switchboard")})
+    db = _mock_db({"switchboard": _mock_db_pool(summary=summary)})
+    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/costs/summary", params={"butler": "switchboard"})
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total_sessions"] == 5
+    assert data["total_cost_usd"] == pytest.approx(0.105, abs=1e-4)
+    mgr.get_client.assert_not_called()
+    CostSummary.model_validate(data)
+
+
 async def test_cost_summary_no_butler_filter_returns_aggregated(app):
     """Omitting ?butler aggregates across all butlers (preserves existing behaviour)."""
     configs = [
@@ -634,6 +720,46 @@ async def test_daily_butler_filter_returns_only_that_butler(app):
     data = resp.json()["data"]
     assert len(data) == 1
     assert data[0]["sessions"] == 2
+
+
+async def test_daily_staffer_uses_db_when_session_tool_absent(app):
+    """Staffer daily spend should come from the DB pool instead of MCP tools."""
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100, type="staffer")]
+    daily = [
+        {
+            "date": "2026-05-01",
+            "sessions": 2,
+            "input_tokens": 10000,
+            "output_tokens": 5000,
+            "by_model": {
+                "claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}
+            },
+        }
+    ]
+    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("switchboard")})
+    db = _mock_db({"switchboard": _mock_db_pool(daily=daily)})
+    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/costs/daily",
+            params={"from": "2026-05-01", "to": "2026-05-01", "butler": "switchboard"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data == [
+        {
+            "date": "2026-05-01",
+            "cost_usd": pytest.approx(0.105, abs=1e-4),
+            "sessions": 2,
+            "input_tokens": 10000,
+            "output_tokens": 5000,
+        }
+    ]
+    mgr.get_client.assert_not_called()
 
 
 async def test_daily_no_butler_filter_aggregates_all(app):

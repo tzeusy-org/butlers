@@ -15,16 +15,19 @@ from datetime import date, timedelta
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db_manager,
     get_mcp_manager,
     get_pricing,
 )
 from butlers.api.models import ApiResponse, CostSummary, DailyCost, ScheduleCost, TopSession
 from butlers.api.pricing import PricingConfig, estimate_session_cost
+from butlers.core.sessions import sessions_daily, sessions_summary
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,162 @@ router = APIRouter(prefix="/api/costs", tags=["costs"])
 
 _STATUS_TIMEOUT_S = 5.0
 _SESSIONS_SUMMARY_TOOL = "sessions_summary"
+
+
+def _get_db_manager() -> DatabaseManager | None:
+    """Return dashboard DB manager when initialized, otherwise None.
+
+    Unit tests for this router often exercise only the legacy MCP fan-out path
+    without initializing API DB pools. Returning None preserves that path while
+    production requests can use DB-backed session aggregates.
+    """
+    try:
+        return get_db_manager()
+    except RuntimeError:
+        return None
+
+
+def _cost_stats_from_session_summary(
+    name: str,
+    data: dict,
+    pricing: PricingConfig,
+) -> tuple[str, float, int, int, int, dict[str, float]]:
+    """Convert raw session aggregate data into the cost router tuple shape."""
+    total_cost = 0.0
+    by_model: dict[str, float] = {}
+    for model_id, stats in data.get("by_model", {}).items():
+        cost = estimate_session_cost(
+            pricing,
+            model_id,
+            stats.get("input_tokens", 0),
+            stats.get("output_tokens", 0),
+            cached_input_tokens=stats.get("cached_input_tokens", 0),
+            context_tokens=stats.get("context_tokens"),
+        )
+        total_cost += cost
+        by_model[model_id] = by_model.get(model_id, 0.0) + cost
+    return (
+        name,
+        total_cost,
+        data.get("total_sessions", 0),
+        data.get("total_input_tokens", 0),
+        data.get("total_output_tokens", 0),
+        by_model,
+    )
+
+
+async def _get_butler_session_stats_from_db(
+    db: DatabaseManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    period: str,
+) -> tuple[str, float, int, int, int, dict[str, float]] | None:
+    """Read session cost stats directly from the butler DB pool if available."""
+    try:
+        data = await sessions_summary(db.pool(info.name), period)
+    except KeyError:
+        logger.debug("Cost summary DB pool unavailable for butler %s", info.name)
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Cost summary DB query failed for butler %s (%s: %s)",
+            info.name,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    return _cost_stats_from_session_summary(info.name, data, pricing)
+
+
+async def _get_butler_session_stats_for_range_from_db(
+    db: DatabaseManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    from_date: date,
+    to_date: date,
+) -> tuple[str, float, int, int, int, dict[str, float]] | None:
+    """Read custom-range session cost stats directly from the butler DB pool."""
+    try:
+        data = await sessions_daily(db.pool(info.name), from_date, to_date)
+    except KeyError:
+        logger.debug("Cost range DB pool unavailable for butler %s", info.name)
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Cost range DB query failed for butler %s (%s: %s)",
+            info.name,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    total_cost = 0.0
+    total_sessions = 0
+    total_input = 0
+    total_output = 0
+    by_model: dict[str, float] = {}
+    for day_entry in data.get("days", []):
+        total_sessions += day_entry.get("sessions", 0)
+        total_input += day_entry.get("input_tokens", 0)
+        total_output += day_entry.get("output_tokens", 0)
+        for model_id, stats in day_entry.get("by_model", {}).items():
+            cost = estimate_session_cost(
+                pricing,
+                model_id,
+                stats.get("input_tokens", 0),
+                stats.get("output_tokens", 0),
+                cached_input_tokens=stats.get("cached_input_tokens", 0),
+                context_tokens=stats.get("context_tokens"),
+            )
+            total_cost += cost
+            by_model[model_id] = by_model.get(model_id, 0.0) + cost
+    return (info.name, total_cost, total_sessions, total_input, total_output, by_model)
+
+
+async def _get_butler_daily_stats_from_db(
+    db: DatabaseManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    from_date: str,
+    to_date: str,
+) -> list[dict] | None:
+    """Read daily session costs directly from the butler DB pool if available."""
+    try:
+        data = await sessions_daily(db.pool(info.name), from_date, to_date)
+    except KeyError:
+        logger.debug("Daily cost DB pool unavailable for butler %s", info.name)
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Daily cost DB query failed for butler %s (%s: %s)",
+            info.name,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    days: list[dict] = []
+    for day_entry in data.get("days", []):
+        day_cost = 0.0
+        for model_id, stats in day_entry.get("by_model", {}).items():
+            day_cost += estimate_session_cost(
+                pricing,
+                model_id,
+                stats.get("input_tokens", 0),
+                stats.get("output_tokens", 0),
+                cached_input_tokens=stats.get("cached_input_tokens", 0),
+                context_tokens=stats.get("context_tokens"),
+            )
+        days.append(
+            {
+                "date": day_entry.get("date", ""),
+                "cost_usd": round(day_cost, 6),
+                "sessions": day_entry.get("sessions", 0),
+                "input_tokens": day_entry.get("input_tokens", 0),
+                "output_tokens": day_entry.get("output_tokens", 0),
+            }
+        )
+    return days
 
 
 async def _get_butler_session_stats(
@@ -54,27 +213,7 @@ async def _get_butler_session_stats(
             text = result.content[0].text if hasattr(result.content[0], "text") else ""
             if text:
                 data = json.loads(text)
-                total_cost = 0.0
-                by_model: dict[str, float] = {}
-                for model_id, stats in data.get("by_model", {}).items():
-                    cost = estimate_session_cost(
-                        pricing,
-                        model_id,
-                        stats.get("input_tokens", 0),
-                        stats.get("output_tokens", 0),
-                        cached_input_tokens=stats.get("cached_input_tokens", 0),
-                        context_tokens=stats.get("context_tokens"),
-                    )
-                    total_cost += cost
-                    by_model[model_id] = by_model.get(model_id, 0.0) + cost
-                return (
-                    info.name,
-                    total_cost,
-                    data.get("total_sessions", 0),
-                    data.get("total_input_tokens", 0),
-                    data.get("total_output_tokens", 0),
-                    by_model,
-                )
+                return _cost_stats_from_session_summary(info.name, data, pricing)
     except (
         ButlerUnreachableError,
         TimeoutError,
@@ -185,6 +324,7 @@ async def get_cost_summary(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
+    db: DatabaseManager | None = Depends(_get_db_manager),
 ) -> ApiResponse[CostSummary]:
     """Return aggregate cost summary across all butlers.
 
@@ -213,14 +353,39 @@ async def get_cost_summary(
         configs = [c for c in configs if c.name == butler]
     if from_date is not None and to_date is not None:
         tasks = [
-            _get_butler_session_stats_for_range(mgr, info, pricing, from_date, to_date)
+            _get_butler_session_stats_for_range_from_db(db, info, pricing, from_date, to_date)
+            if db is not None
+            else _get_butler_session_stats_for_range(mgr, info, pricing, from_date, to_date)
             for info in configs
         ]
         period_label = f"{from_date.isoformat()}/{to_date.isoformat()}"
     else:
-        tasks = [_get_butler_session_stats(mgr, info, pricing, period) for info in configs]
+        tasks = [
+            _get_butler_session_stats_from_db(db, info, pricing, period)
+            if db is not None
+            else _get_butler_session_stats(mgr, info, pricing, period)
+            for info in configs
+        ]
         period_label = period
-    results = await asyncio.gather(*tasks)
+    raw_results = await asyncio.gather(*tasks)
+    if db is not None:
+        if from_date is not None and to_date is not None:
+            fallback_tasks = [
+                _get_butler_session_stats_for_range(mgr, info, pricing, from_date, to_date)
+                for info, result in zip(configs, raw_results, strict=False)
+                if result is None
+            ]
+        else:
+            fallback_tasks = [
+                _get_butler_session_stats(mgr, info, pricing, period)
+                for info, result in zip(configs, raw_results, strict=False)
+                if result is None
+            ]
+        fallback_results = await asyncio.gather(*fallback_tasks)
+        fallback_iter = iter(fallback_results)
+        results = [result if result is not None else next(fallback_iter) for result in raw_results]
+    else:
+        results = raw_results
 
     total_cost = 0.0
     total_sessions = 0
@@ -312,6 +477,7 @@ async def get_daily_costs(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
+    db: DatabaseManager | None = Depends(_get_db_manager),
 ) -> ApiResponse[list[DailyCost]]:
     """Return daily cost time series aggregated across all butlers.
 
@@ -334,10 +500,32 @@ async def get_daily_costs(
         configs = [c for c in configs if c.name == butler]
 
     tasks = [
-        _get_butler_daily_stats(mgr, info, pricing, from_date.isoformat(), to_date.isoformat())
+        _get_butler_daily_stats_from_db(
+            db,
+            info,
+            pricing,
+            from_date.isoformat(),
+            to_date.isoformat(),
+        )
+        if db is not None
+        else _get_butler_daily_stats(mgr, info, pricing, from_date.isoformat(), to_date.isoformat())
         for info in configs
     ]
-    all_results = await asyncio.gather(*tasks)
+    raw_results = await asyncio.gather(*tasks)
+    if db is not None:
+        fallback_tasks = [
+            _get_butler_daily_stats(mgr, info, pricing, from_date.isoformat(), to_date.isoformat())
+            for info, result in zip(configs, raw_results, strict=False)
+            if result is None
+        ]
+        fallback_results = await asyncio.gather(*fallback_tasks)
+        fallback_iter = iter(fallback_results)
+        all_results = [
+            result if result is not None else next(fallback_iter)
+            for result in raw_results
+        ]
+    else:
+        all_results = raw_results
 
     # Merge daily stats from all butlers keyed by date string.
     merged: dict[str, dict] = {}
