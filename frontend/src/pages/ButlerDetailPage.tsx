@@ -1,30 +1,18 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 
-import type { SessionParams, SessionSummary } from "@/api/types";
 import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
 import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
 import { ButlerDetailFooter } from "@/components/butler-detail/ButlerDetailFooter";
 import { ButlerDetailHeader } from "@/components/butler-detail/ButlerDetailHeader";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
-import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
-import { SessionTable } from "@/components/sessions/SessionTable";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import ButlerSessionsTab from "@/components/butler-detail/ButlerSessionsTab";
+import ButlerCrmTab from "@/components/butler-detail/ButlerCrmTab";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useButler } from "@/hooks/use-butlers";
-import { useButlerSessions } from "@/hooks/use-sessions";
-import { useUpcomingDates } from "@/hooks/use-contacts";
 import { titleize } from "@/lib/utils";
 import {
   type DetailMode,
@@ -150,8 +138,6 @@ const ButlerSpendTab = lazy(
 /** localStorage key for persisting the detail page mode. */
 const MODE_STORAGE_KEY = "butlers.detail.mode";
 
-const PAGE_SIZE = 20;
-
 /**
  * Reads the persisted mode from localStorage, defaulting to "resident".
  */
@@ -184,187 +170,6 @@ function TabFallback({ label }: { label: string }) {
   return (
     <div className="text-muted-foreground flex items-center justify-center py-12 text-sm">
       Loading {label}...
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sessions Tab sub-component
-// ---------------------------------------------------------------------------
-
-function ButlerSessionsTab({ butlerName }: { butlerName: string }) {
-  const [page, setPage] = useState(0);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-
-  const params: SessionParams = {
-    offset: page * PAGE_SIZE,
-    limit: PAGE_SIZE,
-  };
-
-  const { data: sessionsResponse, isLoading } = useButlerSessions(butlerName, params);
-  const sessions = sessionsResponse?.data ?? [];
-  const meta = sessionsResponse?.meta;
-  const total = meta?.total ?? 0;
-  const hasMore = meta?.has_more ?? false;
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = page + 1;
-
-  function handleSessionClick(session: SessionSummary) {
-    setSelectedSessionId(session.id);
-  }
-
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Sessions</CardTitle>
-          <CardDescription>Session history for this butler</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <SessionTable
-            sessions={sessions}
-            isLoading={isLoading}
-            onSessionClick={handleSessionClick}
-            showButlerColumn={false}
-          />
-        </CardContent>
-      </Card>
-
-      {/* Pagination controls */}
-      {total > 0 && (
-        <div className="flex items-center justify-between">
-          <p className="text-muted-foreground text-sm">
-            Page {currentPage} of {totalPages}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!hasMore}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Session detail drawer */}
-      <SessionDetailDrawer
-        butler={butlerName}
-        sessionId={selectedSessionId}
-        onClose={() => setSelectedSessionId(null)}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// CRM Tab sub-component
-// ---------------------------------------------------------------------------
-
-function ButlerCrmTab({ butlerName }: { butlerName: string }) {
-  const isRelationship = butlerName === "relationship";
-  const { data: upcomingDates, isLoading } = useUpcomingDates(
-    isRelationship ? 30 : undefined,
-  );
-
-  if (!isRelationship) {
-    return (
-      <Card>
-        <CardContent className="py-12">
-          <p className="text-muted-foreground text-center text-sm">
-            CRM features are only available for the relationship butler.
-          </p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Upcoming dates widget */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Upcoming Dates</CardTitle>
-          <CardDescription>
-            Birthdays, anniversaries, and other important dates in the next 30 days
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-2">
-              {Array.from({ length: 3 }, (_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </div>
-          ) : !upcomingDates || upcomingDates.length === 0 ? (
-            <p className="text-muted-foreground py-6 text-center text-sm">
-              No upcoming dates in the next 30 days.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {upcomingDates.map((item, idx) => (
-                <div
-                  key={`${item.contact_id}-${item.date_type}-${idx}`}
-                  className="flex items-center justify-between rounded-md border px-3 py-2"
-                >
-                  <div className="flex items-center gap-3">
-                    <Badge variant="outline" className="text-xs">
-                      {item.date_type}
-                    </Badge>
-                    <Link
-                      to={`/contacts/${item.contact_id}`}
-                      className="text-sm font-medium hover:underline"
-                    >
-                      {item.contact_name}
-                    </Link>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground text-sm">{item.date}</span>
-                    <Badge
-                      variant={item.days_until <= 3 ? "destructive" : "secondary"}
-                      className="text-xs"
-                    >
-                      {item.days_until === 0
-                        ? "Today"
-                        : item.days_until === 1
-                          ? "Tomorrow"
-                          : `${item.days_until} days`}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Quick links */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Quick Links</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex gap-3">
-            <Button variant="outline" asChild>
-              <Link to="/contacts">Contacts</Link>
-            </Button>
-            <Button variant="outline" asChild>
-              <Link to="/groups">Groups</Link>
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }
