@@ -1640,63 +1640,87 @@ async def get_butler_memory_stats(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
 
-    stats = ButlerMemoryStats()
+    # Run one batched query per table concurrently: each fetchrow returns (total, count_24h)
+    # using COUNT(*) FILTER (...) to fetch both counts in a single round-trip.
+    # Individual failures are caught per-table so a missing table returns zeros, not 500.
 
-    # --- Episodes ---
-    try:
-        stats.total_episodes = await pool.fetchval("SELECT count(*) FROM episodes") or 0
-        stats.episodes_24h = (
-            await pool.fetchval(
-                "SELECT count(*) FROM episodes WHERE created_at > NOW() - INTERVAL '1 day'"
+    _INTERVAL = "NOW() - INTERVAL '1 day'"
+
+    async def _count_episodes() -> tuple[int, int]:
+        try:
+            row = await pool.fetchrow(
+                f"SELECT"
+                f"  count(*) AS total,"
+                f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
+                f" FROM episodes"
             )
-            or 0
-        )
-    except Exception:
-        logger.debug("episodes table not available for butler '%s'; returning zeros", name)
+            return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
+        except Exception:
+            logger.debug("episodes table not available for butler '%s'; returning zeros", name)
+            return (0, 0)
 
-    # --- Facts ---
-    try:
-        stats.total_facts = await pool.fetchval("SELECT count(*) FROM facts") or 0
-        stats.facts_24h = (
-            await pool.fetchval(
-                "SELECT count(*) FROM facts WHERE created_at > NOW() - INTERVAL '1 day'"
+    async def _count_facts() -> tuple[int, int]:
+        try:
+            row = await pool.fetchrow(
+                f"SELECT"
+                f"  count(*) AS total,"
+                f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
+                f" FROM facts"
             )
-            or 0
-        )
-    except Exception:
-        logger.debug("facts table not available for butler '%s'; returning zeros", name)
+            return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
+        except Exception:
+            logger.debug("facts table not available for butler '%s'; returning zeros", name)
+            return (0, 0)
 
-    # --- Entities (public schema, filtered by butler_name) ---
-    try:
-        stats.total_entities = (
-            await pool.fetchval(
-                "SELECT count(*) FROM public.entities WHERE metadata->>'source_butler' = $1",
+    async def _count_entities() -> tuple[int, int]:
+        try:
+            row = await pool.fetchrow(
+                f"SELECT"
+                f"  count(*) AS total,"
+                f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
+                f" FROM public.entities"
+                f" WHERE metadata->>'source_butler' = $1",
                 name,
             )
-            or 0
-        )
-        stats.entities_24h = (
-            await pool.fetchval(
-                "SELECT count(*) FROM public.entities"
-                " WHERE metadata->>'source_butler' = $1"
-                " AND created_at > NOW() - INTERVAL '1 day'",
-                name,
-            )
-            or 0
-        )
-    except Exception:
-        logger.debug("public.entities not available for butler '%s'; returning zeros", name)
+            return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
+        except Exception:
+            logger.debug("public.entities not available for butler '%s'; returning zeros", name)
+            return (0, 0)
 
-    # --- Rules ---
-    try:
-        stats.total_rules = await pool.fetchval("SELECT count(*) FROM rules") or 0
-        stats.rules_24h = (
-            await pool.fetchval(
-                "SELECT count(*) FROM rules WHERE created_at > NOW() - INTERVAL '1 day'"
+    async def _count_rules() -> tuple[int, int]:
+        try:
+            row = await pool.fetchrow(
+                f"SELECT"
+                f"  count(*) AS total,"
+                f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
+                f" FROM rules"
             )
-            or 0
-        )
-    except Exception:
-        logger.debug("rules table not available for butler '%s'; returning zeros", name)
+            return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
+        except Exception:
+            logger.debug("rules table not available for butler '%s'; returning zeros", name)
+            return (0, 0)
+
+    (
+        (total_episodes, episodes_24h),
+        (total_facts, facts_24h),
+        (total_entities, entities_24h),
+        (total_rules, rules_24h),
+    ) = await asyncio.gather(
+        _count_episodes(),
+        _count_facts(),
+        _count_entities(),
+        _count_rules(),
+    )
+
+    stats = ButlerMemoryStats(
+        total_episodes=total_episodes,
+        episodes_24h=episodes_24h,
+        total_facts=total_facts,
+        facts_24h=facts_24h,
+        total_entities=total_entities,
+        entities_24h=entities_24h,
+        total_rules=total_rules,
+        rules_24h=rules_24h,
+    )
 
     return ApiResponse[ButlerMemoryStats](data=stats)
