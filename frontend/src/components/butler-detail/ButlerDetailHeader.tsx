@@ -22,9 +22,13 @@
 // primitive), 6 (no em-dashes). Butler-hue scope restricted to ButlerMark.
 // ---------------------------------------------------------------------------
 
+import type { ReactNode } from "react"
+
 import { ButlerMark } from "@/components/ui/ButlerMark"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useButler } from "@/hooks/use-butlers"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
+import { titleize } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
 // Props
@@ -33,6 +37,34 @@ import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 export interface ButlerDetailHeaderProps {
   /** The active butler name (from URL params). */
   butler: string
+  /** Operational controls rendered on the right side of the identity header. */
+  actions?: ReactNode
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
+  const days = Math.floor(hours / 24)
+  const remainingHours = hours % 24
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`
+}
+
+function activityToneClass(activity: string): string {
+  switch (activity) {
+    case "running":
+      return "text-emerald-500"
+    case "awaiting":
+      return "text-amber-500"
+    case "paused":
+    case "quarantined":
+      return "text-destructive"
+    default:
+      return "text-muted-foreground"
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -53,13 +85,22 @@ export interface ButlerDetailHeaderProps {
  * @example
  *   <ButlerDetailHeader butler="relationship" />
  */
-export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
+export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps) {
   const { rows, aggregates } = useButlerStatusBoard()
+  const { data: butlerResponse } = useButler(butler)
 
   // Find the active butler's description from the status board rows.
   // Falls back to null when loading, errored, or not found.
   const activeRow = rows.find((r) => r.name === butler) ?? null
-  const description = activeRow?.description ?? null
+  const butlerDetail = butlerResponse?.data ?? null
+  const processFacts = butlerDetail?.process_facts ?? null
+  const description = activeRow?.description ?? butlerDetail?.description ?? null
+  const port = processFacts?.port ?? butlerDetail?.port ?? null
+  const uptime =
+    processFacts?.registered_duration_seconds != null
+      ? formatDuration(processFacts.registered_duration_seconds)
+      : null
+  const activity = activeRow?.activity ?? "unknown"
 
   // ---------------------------------------------------------------------------
   // Skeleton state
@@ -109,21 +150,36 @@ export function ButlerDetailHeader({ butler }: ButlerDetailHeaderProps) {
   return (
     <div
       data-testid="butler-detail-header"
-      className="flex flex-col gap-2 border-b border-border px-7 py-3"
+      className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 border-b border-border px-7 py-3 md:grid-cols-[auto_1fr_auto]"
     >
-      {/* Identity block: butler hue ONLY on ButlerMark */}
-      {/* min-w-0 allows flex children to shrink below intrinsic width, enabling truncation */}
-      <div className="flex min-w-0 items-center gap-2 py-0.5">
-        {/* Butler hue appears ONLY on this ButlerMark element */}
-        <ButlerMark name={butler} size={24} tone="fill" />
-        <h1 className="text-2xl font-bold tracking-tight capitalize">{butler}</h1>
-        {description ? (
-          <span className="text-sm text-muted-foreground font-normal ml-1 truncate">
-            {description}
+      <ButlerMark name={butler} size={40} tone={activity === "running" ? "fill" : "neutral"} />
+
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] uppercase tracking-[0.06em]">
+          <span className="text-muted-foreground">/butlers/{butler}</span>
+          <span className={`inline-flex items-center gap-1.5 ${activityToneClass(activity)}`}>
+            <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
+            {activity}
           </span>
-        ) : null}
+          <span className="text-muted-foreground">
+            port {port ?? "--"} · uptime {uptime ?? "--"}
+          </span>
+        </div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight capitalize">{titleize(butler)}</h1>
+          {description ? (
+            <span className="min-w-0 truncate text-sm font-normal text-muted-foreground">
+              {description}
+            </span>
+          ) : null}
+        </div>
       </div>
 
+      {actions ? (
+        <div className="col-span-2 flex items-center justify-start md:col-span-1 md:justify-end">
+          {actions}
+        </div>
+      ) : null}
     </div>
   )
 }

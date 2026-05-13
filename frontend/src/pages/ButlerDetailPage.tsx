@@ -1,10 +1,9 @@
-import { lazy, Suspense, useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useState, type ComponentProps } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router";
 
 import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
 import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
-import { ButlerDetailFooter } from "@/components/butler-detail/ButlerDetailFooter";
 import { ButlerDetailHeader } from "@/components/butler-detail/ButlerDetailHeader";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 import ButlerSessionsTab from "@/components/butler-detail/ButlerSessionsTab";
@@ -130,6 +129,23 @@ const ButlerActivityTab = lazy(
 const ButlerSpendTab = lazy(
   () => import("@/components/butler-detail/ButlerSpendTab.tsx"),
 );
+
+const detailTabTriggerClassName =
+  "h-auto flex-none rounded-none px-3 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.10em] " +
+  "data-[state=active]:border-transparent data-[state=active]:bg-transparent " +
+  "dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-transparent";
+
+function DetailTabTrigger({
+  className,
+  ...props
+}: ComponentProps<typeof TabsTrigger>) {
+  return (
+    <TabsTrigger
+      className={[detailTabTriggerClassName, className].filter(Boolean).join(" ")}
+      {...props}
+    />
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Page-local constants
@@ -266,82 +282,78 @@ export default function ButlerDetailPage() {
   // Extract description from butler response (ButlerSummary.description is optional)
   const description = butlerResponse?.data?.description ?? undefined;
 
-  const breadcrumbs = useMemo(
-    () => [
-      { label: "Overview", href: "/" },
-      { label: "Butlers", href: "/butlers" },
-      { label: name },
-    ],
-    [name],
-  );
-
   return (
     <Page
       archetype="status-board"
       title={titleize(name)}
       description={description}
-      breadcrumbs={breadcrumbs}
-      actions={<ButlerDetailActions butlerName={name} mode={mode} onModeChange={setMode} />}
       loading={butlerLoading}
       error={butlerError}
       onRetry={handleRetry}
-      header={<ButlerDetailHeader butler={name} />}
-      footer={<ButlerDetailFooter butler={name} />}
+      header={
+        <ButlerDetailHeader
+          butler={name}
+          actions={<ButlerDetailActions butlerName={name} mode={mode} onModeChange={setMode} />}
+        />
+      }
     >
         <Tabs value={activeTab} onValueChange={handleTabChange}>
-          <TabsList>
-            <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsList
+            variant="line"
+            className="h-auto w-full justify-start rounded-none border-b border-border bg-transparent p-0"
+          >
+            <DetailTabTrigger value="overview">Overview</DetailTabTrigger>
             {mode === "operator" && (
               <>
-                <TabsTrigger value="sessions">Sessions</TabsTrigger>
+                <DetailTabTrigger value="sessions">Sessions</DetailTabTrigger>
               </>
             )}
             {mode === "resident" && (
               <>
-                <TabsTrigger value="activity">Activity</TabsTrigger>
-                <TabsTrigger value="logs">Logs</TabsTrigger>
-                <TabsTrigger value="approvals">Approvals</TabsTrigger>
-                <TabsTrigger value="spend">Spend</TabsTrigger>
+                <DetailTabTrigger value="activity">Activity</DetailTabTrigger>
+                <DetailTabTrigger value="logs">Logs</DetailTabTrigger>
+                <DetailTabTrigger value="approvals">Approvals</DetailTabTrigger>
+                <DetailTabTrigger value="spend">Spend</DetailTabTrigger>
               </>
             )}
-            <TabsTrigger value="config">Config</TabsTrigger>
+            <DetailTabTrigger value="config">Config</DetailTabTrigger>
             {mode === "operator" && (
               <>
-                <TabsTrigger value="skills">Skills</TabsTrigger>
-                <TabsTrigger value="schedules">Schedules</TabsTrigger>
-                <TabsTrigger value="trigger">Trigger</TabsTrigger>
-                <TabsTrigger value="mcp">MCP</TabsTrigger>
-                <TabsTrigger value="state">State</TabsTrigger>
-                <TabsTrigger value="crm">CRM</TabsTrigger>
+                <DetailTabTrigger value="skills">Skills</DetailTabTrigger>
+                <DetailTabTrigger value="schedules">Schedules</DetailTabTrigger>
+                <DetailTabTrigger value="trigger">Trigger</DetailTabTrigger>
+                <DetailTabTrigger value="mcp">MCP</DetailTabTrigger>
+                <DetailTabTrigger value="state">State</DetailTabTrigger>
+                <DetailTabTrigger value="crm">CRM</DetailTabTrigger>
               </>
             )}
-            <TabsTrigger value="memory">Memory</TabsTrigger>
+            <DetailTabTrigger value="memory">Memory</DetailTabTrigger>
             {mode === "operator" && (
-              <TabsTrigger value="models">Models</TabsTrigger>
+              <DetailTabTrigger value="models">Models</DetailTabTrigger>
             )}
             {showCollectionsTab && (
-              <TabsTrigger value="collections">Collections</TabsTrigger>
+              <DetailTabTrigger value="collections">Collections</DetailTabTrigger>
             )}
-            {showHealthTab && <TabsTrigger value="health">Health</TabsTrigger>}
+            {showHealthTab && <DetailTabTrigger value="health">Health</DetailTabTrigger>}
             {isSwitchboard && (
               <>
-                <TabsTrigger value="routing-log">Routing Log</TabsTrigger>
-                <TabsTrigger value="registry">Registry</TabsTrigger>
+                <DetailTabTrigger value="routing-log">Routing Log</DetailTabTrigger>
+                <DetailTabTrigger value="registry">Registry</DetailTabTrigger>
               </>
             )}
-            {showReviewsTab && <TabsTrigger value="reviews">Reviews</TabsTrigger>}
-            {showTimelinesTab && <TabsTrigger value="timelines">Timelines</TabsTrigger>}
-            {showFinancesTab && <TabsTrigger value="finances">Finances</TabsTrigger>}
-            {showDevicesTab && <TabsTrigger value="devices">Devices</TabsTrigger>}
-            {showTasteTab && <TabsTrigger value="taste">Taste</TabsTrigger>}
+            {showReviewsTab && <DetailTabTrigger value="reviews">Reviews</DetailTabTrigger>}
+            {showTimelinesTab && <DetailTabTrigger value="timelines">Timelines</DetailTabTrigger>}
+            {showFinancesTab && <DetailTabTrigger value="finances">Finances</DetailTabTrigger>}
+            {showDevicesTab && <DetailTabTrigger value="devices">Devices</DetailTabTrigger>}
+            {showTasteTab && <DetailTabTrigger value="taste">Taste</DetailTabTrigger>}
             {showConversationsTab && (
-              <TabsTrigger value="conversations">Conversations</TabsTrigger>
+              <DetailTabTrigger value="conversations">Conversations</DetailTabTrigger>
             )}
             {showInvestigationsTab && (
-              <TabsTrigger value="investigations">Investigations</TabsTrigger>
+              <DetailTabTrigger value="investigations">Investigations</DetailTabTrigger>
             )}
-            {showContactsTab && <TabsTrigger value="contacts">Contacts</TabsTrigger>}
-            {showTripsTab && <TabsTrigger value="trips">Trips</TabsTrigger>}
+            {showContactsTab && <DetailTabTrigger value="contacts">Contacts</DetailTabTrigger>}
+            {showTripsTab && <DetailTabTrigger value="trips">Trips</DetailTabTrigger>}
           </TabsList>
 
           <TabsContent value="overview">

@@ -1,658 +1,303 @@
 // ---------------------------------------------------------------------------
-// ButlerOverviewTab — bu-t0n03 (epic bu-hdavr F.1), bu-yzllz (F.2)
+// ButlerOverviewTab
 //
-// Overview tab body for the butler detail page. Uses the 4-column panel-grid
-// frame from finish-butler-detail-body-panel-grid.
+// Operational overview grid for /butlers/:name. This follows the
+// pr/overview/specific-butler-page-redesign target shape:
+//   status | sessions | spend | awaiting
+//   activity | recent
+//   awaiting your action | config
 //
-// Layout (4 columns, 4 rows):
-//   Row 1: identity (span=2)   | process (span=2)
-//   Row 2: heartbeat (span=2)  | modules (span=2)
-//   Row 3: cost (span=1)       | recent sessions (span=3)
-//   Row 4: activity feed (span=4, scroll, height="320px")
-//
-// The Recent Notifications card has been removed (bu-yzllz F.2). Notification
-// content is covered by the activity-feed panel, which merges session_completed,
-// approval_raised, and memory_write event sources.
-//
-// Doctrine:
-//   - All panel borders via --border token (Panel atom, border-t border-l frame).
-//   - No hex/oklch/rgb literals.
-//   - No pid field anywhere.
-//   - All timestamps via <Time>.
-//   - No em-dashes in copy.
+// The live API does not expose process pid, so the production grid preserves
+// the prototype rhythm while using container-boundary-safe process facts.
 // ---------------------------------------------------------------------------
 
-import { Link } from "react-router";
+import { Link } from "react-router"
 
-import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
-import { ButlerPanelGrid, Panel, ErrorLine } from "@/components/butler-detail/atoms";
-import { Badge } from "@/components/ui/badge";
-import { ButlerMark } from "@/components/ui/ButlerMark";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Time } from "@/components/ui/time";
-import EligibilityTimeline from "@/components/butler-detail/EligibilityTimeline";
-import { useButler, useButlerModules } from "@/hooks/use-butlers";
-import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
-import { useCostSummary } from "@/hooks/use-costs";
-import { useRegistry, useSetEligibility } from "@/hooks/use-general";
-import { useButlerHeartbeats } from "@/hooks/use-system";
-import { useButlerSessions } from "@/hooks/use-sessions";
-import type { ActivityEventType, ModuleStatus, ProcessFacts, SessionSummary } from "@/api/types";
-
-// ---------------------------------------------------------------------------
-// Props
-// ---------------------------------------------------------------------------
+import {
+  ButlerPanelGrid,
+  ErrorLine,
+  KpiCell,
+  KV,
+  MonoLabel,
+  Panel,
+} from "@/components/butler-detail/atoms"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Time } from "@/components/ui/time"
+import { useApprovalActions } from "@/hooks/use-approvals"
+import { useButler } from "@/hooks/use-butlers"
+import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
+import { useCostSummary } from "@/hooks/use-costs"
+import type { ActivityEventType, ApprovalAction } from "@/api/types"
 
 interface ButlerOverviewTabProps {
-  butlerName: string;
+  butlerName: string
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Heartbeat freshness thresholds in seconds. */
-const HEARTBEAT_STALE_SECONDS = 5 * 60;
-const HEARTBEAT_DEAD_SECONDS = 30 * 60;
-
-type HeartbeatFreshness = "fresh" | "stale" | "dead" | "unknown";
-
-function heartbeatFreshness(ageSeconds: number | null | undefined): HeartbeatFreshness {
-  if (ageSeconds === null || ageSeconds === undefined) return "unknown";
-  if (ageSeconds <= HEARTBEAT_STALE_SECONDS) return "fresh";
-  if (ageSeconds <= HEARTBEAT_DEAD_SECONDS) return "stale";
-  return "dead";
+function formatCurrency(amount: number | null | undefined): string {
+  if (amount == null) return "--"
+  if (amount < 0.01) return "$0.00"
+  return `$${amount.toFixed(2)}`
 }
 
-function HeartbeatFreshnessPill({ freshness }: { freshness: HeartbeatFreshness }) {
-  switch (freshness) {
-    case "fresh":
-      return (
-        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-xs">Fresh</Badge>
-      );
-    case "stale":
-      return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs">
-          Stale
-        </Badge>
-      );
-    case "dead":
-      return (
-        <Badge variant="destructive" className="text-xs">
-          Dead
-        </Badge>
-      );
-    default:
-      return (
-        <Badge variant="secondary" className="text-xs">
-          Unknown
-        </Badge>
-      );
-  }
+function statusTone(status: string | undefined): "green" | "amber" | "red" | "dim" {
+  if (status === "ok" || status === "healthy") return "green"
+  if (status === "degraded" || status === "waiting") return "amber"
+  if (status === "error" || status === "down") return "red"
+  return "dim"
 }
 
-/** Map module health status to a colored badge variant for per-module cells. */
-function moduleStatusVariant(status: string): {
-  className?: string;
-  variant?: "default" | "secondary" | "destructive" | "outline";
-} {
-  switch (status) {
-    case "connected":
-    case "ok":
-      return { className: "bg-emerald-600 text-white hover:bg-emerald-600/90" };
-    case "degraded":
-      return { variant: "outline", className: "border-amber-500 text-amber-600" };
-    case "error":
-      return { variant: "destructive" };
-    default:
-      return { variant: "secondary" };
-  }
+function statusLabel(status: string | undefined): string {
+  if (status === "ok" || status === "healthy") return "online"
+  return status ?? "unknown"
 }
 
-/** Single module cell showing name + status badge. */
-function ModuleCell({ mod }: { mod: ModuleStatus }) {
-  const { variant, className } = moduleStatusVariant(mod.status);
-  return (
-    <div
-      className="flex flex-col gap-1 rounded-md border p-3"
-      title={mod.error ?? mod.status}
-    >
-      <span className="text-sm font-medium truncate">{mod.name}</span>
-      <Badge variant={variant} className={className}>
-        {mod.status}
-      </Badge>
-    </div>
-  );
-}
-
-/** Map eligibility state to a badge. Quarantined/stale are clickable to restore. */
-function eligibilityBadge(
-  state: string,
-  onClick?: () => void,
-  isPending?: boolean,
-) {
-  if (state === "active") {
-    return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">Active</Badge>
-    );
-  }
-  if (state === "quarantined") {
-    return (
-      <Badge
-        variant="destructive"
-        className={isPending ? "opacity-50" : "cursor-pointer"}
-        onClick={isPending ? undefined : onClick}
-        title="Click to restore to active"
-      >
-        {isPending ? "Restoring..." : "Quarantined"}
-      </Badge>
-    );
-  }
-  if (state === "stale") {
-    return (
-      <Badge
-        variant="outline"
-        className={
-          isPending
-            ? "border-amber-500 text-amber-600 opacity-50"
-            : "border-amber-500 text-amber-600 cursor-pointer"
-        }
-        onClick={isPending ? undefined : onClick}
-        title="Click to restore to active"
-      >
-        {isPending ? "Restoring..." : "Stale"}
-      </Badge>
-    );
-  }
-  return <Badge variant="secondary">{state}</Badge>;
-}
-
-/** Format a USD cost value. */
-function formatCurrency(amount: number): string {
-  if (amount < 0.01) return "$0.00";
-  return `$${amount.toFixed(2)}`;
-}
-
-/** Format seconds into a human-readable liveness duration. */
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-  const days = Math.floor(hours / 24);
-  const remainingHours = hours % 24;
-  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
-}
-
-/** Map session success field to a compact status badge. */
-function sessionStatusBadge(success: boolean | null) {
-  if (success === true) {
-    return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-        Success
-      </Badge>
-    );
-  }
-  if (success === false) {
-    return <Badge variant="destructive">Failed</Badge>;
-  }
-  return (
-    <Badge variant="secondary" className="text-muted-foreground">
-      Running
-    </Badge>
-  );
-}
-
-/** Format a percentage share, rounded to one decimal place. */
-function formatPercent(share: number, total: number): string {
-  if (total === 0) return "0.0%";
-  return `${((share / total) * 100).toFixed(1)}%`;
-}
-
-/** Map activity event type to a compact badge label. */
-function activityEventBadge(eventType: ActivityEventType) {
+function activityLabel(eventType: ActivityEventType): string {
   switch (eventType) {
     case "session_completed":
-      return (
-        <Badge variant="secondary" className="text-xs shrink-0 w-[80px] justify-center">
-          session
-        </Badge>
-      );
+      return "session"
     case "approval_raised":
-      return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs shrink-0 w-[80px] justify-center">
-          approval
-        </Badge>
-      );
+      return "approval"
     case "memory_write":
-      return (
-        <Badge variant="secondary" className="text-xs shrink-0 w-[80px] justify-center text-muted-foreground">
-          memory
-        </Badge>
-      );
+      return "memory"
     default:
-      return (
-        <Badge variant="secondary" className="text-xs shrink-0 w-[80px] justify-center">
-          {eventType}
-        </Badge>
-      );
+      return eventType
   }
 }
 
-// ---------------------------------------------------------------------------
-// Process facts panel body
-// ---------------------------------------------------------------------------
-
-interface ProcessFactsPanelBodyProps {
-  processFacts: ProcessFacts | null | undefined;
-}
-
-function ProcessFactsPanelBody({ processFacts }: ProcessFactsPanelBodyProps) {
-  const unavailable = "--";
+function ActivityStripe({ values }: { values: number[] }) {
+  const max = Math.max(...values, 1)
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm font-mono">
-      <dt className="text-muted-foreground font-medium font-sans">Container</dt>
-      <dd>{processFacts?.container_name ?? unavailable}</dd>
-      <dt className="text-muted-foreground font-medium font-sans">Port</dt>
-      <dd>{processFacts?.port ?? unavailable}</dd>
-      <dt className="text-muted-foreground font-medium font-sans">Registered</dt>
-      <dd>
-        {processFacts?.registered_duration_seconds != null
-          ? formatDuration(processFacts.registered_duration_seconds)
-          : unavailable}
-      </dd>
-      <dt className="text-muted-foreground font-medium font-sans">Config</dt>
-      <dd>{processFacts?.config_path ?? unavailable}</dd>
-    </dl>
-  );
+    <div className="flex h-[68px] items-end gap-px" aria-label="24-hour activity">
+      {values.map((value, index) => {
+        const height = value === 0 ? 2 : 2 + Math.round((value / max) * 66)
+        return (
+          <span
+            key={index}
+            className={value === 0 ? "flex-1 rounded-[1px] bg-muted" : "flex-1 rounded-[1px] bg-foreground/70"}
+            style={{ height }}
+          />
+        )
+      })}
+    </div>
+  )
 }
 
-// ---------------------------------------------------------------------------
-// Loading skeleton (panel grid shape)
-// ---------------------------------------------------------------------------
+function HourAxis() {
+  return (
+    <div className="mt-2 flex justify-between font-mono text-[9px] text-muted-foreground">
+      {["00", "03", "06", "09", "12", "15", "18", "21", "now"].map((label) => (
+        <span key={label}>{label}</span>
+      ))}
+    </div>
+  )
+}
+
+function EventKind({ eventType }: { eventType: ActivityEventType }) {
+  return (
+    <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+      {activityLabel(eventType)}
+    </span>
+  )
+}
+
+function ActionRow({ action }: { action: ApprovalAction }) {
+  return (
+    <div className="grid grid-cols-[8px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border/40 py-2 last:border-b-0">
+      <span className="mt-1.5 h-1.5 w-1.5 rounded-[1px] bg-amber-500" aria-hidden="true" />
+      <span className="min-w-0 truncate text-xs">
+        {action.agent_summary || action.tool_name}
+        <span className="text-muted-foreground"> · </span>
+        <Time value={action.requested_at} mode="relative" />
+      </span>
+      <Link
+        to="/approvals"
+        className="text-xs text-foreground underline decoration-border underline-offset-4"
+      >
+        review
+      </Link>
+    </div>
+  )
+}
 
 function OverviewSkeleton() {
   return (
-    <ButlerPanelGrid
-      className="sm:grid-cols-2 md:grid-cols-4"
-      data-testid="overview-skeleton"
-    >
-      <Panel title="identity" span={2} className="sm:col-span-2">
-        <div className="space-y-3">
-          <Skeleton className="h-5 w-40" />
-          <Skeleton className="h-4 w-64" />
-          <Skeleton className="h-4 w-32" />
-        </div>
+    <ButlerPanelGrid className="sm:grid-cols-2 md:grid-cols-4" data-testid="overview-skeleton">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Panel key={index} title="loading">
+          <Skeleton className="h-8 w-24 rounded-sm" />
+        </Panel>
+      ))}
+      <Panel title="activity" span={2} className="sm:col-span-2">
+        <Skeleton className="h-[100px] w-full rounded-sm" />
       </Panel>
-      <Panel title="process" span={2} className="sm:col-span-2">
-        <div className="space-y-3">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-4 w-56" />
-        </div>
+      <Panel title="recent" span={2} className="sm:col-span-2">
+        <Skeleton className="h-[100px] w-full rounded-sm" />
       </Panel>
-      <Panel title="heartbeat" span={2} className="sm:col-span-2">
-        <div className="space-y-3">
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-4 w-40" />
-        </div>
+      <Panel title="awaiting your action" span={2} className="sm:col-span-2">
+        <Skeleton className="h-24 w-full rounded-sm" />
       </Panel>
-      <Panel title="modules" span={2} className="sm:col-span-2">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          <Skeleton className="h-16 rounded-md" />
-          <Skeleton className="h-16 rounded-md" />
-          <Skeleton className="h-16 rounded-md" />
-        </div>
-      </Panel>
-      <Panel title="cost" span={1}>
-        <div className="space-y-2">
-          <Skeleton className="h-6 w-24" />
-          <Skeleton className="h-6 w-24" />
-        </div>
-      </Panel>
-      <Panel title="recent sessions" span={3} className="sm:col-span-2 md:col-span-3">
-        <div className="space-y-3">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 w-full" />
-          ))}
-        </div>
-      </Panel>
-      <Panel title="activity" span={4} className="sm:col-span-2 md:col-span-4">
-        <div className="space-y-2">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-8 w-full" />
-          ))}
-        </div>
+      <Panel title="config" span={2} className="sm:col-span-2">
+        <Skeleton className="h-24 w-full rounded-sm" />
       </Panel>
     </ButlerPanelGrid>
-  );
+  )
 }
 
-// ---------------------------------------------------------------------------
-// ButlerOverviewTab
-// ---------------------------------------------------------------------------
-
 export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
-  const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName);
-  const { data: costTodayResponse, isLoading: costTodayLoading } = useCostSummary("today");
-  const { data: cost7dResponse, isLoading: cost7dLoading } = useCostSummary("7d");
-  const { data: sessionsResponse, isLoading: sessionsLoading } = useButlerSessions(butlerName, {
-    limit: 5,
-  });
-  const { data: registryResponse } = useRegistry();
-  const setEligibility = useSetEligibility();
-  const { data: heartbeatsResponse, isLoading: heartbeatsLoading } = useButlerHeartbeats();
-  const { data: modulesResponse, isLoading: modulesLoading } = useButlerModules(butlerName);
+  const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName)
+  const { rows } = useButlerStatusBoard()
+  const costQuery = useCostSummary("today")
+  const approvalsQuery = useApprovalActions({ status: "pending", butler: butlerName, limit: 5 })
   const {
     data: activityFeedData,
     isLoading: activityFeedLoading,
     isError: activityFeedError,
-  } = useButlerActivityFeed(butlerName);
+  } = useButlerActivityFeed(butlerName, 5)
 
   if (butlerLoading) {
-    return <OverviewSkeleton />;
+    return <OverviewSkeleton />
   }
 
-  const butler = butlerResponse?.data;
-  // Derive per-butler costs. A value of undefined means the summary wasn't available
-  // (loading or error); 0 means the summary loaded but this butler had no spend.
-  const costTodaySummary = costTodayResponse?.data;
-  const cost7dSummary = cost7dResponse?.data;
-  const costToday = costTodaySummary ? (costTodaySummary.by_butler?.[butlerName] ?? 0) : undefined;
-  const cost7d = cost7dSummary ? (cost7dSummary.by_butler?.[butlerName] ?? 0) : undefined;
-  const globalTotalToday = costTodaySummary?.total_cost_usd;
-  const costLoading = costTodayLoading || cost7dLoading;
-  const recentSessions = sessionsResponse?.data ?? [];
-
-  // Find this butler's registry entry for eligibility state
-  const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
-
-  // Find this butler's heartbeat entry
-  const heartbeatEntry = heartbeatsResponse?.data?.butlers?.find((b) => b.name === butlerName);
-  const freshness = heartbeatFreshness(heartbeatEntry?.heartbeat_age_seconds);
-
-  // Per-module health from dedicated endpoint
-  const modules = modulesResponse?.data ?? [];
-
-  // Activity feed events
-  const activityEvents = activityFeedData?.events ?? [];
-
-  const showShareRow =
-    costToday != null && globalTotalToday != null && globalTotalToday > 0;
+  const butler = butlerResponse?.data
+  const row = rows.find((item) => item.name === butlerName)
+  const processFacts = butler?.process_facts ?? null
+  const modules = butler?.modules ?? []
+  const schedules = butler?.schedules ?? []
+  const skills = butler?.skills ?? []
+  const sessions24h = row?.sessions24h ?? butler?.sessions_24h ?? 0
+  const costToday = costQuery.data?.data?.by_butler?.[butlerName] ?? 0
+  const pendingActions = approvalsQuery.data?.data ?? []
+  const recentEvents = activityFeedData?.events ?? []
+  const stripe = row?.hourlyStripe ?? Array(24).fill(0)
+  const status = butler?.status ?? row?.status
+  const awaitingCount = pendingActions.length
 
   return (
     <ButlerPanelGrid
       className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-panel-grid"
     >
-      {/* ----------------------------------------------------------------- */}
-      {/* Row 1: identity (span=2) | process (span=2)                        */}
-      {/* ----------------------------------------------------------------- */}
-
-      {/* Identity panel */}
-      <Panel
-        title="identity"
-        span={2}
-        className="sm:col-span-2"
-        testId="panel-identity"
-      >
-        {/* Butler mark + name + status */}
-        <div className="flex items-center gap-3 mb-2">
-          <ButlerMark name={butlerName} tone="fill" />
-          <span className="font-semibold text-foreground">
-            {butler?.name ?? butlerName}
+      <Panel title="status" testId="panel-status">
+        <div className="flex items-center gap-2">
+          <span
+            className={[
+              "h-2 w-2 rounded-full",
+              statusTone(status) === "green" && "bg-emerald-500",
+              statusTone(status) === "amber" && "bg-amber-500",
+              statusTone(status) === "red" && "bg-destructive",
+              statusTone(status) === "dim" && "bg-muted-foreground",
+            ].filter(Boolean).join(" ")}
+            aria-hidden="true"
+          />
+          <span className="font-mono text-sm uppercase tracking-[0.06em]">
+            {statusLabel(status)}
+            {row?.activity ? ` · ${row.activity}` : ""}
           </span>
-          {butler && <ButlerStatusBadge status={butler.status} />}
         </div>
-        {butler?.description && (
-          <p className="italic font-[family-name:var(--font-serif,serif)] text-sm text-muted-foreground mb-3">
-            {butler.description}
-          </p>
-        )}
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-          <dt className="text-muted-foreground font-medium">Port</dt>
-          <dd>{butler?.port ?? "--"}</dd>
-          <dt className="text-muted-foreground font-medium">Status</dt>
-          <dd className="capitalize">{butler?.status ?? "unknown"}</dd>
-        </dl>
+        <MonoLabel color="dim" className="mt-2 block">
+          last run {row?.lastRunISO ? <Time value={row.lastRunISO} mode="relative" /> : "--"}
+        </MonoLabel>
       </Panel>
 
-      {/* Process panel */}
-      <Panel
-        title="process"
-        span={2}
-        className="sm:col-span-2"
-        testId="panel-process"
-      >
-        <ProcessFactsPanelBody processFacts={butler?.process_facts ?? null} />
+      <Panel title="sessions" sub="24h" testId="panel-sessions">
+        <KpiCell label="" value={sessions24h} sub="started in the last day" />
       </Panel>
 
-      {/* ----------------------------------------------------------------- */}
-      {/* Row 2: heartbeat (span=2) | modules (span=2)                       */}
-      {/* ----------------------------------------------------------------- */}
-
-      {/* Heartbeat and eligibility panel */}
-      <Panel
-        title="heartbeat"
-        span={2}
-        className="sm:col-span-2"
-        testId="panel-heartbeat"
-      >
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-          <dt className="text-muted-foreground font-medium">Last heartbeat</dt>
-          <dd className="flex items-center gap-2" data-testid="heartbeat-row">
-            {heartbeatsLoading ? (
-              <Skeleton className="h-5 w-16" />
-            ) : (
-              <>
-                <HeartbeatFreshnessPill freshness={freshness} />
-                {heartbeatEntry?.last_heartbeat_at ? (
-                  <span className="text-xs text-muted-foreground">
-                    <Time value={heartbeatEntry.last_heartbeat_at} mode="relative" />
-                  </span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">No heartbeat recorded</span>
-                )}
-              </>
-            )}
-          </dd>
-          {heartbeatEntry?.heartbeat_age_seconds != null && (
-            <>
-              <dt className="text-muted-foreground font-medium">Age</dt>
-              <dd className="text-sm font-mono">
-                {formatDuration(heartbeatEntry.heartbeat_age_seconds)}
-              </dd>
-            </>
-          )}
-          {registryEntry && (
-            <>
-              <dt className="text-muted-foreground font-medium">Eligibility</dt>
-              <dd>
-                {eligibilityBadge(
-                  registryEntry.eligibility_state,
-                  () =>
-                    setEligibility.mutate({
-                      name: butlerName,
-                      state: "active",
-                    }),
-                  setEligibility.isPending,
-                )}
-                {registryEntry.quarantine_reason && (
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    {registryEntry.quarantine_reason}
-                  </span>
-                )}
-              </dd>
-              <dt className="text-muted-foreground font-medium">24h History</dt>
-              <dd className="pt-1">
-                <EligibilityTimeline butlerName={butlerName} />
-              </dd>
-            </>
-          )}
-        </dl>
-      </Panel>
-
-      {/* Modules panel */}
-      <Panel
-        title="modules"
-        span={2}
-        className="sm:col-span-2"
-        testId="panel-modules"
-      >
-        {modulesLoading ? (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            <Skeleton className="h-16 rounded-md" />
-            <Skeleton className="h-16 rounded-md" />
-            <Skeleton className="h-16 rounded-md" />
-          </div>
-        ) : modules.length > 0 ? (
-          <div
-            className="grid grid-cols-2 gap-2 sm:grid-cols-3"
-            data-testid="module-health-grid"
-          >
-            {modules.map((mod) => (
-              <ModuleCell key={mod.name} mod={mod} />
-            ))}
-          </div>
+      <Panel title="spend" sub="today" testId="panel-spend">
+        {costQuery.isLoading ? (
+          <Skeleton className="h-8 w-20 rounded-sm" />
         ) : (
-          <p className="text-sm text-muted-foreground">No modules registered</p>
+          <KpiCell
+            label=""
+            value={formatCurrency(costToday)}
+            sub={`${formatCurrency(sessions24h > 0 ? costToday / sessions24h : 0)} / session`}
+          />
         )}
       </Panel>
 
-      {/* ----------------------------------------------------------------- */}
-      {/* Row 3: cost (span=1) | recent sessions (span=3)                    */}
-      {/* ----------------------------------------------------------------- */}
-
-      {/* Cost panel */}
-      <Panel
-        title="cost today"
-        span={1}
-        testId="panel-cost"
-      >
-        {costLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-6 w-24" />
-            <Skeleton className="h-6 w-24" />
-            <Skeleton className="h-6 w-32" />
-          </div>
-        ) : costToday == null && cost7d == null ? (
-          <p className="text-sm text-muted-foreground">No cost data</p>
-        ) : (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground font-medium">Today</dt>
-            <dd className="font-mono">
-              {costToday != null ? formatCurrency(costToday) : "--"}
-            </dd>
-            <dt className="text-muted-foreground font-medium">Last 7d</dt>
-            <dd className="font-mono">
-              {cost7d != null ? formatCurrency(cost7d) : "--"}
-            </dd>
-            {showShareRow && (
-              <>
-                <dt className="text-muted-foreground font-medium">Share (today)</dt>
-                <dd className="font-mono" data-testid="cost-share-row">
-                  {formatCurrency(costToday!)} / {formatCurrency(globalTotalToday!)}{" "}
-                  ({formatPercent(costToday!, globalTotalToday!)})
-                </dd>
-              </>
-            )}
-          </dl>
-        )}
+      <Panel title="awaiting" testId="panel-awaiting">
+        <KpiCell
+          label=""
+          value={awaitingCount}
+          sub={awaitingCount > 0 ? "pending review" : "nothing pending"}
+          tone={awaitingCount > 0 ? "amber" : "fg"}
+        />
       </Panel>
 
-      {/* Recent sessions panel */}
-      <Panel
-        title="recent sessions"
-        span={3}
-        className="sm:col-span-2 md:col-span-3"
-        testId="panel-recent-sessions"
-      >
-        <div className="flex items-center justify-end mb-2">
-          <Button variant="link" size="sm" asChild className="h-auto p-0 text-xs">
-            <Link to={`/butlers/${encodeURIComponent(butlerName)}/sessions`}>
-              View all
-            </Link>
-          </Button>
-        </div>
-        {sessionsLoading ? (
-          <div className="space-y-3">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-10 w-full" />
-            ))}
-          </div>
-        ) : recentSessions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No sessions yet</p>
-        ) : (
-          <ul className="divide-y divide-border" aria-label="sessions list">
-            {recentSessions.map((session: SessionSummary) => (
-              <li key={session.id} className="py-2 flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm truncate text-foreground" title={session.prompt}>
-                    {session.prompt}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    <Time value={session.started_at} mode="smart" compact />
-                  </p>
-                </div>
-                <div className="shrink-0">{sessionStatusBadge(session.success)}</div>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Panel title="activity" sub="24h" span={2} height="140px" className="sm:col-span-2" testId="panel-activity">
+        <ActivityStripe values={stripe} />
+        <HourAxis />
       </Panel>
 
-      {/* ----------------------------------------------------------------- */}
-      {/* Row 4: activity feed (span=4)                                      */}
-      {/* ----------------------------------------------------------------- */}
-
-      <Panel
-        title="activity"
-        span={4}
-        scroll
-        height="320px"
-        className="sm:col-span-2 md:col-span-4"
-        testId="panel-activity-feed"
-      >
+      <Panel title="recent" sub={`${recentEvents.length} events`} span={2} scroll height="140px" className="sm:col-span-2" testId="panel-recent">
         {activityFeedLoading ? (
           <div className="space-y-2" data-testid="activity-feed-loading">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-8 w-full" />
+            {Array.from({ length: 4 }).map((_, index) => (
+              <Skeleton key={index} className="h-7 w-full rounded-sm" />
             ))}
           </div>
         ) : activityFeedError ? (
-          <ErrorLine>Could not load activity feed.</ErrorLine>
-        ) : activityEvents.length === 0 ? (
-          <p className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]">
-            No recent activity.
-          </p>
+          <ErrorLine>Could not load recent events.</ErrorLine>
+        ) : recentEvents.length === 0 ? (
+          <MonoLabel color="dim">no recent events</MonoLabel>
         ) : (
           <div data-testid="activity-feed-list">
-            {activityEvents.map((event, idx) => (
+            {recentEvents.map((event, index) => (
               <div
-                key={`${event.ts}-${idx}`}
-                className="flex items-baseline gap-3 py-1.5 border-b border-border/40 last:border-b-0 min-w-0"
+                key={`${event.ts}-${index}`}
+                className="grid grid-cols-[50px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border/40 py-1.5 last:border-b-0"
                 data-testid="activity-feed-row"
               >
-                {/* Timestamp — 80px, relative */}
-                <span className="shrink-0 w-[80px] text-xs text-muted-foreground">
-                  <Time value={event.ts} mode="relative" />
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  <Time value={event.ts} mode="relative" compact />
                 </span>
-                {/* Event type badge — 80px */}
-                {activityEventBadge(event.event_type)}
-                {/* Summary text — flex, truncated */}
-                <span className="flex-1 text-xs text-foreground min-w-0 truncate">
-                  {event.summary}
-                </span>
+                <span className="min-w-0 truncate text-xs">{event.summary}</span>
+                <EventKind eventType={event.event_type} />
               </div>
             ))}
           </div>
         )}
       </Panel>
 
+      <Panel title="awaiting your action" span={2} scroll className="sm:col-span-2" testId="panel-awaiting-actions">
+        {approvalsQuery.isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-7 w-full rounded-sm" />
+            <Skeleton className="h-7 w-full rounded-sm" />
+          </div>
+        ) : approvalsQuery.isError ? (
+          <ErrorLine>Could not load approvals.</ErrorLine>
+        ) : pendingActions.length === 0 ? (
+          <MonoLabel color="dim">no items pending review</MonoLabel>
+        ) : (
+          <div>
+            {pendingActions.map((action) => (
+              <ActionRow key={action.id} action={action} />
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      <Panel
+        title="config"
+        sub={processFacts?.config_path ?? undefined}
+        span={2}
+        className="sm:col-span-2"
+        testId="panel-config"
+      >
+        <div className="grid gap-0">
+          <KV k="port" v={processFacts?.port ?? butler?.port ?? "--"} mono />
+          <KV
+            k="registered"
+            v={processFacts?.registered_duration_seconds != null ? `${Math.floor(processFacts.registered_duration_seconds / 3600)}h` : "--"}
+            mono
+          />
+          <KV k="modules" v={`${modules.length} registered`} />
+          <KV k="schedules" v={`${schedules.length} configured`} />
+          <KV k="skills" v={`${skills.length} available`} />
+        </div>
+      </Panel>
     </ButlerPanelGrid>
-  );
+  )
 }

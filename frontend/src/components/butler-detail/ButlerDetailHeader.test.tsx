@@ -40,8 +40,13 @@ vi.mock("@/hooks/use-butler-status-board", () => ({
   useButlerStatusBoard: vi.fn(),
 }))
 
+vi.mock("@/hooks/use-butlers", () => ({
+  useButler: vi.fn(),
+}))
+
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board"
+import { useButler } from "@/hooks/use-butlers"
 import { ButlerDetailHeader } from "./ButlerDetailHeader"
 
 // ---------------------------------------------------------------------------
@@ -104,6 +109,30 @@ function renderHeader(butlerName = "relationship") {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  vi.mocked(useButler).mockReturnValue({
+    data: {
+      data: {
+        name: "relationship",
+        status: "ok",
+        port: 8471,
+        type: "butler",
+        description: "Relationship intelligence butler",
+        sessions_24h: 0,
+        modules: [],
+        schedules: [],
+        skills: [],
+        process_facts: {
+          container_name: "butlers-relationship",
+          port: 8471,
+          registered_duration_seconds: 390_000,
+          config_path: "roster/relationship/butler.toml",
+        },
+      },
+      meta: {},
+    },
+    isLoading: false,
+    error: null,
+  } as unknown as ReturnType<typeof useButler>)
   vi.mocked(useButlerStatusBoard).mockReturnValue({
     rows: [
       makeRow("relationship", { description: "Relationship intelligence butler", activity: "idle" }),

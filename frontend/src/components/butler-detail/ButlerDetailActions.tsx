@@ -19,7 +19,6 @@ import { toast } from "sonner";
 
 import { triggerButler } from "@/api/index.ts";
 import { ChatPanel } from "@/components/chat/ChatPanel";
-import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
 import { Button } from "@/components/ui/button";
 import { useButler } from "@/hooks/use-butlers";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
@@ -29,6 +28,40 @@ import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 // ---------------------------------------------------------------------------
 
 type DetailMode = "operator" | "resident";
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "ok":
+    case "healthy":
+      return "online";
+    case "degraded":
+      return "degraded";
+    case "error":
+    case "down":
+      return "down";
+    default:
+      return status || "unknown";
+  }
+}
+
+function statusToneClass(status: string): string {
+  switch (status) {
+    case "ok":
+    case "healthy":
+      return "bg-emerald-500";
+    case "degraded":
+      return "bg-amber-500";
+    case "error":
+    case "down":
+      return "bg-destructive";
+    default:
+      return "bg-muted-foreground";
+  }
+}
+
+const operationalButtonClassName =
+  "h-7 rounded-[3px] border-border bg-transparent px-2.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] shadow-none " +
+  "hover:bg-muted/50 hover:text-foreground dark:bg-transparent dark:border-border dark:hover:bg-muted/50";
 
 interface ButlerDetailActionsProps {
   butlerName: string;
@@ -90,7 +123,17 @@ export function ButlerDetailActions({
 
   return (
     <div className="flex items-center gap-2" data-testid="butler-detail-actions">
-      <ButlerStatusBadge status={status} data-testid="butler-status-pill" />
+      <span
+        data-testid="butler-status-pill"
+        aria-label={`Butler status: ${statusLabel(status)}`}
+        className="inline-flex items-center gap-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground"
+      >
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${statusToneClass(status)}`}
+          aria-hidden="true"
+        />
+        {statusLabel(status)}
+      </span>
 
       {/* Operator / Resident mode toggle pill */}
       <button
@@ -100,7 +143,7 @@ export function ButlerDetailActions({
         aria-label={`Switch to ${mode === "operator" ? "resident" : "operator"} mode`}
         data-testid="butler-mode-toggle"
         onClick={handleModeToggle}
-        className="inline-flex cursor-pointer items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 select-none"
+        className="inline-flex h-7 cursor-pointer select-none items-center rounded-[3px] border border-border bg-transparent px-2.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         {mode === "operator" ? "Operator" : "Resident"}
       </button>
@@ -111,6 +154,7 @@ export function ButlerDetailActions({
         data-testid="butler-force-run"
         disabled={isForceRunning}
         onClick={handleForceRun}
+        className={operationalButtonClassName}
       >
         {isForceRunning ? "Running…" : "Force Run"}
       </Button>
@@ -121,6 +165,7 @@ export function ButlerDetailActions({
         data-testid="butler-pause"
         disabled={pauseDisabled}
         onClick={handlePauseToggle}
+        className={operationalButtonClassName}
       >
         {setEligibility.isPending
           ? isPaused
@@ -131,7 +176,7 @@ export function ButlerDetailActions({
             : "Pause"}
       </Button>
 
-      <ChatPanel butlerName={butlerName} />
+      <ChatPanel butlerName={butlerName} triggerClassName={operationalButtonClassName} />
     </div>
   );
 }

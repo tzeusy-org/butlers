@@ -183,8 +183,7 @@ describe("ButlerDetailPage — single-H1 contract", () => {
     const html = renderPage();
     const h1Match = html.match(/<h1[^>]*>(.*?)<\/h1>/s);
     expect(h1Match).not.toBeNull();
-    // ButlerDetailHeader renders the raw butler name; CSS capitalize is applied at render time.
-    expect(h1Match![1]).toContain("general");
+    expect(h1Match![1].toLowerCase()).toContain("general");
   });
 
   it("tabs block remains inside the primary content — no second h1", () => {
@@ -314,10 +313,10 @@ describe("ButlerDetailPage — rendering", () => {
     expect(html).toContain("Skills");
   });
 
-  it("renders breadcrumbs with Overview and Butlers links", () => {
+  it("renders compact route metadata instead of legacy breadcrumbs", () => {
     const html = renderPage();
-    expect(html).toContain("/butlers");
-    expect(html).toContain("Butlers");
+    expect(html).toContain("/butlers/general");
+    expect(html).not.toContain('aria-label="Breadcrumb"');
   });
 });
 
@@ -387,12 +386,12 @@ describe("ButlerDetailPage — Gate-A A2 actions slot", () => {
     expect(html).toContain("Sessions");
   });
 
-  it("status pill shows Up badge for ok status", () => {
+  it("status indicator shows online for ok status", () => {
     const html = renderPage();
-    // BASE_BUTLER has status: "ok" → renders "Up" text inside the pill
+    // BASE_BUTLER has status: "ok" and renders a compact text indicator.
     const pillStart = html.indexOf('data-testid="butler-status-pill"');
     const pillRegion = html.slice(pillStart, pillStart + 200);
-    expect(pillRegion).toContain("Up");
+    expect(pillRegion).toContain("online");
   });
 });
 
@@ -500,7 +499,7 @@ describe("ButlerDetailPage — Gate-B B2 default rendering (resident mode)", () 
   it("mode toggle pill shows Resident label in resident mode", () => {
     const html = renderPage();
     const toggleIndex = html.indexOf('data-testid="butler-mode-toggle"');
-    const pillRegion = html.slice(toggleIndex, toggleIndex + 300);
+    const pillRegion = html.slice(toggleIndex, toggleIndex + 900);
     expect(pillRegion).toContain("Resident");
   });
 });
@@ -543,7 +542,7 @@ describe("ButlerDetailPage — Gate-B B2 operator mode rendering", () => {
   it("mode toggle pill shows Operator label in operator mode", () => {
     const html = renderPage();
     const toggleIndex = html.indexOf('data-testid="butler-mode-toggle"');
-    const pillRegion = html.slice(toggleIndex, toggleIndex + 300);
+    const pillRegion = html.slice(toggleIndex, toggleIndex + 900);
     expect(pillRegion).toContain("Operator");
   });
 });
@@ -1714,17 +1713,14 @@ describe("Spec scenario 1 -- status-board archetype chrome on /butlers/{name}", 
     expect(html).toContain('data-testid="butler-detail-header"');
   });
 
-  it("renders breadcrumbs in the status-board chrome strip", () => {
+  it("does not render the legacy breadcrumb chrome strip", () => {
     const html = renderPage();
-    // status-board archetype renders a chrome strip between the header slot
-    // and the body when breadcrumbs are provided.
-    expect(html).toContain('aria-label="Breadcrumb"');
-    expect(html).toContain("/butlers");
+    expect(html).not.toContain('aria-label="Breadcrumb"');
+    expect(html).toContain("/butlers/general");
   });
 
-  it("renders the actions slot in the status-board chrome strip", () => {
+  it("renders the actions inside the status-board header", () => {
     const html = renderPage();
-    // ButlerDetailActions is in the actions slot, rendered inside the chrome strip.
     expect(html).toContain('data-testid="butler-detail-actions"');
   });
 });
@@ -1802,7 +1798,7 @@ describe("Spec scenario 3 -- sibling nav is not duplicated in page body", () => 
 
   it("still renders the active butler identity in the detail header", () => {
     const html = renderPage();
-    expect(html).toContain(">health</h1>");
+    expect(html).toContain(">Health</h1>");
   });
 });
 
@@ -1907,10 +1903,10 @@ describe("Spec scenario 6 -- detail body remains token-only after shell nav move
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 7: footer KPI band is butler-scoped (shows active butler's data)
+// Scenario 7: redesigned overview owns page KPIs; legacy footer is removed
 // ---------------------------------------------------------------------------
 
-describe("Spec scenario 7 -- footer KPI band is scoped to the active butler", () => {
+describe("Spec scenario 7 -- detail page has no legacy footer KPI band", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorageMock.clear();
@@ -1940,35 +1936,32 @@ describe("Spec scenario 7 -- footer KPI band is scoped to the active butler", ()
     } as any);
   });
 
-  it("footer renders an aria-label scoped to the active butler", () => {
+  it("does not render the legacy footer aria-label", () => {
     const html = renderPage();
-    // ButlerDetailFooter renders <footer aria-label="KPI summary for {butler}">
-    expect(html).toContain('aria-label="KPI summary for general"');
+    expect(html).not.toContain('aria-label="KPI summary for general"');
   });
 
-  it("footer shows the active butler sessions_24h value (not fleet aggregate)", () => {
+  it("overview grid shows the active butler sessions_24h value", () => {
     const html = renderPage();
-    // sessions_24h=7 for general. The KPI cell renders "7" as the value.
-    // Fleet aggregate would be a different number (or 0 if others aren't included).
     expect(html).toContain(">7<");
   });
 
-  it("footer renders the Sessions 24h KPI label", () => {
+  it("overview grid renders the sessions KPI label", () => {
     const html = renderPage();
-    expect(html).toContain("Sessions 24h");
+    expect(html).toContain("sessions");
   });
 
-  it("footer renders the Spend today KPI label", () => {
+  it("overview grid renders the spend KPI label", () => {
     const html = renderPage();
-    expect(html).toContain("Spend today");
+    expect(html).toContain("spend");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 8: footer partial-failure placeholder when loadPct is null
+// Scenario 8: overview partial-failure placeholder when config facts are null
 // ---------------------------------------------------------------------------
 
-describe("Spec scenario 8 -- footer LOAD % shows neutral placeholder when loadPct is null", () => {
+describe("Spec scenario 8 -- overview config shows neutral placeholder when process facts are null", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorageMock.clear();
@@ -1991,21 +1984,17 @@ describe("Spec scenario 8 -- footer LOAD % shows neutral placeholder when loadPc
     } as any);
   });
 
-  it("footer LOAD % cell renders the neutral placeholder glyph when max_concurrent is unknown", () => {
+  it("overview config renders the neutral placeholder glyph when process facts are unknown", () => {
     const html = renderPage();
-    // ButlerDetailFooter renders "--" (two hyphens, not em-dash) when loadPct=null.
-    // The PLACEHOLDER constant is "--".
-    // Since the footer contains multiple KPI cells, we check that "--" appears.
     expect(html).toContain("--");
   });
 
-  it("footer does not collapse or crash when loadPct is null", () => {
+  it("overview grid does not collapse or crash when process facts are null", () => {
     const html = renderPage();
-    // The footer should still render all four KPI labels.
-    expect(html).toContain("Sessions 24h");
-    expect(html).toContain("Spend today");
-    expect(html).toContain("Load");
-    expect(html).toContain("Last activity");
+    expect(html).toContain("status");
+    expect(html).toContain("sessions");
+    expect(html).toContain("spend");
+    expect(html).toContain("config");
   });
 });
 
@@ -2370,6 +2359,38 @@ describe("Spec scenario 14 -- responsive tab rail overflow (bu-ja5bt.7)", () => 
     const tablist = container.querySelector('[role="tablist"]');
     expect(tablist).not.toBeNull();
     expect(tablist!.className).toContain("snap-x");
+  });
+
+  it("switchboard resident tab rail uses the detail-page line treatment", () => {
+    localStorageMock.getItem.mockReturnValue(null);
+    vi.mocked(useParams).mockReturnValue({ name: "switchboard" });
+    setButlerState({ ...BASE_BUTLER, name: "switchboard" });
+
+    const { container } = renderPageLive();
+    const tablist = container.querySelector('[role="tablist"]');
+    expect(tablist).not.toBeNull();
+    expect(tablist!.getAttribute("data-variant")).toBe("line");
+    expect(tablist!.className).toContain("border-b");
+    expect(tablist!.className).toContain("bg-transparent");
+    expect(tablist!.className).not.toContain("bg-muted");
+
+    const triggerLabels = screen.getAllByRole("tab").map((tab) => tab.textContent?.trim());
+    expect(triggerLabels).toEqual([
+      "Overview",
+      "Activity",
+      "Logs",
+      "Approvals",
+      "Spend",
+      "Config",
+      "Memory",
+      "Routing Log",
+      "Registry",
+    ]);
+
+    const overview = screen.getByRole("tab", { name: "Overview" });
+    expect(overview.className).toContain("font-mono");
+    expect(overview.className).toContain("uppercase");
+    expect(overview.className).toContain("data-[state=active]:bg-transparent");
   });
 
   // -------------------------------------------------------------------------
