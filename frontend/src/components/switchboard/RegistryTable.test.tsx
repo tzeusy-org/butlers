@@ -31,6 +31,22 @@ function extractBadgeTexts(html: string): string[] {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const SAMPLE_REGISTRY_ENTRY = {
+  name: "switchboard",
+  endpoint_url: "http://localhost:40100/sse",
+  description: "Route messages",
+  modules: [] as unknown[],
+  last_seen_at: null,
+  eligibility_state: "eligible",
+  quarantined_at: null,
+  quarantine_reason: null,
+  registered_at: "2026-02-13T00:00:00Z",
+};
+
 describe("RegistryTable", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -185,6 +201,87 @@ describe("RegistryTable", () => {
     // Guard: must not contain single-character badges that would indicate splitting.
     const singleCharBadges = badges.filter((b) => b.length === 1);
     expect(singleCharBadges).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Empty-state coverage (bu-vbizz)
+  // ---------------------------------------------------------------------------
+
+  it("renders the empty state when there are no registry entries and not loading", () => {
+    setQueryState({
+      data: { data: [], meta: {} },
+      isLoading: false,
+    });
+
+    const html = renderTable();
+    expect(html).toContain("No butlers registered in the switchboard");
+  });
+
+  it("empty state title and description contain expected copy", () => {
+    setQueryState({
+      data: { data: [], meta: {} },
+      isLoading: false,
+    });
+
+    const html = renderTable();
+    expect(html).toContain("No butlers registered in the switchboard");
+    expect(html).toContain("Butlers appear here when they connect");
+  });
+
+  it("empty state copy contains no user-visible em-dash", () => {
+    setQueryState({
+      data: { data: [], meta: {} },
+      isLoading: false,
+    });
+
+    const html = renderTable();
+
+    // Isolate the empty-state block — EmptyState renders h2 (title) and p (description).
+    const h2Match = html.match(/<h2[^>]*>(.*?)<\/h2>/);
+    const pMatch = html.match(/<p[^>]*>(.*?)<\/p>/);
+
+    const titleText = h2Match?.[1] ?? "";
+    const descText = pMatch?.[1] ?? "";
+
+    expect(titleText).not.toContain("—");
+    expect(descText).not.toContain("—");
+    expect(titleText).not.toContain("&mdash;");
+    expect(descText).not.toContain("&mdash;");
+  });
+
+  it("does NOT render the empty state while loading (table skeleton shown instead)", () => {
+    setQueryState({
+      data: undefined,
+      isLoading: true,
+    });
+
+    const html = renderTable();
+    expect(html).not.toContain("No butlers registered");
+    // The table element is present during loading
+    expect(html).toContain("<table");
+  });
+
+  it("renders the table (not empty state) when entries are present", () => {
+    setQueryState({
+      data: { data: [SAMPLE_REGISTRY_ENTRY], meta: {} },
+      isLoading: false,
+    });
+
+    const html = renderTable();
+    expect(html).not.toContain("No butlers registered");
+    expect(html).toContain("<table");
+    expect(html).toContain("switchboard");
+  });
+
+  it("renders empty state when data is undefined and not loading", () => {
+    setQueryState({
+      data: undefined,
+      isLoading: false,
+    });
+
+    // response?.data ?? [] resolves to [] when data is undefined
+    const html = renderTable();
+    expect(html).toContain("No butlers registered in the switchboard");
   });
 
   // Regression test: butlers-992
