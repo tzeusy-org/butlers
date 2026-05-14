@@ -930,8 +930,9 @@ async def _persist_notes_and_remove_worktree(
     delete_remote: bool,
     diff_snapshot: list[dict[str, str]] | None = None,
 ) -> None:
+    notes_status: ParseStatus = "failed"
     try:
-        await _persist_investigation_notes(
+        notes_status = await _persist_investigation_notes(
             pool,
             attempt_id,
             worktree_path,
@@ -944,7 +945,7 @@ async def _persist_notes_and_remove_worktree(
             attempt_id,
             exc,
         )
-    if diff_snapshot is not None:
+    if notes_status == "failed" and diff_snapshot is not None:
         try:
             await _persist_diff_snapshot(pool, attempt_id, diff_snapshot)
         except Exception as exc:  # noqa: BLE001

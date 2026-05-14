@@ -29,6 +29,7 @@ from butlers.core.qa.dispatch import (
     _capture_commit_diff_snapshot,
     _dispatch_pr_review_followup,
     _extract_review_state,
+    _persist_notes_and_remove_worktree,
     _prepare_agent_workspace,
     _run_investigation_session,
     build_sandbox_env,
@@ -446,6 +447,73 @@ async def test_run_investigation_no_commit_persists_empty_snapshot_without_git_d
     create_pr.assert_awaited_once()
     assert persist_and_remove.await_args.kwargs["diff_snapshot"] == []
     assert persist_and_remove.await_args.kwargs["delete_branch"] is True
+
+
+@pytest.mark.asyncio
+async def test_persist_notes_and_remove_worktree_skips_diff_fallback_when_notes_persist(
+    tmp_path: Path,
+):
+    diff_snapshot = [{"kind": "+", "text": "fixed = True"}]
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch._persist_investigation_notes",
+            new_callable=AsyncMock,
+            return_value="ok",
+        ) as persist_notes,
+        patch(
+            "butlers.core.qa.dispatch._persist_diff_snapshot",
+            new_callable=AsyncMock,
+        ) as persist_diff,
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+    ):
+        await _persist_notes_and_remove_worktree(
+            _make_pool(),
+            uuid.uuid4(),
+            tmp_path,
+            "qa/finance/abcdef123456",
+            tmp_path,
+            delete_branch=False,
+            delete_remote=False,
+            diff_snapshot=diff_snapshot,
+        )
+
+    persist_notes.assert_awaited_once()
+    persist_diff.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_persist_notes_and_remove_worktree_falls_back_when_notes_absent(
+    tmp_path: Path,
+):
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    diff_snapshot = [{"kind": "+", "text": "fixed = True"}]
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch._persist_investigation_notes",
+            new_callable=AsyncMock,
+            return_value="failed",
+        ),
+        patch(
+            "butlers.core.qa.dispatch._persist_diff_snapshot",
+            new_callable=AsyncMock,
+        ) as persist_diff,
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+    ):
+        await _persist_notes_and_remove_worktree(
+            pool,
+            attempt_id,
+            tmp_path,
+            "qa/finance/abcdef123456",
+            tmp_path,
+            delete_branch=False,
+            delete_remote=False,
+            diff_snapshot=diff_snapshot,
+        )
+
+    persist_diff.assert_awaited_once_with(pool, attempt_id, diff_snapshot)
 
 
 @pytest.mark.asyncio
