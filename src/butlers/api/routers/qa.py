@@ -815,6 +815,11 @@ async def get_qa_summary(
                 WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
             ) AS active_cases_now
         FROM public.healing_attempts
+        WHERE qa_patrol_id IS NOT NULL
+          AND (
+              status IN ('dispatch_pending', 'investigating', 'pr_open')
+              OR closed_at >= $2
+          )
         """,
         cutoff_24h,
         datetime.now(tz=UTC) - timedelta(days=7),
@@ -846,7 +851,8 @@ async def get_qa_summary(
                 )
             ) AS escalated
         FROM public.healing_attempts
-        WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
+        WHERE qa_patrol_id IS NOT NULL
+          AND status IN ('dispatch_pending', 'investigating', 'pr_open')
         """
     )
     active_breakdown = QaActiveBreakdown(

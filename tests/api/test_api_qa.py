@@ -349,6 +349,16 @@ class TestGetQaSummary:
         assert body["kpis"]["active_cases_now"] == 3
         assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated": 0}
 
+    async def test_summary_kpi_queries_scope_to_qa_originated_attempts(self) -> None:
+        app, pool = _build_summary_app()
+
+        assert (await _call(app, "get", "/api/qa/summary")).status_code == 200
+
+        kpi_sql = pool.fetchrow.await_args_list[2].args[0]
+        active_breakdown_sql = pool.fetchrow.await_args_list[3].args[0]
+        assert "qa_patrol_id IS NOT NULL" in kpi_sql
+        assert "qa_patrol_id IS NOT NULL" in active_breakdown_sql
+
 
 class TestListPatrols:
     async def test_list_patrols_pagination_and_status_filter(self) -> None:
