@@ -291,7 +291,7 @@ async def run_health_briefing_contribution(
     weight_row = await pool.fetchrow(
         """
         SELECT content, metadata->>'value' AS value, valid_at
-        FROM public.facts
+        FROM facts
         WHERE predicate = 'measurement_weight'
           AND scope = 'health'
           AND validity = 'active'
