@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.core.qa.dispatch import QaDispatchConfig, dispatch_qa_investigation
+from butlers.core.qa.dispatch import (
+    QaDispatchConfig,
+    _run_investigation_session,
+    check_open_pr_statuses,
+    dispatch_qa_investigation,
+)
 from butlers.core.qa.journal import record_event, record_patrol_tick_events
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.triage import TriagedFinding
@@ -322,3 +327,235 @@ async def test_flagged_event_not_emitted_for_deduplicated_finding() -> None:
 
     assert result.accepted is False and result.reason == "already_investigating"
     record.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drafted_on_pr_creation(tmp_path: Path) -> None:
+    attempt_id = uuid.uuid4()
+    branch_name = "qa/general/abcdef"
+    diff_snapshot = [
+        {"kind": "meta", "text": "diff --git a/a.py b/a.py"},
+        {"kind": "+", "text": "fixed = True"},
+        {"kind": "-", "text": "broken = True"},
+    ]
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch._create_qa_pr",
+            new_callable=AsyncMock,
+            return_value=("https://github.com/acme/repo/pull/42", 42, None),
+        ),
+        patch(
+            "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
+            new_callable=AsyncMock,
+            return_value=diff_snapshot,
+        ),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
+            new_callable=AsyncMock,
+        ),
+        patch("butlers.core.qa.dispatch.record_pr_drafted_event", new_callable=AsyncMock) as record,
+    ):
+        await _run_investigation_session(
+            pool=_make_pool(),
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name=branch_name,
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token="ghtoken",
+        )
+
+    record.assert_awaited_once()
+    assert record.await_args.kwargs == {
+        "attempt_id": attempt_id,
+        "pr_number": 42,
+        "branch_name": branch_name,
+        "additions": 1,
+        "deletions": 1,
+        "file_count": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_wait_deduplicated_per_patrol_cycle() -> None:
+    attempt_id = uuid.uuid4()
+    patrol_started_at = datetime(2026, 5, 15, 5, 0, tzinfo=UTC)
+    pool = _make_pool()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": attempt_id,
+                "pr_url": "https://github.com/acme/repo/pull/42",
+                "pr_number": 42,
+                "fingerprint": "a" * 64,
+                "butler_name": "general",
+                "follow_up_count": 0,
+                "branch_name": "qa/general/abcdef",
+                "last_follow_up_at": None,
+            }
+        ]
+    )
+    pool.fetchval = AsyncMock(side_effect=[False, uuid.uuid4(), True])
+    pr_data = {
+        "state": "OPEN",
+        "reviews": [],
+        "latestReviews": [],
+        "reviewThreads": [],
+        "statusCheckRollup": [
+            {"name": "test", "status": "IN_PROGRESS", "conclusion": None},
+            {"name": "lint", "status": "QUEUED", "conclusion": None},
+        ],
+    }
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(json.dumps(pr_data).encode(), b""))
+    proc.returncode = 0
+
+    with patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc):
+        await check_open_pr_statuses(
+            pool,
+            Path("/tmp/repo"),
+            gh_token="ghtoken",
+            patrol_started_at=patrol_started_at,
+        )
+        await check_open_pr_statuses(
+            pool,
+            Path("/tmp/repo"),
+            gh_token="ghtoken",
+            patrol_started_at=patrol_started_at,
+        )
+
+    wait_insert_calls = [
+        call
+        for call in pool.fetchval.await_args_list
+        if "INSERT INTO public.qa_investigation_events" in call.args[0]
+    ]
+    assert len(wait_insert_calls) == 1
+    _, *params = wait_insert_calls[0].args
+    assert params[4] == "wait"
+    assert params[5] == "CI · 2 checks pending"
+    assert params[6] == "test, lint"
+
+
+@pytest.mark.asyncio
+async def test_merged_on_pr_merge_transition() -> None:
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": attempt_id,
+                "pr_url": "https://github.com/acme/repo/pull/42",
+                "pr_number": 42,
+                "fingerprint": "a" * 64,
+                "butler_name": "general",
+                "follow_up_count": 0,
+                "branch_name": "qa/general/abcdef",
+                "last_follow_up_at": None,
+            }
+        ]
+    )
+    proc = MagicMock()
+    proc.communicate = AsyncMock(
+        return_value=(
+            json.dumps(
+                {
+                    "state": "MERGED",
+                    "reviews": [],
+                    "latestReviews": [],
+                    "reviewThreads": [],
+                    "statusCheckRollup": [],
+                }
+            ).encode(),
+            b"",
+        )
+    )
+    proc.returncode = 0
+
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.record_pr_merged_event", new_callable=AsyncMock) as record,
+    ):
+        await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+
+    record.assert_awaited_once()
+    assert record.await_args.kwargs["attempt_id"] == attempt_id
+    assert record.await_args.kwargs["detail"] == "PR #42 observed merged during patrol status check"
+
+
+@pytest.mark.asyncio
+async def test_escalated_on_unfixable(tmp_path: Path) -> None:
+    attempt_id = uuid.uuid4()
+    branch_name = "qa/general/abcdef"
+    (tmp_path / "UNFIXABLE").write_text("not a code bug", encoding="utf-8")
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+
+    with (
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
+            new_callable=AsyncMock,
+        ),
+        patch("butlers.core.qa.dispatch.record_escalated_event", new_callable=AsyncMock) as record,
+    ):
+        await _run_investigation_session(
+            pool=_make_pool(),
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name=branch_name,
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token="ghtoken",
+        )
+
+    record.assert_awaited_once()
+    assert record.await_args.kwargs["attempt_id"] == attempt_id
+    assert record.await_args.kwargs["text"] == (
+        "Investigation agent determined this error is not a code bug"
+    )
+
+
+@pytest.mark.asyncio
+async def test_escalated_on_human_action_failure(tmp_path: Path) -> None:
+    attempt_id = uuid.uuid4()
+    error_detail = "human action required: refresh GitHub credentials"
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(
+        return_value=MagicMock(success=False, session_id=None, error=error_detail)
+    )
+
+    with (
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
+            new_callable=AsyncMock,
+        ),
+        patch("butlers.core.qa.dispatch.record_escalated_event", new_callable=AsyncMock) as record,
+    ):
+        await _run_investigation_session(
+            pool=_make_pool(),
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name="qa/general/abcdef",
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token="ghtoken",
+        )
+
+    record.assert_awaited_once()
+    assert record.await_args.kwargs["attempt_id"] == attempt_id
+    assert record.await_args.kwargs["text"] == error_detail

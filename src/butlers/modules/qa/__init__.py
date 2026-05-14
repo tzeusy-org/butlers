@@ -1342,6 +1342,7 @@ class QaModule(Module):
                 git_author_name=git_author_name,
                 git_author_email=git_author_email,
                 patrol_id=patrol_id,
+                patrol_started_at=patrol_started_at,
             )
 
             # Phase 5: Journal ticks for open cases unchanged during this cycle.
@@ -1732,6 +1733,7 @@ class QaModule(Module):
         git_author_name: str | None = None,
         git_author_email: str | None = None,
         patrol_id: uuid.UUID | None = None,
+        patrol_started_at: datetime | None = None,
     ) -> None:
         """Check GitHub status of open PR investigations.
 
@@ -1767,6 +1769,7 @@ class QaModule(Module):
                 config=dispatch_config,
                 task_registry=self._watchdog_tasks,
                 patrol_id=patrol_id,
+                patrol_started_at=patrol_started_at,
             )
         except Exception:
             logger.warning("QaModule: check_open_pr_statuses failed (non-fatal)", exc_info=True)

@@ -73,7 +73,13 @@ from butlers.core.qa.findings import (
     update_finding_dedup_reason,
     update_finding_dispatch_queued,
 )
-from butlers.core.qa.journal import record_event
+from butlers.core.qa.journal import (
+    record_escalated_event,
+    record_event,
+    record_pr_drafted_event,
+    record_pr_merged_event,
+    record_wait_event_once,
+)
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
@@ -893,6 +899,72 @@ async def _capture_commit_diff_snapshot(worktree_path: Path) -> list[dict[str, s
     return [line.model_dump(mode="json") for line in parse_unified_diff(diff_text)]
 
 
+def _diff_snapshot_stats(diff_snapshot: list[dict[str, str]]) -> tuple[int, int, int]:
+    additions = 0
+    deletions = 0
+    file_count = 0
+    for line in diff_snapshot:
+        kind = line.get("kind")
+        if kind == "+":
+            additions += 1
+        elif kind == "-":
+            deletions += 1
+        elif kind == "meta" and line.get("text", "").startswith("diff --git "):
+            file_count += 1
+    return additions, deletions, file_count
+
+
+def _human_action_error_detail(error_detail: str | None) -> bool:
+    if not error_detail:
+        return False
+    lowered = error_detail.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "human action",
+            "operator",
+            "manual",
+            "credential",
+            "authorization",
+            "authentication",
+            "permission",
+            "no_gh_token",
+            "git_auth_failed",
+            "repo_not_whitelisted",
+            "gh_pr_create_failed",
+        )
+    )
+
+
+async def _record_escalation_for_terminal(
+    pool: asyncpg.Pool,
+    *,
+    attempt_id: uuid.UUID,
+    status: str,
+    error_detail: str | None,
+) -> None:
+    if status != "unfixable" and not _human_action_error_detail(error_detail):
+        return
+
+    reason = error_detail or "Investigation agent determined this case needs human review"
+    text = reason.splitlines()[0][:120]
+    try:
+        await record_escalated_event(
+            pool,
+            attempt_id=attempt_id,
+            text=text,
+            detail=(
+                "Review the QA case detail and underlying PR/session context for the next action."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "QA dispatch: failed to record escalated journal event (attempt=%s): %s",
+            attempt_id,
+            exc,
+        )
+
+
 async def _persist_diff_snapshot(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,
@@ -1425,6 +1497,12 @@ async def _run_investigation_session(
                 error_detail=error_detail,
                 healing_session_id=investigation_session_id,
             )
+            await _record_escalation_for_terminal(
+                pool,
+                attempt_id=attempt_id,
+                status="failed",
+                error_detail=error_detail,
+            )
             await _persist_notes_and_remove_worktree(
                 pool,
                 attempt_id,
@@ -1458,6 +1536,12 @@ async def _run_investigation_session(
                 "unfixable",
                 error_detail="Investigation agent determined this error is not a code bug",
                 healing_session_id=investigation_session_id,
+            )
+            await _record_escalation_for_terminal(
+                pool,
+                attempt_id=attempt_id,
+                status="unfixable",
+                error_detail="Investigation agent determined this error is not a code bug",
             )
             await _persist_notes_and_remove_worktree(
                 pool,
@@ -1558,6 +1642,12 @@ async def _run_investigation_session(
                 error_detail="no_gh_token: BUTLERS_QA_GH_TOKEN not found in CredentialStore",
                 healing_session_id=investigation_session_id,
             )
+            await _record_escalation_for_terminal(
+                pool,
+                attempt_id=attempt_id,
+                status="failed",
+                error_detail="no_gh_token: BUTLERS_QA_GH_TOKEN not found in CredentialStore",
+            )
             await _persist_notes_and_remove_worktree(
                 pool,
                 attempt_id,
@@ -1603,6 +1693,15 @@ async def _run_investigation_session(
                     "authentication is not configured for subprocess pushes"
                 ),
                 healing_session_id=investigation_session_id,
+            )
+            await _record_escalation_for_terminal(
+                pool,
+                attempt_id=attempt_id,
+                status="failed",
+                error_detail=(
+                    "git_auth_failed: QA GitHub token is present but git-over-HTTPS "
+                    "authentication is not configured for subprocess pushes"
+                ),
             )
             await _persist_notes_and_remove_worktree(
                 pool,
@@ -1657,6 +1756,12 @@ async def _run_investigation_session(
                 error_detail=f"PR blocked: {wl_detail}",
                 healing_session_id=investigation_session_id,
             )
+            await _record_escalation_for_terminal(
+                pool,
+                attempt_id=attempt_id,
+                status="failed",
+                error_detail=f"PR blocked: {wl_detail}",
+            )
             await _persist_notes_and_remove_worktree(
                 pool,
                 attempt_id,
@@ -1696,6 +1801,12 @@ async def _run_investigation_session(
                 "unfixable",
                 error_detail="no_op_branch: investigation agent produced no code changes",
                 healing_session_id=investigation_session_id,
+            )
+            await _record_escalation_for_terminal(
+                pool,
+                attempt_id=attempt_id,
+                status="unfixable",
+                error_detail="no_op_branch: investigation agent produced no code changes",
             )
             await _persist_notes_and_remove_worktree(
                 pool,
@@ -1737,6 +1848,12 @@ async def _run_investigation_session(
                 error_detail=pr_error,
                 healing_session_id=investigation_session_id,
             )
+            await _record_escalation_for_terminal(
+                pool,
+                attempt_id=attempt_id,
+                status="failed",
+                error_detail=pr_error,
+            )
             await _persist_notes_and_remove_worktree(
                 pool,
                 attempt_id,
@@ -1763,6 +1880,23 @@ async def _run_investigation_session(
             pr_number=pr_number,
             healing_session_id=investigation_session_id,
         )
+        additions, deletions, file_count = _diff_snapshot_stats(diff_snapshot)
+        try:
+            await record_pr_drafted_event(
+                pool,
+                attempt_id=attempt_id,
+                pr_number=pr_number,
+                branch_name=branch_name,
+                additions=additions,
+                deletions=deletions,
+                file_count=file_count,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "QA dispatch: failed to record drafted journal event (attempt=%s): %s",
+                attempt_id,
+                exc,
+            )
         # Note: finding was already linked to attempt in dispatch_qa_investigation
         # (via update_finding_attempt at gate 6). No redundant call needed here.
 
@@ -1885,6 +2019,7 @@ async def check_open_pr_statuses(
     config: QaDispatchConfig | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
     patrol_id: uuid.UUID | None = None,
+    patrol_started_at: datetime | None = None,
 ) -> dict[str, int]:
     """Check GitHub status of all pr_open QA healing attempts.
 
@@ -2059,7 +2194,7 @@ async def check_open_pr_statuses(
             # (e.g. 2.46 shipped with Debian) reject the field with exit-code 1.
             # We attempt the full field set first and fall back to the subset
             # that older gh versions support.
-            _full_fields = "state,reviews,latestReviews,reviewThreads"
+            _full_fields = "state,reviews,latestReviews,reviewThreads,statusCheckRollup"
             _compat_fields = "state,reviews,latestReviews"
 
             for json_fields in (_full_fields, _compat_fields):
@@ -2113,6 +2248,19 @@ async def check_open_pr_statuses(
 
             if state == "MERGED":
                 await update_attempt_status(pool, attempt_id, "pr_merged")
+                try:
+                    await record_pr_merged_event(
+                        pool,
+                        attempt_id=attempt_id,
+                        detail=f"PR #{pr_number} observed merged during patrol status check",
+                    )
+                except Exception as _journal_exc:
+                    logger.debug(
+                        "check_open_pr_statuses: failed to record merged journal event "
+                        "(attempt=%s): %s",
+                        attempt_id,
+                        _journal_exc,
+                    )
                 counts["merged"] += 1
                 logger.info("QA PR merged: attempt=%s pr_number=%s", attempt_id, pr_number)
                 continue
@@ -2131,6 +2279,25 @@ async def check_open_pr_statuses(
                     pr_number,
                 )
                 continue
+
+            pending_check_names = _extract_pending_check_names(pr_data)
+            if pending_check_names:
+                wait_cycle_start = patrol_started_at or datetime.now(UTC)
+                try:
+                    await record_wait_event_once(
+                        pool,
+                        attempt_id=attempt_id,
+                        patrol_started_at=wait_cycle_start,
+                        pending_count=len(pending_check_names),
+                        pending_check_names=pending_check_names,
+                    )
+                except Exception as _journal_exc:
+                    logger.debug(
+                        "check_open_pr_statuses: failed to record wait journal event "
+                        "(attempt=%s): %s",
+                        attempt_id,
+                        _journal_exc,
+                    )
 
             # OPEN state: check for reviewer feedback
             review_state, feedback_summary = _extract_review_state(pr_data)
@@ -2208,6 +2375,51 @@ async def check_open_pr_statuses(
             counts["errors"] += 1
 
     return counts
+
+
+_PENDING_CHECK_STATUSES = {
+    "ACTION_REQUIRED",
+    "EXPECTED",
+    "IN_PROGRESS",
+    "PENDING",
+    "QUEUED",
+    "REQUESTED",
+    "WAITING",
+}
+
+
+def _extract_pending_check_names(pr_data: dict[str, Any]) -> list[str]:
+    """Return human-readable names for PR checks that are still pending."""
+
+    checks = pr_data.get("statusCheckRollup") or []
+    pending: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(checks, list):
+        return pending
+
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        status = str(check.get("status") or "").upper()
+        conclusion = str(check.get("conclusion") or "").upper()
+        if status not in _PENDING_CHECK_STATUSES and conclusion:
+            continue
+        if conclusion in {"SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "TIMED_OUT"}:
+            continue
+
+        name = (
+            check.get("name")
+            or check.get("workflowName")
+            or check.get("context")
+            or check.get("title")
+            or "unnamed check"
+        )
+        name = str(name).strip()
+        if name and name not in seen:
+            pending.append(name)
+            seen.add(name)
+
+    return pending
 
 
 def _extract_review_state(

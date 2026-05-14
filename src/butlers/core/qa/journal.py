@@ -69,6 +69,131 @@ async def record_event(
     return event_id
 
 
+def _format_pr_detail(
+    *,
+    additions: int | None,
+    deletions: int | None,
+    file_count: int | None,
+) -> str | None:
+    if additions is None or deletions is None or file_count is None:
+        return None
+    files_label = "file" if file_count == 1 else "files"
+    return f"+{additions} / −{deletions} · {file_count} {files_label}"
+
+
+async def record_pr_drafted_event(
+    session: AsyncSession,
+    *,
+    attempt_id: uuid.UUID,
+    pr_number: int | None,
+    branch_name: str,
+    additions: int | None = None,
+    deletions: int | None = None,
+    file_count: int | None = None,
+    ts: datetime | None = None,
+) -> uuid.UUID:
+    """Insert the journal event for a drafted QA PR."""
+
+    number_label = pr_number if pr_number is not None else "unknown"
+    return await record_event(
+        session,
+        attempt_id=attempt_id,
+        step="drafted",
+        text=f"PR #{number_label} · {branch_name}",
+        detail=_format_pr_detail(
+            additions=additions,
+            deletions=deletions,
+            file_count=file_count,
+        ),
+        data={
+            "pr_number": pr_number,
+            "branch_name": branch_name,
+            "additions": additions,
+            "deletions": deletions,
+            "file_count": file_count,
+        },
+        ts=ts,
+    )
+
+
+async def record_wait_event_once(
+    session: AsyncSession,
+    *,
+    attempt_id: uuid.UUID,
+    patrol_started_at: datetime,
+    pending_count: int,
+    pending_check_names: list[str],
+    ts: datetime | None = None,
+) -> uuid.UUID | None:
+    """Insert at most one CI-wait journal event for an attempt in a patrol cycle."""
+
+    exists = await session.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM public.qa_investigation_events
+            WHERE attempt_id = $1
+              AND step = 'wait'
+              AND ts >= $2
+        )
+        """,
+        attempt_id,
+        patrol_started_at,
+    )
+    if exists:
+        return None
+
+    detail = ", ".join(pending_check_names) if pending_check_names else None
+    return await record_event(
+        session,
+        attempt_id=attempt_id,
+        step="wait",
+        text=f"CI · {pending_count} checks pending",
+        detail=detail,
+        data={"pending_count": pending_count, "pending_check_names": pending_check_names},
+        ts=ts,
+    )
+
+
+async def record_pr_merged_event(
+    session: AsyncSession,
+    *,
+    attempt_id: uuid.UUID,
+    detail: str | None = None,
+    ts: datetime | None = None,
+) -> uuid.UUID:
+    """Insert the journal event for a merged QA PR."""
+
+    return await record_event(
+        session,
+        attempt_id=attempt_id,
+        step="merged",
+        text="CI green · merged",
+        detail=detail,
+        ts=ts,
+    )
+
+
+async def record_escalated_event(
+    session: AsyncSession,
+    *,
+    attempt_id: uuid.UUID,
+    text: str,
+    detail: str | None = None,
+    ts: datetime | None = None,
+) -> uuid.UUID:
+    """Insert the journal event for a QA case escalated to human attention."""
+
+    return await record_event(
+        session,
+        attempt_id=attempt_id,
+        step="escalated",
+        text=text,
+        detail=detail,
+        ts=ts,
+    )
+
+
 def _format_case_age(created_at: datetime | None, now: datetime) -> str:
     if created_at is None:
         return "unknown age"
