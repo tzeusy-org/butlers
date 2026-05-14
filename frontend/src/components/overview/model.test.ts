@@ -66,20 +66,45 @@ function notificationStats(overrides: Partial<NotificationStats> = {}): Notifica
 
 function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
   return {
+    staffer_status: "healthy",
+    last_patrol_at: null,
+    next_patrol_at: null,
     last_patrol: null,
     stats_24h: {
       patrols_completed: 1,
       total_findings: 0,
       novel_findings: 0,
       dispatched_investigations: 0,
+      prs_opened: 0,
     },
     stats_all_time: {
       total_patrols: 1,
       total_findings: 0,
       novel_findings: 0,
       dispatched_investigations: 0,
+      prs_merged: 0,
+      prs_failed: 0,
+      success_rate: 0,
+    },
+    kpis: {
+      prs_landed_24h: 0,
+      mttr_24h_seconds: null,
+      self_resolved_7d_pct: 0,
+      active_cases_now: 0,
+    },
+    active_breakdown: {
+      awaiting_ci: 0,
+      escalated: 0,
     },
     active_sources: [],
+    circuit_breaker: {
+      tripped: false,
+      consecutive_failures: 0,
+    },
+    credentials_status: {
+      gh_token_present: null,
+      provisioning_hint: null,
+    },
     ...overrides,
   };
 }

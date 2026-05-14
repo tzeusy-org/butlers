@@ -190,7 +190,12 @@ import type {
   SteamPlaytimeAnalytics,
   QaPatrolSummary,
   QaPatrolDetail,
+  QaCaseDossier,
+  QaCaseJournalParams,
+  QaCasesParams,
+  QaCaseSummary,
   QaFindingRecord,
+  QaJournalEvent,
   QaKnownIssue,
   QaSummary,
   QaDismissal,
@@ -3628,6 +3633,36 @@ export function getHealingAttempt(attemptId: string): Promise<HealingAttempt> {
 /** GET /api/qa/summary — QA staffer status, last patrol, 24h/all-time stats */
 export function getQaSummary(): Promise<ApiResponse<QaSummary>> {
   return apiFetch<ApiResponse<QaSummary>>("/qa/summary");
+}
+
+/** GET /api/qa/cases — paginated QA case summaries */
+export function getQaCases(params?: QaCasesParams): Promise<PaginatedResponse<QaCaseSummary>> {
+  const query = new URLSearchParams();
+  if (params?.sev) query.set("sev", params.sev);
+  if (params?.since) query.set("since", params.since);
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<QaCaseSummary>>(`/qa/cases${qs ? `?${qs}` : ""}`);
+}
+
+/** GET /api/qa/cases/:caseId — full case dossier */
+export function getQaCase(caseId: string): Promise<ApiResponse<QaCaseDossier>> {
+  return apiFetch<ApiResponse<QaCaseDossier>>(`/qa/cases/${encodeURIComponent(caseId)}`);
+}
+
+/** GET /api/qa/cases/:caseId/journal — paginated journal events */
+export function getQaCaseJournal(
+  caseId: string,
+  params?: QaCaseJournalParams,
+): Promise<PaginatedResponse<QaJournalEvent>> {
+  const query = new URLSearchParams();
+  if (params?.cursor) query.set("cursor", params.cursor);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<QaJournalEvent>>(
+    `/qa/cases/${encodeURIComponent(caseId)}/journal${qs ? `?${qs}` : ""}`,
+  );
 }
 
 /** GET /api/qa/patrols — paginated patrol list */

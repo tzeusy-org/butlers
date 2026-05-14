@@ -3112,6 +3112,7 @@ export interface QaStats24h {
   total_findings: number;
   novel_findings: number;
   dispatched_investigations: number;
+  prs_opened: number;
 }
 
 /** All-time aggregate statistics */
@@ -3120,14 +3121,153 @@ export interface QaAllTimeStats {
   total_findings: number;
   novel_findings: number;
   dispatched_investigations: number;
+  prs_merged: number;
+  prs_failed: number;
+  success_rate: number;
+}
+
+/** KPI strip metrics for the QA dossier dashboard — GET /api/qa/summary */
+export interface QaKpiBlock {
+  prs_landed_24h: number;
+  mttr_24h_seconds: number | null;
+  self_resolved_7d_pct: number;
+  active_cases_now: number;
+}
+
+/** Active-case status breakdown for the QA dossier dashboard — GET /api/qa/summary */
+export interface QaActiveBreakdown {
+  awaiting_ci: number;
+  escalated: number;
 }
 
 /** QA staffer summary — GET /api/qa/summary */
 export interface QaSummary {
+  staffer_status: string;
+  last_patrol_at: string | null;
+  next_patrol_at: string | null;
   last_patrol: QaPatrolSummary | null;
   stats_24h: QaStats24h;
   stats_all_time: QaAllTimeStats;
+  kpis: QaKpiBlock;
+  active_breakdown: QaActiveBreakdown;
   active_sources: string[];
+  circuit_breaker: {
+    tripped: boolean;
+    consecutive_failures: number;
+  };
+  credentials_status: {
+    gh_token_present: boolean | null;
+    provisioning_hint: string | null;
+  };
+}
+
+/** Summary row for the QA Cases API — GET /api/qa/cases */
+export interface QaCaseSummary {
+  id: string;
+  short_id: string;
+  sev: "high" | "medium" | "low";
+  butler: string;
+  headline: string | null;
+  detected: string;
+  age_seconds: number;
+  state: "detect" | "diagnose" | "pr" | "landed" | "escalated";
+  pr_state: "drafted" | "open" | "merged" | "closed" | null;
+  pr_url: string | null;
+}
+
+/** Parsed QA investigation notes embedded in a case dossier. */
+export interface QaInvestigationNotes {
+  schema_version: 1;
+  headline: string;
+  hypothesis: string;
+  blurb_segments: (
+    | string
+    | {
+        claim: string;
+        text: string;
+      }
+  )[];
+  claims: Record<
+    string,
+    {
+      evidence_ids: string[];
+      note: string;
+    }
+  >;
+  evidence_lines: {
+    id: string;
+    ts: string;
+    lvl: string;
+    butler: string;
+    msg: string;
+  }[];
+  counter_evidence: {
+    hypothesis: string;
+    verdict: "rejected" | "accepted" | "pending";
+    reason: string;
+  }[];
+  why_this_fix: string;
+  diff_snapshot: {
+    kind: "meta" | "+" | "-" | " ";
+    text: string;
+  }[];
+}
+
+/** Pull request summary embedded in a QA case dossier. */
+export interface QaPrSummary {
+  number: number;
+  state: "drafted" | "open" | "merged" | "closed";
+  title: string;
+  branch: string;
+  ci_status: "passing" | "failing" | "pending" | "unknown";
+  additions: number;
+  deletions: number;
+  opened_at: string;
+  merged_at: string | null;
+  url: string;
+}
+
+/** A single chronological event in the QA case journal. */
+export interface QaJournalEvent {
+  id: string;
+  ts: string;
+  step:
+    | "flagged"
+    | "sampled"
+    | "cross-checked"
+    | "considered"
+    | "concluded"
+    | "drafted"
+    | "wait"
+    | "merged"
+    | "tick"
+    | "escalated";
+  text: string;
+  detail: string | null;
+  data: Record<string, unknown>;
+}
+
+/** Full case payload for the QA dossier renderer — GET /api/qa/cases/:id */
+export interface QaCaseDossier {
+  case: QaCaseSummary;
+  state_track_stage: "detect" | "diagnose" | "pr" | "landed" | "escalated";
+  investigation_notes: QaInvestigationNotes | null;
+  pr: QaPrSummary | null;
+  journal: QaJournalEvent[];
+}
+
+/** Params for listing QA cases */
+export interface QaCasesParams {
+  sev?: "high" | "medium" | "low" | "all";
+  since?: "24h" | "7d" | "30d";
+  offset?: number;
+  limit?: number;
+}
+
+/** Params for paginating one QA case journal */
+export interface QaCaseJournalParams {
+  cursor?: string;
+  limit?: number;
 }
 
 /** Request body for dismissing a known issue */

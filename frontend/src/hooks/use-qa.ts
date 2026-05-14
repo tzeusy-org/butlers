@@ -14,6 +14,9 @@ import {
   forceQaPatrol,
   getHealingAttempt,
   getQaAllowedRepos,
+  getQaCase,
+  getQaCaseJournal,
+  getQaCases,
   getQaCircuitBreaker,
   getQaFindingByAttempt,
   getQaInvestigations,
@@ -34,6 +37,8 @@ import {
 import type {
   HealingAttemptsParams,
   QaAllowedRepoCreate,
+  QaCaseJournalParams,
+  QaCasesParams,
   QaDismissRequest,
   QaInvestigationsParams,
   QaKnownIssuesParams,
@@ -52,6 +57,45 @@ export function useQaSummary() {
   return useQuery({
     queryKey: ["qa-summary"],
     queryFn: () => getQaSummary(),
+    staleTime: STALE_TIME,
+    refetchInterval: STALE_TIME,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cases
+// ---------------------------------------------------------------------------
+
+/** Fetch paginated QA case summaries for the dossier dashboard. */
+export function useQaCases(params?: Pick<QaCasesParams, "limit" | "offset" | "sev" | "since">) {
+  return useQuery({
+    queryKey: ["qa-cases", params],
+    queryFn: () => getQaCases(params),
+    staleTime: STALE_TIME,
+    refetchInterval: STALE_TIME,
+  });
+}
+
+/** Fetch a single QA case dossier. */
+export function useQaCase(caseId: string | undefined) {
+  return useQuery({
+    queryKey: ["qa-case", caseId],
+    queryFn: () => getQaCase(caseId!),
+    enabled: !!caseId,
+    staleTime: STALE_TIME,
+    refetchInterval: STALE_TIME,
+  });
+}
+
+/** Fetch paginated journal events for a QA case. */
+export function useQaCaseJournal(
+  caseId: string | undefined,
+  params?: Pick<QaCaseJournalParams, "cursor" | "limit">,
+) {
+  return useQuery({
+    queryKey: ["qa-case-journal", caseId, params],
+    queryFn: () => getQaCaseJournal(caseId!, params),
+    enabled: !!caseId,
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
   });
