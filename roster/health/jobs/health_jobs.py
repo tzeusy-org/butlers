@@ -5,7 +5,7 @@ Each job handler:
 - Returns a dict with a summary of work done
 - Issues queries directly via db_pool.fetch() / db_pool.fetchrow() / db_pool.execute()
 - Uses health schema tables (health.medications, health.symptoms, etc.)
-  and public.facts for measurements
+  and facts (resolved via search_path to public.facts) for measurements
 - Is a no-op (returns early with zeros) when no matching data exists
 """
 
@@ -161,7 +161,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     type_rows = await db_pool.fetch(
         """
         SELECT DISTINCT predicate
-        FROM public.facts
+        FROM facts
         WHERE predicate LIKE 'measurement~_%' ESCAPE '~'
           AND scope = 'health'
           AND validity = 'active'
@@ -176,7 +176,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         history_rows = await db_pool.fetch(
             """
             SELECT valid_at AS measured_at
-            FROM public.facts
+            FROM facts
             WHERE predicate = $1
               AND scope = 'health'
               AND validity = 'active'
@@ -413,7 +413,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         streak_rows = await db_pool.fetch(
             """
             SELECT DISTINCT DATE(valid_at AT TIME ZONE 'UTC') AS day
-            FROM public.facts
+            FROM facts
             WHERE predicate = $1
               AND scope = 'health'
               AND validity = 'active'
