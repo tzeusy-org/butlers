@@ -47,22 +47,37 @@ Standard envelope patterns:
 // Single resource or aggregate
 interface ApiResponse<T> {
   data: T;
+  meta: Record<string, unknown>;
 }
 
 // Paginated list
 interface PaginatedResponse<T> {
   data: T[];
-  total: number;
-  offset: number;
-  limit: number;
+  meta: {
+    total: number;
+    offset: number;
+    limit: number;
+    has_more: boolean;
+  };
 }
 
 // Error
 interface ErrorResponse {
-  code: string;
-  message: string;
+  error: {
+    code: string;
+    message: string;
+    butler: string | null;
+    details: Record<string, unknown> | null;
+  };
 }
 ```
+
+`ApiResponse<T>` always includes an extensible `meta` object, empty when the
+endpoint has no metadata. `PaginatedResponse<T>` carries pagination metadata
+inside `meta`; list endpoints MUST NOT expose `total`, `offset`, `limit`, or
+`has_more` as top-level response fields. Error responses carry `code`,
+`message`, `butler`, and `details` inside the top-level `error` object; they
+MUST NOT expose `code` or `message` as top-level fields.
 
 Explicit exceptions (frontend contract):
 
@@ -106,6 +121,9 @@ Admission-control decisions that did not launch a runtime session (for example c
 | `GET /api/costs/daily` | `ApiResponse<DailyCost[]>` | Per-day costs |
 | `GET /api/search` | `ApiResponse<SearchResults>` | Cross-domain search (groups: sessions, state, contacts) |
 | `GET /api/qa/summary` | `ApiResponse<QaSummary>` | QA staffer status, patrol rollup, circuit breaker |
+| `GET /api/qa/cases` | `PaginatedResponse<QaCaseSummary>` | QA case rail summaries for the dossier renderer (filters: sev, since, offset, limit) |
+| `GET /api/qa/cases/{id}` | `ApiResponse<QaCaseDossier>` | Full QA case dossier with notes, PR summary, and recent journal |
+| `GET /api/qa/cases/{id}/journal` | `PaginatedResponse<QaJournalEvent>` | Chronological QA case journal stream (filters: cursor, limit) |
 | `GET /api/qa/investigations` | `PaginatedResponse<QaInvestigation>` | QA-originated investigations with phase/deadline/evidence summary |
 | `GET /api/qa/meta-review` | `PaginatedResponse<QaMetaReviewFinding>` | QA-self-recursive findings routed to operator lane; never auto-investigated |
 | `GET /api/healing/dispatch-events` | `PaginatedResponse<DispatchDecision>` | Admission-control decisions that did not launch a workflow (distinct from failed executions) |

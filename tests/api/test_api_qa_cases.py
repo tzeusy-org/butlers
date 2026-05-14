@@ -445,8 +445,10 @@ async def test_cases_response_envelopes() -> None:
     journal_response = await _call(app, f"/api/qa/cases/{attempt_id}/journal")
 
     assert list_response.status_code == 200
-    assert set(list_response.json()) == {"data", "meta"}
-    assert list_response.json()["meta"] == {
+    list_body = list_response.json()
+    assert set(list_body) == {"data", "meta"}
+    assert not {"total", "offset", "limit", "has_more"} & set(list_body)
+    assert list_body["meta"] == {
         "total": 1,
         "offset": 0,
         "limit": 25,
@@ -454,12 +456,15 @@ async def test_cases_response_envelopes() -> None:
     }
 
     assert detail_response.status_code == 200
-    assert set(detail_response.json()) == {"data", "meta"}
-    assert detail_response.json()["meta"] == {}
+    detail_body = detail_response.json()
+    assert set(detail_body) == {"data", "meta"}
+    assert detail_body["meta"] == {}
 
     assert journal_response.status_code == 200
-    assert set(journal_response.json()) == {"data", "meta"}
-    assert journal_response.json()["meta"] == {
+    journal_body = journal_response.json()
+    assert set(journal_body) == {"data", "meta"}
+    assert not {"total", "offset", "limit", "has_more"} & set(journal_body)
+    assert journal_body["meta"] == {
         "total": 0,
         "offset": 0,
         "limit": 50,
@@ -514,4 +519,12 @@ async def test_journal_404() -> None:
     response = await _call(app, f"/api/qa/cases/{missing_id}/journal")
 
     assert response.status_code == 404
-    assert response.json()["error"]["code"] == "QA_CASE_NOT_FOUND"
+    body = response.json()
+    assert body == {
+        "error": {
+            "code": "QA_CASE_NOT_FOUND",
+            "message": f"QA case not found: {missing_id}",
+            "butler": None,
+            "details": None,
+        }
+    }
