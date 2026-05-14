@@ -43,7 +43,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -53,6 +53,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.qa.notes import InvestigationNotes
 from butlers.core.qa.repo_whitelist import parse_repo_url
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,68 @@ class QaActiveBreakdown(BaseModel):
 
     awaiting_ci: int
     escalated: int
+
+
+class QaCaseSummary(BaseModel):
+    """Summary row for the QA Cases API."""
+
+    id: uuid.UUID
+    short_id: str
+    sev: Literal["high", "medium", "low"]
+    butler: str
+    headline: str | None = None
+    detected: datetime
+    age_seconds: int
+    state: Literal["detect", "diagnose", "pr", "landed", "escalated"]
+    pr_state: Literal["drafted", "open", "merged", "closed"] | None = None
+    pr_url: str | None = None
+
+
+class QaPrSummary(BaseModel):
+    """Pull request summary embedded in a QA case dossier."""
+
+    number: int
+    state: Literal["drafted", "open", "merged", "closed"]
+    title: str
+    branch: str
+    ci_status: Literal["passing", "failing", "pending", "unknown"]
+    additions: int
+    deletions: int
+    opened_at: datetime
+    merged_at: datetime | None = None
+    url: str
+
+
+class QaJournalEvent(BaseModel):
+    """A single chronological event in the QA case journal."""
+
+    id: uuid.UUID
+    ts: datetime
+    step: Literal[
+        "flagged",
+        "sampled",
+        "cross-checked",
+        "considered",
+        "concluded",
+        "drafted",
+        "wait",
+        "merged",
+        "tick",
+        "escalated",
+    ]
+    text: str
+    detail: str | None = None
+    data: dict[str, Any]
+
+
+class QaCaseDossier(BaseModel):
+    """Full case payload for the QA dossier renderer."""
+
+    case: QaCaseSummary
+    state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated"]
+    investigation_notes: InvestigationNotes | None = None
+    pr: QaPrSummary | None = None
+    journal: list[QaJournalEvent] = Field(default_factory=list)
 
 
 class QaCircuitBreaker(BaseModel):
