@@ -48,10 +48,18 @@ from typing import Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, ValidationError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models import (
+    ApiMeta,
+    ApiResponse,
+    ErrorDetail,
+    ErrorResponse,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.models import QaFinding
@@ -810,6 +818,76 @@ def _row_to_case_summary(row: Any) -> QaCaseSummary:
     )
 
 
+def _case_not_found_response(case_id: uuid.UUID) -> JSONResponse:
+    """Return the RFC 0007 error envelope for missing QA cases."""
+    body = ErrorResponse(
+        error=ErrorDetail(
+            code="QA_CASE_NOT_FOUND",
+            message=f"QA case not found: {case_id}",
+        )
+    )
+    return JSONResponse(status_code=404, content=body.model_dump())
+
+
+def _investigation_notes_from_case_row(row: Any) -> InvestigationNotes | None:
+    """Extract the latest linked finding's investigation notes, when present."""
+    structured_evidence = _jsonb_dict(row.get("finding_structured_evidence"))
+    if not structured_evidence:
+        return None
+
+    notes = structured_evidence.get("investigation_notes")
+    if isinstance(notes, dict):
+        try:
+            return InvestigationNotes.model_validate(notes)
+        except ValidationError:
+            return None
+    return None
+
+
+def _pr_number_from_url(url: str | None) -> int | None:
+    if not url:
+        return None
+    try:
+        return int(url.rstrip("/").rsplit("/", 1)[-1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
+    """Build the dossier PR summary from persisted healing attempt fields."""
+    pr_url = row.get("pr_url")
+    pr_number = row.get("pr_number") or _pr_number_from_url(pr_url)
+    branch = row.get("branch_name")
+    pr_state = _pr_state_for_case(row)
+
+    if not pr_url or pr_number is None or not branch or pr_state is None:
+        return None
+
+    return QaPrSummary(
+        number=pr_number,
+        state=pr_state,
+        title=f"PR #{pr_number}",
+        branch=branch,
+        ci_status="unknown",
+        additions=0,
+        deletions=0,
+        opened_at=row["created_at"],
+        merged_at=row.get("closed_at") if pr_state == "merged" else None,
+        url=pr_url,
+    )
+
+
+def _row_to_journal_event(row: Any) -> QaJournalEvent:
+    return QaJournalEvent(
+        id=row["id"],
+        ts=row["ts"],
+        step=row["step"],
+        text=row["text"],
+        detail=row.get("detail"),
+        data=_jsonb_dict(row.get("data")) or {},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Circuit breaker constants — shared by /summary and /circuit-breaker endpoints.
 # CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.dispatch
@@ -1474,6 +1552,145 @@ async def list_cases(
     data = [_row_to_case_summary(r) for r in rows]
     return PaginatedResponse(
         data=data, meta=PaginationMeta(total=total, offset=offset, limit=limit)
+    )
+
+
+@router.get("/cases/{case_id}", response_model=ApiResponse[QaCaseDossier])
+async def get_case(
+    case_id: uuid.UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[QaCaseDossier] | JSONResponse:
+    """Return the full dossier payload for one QA case."""
+    pool = _shared_pool(db)
+
+    row = await pool.fetchrow(
+        """
+        SELECT
+            a.id,
+            a.butler_name,
+            a.status,
+            a.severity,
+            a.exception_type,
+            a.call_site,
+            a.sanitized_msg,
+            a.branch_name,
+            a.pr_url,
+            a.pr_number,
+            a.created_at,
+            a.closed_at,
+            a.error_detail,
+            COALESCE(f.severity, a.severity) AS case_severity,
+            COALESCE(f.detected_at, a.created_at) AS detected,
+            EXTRACT(EPOCH FROM (now() - COALESCE(f.detected_at, a.created_at)))::int
+                AS age_seconds,
+            f.id AS finding_id,
+            f.fingerprint AS finding_fingerprint,
+            f.source_type AS finding_source_type,
+            f.source_butler AS finding_source_butler,
+            f.severity AS finding_severity,
+            f.exception_type AS finding_exception_type,
+            f.event_summary AS finding_event_summary,
+            f.call_site AS finding_call_site,
+            f.occurrence_count AS finding_occurrence_count,
+            f.first_seen AS finding_first_seen,
+            f.last_seen AS finding_last_seen,
+            f.source_session_trigger_source AS finding_source_session_trigger_source,
+            f.structured_evidence AS finding_structured_evidence
+        FROM public.healing_attempts a
+        LEFT JOIN LATERAL (
+            SELECT id, fingerprint, source_type, source_butler, severity,
+                   exception_type, event_summary, call_site, occurrence_count,
+                   first_seen, last_seen, source_session_trigger_source,
+                   structured_evidence, created_at,
+                   MIN(first_seen) OVER () AS detected_at
+            FROM public.qa_findings
+            WHERE healing_attempt_id = a.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) f ON TRUE
+        WHERE a.id = $1
+        """,
+        case_id,
+    )
+    if row is None:
+        return _case_not_found_response(case_id)
+
+    journal_rows = await pool.fetch(
+        """
+        SELECT id, ts, step, text, detail, data
+        FROM (
+            SELECT id, ts, step, text, detail, data
+            FROM public.qa_investigation_events
+            WHERE attempt_id = $1
+            ORDER BY ts DESC
+            LIMIT 50
+        ) recent
+        ORDER BY ts ASC
+        """,
+        case_id,
+    )
+    case = _row_to_case_summary(row)
+    dossier = QaCaseDossier(
+        case=case,
+        state_track_stage=case.state,
+        investigation_notes=_investigation_notes_from_case_row(row),
+        pr=_row_to_pr_summary(row),
+        journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
+    )
+    return ApiResponse(data=dossier)
+
+
+@router.get("/cases/{case_id}/journal", response_model=PaginatedResponse[QaJournalEvent])
+async def get_case_journal(
+    case_id: uuid.UUID,
+    cursor: datetime | None = Query(
+        None,
+        description="ISO timestamp of the last event already seen",
+    ),
+    limit: int = Query(50, ge=1, le=500),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[QaJournalEvent] | JSONResponse:
+    """Return a chronological page of journal events for one QA case."""
+    pool = _shared_pool(db)
+
+    exists = await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM public.healing_attempts WHERE id = $1)",
+        case_id,
+    )
+    if not exists:
+        return _case_not_found_response(case_id)
+
+    conditions = ["attempt_id = $1"]
+    args: list[Any] = [case_id]
+    if cursor is not None:
+        conditions.append("ts > $2")
+        args.append(cursor)
+
+    total = int(
+        await pool.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM public.qa_investigation_events
+            WHERE {" AND ".join(conditions)}
+            """,
+            *args,
+        )
+        or 0
+    )
+    rows = await pool.fetch(
+        f"""
+        SELECT id, ts, step, text, detail, data
+        FROM public.qa_investigation_events
+        WHERE {" AND ".join(conditions)}
+        ORDER BY ts ASC
+        LIMIT ${len(args) + 1}
+        """,
+        *args,
+        limit,
+    )
+    return PaginatedResponse(
+        data=[_row_to_journal_event(row) for row in rows],
+        meta=PaginationMeta(total=total, offset=0, limit=limit),
     )
 
 
