@@ -109,13 +109,15 @@ Shape:
 
 The Pydantic model lives at `src/butlers/core/qa/notes.py` as `InvestigationNotes` with strict validation. When the agent emits malformed JSON, the dispatcher records `qa_investigation_notes_parse_total{status="partial"}` (best-effort extraction of recoverable fields) or `{status="failed"}` (drop the artifact) but never crashes the investigation.
 
-### D3 — Agent emission via Claude structured-output
+### D3 — Agent emission via portable file contract
 
 The investigation agent's terminal step writes a JSON file at a known path inside the worktree (`./.qa/investigation_notes.json`) before signalling completion. The dispatcher reads that file *before* worktree teardown, validates against the schema, and writes the parsed payload into `qa_findings.structured_evidence.investigation_notes`.
 
 Rationale: writing through a file is robust to streaming-output truncation and works whether the agent runs Claude, Codex, or any future runtime. The file path lives inside the worktree so cleanup is automatic if the artifact is missing.
 
-The Claude-specific prompt instructs the agent to use structured output for the JSON file's content. Other runtimes get the same JSON-shape instruction but without the structured-output mode toggle — best-effort parsing handles the difference.
+Runtime contract note: the active `RuntimeAdapter.invoke()` signature accepts `prompt`, `system_prompt`, MCP servers, environment, model/runtime args, cwd, and timeout. It does not accept a structured-output schema tied to a file artifact. The active Claude CLI exposes `--json-schema`, but that validates the final printed response in `--print` mode; it does not validate JSON that the agent writes to `./.qa/investigation_notes.json` through file operations after doing investigation work. Treating `--json-schema` as an artifact-file schema hook would validate the wrong payload and could break the existing dispatcher, which reads the file rather than the final response.
+
+Therefore the Investigation Notes Artifact is a portable file contract for all runtimes: the prompt instructs the agent to write plain JSON matching `InvestigationNotes`, and the dispatcher performs strict validation plus tolerant best-effort parsing after the runtime exits. If a future runtime adapter grows an explicit artifact-file structured-output channel, a later change can bind `InvestigationNotes` to that channel without changing the dispatcher persistence contract.
 
 ### D4 — Diff snapshot at commit time
 
@@ -309,7 +311,7 @@ This is a doctrine clarification, not a contract break — anonymization-on-egre
 1. Land the OpenSpec change (this directory) and update RFC 0015 doctrine in the same PR. No code changes yet.
 2. Add the `qa_investigation_events` Alembic migration. Verify with a no-op test that the table exists in fresh and existing DBs.
 3. Implement the journal helper (`src/butlers/core/qa/journal.py`) and wire the `flagged` / `drafted` / `wait` / `merged` / `escalated` / `tick` emitters into existing call sites. No agent contract change yet.
-4. Implement the `InvestigationNotes` Pydantic model and the parser in `src/butlers/core/qa/notes.py`. Update the investigation agent prompt to instruct emission of `./.qa/investigation_notes.json`. Update `dispatch.py` to read, parse, and persist the file before worktree teardown.
+4. Implement the `InvestigationNotes` Pydantic model and the parser in `src/butlers/core/qa/notes.py`. Update the investigation agent prompt to instruct emission of `./.qa/investigation_notes.json` through the portable file contract. Update `dispatch.py` to read, parse, and persist the file before worktree teardown.
 5. Implement the diff snapshot capture in `dispatch.py`.
 6. Add the Cases API endpoints (`/api/qa/cases`, `/api/qa/cases/:id`, `/api/qa/cases/:id/journal`) and extend `/api/qa/summary` with the KPI block.
 7. Implement the retention cleanup job and schedule it daily at 04:00 UTC.

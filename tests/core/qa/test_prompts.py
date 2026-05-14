@@ -142,6 +142,7 @@ def test_prompt_requires_structured_investigation_notes_json():
     prompt = build_investigation_prompt(_make_finding(), uuid.uuid4())
 
     assert "./.qa/investigation_notes.json" in prompt
+    assert "portable file contract" in prompt
     for field in (
         "schema_version",
         "headline",
@@ -157,6 +158,7 @@ def test_prompt_requires_structured_investigation_notes_json():
     assert '"headline": "Spotify ingestion failing - scope renamed upstream"' in prompt
     assert '"hypothesis": "Token expiry"' in prompt
     assert "Emit valid JSON only" in prompt
+    assert "structured-output mode" not in prompt
 
 
 # ---------------------------------------------------------------------------

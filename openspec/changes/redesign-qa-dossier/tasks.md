@@ -27,7 +27,7 @@
 - [ ] 4.2 Add `BlurbSegment`, `Claim`, `EvidenceLine`, `CounterEvidenceItem`, `DiffLine` sub-models with strict validation
 - [ ] 4.3 Implement `parse_investigation_notes(raw: str) -> tuple[InvestigationNotes | None, Literal["ok","partial","failed"]]` — strict parse first, fall back to per-field best-effort extraction on failure
 - [ ] 4.4 Update the investigation agent prompt in `src/butlers/core/qa/dispatch.py` (or wherever the prompt is composed) to instruct emission of `./.qa/investigation_notes.json` with the documented schema, plus a one-paragraph rationale and example
-- [ ] 4.5 When the runtime is Claude, enable structured-output mode for the notes JSON; for other runtimes, emit the same JSON-shape instruction without the mode toggle
+- [ ] 4.5 Use the portable file contract for every runtime: prompt the agent to write plain JSON to `./.qa/investigation_notes.json`, then rely on dispatcher validation/tolerant parsing; do not require Claude final-response structured-output mode unless the runtime adapter gains an artifact-file schema channel
 - [ ] 4.6 In the dispatcher's terminal handler, read `./.qa/investigation_notes.json` before worktree teardown, parse via 4.3, and persist into `qa_findings.structured_evidence.investigation_notes` (for every finding linked to the attempt)
 - [ ] 4.7 Add Prometheus counter `qa_investigation_notes_parse_total{status}` (status ∈ {ok, partial, failed}); increment per parse attempt
 - [ ] 4.8 Emit `considered` and `concluded` journal events from the agent path: for each `counter_evidence[]` entry insert a `considered` event; insert exactly one `concluded` event with the agent's hypothesis when notes are successfully parsed
@@ -119,7 +119,7 @@
 ## 14. End-to-end validation
 
 - [ ] 14.1 Force a patrol via `POST /api/qa/force-patrol` against a dev butler producing synthetic errors; verify `flagged` and `drafted` events appear in `qa_investigation_events`
-- [ ] 14.2 Run an end-to-end investigation with a Claude runtime; verify `./.qa/investigation_notes.json` is produced, parses cleanly, persists into `structured_evidence`, and the dossier renders all fields
+- [ ] 14.2 Run an end-to-end investigation with the configured QA runtime; verify `./.qa/investigation_notes.json` is produced by the portable file contract, parses cleanly, persists into `structured_evidence`, and the dossier renders all fields
 - [ ] 14.3 Wait two patrol cycles after the case lands; verify `tick` events accumulate while the case is `pr_open` and stop after `merged`
 - [ ] 14.4 Verify the daily cleanup job runs on schedule in dev (or run it manually) and increments the retention counter; confirm narrative fields are preserved post-cleanup
 - [ ] 14.5 Verify the page renders correctly at `https://tzeusy.parrot-hen.ts.net/butlers-dev/qa` with real data
