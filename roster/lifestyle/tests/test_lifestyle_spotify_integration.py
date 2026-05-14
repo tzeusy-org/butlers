@@ -252,6 +252,90 @@ class TestScenario1ValidCredentials:
         assert module._user_profile is not None
         assert module._user_profile["id"] == _USER_ID
 
+    async def test_token_refresh_temporarily_unavailable_keeps_tools_enabled(self) -> None:
+        """Transient token service failures should not disable configured Spotify tools."""
+        token_response = _make_http_response(
+            503,
+            {"error": "temporarily_unavailable", "error_description": ""},
+            headers={"Retry-After": "42"},
+        )
+        http_client = _make_mock_http_client([])
+        http_client.post = AsyncMock(return_value=token_response)
+        cred_store = _make_credential_store(expires_at="2000-01-01T00:00:00+00:00")
+
+        module = SpotifyModule()
+        import unittest.mock as mock
+
+        with mock.patch(
+            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            return_value=http_client,
+        ):
+            await module.on_startup(config={}, db=None, credential_store=cred_store)
+
+        assert module._client is not None
+        assert module._credentials_ok is True
+        assert module._user_profile is None
+
+    async def test_create_playlist_lazy_fetches_profile_after_transient_startup_failure(
+        self,
+    ) -> None:
+        """spotify_create_playlist lazily fetches the user profile when it was not
+        populated at startup due to a transient token service failure.
+
+        After recovery, the lazy fetch succeeds and the playlist is created normally.
+        """
+        import unittest.mock as mock
+
+        # Startup: token refresh is temporarily unavailable → _user_profile stays None
+        token_503 = _make_http_response(
+            503,
+            {"error": "temporarily_unavailable", "error_description": ""},
+            headers={"Retry-After": "5"},
+        )
+        startup_http_client = AsyncMock(spec=httpx.AsyncClient)
+        startup_http_client.post = AsyncMock(return_value=token_503)
+        startup_http_client.request = AsyncMock(side_effect=[])
+        startup_http_client.aclose = AsyncMock()
+        cred_store = _make_credential_store(expires_at="2000-01-01T00:00:00+00:00")
+
+        module = SpotifyModule()
+        with mock.patch(
+            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            return_value=startup_http_client,
+        ):
+            await module.on_startup(config={}, db=None, credential_store=cred_store)
+
+        assert module._user_profile is None
+        assert module._credentials_ok is True
+
+        mcp = _make_mock_mcp()
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
+
+        # Recovery: stub out get_me() (token refresh is already tested elsewhere) and
+        # create_playlist() on the client to simulate the service being back.
+        assert module._client is not None
+        with (
+            mock.patch.object(
+                module._client,
+                "get_me",
+                new_callable=AsyncMock,
+                return_value=_PROFILE_RESPONSE,
+            ),
+            mock.patch.object(
+                module._client,
+                "create_playlist",
+                new_callable=AsyncMock,
+                return_value=_PLAYLIST_RESPONSE,
+            ),
+        ):
+            result = await mcp._registered_tools["spotify_create_playlist"](name="Lazy Fetch Test")
+
+        assert "id" in result, f"Expected playlist id in result, got: {result}"
+        assert result["id"] == _PLAYLIST_ID
+        # After lazy fetch, _user_profile should now be cached
+        assert module._user_profile is not None
+        assert module._user_profile["id"] == _USER_ID
+
     async def test_butler_toml_includes_spotify_module(self) -> None:
         """roster/lifestyle/butler.toml declares [modules.spotify]."""
         from pathlib import Path

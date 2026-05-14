@@ -117,6 +117,16 @@ class SpotifyRateLimitError(Exception):
         self.retry_after_s = retry_after_s
 
 
+class SpotifyTokenRefreshUnavailableError(Exception):
+    """Raised when Spotify's token service fails with a retryable condition."""
+
+    def __init__(self, retry_after_s: float) -> None:
+        super().__init__(
+            f"Spotify token refresh temporarily unavailable; retry after {retry_after_s:.1f}s"
+        )
+        self.retry_after_s = retry_after_s
+
+
 class SpotifyAPIError(Exception):
     """Raised for unexpected Spotify API errors (non-401/429 status codes)."""
 
@@ -256,6 +266,18 @@ class SpotifyClient:
         now = datetime.now(UTC)
         return now >= (self._expires_at - timedelta(seconds=_PROACTIVE_REFRESH_WINDOW_S))
 
+    @staticmethod
+    def _oauth_error_code(response: httpx.Response) -> str | None:
+        """Extract an OAuth ``error`` code from a token endpoint response."""
+        try:
+            data = response.json()
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        error = data.get("error")
+        return error if isinstance(error, str) else None
+
     async def _refresh_access_token(self) -> None:
         """Exchange the stored refresh token for a new access token.
 
@@ -287,11 +309,29 @@ class SpotifyClient:
         )
 
         if response.status_code != 200:
-            body = response.text
+            body = response.text[:200]
+            oauth_error = self._oauth_error_code(response)
+            if (
+                response.status_code == 429
+                or response.status_code >= 500
+                or oauth_error in {"server_error", "temporarily_unavailable"}
+            ):
+                retry_after_s = self._parse_retry_after(response, attempt=0)
+                logger.warning(
+                    "Spotify token refresh temporarily unavailable: "
+                    "status=%d error=%r retry_after_s=%.1f body=%r",
+                    response.status_code,
+                    oauth_error,
+                    retry_after_s,
+                    body,
+                )
+                raise SpotifyTokenRefreshUnavailableError(retry_after_s)
+
             logger.error(
-                "Spotify token refresh failed: status=%d body=%r",
+                "Spotify token refresh failed: status=%d error=%r body=%r",
                 response.status_code,
-                body[:200],
+                oauth_error,
+                body,
             )
             raise SpotifyAuthError(
                 f"Spotify token refresh failed (HTTP {response.status_code}). "

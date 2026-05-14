@@ -27,6 +27,7 @@ from butlers.connectors.spotify_client import (
     SpotifyAuthError,
     SpotifyClient,
     SpotifyRateLimitError,
+    SpotifyTokenRefreshUnavailableError,
 )
 from butlers.modules.base import Module, ToolMeta
 
@@ -58,6 +59,13 @@ def _premium_required_error(product: str | None) -> str:
 
 def _rate_limited_error(retry_after_s: float) -> str:
     return f"Spotify rate limited. Try again in {retry_after_s:.0f} seconds."
+
+
+def _token_refresh_unavailable_error(retry_after_s: float) -> str:
+    return (
+        "Spotify authentication is temporarily unavailable. "
+        f"Try again in {retry_after_s:.0f} seconds."
+    )
 
 
 def _api_error_message(status_code: int, body: str) -> str:
@@ -176,6 +184,12 @@ class SpotifyModule(Module):
                 profile.get("display_name") or profile.get("id"),
                 profile.get("product"),
             )
+        except SpotifyTokenRefreshUnavailableError as exc:
+            logger.warning(
+                "Spotify module: token refresh temporarily unavailable at startup — %s",
+                exc,
+            )
+            self._credentials_ok = True
         except SpotifyAuthError as exc:
             logger.warning("Spotify module: auth failed at startup — %s", exc)
             self._credentials_ok = False
@@ -239,8 +253,28 @@ class SpotifyModule(Module):
     def _no_credentials(self) -> dict[str, Any]:
         return {"error": _NO_CREDENTIALS_ERROR}
 
+    async def _get_user_profile(self) -> dict[str, Any] | None:
+        """Return the cached user profile, fetching it lazily if not yet available.
+
+        Returns ``None`` when the client is unavailable or a transient error occurs.
+        """
+        if self._user_profile is not None:
+            return self._user_profile
+        if self._client is None:
+            return None
+        try:
+            profile = await self._client.get_me()
+            self._user_profile = profile
+            return profile
+        except SpotifyTokenRefreshUnavailableError:
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _handle_spotify_error(self, exc: Exception) -> dict[str, Any]:
         """Convert a SpotifyClient exception to an actionable error dict."""
+        if isinstance(exc, SpotifyTokenRefreshUnavailableError):
+            return {"error": _token_refresh_unavailable_error(exc.retry_after_s)}
         if isinstance(exc, SpotifyAuthError):
             return {"error": _AUTH_EXPIRED_ERROR}
         if isinstance(exc, SpotifyRateLimitError):
@@ -570,9 +604,12 @@ class SpotifyModule(Module):
             """
             if not module._credentials_ok or module._client is None:
                 return module._no_credentials()
-            if module._user_profile is None:
-                return {"error": "User profile not available. Re-connect Spotify."}
-            user_id = module._user_profile.get("id")
+            profile = await module._get_user_profile()
+            if profile is None:
+                return {
+                    "error": "Spotify user profile is temporarily unavailable. Try again shortly."
+                }
+            user_id = profile.get("id")
             if not user_id:
                 return {"error": "Could not determine Spotify user ID."}
             try:
