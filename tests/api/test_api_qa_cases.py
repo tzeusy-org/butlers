@@ -211,6 +211,33 @@ async def test_cases_since_filter_builds_requested_cutoff() -> None:
     assert "a.created_at >= $1" in pool.fetchval.await_args.args[0]
 
 
+async def test_cases_filter_combinations() -> None:
+    app, pool = _build_app(rows=[_make_case_row()], total=1)
+
+    response = await _call(app, "/api/qa/cases", params={"sev": "high", "since": "24h"})
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["sev"] == "high"
+    count_sql = pool.fetchval.await_args.args[0]
+    fetch_sql = pool.fetch.await_args.args[0]
+    assert "COALESCE(f.severity, a.severity) IN (0, 1)" in count_sql
+    assert "COALESCE(f.severity, a.severity) IN (0, 1)" in fetch_sql
+    cutoff = pool.fetchval.await_args.args[1]
+    assert isinstance(cutoff, datetime)
+    assert (
+        timedelta(hours=23, minutes=59)
+        <= datetime.now(UTC) - cutoff
+        <= timedelta(hours=24, minutes=1)
+    )
+
+    invalid_app, invalid_pool = _build_app(rows=[], total=0)
+    invalid_response = await _call(invalid_app, "/api/qa/cases", params={"sev": "invalid"})
+
+    assert invalid_response.status_code == 422
+    invalid_pool.fetchval.assert_not_awaited()
+    invalid_pool.fetch.assert_not_awaited()
+
+
 async def test_cases_pagination_passes_offset_limit_and_reports_has_more() -> None:
     app, pool = _build_app(rows=[_make_case_row()], total=40)
 
@@ -316,6 +343,24 @@ async def test_case_detail_full_notes() -> None:
     assert "ORDER BY ts DESC" in pool.fetch.await_args.args[0]
 
 
+async def test_cases_returns_raw_evidence_lines() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_892)
+    raw_token = "RAW-EVIDENCE-TOKEN-bu-do4op"
+    notes = _notes_payload()
+    notes["evidence_lines"][0]["msg"] = f"log line includes {raw_token}"
+    row = _make_case_row(
+        id=attempt_id,
+        finding_structured_evidence={"investigation_notes": notes},
+    )
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    evidence_lines = response.json()["data"]["investigation_notes"]["evidence_lines"]
+    assert evidence_lines[0]["msg"] == f"log line includes {raw_token}"
+
+
 async def test_case_detail_missing_notes() -> None:
     attempt_id = _uuid7_with_timestamp(1_771_234_567_891)
     row = _make_case_row(
@@ -335,6 +380,40 @@ async def test_case_detail_missing_notes() -> None:
     assert body["journal"] == []
 
 
+async def test_cases_short_id_stable_per_attempt() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_321)
+    row = _make_case_row(id=attempt_id)
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    first = await _call(app, f"/api/qa/cases/{attempt_id}")
+    second = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["data"]["case"]["short_id"] == "#321"
+    assert second.json()["data"]["case"]["short_id"] == "#321"
+
+
+async def test_cases_handles_attempt_without_findings() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_654)
+    row = _make_case_row(
+        id=attempt_id,
+        butler_name="messenger",
+        exception_type="ValueError",
+        finding_id=None,
+        finding_event_summary=None,
+        finding_structured_evidence=None,
+    )
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["case"]["headline"] == "ValueError in messenger"
+    assert body["investigation_notes"] is None
+
+
 async def test_case_detail_404() -> None:
     missing_id = uuid.uuid4()
     app, _pool = _build_app(fetchrow_result=None)
@@ -349,6 +428,42 @@ async def test_case_detail_404() -> None:
             "butler": None,
             "details": None,
         }
+    }
+
+
+async def test_cases_response_envelopes() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_893)
+    row = _make_case_row(id=attempt_id)
+    app, _pool = _build_app(
+        fetchval_side_effect=[1, True, 0],
+        fetchrow_result=row,
+        fetch_side_effect=[[row], [], []],
+    )
+
+    list_response = await _call(app, "/api/qa/cases")
+    detail_response = await _call(app, f"/api/qa/cases/{attempt_id}")
+    journal_response = await _call(app, f"/api/qa/cases/{attempt_id}/journal")
+
+    assert list_response.status_code == 200
+    assert set(list_response.json()) == {"data", "meta"}
+    assert list_response.json()["meta"] == {
+        "total": 1,
+        "offset": 0,
+        "limit": 25,
+        "has_more": False,
+    }
+
+    assert detail_response.status_code == 200
+    assert set(detail_response.json()) == {"data", "meta"}
+    assert detail_response.json()["meta"] == {}
+
+    assert journal_response.status_code == 200
+    assert set(journal_response.json()) == {"data", "meta"}
+    assert journal_response.json()["meta"] == {
+        "total": 0,
+        "offset": 0,
+        "limit": 50,
+        "has_more": False,
     }
 
 
