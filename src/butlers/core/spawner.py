@@ -103,6 +103,24 @@ _FALLBACK_MODEL_ID = "claude-haiku-4-5-20251001"
 # timeout for the current spawn.
 _FALLBACK_SESSION_TIMEOUT_S = 1800
 
+# Runtime adapters own subprocess timeout handling because they can kill child
+# processes and preserve adapter-specific diagnostics. The spawner keeps an
+# outer guard only as a backstop for adapters that ignore the timeout.
+_RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S = 1.0
+_RUNTIME_TIMEOUT_MAX_CLEANUP_GRACE_S = 10.0
+_RUNTIME_TIMEOUT_CLEANUP_GRACE_FRACTION = 0.05
+
+
+def _runtime_timeout_guard_s(timeout_s: float) -> float:
+    grace_s = min(
+        _RUNTIME_TIMEOUT_MAX_CLEANUP_GRACE_S,
+        max(
+            _RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S,
+            timeout_s * _RUNTIME_TIMEOUT_CLEANUP_GRACE_FRACTION,
+        ),
+    )
+    return timeout_s + grace_s
+
 
 def _get_global_semaphore() -> asyncio.Semaphore:
     """Return the process-wide spawn concurrency semaphore (lazy init).
@@ -1579,15 +1597,38 @@ class Spawner:
             invoke_kwargs["timeout"] = timeout_s
             merged_runtime_capture = False
             try:
-                result_text, tool_calls, usage = await asyncio.wait_for(
-                    runtime.invoke(**invoke_kwargs),
-                    timeout=timeout_s,
-                )
-            except TimeoutError:
-                raise TimeoutError(
-                    f"Session timed out after {timeout_s}s "
-                    f"(model={model}, butler={self._config.name})"
-                )
+                invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
+                try:
+                    done, _pending = await asyncio.wait(
+                        {invoke_task},
+                        timeout=_runtime_timeout_guard_s(float(timeout_s)),
+                    )
+                    if not done:
+                        invoke_task.cancel()
+                        try:
+                            await asyncio.wait_for(
+                                invoke_task, timeout=_RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S
+                            )
+                        except (TimeoutError, asyncio.CancelledError):
+                            pass
+                        except Exception:
+                            logger.debug(
+                                "Runtime task raised while handling spawner timeout for butler=%s",
+                                self._config.name,
+                                exc_info=True,
+                            )
+                        raise TimeoutError(
+                            f"Session timed out after {timeout_s}s "
+                            f"(model={model}, butler={self._config.name})"
+                        )
+                    result_text, tool_calls, usage = await invoke_task
+                finally:
+                    if not invoke_task.done():
+                        invoke_task.cancel()
+                        try:
+                            await invoke_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
             except MCPToolDiscoveryError as exc:
                 executed_tool_calls = (
                     consume_runtime_session_tool_calls(runtime_session_id)
