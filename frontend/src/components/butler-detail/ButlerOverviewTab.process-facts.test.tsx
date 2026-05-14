@@ -1,11 +1,10 @@
 /**
- * ButlerOverviewTab — process facts card regression tests.
+ * ButlerOverviewTab — config/process facts panel regression tests.
  *
  * Asserts:
- *   1. The process facts card renders all four expected labels:
- *      Container, Port, Registered, Config.
+ *   1. The config panel renders the process facts currently exposed by the API.
  *   2. Values from the mock data are visible in the rendered output.
- *   3. No "pid" label or value appears anywhere in the rendered card.
+ *   3. No "pid" label or value appears anywhere in the rendered panel.
  *
  * Bead: bu-8hbph.2
  */
@@ -17,6 +16,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 import { useButler } from "@/hooks/use-butlers";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import type { ButlerDetail } from "@/api/types";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,10 @@ import type { ButlerDetail } from "@/api/types";
 vi.mock("@/hooks/use-butlers", () => ({
   useButler: vi.fn(),
   useButlerModules: vi.fn(() => ({ data: null, isLoading: false })),
+}));
+
+vi.mock("@/hooks/use-butler-status-board", () => ({
+  useButlerStatusBoard: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-system", () => ({
@@ -47,6 +51,14 @@ vi.mock("@/hooks/use-sessions", () => ({
 vi.mock("@/hooks/use-general", () => ({
   useRegistry: vi.fn(() => ({ data: null, isLoading: false })),
   useSetEligibility: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}));
+
+vi.mock("@/hooks/use-approvals", () => ({
+  useApprovalActions: vi.fn(() => ({ data: { data: [], meta: {} }, isLoading: false, isError: false })),
+}));
+
+vi.mock("@/hooks/use-butler-analytics", () => ({
+  useButlerActivityFeed: vi.fn(() => ({ data: { events: [] }, isLoading: false, isError: false, error: null })),
 }));
 
 // Stub components that require full DOM / router context not needed here.
@@ -88,6 +100,41 @@ function setButlerState(butler: ButlerDetail | null, opts: Partial<UseButlerResu
     error: null,
     ...opts,
   } as UseButlerResult);
+
+  vi.mocked(useButlerStatusBoard).mockReturnValue({
+    rows: [
+      {
+        name: "general",
+        type: "butler",
+        description: null,
+        status: "ok",
+        activity: "idle",
+        cellTone: "neutral",
+        eligibility: "active",
+        sessions24h: butler?.sessions_24h ?? 0,
+        costToday: 0,
+        loadPct: null,
+        lastRunISO: null,
+        hourlyStripe: Array(24).fill(0),
+      },
+    ],
+    aggregates: {
+      total: 1,
+      butlerCount: 1,
+      stafferCount: 0,
+      active: 0,
+      paused: 0,
+      awaiting: 0,
+      quarantined: 0,
+      totalSessions24h: butler?.sessions_24h ?? 0,
+      totalSpendToday: 0,
+      avgLoadPct: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    },
+  });
 }
 
 function renderTab(): string {
@@ -105,23 +152,24 @@ function renderTab(): string {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("ButlerOverviewTab — process facts card", () => {
+describe("ButlerOverviewTab — config/process facts panel", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     setButlerState(BASE_BUTLER);
   });
 
-  it("renders all four process fact labels", () => {
+  it("renders the process-backed config labels", () => {
     const html = renderTab();
-    expect(html).toContain("Container");
-    expect(html).toContain("Port");
-    expect(html).toContain("Registered");
-    expect(html).toContain("Config");
+    expect(html).toContain("port");
+    expect(html).toContain("registered");
+    expect(html).toContain("modules");
+    expect(html).toContain("schedules");
+    expect(html).toContain("skills");
   });
 
-  it("renders the container_name value", () => {
+  it("renders the config_path value in the panel sublabel", () => {
     const html = renderTab();
-    expect(html).toContain("butlers-up");
+    expect(html).toContain("roster/general/butler.toml");
   });
 
   it("renders the port value", () => {
@@ -130,15 +178,10 @@ describe("ButlerOverviewTab — process facts card", () => {
     expect(html).toContain("8001");
   });
 
-  it("renders a human-readable registered duration", () => {
+  it("renders the registered duration in compact hours", () => {
     const html = renderTab();
-    // 3723 seconds = 1h 2m
-    expect(html).toContain("1h 2m");
-  });
-
-  it("renders the config_path value", () => {
-    const html = renderTab();
-    expect(html).toContain("roster/general/butler.toml");
+    // Current compact grid floors runtime to whole hours.
+    expect(html).toContain("1h");
   });
 
   it("does NOT render any pid label or value", () => {
@@ -149,12 +192,11 @@ describe("ButlerOverviewTab — process facts card", () => {
     expect(html.toLowerCase()).not.toContain("process-id");
   });
 
-  it("renders '--' placeholders when process_facts is null", () => {
+  it("falls back to the butler port when process_facts is null", () => {
     setButlerState({ ...BASE_BUTLER, process_facts: null });
     const html = renderTab();
-    // Each of the 4 fact rows should show the unavailable placeholder
-    const placeholderCount = (html.match(/--/g) ?? []).length;
-    expect(placeholderCount).toBeGreaterThanOrEqual(4);
+    expect(html).toContain("8001");
+    expect(html).toContain("--");
   });
 
   it("renders '--' for registered when registered_duration_seconds is null", () => {

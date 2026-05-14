@@ -117,8 +117,7 @@ def _build_user_message(state: dict, state_class: str) -> str:
     notification_items = state.get("notification_items", [])
 
     top_attention_items = [
-        _compact_attention_item(item)
-        for item in sorted(attention_items, key=_severity_rank)[:3]
+        _compact_attention_item(item) for item in sorted(attention_items, key=_severity_rank)[:3]
     ]
     unhealthy_butlers = [
         _compact_butler_status(item)
@@ -137,9 +136,7 @@ def _build_user_message(state: dict, state_class: str) -> str:
             "unhealthy_total": len(unhealthy_butlers),
             "unhealthy": unhealthy_butlers,
         },
-        "recent_notifications": [
-            _compact_notification(item) for item in notification_items[:3]
-        ],
+        "recent_notifications": [_compact_notification(item) for item in notification_items[:3]],
     }
     return (
         f"Dashboard state:\n{json.dumps(state_summary, default=str, indent=2)}\n\n"

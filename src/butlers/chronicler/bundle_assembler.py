@@ -171,9 +171,9 @@ def _serialise_row(
             if isinstance(val, datetime):
                 val = val.isoformat()
                 if display_timezone is not None:
-                    result[f"local_{key}"] = row[key].astimezone(
-                        ZoneInfo(display_timezone)
-                    ).isoformat()
+                    result[f"local_{key}"] = (
+                        row[key].astimezone(ZoneInfo(display_timezone)).isoformat()
+                    )
             elif isinstance(val, enum.Enum):
                 val = val.value
             result[key] = val

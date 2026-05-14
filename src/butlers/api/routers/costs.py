@@ -521,8 +521,7 @@ async def get_daily_costs(
         fallback_results = await asyncio.gather(*fallback_tasks)
         fallback_iter = iter(fallback_results)
         all_results = [
-            result if result is not None else next(fallback_iter)
-            for result in raw_results
+            result if result is not None else next(fallback_iter) for result in raw_results
         ]
     else:
         all_results = raw_results

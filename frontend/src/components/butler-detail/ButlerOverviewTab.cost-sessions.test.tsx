@@ -1,17 +1,16 @@
 /**
- * ButlerOverviewTab — cost card and recent sessions card regression tests.
+ * ButlerOverviewTab — spend and recent activity panel regression tests.
  *
- * Pins the contracts for both cards:
- *   Cost card:
- *     1. Renders "Today" and "Last 7d" labels with monospace values.
- *     2. Shows "$0.00" when the butler has no spend in the period.
- *     3. Shows "No cost data" when both periods return no data.
- *     4. Shows a skeleton when isLoading.
+ * Pins the contracts for current overview grid panels:
+ *   Spend:
+ *     1. Renders today's spend with monospace values.
+ *     2. Shows "$0.00" when the butler has no spend today.
+ *     3. Shows a skeleton when the cost source is loading.
  *
- *   Recent sessions card:
- *     1. Renders last 5 sessions with prompt + status badge.
- *     2. Shows "No sessions yet" when the list is empty.
- *     3. Shows a skeleton when isLoading.
+ *   Recent activity:
+ *     1. Renders recent activity events with summary + kind.
+ *     2. Shows "no recent events" when the event list is empty.
+ *     3. Shows a skeleton while activity is loading.
  *
  * Bead: bu-8hbph.4
  */
@@ -30,6 +29,14 @@ import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 vi.mock("@/hooks/use-butlers", () => ({
   useButler: vi.fn(),
   useButlerModules: vi.fn(() => ({ data: { data: [], meta: {} }, isLoading: false, isError: false, error: null })),
+}));
+
+vi.mock("@/hooks/use-butler-status-board", () => ({
+  useButlerStatusBoard: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-approvals", () => ({
+  useApprovalActions: vi.fn(() => ({ data: { data: [], meta: {} }, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-system", () => ({
@@ -59,12 +66,7 @@ vi.mock("@/hooks/use-sessions", () => ({
 }));
 
 vi.mock("@/hooks/use-butler-analytics", () => ({
-  useButlerActivityFeed: vi.fn(() => ({
-    data: { events: [] },
-    isLoading: false,
-    isError: false,
-    error: null,
-  })),
+  useButlerActivityFeed: vi.fn(),
 }));
 
 // Stub heavy child components not under test here.
@@ -83,9 +85,10 @@ vi.mock("@/components/ui/time", () => ({
 }));
 
 import { useButler } from "@/hooks/use-butlers";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useCostSummary } from "@/hooks/use-costs";
-import { useButlerSessions } from "@/hooks/use-sessions";
-import type { ButlerDetail, SessionSummary } from "@/api/types";
+import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
+import type { ActivityFeed, ButlerDetail } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Shared fixture data
@@ -103,44 +106,22 @@ const BASE_BUTLER: ButlerDetail = {
   process_facts: null,
 };
 
-const SESSION_SUCCESS: SessionSummary = {
-  id: "session-1",
-  butler: "general",
-  prompt: "Check my email",
-  trigger_source: "scheduler",
-  success: true,
-  started_at: "2026-05-10T08:00:00Z",
-  completed_at: "2026-05-10T08:01:30Z",
-  duration_ms: 90000,
-  input_tokens: 1200,
-  output_tokens: 400,
-};
-
-const SESSION_FAILED: SessionSummary = {
-  id: "session-2",
-  butler: "general",
-  prompt: "Send weekly report",
-  trigger_source: "manual",
-  success: false,
-  started_at: "2026-05-10T09:15:00Z",
-  completed_at: "2026-05-10T09:15:45Z",
-  duration_ms: 45000,
-  input_tokens: 800,
-  output_tokens: 100,
-};
-
-const SESSION_RUNNING: SessionSummary = {
-  id: "session-3",
-  butler: "general",
-  prompt: "Process new messages",
-  trigger_source: "scheduler",
-  success: null,
-  started_at: "2026-05-10T10:00:00Z",
-  completed_at: null,
-  duration_ms: null,
-  input_tokens: null,
-  output_tokens: null,
-};
+const ACTIVITY_EVENTS: ActivityFeed["events"] = [
+  {
+    ts: "2026-05-10T08:00:00Z",
+    event_type: "session_completed",
+    summary: "Completed inbox triage",
+    entity_id: "session-1",
+    metadata: {},
+  },
+  {
+    ts: "2026-05-10T09:15:00Z",
+    event_type: "memory_write",
+    summary: "Stored one useful memory",
+    entity_id: "memory-1",
+    metadata: {},
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Setup helpers
@@ -172,16 +153,16 @@ function makeCostSummary(
 
 function setupDefaultMocks({
   costSummary24h = makeCostSummary(0.05),
-  costSummary7d = makeCostSummary(0.35),
   costLoading = false,
-  sessions = [SESSION_SUCCESS],
-  sessionsLoading = false,
+  sessions24h = 3,
+  activityEvents = ACTIVITY_EVENTS,
+  activityLoading = false,
 }: {
   costSummary24h?: CostSummaryData | null;
-  costSummary7d?: CostSummaryData | null;
   costLoading?: boolean;
-  sessions?: SessionSummary[];
-  sessionsLoading?: boolean;
+  sessions24h?: number;
+  activityEvents?: ActivityFeed["events"];
+  activityLoading?: boolean;
 } = {}) {
   vi.mocked(useButler).mockReturnValue({
     data: { data: BASE_BUTLER, meta: {} },
@@ -191,23 +172,52 @@ function setupDefaultMocks({
     refetch: vi.fn().mockResolvedValue(undefined),
   } as unknown as ReturnType<typeof useButler>);
 
-  // useCostSummary is called twice: once with "today" and once with "7d".
-  // Use mockImplementation to discriminate by argument instead of relying on
-  // call-order queues, which are consumed across test invocations.
-  vi.mocked(useCostSummary).mockImplementation((period) => {
-    const summary = period === "7d" ? costSummary7d : costSummary24h;
-    return {
-      data: summary ? { data: summary, meta: {} } : undefined,
-      isLoading: costLoading,
-    } as ReturnType<typeof useCostSummary>;
+  vi.mocked(useButlerStatusBoard).mockReturnValue({
+    rows: [
+      {
+        name: "general",
+        type: "butler",
+        description: null,
+        status: "ok",
+        activity: "idle",
+        cellTone: "neutral",
+        eligibility: "active",
+        sessions24h,
+        costToday: costSummary24h?.by_butler.general ?? 0,
+        loadPct: null,
+        lastRunISO: "2026-05-10T08:00:00Z",
+        hourlyStripe: Array(24).fill(0),
+      },
+    ],
+    aggregates: {
+      total: 1,
+      butlerCount: 1,
+      stafferCount: 0,
+      active: 0,
+      paused: 0,
+      awaiting: 0,
+      quarantined: 0,
+      totalSessions24h: sessions24h,
+      totalSpendToday: costSummary24h?.total_cost_usd ?? 0,
+      avgLoadPct: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    },
   });
 
-  vi.mocked(useButlerSessions).mockReturnValue({
-    data: { data: sessions, meta: { total: sessions.length, offset: 0, limit: 5 } },
-    isLoading: sessionsLoading,
+  vi.mocked(useCostSummary).mockReturnValue({
+    data: costSummary24h ? { data: costSummary24h, meta: {} } : undefined,
+    isLoading: costLoading,
+  } as ReturnType<typeof useCostSummary>);
+
+  vi.mocked(useButlerActivityFeed).mockReturnValue({
+    data: { events: activityEvents },
+    isLoading: activityLoading,
     isError: false,
     error: null,
-  } as ReturnType<typeof useButlerSessions>);
+  } as unknown as ReturnType<typeof useButlerActivityFeed>);
 }
 
 function renderTab(butlerName = "general"): string {
@@ -222,19 +232,19 @@ function renderTab(butlerName = "general"): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cost card tests
+// Spend panel tests
 // ---------------------------------------------------------------------------
 
-describe("ButlerOverviewTab — cost card", () => {
+describe("ButlerOverviewTab — spend panel", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
-  it("renders 'Today' and 'Last 7d' labels", () => {
+  it("renders the spend panel title and today label", () => {
     setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain("Today");
-    expect(html).toContain("Last 7d");
+    expect(html).toContain("spend");
+    expect(html).toContain("today");
   });
 
   it("renders today cost in monospace with dollar sign", () => {
@@ -245,10 +255,11 @@ describe("ButlerOverviewTab — cost card", () => {
     expect(html).toContain("font-mono");
   });
 
-  it("renders 7d cost value", () => {
-    setupDefaultMocks({ costSummary7d: makeCostSummary(0.35) });
+  it("renders per-session spend using the status-board session count", () => {
+    setupDefaultMocks({ costSummary24h: makeCostSummary(0.35), sessions24h: 7 });
     const html = renderTab();
     expect(html).toContain("$0.35");
+    expect(html).toContain("$0.05 / session");
   });
 
   it("renders '$0.00' when butler has no spend in the period", () => {
@@ -261,184 +272,103 @@ describe("ButlerOverviewTab — cost card", () => {
         by_butler: { "other-butler": 1.0 },
         by_model: {},
       },
-      costSummary7d: {
-        total_cost_usd: 5.0,
-        total_sessions: 20,
-        total_input_tokens: 20000,
-        total_output_tokens: 8000,
-        by_butler: { "other-butler": 5.0 },
-        by_model: {},
-      },
     });
     const html = renderTab();
     // Butler "general" has no entry — should show $0.00
     expect(html).toContain("$0.00");
   });
 
-  it("renders 'No cost data' when both cost summaries are unavailable", () => {
-    setupDefaultMocks({ costSummary24h: null, costSummary7d: null });
+  it("renders '$0.00' when cost data is unavailable", () => {
+    setupDefaultMocks({ costSummary24h: null });
     const html = renderTab();
-    expect(html).toContain("No cost data");
+    expect(html).toContain("$0.00");
   });
 
   it("renders loading skeleton when cost is loading", () => {
     setupDefaultMocks({ costLoading: true });
     const html = renderTab();
-    // In loading state the card title is still present but no data rows
-    expect(html).not.toContain("Last 24h");
-    expect(html).not.toContain("Last 7d");
+    expect(html).toContain('data-testid="panel-spend"');
+    expect(html).not.toContain("$0.05");
     // There should be skeleton elements (class="...animate-pulse...")
     expect(html.toLowerCase()).toContain("skeleton");
   });
 
-  it("renders the cost panel testid", () => {
+  it("renders the spend panel testid", () => {
     setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain('data-testid="panel-cost"');
-  });
-
-  it("renders global total and percentage share when butler is a fraction of total", () => {
-    // Butler spent $0.05 out of a $0.20 global total → 25.0%
-    setupDefaultMocks({
-      costSummary24h: makeCostSummary(0.05, "general", 0.20),
-    });
-    const html = renderTab();
-    expect(html).toContain("Share (today)");
-    expect(html).toContain("$0.05");
-    expect(html).toContain("$0.20");
-    expect(html).toContain("25.0%");
-  });
-
-  it("renders share row when butler is sole contributor (100%)", () => {
-    // Butler spent $0.10, global total is also $0.10 → 100.0%
-    setupDefaultMocks({
-      costSummary24h: makeCostSummary(0.10, "general", 0.10),
-    });
-    const html = renderTab();
-    expect(html).toContain("100.0%");
-  });
-
-  it("omits share row when global total is zero", () => {
-    // Global total is zero: division guard should suppress the share row
-    setupDefaultMocks({
-      costSummary24h: {
-        total_cost_usd: 0,
-        total_sessions: 0,
-        total_input_tokens: 0,
-        total_output_tokens: 0,
-        by_butler: {},
-        by_model: {},
-      },
-    });
-    const html = renderTab();
-    expect(html).not.toContain("Share (today)");
-  });
-
-  it("omits share row when cost data is unavailable", () => {
-    setupDefaultMocks({ costSummary24h: null, costSummary7d: null });
-    const html = renderTab();
-    expect(html).not.toContain("Share (today)");
+    expect(html).toContain('data-testid="panel-spend"');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Recent sessions card tests
+// Recent activity panel tests
 // ---------------------------------------------------------------------------
 
-describe("ButlerOverviewTab — recent sessions card", () => {
+describe("ButlerOverviewTab — recent activity panel", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
-  it("renders the recent sessions panel", () => {
-    setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
+  it("renders the recent activity panel", () => {
+    setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain('data-testid="panel-recent-sessions"');
-    expect(html).toContain("recent sessions");
+    expect(html).toContain('data-testid="panel-recent"');
+    expect(html).toContain("recent");
   });
 
-  it("renders session prompt text", () => {
-    setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
+  it("renders activity summaries", () => {
+    setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain("Check my email");
+    expect(html).toContain("Completed inbox triage");
+    expect(html).toContain("Stored one useful memory");
   });
 
-  it("renders 'Success' badge for a successful session", () => {
-    setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
+  it("renders event kind labels", () => {
+    setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain("Success");
+    expect(html).toContain("session");
+    expect(html).toContain("memory");
   });
 
-  it("renders 'Failed' badge for a failed session", () => {
-    setupDefaultMocks({ sessions: [SESSION_FAILED] });
-    const html = renderTab();
-    expect(html).toContain("Failed");
-  });
-
-  it("renders 'Running' badge for an in-progress session", () => {
-    setupDefaultMocks({ sessions: [SESSION_RUNNING] });
-    const html = renderTab();
-    expect(html).toContain("Running");
-  });
-
-  it("renders all five sessions when five are provided", () => {
-    const fiveSessions: SessionSummary[] = Array.from({ length: 5 }, (_, i) => ({
-      id: `session-${i + 1}`,
-      butler: "general",
-      prompt: `Task number ${i + 1}`,
-      trigger_source: "scheduler",
-      success: true,
-      started_at: "2026-05-10T08:00:00Z",
-      completed_at: "2026-05-10T08:01:00Z",
-      duration_ms: 60000,
-      input_tokens: 500,
-      output_tokens: 100,
+  it("renders all provided activity events", () => {
+    const fiveEvents: ActivityFeed["events"] = Array.from({ length: 5 }, (_, i) => ({
+      ts: `2026-05-10T0${i}:00:00Z`,
+      event_type: "session_completed",
+      summary: `Activity event ${i + 1}`,
+      entity_id: `session-${i + 1}`,
+      metadata: {},
     }));
-    setupDefaultMocks({ sessions: fiveSessions });
+    setupDefaultMocks({ activityEvents: fiveEvents });
     const html = renderTab();
     for (let i = 1; i <= 5; i++) {
-      expect(html).toContain(`Task number ${i}`);
+      expect(html).toContain(`Activity event ${i}`);
     }
   });
 
-  it("renders 'No sessions yet' when the sessions list is empty", () => {
-    setupDefaultMocks({ sessions: [] });
+  it("renders 'no recent events' when the event list is empty", () => {
+    setupDefaultMocks({ activityEvents: [] });
     const html = renderTab();
-    expect(html).toContain("No sessions yet");
+    expect(html).toContain("no recent events");
   });
 
-  it("renders loading skeletons when sessions are loading", () => {
-    setupDefaultMocks({ sessionsLoading: true });
+  it("renders loading skeletons when recent activity is loading", () => {
+    setupDefaultMocks({ activityLoading: true });
     const html = renderTab();
-    // In loading state the prompt text should not appear
-    expect(html).not.toContain("Check my email");
+    expect(html).not.toContain("Completed inbox triage");
     // Skeleton elements are present
     expect(html.toLowerCase()).toContain("skeleton");
   });
 
-  it("renders the sessions list aria-label when sessions exist", () => {
-    setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
+  it("renders the activity list testid when events exist", () => {
+    setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain('aria-label="sessions list"');
+    expect(html).toContain('data-testid="activity-feed-list"');
   });
 
-  it("renders a 'View all' link to the butler sessions page", () => {
-    setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
+  it("renders the activity timestamp via Time component", () => {
+    setupDefaultMocks();
     const html = renderTab();
-    expect(html).toContain("/butlers/general/sessions");
-    expect(html).toContain("View all");
-  });
-
-  it("renders the sessions panel testid", () => {
-    setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
-    const html = renderTab();
-    expect(html).toContain('data-testid="panel-recent-sessions"');
-  });
-
-  it("renders the started_at timestamp via Time component", () => {
-    setupDefaultMocks({ sessions: [SESSION_SUCCESS] });
-    const html = renderTab();
-    // The stubbed Time component renders the raw ISO value as dateTime attr
+    // The stubbed Time component renders the raw ISO value as dateTime attr.
     expect(html).toContain("2026-05-10T08:00:00Z");
   });
 });
