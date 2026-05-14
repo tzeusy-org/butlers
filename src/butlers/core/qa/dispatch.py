@@ -147,6 +147,10 @@ _NOTES_HEADER_TO_KEY: dict[str, str] = {
     "test coverage": "test_coverage",
 }
 
+#: Markers that indicate raw evidence-collection structures, not harmless
+#: prose that merely names an implementation detail.
+_FORBIDDEN_QA_PR_BODY_MARKERS = ("\n### Evidence\n", "\n## Evidence\n", "evidence_lines:")
+
 #: Substituted into the PR body for any section the agent did not provide.
 _NOTES_PLACEHOLDER = "*(The investigation agent did not provide this section.)*"
 
@@ -691,6 +695,10 @@ def _load_investigation_notes(worktree_path: Path | None) -> dict[str, str]:
     return sections
 
 
+def _qa_pr_body_contains_raw_evidence_marker(pr_body: str) -> bool:
+    return any(marker in pr_body for marker in _FORBIDDEN_QA_PR_BODY_MARKERS)
+
+
 async def _create_qa_pr(
     repo_root: Path,
     branch_name: str,
@@ -838,6 +846,23 @@ async def _create_qa_pr(
         if delete_error is not None:
             logger.warning(
                 "Failed to delete remote branch %s after anonymization failure: %s",
+                branch_name,
+                delete_error,
+            )
+        return None, None, "anonymization_failed"
+
+    if _qa_pr_body_contains_raw_evidence_marker(pr_body):
+        logger.warning(
+            "QA investigation PR body contained a raw-evidence marker after anonymization "
+            "(attempt=%s); blocking GitHub PR creation",
+            attempt_id,
+        )
+        delete_error = await _delete_remote_branch_with_gh_auth(
+            repo_root, branch_name, owner_repo, env
+        )
+        if delete_error is not None:
+            logger.warning(
+                "Failed to delete remote branch %s after raw-evidence guard failure: %s",
                 branch_name,
                 delete_error,
             )
