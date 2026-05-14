@@ -16,7 +16,11 @@ from butlers.core.qa.dispatch import (
     check_open_pr_statuses,
     dispatch_qa_investigation,
 )
-from butlers.core.qa.journal import record_event, record_patrol_tick_events
+from butlers.core.qa.journal import (
+    OPEN_PATROL_TICK_STATUSES,
+    record_event,
+    record_patrol_tick_events,
+)
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.triage import TriagedFinding
 
@@ -148,7 +152,8 @@ async def test_tick_emitted_when_case_unchanged() -> None:
     assert "COALESCE(MIN(f.first_seen), h.created_at) AS detected_at" in fetch_sql
     assert "LEFT JOIN public.qa_findings f ON f.healing_attempt_id = h.id" in fetch_sql
     assert "GROUP BY h.id" in fetch_sql
-    assert statuses == ["investigating", "pr_open", "dispatch_pending"]
+    assert tuple(statuses) == OPEN_PATROL_TICK_STATUSES
+    assert "dispatch_pending" not in statuses
     assert since == patrol_started_at
 
     session.execute.assert_awaited_once()
@@ -177,7 +182,7 @@ async def test_tick_age_handles_naive_timestamps() -> None:
         return_value=[
             {
                 "id": attempt_id,
-                "status": "dispatch_pending",
+                "status": "investigating",
                 "created_at": datetime(2026, 5, 15, 5, 0),
                 "detected_at": datetime(2026, 5, 15, 5, 0),
                 "current_phase": None,
@@ -197,9 +202,9 @@ async def test_tick_age_handles_naive_timestamps() -> None:
     )
 
     *_, details, data_values = session.execute.await_args.args
-    assert details == ["awaiting dispatch for 5m"]
+    assert details == ["investigation ongoing for 5m"]
     assert [json.loads(value) for value in data_values] == [
-        {"patrol_id": str(patrol_id), "status": "dispatch_pending", "case_age": "5m"}
+        {"patrol_id": str(patrol_id), "status": "investigating", "case_age": "5m"}
     ]
 
 

@@ -25,7 +25,7 @@ JournalStep = Literal[
 ]
 
 VALID_JOURNAL_STEPS: frozenset[str] = frozenset(JournalStep.__args__)
-OPEN_PATROL_TICK_STATUSES: tuple[str, ...] = ("investigating", "pr_open", "dispatch_pending")
+OPEN_PATROL_TICK_STATUSES: tuple[str, ...] = ("investigating", "pr_open")
 type AsyncSession = asyncpg.Pool | asyncpg.Connection
 
 
@@ -218,8 +218,6 @@ def _format_case_age(created_at: datetime | None, now: datetime) -> str:
 def _tick_detail(row: Any, now: datetime) -> str:
     age = _format_case_age(row["detected_at"], now)
     status = row["status"]
-    if status == "dispatch_pending":
-        return f"awaiting dispatch for {age}"
     if status == "pr_open":
         pr_number = row["pr_number"]
         review_state = row["review_state"]
