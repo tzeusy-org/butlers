@@ -33,7 +33,9 @@ _INVESTIGATION_NOTES_JSON_GUIDANCE = """\
 
 Before terminating, write a JSON file at ``./.qa/investigation_notes.json`` \
 inside the repository root matching the ``InvestigationNotes`` schema below. \
-Create the ``.qa`` directory if needed. This JSON is separate from \
+This is a portable file contract: the dispatcher validates this file after the \
+agent exits, so do not rely on final-response JSON or runtime-specific output \
+formatting. Create the ``.qa`` directory if needed. This JSON is separate from \
 ``INVESTIGATION_NOTES.md`` and is persisted into the internal QA case record.
 
 Fields:

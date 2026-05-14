@@ -7,7 +7,8 @@ The investigation agent SHALL emit a structured `investigation_notes` JSON artif
 - **WHEN** the investigation agent reaches a terminal step (commit complete or unfixable verdict)
 - **THEN** it writes a JSON file at `./.qa/investigation_notes.json` inside its worktree
 - **AND** the JSON conforms to the `InvestigationNotes` schema (`schema_version`, `headline`, `hypothesis`, `blurb_segments`, `claims`, `evidence_lines`, `counter_evidence`, `why_this_fix`, `diff_snapshot`)
-- **AND** if the agent supports structured output (Claude), it uses structured-output mode to produce the JSON; otherwise it writes plain JSON matching the schema
+- **AND** the artifact is governed by the portable file contract: the agent writes plain JSON matching the schema, and the dispatcher validates the file after the runtime exits
+- **AND** runtime-specific final-response structured-output modes are not required for this artifact unless the `RuntimeAdapter.invoke()` contract gains an explicit artifact-file schema channel
 
 #### Scenario: Dispatcher reads and persists notes
 - **WHEN** the agent signals completion and before worktree teardown
