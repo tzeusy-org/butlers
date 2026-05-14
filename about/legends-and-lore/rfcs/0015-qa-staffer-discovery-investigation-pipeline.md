@@ -246,6 +246,8 @@ All QA API routes live under `/api/qa/`. The frontend surfaces live at `/qa`,
 `/qa/patrols/:patrolId`, and `/qa/investigations/:attemptId`. The existing `/api/healing/`
 router is unchanged.
 
+**Retention.** Raw evidence stored on qa_findings.structured_evidence.evidence_lines[] is purged after 30 days. Cases still in non-terminal state are exempt until 14 days past their terminal transition. The cleanup job retains the narrative payload (headline, hypothesis, why_this_fix, diff_snapshot, counter_evidence, blurb_segments, claims) indefinitely; only evidence_lines[] is purged.
+
 **Key API endpoints:**
 
 | Endpoint | Description |
@@ -373,7 +375,7 @@ Option (b) is recommended for three reasons:
 - QA does NOT route user messages; it has no Switchboard classification authority.
 - QA does NOT merge PRs; human review remains mandatory.
 - QA does NOT run in per-butler processes; it is a single staffer with cross-system access.
-- QA does NOT store raw log lines in `qa_findings`; only computed fingerprints and sanitized summaries.
+- QA does NOT leak un-anonymized log content beyond the private operator dashboard. PR titles, PR bodies, branch commit messages, and any externally-egress paths SHALL pass through anonymize() + validate_anonymized(). Raw log lines MAY be stored on qa_findings.structured_evidence.evidence_lines[] strictly to support the internal dossier UI.
 - QA does NOT provide user-facing insights or recommendations; that is the Proactive Butler's domain.
 - QA does NOT implement the `prometheus_metrics`, `mcp_reachability`, `scheduler_drift`,
   `connector_heartbeat`, or `git_regression` discovery sources in v1.
