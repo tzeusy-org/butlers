@@ -24,6 +24,85 @@ from butlers.core.qa.models import QaFinding
 # Prompt template
 # ---------------------------------------------------------------------------
 
+# Runtime note: the shared RuntimeAdapter.invoke contract does not expose a
+# structured-output/schema parameter, and Claude is invoked through the same
+# prompt/runtime_args path as other runtimes. Keep this as a portable file
+# contract until the runtime interface grows a real structured-output hook.
+_INVESTIGATION_NOTES_JSON_GUIDANCE = """\
+## Writing Structured Investigation Notes (./.qa/investigation_notes.json)
+
+Before terminating, write a JSON file at ``./.qa/investigation_notes.json`` \
+inside the repository root matching the ``InvestigationNotes`` schema below. \
+Create the ``.qa`` directory if needed. This JSON is separate from \
+``INVESTIGATION_NOTES.md`` and is persisted into the internal QA case record.
+
+Fields:
+
+- ``schema_version``: Always the integer ``1``.
+- ``headline``: One concise operator-facing title for the case.
+- ``hypothesis``: The final technical root-cause hypothesis you accepted.
+- ``blurb_segments``: Ordered narrative chunks; use strings for glue text and \
+objects with ``claim`` and ``text`` when a sentence should point at a claim.
+- ``claims``: Object keyed by claim id; each value has ``evidence_ids`` and a \
+short ``note`` explaining what those evidence lines establish.
+- ``evidence_lines``: Array of raw internal evidence objects with ``id``, \
+``ts``, ``lvl``, ``butler``, and ``msg``.
+- ``counter_evidence``: Array of hypotheses you considered, each with \
+``hypothesis``, ``verdict`` (``rejected``, ``accepted``, or ``pending``), and \
+``reason``.
+- ``why_this_fix``: One or two sentences explaining why the committed change \
+addresses the accepted hypothesis.
+- ``diff_snapshot``: Array of diff line objects with ``kind`` (``meta``, \
+``+``, ``-``, or a single space) and ``text``.
+
+Small example:
+
+```json
+{{
+  "schema_version": 1,
+  "headline": "Spotify ingestion failing - scope renamed upstream",
+  "hypothesis": "A hard-coded Spotify scope string drifted from the provider contract.",
+  "blurb_segments": [
+    {{"claim": "c1", "text": "The connector now receives scope_mismatch from Spotify."}},
+    " Updating the requested scope and surfacing reauthorization resolves the failure."
+  ],
+  "claims": {{
+    "c1": {{"evidence_ids": ["e1"], "note": "The failing call reached scope validation."}}
+  }},
+  "evidence_lines": [
+    {{
+      "id": "e1",
+      "ts": "2026-05-14T14:30:11Z",
+      "lvl": "ERROR",
+      "butler": "chronicler",
+      "msg": "spotify.ingest 401 scope_mismatch /me/player/recently-played"
+    }}
+  ],
+  "counter_evidence": [
+    {{
+      "hypothesis": "Token expiry",
+      "verdict": "rejected",
+      "reason": "Refresh reached scope validation before token validation."
+    }}
+  ],
+  "why_this_fix": "Renaming the scope and showing reauth clears the connector failure.",
+  "diff_snapshot": [
+    {{"kind": "meta", "text": "src/butlers/connectors/spotify.py"}},
+    {{"kind": "-", "text": "scope=user-read-currently-playing"}},
+    {{"kind": "+", "text": "scope=user-read-playback-state"}}
+  ]
+}}
+```
+
+Rules for the JSON file:
+
+- Emit valid JSON only; no Markdown wrapper in ``./.qa/investigation_notes.json``.
+- Keep all non-evidence narrative safe for external review: no PII, secrets, \
+hostnames, or environment-specific identifiers.
+- Include every top-level field, even if an array or object is empty.
+
+"""
+
 _QA_INVESTIGATION_PROMPT_TEMPLATE = """\
 You are a QA investigation agent for the butler system. An automated patrol \
 cycle has detected a recurring error in the {source_butler} butler and you have \
@@ -86,6 +165,7 @@ code fences are fine. Do not include screenshots or attachments.
 - If you skip this file, the PR will be opened with placeholder text instead. \
 The fix still ships, but reviewers lose the context — please write it.
 
+{investigation_notes_json_guidance}\
 ## Signaling an Unfixable Error
 
 When the error cannot be fixed with a code change, create a file named \
@@ -255,6 +335,7 @@ def build_investigation_prompt(
         evidence_section=evidence_section,
         context_section=context_section,
         dashboard_section=dashboard_section,
+        investigation_notes_json_guidance=_INVESTIGATION_NOTES_JSON_GUIDANCE,
     )
 
 

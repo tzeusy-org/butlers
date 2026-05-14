@@ -137,6 +137,28 @@ def test_prompt_safety_and_braces():
     assert "Diagnostic Context" in p2 and "field" in p2
 
 
+def test_prompt_requires_structured_investigation_notes_json():
+    """Investigation prompt tells terminal agents to emit the notes artifact."""
+    prompt = build_investigation_prompt(_make_finding(), uuid.uuid4())
+
+    assert "./.qa/investigation_notes.json" in prompt
+    for field in (
+        "schema_version",
+        "headline",
+        "hypothesis",
+        "blurb_segments",
+        "claims",
+        "evidence_lines",
+        "counter_evidence",
+        "why_this_fix",
+        "diff_snapshot",
+    ):
+        assert f"``{field}``" in prompt
+    assert '"headline": "Spotify ingestion failing - scope renamed upstream"' in prompt
+    assert '"hypothesis": "Token expiry"' in prompt
+    assert "Emit valid JSON only" in prompt
+
+
 # ---------------------------------------------------------------------------
 # build_review_followup_prompt tests
 # ---------------------------------------------------------------------------

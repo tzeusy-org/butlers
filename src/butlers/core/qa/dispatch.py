@@ -74,7 +74,7 @@ from butlers.core.qa.findings import (
 )
 from butlers.core.qa.journal import record_event
 from butlers.core.qa.models import QaFinding
-from butlers.core.qa.notes import ParseStatus, parse_investigation_notes
+from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
 from butlers.core.qa.triage import TriagedFinding
@@ -756,6 +756,32 @@ def _qa_pr_body_contains_raw_evidence_marker(pr_body: str) -> bool:
     return any(marker in pr_body for marker in _FORBIDDEN_QA_PR_BODY_MARKERS)
 
 
+async def _emit_investigation_notes_journal_events(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    notes: InvestigationNotes,
+) -> None:
+    """Emit journal events derived from a successfully parsed notes artifact."""
+
+    for item in notes.counter_evidence:
+        await record_event(
+            pool,
+            attempt_id=attempt_id,
+            step="considered",
+            text=item.hypothesis,
+            detail=f"{item.verdict}: {item.reason}",
+        )
+
+    why_this_fix = notes.why_this_fix[:80]
+    await record_event(
+        pool,
+        attempt_id=attempt_id,
+        step="concluded",
+        text=notes.hypothesis,
+        detail=f"confidence n/a: {why_this_fix}",
+    )
+
+
 async def _persist_investigation_notes(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,
@@ -817,6 +843,7 @@ async def _persist_investigation_notes(
         attempt_id,
         payload,
     )
+    await _emit_investigation_notes_journal_events(pool, attempt_id, notes)
     logger.info(
         "Persisted QA investigation notes artifact (attempt=%s path=%s status=%s)",
         attempt_id,

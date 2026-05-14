@@ -4,7 +4,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -138,6 +138,7 @@ async def test_dispatcher_persists_ok_notes(tmp_path: Path, monkeypatch: pytest.
     attempt_id = uuid.uuid4()
     pool = MagicMock()
     pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.fetchval = AsyncMock(return_value=uuid.uuid4())
     counter = _FakeParseCounter()
     monkeypatch.setattr(
         "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
@@ -154,6 +155,7 @@ async def test_dispatcher_persists_ok_notes(tmp_path: Path, monkeypatch: pytest.
     assert "investigation_notes" in sql
     assert persisted_attempt_id == attempt_id
     assert persisted_payload == payload
+    assert pool.fetchval.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -166,6 +168,7 @@ async def test_dispatcher_handles_missing_notes_file(
     attempt_id = uuid.uuid4()
     pool = MagicMock()
     pool.execute = AsyncMock()
+    pool.fetchval = AsyncMock()
     counter = _FakeParseCounter()
     monkeypatch.setattr(
         "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
@@ -177,6 +180,7 @@ async def test_dispatcher_handles_missing_notes_file(
     assert status == "failed"
     assert counter.counts == {"ok": 0, "partial": 0, "failed": 1}
     pool.execute.assert_not_awaited()
+    pool.fetchval.assert_not_awaited()
     assert "emitted no structured notes artifact" in caplog.text
 
 
@@ -191,6 +195,7 @@ async def test_dispatcher_persists_partial_notes(
     attempt_id = uuid.uuid4()
     pool = MagicMock()
     pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.fetchval = AsyncMock(return_value=uuid.uuid4())
     counter = _FakeParseCounter()
     monkeypatch.setattr(
         "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
@@ -204,6 +209,7 @@ async def test_dispatcher_persists_partial_notes(
     _sql, _persisted_attempt_id, persisted_payload = pool.execute.await_args.args
     assert persisted_payload["claims"] == {}
     assert persisted_payload["headline"] == payload["headline"]
+    assert pool.fetchval.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -217,6 +223,7 @@ async def test_evidence_lines_not_reanonymized(
     _write_structured_notes(tmp_path, payload)
     pool = MagicMock()
     pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.fetchval = AsyncMock(return_value=uuid.uuid4())
     counter = _FakeParseCounter()
     monkeypatch.setattr(
         "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
@@ -228,3 +235,108 @@ async def test_evidence_lines_not_reanonymized(
     assert status == "ok"
     _sql, _persisted_attempt_id, persisted_payload = pool.execute.await_args.args
     assert raw_token in persisted_payload["evidence_lines"][0]["msg"]
+
+
+@pytest.mark.asyncio
+async def test_considered_emitted_per_counter_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    payload = _valid_notes_payload()
+    payload["counter_evidence"] = [
+        {
+            "hypothesis": "Token expiry",
+            "verdict": "rejected",
+            "reason": "Refresh reached scope validation first.",
+        },
+        {
+            "hypothesis": "Spotify-wide outage",
+            "verdict": "rejected",
+            "reason": "Other player endpoints returned 200.",
+        },
+        {
+            "hypothesis": "Network egress block",
+            "verdict": "pending",
+            "reason": "Egress checks were not available in this run.",
+        },
+    ]
+    _write_structured_notes(tmp_path, payload)
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    counter = _FakeParseCounter()
+    monkeypatch.setattr(
+        "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
+        counter,
+    )
+
+    with patch("butlers.core.qa.dispatch.record_event", new_callable=AsyncMock) as record:
+        status = await _persist_investigation_notes(pool, uuid.uuid4(), tmp_path)
+
+    assert status == "ok"
+    considered = [
+        call.kwargs for call in record.await_args_list if call.kwargs["step"] == "considered"
+    ]
+    assert [event["text"] for event in considered] == [
+        "Token expiry",
+        "Spotify-wide outage",
+        "Network egress block",
+    ]
+    assert [event["detail"] for event in considered] == [
+        "rejected: Refresh reached scope validation first.",
+        "rejected: Other player endpoints returned 200.",
+        "pending: Egress checks were not available in this run.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_concluded_emitted_once_on_ok_parse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    payload = _valid_notes_payload()
+    _write_structured_notes(tmp_path, payload)
+    attempt_id = uuid.uuid4()
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    counter = _FakeParseCounter()
+    monkeypatch.setattr(
+        "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
+        counter,
+    )
+
+    with patch("butlers.core.qa.dispatch.record_event", new_callable=AsyncMock) as record:
+        status = await _persist_investigation_notes(pool, attempt_id, tmp_path)
+
+    assert status == "ok"
+    concluded = [
+        call.kwargs for call in record.await_args_list if call.kwargs["step"] == "concluded"
+    ]
+    assert len(concluded) == 1
+    assert concluded[0]["attempt_id"] == attempt_id
+    assert concluded[0]["text"] == payload["hypothesis"]
+    assert concluded[0]["detail"].startswith("confidence n/a: ")
+    assert payload["why_this_fix"][:80] in concluded[0]["detail"]
+
+
+@pytest.mark.asyncio
+async def test_no_considered_or_concluded_on_failed_parse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    notes_dir = tmp_path / ".qa"
+    notes_dir.mkdir()
+    (notes_dir / "investigation_notes.json").write_text("not valid JSON", encoding="utf-8")
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    counter = _FakeParseCounter()
+    monkeypatch.setattr(
+        "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
+        counter,
+    )
+
+    with patch("butlers.core.qa.dispatch.record_event", new_callable=AsyncMock) as record:
+        status = await _persist_investigation_notes(pool, uuid.uuid4(), tmp_path)
+
+    assert status == "failed"
+    pool.execute.assert_not_awaited()
+    record.assert_not_awaited()
