@@ -836,8 +836,6 @@ def _investigation_notes_from_case_row(row: Any) -> InvestigationNotes | None:
         return None
 
     notes = structured_evidence.get("investigation_notes")
-    if isinstance(notes, InvestigationNotes):
-        return notes
     if isinstance(notes, dict):
         try:
             return InvestigationNotes.model_validate(notes)
@@ -880,24 +878,13 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
 
 
 def _row_to_journal_event(row: Any) -> QaJournalEvent:
-    data = row.get("data")
-    if isinstance(data, str):
-        try:
-            parsed = json.loads(data)
-        except (TypeError, ValueError):
-            data = {}
-        else:
-            data = parsed if isinstance(parsed, dict) else {}
-    elif not isinstance(data, dict):
-        data = {}
-
     return QaJournalEvent(
         id=row["id"],
         ts=row["ts"],
         step=row["step"],
         text=row["text"],
         detail=row.get("detail"),
-        data=data,
+        data=_jsonb_dict(row.get("data")) or {},
     )
 
 
