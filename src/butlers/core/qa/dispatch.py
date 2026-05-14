@@ -72,6 +72,7 @@ from butlers.core.qa.findings import (
     update_finding_dedup_reason,
     update_finding_dispatch_queued,
 )
+from butlers.core.qa.journal import record_event
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
@@ -118,6 +119,22 @@ _MAX_FOLLOWUP_ERROR_LEN = 500
 #: ``commented`` is included so unresolved review threads (even without an
 #: explicit CHANGES_REQUESTED decision) also trigger follow-up dispatch.
 _ACTIONABLE_REVIEW_STATES = frozenset({"changes_requested", "commented"})
+
+
+async def _fetch_patrol_started_at(pool: asyncpg.Pool, patrol_id: uuid.UUID) -> datetime | None:
+    return await pool.fetchval(
+        "SELECT started_at FROM public.qa_patrols WHERE id = $1",
+        patrol_id,
+    )
+
+
+def _flagged_event_detail(finding: QaFinding) -> str:
+    return (
+        f"{finding.exception_type} at {finding.call_site}; "
+        f"source={finding.source_type}/{finding.source_butler}; "
+        f"occurrences={finding.occurrence_count}; severity={finding.severity}"
+    )
+
 
 #: PR labels applied to QA-originated investigation PRs.
 _DEFAULT_PR_LABELS = ["self-healing", "automated"]
@@ -2570,6 +2587,28 @@ async def dispatch_qa_investigation(
             await update_finding_attempt(pool, finding_id, attempt_id)
         except Exception as _link_exc:
             logger.debug("QA dispatch: failed to link finding to attempt: %s", _link_exc)
+
+        try:
+            await record_event(
+                pool,
+                attempt_id=attempt_id,
+                finding_id=finding_id,
+                step="flagged",
+                text=finding.event_summary,
+                detail=_flagged_event_detail(finding),
+                data={
+                    "fingerprint": fp,
+                    "source_type": finding.source_type,
+                    "source_butler": finding.source_butler,
+                    "severity": finding.severity,
+                    "exception_type": finding.exception_type,
+                    "call_site": finding.call_site,
+                    "occurrence_count": finding.occurrence_count,
+                },
+                ts=await _fetch_patrol_started_at(pool, patrol_id),
+            )
+        except Exception as _journal_exc:
+            logger.debug("QA dispatch: failed to record flagged journal event: %s", _journal_exc)
 
         # ---------------------------------------------------------------
         # Gate 7: Cooldown gate
