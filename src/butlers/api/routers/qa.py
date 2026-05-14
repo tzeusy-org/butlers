@@ -229,6 +229,22 @@ class QaAllTimeStats(BaseModel):
     success_rate: float = 0.0
 
 
+class QaKpiBlock(BaseModel):
+    """KPI strip metrics for the QA dossier dashboard."""
+
+    prs_landed_24h: int
+    mttr_24h_seconds: float | None = None
+    self_resolved_7d_pct: float
+    active_cases_now: int
+
+
+class QaActiveBreakdown(BaseModel):
+    """Small active-case status breakdown for the QA dossier dashboard."""
+
+    awaiting_ci: int
+    escalated: int
+
+
 class QaCircuitBreaker(BaseModel):
     """Circuit breaker state for QA investigations."""
 
@@ -269,6 +285,8 @@ class QaSummary(BaseModel):
     last_patrol: QaPatrolSummary | None = None
     stats_24h: QaStats24h
     stats_all_time: QaAllTimeStats
+    kpis: QaKpiBlock
+    active_breakdown: QaActiveBreakdown
     active_sources: list[str] = Field(default_factory=list)
     circuit_breaker: QaCircuitBreaker = Field(
         default_factory=lambda: QaCircuitBreaker(tripped=False, consecutive_failures=0)
@@ -770,6 +788,78 @@ async def get_qa_summary(
         prs_opened=prs_opened_24h,
     )
 
+    kpis_row = await pool.fetchrow(
+        """
+        SELECT
+            COUNT(*) FILTER (
+                WHERE status = 'pr_merged'
+                  AND closed_at >= $1
+            ) AS prs_landed_24h,
+            AVG(EXTRACT(EPOCH FROM (closed_at - created_at))) FILTER (
+                WHERE closed_at >= $1
+                  AND status IN ('pr_merged', 'failed', 'timeout', 'unfixable')
+            ) AS mttr_24h_seconds,
+            (
+                100.0 * COUNT(*) FILTER (
+                    WHERE status = 'pr_merged'
+                      AND closed_at >= $2
+                ) / NULLIF(
+                    COUNT(*) FILTER (
+                        WHERE status IN ('pr_merged', 'unfixable', 'failed')
+                          AND closed_at >= $2
+                    ),
+                    0
+                )
+            ) AS self_resolved_7d_pct,
+            COUNT(*) FILTER (
+                WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
+            ) AS active_cases_now
+        FROM public.healing_attempts
+        WHERE qa_patrol_id IS NOT NULL
+          AND (
+              status IN ('dispatch_pending', 'investigating', 'pr_open')
+              OR closed_at >= $2
+          )
+        """,
+        cutoff_24h,
+        datetime.now(tz=UTC) - timedelta(days=7),
+    )
+    kpis = QaKpiBlock(
+        prs_landed_24h=int(kpis_row["prs_landed_24h"] or 0) if kpis_row else 0,
+        mttr_24h_seconds=(
+            float(kpis_row["mttr_24h_seconds"])
+            if kpis_row and kpis_row["mttr_24h_seconds"] is not None
+            else None
+        ),
+        self_resolved_7d_pct=(
+            round(float(kpis_row["self_resolved_7d_pct"]), 2)
+            if kpis_row and kpis_row["self_resolved_7d_pct"] is not None
+            else 0.0
+        ),
+        active_cases_now=int(kpis_row["active_cases_now"] or 0) if kpis_row else 0,
+    )
+
+    active_breakdown_row = await pool.fetchrow(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'pr_open') AS awaiting_ci,
+            COUNT(*) FILTER (
+                WHERE (
+                    error_detail ILIKE '%human action%'
+                    OR error_detail ILIKE '%operator%'
+                    OR error_detail ILIKE '%escalat%'
+                )
+            ) AS escalated
+        FROM public.healing_attempts
+        WHERE qa_patrol_id IS NOT NULL
+          AND status IN ('dispatch_pending', 'investigating', 'pr_open')
+        """
+    )
+    active_breakdown = QaActiveBreakdown(
+        awaiting_ci=(int(active_breakdown_row["awaiting_ci"] or 0) if active_breakdown_row else 0),
+        escalated=int(active_breakdown_row["escalated"] or 0) if active_breakdown_row else 0,
+    )
+
     # All-time stats
     all_time_row = await pool.fetchrow(
         """
@@ -898,6 +988,8 @@ async def get_qa_summary(
         last_patrol=last_patrol,
         stats_24h=stats_24h,
         stats_all_time=stats_all_time,
+        kpis=kpis,
+        active_breakdown=active_breakdown,
         active_sources=active_sources,
         circuit_breaker=circuit_breaker,
         credentials_status=credentials_status,
