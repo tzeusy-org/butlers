@@ -217,8 +217,8 @@ def _capture_gh_pr_create_subprocess(remote_url: str, captured_args: list):
     """Build a fake create_subprocess_exec that captures gh pr create args.
 
     Sequence of subprocess calls inside _create_qa_pr that we need to satisfy:
-    1. git remote get-url → returns remote_url
-    2. git log (no-op detection) → returns one commit (so push proceeds)
+    1. git log (no-op detection) → returns one commit (so push proceeds)
+    2. git remote get-url → returns remote_url
     3. gh auth setup-git → success
     4. git push → success
     5. gh pr create → success, returns PR URL on stdout
@@ -231,10 +231,10 @@ def _capture_gh_pr_create_subprocess(remote_url: str, captured_args: list):
         captured_args.append(args)
         proc = MagicMock()
         if call_index == 0:
-            proc.communicate = AsyncMock(return_value=(remote_url.encode(), b""))
+            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
             proc.returncode = 0
         elif call_index == 1:
-            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+            proc.communicate = AsyncMock(return_value=(remote_url.encode(), b""))
             proc.returncode = 0
         elif call_index == 2:
             proc.communicate = AsyncMock(return_value=(b"", b""))

@@ -191,12 +191,12 @@ async def test_create_qa_pr_allowed_repo_proceeds_to_push():
         call_args_list.append(args)
         proc = MagicMock()
         if call_index == 0:
-            # First call: git remote get-url
-            proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
+            # First call: git log (no-op detection) — return a commit line so push is attempted
+            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
             proc.returncode = 0
         elif call_index == 1:
-            # Second call: git log (no-op detection) — return a commit line so push is attempted
-            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+            # Second call: git remote get-url
+            proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
             proc.returncode = 0
         elif call_index == 2:
             # Third call: gh auth setup-git
@@ -251,12 +251,12 @@ async def test_create_qa_pr_ssh_url_allowed():
         call_args_list.append(args)
         proc = MagicMock()
         if call_index == 0:
-            # git remote get-url → SSH URL
-            proc.communicate = AsyncMock(return_value=(b"git@github.com:acme/repo.git", b""))
-            proc.returncode = 0
-        elif call_index == 1:
             # git log (no-op detection) — return a commit line so push is attempted
             proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+            proc.returncode = 0
+        elif call_index == 1:
+            # git remote get-url → SSH URL
+            proc.communicate = AsyncMock(return_value=(b"git@github.com:acme/repo.git", b""))
             proc.returncode = 0
         elif call_index == 2:
             proc.communicate = AsyncMock(return_value=(b"", b""))

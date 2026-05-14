@@ -67,6 +67,7 @@ from butlers.core.healing.worktree import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model
+from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
     update_finding_attempt,
     update_finding_dedup_reason,
@@ -786,6 +787,8 @@ async def _persist_investigation_notes(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,
     worktree_path: Path,
+    *,
+    diff_snapshot: list[dict[str, str]] | None = None,
 ) -> ParseStatus:
     """Persist agent-authored structured notes for all findings on an attempt.
 
@@ -829,6 +832,8 @@ async def _persist_investigation_notes(
         return status
 
     payload = notes.model_dump(mode="json")
+    if diff_snapshot is not None:
+        payload["diff_snapshot"] = diff_snapshot
     await pool.execute(
         """
         UPDATE public.qa_findings
@@ -853,6 +858,67 @@ async def _persist_investigation_notes(
     return status
 
 
+async def _capture_commit_diff_snapshot(worktree_path: Path) -> list[dict[str, str]]:
+    """Capture the final commit's unified diff from the QA worktree."""
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            str(worktree_path),
+            "diff",
+            "--no-color",
+            "HEAD~1..HEAD",
+            "--unified=3",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning(
+                "Failed to capture QA commit diff snapshot (worktree=%s): %s",
+                worktree_path,
+                stderr.decode("utf-8", errors="replace").strip(),
+            )
+            return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to capture QA commit diff snapshot (worktree=%s): %s",
+            worktree_path,
+            exc,
+        )
+        return []
+
+    diff_text = stdout.decode("utf-8", errors="replace")
+    return [line.model_dump(mode="json") for line in parse_unified_diff(diff_text)]
+
+
+async def _persist_diff_snapshot(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    diff_snapshot: list[dict[str, str]],
+) -> None:
+    """Persist a commit-time diff snapshot, even when notes are missing."""
+
+    await pool.execute(
+        """
+        UPDATE public.qa_findings
+        SET structured_evidence = jsonb_set(
+                COALESCE(structured_evidence, '{}'::jsonb),
+                '{investigation_notes}',
+                COALESCE(
+                    COALESCE(structured_evidence, '{}'::jsonb)->'investigation_notes',
+                    '{}'::jsonb
+                ) || jsonb_build_object('diff_snapshot', $2::jsonb),
+                true
+            )
+        WHERE healing_attempt_id = $1
+        """,
+        attempt_id,
+        diff_snapshot,
+    )
+
+
 async def _persist_notes_and_remove_worktree(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,
@@ -862,9 +928,16 @@ async def _persist_notes_and_remove_worktree(
     *,
     delete_branch: bool,
     delete_remote: bool,
+    diff_snapshot: list[dict[str, str]] | None = None,
 ) -> None:
+    notes_status: ParseStatus = "failed"
     try:
-        await _persist_investigation_notes(pool, attempt_id, worktree_path)
+        notes_status = await _persist_investigation_notes(
+            pool,
+            attempt_id,
+            worktree_path,
+            diff_snapshot=diff_snapshot,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Unexpected error while persisting QA investigation notes "
@@ -872,6 +945,16 @@ async def _persist_notes_and_remove_worktree(
             attempt_id,
             exc,
         )
+    if notes_status == "failed" and diff_snapshot is not None:
+        try:
+            await _persist_diff_snapshot(pool, attempt_id, diff_snapshot)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Unexpected error while persisting QA diff snapshot "
+                "(attempt=%s): %s; continuing worktree teardown",
+                attempt_id,
+                exc,
+            )
     await remove_healing_worktree(
         repo_root,
         branch_name,
@@ -914,10 +997,23 @@ async def _create_qa_pr(
           ``not_in_whitelist``),
         - Any other string for push/gh failures.
     """
+    env: dict[str, str] = build_git_auth_env(gh_token)
+
+    # Step 0: No-op detection — abort before pushing an empty branch.
+    # An investigation that produced no commits should not create a remote branch
+    # or open a PR; classify explicitly so the caller can transition to unfixable
+    # rather than leaving a leaked remote branch.
+    if await _detect_no_op_branch(repo_root, branch_name, env):
+        logger.info(
+            "_create_qa_pr: branch %r has no commits ahead of main — no-op investigation "
+            "(attempt=%s); skipping push and PR creation",
+            branch_name,
+            attempt_id,
+        )
+        return None, None, "no_op_branch"
+
     if not gh_token:
         return None, None, "no_gh_token"
-
-    env: dict[str, str] = build_git_auth_env(gh_token)
 
     # Step 0: Whitelist enforcement — check before git push
     # Fail-closed: if whitelist is None, create a no-pool instance (blocks all).
@@ -941,19 +1037,6 @@ async def _create_qa_pr(
         )
         # Return a reason code that the caller can use for owner notification.
         return None, None, f"repo_not_whitelisted:{wl_reason}:{owner_repo}"
-
-    # Step 0.5: No-op detection — abort before pushing an empty branch.
-    # An investigation that produced no commits should not create a remote branch
-    # or open a PR; classify explicitly so the caller can transition to unfixable
-    # rather than leaving a leaked remote branch.
-    if await _detect_no_op_branch(repo_root, branch_name, env):
-        logger.info(
-            "_create_qa_pr: branch %r has no commits ahead of main — no-op investigation "
-            "(attempt=%s); skipping push and PR creation",
-            branch_name,
-            attempt_id,
-        )
-        return None, None, "no_op_branch"
 
     # Step 1: git push over HTTPS using GH_TOKEN-backed gh auth.
     push_error = await _push_branch_with_gh_auth(repo_root, branch_name, owner_repo, env)
@@ -1194,6 +1277,7 @@ async def _qa_timeout_watchdog(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=[],
             )
     except asyncio.CancelledError:
         # Watchdog was cancelled because the investigation task completed normally
@@ -1383,6 +1467,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=[],
             )
             return
 
@@ -1397,6 +1482,9 @@ async def _run_investigation_session(
             dashboard_base_url=config.dashboard_base_url,
             whitelist=config.repo_whitelist,
             worktree_path=worktree_path,
+        )
+        diff_snapshot = (
+            [] if pr_error == "no_op_branch" else await _capture_commit_diff_snapshot(worktree_path)
         )
 
         if pr_error == "anonymization_failed":
@@ -1438,6 +1526,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=diff_snapshot,
             )
             return
 
@@ -1477,6 +1566,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=diff_snapshot,
             )
             return
 
@@ -1522,6 +1612,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=diff_snapshot,
             )
             return
 
@@ -1574,6 +1665,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=diff_snapshot,
             )
             return
 
@@ -1613,6 +1705,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=[],
             )
             return
 
@@ -1652,6 +1745,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                diff_snapshot=diff_snapshot,
             )
             return
 
@@ -1682,6 +1776,7 @@ async def _run_investigation_session(
             worktree_path,
             delete_branch=False,
             delete_remote=False,
+            diff_snapshot=diff_snapshot,
         )
         # Record success only after DB status update and worktree cleanup succeed,
         # so that no conflicting failure metric is emitted for the same attempt.
