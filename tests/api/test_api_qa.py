@@ -186,11 +186,34 @@ def _make_pr_stats_row(
     }
 
 
+def _make_kpi_row(
+    prs_landed_24h: int = 0,
+    mttr_24h_seconds: float | None = None,
+    self_resolved_7d_pct: float | None = None,
+    active_cases_now: int = 0,
+) -> dict[str, Any]:
+    return {
+        "prs_landed_24h": prs_landed_24h,
+        "mttr_24h_seconds": mttr_24h_seconds,
+        "self_resolved_7d_pct": self_resolved_7d_pct,
+        "active_cases_now": active_cases_now,
+    }
+
+
+def _make_active_breakdown_row(awaiting_ci: int = 0, escalated: int = 0) -> dict[str, Any]:
+    return {
+        "awaiting_ci": awaiting_ci,
+        "escalated": escalated,
+    }
+
+
 def _build_summary_app(
     *,
     last_patrol: dict[str, Any] | None = None,
     stats_24h: dict[str, Any] | None = None,
     prs_opened_24h: int = 0,
+    kpis: dict[str, Any] | None = None,
+    active_breakdown: dict[str, Any] | None = None,
     all_time_stats: dict[str, Any] | None = None,
     pr_stats: dict[str, Any] | None = None,
     cb_rows: list[dict[str, Any]] | None = None,
@@ -201,6 +224,8 @@ def _build_summary_app(
         fetchrow_side_effect=[
             _r(last_patrol) if last_patrol is not None else None,
             _r(stats_24h or _make_stats_row()),
+            _r(kpis or _make_kpi_row()),
+            _r(active_breakdown or _make_active_breakdown_row()),
             _r(all_time_stats or _make_stats_row()),
             _r(pr_stats or _make_pr_stats_row()),
         ],
@@ -240,6 +265,13 @@ class TestGetQaSummary:
             and body["data"]["stats_24h"]["patrols_completed"] == 0
             and body["data"]["active_sources"] == []
         )
+        assert body["data"]["kpis"] == {
+            "prs_landed_24h": 0,
+            "mttr_24h_seconds": None,
+            "self_resolved_7d_pct": 0.0,
+            "active_cases_now": 0,
+        }
+        assert body["data"]["active_breakdown"] == {"awaiting_ci": 0, "escalated": 0}
 
         # With patrol and stats
         patrol_id = uuid.uuid4()
@@ -248,6 +280,13 @@ class TestGetQaSummary:
             stats_24h=_make_stats_row(patrols_completed=5, total_findings=10),
             all_time_stats=_make_stats_row(patrols_completed=5, total_findings=10),
             prs_opened_24h=3,
+            kpis=_make_kpi_row(
+                prs_landed_24h=4,
+                mttr_24h_seconds=312.75,
+                self_resolved_7d_pct=80.0,
+                active_cases_now=6,
+            ),
+            active_breakdown=_make_active_breakdown_row(awaiting_ci=2, escalated=1),
             pr_stats=_make_pr_stats_row(prs_merged=10, prs_failed=2, total_dispatched=20),
             source_rows=[{"sources_polled": ["log_scanner"]}],
         )
@@ -260,6 +299,13 @@ class TestGetQaSummary:
             body2["stats_all_time"]["prs_merged"] == 10
             and body2["stats_all_time"]["success_rate"] == 0.5
         )
+        assert body2["kpis"] == {
+            "prs_landed_24h": 4,
+            "mttr_24h_seconds": 312.75,
+            "self_resolved_7d_pct": 80.0,
+            "active_cases_now": 6,
+        }
+        assert body2["active_breakdown"] == {"awaiting_ci": 2, "escalated": 1}
         assert "log_scanner" in body2["active_sources"]
 
         assert (await _call(_make_503_app(), "get", "/api/qa/summary")).status_code == 503
@@ -284,6 +330,24 @@ class TestGetQaSummary:
         creds = (await _call(app4, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
         assert creds["gh_token_present"] is True
         assert creds["provisioning_hint"] is None
+
+    async def test_summary_kpi_mttr_is_null_without_terminal_24h_sample(self) -> None:
+        app, _ = _build_summary_app(
+            kpis=_make_kpi_row(
+                prs_landed_24h=0,
+                mttr_24h_seconds=None,
+                self_resolved_7d_pct=None,
+                active_cases_now=3,
+            ),
+            active_breakdown=_make_active_breakdown_row(awaiting_ci=1, escalated=0),
+        )
+
+        body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert body["kpis"]["mttr_24h_seconds"] is None
+        assert body["kpis"]["self_resolved_7d_pct"] == 0.0
+        assert body["kpis"]["active_cases_now"] == 3
+        assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated": 0}
 
 
 class TestListPatrols:
