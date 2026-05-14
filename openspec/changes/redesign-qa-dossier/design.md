@@ -109,7 +109,7 @@ Shape:
 
 The Pydantic model lives at `src/butlers/core/qa/notes.py` as `InvestigationNotes` with strict validation. When the agent emits malformed JSON, the dispatcher records `qa_investigation_notes_parse_total{status="partial"}` (best-effort extraction of recoverable fields) or `{status="failed"}` (drop the artifact) but never crashes the investigation.
 
-### D3 — Agent emission via portable file contract
+### D3: Agent emission via portable file contract
 
 The investigation agent's terminal step writes a JSON file at a known path inside the worktree (`./.qa/investigation_notes.json`) before signalling completion. The dispatcher reads that file *before* worktree teardown, validates against the schema, and writes the parsed payload into `qa_findings.structured_evidence.investigation_notes`.
 
