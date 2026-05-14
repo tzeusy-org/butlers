@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 import asyncpg
 
@@ -25,6 +25,7 @@ JournalStep = Literal[
 ]
 
 VALID_JOURNAL_STEPS: frozenset[str] = frozenset(JournalStep.__args__)
+OPEN_PATROL_TICK_STATUSES: tuple[str, ...] = ("investigating", "pr_open", "dispatch_pending")
 type AsyncSession = asyncpg.Pool | asyncpg.Connection
 
 
@@ -66,3 +67,150 @@ async def record_event(
         json.dumps(data or {}),
     )
     return event_id
+
+
+def _format_case_age(created_at: datetime | None, now: datetime) -> str:
+    if created_at is None:
+        return "unknown age"
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    elapsed = max(now - created_at, now - now)
+    total_minutes = int(elapsed.total_seconds() // 60)
+    if total_minutes < 1:
+        return "less than 1m"
+    if total_minutes < 60:
+        return f"{total_minutes}m"
+    hours, minutes = divmod(total_minutes, 60)
+    if hours < 48:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    days, rem_hours = divmod(hours, 24)
+    return f"{days}d {rem_hours}h" if rem_hours else f"{days}d"
+
+
+def _tick_detail(row: Any, now: datetime) -> str:
+    age = _format_case_age(row["detected_at"], now)
+    status = row["status"]
+    if status == "dispatch_pending":
+        return f"awaiting dispatch for {age}"
+    if status == "pr_open":
+        pr_number = row["pr_number"]
+        review_state = row["review_state"]
+        follow_up_status = row["last_follow_up_status"]
+        if follow_up_status == "dispatched":
+            return f"awaiting follow-up result for {age}"
+        if review_state:
+            return f"awaiting PR review follow-up for {age} (review_state={review_state})"
+        if pr_number is not None:
+            return f"awaiting PR #{pr_number} checks or review for {age}"
+        return f"awaiting PR checks or review for {age}"
+
+    current_phase = row["current_phase"]
+    if current_phase:
+        return f"investigation ongoing for {age}; current phase {current_phase}"
+    return f"investigation ongoing for {age}"
+
+
+async def record_patrol_tick_events(
+    session: AsyncSession,
+    *,
+    patrol_id: uuid.UUID,
+    patrol_started_at: datetime,
+    ts: datetime | None = None,
+) -> list[uuid.UUID]:
+    """Insert tick events for open QA cases unchanged during a patrol cycle.
+
+    Uses one query to find eligible attempts and one array-based insert for the
+    journal rows. The caller owns transaction scope; this helper does not commit.
+    """
+    tick_ts = ts or datetime.now(UTC)
+    rows = await session.fetch(
+        """
+        SELECT h.id,
+               h.status,
+               h.created_at,
+               COALESCE(MIN(f.first_seen), h.created_at) AS detected_at,
+               h.current_phase,
+               h.pr_number,
+               h.review_state,
+               h.last_follow_up_status
+        FROM public.healing_attempts h
+        LEFT JOIN public.qa_findings f ON f.healing_attempt_id = h.id
+        WHERE h.status = ANY($1::text[])
+          AND h.closed_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM public.qa_investigation_events e
+              WHERE e.attempt_id = h.id
+                AND e.ts >= $2
+          )
+        GROUP BY h.id,
+                 h.status,
+                 h.created_at,
+                 h.current_phase,
+                 h.pr_number,
+                 h.review_state,
+                 h.last_follow_up_status
+        ORDER BY h.created_at ASC, h.id ASC
+        """,
+        list(OPEN_PATROL_TICK_STATUSES),
+        patrol_started_at,
+    )
+    if not rows:
+        return []
+
+    patrol_id_str = str(patrol_id)
+    patrol_id_short = patrol_id_str.split("-", 1)[0]
+    event_ids: list[uuid.UUID] = []
+    attempt_ids: list[uuid.UUID] = []
+    event_ts_values: list[datetime] = []
+    steps: list[str] = []
+    texts: list[str] = []
+    details: list[str] = []
+    data_values: list[str] = []
+
+    for row in rows:
+        age = _format_case_age(row["detected_at"], tick_ts)
+        event_ids.append(uuid.UUID(generate_uuid7_string()))
+        attempt_ids.append(row["id"])
+        event_ts_values.append(tick_ts)
+        steps.append("tick")
+        texts.append(f"patrol cycle {patrol_id_short} - case still {row['status']}")
+        details.append(_tick_detail(row, tick_ts))
+        data_values.append(
+            json.dumps(
+                {
+                    "patrol_id": patrol_id_str,
+                    "status": row["status"],
+                    "case_age": age,
+                }
+            )
+        )
+
+    await session.execute(
+        """
+        INSERT INTO public.qa_investigation_events (
+            id, attempt_id, ts, step, text, detail, data
+        )
+        SELECT event_id, attempt_id, event_ts, step, text, detail, data::jsonb
+        FROM unnest(
+            $1::uuid[],
+            $2::uuid[],
+            $3::timestamptz[],
+            $4::text[],
+            $5::text[],
+            $6::text[],
+            $7::text[]
+        ) AS rows(event_id, attempt_id, event_ts, step, text, detail, data)
+        """,
+        event_ids,
+        attempt_ids,
+        event_ts_values,
+        steps,
+        texts,
+        details,
+        data_values,
+    )
+    return event_ids

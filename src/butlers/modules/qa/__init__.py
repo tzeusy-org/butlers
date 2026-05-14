@@ -43,6 +43,7 @@ from butlers.core.qa.dispatch import (
     dispatch_novel_findings,
 )
 from butlers.core.qa.findings import get_dispatch_queued_findings
+from butlers.core.qa.journal import record_patrol_tick_events
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
@@ -1137,6 +1138,7 @@ class QaModule(Module):
             return {"status": "error", "reason": "no_db_pool"}
 
         patrol_start = time.monotonic()
+        patrol_started_at = datetime.now(UTC)
         patrol_id = await self._create_patrol_record(pool)
         self._current_patrol_id = patrol_id
         sources_polled: list[str] = []
@@ -1342,7 +1344,16 @@ class QaModule(Module):
                 patrol_id=patrol_id,
             )
 
-            # Phase 5: Metric snapshots (non-fatal)
+            # Phase 5: Journal ticks for open cases unchanged during this cycle.
+            tick_event_ids = await record_patrol_tick_events(
+                pool,
+                patrol_id=patrol_id,
+                patrol_started_at=patrol_started_at,
+            )
+            if _HAS_OTEL and _patrol_span is not None:
+                _patrol_span.set_attribute("qa.tick_events", len(tick_event_ids))
+
+            # Phase 6: Metric snapshots (non-fatal)
             await self._record_investigation_metrics(pool)
 
             # Determine final patrol status.

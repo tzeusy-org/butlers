@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.core.qa.dispatch import QaDispatchConfig, dispatch_qa_investigation
-from butlers.core.qa.journal import record_event
+from butlers.core.qa.journal import record_event, record_patrol_tick_events
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.triage import TriagedFinding
 
@@ -100,6 +101,141 @@ async def test_record_event_helper_rejects_unknown_step() -> None:
         )
 
     session.fetchval.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_emitted_when_case_unchanged() -> None:
+    session = MagicMock()
+    attempt_id = uuid.uuid4()
+    patrol_id = uuid.uuid4()
+    patrol_started_at = datetime(2026, 5, 15, 5, 0, tzinfo=UTC)
+    tick_ts = datetime(2026, 5, 15, 5, 12, tzinfo=UTC)
+    session.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": attempt_id,
+                "status": "investigating",
+                "created_at": datetime(2026, 5, 15, 5, 0, tzinfo=UTC),
+                "detected_at": datetime(2026, 5, 15, 4, 42, tzinfo=UTC),
+                "current_phase": "reproduce",
+                "pr_number": None,
+                "review_state": None,
+                "last_follow_up_status": None,
+            }
+        ]
+    )
+    session.execute = AsyncMock()
+
+    event_ids = await record_patrol_tick_events(
+        session,
+        patrol_id=patrol_id,
+        patrol_started_at=patrol_started_at,
+        ts=tick_ts,
+    )
+
+    assert len(event_ids) == 1
+    assert event_ids[0].version == 7
+    session.fetch.assert_awaited_once()
+    fetch_sql, statuses, since = session.fetch.await_args.args
+    assert "NOT EXISTS" in fetch_sql
+    assert "e.ts >= $2" in fetch_sql
+    assert "h.closed_at IS NULL" in fetch_sql
+    assert "COALESCE(MIN(f.first_seen), h.created_at) AS detected_at" in fetch_sql
+    assert "LEFT JOIN public.qa_findings f ON f.healing_attempt_id = h.id" in fetch_sql
+    assert "GROUP BY h.id" in fetch_sql
+    assert statuses == ["investigating", "pr_open", "dispatch_pending"]
+    assert since == patrol_started_at
+
+    session.execute.assert_awaited_once()
+    insert_sql, ids, attempt_ids, ts_values, steps, texts, details, data_values = (
+        session.execute.await_args.args
+    )
+    assert "INSERT INTO public.qa_investigation_events" in insert_sql
+    assert "unnest" in insert_sql
+    assert ids == event_ids
+    assert attempt_ids == [attempt_id]
+    assert ts_values == [tick_ts]
+    assert steps == ["tick"]
+    assert texts == [f"patrol cycle {str(patrol_id).split('-', 1)[0]} - case still investigating"]
+    assert details == ["investigation ongoing for 30m; current phase reproduce"]
+    assert [json.loads(value) for value in data_values] == [
+        {"patrol_id": str(patrol_id), "status": "investigating", "case_age": "30m"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tick_age_handles_naive_timestamps() -> None:
+    session = MagicMock()
+    attempt_id = uuid.uuid4()
+    patrol_id = uuid.uuid4()
+    session.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": attempt_id,
+                "status": "dispatch_pending",
+                "created_at": datetime(2026, 5, 15, 5, 0),
+                "detected_at": datetime(2026, 5, 15, 5, 0),
+                "current_phase": None,
+                "pr_number": None,
+                "review_state": None,
+                "last_follow_up_status": None,
+            }
+        ]
+    )
+    session.execute = AsyncMock()
+
+    await record_patrol_tick_events(
+        session,
+        patrol_id=patrol_id,
+        patrol_started_at=datetime(2026, 5, 15, 5, 0),
+        ts=datetime(2026, 5, 15, 5, 5),
+    )
+
+    *_, details, data_values = session.execute.await_args.args
+    assert details == ["awaiting dispatch for 5m"]
+    assert [json.loads(value) for value in data_values] == [
+        {"patrol_id": str(patrol_id), "status": "dispatch_pending", "case_age": "5m"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tick_not_emitted_when_other_events_fired() -> None:
+    session = MagicMock()
+    session.fetch = AsyncMock(return_value=[])
+    session.execute = AsyncMock()
+
+    event_ids = await record_patrol_tick_events(
+        session,
+        patrol_id=uuid.uuid4(),
+        patrol_started_at=datetime(2026, 5, 15, 5, 0, tzinfo=UTC),
+        ts=datetime(2026, 5, 15, 5, 5, tzinfo=UTC),
+    )
+
+    assert event_ids == []
+    fetch_sql = session.fetch.await_args.args[0]
+    assert "FROM public.qa_investigation_events e" in fetch_sql
+    assert "e.attempt_id = h.id" in fetch_sql
+    assert "e.ts >= $2" in fetch_sql
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_not_emitted_for_terminal_cases() -> None:
+    session = MagicMock()
+    session.fetch = AsyncMock(return_value=[])
+    session.execute = AsyncMock()
+
+    event_ids = await record_patrol_tick_events(
+        session,
+        patrol_id=uuid.uuid4(),
+        patrol_started_at=datetime(2026, 5, 15, 5, 0, tzinfo=UTC),
+        ts=datetime(2026, 5, 15, 5, 5, tzinfo=UTC),
+    )
+
+    assert event_ids == []
+    fetch_sql = session.fetch.await_args.args[0]
+    assert "h.closed_at IS NULL" in fetch_sql
+    session.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
