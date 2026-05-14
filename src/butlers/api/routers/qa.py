@@ -10,6 +10,7 @@ Endpoints:
 - GET  /api/qa/patrols/{patrolId}                   — full patrol with nested findings
 - GET  /api/qa/patrols/{patrolId}/findings          — findings for a patrol
 - GET  /api/qa/findings/by-attempt/{attemptId}      — finding that dispatched an attempt
+- GET  /api/qa/cases                                — paginated QA case summaries
 - GET  /api/qa/investigations                       — paginated QA-originated healing attempts
                                                       (with current_phase and workflow_deadline_at)
 - GET  /api/qa/meta-review                          — QA-self-recursive findings (operator lane)
@@ -53,8 +54,15 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes
 from butlers.core.qa.repo_whitelist import parse_repo_url
+from butlers.core.qa.severity import (
+    headline_for_case,
+    map_severity,
+    short_id_from_uuid,
+    state_of_case,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,16 @@ _SEVERITY_INT_TO_HINT: dict[int, str] = {
     2: "medium",
     3: "low",
     4: "info",
+}
+_QA_CASE_SINCE_DELTAS: dict[str, timedelta] = {
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
+_QA_CASE_SEVERITY_SQL: dict[str, str] = {
+    "high": "COALESCE(f.severity, a.severity) IN (0, 1)",
+    "medium": "COALESCE(f.severity, a.severity) = 2",
+    "low": "COALESCE(f.severity, a.severity) IN (3, 4)",
 }
 
 
@@ -725,6 +743,73 @@ def _row_to_investigation(row: Any) -> QaInvestigation:
     )
 
 
+def _jsonb_dict(value: Any) -> dict[str, Any] | None:
+    """Normalize an asyncpg JSONB value into a dict when possible."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _finding_from_case_row(row: Any) -> QaFinding | None:
+    """Build the linked finding helper model from a QA case query row."""
+    if row.get("finding_id") is None:
+        return None
+    return QaFinding(
+        fingerprint=row["finding_fingerprint"],
+        source_type=row["finding_source_type"],
+        source_butler=row["finding_source_butler"],
+        severity=row["finding_severity"],
+        exception_type=row["finding_exception_type"],
+        event_summary=row["finding_event_summary"],
+        call_site=row["finding_call_site"],
+        occurrence_count=row["finding_occurrence_count"],
+        first_seen=row["finding_first_seen"],
+        last_seen=row["finding_last_seen"],
+        timestamp=row["finding_last_seen"],
+        source_session_trigger_source=row.get("finding_source_session_trigger_source"),
+        structured_evidence=_jsonb_dict(row.get("finding_structured_evidence")),
+    )
+
+
+def _pr_state_for_case(row: Any) -> Literal["drafted", "open", "merged", "closed"] | None:
+    """Map healing status into the compact case-list PR state."""
+    status = row["status"]
+    if status == "pr_merged":
+        return "merged"
+    if status == "pr_open":
+        return "open"
+    if status == "drafted":
+        return "drafted"
+    if row.get("pr_url") and status in {"failed", "timeout", "unfixable", "anonymization_failed"}:
+        return "closed"
+    return None
+
+
+def _row_to_case_summary(row: Any) -> QaCaseSummary:
+    """Convert a healing attempt plus latest linked finding into a case summary."""
+    finding = _finding_from_case_row(row)
+    detected = row["detected"]
+    severity = row["case_severity"]
+    return QaCaseSummary(
+        id=row["id"],
+        short_id=short_id_from_uuid(row["id"]),
+        sev=map_severity(severity),
+        butler=row["butler_name"],
+        headline=headline_for_case(row, finding),
+        detected=detected,
+        age_seconds=max(0, int(row["age_seconds"] or 0)),
+        state=state_of_case(row),
+        pr_state=_pr_state_for_case(row),
+        pr_url=row.get("pr_url"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Circuit breaker constants — shared by /summary and /circuit-breaker endpoints.
 # CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.dispatch
@@ -1285,6 +1370,111 @@ async def get_finding_by_attempt(
         )
 
     return ApiResponse(data=_row_to_finding(row))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/cases — paginated QA case summaries
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cases", response_model=PaginatedResponse[QaCaseSummary])
+async def list_cases(
+    sev: Literal["high", "medium", "low", "all"] = Query(
+        "all",
+        description="Filter by mapped case severity",
+    ),
+    since: Literal["24h", "7d", "30d"] = Query(
+        "7d",
+        description="Only include attempts created within this window",
+    ),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[QaCaseSummary]:
+    """List QA case summaries from QA-originated healing attempts."""
+    pool = _shared_pool(db)
+
+    conditions: list[str] = ["a.qa_patrol_id IS NOT NULL", "a.created_at >= $1"]
+    args: list[Any] = [datetime.now(UTC) - _QA_CASE_SINCE_DELTAS[since]]
+    idx = 2
+
+    if sev != "all":
+        conditions.append(_QA_CASE_SEVERITY_SQL[sev])
+
+    where = " WHERE " + " AND ".join(conditions)
+    latest_finding_join = """
+        LEFT JOIN LATERAL (
+            SELECT id, fingerprint, source_type, source_butler, severity,
+                   exception_type, event_summary, call_site, occurrence_count,
+                   first_seen, last_seen, source_session_trigger_source,
+                   structured_evidence, created_at,
+                   MIN(first_seen) OVER () AS detected_at
+            FROM public.qa_findings
+            WHERE healing_attempt_id = a.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) f ON TRUE
+    """
+    count_join = latest_finding_join if sev != "all" else ""
+
+    total = int(
+        await pool.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM public.healing_attempts a
+            {count_join}
+            {where}
+            """,
+            *args,
+        )
+        or 0
+    )
+
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            a.id,
+            a.butler_name,
+            a.status,
+            a.severity,
+            a.exception_type,
+            a.call_site,
+            a.sanitized_msg,
+            a.pr_url,
+            a.created_at,
+            a.error_detail,
+            COALESCE(f.severity, a.severity) AS case_severity,
+            COALESCE(f.detected_at, a.created_at) AS detected,
+            EXTRACT(EPOCH FROM (now() - COALESCE(f.detected_at, a.created_at)))::int
+                AS age_seconds,
+            f.id AS finding_id,
+            f.fingerprint AS finding_fingerprint,
+            f.source_type AS finding_source_type,
+            f.source_butler AS finding_source_butler,
+            f.severity AS finding_severity,
+            f.exception_type AS finding_exception_type,
+            f.event_summary AS finding_event_summary,
+            f.call_site AS finding_call_site,
+            f.occurrence_count AS finding_occurrence_count,
+            f.first_seen AS finding_first_seen,
+            f.last_seen AS finding_last_seen,
+            f.source_session_trigger_source AS finding_source_session_trigger_source,
+            f.structured_evidence AS finding_structured_evidence
+        FROM public.healing_attempts a
+        {latest_finding_join}
+        {where}
+        ORDER BY a.created_at DESC
+        OFFSET ${idx} LIMIT ${idx + 1}
+        """,
+        *args,
+        offset,
+        limit,
+    )
+
+    data = [_row_to_case_summary(r) for r in rows]
+    return PaginatedResponse(
+        data=data, meta=PaginationMeta(total=total, offset=offset, limit=limit)
+    )
 
 
 # ---------------------------------------------------------------------------
