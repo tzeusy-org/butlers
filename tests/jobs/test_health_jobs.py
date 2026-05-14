@@ -66,7 +66,9 @@ async def test_insight_scan_predicate_query_does_not_hardcode_public_facts():
         await health_jobs.run_insight_scan(pool)
 
     assert pool.fetch.call_count >= 1
-    first_call_sql = pool.fetch.call_args_list[0][0][0]
+    first_call_sql = next(
+        c.args[0] for c in pool.fetch.call_args_list if "SELECT DISTINCT predicate" in c.args[0]
+    )
     assert "FROM facts" in first_call_sql, (
         "measurement-gap predicate query must use unqualified 'facts'"
     )
@@ -105,7 +107,9 @@ async def test_insight_scan_history_query_does_not_hardcode_public_facts():
         await health_jobs.run_insight_scan(pool)
 
     assert pool.fetch.call_count >= 2
-    history_call_sql = pool.fetch.call_args_list[1][0][0]
+    history_call_sql = next(
+        c.args[0] for c in pool.fetch.call_args_list if "SELECT valid_at" in c.args[0]
+    )
     assert "FROM facts" in history_call_sql, (
         "per-type cadence history query must use unqualified 'facts'"
     )
@@ -143,9 +147,10 @@ async def test_insight_scan_streak_query_does_not_hardcode_public_facts():
         health_jobs = load_roster_jobs("health")
         await health_jobs.run_insight_scan(pool)
 
-    # Streak query is at index 4 in this scenario.
     assert pool.fetch.call_count >= 5
-    streak_call_sql = pool.fetch.call_args_list[4][0][0]
+    streak_call_sql = next(
+        c.args[0] for c in pool.fetch.call_args_list if "SELECT DISTINCT DATE" in c.args[0]
+    )
     assert "FROM facts" in streak_call_sql, "streak query must use unqualified 'facts'"
     assert "public.facts" not in streak_call_sql, "streak query must not hard-code 'public.facts'"
     assert "valid_at" in streak_call_sql
