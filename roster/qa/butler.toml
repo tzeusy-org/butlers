@@ -36,6 +36,16 @@ dispatch_mode = "job"
 job_name = "qa_pr_status_check"
 
 # ---------------------------------------------------------------------------
+# Raw evidence retention cleanup: hourly scheduler tick; the QA module runs
+# the cleanup only at [modules.qa].retention_cleanup_hour (UTC).
+# ---------------------------------------------------------------------------
+[[butler.schedule]]
+name = "qa_evidence_cleanup"
+cron = "0 * * * *"
+dispatch_mode = "job"
+job_name = "qa_evidence_cleanup"
+
+# ---------------------------------------------------------------------------
 # QA module configuration
 # ---------------------------------------------------------------------------
 [modules.qa]
@@ -46,3 +56,5 @@ max_concurrent_investigations = 2
 severity_threshold = 2
 enabled_sources = ["log_scanner", "session_records", "butler_reports"]
 max_reactive_buffer = 50
+# UTC hour for daily removal of raw investigation_notes.evidence_lines.
+retention_cleanup_hour = 4

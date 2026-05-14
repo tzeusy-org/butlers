@@ -26,7 +26,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +120,24 @@ def _get_qa_findings_total():
         return None
 
 
+def _get_qa_findings_retention_purged_total():
+    """Return the qa_findings_retention_purged_total Prometheus Counter."""
+    try:
+        from prometheus_client import Counter
+
+        return Counter(
+            "qa_findings_retention_purged_total",
+            "Total QA finding rows whose retained raw evidence lines were purged",
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus counter 'qa_findings_retention_purged_total';"
+            " metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
 def _get_qa_investigations_active():
     """Return the qa_investigations_active Prometheus Gauge."""
     try:
@@ -177,6 +195,7 @@ def _get_qa_investigation_duration_seconds():
 
 _qa_patrol_total = _get_qa_patrol_total()
 _qa_findings_total = _get_qa_findings_total()
+_qa_findings_retention_purged_total = _get_qa_findings_retention_purged_total()
 _qa_investigations_active = _get_qa_investigations_active()
 _qa_patrol_duration_seconds = _get_qa_patrol_duration_seconds()
 _qa_investigation_duration_seconds = _get_qa_investigation_duration_seconds()
@@ -199,6 +218,9 @@ _DEFAULT_SEVERITY_THRESHOLD = 2
 
 #: Default reactive buffer size.
 _DEFAULT_MAX_REACTIVE_BUFFER = 50
+
+#: Default UTC hour for the daily evidence retention cleanup.
+_DEFAULT_RETENTION_CLEANUP_HOUR = 4
 
 #: Known source names (for config validation).
 _KNOWN_SOURCES = frozenset({"log_scanner", "session_records", "butler_reports"})
@@ -268,6 +290,8 @@ class QaConfig(BaseModel):
         ``discover()`` call.  Default 200_000.
     log_scanner_max_scan_seconds:
         Wall-clock cap in seconds per log scanner ``discover()`` call.  Default 30.
+    retention_cleanup_hour:
+        UTC hour when the daily raw evidence cleanup should run.  Default 4.
     """
 
     enabled: bool = True
@@ -286,6 +310,7 @@ class QaConfig(BaseModel):
     dashboard_base_url: str | None = None
     log_scanner_max_total_lines: int = DEFAULT_MAX_TOTAL_LINES
     log_scanner_max_scan_seconds: float = DEFAULT_MAX_SCAN_SECONDS
+    retention_cleanup_hour: int = _DEFAULT_RETENTION_CLEANUP_HOUR
     model_config = ConfigDict(extra="forbid")
 
     @field_validator("patrol_interval_minutes", "log_lookback_minutes")
@@ -307,6 +332,13 @@ class QaConfig(BaseModel):
     def _scanner_caps_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Must be at least 1")
+        return v
+
+    @field_validator("retention_cleanup_hour")
+    @classmethod
+    def _valid_utc_hour(cls, v: int) -> int:
+        if v < 0 or v > 23:
+            raise ValueError("Must be an hour from 0 to 23")
         return v
 
     @field_validator("enabled_sources")
@@ -335,6 +367,25 @@ _active_instance: QaModule | None = None
 def get_active_instance() -> QaModule | None:
     """Return the active QaModule instance, or None if not started."""
     return _active_instance
+
+
+def _ensure_aware_datetime(value: Any) -> datetime | None:
+    """Normalize DB timestamps for cutoff comparisons."""
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _coerce_jsonb(value: Any) -> Any:
+    """Return decoded JSONB values, accepting string fixtures in unit tests."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
 
 
 class QaModule(Module):
@@ -928,6 +979,133 @@ class QaModule(Module):
             await self._run_patrol_cycle()
         except Exception:
             logger.error("QaModule.run_patrol_tick: unexpected error", exc_info=True)
+
+    async def daily_evidence_cleanup(self, *, now: datetime | None = None) -> dict[str, int | str]:
+        """Strip retained raw evidence lines from aged QA finding rows.
+
+        Raw ``investigation_notes.evidence_lines`` are retained for a bounded
+        window only: terminal attempts older than 14 days, or findings older
+        than 30 days, should keep their narrative notes but lose the raw lines.
+        Malformed notes payloads are skipped with a warning so one bad row does
+        not stop the daily job.
+        """
+        if self._pool is None:
+            logger.debug("QaModule.daily_evidence_cleanup: no DB pool — skipping")
+            return {"status": "skipped", "cleaned_rows": 0, "malformed_rows": 0}
+
+        run_at = now or datetime.now(UTC)
+        terminal_cutoff = run_at - timedelta(days=14)
+        finding_cutoff = run_at - timedelta(days=30)
+
+        rows = await self._pool.fetch(
+            """
+            SELECT f.id,
+                   f.created_at,
+                   f.healing_attempt_id,
+                   f.structured_evidence,
+                   h.closed_at
+            FROM public.qa_findings f
+            LEFT JOIN public.healing_attempts h ON h.id = f.healing_attempt_id
+            WHERE f.structured_evidence IS NOT NULL
+              AND f.structured_evidence ? 'investigation_notes'
+              AND (
+                    (h.closed_at IS NOT NULL AND h.closed_at < $1)
+                 OR (f.healing_attempt_id IS NULL AND f.created_at < $2)
+              )
+            """,
+            terminal_cutoff,
+            finding_cutoff,
+        )
+
+        cleaned_rows = 0
+        malformed_rows = 0
+        for row in rows:
+            finding_id = row["id"]
+            created_at = _ensure_aware_datetime(row["created_at"])
+            healing_attempt_id = row["healing_attempt_id"]
+            closed_at = _ensure_aware_datetime(row["closed_at"])
+            is_old_terminal = closed_at is not None and closed_at < terminal_cutoff
+            is_old_unlinked_finding = (
+                healing_attempt_id is None
+                and created_at is not None
+                and created_at < finding_cutoff
+            )
+            if not is_old_terminal and not is_old_unlinked_finding:
+                continue
+
+            structured_evidence = _coerce_jsonb(row["structured_evidence"])
+            if not isinstance(structured_evidence, dict):
+                malformed_rows += 1
+                logger.warning(
+                    "QaModule.daily_evidence_cleanup: malformed structured_evidence "
+                    "shape; skipping finding_id=%s",
+                    finding_id,
+                )
+                continue
+
+            investigation_notes = structured_evidence.get("investigation_notes")
+            if not isinstance(investigation_notes, dict):
+                malformed_rows += 1
+                logger.warning(
+                    "QaModule.daily_evidence_cleanup: malformed investigation_notes "
+                    "shape; skipping finding_id=%s",
+                    finding_id,
+                )
+                continue
+
+            if "evidence_lines" not in investigation_notes:
+                continue
+
+            cleaned_notes = dict(investigation_notes)
+            cleaned_notes.pop("evidence_lines", None)
+            cleaned_evidence = dict(structured_evidence)
+            cleaned_evidence["investigation_notes"] = cleaned_notes
+
+            await self._pool.execute(
+                """
+                UPDATE public.qa_findings
+                SET structured_evidence = $2
+                WHERE id = $1
+                """,
+                finding_id,
+                cleaned_evidence,
+            )
+            cleaned_rows += 1
+
+        if cleaned_rows and _qa_findings_retention_purged_total is not None:
+            try:
+                _qa_findings_retention_purged_total.inc(cleaned_rows)
+            except Exception:
+                logger.debug(
+                    "QaModule: failed to record qa_findings_retention_purged_total metric",
+                    exc_info=True,
+                )
+
+        logger.info(
+            "QaModule daily evidence cleanup complete: cleaned_rows=%d malformed_rows=%d",
+            cleaned_rows,
+            malformed_rows,
+        )
+        return {
+            "status": "completed",
+            "cleaned_rows": cleaned_rows,
+            "malformed_rows": malformed_rows,
+        }
+
+    async def run_scheduled_evidence_cleanup(
+        self, *, now: datetime | None = None
+    ) -> dict[str, int | str]:
+        """Run the daily evidence cleanup only at the configured UTC hour."""
+        run_at = now or datetime.now(UTC)
+        if run_at.hour != self._config.retention_cleanup_hour:
+            logger.debug(
+                "QaModule.run_scheduled_evidence_cleanup: skipping outside configured hour "
+                "(current_hour=%d configured_hour=%d)",
+                run_at.hour,
+                self._config.retention_cleanup_hour,
+            )
+            return {"status": "skipped", "cleaned_rows": 0, "malformed_rows": 0}
+        return await self.daily_evidence_cleanup(now=run_at)
 
     async def _run_patrol_cycle(self) -> dict:
         """Execute one complete patrol cycle under the asyncio.Lock.

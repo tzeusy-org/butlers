@@ -527,6 +527,21 @@ async def _run_qa_pr_status_check_job(
     return {"status": "completed"}
 
 
+async def _run_qa_evidence_cleanup_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the QA raw evidence retention cleanup via the active QaModule instance."""
+    del pool, job_args
+    from butlers.modules.qa import get_active_instance
+
+    qa = get_active_instance()
+    if qa is None:
+        logger.warning("qa_evidence_cleanup job: QaModule not active — skipping")
+        return {"skipped": True, "reason": "qa_module_not_active"}
+    return await qa.run_scheduled_evidence_cleanup()
+
+
 # ---------------------------------------------------------------------------
 # Chronicler jobs
 # ---------------------------------------------------------------------------
@@ -745,6 +760,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "qa": {
             "qa_patrol": _run_qa_patrol_job,
             "qa_pr_status_check": _run_qa_pr_status_check_job,
+            "qa_evidence_cleanup": _run_qa_evidence_cleanup_job,
         },
     }
 

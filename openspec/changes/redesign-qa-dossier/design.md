@@ -145,7 +145,7 @@ The daily cleanup job runs in the QA module's scheduler (`src/butlers/modules/qa
 ```sql
 -- Delete evidence_lines (and only evidence_lines) from structured_evidence for findings
 -- where the linked healing_attempt is terminal AND closed_at < now() - 14 days,
--- OR finding.created_at < now() - 30 days regardless of attempt state.
+-- OR the finding is not linked to a healing_attempt and created_at < now() - 30 days.
 UPDATE public.qa_findings
    SET structured_evidence = structured_evidence - 'investigation_notes' || jsonb_build_object(
          'investigation_notes',
@@ -157,9 +157,12 @@ UPDATE public.qa_findings
      LEFT JOIN public.healing_attempts h ON h.id = f.healing_attempt_id
     WHERE (
             h.closed_at IS NOT NULL
-        AND h.closed_at < now() - INTERVAL '14 days'
+       AND h.closed_at < now() - INTERVAL '14 days'
           )
-       OR f.created_at < now() - INTERVAL '30 days'
+       OR (
+            f.healing_attempt_id IS NULL
+        AND f.created_at < now() - INTERVAL '30 days'
+          )
  );
 ```
 
