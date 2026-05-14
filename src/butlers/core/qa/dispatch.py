@@ -74,6 +74,7 @@ from butlers.core.qa.findings import (
 )
 from butlers.core.qa.journal import record_event
 from butlers.core.qa.models import QaFinding
+from butlers.core.qa.notes import ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
 from butlers.core.qa.triage import TriagedFinding
@@ -156,6 +157,10 @@ _UNFIXABLE_FILE = UNFIXABLE_SENTINEL_FILENAME
 #: by ``build_investigation_prompt``.  See ``_load_investigation_notes``.
 _INVESTIGATION_NOTES_FILE = "INVESTIGATION_NOTES.md"
 
+#: Structured investigation notes artifact written at worktree root by the QA
+#: investigation agent. Persisted before terminal worktree teardown.
+_INVESTIGATION_NOTES_JSON = Path(".qa") / "investigation_notes.json"
+
 #: Mapping from H2 header text (lowercased, no leading "## ") to the section
 #: key returned by ``_load_investigation_notes``.
 _NOTES_HEADER_TO_KEY: dict[str, str] = {
@@ -170,6 +175,41 @@ _FORBIDDEN_QA_PR_BODY_MARKERS = ("\n### Evidence\n", "\n## Evidence\n", "evidenc
 
 #: Substituted into the PR body for any section the agent did not provide.
 _NOTES_PLACEHOLDER = "*(The investigation agent did not provide this section.)*"
+
+
+def _get_qa_investigation_notes_parse_total():
+    """Return the qa_investigation_notes_parse_total Prometheus Counter."""
+    try:
+        from prometheus_client import Counter
+
+        return Counter(
+            "qa_investigation_notes_parse_total",
+            "Total QA investigation notes parse attempts by status",
+            labelnames=["status"],
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus counter "
+            "'qa_investigation_notes_parse_total'; metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
+_qa_investigation_notes_parse_total = _get_qa_investigation_notes_parse_total()
+
+
+def _record_investigation_notes_parse(status: ParseStatus) -> None:
+    if _qa_investigation_notes_parse_total is None:
+        return
+    try:
+        _qa_investigation_notes_parse_total.labels(status=status).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Failed to record qa_investigation_notes_parse_total metric",
+            exc_info=True,
+        )
+
 
 #: Environment variables that must never leak into investigation agent sandboxes.
 _BLOCKED_ENV_PREFIXES = (
@@ -716,6 +756,103 @@ def _qa_pr_body_contains_raw_evidence_marker(pr_body: str) -> bool:
     return any(marker in pr_body for marker in _FORBIDDEN_QA_PR_BODY_MARKERS)
 
 
+async def _persist_investigation_notes(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    worktree_path: Path,
+) -> ParseStatus:
+    """Persist agent-authored structured notes for all findings on an attempt.
+
+    Notes persistence is a terminal-cleanup side effect: parse/read/persistence
+    failures are visible through logs and metrics, but must not rewrite the
+    already-decided investigation terminal state.
+    """
+    notes_path = worktree_path / _INVESTIGATION_NOTES_JSON
+    try:
+        raw = notes_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        _record_investigation_notes_parse("failed")
+        logger.info(
+            "QA investigation emitted no structured notes artifact "
+            "(attempt=%s path=%s); skipping notes persistence",
+            attempt_id,
+            notes_path,
+        )
+        return "failed"
+    except (OSError, UnicodeDecodeError) as exc:
+        _record_investigation_notes_parse("failed")
+        logger.warning(
+            "Failed to read QA investigation notes artifact "
+            "(attempt=%s path=%s): %s; skipping notes persistence",
+            attempt_id,
+            notes_path,
+            exc,
+        )
+        return "failed"
+
+    notes, status = parse_investigation_notes(raw)
+    _record_investigation_notes_parse(status)
+    if notes is None:
+        logger.info(
+            "QA investigation notes artifact did not parse "
+            "(attempt=%s path=%s status=%s); skipping notes persistence",
+            attempt_id,
+            notes_path,
+            status,
+        )
+        return status
+
+    payload = notes.model_dump(mode="json")
+    await pool.execute(
+        """
+        UPDATE public.qa_findings
+        SET structured_evidence = jsonb_set(
+                COALESCE(structured_evidence, '{}'::jsonb),
+                '{investigation_notes}',
+                $2,
+                true
+            )
+        WHERE healing_attempt_id = $1
+        """,
+        attempt_id,
+        payload,
+    )
+    logger.info(
+        "Persisted QA investigation notes artifact (attempt=%s path=%s status=%s)",
+        attempt_id,
+        notes_path,
+        status,
+    )
+    return status
+
+
+async def _persist_notes_and_remove_worktree(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    repo_root: Path,
+    branch_name: str,
+    worktree_path: Path,
+    *,
+    delete_branch: bool,
+    delete_remote: bool,
+) -> None:
+    try:
+        await _persist_investigation_notes(pool, attempt_id, worktree_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Unexpected error while persisting QA investigation notes "
+            "(attempt=%s): %s; continuing worktree teardown",
+            attempt_id,
+            exc,
+        )
+    await remove_healing_worktree(
+        repo_root,
+        branch_name,
+        delete_branch=delete_branch,
+        delete_remote=delete_remote,
+    )
+
+
 async def _create_qa_pr(
     repo_root: Path,
     branch_name: str,
@@ -997,6 +1134,7 @@ async def _qa_timeout_watchdog(
     attempt_id: uuid.UUID,
     repo_root: Path,
     branch_name: str,
+    worktree_path: Path,
     investigation_task: asyncio.Task[Any],
     timeout_minutes: int,
 ) -> None:
@@ -1021,8 +1159,14 @@ async def _qa_timeout_watchdog(
                 "timeout",
                 error_detail=f"QA investigation cancelled after {timeout_minutes} minute timeout",
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
     except asyncio.CancelledError:
         # Watchdog was cancelled because the investigation task completed normally
@@ -1170,8 +1314,14 @@ async def _run_investigation_session(
                 error_detail=error_detail,
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1198,8 +1348,14 @@ async def _run_investigation_session(
                 error_detail="Investigation agent determined this error is not a code bug",
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1247,8 +1403,14 @@ async def _run_investigation_session(
                 error_detail="PR blocked: residual PII or credentials detected after anonymization",
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1280,8 +1442,14 @@ async def _run_investigation_session(
                 error_detail="no_gh_token: BUTLERS_QA_GH_TOKEN not found in CredentialStore",
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1319,8 +1487,14 @@ async def _run_investigation_session(
                 ),
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1365,8 +1539,14 @@ async def _run_investigation_session(
                 error_detail=f"PR blocked: {wl_detail}",
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1398,8 +1578,14 @@ async def _run_investigation_session(
                 error_detail="no_op_branch: investigation agent produced no code changes",
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1431,8 +1617,14 @@ async def _run_investigation_session(
                 error_detail=pr_error,
                 healing_session_id=investigation_session_id,
             )
-            await remove_healing_worktree(
-                repo_root, branch_name, delete_branch=True, delete_remote=False
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
             )
             return
 
@@ -1455,8 +1647,14 @@ async def _run_investigation_session(
 
         logger.info("QA investigation PR created: attempt=%s pr_url=%s", attempt_id, pr_url)
         # Remove worktree; keep branch (backs the open PR)
-        await remove_healing_worktree(
-            repo_root, branch_name, delete_branch=False, delete_remote=False
+        await _persist_notes_and_remove_worktree(
+            pool,
+            attempt_id,
+            repo_root,
+            branch_name,
+            worktree_path,
+            delete_branch=False,
+            delete_remote=False,
         )
         # Record success only after DB status update and worktree cleanup succeed,
         # so that no conflicting failure metric is emitted for the same attempt.
@@ -1532,8 +1730,14 @@ async def _run_investigation_session(
             error_detail=f"{type(exc).__name__}: {exc}",
             healing_session_id=investigation_session_id,
         )
-        await remove_healing_worktree(
-            repo_root, branch_name, delete_branch=True, delete_remote=False
+        await _persist_notes_and_remove_worktree(
+            pool,
+            attempt_id,
+            repo_root,
+            branch_name,
+            worktree_path,
+            delete_branch=True,
+            delete_remote=False,
         )
     finally:
         if metrics is not None:
@@ -2856,6 +3060,7 @@ async def dispatch_qa_investigation(
                 attempt_id=attempt_id,
                 repo_root=repo_root,
                 branch_name=branch_name,
+                worktree_path=worktree_path,
                 investigation_task=investigation_task,
                 timeout_minutes=config.timeout_minutes,
             ),
