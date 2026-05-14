@@ -702,6 +702,64 @@ async def _resolve_pr_by_head(
         return None, None
 
 
+def _parse_github_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+async def _fetch_pr_created_at(
+    repo_root: Path,
+    *,
+    pr_number: int | None,
+    pr_url: str | None,
+    env: dict[str, str],
+) -> datetime | None:
+    """Fetch GitHub's PR creation timestamp for journal backdating.
+
+    Missing metadata is non-fatal: callers should pass ``None`` through so
+    ``record_event`` retains its explicit current-time fallback.
+    """
+    import json as _json
+
+    target = str(pr_number) if pr_number is not None else pr_url
+    if not target:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh",
+            "pr",
+            "view",
+            target,
+            "--json",
+            "createdAt",
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        data = _json.loads(stdout.decode("utf-8", errors="replace"))
+        if not isinstance(data, dict):
+            return None
+        return _parse_github_datetime(data.get("createdAt"))
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_fetch_pr_created_at: lookup failed for PR %r",
+            target,
+            exc_info=True,
+        )
+        return None
+
+
 def _load_investigation_notes(worktree_path: Path | None) -> dict[str, str]:
     """Read and parse the agent's ``INVESTIGATION_NOTES.md`` file.
 
@@ -1045,7 +1103,7 @@ async def _create_qa_pr(
     dashboard_base_url: str | None = None,
     whitelist: RepoWhitelist | None = None,
     worktree_path: Path | None = None,
-) -> tuple[str | None, int | None, str | None]:
+) -> tuple[str | None, int | None, datetime | None, str | None]:
     """Push branch and create a QA investigation GitHub PR.
 
     When ``worktree_path`` is provided, the dispatcher reads
@@ -1056,8 +1114,8 @@ async def _create_qa_pr(
 
     Returns
     -------
-    tuple[str | None, int | None, str | None]
-        ``(pr_url, pr_number, error_message)``  — *error_message* is:
+    tuple[str | None, int | None, datetime | None, str | None]
+        ``(pr_url, pr_number, pr_created_at, error_message)``  — *error_message* is:
         - ``None`` on success,
         - ``"anonymization_failed"`` when PII validation blocks the PR,
         - ``"no_gh_token"`` when no GitHub token is available,
@@ -1082,10 +1140,10 @@ async def _create_qa_pr(
             branch_name,
             attempt_id,
         )
-        return None, None, "no_op_branch"
+        return None, None, None, "no_op_branch"
 
     if not gh_token:
-        return None, None, "no_gh_token"
+        return None, None, None, "no_gh_token"
 
     # Step 0: Whitelist enforcement — check before git push
     # Fail-closed: if whitelist is None, create a no-pool instance (blocks all).
@@ -1098,7 +1156,7 @@ async def _create_qa_pr(
             "_create_qa_pr: could not determine repository from origin remote; "
             "blocking PR creation (fail-closed)"
         )
-        return None, None, "repo_not_whitelisted:remote_unavailable"
+        return None, None, None, "repo_not_whitelisted:remote_unavailable"
 
     allowed, wl_reason = effective_whitelist.is_allowed(owner_repo)
     if not allowed:
@@ -1108,12 +1166,12 @@ async def _create_qa_pr(
             wl_reason,
         )
         # Return a reason code that the caller can use for owner notification.
-        return None, None, f"repo_not_whitelisted:{wl_reason}:{owner_repo}"
+        return None, None, None, f"repo_not_whitelisted:{wl_reason}:{owner_repo}"
 
     # Step 1: git push over HTTPS using GH_TOKEN-backed gh auth.
     push_error = await _push_branch_with_gh_auth(repo_root, branch_name, owner_repo, env)
     if push_error is not None:
-        return None, None, push_error
+        return None, None, None, push_error
 
     # Step 2: Build PR content
     fp_short = finding.fingerprint[:12]
@@ -1185,7 +1243,7 @@ async def _create_qa_pr(
                 branch_name,
                 delete_error,
             )
-        return None, None, "anonymization_failed"
+        return None, None, None, "anonymization_failed"
 
     if _qa_pr_body_contains_raw_evidence_marker(pr_body):
         logger.warning(
@@ -1202,7 +1260,7 @@ async def _create_qa_pr(
                 branch_name,
                 delete_error,
             )
-        return None, None, "anonymization_failed"
+        return None, None, None, "anonymization_failed"
 
     # Step 5: gh pr create
     label_args: list[str] = []
@@ -1266,7 +1324,7 @@ async def _create_qa_pr(
                 attempt_id,
                 exc_info=True,
             )
-        return None, None, classified_err
+        return None, None, None, classified_err
 
     pr_url = gh_stdout.decode("utf-8", errors="replace").strip()
     pr_number: int | None = None
@@ -1303,7 +1361,13 @@ async def _create_qa_pr(
                 pr_url,
             )
 
-    return pr_url, pr_number, None
+    pr_created_at = await _fetch_pr_created_at(
+        repo_root,
+        pr_number=pr_number,
+        pr_url=pr_url,
+        env=env,
+    )
+    return pr_url, pr_number, pr_created_at, None
 
 
 # ---------------------------------------------------------------------------
@@ -1556,7 +1620,7 @@ async def _run_investigation_session(
             return
 
         # Agent succeeded — create PR
-        pr_url, pr_number, pr_error = await _create_qa_pr(
+        pr_url, pr_number, pr_created_at, pr_error = await _create_qa_pr(
             repo_root=repo_root,
             branch_name=branch_name,
             finding=finding,
@@ -1890,6 +1954,7 @@ async def _run_investigation_session(
                 additions=additions,
                 deletions=deletions,
                 file_count=file_count,
+                ts=pr_created_at,
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug(

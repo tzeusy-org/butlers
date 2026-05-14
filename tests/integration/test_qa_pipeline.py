@@ -705,7 +705,7 @@ class TestAnonymizationGate:
             patch(
                 "butlers.core.qa.dispatch._create_qa_pr",
                 new_callable=AsyncMock,
-                return_value=(None, None, "anonymization_failed"),
+                return_value=(None, None, None, "anonymization_failed"),
             ),
         ):
             await _run_investigation_session(

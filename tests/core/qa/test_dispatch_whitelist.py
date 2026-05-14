@@ -61,7 +61,7 @@ def _mock_git_remote(remote_url: str):
 @pytest.mark.asyncio
 async def test_create_qa_pr_no_gh_token():
     """Returns 'no_gh_token' immediately when no token is provided."""
-    pr_url, pr_number, error = await _create_qa_pr(
+    pr_url, pr_number, _pr_created_at, error = await _create_qa_pr(
         repo_root=Path("/tmp/repo"),
         branch_name="qa/test-branch",
         finding=_make_finding(),
@@ -84,7 +84,7 @@ async def test_create_qa_pr_whitelist_empty_blocks_all():
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         return_value=mock_proc,
     ):
-        pr_url, pr_number, error = await _create_qa_pr(
+        pr_url, pr_number, _pr_created_at, error = await _create_qa_pr(
             repo_root=Path("/tmp/repo"),
             branch_name="qa/test-branch",
             finding=_make_finding(),
@@ -111,7 +111,7 @@ async def test_create_qa_pr_repo_not_in_whitelist():
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         return_value=mock_proc,
     ):
-        pr_url, pr_number, error = await _create_qa_pr(
+        pr_url, pr_number, _pr_created_at, error = await _create_qa_pr(
             repo_root=Path("/tmp/repo"),
             branch_name="qa/test-branch",
             finding=_make_finding(),
@@ -138,7 +138,7 @@ async def test_create_qa_pr_no_whitelist_param_blocks_all():
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         return_value=git_proc,
     ):
-        pr_url, pr_number, error = await _create_qa_pr(
+        pr_url, pr_number, _pr_created_at, error = await _create_qa_pr(
             repo_root=Path("/tmp/repo"),
             branch_name="qa/test-branch",
             finding=_make_finding(),
@@ -165,7 +165,7 @@ async def test_create_qa_pr_git_remote_fails_blocks():
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         return_value=mock_proc,
     ):
-        pr_url, pr_number, error = await _create_qa_pr(
+        pr_url, pr_number, _pr_created_at, error = await _create_qa_pr(
             repo_root=Path("/tmp/repo"),
             branch_name="qa/test-branch",
             finding=_make_finding(),
@@ -216,7 +216,7 @@ async def test_create_qa_pr_allowed_repo_proceeds_to_push():
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         side_effect=_fake_subprocess,
     ):
-        pr_url, pr_number, error = await _create_qa_pr(
+        pr_url, pr_number, _pr_created_at, error = await _create_qa_pr(
             repo_root=Path("/tmp/repo"),
             branch_name="qa/test-branch",
             finding=_make_finding(),
@@ -272,7 +272,7 @@ async def test_create_qa_pr_ssh_url_allowed():
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         side_effect=_fake_subprocess,
     ):
-        pr_url, pr_number, error = await _create_qa_pr(
+        pr_url, pr_number, _pr_created_at, error = await _create_qa_pr(
             repo_root=Path("/tmp/repo"),
             branch_name="qa/test-branch",
             finding=_make_finding(),

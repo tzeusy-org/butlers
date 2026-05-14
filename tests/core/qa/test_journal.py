@@ -20,6 +20,7 @@ from butlers.core.qa.journal import (
     OPEN_PATROL_TICK_STATUSES,
     record_event,
     record_patrol_tick_events,
+    record_pr_drafted_event,
 )
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.triage import TriagedFinding
@@ -338,6 +339,7 @@ async def test_flagged_event_not_emitted_for_deduplicated_finding() -> None:
 async def test_drafted_on_pr_creation(tmp_path: Path) -> None:
     attempt_id = uuid.uuid4()
     branch_name = "qa/general/abcdef"
+    pr_created_at = datetime(2026, 5, 15, 6, 10, 30, tzinfo=UTC)
     diff_snapshot = [
         {"kind": "meta", "text": "diff --git a/a.py b/a.py"},
         {"kind": "+", "text": "fixed = True"},
@@ -350,7 +352,7 @@ async def test_drafted_on_pr_creation(tmp_path: Path) -> None:
         patch(
             "butlers.core.qa.dispatch._create_qa_pr",
             new_callable=AsyncMock,
-            return_value=("https://github.com/acme/repo/pull/42", 42, None),
+            return_value=("https://github.com/acme/repo/pull/42", 42, pr_created_at, None),
         ),
         patch(
             "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
@@ -385,7 +387,70 @@ async def test_drafted_on_pr_creation(tmp_path: Path) -> None:
         "additions": 1,
         "deletions": 1,
         "file_count": 1,
+        "ts": pr_created_at,
     }
+
+
+@pytest.mark.asyncio
+async def test_drafted_on_pr_creation_explicitly_falls_back_without_created_at(
+    tmp_path: Path,
+) -> None:
+    attempt_id = uuid.uuid4()
+    branch_name = "qa/general/abcdef"
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch._create_qa_pr",
+            new_callable=AsyncMock,
+            return_value=("https://github.com/acme/repo/pull/42", 42, None, None),
+        ),
+        patch(
+            "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
+            new_callable=AsyncMock,
+        ),
+        patch("butlers.core.qa.dispatch.record_pr_drafted_event", new_callable=AsyncMock) as record,
+    ):
+        await _run_investigation_session(
+            pool=_make_pool(),
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name=branch_name,
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token="ghtoken",
+        )
+
+    record.assert_awaited_once()
+    assert record.await_args.kwargs["ts"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_pr_drafted_event_passes_timestamp_to_record_event() -> None:
+    session = MagicMock()
+    session.fetchval = AsyncMock()
+    ts = datetime(2026, 5, 15, 6, 10, 30, tzinfo=UTC)
+
+    await record_pr_drafted_event(
+        session,
+        attempt_id=uuid.uuid4(),
+        pr_number=42,
+        branch_name="qa/general/abcdef",
+        ts=ts,
+    )
+
+    _, *params = session.fetchval.await_args.args
+    assert params[3] == ts
 
 
 @pytest.mark.asyncio

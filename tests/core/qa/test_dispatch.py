@@ -377,7 +377,7 @@ async def test_run_investigation_persists_commit_diff_snapshot(tmp_path: Path):
         patch(
             "butlers.core.qa.dispatch._create_qa_pr",
             new_callable=AsyncMock,
-            return_value=("https://github.com/acme/repo/pull/42", 42, None),
+            return_value=("https://github.com/acme/repo/pull/42", 42, None, None),
         ),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
         patch(
@@ -422,7 +422,7 @@ async def test_run_investigation_no_commit_persists_empty_snapshot_without_git_d
         patch(
             "butlers.core.qa.dispatch._create_qa_pr",
             new_callable=AsyncMock,
-            return_value=(None, None, "no_op_branch"),
+            return_value=(None, None, None, "no_op_branch"),
         ) as create_pr,
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
         patch(

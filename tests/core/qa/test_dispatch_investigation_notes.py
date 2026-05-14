@@ -222,6 +222,7 @@ def _capture_gh_pr_create_subprocess(remote_url: str, captured_args: list):
     3. gh auth setup-git → success
     4. git push → success
     5. gh pr create → success, returns PR URL on stdout
+    6. gh pr view → success, returns PR metadata
     Any further calls return success.
     """
     call_index = 0
@@ -245,6 +246,11 @@ def _capture_gh_pr_create_subprocess(remote_url: str, captured_args: list):
         elif call_index == 4:
             proc.communicate = AsyncMock(
                 return_value=(b"https://github.com/acme/repo/pull/42\n", b"")
+            )
+            proc.returncode = 0
+        elif call_index == 5:
+            proc.communicate = AsyncMock(
+                return_value=(b'{"createdAt":"2026-05-15T06:10:30Z"}', b"")
             )
             proc.returncode = 0
         else:
@@ -290,7 +296,7 @@ Added `test_relationship_jobs_reads_renamed_key` to lock in the new behavior.
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         side_effect=fake,
     ):
-        pr_url, pr_number, error = await _create_qa_pr(
+        pr_url, pr_number, pr_created_at, error = await _create_qa_pr(
             repo_root=worktree,
             branch_name="qa/test-branch",
             finding=_make_finding(),
@@ -304,6 +310,7 @@ Added `test_relationship_jobs_reads_renamed_key` to lock in the new behavior.
     assert error is None, f"unexpected error: {error}"
     assert pr_url == "https://github.com/acme/repo/pull/42"
     assert pr_number == 42
+    assert pr_created_at == datetime(2026, 5, 15, 6, 10, 30, tzinfo=UTC)
 
     body = _extract_pr_body(captured)
     # Agent content is present
@@ -327,7 +334,7 @@ async def test_create_qa_pr_uses_placeholder_when_notes_missing(tmp_path: Path):
         "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
         side_effect=fake,
     ):
-        pr_url, _pr_number, error = await _create_qa_pr(
+        pr_url, _pr_number, _pr_created_at, error = await _create_qa_pr(
             repo_root=worktree,
             branch_name="qa/test-branch",
             finding=_make_finding(),
