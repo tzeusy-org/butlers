@@ -77,116 +77,104 @@ function renderPage(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Single-H1 contract — QaPatrolDetailPage
+// Navigation — breadcrumbs
 // ---------------------------------------------------------------------------
 
-describe("QaPatrolDetailPage — single-H1 contract", () => {
+describe("QaPatrolDetailPage — navigation", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("renders exactly one H1 when patrol is loaded", () => {
+  it("renders a breadcrumb link to /qa", () => {
     setPatrolState(BASE_PATROL);
     const html = renderPage();
-    expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(1);
+    expect(html).toContain('href="/qa"');
+    expect(html).toContain("QA");
   });
 
-  it("H1 contains 'Patrol Detail'", () => {
+  it("renders patrol short ID in breadcrumbs", () => {
     setPatrolState(BASE_PATROL);
     const html = renderPage();
-    const h1 = html.match(/<h1[^>]*>(.*?)<\/h1>/s);
-    expect(h1).not.toBeNull();
-    expect(h1![1]).toContain("Patrol Detail");
-  });
-
-  it("renders zero H1s in loading state (skeleton, no heading)", () => {
-    vi.mocked(useQaPatrol).mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-      error: null,
-    } as UseQaPatrolResult);
-    const html = renderPage();
-    expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(0);
+    expect(html).toContain("patrol-a");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Content — QaPatrolDetailPage
+// Page header
 // ---------------------------------------------------------------------------
 
-describe("QaPatrolDetailPage — content", () => {
+describe("QaPatrolDetailPage — header", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("renders the patrol ID short form in breadcrumbs", () => {
+  it("renders 'QA Patrol' mono eyebrow", () => {
     setPatrolState(BASE_PATROL);
     const html = renderPage();
-    // Breadcrumb shows first 8 chars of patrol ID
-    expect(html).toContain("patrol-a");
+    expect(html).toContain("QA Patrol");
   });
 
-  it("renders breadcrumb link to /qa", () => {
+  it("renders H1 with 'Patrol' in the title", () => {
     setPatrolState(BASE_PATROL);
     const html = renderPage();
-    expect(html).toContain("/qa");
-    expect(html).toContain("QA");
+    expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(1);
+    const h1 = html.match(/<h1[^>]*>(.*?)<\/h1>/s);
+    expect(h1![1]).toContain("Patrol");
   });
 
-  it("renders clean status badge for clean patrol", () => {
+  it("renders the log_lookback_minutes in the caption", () => {
+    setPatrolState(BASE_PATROL);
+    const html = renderPage();
+    expect(html).toContain("60");
+    expect(html).toContain("lookback");
+  });
+
+  it("renders 'clean' status in caption", () => {
     setPatrolState({ ...BASE_PATROL, status: "clean" });
     const html = renderPage();
     expect(html).toContain("clean");
   });
 
-  it("renders 'dispatched' badge for findings_dispatched status", () => {
+  it("renders 'dispatched' status in caption for findings_dispatched", () => {
     setPatrolState({ ...BASE_PATROL, status: "findings_dispatched" });
     const html = renderPage();
     expect(html).toContain("dispatched");
   });
+});
 
-  it("renders metadata section with patrol full ID", () => {
+// ---------------------------------------------------------------------------
+// Findings section (rule-separated list, no table)
+// ---------------------------------------------------------------------------
+
+describe("QaPatrolDetailPage — findings list", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders 'Findings' eyebrow section", () => {
     setPatrolState(BASE_PATROL);
     const html = renderPage();
-    expect(html).toContain("patrol-abc12345");
-    expect(html).toContain("Metadata");
+    expect(html).toContain("Findings");
   });
 
-  it("renders lookback duration", () => {
-    setPatrolState(BASE_PATROL);
-    const html = renderPage();
-    expect(html).toContain("60");
-    expect(html).toContain("minutes");
-  });
-
-  it("renders findings count", () => {
-    setPatrolState({ ...BASE_PATROL, findings_count: 5, novel_count: 2 });
-    const html = renderPage();
-    expect(html).toContain("5");
-    expect(html).toContain("2");
-  });
-
-  it("renders 'No findings in this patrol' when findings array is empty", () => {
+  it("renders 'No findings' empty state when findings array is empty", () => {
     setPatrolState({ ...BASE_PATROL, findings: [] });
     const html = renderPage();
     expect(html).toContain("No findings");
   });
 
-  it("renders findings table when findings are present", () => {
+  it("renders finding event_summary in list row", () => {
     setPatrolState({
       ...BASE_PATROL,
       findings_count: 1,
+      novel_count: 1,
       findings: [BASE_FINDING],
     });
     const html = renderPage();
-    expect(html).toContain("Severity");
-    expect(html).toContain("Exception");
-    expect(html).toContain("ValueError");
     expect(html).toContain("Unexpected null encountered in pipeline");
   });
 
-  it("renders 'novel' dedup badge for findings without dedup_reason", () => {
+  it("renders 'novel' dedup mark for findings without dedup_reason", () => {
     setPatrolState({
       ...BASE_PATROL,
       findings_count: 1,
@@ -196,13 +184,37 @@ describe("QaPatrolDetailPage — content", () => {
     expect(html).toContain("novel");
   });
 
-  it("renders error_detail in metadata when present", () => {
-    setPatrolState({ ...BASE_PATROL, error_detail: "Timeout during log scan" });
+  it("renders source butler name in finding row", () => {
+    setPatrolState({
+      ...BASE_PATROL,
+      findings_count: 1,
+      findings: [BASE_FINDING],
+    });
     const html = renderPage();
-    expect(html).toContain("Timeout during log scan");
+    expect(html).toContain("qa");
   });
 
-  it("renders dispatched investigations card when any finding has healing_attempt_id", () => {
+  it("does NOT render a <table> element (no table layout)", () => {
+    setPatrolState({
+      ...BASE_PATROL,
+      findings_count: 1,
+      findings: [BASE_FINDING],
+    });
+    const html = renderPage();
+    expect(html).not.toContain("<table");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch summary section
+// ---------------------------------------------------------------------------
+
+describe("QaPatrolDetailPage — dispatch summary", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders 'Dispatched' section when findings have healing_attempt_id", () => {
     setPatrolState({
       ...BASE_PATROL,
       findings_count: 1,
@@ -210,27 +222,43 @@ describe("QaPatrolDetailPage — content", () => {
       findings: [{ ...BASE_FINDING, healing_attempt_id: "attempt-xyz" }],
     });
     const html = renderPage();
-    expect(html).toContain("Dispatched Investigations");
+    expect(html).toContain("Dispatched");
     expect(html).toContain("/qa/investigations/attempt-xyz");
   });
 
-  it("does not render dispatched investigations card when no findings are dispatched", () => {
+  it("does not render 'Dispatched' section when no findings are dispatched", () => {
     setPatrolState({ ...BASE_PATROL, findings: [] });
     const html = renderPage();
-    expect(html).not.toContain("Dispatched Investigations");
+    expect(html).not.toContain("Dispatched (");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Error / not-found states
+// Error detail
 // ---------------------------------------------------------------------------
 
-describe("QaPatrolDetailPage — async states", () => {
+describe("QaPatrolDetailPage — error detail", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("renders error state when patrol not found", () => {
+  it("renders error_detail when present", () => {
+    setPatrolState({ ...BASE_PATROL, error_detail: "Timeout during log scan" });
+    const html = renderPage();
+    expect(html).toContain("Timeout during log scan");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Not-found / async states
+// ---------------------------------------------------------------------------
+
+describe("QaPatrolDetailPage — not-found", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders serif-italic 'Patrol not found.' on error", () => {
     vi.mocked(useQaPatrol).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -238,11 +266,12 @@ describe("QaPatrolDetailPage — async states", () => {
       error: new Error("Not found"),
     } as UseQaPatrolResult);
     const html = renderPage();
-    expect(html).toContain("Patrol not found or failed to load");
-    expect(html).toContain("Back to QA");
+    expect(html).toContain("Patrol not found");
+    expect(html).toContain("italic");
+    expect(html).toContain('href="/qa"');
   });
 
-  it("renders error state when patrol data is absent", () => {
+  it("renders serif-italic 'Patrol not found.' when data is absent", () => {
     vi.mocked(useQaPatrol).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -250,49 +279,29 @@ describe("QaPatrolDetailPage — async states", () => {
       error: null,
     } as UseQaPatrolResult);
     const html = renderPage();
-    expect(html).toContain("Patrol not found or failed to load");
+    expect(html).toContain("Patrol not found");
+  });
+
+  it("renders loading skeleton in loading state (no H1)", () => {
+    vi.mocked(useQaPatrol).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as UseQaPatrolResult);
+    const html = renderPage();
+    expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(0);
+    expect(html).toContain("animate-pulse");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Slot composition baseline — for Gate-A change tracking
+// No recharts
 // ---------------------------------------------------------------------------
 
-describe("QaPatrolDetailPage — slot composition baseline", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  // Breadcrumbs: rendered directly by page (not via Page archetype=detail)
-  it("breadcrumbs are rendered directly by the page (not via Page archetype)", () => {
-    setPatrolState(BASE_PATROL);
-    const html = renderPage();
-    expect(html).toContain('aria-label="Breadcrumb"');
-    // Not using DetailPage shell — no max-w-5xl constraint
-    expect(html).not.toContain("max-w-5xl");
-  });
-
-  // No Tier-2 hero (no PulseStrip, no DetailPage shell)
-  it("does not render a Tier-2 hero or PulseStrip today (pre-redesign baseline)", () => {
-    setPatrolState(BASE_PATROL);
-    const html = renderPage();
-    expect(html).not.toContain("max-w-5xl");
-    expect(html).not.toContain("Dunbar tier");
-  });
-
-  // Actions slot: no top-level action buttons in the loaded state
-  it("does not render Back to QA button in loaded (non-error) state", () => {
-    setPatrolState(BASE_PATROL);
-    const html = renderPage();
-    // Back to QA button only appears in the error state
-    expect(html).not.toContain("Back to QA");
-  });
-
-  // Primary slot: Metadata card and All Findings card present
-  it("primary content includes Metadata and All Findings sections", () => {
-    setPatrolState(BASE_PATROL);
-    const html = renderPage();
-    expect(html).toContain("Metadata");
-    expect(html).toContain("All Findings");
+describe("QaPatrolDetailPage — no recharts", () => {
+  it("page file contains no recharts import", async () => {
+    const src = await import("@/pages/QaPatrolDetailPage?raw");
+    expect((src as unknown as { default: string }).default).not.toContain("recharts");
   });
 });

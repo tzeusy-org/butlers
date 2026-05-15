@@ -1,25 +1,7 @@
 import { Link, useParams } from "react-router";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Time } from "@/components/ui/time";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { useQaPatrol } from "@/hooks/use-qa";
 import type { QaFindingRecord } from "@/api/index.ts";
 
@@ -28,7 +10,7 @@ import type { QaFindingRecord } from "@/api/index.ts";
 // ---------------------------------------------------------------------------
 
 function formatDuration(start: string, end: string | null | undefined): string {
-  if (!end) return "running...";
+  if (!end) return "running";
   const ms = new Date(end).getTime() - new Date(start).getTime();
   if (ms < 0) return "--";
   const s = Math.round(ms / 1000);
@@ -36,153 +18,180 @@ function formatDuration(start: string, end: string | null | undefined): string {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
-// ---------------------------------------------------------------------------
-// Severity badge
-// ---------------------------------------------------------------------------
-
-function SeverityBadge({ severity }: { severity: number }) {
-  const labels: Record<number, string> = { 0: "critical", 1: "high", 2: "medium", 3: "low", 4: "info" };
-  const label = labels[severity] ?? String(severity);
-  const classNames: Record<number, string> = {
-    0: "bg-red-600 text-white hover:bg-red-600/90",
-    1: "bg-orange-500 text-white hover:bg-orange-500/90",
-    2: "bg-yellow-500 text-white hover:bg-yellow-500/90",
-    3: "bg-slate-400 text-white hover:bg-slate-400/90",
-    4: "bg-sky-400 text-white hover:bg-sky-400/90",
-  };
-  return <Badge className={classNames[severity] ?? ""}>{label}</Badge>;
-}
-
-// ---------------------------------------------------------------------------
-// Source type badge
-// ---------------------------------------------------------------------------
-
-function SourceTypeBadge({ sourceType }: { sourceType: string }) {
+function formatSourceType(value: string): string {
   const labels: Record<string, string> = {
     log_scanner: "log",
     session_records: "session",
     butler_reports: "butler",
   };
+  return labels[value] ?? value.replace(/_/g, " ");
+}
+
+// ---------------------------------------------------------------------------
+// Severity glyph
+// ---------------------------------------------------------------------------
+
+const SEVERITY_CLASS: Record<number, string> = {
+  0: "bg-destructive",
+  1: "bg-destructive",
+  2: "bg-amber-500",
+  3: "bg-muted-foreground",
+  4: "bg-muted-foreground",
+};
+
+function SeverityGlyph({ severity }: { severity: number }) {
+  const cls = SEVERITY_CLASS[severity] ?? "bg-muted-foreground";
+  const labels: Record<number, string> = {
+    0: "critical",
+    1: "high",
+    2: "medium",
+    3: "low",
+    4: "info",
+  };
   return (
-    <Badge variant="secondary" className="font-mono text-xs">
-      {labels[sourceType] ?? sourceType}
-    </Badge>
+    <span
+      className={`mt-0.5 h-2 w-2 shrink-0 ${cls}`}
+      aria-label={labels[severity] ?? "unknown"}
+    />
   );
 }
 
 // ---------------------------------------------------------------------------
-// Patrol status badge
+// Dedup mark
 // ---------------------------------------------------------------------------
 
-function PatrolStatusBadge({ status }: { status: string }) {
-  if (status === "clean") {
-    return <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">clean</Badge>;
-  }
-  if (status === "findings_dispatched") {
-    return <Badge className="bg-blue-600 text-white hover:bg-blue-600/90">dispatched</Badge>;
-  }
-  if (status === "running") {
+function DedupMark({ reason }: { reason: string | null }) {
+  if (!reason) {
     return (
-      <Badge variant="outline" className="border-amber-500 text-amber-600">
-        running
-      </Badge>
+      <span className="font-mono text-[10px] uppercase tracking-[0.10em] text-emerald-600 tnum">
+        novel
+      </span>
     );
   }
-  if (status === "error") {
-    return <Badge variant="destructive">error</Badge>;
-  }
-  if (status === "skipped_overlap") {
-    return <Badge variant="secondary">skipped</Badge>;
-  }
-  return <Badge variant="outline">{status}</Badge>;
-}
-
-// ---------------------------------------------------------------------------
-// Dedup reason badge
-// ---------------------------------------------------------------------------
-
-function DedupBadge({ reason }: { reason: string | null }) {
-  if (!reason) {
-    return <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">novel</Badge>;
-  }
   const labels: Record<string, string> = {
-    active_attempt: "active attempt",
-    open_pr: "open PR",
+    active_attempt: "active",
+    open_pr: "open pr",
     dismissed: "dismissed",
     cooldown: "cooldown",
   };
-  return <Badge variant="secondary">{labels[reason] ?? reason}</Badge>;
+  return (
+    <span className="font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum">
+      {labels[reason] ?? reason}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Findings table
+// Findings list (rule-separated rows, no table)
 // ---------------------------------------------------------------------------
 
-function FindingsTable({ findings }: { findings: QaFindingRecord[] }) {
+interface FindingRowProps {
+  finding: QaFindingRecord;
+}
+
+function FindingRow({ finding }: FindingRowProps) {
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,180px)_1fr_auto] items-start gap-x-3 py-3">
+      {/* mark column */}
+      <SeverityGlyph severity={finding.severity} />
+
+      {/* id + butler column */}
+      <p className="min-w-0 truncate font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground tnum">
+        {finding.fingerprint.slice(0, 8)} &middot; {finding.source_butler}
+      </p>
+
+      {/* summary column (1fr) */}
+      <p className="min-w-0 text-[12px] leading-relaxed text-foreground">
+        {finding.event_summary}
+        {finding.healing_attempt_id && (
+          <span className="ml-2">
+            <Link
+              to={`/qa/investigations/${finding.healing_attempt_id}`}
+              className="font-mono text-[10px] uppercase tracking-[0.08em] text-primary underline-offset-4 hover:underline"
+            >
+              {"→"} investigate
+            </Link>
+          </span>
+        )}
+      </p>
+
+      {/* meta column */}
+      <DedupMark reason={finding.dedup_reason} />
+    </div>
+  );
+}
+
+function FindingsList({ findings }: { findings: QaFindingRecord[] }) {
   if (findings.length === 0) {
     return (
-      <div className="text-muted-foreground py-8 text-center text-sm">
+      <p className="py-6 font-[family-name:var(--font-serif,serif)] text-sm italic text-muted-foreground">
         No findings in this patrol.
-      </div>
+      </p>
     );
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Severity</TableHead>
-          <TableHead>Source</TableHead>
-          <TableHead>Butler</TableHead>
-          <TableHead>Exception</TableHead>
-          <TableHead className="max-w-xs">Summary</TableHead>
-          <TableHead className="text-right">Count</TableHead>
-          <TableHead>Dedup</TableHead>
-          <TableHead>Investigation</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {findings.map((f) => (
-          <TableRow key={f.id}>
-            <TableCell>
-              <SeverityBadge severity={f.severity} />
-            </TableCell>
-            <TableCell>
-              <SourceTypeBadge sourceType={f.source_type} />
-            </TableCell>
-            <TableCell>
-              <Badge variant="outline" className="font-mono text-xs">
-                {f.source_butler}
-              </Badge>
-            </TableCell>
-            <TableCell>
-              <code className="text-xs">{f.exception_type}</code>
-            </TableCell>
-            <TableCell className="max-w-xs">
-              <p className="truncate text-xs" title={f.event_summary}>
-                {f.event_summary}
-              </p>
-            </TableCell>
-            <TableCell className="text-right">{f.occurrence_count}</TableCell>
-            <TableCell>
-              <DedupBadge reason={f.dedup_reason} />
-            </TableCell>
-            <TableCell>
-              {f.healing_attempt_id ? (
-                <Link
-                  to={`/qa/investigations/${f.healing_attempt_id}`}
-                  className="text-primary text-xs underline-offset-4 hover:underline"
-                >
-                  {f.healing_attempt_id.slice(0, 8)}
-                </Link>
-              ) : (
-                <span className="text-muted-foreground text-xs">—</span>
-              )}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <div className="divide-y divide-border">
+      {findings.map((f) => (
+        <FindingRow key={f.id} finding={f} />
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch summary (rule-separated)
+// ---------------------------------------------------------------------------
+
+function DispatchedRow({ finding }: { finding: QaFindingRecord }) {
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,180px)_1fr_auto] items-center gap-x-3 py-3">
+      <SeverityGlyph severity={finding.severity} />
+
+      <p className="min-w-0 truncate font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground tnum">
+        {finding.fingerprint.slice(0, 8)} &middot; {finding.source_butler}
+      </p>
+
+      <p className="min-w-0 truncate text-[12px] text-foreground">{finding.event_summary}</p>
+
+      {finding.healing_attempt_id ? (
+        <Link
+          to={`/qa/investigations/${finding.healing_attempt_id}`}
+          className="font-mono text-[10px] uppercase tracking-[0.08em] text-primary underline-offset-4 hover:underline"
+        >
+          View
+        </Link>
+      ) : (
+        <span className="font-mono text-[10px] text-muted-foreground">--</span>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Patrol status label
+// ---------------------------------------------------------------------------
+
+function patrolStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    clean: "clean",
+    findings_dispatched: "dispatched",
+    running: "running",
+    error: "error",
+    skipped_overlap: "skipped",
+  };
+  return map[status] ?? status;
+}
+
+// ---------------------------------------------------------------------------
+// Eyebrow primitive
+// ---------------------------------------------------------------------------
+
+function Eyebrow({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+      {children}
+    </p>
   );
 }
 
@@ -192,17 +201,15 @@ function FindingsTable({ findings }: { findings: QaFindingRecord[] }) {
 
 function PageSkeleton() {
   return (
-    <div className="space-y-6">
-      <Skeleton className="h-8 w-64" />
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-32" />
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-3/4" />
-        </CardContent>
-      </Card>
+    <div className="space-y-6 animate-pulse">
+      <div className="h-4 w-48 rounded bg-muted" />
+      <div className="h-6 w-64 rounded bg-muted" />
+      <div className="h-4 w-full max-w-sm rounded bg-muted" />
+      <div className="space-y-3 pt-4">
+        <div className="h-3 w-full rounded bg-muted" />
+        <div className="h-3 w-5/6 rounded bg-muted" />
+        <div className="h-3 w-4/6 rounded bg-muted" />
+      </div>
     </div>
   );
 }
@@ -216,48 +223,26 @@ export default function QaPatrolDetailPage() {
   const { data: response, isLoading, isError } = useQaPatrol(patrolId || undefined);
   const patrol = response?.data;
 
-  if (!patrolId) {
-    return (
-      <div className="space-y-6">
-        <h1 className="text-2xl font-bold tracking-tight">Patrol Detail</h1>
-        <Card>
-          <CardContent>
-            <p className="text-muted-foreground py-12 text-center text-sm">
-              No patrol ID provided.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   if (isLoading) return <PageSkeleton />;
 
-  if (isError || !patrol) {
+  if (!patrolId || isError || !patrol) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-4">
-          <Button variant="outline" size="sm" asChild>
-            <Link to="/qa">Back to QA</Link>
-          </Button>
-          <h1 className="text-2xl font-bold tracking-tight">Patrol Detail</h1>
-        </div>
-        <Card>
-          <CardContent>
-            <p className="text-destructive py-12 text-center text-sm">
-              Patrol not found or failed to load.
-            </p>
-          </CardContent>
-        </Card>
+      <div className="space-y-4">
+        <Breadcrumbs items={[{ label: "QA", href: "/qa" }]} />
+        <p className="font-[family-name:var(--font-serif,serif)] text-sm italic text-muted-foreground">
+          Patrol not found.
+        </p>
       </div>
     );
   }
 
-  const novelFindings = patrol.findings.filter((f) => !f.dedup_reason);
   const dispatched = patrol.findings.filter((f) => f.healing_attempt_id);
+  const novelFindings = patrol.findings.filter((f) => !f.dedup_reason);
+  const duration = formatDuration(patrol.started_at, patrol.completed_at);
+  const sourcesLabel = patrol.sources_polled.map(formatSourceType).join(", ");
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* Breadcrumbs + header */}
       <Breadcrumbs
         items={[
@@ -265,109 +250,51 @@ export default function QaPatrolDetailPage() {
           { label: `Patrol ${patrol.id.slice(0, 8)}` },
         ]}
       />
-      <div className="flex items-center gap-4">
-        <h1 className="text-2xl font-bold tracking-tight">Patrol Detail</h1>
-        <PatrolStatusBadge status={patrol.status} />
-      </div>
 
-      {/* Metadata card */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Metadata</CardTitle>
-          <CardDescription>
-            <code className="text-xs">{patrol.id}</code>
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
-            <dt className="text-muted-foreground font-medium">Started</dt>
-            <dd><Time value={patrol.started_at} mode="absolute" /></dd>
+      {/* Page header */}
+      <header className="space-y-1">
+        <Eyebrow>QA Patrol</Eyebrow>
+        <h1 className="font-sans text-[22px] font-medium leading-[1.25] tracking-normal text-foreground">
+          Patrol · <Time value={patrol.started_at} mode="absolute" />
+        </h1>
+        <p className="font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum">
+          {duration} &middot; {patrolStatusLabel(patrol.status)} &middot; {sourcesLabel} &middot;{" "}
+          {patrol.log_lookback_minutes}m lookback
+        </p>
+      </header>
 
-            <dt className="text-muted-foreground font-medium">Completed</dt>
-            <dd>{patrol.completed_at ? <Time value={patrol.completed_at} mode="absolute" /> : "--"}</dd>
+      {/* Findings section */}
+      <section className="space-y-2" aria-label="Findings">
+        <Eyebrow>
+          Findings ({patrol.findings_count}) &middot; {novelFindings.length} novel &middot;{" "}
+          {patrol.findings_count - novelFindings.length} deduplicated
+        </Eyebrow>
+        <hr className="border-border" />
+        <FindingsList findings={patrol.findings} />
+      </section>
 
-            <dt className="text-muted-foreground font-medium">Duration</dt>
-            <dd>{formatDuration(patrol.started_at, patrol.completed_at)}</dd>
-
-            <dt className="text-muted-foreground font-medium">Lookback</dt>
-            <dd>{patrol.log_lookback_minutes} minutes</dd>
-
-            <dt className="text-muted-foreground font-medium">Sources polled</dt>
-            <dd className="flex flex-wrap gap-1">
-              {patrol.sources_polled.map((s) => (
-                <SourceTypeBadge key={s} sourceType={s} />
-              ))}
-            </dd>
-
-            <dt className="text-muted-foreground font-medium">Total findings</dt>
-            <dd>{patrol.findings_count}</dd>
-
-            <dt className="text-muted-foreground font-medium">Novel findings</dt>
-            <dd>{patrol.novel_count}</dd>
-
-            <dt className="text-muted-foreground font-medium">Dispatched</dt>
-            <dd>{patrol.dispatched_count}</dd>
-
-            {patrol.error_detail && (
-              <>
-                <dt className="text-muted-foreground font-medium">Error</dt>
-                <dd className="text-destructive text-xs">{patrol.error_detail}</dd>
-              </>
-            )}
-          </dl>
-        </CardContent>
-      </Card>
-
-      {/* Dispatch summary */}
+      {/* Dispatch summary section */}
       {dispatched.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Dispatched Investigations</CardTitle>
-            <CardDescription>
-              {dispatched.length} finding{dispatched.length !== 1 ? "s" : ""} triggered an
-              investigation in this patrol.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {dispatched.map((f) => (
-                <div key={f.id} className="flex items-center justify-between rounded-md border p-2 text-sm">
-                  <div className="flex items-center gap-2">
-                    <SeverityBadge severity={f.severity} />
-                    <code className="text-xs">{f.exception_type}</code>
-                    <span className="text-muted-foreground text-xs truncate max-w-64">
-                      {f.event_summary}
-                    </span>
-                  </div>
-                  {f.healing_attempt_id && (
-                    <Link
-                      to={`/qa/investigations/${f.healing_attempt_id}`}
-                      className="text-primary text-xs underline-offset-4 hover:underline"
-                    >
-                      View investigation
-                    </Link>
-                  )}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <section className="space-y-2" aria-label="Dispatched investigations">
+          <Eyebrow>
+            Dispatched ({dispatched.length})
+          </Eyebrow>
+          <hr className="border-border" />
+          <div className="divide-y divide-border">
+            {dispatched.map((f) => (
+              <DispatchedRow key={f.id} finding={f} />
+            ))}
+          </div>
+        </section>
       )}
 
-      {/* All findings table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            All Findings ({patrol.findings_count})
-          </CardTitle>
-          <CardDescription>
-            {novelFindings.length} novel · {patrol.findings_count - novelFindings.length} deduplicated
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FindingsTable findings={patrol.findings} />
-        </CardContent>
-      </Card>
+      {/* Error detail */}
+      {patrol.error_detail && (
+        <section className="space-y-2" aria-label="Patrol error">
+          <Eyebrow>Error</Eyebrow>
+          <p className="font-mono text-[11px] text-destructive">{patrol.error_detail}</p>
+        </section>
+      )}
     </div>
   );
 }
