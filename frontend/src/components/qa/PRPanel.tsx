@@ -55,7 +55,7 @@ export function PRPanel({ pr, whyThisFix, diffSnapshot, className }: PRPanelProp
             Open PR
           </a>
         </div>
-        <h3 className="font-sans text-[17px] font-medium leading-tight tracking-normal text-foreground">
+        <h3 className="font-sans text-[14px] font-medium leading-tight tracking-normal text-foreground">
           {pr.title}
         </h3>
         <p className="font-mono text-[10px] leading-none text-muted-foreground tnum">
@@ -68,7 +68,7 @@ export function PRPanel({ pr, whyThisFix, diffSnapshot, className }: PRPanelProp
           <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
             Why this fix
           </p>
-          <p className="font-sans text-sm leading-relaxed text-foreground">{whyThisFix}</p>
+          <p className="font-serif italic text-[13px] leading-relaxed text-foreground">{whyThisFix}</p>
         </div>
       ) : null}
 
