@@ -82,10 +82,10 @@ export function PRPanel({ pr, whyThisFix, diffSnapshot, className }: PRPanelProp
       ) : null}
 
       <p className="font-mono text-[10px] leading-none text-muted-foreground tnum">
-        opened <Time value={pr.opened_at} mode="smart" /> ·{" "}
+        opened <Time value={pr.opened_at} mode="absolute" precision="time" /> ·{" "}
         {pr.merged_at ? (
           <>
-            merged <Time value={pr.merged_at} mode="smart" />
+            merged <Time value={pr.merged_at} mode="absolute" precision="time" />
           </>
         ) : (
           "not merged"
