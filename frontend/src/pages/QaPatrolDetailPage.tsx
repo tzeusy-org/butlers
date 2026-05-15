@@ -154,16 +154,12 @@ function DispatchedRow({ finding }: { finding: QaFindingRecord }) {
 
       <p className="min-w-0 truncate text-[12px] text-foreground">{finding.event_summary}</p>
 
-      {finding.healing_attempt_id ? (
-        <Link
-          to={`/qa/investigations/${finding.healing_attempt_id}`}
-          className="font-mono text-[10px] uppercase tracking-[0.08em] text-primary underline-offset-4 hover:underline"
-        >
-          View
-        </Link>
-      ) : (
-        <span className="font-mono text-[10px] text-muted-foreground">--</span>
-      )}
+      <Link
+        to={"/qa/investigations/" + finding.healing_attempt_id}
+        className="font-mono text-[10px] uppercase tracking-[0.08em] text-primary underline-offset-4 hover:underline"
+      >
+        View
+      </Link>
     </div>
   );
 }
@@ -237,7 +233,6 @@ export default function QaPatrolDetailPage() {
   }
 
   const dispatched = patrol.findings.filter((f) => f.healing_attempt_id);
-  const novelFindings = patrol.findings.filter((f) => !f.dedup_reason);
   const duration = formatDuration(patrol.started_at, patrol.completed_at);
   const sourcesLabel = patrol.sources_polled.map(formatSourceType).join(", ");
 
@@ -258,16 +253,17 @@ export default function QaPatrolDetailPage() {
           Patrol · <Time value={patrol.started_at} mode="absolute" />
         </h1>
         <p className="font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum">
-          {duration} &middot; {patrolStatusLabel(patrol.status)} &middot; {sourcesLabel} &middot;{" "}
-          {patrol.log_lookback_minutes}m lookback
+          {[duration, patrolStatusLabel(patrol.status), sourcesLabel, `${patrol.log_lookback_minutes}m lookback`]
+            .filter(Boolean)
+            .join(" · ")}
         </p>
       </header>
 
       {/* Findings section */}
       <section className="space-y-2" aria-label="Findings">
         <Eyebrow>
-          Findings ({patrol.findings_count}) &middot; {novelFindings.length} novel &middot;{" "}
-          {patrol.findings_count - novelFindings.length} deduplicated
+          Findings ({patrol.findings_count}) &middot; {patrol.novel_count} novel &middot;{" "}
+          {patrol.findings_count - patrol.novel_count} deduplicated
         </Eyebrow>
         <hr className="border-border" />
         <FindingsList findings={patrol.findings} />
