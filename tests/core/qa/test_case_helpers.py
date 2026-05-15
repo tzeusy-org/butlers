@@ -64,7 +64,7 @@ def test_short_id_stable() -> None:
     [
         ("pr_merged", "landed"),
         ("pr_open", "pr"),
-        ("drafted", "pr"),
+        ("drafted", "detect"),
         ("unfixable", "escalated"),
         ("failed", "detect"),
         ("timeout", "detect"),

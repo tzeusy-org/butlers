@@ -47,12 +47,16 @@ def state_of_case(attempt: Mapping[str, Any] | object) -> CaseState:
     status = _get_field(attempt, "status")
     if status == "pr_merged":
         return "landed"
-    if status in {"pr_open", "drafted"}:
-        return "pr"
-    if status == "unfixable" or failed_with_human_action(attempt):
+    if status == "unfixable":
         return "escalated"
+    if failed_with_human_action(attempt):
+        return "escalated"
+    if status == "pr_open":
+        return "pr"
     if status == "investigating":
         return "diagnose"
+    if status == "dispatch_pending":
+        return "detect"
     return "detect"
 
 

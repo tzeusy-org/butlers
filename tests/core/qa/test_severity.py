@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from butlers.core.qa import severity
 from butlers.core.qa.severity import (
     _HUMAN_ACTION_MARKERS,
     _sql_string_literal,
@@ -83,3 +84,30 @@ def test_state_of_case_uses_failed_with_human_action_marker_rules() -> None:
     assert (
         state_of_case(_attempt("investigating", "operator must review credentials")) == "diagnose"
     )
+
+
+def test_state_of_case_uses_canonical_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[SimpleNamespace] = []
+    attempt = _attempt("failed", "legacy inline marker should not matter")
+
+    def fake_failed_with_human_action(candidate: object) -> bool:
+        assert isinstance(candidate, SimpleNamespace)
+        calls.append(candidate)
+        return True
+
+    monkeypatch.setattr(severity, "failed_with_human_action", fake_failed_with_human_action)
+
+    assert severity.state_of_case(attempt) == "escalated"
+    assert calls == [attempt]
+
+
+def test_state_of_case_dispatch_pending_explicitly_detect() -> None:
+    assert state_of_case(_attempt("dispatch_pending")) == "detect"
+
+
+def test_state_of_case_unfixable_without_marker_escalates() -> None:
+    assert state_of_case(_attempt("unfixable", "No matching context")) == "escalated"
+
+
+def test_state_of_case_drafted_uses_default_detect_branch() -> None:
+    assert state_of_case(_attempt("drafted")) == "detect"
