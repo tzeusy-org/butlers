@@ -79,10 +79,12 @@ const PENDING_REVIEWS = [
     label: "Type hints",
     ease_factor: 2.3,
     repetitions: 2,
-    // Due later today: end-of-today minus 30 minutes, ensuring it falls in Today bucket.
+    // Due later today: 1 second before midnight, ensuring it falls in Today bucket
+    // regardless of what time of day CI runs. (Previously 23:29 caused failures
+    // when CI ran at 23:30+ UTC.)
     next_review_at: (() => {
       const d = new Date();
-      d.setHours(23, 29, 59, 999);
+      d.setHours(23, 59, 59, 0);
       return d.toISOString();
     })(),
     mastery_status: "learning",
