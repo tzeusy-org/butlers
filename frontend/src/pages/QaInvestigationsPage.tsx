@@ -195,7 +195,7 @@ export default function QaInvestigationsPage() {
           />
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <h1 className="text-2xl font-semibold tracking-normal">Dispatch case index</h1>
+              <h1 className="text-2xl font-medium tracking-normal">Dispatch case index</h1>
               <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
                 Rule-separated QA cases
               </p>

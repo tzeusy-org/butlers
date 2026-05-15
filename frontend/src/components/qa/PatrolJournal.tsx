@@ -15,7 +15,6 @@ const stepClassName: Record<string, string> = {
   escalated: "text-amber-500",
   flagged: "text-amber-500",
   merged: "text-emerald-500",
-  opened: "text-amber-500",
   sampled: "text-foreground",
   tick: "text-muted-foreground",
   wait: "text-muted-foreground",

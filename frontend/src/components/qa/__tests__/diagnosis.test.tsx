@@ -83,13 +83,13 @@ describe("QA diagnosis components", () => {
     fireEvent.mouseEnter(screen.getByTestId("qa-claim-c1"));
 
     expect(screen.getByTestId("qa-evidence-row-e1").className).toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.10)]",
+      "bg-severity-medium/10",
     );
     expect(screen.getByTestId("qa-evidence-row-e3").className).toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.10)]",
+      "bg-severity-medium/10",
     );
     expect(screen.getByTestId("qa-evidence-row-e2").className).not.toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.10)]",
+      "bg-severity-medium/10",
     );
   });
 
@@ -99,11 +99,11 @@ describe("QA diagnosis components", () => {
     fireEvent.mouseEnter(screen.getByTestId("qa-evidence-row-e2"));
 
     expect(screen.getByTestId("qa-claim-c2").className).toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.15)]",
+      "bg-severity-medium/15",
     );
     expect(screen.getByTestId("qa-claim-c2-marker").className).toContain("text-amber-500");
     expect(screen.getByTestId("qa-claim-c1").className).not.toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.15)]",
+      "bg-severity-medium/15",
     );
   });
 
@@ -114,10 +114,10 @@ describe("QA diagnosis components", () => {
     fireEvent.mouseEnter(screen.getByTestId("qa-evidence-row-e3"));
 
     expect(screen.getByTestId("qa-claim-c1").className).toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.15)]",
+      "bg-severity-medium/15",
     );
     expect(screen.getByTestId("qa-claim-c2").className).toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.15)]",
+      "bg-severity-medium/15",
     );
   });
 

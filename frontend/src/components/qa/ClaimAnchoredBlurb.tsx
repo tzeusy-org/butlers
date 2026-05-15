@@ -58,7 +58,7 @@ export function ClaimAnchoredBlurb({
             key={`claim-${segment.claim}-${index}`}
             className={cn(
               "rounded-[2px] underline decoration-border/80 decoration-1 underline-offset-4 transition-colors duration-fast",
-              active && "bg-[oklch(0.81_0.185_84_/_0.15)] decoration-amber-500",
+              active && "bg-severity-medium/15 decoration-amber-500",
             )}
             data-claim-id={segment.claim}
             data-testid={`qa-claim-${segment.claim}`}

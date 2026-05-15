@@ -26,7 +26,7 @@ export function PRPanel({ pr, whyThisFix, diffSnapshot, className }: PRPanelProp
   if (!pr) {
     return (
       <p className={cn("font-serif text-sm italic text-muted-foreground", className)}>
-        No PR — escalated to user.
+        No PR. Escalated to user.
       </p>
     );
   }

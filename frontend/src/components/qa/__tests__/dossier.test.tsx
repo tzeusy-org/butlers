@@ -205,7 +205,7 @@ describe("QA case dossier composition", () => {
     expect(screen.getByText("Diagnosing…")).toBeTruthy();
     expect(screen.queryByText("Evidence · log fragments")).toBeNull();
     expect(screen.queryByText("Considered & ruled out")).toBeNull();
-    expect(screen.getByText("No PR — escalated to user.")).toBeTruthy();
+    expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
     expect(screen.queryByText("Patrol journal · every QA decision on this case")).toBeNull();
   });
 
@@ -214,20 +214,19 @@ describe("QA case dossier composition", () => {
 
     fireEvent.mouseEnter(screen.getByTestId("qa-claim-c-timeout"));
     expect(screen.getByTestId("qa-evidence-row-e-timeout").className).toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.10)]",
+      "bg-severity-medium/10",
     );
 
     fireEvent.mouseLeave(screen.getByTestId("qa-claim-c-timeout"));
     fireEvent.mouseEnter(screen.getByTestId("qa-evidence-row-e-run"));
     expect(screen.getByTestId("qa-claim-c-run").className).toContain(
-      "bg-[oklch(0.81_0.185_84_/_0.15)]",
+      "bg-severity-medium/15",
     );
   });
 
   it("test_journal_renders_per_step_colors", () => {
     const events = [
       { id: "flagged", ts: "2026-05-15T01:00:00Z", step: "flagged", text: "flagged", detail: null, data: {} },
-      { id: "opened", ts: "2026-05-15T01:01:00Z", step: "opened", text: "opened", detail: null, data: {} },
       { id: "sampled", ts: "2026-05-15T01:02:00Z", step: "sampled", text: "sampled", detail: null, data: {} },
       { id: "wait", ts: "2026-05-15T01:03:00Z", step: "wait", text: "wait", detail: null, data: {} },
       { id: "merged", ts: "2026-05-15T01:04:00Z", step: "merged", text: "merged", detail: null, data: {} },
@@ -237,11 +236,10 @@ describe("QA case dossier composition", () => {
     render(<PatrolJournal events={events} patrolIntervalMinutes={12} />);
 
     expect(screen.getByTestId("qa-journal-step-flagged").className).toContain("text-amber-500");
-    expect(screen.getByTestId("qa-journal-step-opened").className).toContain("text-amber-500");
     expect(screen.getByTestId("qa-journal-step-sampled").className).toContain("text-foreground");
     expect(screen.getByTestId("qa-journal-step-wait").className).toContain("text-muted-foreground");
     expect(screen.getByTestId("qa-journal-step-merged").className).toContain("text-emerald-500");
     expect(screen.getByTestId("qa-journal-step-escalated").className).toContain("text-amber-500");
-    expect(screen.getByText("6 entries · patrol every 12m")).toBeTruthy();
+    expect(screen.getByText("5 entries · patrol every 12m")).toBeTruthy();
   });
 });

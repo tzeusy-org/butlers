@@ -79,7 +79,7 @@ export function EvidenceLog({
             key={row.id}
             className={cn(
               "grid min-h-8 grid-cols-[20px_74px_48px_90px_1fr] items-start gap-2 px-1 py-2 transition-colors duration-fast",
-              active && "bg-[oklch(0.81_0.185_84_/_0.10)]",
+              active && "bg-severity-medium/10",
             )}
             data-evidence-id={row.id}
             data-testid={`qa-evidence-row-${row.id}`}

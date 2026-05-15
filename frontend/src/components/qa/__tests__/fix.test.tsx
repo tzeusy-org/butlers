@@ -31,9 +31,9 @@ describe("QA dossier fix-column components", () => {
   it("test_pr_panel_null_renders_escalated_message", () => {
     render(<PRPanel pr={null} whyThisFix={null} />);
 
-    expect(screen.getByText("No PR — escalated to user.")).toBeTruthy();
-    expect(screen.getByText("No PR — escalated to user.").className).toContain("italic");
-    expect(screen.getByText("No PR — escalated to user.").className).toContain("font-serif");
+    expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
+    expect(screen.getByText("No PR. Escalated to user.").className).toContain("italic");
+    expect(screen.getByText("No PR. Escalated to user.").className).toContain("font-serif");
   });
 
   it("test_pr_panel_renders_all_fields", () => {
