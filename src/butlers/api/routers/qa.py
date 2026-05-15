@@ -217,6 +217,14 @@ class QaDismissal(BaseModel):
     created_at: datetime
 
 
+class QaActiveDismissal(BaseModel):
+    """Active dismissal data embedded in a QA case dossier."""
+
+    fingerprint: str
+    expires_at: datetime
+    reason: str | None = None
+
+
 class KnownIssue(BaseModel):
     """A known issue grouped by fingerprint with aggregated stats."""
 
@@ -330,6 +338,7 @@ class QaCaseDossier(BaseModel):
 
     case: QaCaseSummary
     state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated"]
+    dismissal: QaActiveDismissal | None = None
     investigation_notes: InvestigationNotes | None = None
     pr: QaPrSummary | None = None
     journal: list[QaJournalEvent] = Field(default_factory=list)
@@ -699,6 +708,15 @@ def _row_to_dismissal(row: Any) -> QaDismissal:
         dismissed_until=row["dismissed_until"],
         dismissed_by=row["dismissed_by"],
         created_at=row["created_at"],
+    )
+
+
+def _row_to_active_dismissal(row: Any) -> QaActiveDismissal:
+    """Convert an active qa_dismissals lookup row to QaActiveDismissal."""
+    return QaActiveDismissal(
+        fingerprint=row["fingerprint"],
+        expires_at=row["expires_at"],
+        reason=row.get("reason"),
     )
 
 
@@ -1617,6 +1635,23 @@ async def get_case(
     if row is None:
         return _case_not_found_response(case_id)
 
+    dismissal: QaActiveDismissal | None = None
+    finding_fingerprint = row.get("finding_fingerprint")
+    if finding_fingerprint:
+        dismissal_row = await pool.fetchrow(
+            """
+            SELECT fingerprint, dismissed_until AS expires_at, NULL::text AS reason
+            FROM public.qa_dismissals
+            WHERE fingerprint = $1
+              AND dismissed_until > now()
+            ORDER BY dismissed_until DESC
+            LIMIT 1
+            """,
+            finding_fingerprint,
+        )
+        if dismissal_row is not None:
+            dismissal = _row_to_active_dismissal(dismissal_row)
+
     journal_rows = await pool.fetch(
         """
         SELECT id, ts, step, text, detail, data
@@ -1635,6 +1670,7 @@ async def get_case(
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,
+        dismissal=dismissal,
         investigation_notes=_investigation_notes_from_case_row(row),
         pr=_row_to_pr_summary(row),
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],

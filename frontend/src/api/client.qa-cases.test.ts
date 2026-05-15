@@ -21,7 +21,7 @@ function mockResponse(data: unknown, status = 200) {
   });
 }
 
-import { getQaCase, getQaCaseJournal, getQaCases } from "./client.ts";
+import { getQaCase, getQaCaseJournal, getQaCases, removeQaDismissal } from "./client.ts";
 
 const EMPTY_PAGE = { data: [], meta: { total: 0, offset: 0, limit: 25, has_more: false } };
 const EMPTY_DOSSIER = {
@@ -39,6 +39,7 @@ const EMPTY_DOSSIER = {
       pr_url: null,
     },
     state_track_stage: "detect",
+    dismissal: null,
     investigation_notes: null,
     pr: null,
     journal: [],
@@ -98,5 +99,17 @@ describe("getQaCaseJournal", () => {
     expect(url).toContain("/qa/cases/case-1/journal");
     expect(url).toContain("cursor=2026-05-15T00%3A00%3A00Z");
     expect(url).toContain("limit=50");
+  });
+});
+
+describe("removeQaDismissal", () => {
+  it("URI-encodes the fingerprint in the dismissal removal path", async () => {
+    mockResponse({ data: { deleted: true }, meta: {} });
+    await removeQaDismissal("fingerprint/with spaces");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/qa/dismissals/fingerprint%2Fwith%20spaces"),
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 });

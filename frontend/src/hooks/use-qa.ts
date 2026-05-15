@@ -29,6 +29,7 @@ import {
   getQaTrends,
   listHealingAttempts,
   patchQaAllowedRepo,
+  removeQaDismissal,
   resetQaCircuitBreaker,
   syncQaRepo,
   undismissQaKnownIssue,
@@ -184,6 +185,20 @@ export function useUndismissQaIssue() {
   return useMutation({
     mutationFn: (fingerprint: string) => undismissQaKnownIssue(fingerprint),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-known-issues"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
+    },
+  });
+}
+
+/** Remove an active dismissal from a case dossier. */
+export function useRemoveDismissal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (fingerprint: string) => removeQaDismissal(fingerprint),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-case"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-cases"] });
       queryClient.invalidateQueries({ queryKey: ["qa-known-issues"] });
       queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
     },

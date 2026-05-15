@@ -3743,6 +3743,16 @@ export function undismissQaKnownIssue(
   );
 }
 
+/** DELETE /api/qa/dismissals/:fingerprint — remove an active dismissal */
+export function removeQaDismissal(
+  fingerprint: string,
+): Promise<ApiResponse<Record<string, unknown>>> {
+  return apiFetch<ApiResponse<Record<string, unknown>>>(
+    `/qa/dismissals/${encodeURIComponent(fingerprint)}`,
+    { method: "DELETE" },
+  );
+}
+
 /** GET /api/qa/investigations — paginated investigation pipeline */
 export function getQaInvestigations(
   params?: QaInvestigationsParams,

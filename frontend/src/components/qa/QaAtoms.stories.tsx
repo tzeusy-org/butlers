@@ -1,3 +1,7 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+import { useState } from "react";
+
 import type { QaActiveBreakdown, QaCaseSummary, QaKpiBlock } from "@/api/types";
 
 import { CaseDossierHeader, CaseList, QaKpiStrip, StateTrack } from "./index";
@@ -41,17 +45,29 @@ const cases: QaCaseSummary[] = [
   },
 ];
 
+function StoryProvider({ children }: { children: ReactNode }) {
+  const [client] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      }),
+  );
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+
 export function QaAtoms() {
   return (
-    <div className="max-w-5xl space-y-8 p-8">
-      <QaKpiStrip kpis={kpis} active={activeBreakdown} />
-      <div className="grid gap-8 md:grid-cols-[320px_1fr]">
-        <CaseList cases={cases} selectedId="case-1" onSelect={() => undefined} />
-        <div className="space-y-4 border-t border-border/60 pt-4">
-          <CaseDossierHeader case={cases[0]} stage="pr" />
-          <StateTrack stage="escalated" />
+    <StoryProvider>
+      <div className="max-w-5xl space-y-8 p-8">
+        <QaKpiStrip kpis={kpis} active={activeBreakdown} />
+        <div className="grid gap-8 md:grid-cols-[320px_1fr]">
+          <CaseList cases={cases} selectedId="case-1" onSelect={() => undefined} />
+          <div className="space-y-4 border-t border-border/60 pt-4">
+            <CaseDossierHeader case={cases[0]} stage="pr" dismissal={null} />
+            <StateTrack stage="escalated" />
+          </div>
         </div>
       </div>
-    </div>
+    </StoryProvider>
   );
 }

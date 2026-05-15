@@ -1,10 +1,30 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { QaActiveBreakdown, QaCaseSummary, QaKpiBlock } from "@/api/types";
-import { CaseList, QaKpiStrip, StateTrack } from "@/components/qa";
+import type {
+  QaActiveBreakdown,
+  QaActiveDismissal,
+  QaCaseSummary,
+  QaKpiBlock,
+} from "@/api/types";
+import { CaseDossierHeader, CaseList, QaKpiStrip, StateTrack } from "@/components/qa";
+
+const qaHookMocks = vi.hoisted(() => ({
+  removeDismissalMutate: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-qa", () => ({
+  useRemoveDismissal: () => ({
+    mutate: qaHookMocks.removeDismissalMutate,
+    isPending: false,
+  }),
+}));
+
+afterEach(() => {
+  cleanup();
+});
 
 const kpisWithNullMttr: QaKpiBlock = {
   prs_landed_24h: 3,
@@ -16,6 +36,12 @@ const kpisWithNullMttr: QaKpiBlock = {
 const activeBreakdown: QaActiveBreakdown = {
   awaiting_ci: 2,
   escalated: 1,
+};
+
+const activeDismissal: QaActiveDismissal = {
+  fingerprint: "f".repeat(64),
+  expires_at: "2026-05-15T10:30:00Z",
+  reason: null,
 };
 
 const cases: QaCaseSummary[] = [
@@ -46,6 +72,10 @@ const cases: QaCaseSummary[] = [
 ];
 
 describe("QA dossier atoms", () => {
+  beforeEach(() => {
+    qaHookMocks.removeDismissalMutate.mockReset();
+  });
+
   it("renders null MTTR as an em dash with the terminal-case sublabel", () => {
     render(<QaKpiStrip kpis={kpisWithNullMttr} active={activeBreakdown} />);
 
@@ -73,5 +103,20 @@ describe("QA dossier atoms", () => {
     expect(screen.getByTestId("qa-state-track-escalated-label").textContent).toBe("· escalated");
     expect(screen.getByTestId("qa-state-track-pr").className).toContain("text-amber-500");
     expect(screen.getByTestId("qa-state-track-landed").className).toContain("text-amber-500");
+  });
+
+  it("renders the active dismissal caption when present", () => {
+    render(<CaseDossierHeader case={cases[0]} stage="pr" dismissal={activeDismissal} />);
+
+    expect(screen.getByText(/dismissed until/i)).toBeTruthy();
+    expect(screen.getByLabelText("Remove dismissal")).toBeTruthy();
+  });
+
+  it("invokes the remove dismissal mutation from the header pill", () => {
+    render(<CaseDossierHeader case={cases[0]} stage="pr" dismissal={activeDismissal} />);
+
+    fireEvent.click(screen.getByLabelText("Remove dismissal"));
+
+    expect(qaHookMocks.removeDismissalMutate).toHaveBeenCalledWith(activeDismissal.fingerprint);
   });
 });
