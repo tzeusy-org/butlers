@@ -108,6 +108,9 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
       gh_token_present: null,
       provisioning_hint: null,
     },
+    port: null,
+    model: null,
+    patrol_interval_minutes: null,
     ...overrides,
   };
 }
