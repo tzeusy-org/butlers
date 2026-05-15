@@ -8,6 +8,7 @@ import shutil
 import pytest
 
 from butlers.testing.migration import (
+    constraint_exists,
     create_migration_db,
     get_column_info,
     index_exists,
@@ -46,3 +47,6 @@ def test_notifications_table_schema_and_indexes(postgres_container):
     assert index_exists(db_url, "idx_notifications_source_butler_created")
     assert index_exists(db_url, "idx_notifications_channel_created")
     assert index_exists(db_url, "idx_notifications_status")
+
+    # CHECK constraint enumerating valid status values (sw_011)
+    assert constraint_exists(db_url, "notifications", "chk_notifications_status")

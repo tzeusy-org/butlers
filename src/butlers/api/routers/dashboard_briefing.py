@@ -263,13 +263,14 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
                     CASE WHEN status = 'failed' THEN 'high' ELSE 'low' END
                 ) AS severity
             FROM notifications
-            WHERE status IN ('unread', 'failed')
+            WHERE status IN ('sent', 'failed')
               AND created_at >= NOW() - INTERVAL '24 hours'
             ORDER BY
                 CASE LOWER(COALESCE(metadata->>'severity', metadata->>'priority', status))
                     WHEN 'critical' THEN 0
                     WHEN 'error' THEN 0
                     WHEN 'high' THEN 0
+                    WHEN 'failed' THEN 0
                     WHEN 'warning' THEN 1
                     WHEN 'warn' THEN 1
                     WHEN 'medium' THEN 1

@@ -1273,7 +1273,9 @@ async def pool_with_notifications(pool):
             error TEXT,
             session_id UUID,
             trace_id TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT chk_notifications_status
+                CHECK (status IN ('sent', 'failed', 'read'))
         )
     """)
     yield pool
