@@ -12,7 +12,12 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.qa import _get_credentials_status_fn, _get_db_manager, _get_force_patrol_fn
+from butlers.api.routers.qa import (
+    _get_credentials_status_fn,
+    _get_db_manager,
+    _get_force_patrol_fn,
+    _get_staffer_info_fn,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -232,9 +237,15 @@ def _build_summary_app(
     pr_stats: dict[str, Any] | None = None,
     cb_rows: list[dict[str, Any]] | None = None,
     source_rows: list[dict[str, Any]] | None = None,
+    staffer_info: dict[str, Any] | None = None,
 ) -> tuple[Any, MagicMock]:
-    """Build a test app with mocks wired to the summary endpoint's call sequence."""
-    return _build_app(
+    """Build a test app with mocks wired to the summary endpoint's call sequence.
+
+    ``staffer_info`` overrides the injected staffer-info callable.  When ``None``
+    (the default), a no-op async callable is injected so that the existing DB-mock
+    sequence is not disturbed by the standalone catalog query path.
+    """
+    app, pool = _build_app(
         fetchrow_side_effect=[
             _r(last_patrol) if last_patrol is not None else None,
             _r(stats_24h or _make_stats_row()),
@@ -249,6 +260,16 @@ def _build_summary_app(
             [_r(row) for row in (source_rows or [])],
         ],
     )
+
+    # Wire the staffer_info_fn dependency so the standalone catalog-query path
+    # is not exercised by default (it would need additional fetchrow mocks).
+    effective_info = staffer_info if staffer_info is not None else {}
+
+    async def _staffer_info_fn() -> dict[str, Any]:
+        return effective_info
+
+    app.dependency_overrides[_get_staffer_info_fn] = lambda: _staffer_info_fn
+    return app, pool
 
 
 def _make_503_app() -> Any:
@@ -463,6 +484,48 @@ class TestGetQaSummary:
         assert "prs_landed_prior_24h" in kpi_sql
         assert "mttr_prior_24h_seconds" in kpi_sql
         assert "self_resolved_prior_7d_pct" in kpi_sql
+
+    async def test_summary_exposes_port_model_patrol_interval_via_staffer_info_fn(self) -> None:
+        """port, model, patrol_interval_minutes are populated from the injected callable."""
+        app, _ = _build_summary_app(
+            staffer_info={
+                "port": 41110,
+                "model": "claude-sonnet-4-5",
+                "patrol_interval_minutes": 10,
+            }
+        )
+
+        data = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert data["port"] == 41110
+        assert data["model"] == "claude-sonnet-4-5"
+        assert data["patrol_interval_minutes"] == 10
+
+    async def test_summary_port_model_patrol_interval_null_when_info_empty(self) -> None:
+        """Fields are null when the staffer_info callable returns an empty dict."""
+        app, _ = _build_summary_app(staffer_info={})
+
+        data = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert data["port"] is None
+        assert data["model"] is None
+        assert data["patrol_interval_minutes"] is None
+
+    async def test_summary_staffer_info_fn_failure_is_non_fatal(self) -> None:
+        """A raising staffer_info_fn is swallowed; fields fall back to null."""
+
+        async def _broken_fn() -> dict[str, Any]:
+            raise RuntimeError("boom")
+
+        app, _ = _build_summary_app()
+        # Override the dependency with a broken callable.
+        app.dependency_overrides[_get_staffer_info_fn] = lambda: _broken_fn
+
+        data = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert data["port"] is None
+        assert data["model"] is None
+        assert data["patrol_interval_minutes"] is None
 
 
 class TestListPatrols:

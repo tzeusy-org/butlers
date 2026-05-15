@@ -3170,6 +3170,9 @@ export interface QaSummary {
     gh_token_present: boolean | null;
     provisioning_hint: string | null;
   };
+  port: number | null;
+  model: string | null;
+  patrol_interval_minutes: number | null;
 }
 
 /** Summary row for the QA Cases API — GET /api/qa/cases */

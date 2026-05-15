@@ -128,8 +128,15 @@ function StickyTopBar({
 function PageHeader({ summary }: { summary: ReturnType<typeof useQaSummary> }) {
   const data = summary.data?.data;
 
-  const patrolInterval = 10; // minutes -- default; no config endpoint yet
-  const model = data?.staffer_status ?? "unknown";
+  const port = data?.port ?? null;
+  const model = data?.model ?? null;
+  const patrolInterval = data?.patrol_interval_minutes ?? null;
+
+  const caption = [
+    port !== null && `port :${port}`,
+    model && `model ${model}`,
+    patrolInterval !== null && `patrol every ${patrolInterval}m`,
+  ].filter(Boolean).join(" · ");
 
   return (
     <header className="border-b border-border/60 px-6 py-5">
@@ -147,9 +154,9 @@ function PageHeader({ summary }: { summary: ReturnType<typeof useQaSummary> }) {
           showTitle={false}
         />
       </div>
-      <p className="mt-1.5 font-mono text-[10px] text-muted-foreground">
-        model {model} · patrol every {patrolInterval}m
-      </p>
+      {caption && (
+        <p className="mt-1.5 font-mono text-[10px] text-muted-foreground">{caption}</p>
+      )}
     </header>
   );
 }

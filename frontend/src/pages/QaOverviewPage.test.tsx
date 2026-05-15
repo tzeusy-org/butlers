@@ -69,6 +69,9 @@ const MOCK_SUMMARY = {
   active_sources: [],
   circuit_breaker: { tripped: false, consecutive_failures: 0 },
   credentials_status: { gh_token_present: true, provisioning_hint: null },
+  port: 41110,
+  model: "claude-sonnet-4-5",
+  patrol_interval_minutes: 10,
 };
 
 const MOCK_CASE_1 = {
@@ -138,6 +141,36 @@ describe("QaOverviewPage -- dossier shell", () => {
     const html = renderPage();
     expect(html).toContain("QA Staffer · dossier");
     expect(html).toContain("What the staff caught and fixed");
+  });
+
+  it("renders port, model, and patrol_interval_minutes in header caption", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain("port :41110");
+    expect(html).toContain("model claude-sonnet-4-5");
+    expect(html).toContain("patrol every 10m");
+  });
+
+  it("omits header caption when port/model/patrol_interval_minutes are all null", () => {
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: {
+        data: { ...MOCK_SUMMARY, port: null, model: null, patrol_interval_minutes: null },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).not.toContain("port :");
+    expect(html).not.toContain("patrol every");
   });
 
   it("renders a live 24h clock in the page header", () => {
