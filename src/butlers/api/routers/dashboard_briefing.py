@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from prometheus_client import Counter
 from pydantic import BaseModel
 
+from butlers.api.audit_grouping import attention_item_from_audit_group_row, build_audit_group_query
 from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.briefing.classify import classify, headline_for, time_of_day
 from butlers.api.briefing.fallback import elaborate_fallback
@@ -318,73 +319,21 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
     except Exception as exc:
         logger.warning("Could not fetch attention items: %s", exc)
 
-    # Group recent audit failures into issue-like attention items. This mirrors
-    # the dashboard issue surface enough for the briefing without probing MCP.
+    # Group recent audit failures into issue-like attention items. Uses the
+    # shared CTE (with tmp-path normalization) so grouping is consistent with
+    # the Issues page. Window is 24 hours; capped at 20 groups.
     try:
         rows = await pool.fetch(
-            """
-            WITH normalized_errors AS (
-                SELECT
-                    butler,
-                    created_at,
-                    COALESCE(NULLIF(BTRIM(SPLIT_PART(error, E'\n', 1)), ''), 'Unknown error')
-                        AS error_summary,
-                    (
-                        operation = 'session'
-                        AND COALESCE(request_summary->>'trigger_source', '') LIKE 'schedule:%'
-                    ) AS is_schedule,
-                    NULLIF(
-                        SPLIT_PART(COALESCE(request_summary->>'trigger_source', ''), ':', 2),
-                        ''
-                    ) AS schedule_name
-                FROM dashboard_audit_log
-                WHERE result = 'error'
-                  AND created_at >= NOW() - INTERVAL '7 days'
+            build_audit_group_query(
+                where_extra="\n                  AND created_at >= NOW() - INTERVAL '24 hours'",
+                limit=20,
             )
-            SELECT
-                error_summary,
-                MIN(created_at) AS first_seen_at,
-                MAX(created_at) AS last_seen_at,
-                COUNT(*)::int AS occurrences,
-                ARRAY_AGG(DISTINCT butler ORDER BY butler) AS butlers,
-                BOOL_OR(is_schedule) AS has_schedule,
-                ARRAY_REMOVE(
-                    ARRAY_AGG(DISTINCT schedule_name ORDER BY schedule_name),
-                    NULL
-                ) AS schedule_names
-            FROM normalized_errors
-            GROUP BY error_summary
-            ORDER BY last_seen_at DESC
-            LIMIT 20
-            """
         )
         audit_issues = []
         for row in rows:
-            butlers = [str(item) for item in (_row_get(row, "butlers") or [])] or ["unknown"]
-            has_schedule = bool(_row_get(row, "has_schedule"))
-            severity = "high" if has_schedule else "medium"
-            error_summary = str(_row_get(row, "error_summary", "Unknown error"))
-            if len(butlers) == 1:
-                description = f"{error_summary} ({butlers[0]})"
-                butler = butlers[0]
-            else:
-                description = f"{error_summary} ({len(butlers)} butlers)"
-                butler = "multiple"
-            issue = {
-                "severity": severity,
-                "type": "scheduled_task_failure" if has_schedule else "audit_error_group",
-                "butler": butler,
-                "description": description,
-                "link": "/audit-log",
-                "error_message": error_summary,
-                "occurrences": int(_row_get(row, "occurrences", 1) or 1),
-                "first_seen_at": _isoformat_or_none(_row_get(row, "first_seen_at")),
-                "last_seen_at": _isoformat_or_none(_row_get(row, "last_seen_at")),
-                "butlers": butlers,
-                "source": "audit_log",
-            }
-            audit_issues.append(issue)
-            state["attention_items"].append(issue)
+            item = attention_item_from_audit_group_row(row)
+            audit_issues.append(item)
+            state["attention_items"].append(item)
         state["audit_issues"] = audit_issues
     except Exception as exc:
         logger.warning("Could not fetch audit-derived attention items: %s", exc)
