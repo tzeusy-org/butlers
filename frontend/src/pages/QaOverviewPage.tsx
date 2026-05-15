@@ -8,7 +8,7 @@
  *   4. Two-pane body: CaseList rail (320px) + CaseDossier main column
  *
  * URL-driven case selection: `?case=<id>` selects a case in the rail.
- * Clicking a case row calls setParams({ case: id }) to update the URL.
+ * Clicking a case row calls setParams with a functional update to preserve existing params.
  *
  * bu-21uf7 -- Rewrite QaOverviewPage.tsx as dossier shell
  */
@@ -179,7 +179,11 @@ export default function QaOverviewPage() {
   const effectiveCaseId = selectedCaseId ?? casesData[0]?.id;
 
   function handleCaseSelect(id: string) {
-    setParams({ case: id });
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("case", id);
+      return next;
+    });
   }
 
   const summaryData = summary.data?.data;
