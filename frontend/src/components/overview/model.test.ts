@@ -91,6 +91,9 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
       mttr_24h_seconds: null,
       self_resolved_7d_pct: 0,
       active_cases_now: 0,
+      prs_landed_prior_24h: 0,
+      mttr_prior_24h_seconds: null,
+      self_resolved_prior_7d_pct: null,
     },
     active_breakdown: {
       awaiting_ci: 0,
