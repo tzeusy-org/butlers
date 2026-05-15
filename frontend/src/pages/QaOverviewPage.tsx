@@ -17,6 +17,7 @@ import { useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { CaseDossier, CaseList, QaKpiStrip } from "@/components/qa";
+import { Time } from "@/components/ui/time";
 import { useQaCases, useQaSummary } from "@/hooks/use-qa";
 import { useDarkMode } from "@/hooks/useDarkMode";
 
@@ -135,9 +136,17 @@ function PageHeader({ summary }: { summary: ReturnType<typeof useQaSummary> }) {
       <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
         QA Staffer · dossier
       </p>
-      <h1 className="font-sans text-2xl font-medium leading-tight tracking-[-0.02em] text-foreground">
-        What the staff caught and fixed
-      </h1>
+      <div className="flex items-baseline justify-between">
+        <h1 className="font-sans text-2xl font-medium leading-tight tracking-[-0.02em] text-foreground">
+          What the staff caught and fixed
+        </h1>
+        <Time
+          value={new Date()}
+          mode="clock-24h-mono"
+          className="font-mono text-sm text-muted-foreground tabular-nums"
+          showTitle={false}
+        />
+      </div>
       <p className="mt-1.5 font-mono text-[10px] text-muted-foreground">
         model {model} · patrol every {patrolInterval}m
       </p>

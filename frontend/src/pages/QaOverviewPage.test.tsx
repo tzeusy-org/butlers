@@ -140,6 +140,17 @@ describe("QaOverviewPage -- dossier shell", () => {
     expect(html).toContain("What the staff caught and fixed");
   });
 
+  it("renders a live 24h clock in the page header", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    // clock-24h-mono renders a <time> element with HH:MM (e.g. "08:30")
+    expect(html).toMatch(/<time[^>]*>\d{2}:\d{2}<\/time>/);
+  });
+
   it("renders the KPI strip with prs-landed value", () => {
     (useQaCases as AnyMock).mockReturnValue({
       data: { data: [MOCK_CASE_1] },
