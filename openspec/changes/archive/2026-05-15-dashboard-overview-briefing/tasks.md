@@ -1,6 +1,6 @@
 ## 1. Spec Landing
 
-- [ ] 1.1 Land this proposal, design, and delta spec (`dashboard-briefing`) via the OpenSpec workflow.
+- [x] 1.1 Land this proposal, design, and delta spec (`dashboard-briefing`) via the OpenSpec workflow.
 - [ ] 1.2 File a follow-up bd issue for the page restructure that consumes the briefing (the editorial archetype landing for `/`).
 
 ## 2. Backend: Endpoint
@@ -33,8 +33,8 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Run `openspec validate dashboard-overview-briefing`.
-- [ ] 4.2 Run `openspec verify dashboard-overview-briefing` after backend implementation lands.
+- [x] 4.1 Run `openspec validate dashboard-overview-briefing`.
+- [x] 4.2 Run `openspec verify dashboard-overview-briefing` after backend implementation lands.
 - [ ] 4.3 Manually verify the endpoint on a running instance: each `state_class` produces the right headline; local-runtime happy path returns `source="llm"` within the configured timeout; fallback path produces a coherent paragraph; cache hit preserves `generated_at`.
 
 ## 4a. Spec / Behavior Alignment Fix [bu-5y5ve]
