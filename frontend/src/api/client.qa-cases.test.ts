@@ -107,9 +107,9 @@ describe("removeQaDismissal", () => {
     mockResponse({ data: { deleted: true }, meta: {} });
     await removeQaDismissal("fingerprint/with spaces");
 
-    const url: string = mockFetch.mock.calls[0][0];
-    const init: RequestInit = mockFetch.mock.calls[0][1];
-    expect(url).toContain("/qa/dismissals/fingerprint%2Fwith%20spaces");
-    expect(init.method).toBe("DELETE");
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/qa/dismissals/fingerprint%2Fwith%20spaces"),
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 });

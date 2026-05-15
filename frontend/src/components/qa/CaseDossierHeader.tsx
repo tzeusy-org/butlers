@@ -17,8 +17,13 @@ function formatDismissalExpiry(expiresAt: string): string {
   const expires = new Date(expiresAt);
   if (Number.isNaN(expires.getTime())) return expiresAt;
 
-  const msUntilExpiry = expires.getTime() - Date.now();
-  if (msUntilExpiry > 24 * 60 * 60 * 1000) {
+  const now = new Date();
+  const isToday =
+    expires.getFullYear() === now.getFullYear() &&
+    expires.getMonth() === now.getMonth() &&
+    expires.getDate() === now.getDate();
+
+  if (!isToday) {
     return expires.toLocaleString([], {
       month: "short",
       day: "numeric",
