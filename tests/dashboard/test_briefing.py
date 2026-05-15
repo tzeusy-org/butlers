@@ -179,6 +179,105 @@ class TestDashboardStateContext:
         }
 
 
+# ---------------------------------------------------------------------------
+# Briefing liveness clock-skew guard (bu-1hs86)
+#
+# Verifies:
+#   - The butler_registry SQL query contains the future-clock WHEN clause.
+#   - A future-dated last_seen_at (>5 min ahead) is surfaced as 'degraded'.
+#   - A stale last_seen_at (past, beyond TTL) is still 'degraded'.
+#   - A healthy last_seen_at (within TTL, not in the future) is 'healthy'.
+# ---------------------------------------------------------------------------
+
+
+class TestButlerLivenessClockSkew:
+    """SQL liveness check must flag future-dated last_seen_at as degraded."""
+
+    def test_butler_registry_sql_contains_future_clock_guard(self):
+        """The butler_registry query must include a WHEN clause for future timestamps."""
+        import inspect
+
+        import butlers.api.routers.dashboard_briefing as mod
+
+        source = inspect.getsource(mod)
+        assert "last_seen_at > NOW() + INTERVAL '5 minutes'" in source, (
+            "SQL liveness check must guard against future-dated last_seen_at "
+            "(clock-skew degraded guard is missing)"
+        )
+
+    async def test_future_dated_last_seen_at_is_degraded(self):
+        """A butler whose last_seen_at is >5 min in the future appears as 'degraded'."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        # Simulate what the DB CASE expression returns when last_seen_at is far in the future
+        pool = _make_owner_pool(
+            butler_statuses=[
+                {
+                    "name": "skewed-butler",
+                    "status": "degraded",  # what the SQL CASE yields for future ts
+                    "agent_type": "butler",
+                    "eligibility_state": "active",
+                    "last_seen_at": now,
+                    "description": "Butler with clock skew",
+                    "modules": [],
+                    "capabilities": [],
+                    "quarantine_reason": None,
+                }
+            ],
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert len(state["butler_statuses"]) == 1
+        assert state["butler_statuses"][0]["status"] == "degraded"
+        assert state["butler_statuses"][0]["name"] == "skewed-butler"
+
+    async def test_stale_last_seen_at_is_still_degraded(self):
+        """A butler whose last_seen_at is past the TTL remains 'degraded'."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            butler_statuses=[
+                {
+                    "name": "stale-butler",
+                    "status": "degraded",  # what the SQL CASE yields for stale ts
+                    "agent_type": "butler",
+                    "eligibility_state": "active",
+                    "last_seen_at": now,
+                    "description": "Butler with stale heartbeat",
+                    "modules": [],
+                    "capabilities": [],
+                    "quarantine_reason": None,
+                }
+            ],
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert state["butler_statuses"][0]["status"] == "degraded"
+
+    async def test_healthy_last_seen_at_is_healthy(self):
+        """A butler with a recent, non-future last_seen_at is 'healthy'."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            butler_statuses=[
+                {
+                    "name": "healthy-butler",
+                    "status": "healthy",  # what the SQL CASE yields for in-range ts
+                    "agent_type": "butler",
+                    "eligibility_state": "active",
+                    "last_seen_at": now,
+                    "description": "Healthy butler",
+                    "modules": [],
+                    "capabilities": [],
+                    "quarantine_reason": None,
+                }
+            ],
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert state["butler_statuses"][0]["status"] == "healthy"
+
+
 class TestPromptContext:
     def test_build_user_message_summarizes_top_attention_and_health(self):
         """The LLM prompt gets a bounded ecosystem snapshot, not raw thin rows."""

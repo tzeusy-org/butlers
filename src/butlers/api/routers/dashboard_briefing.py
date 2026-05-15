@@ -356,6 +356,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
                     WHEN eligibility_state = 'quarantined' THEN 'error'
                     WHEN eligibility_state = 'stale' THEN 'degraded'
                     WHEN last_seen_at IS NULL THEN 'degraded'
+                    WHEN last_seen_at > NOW() + INTERVAL '5 minutes' THEN 'degraded'
                     WHEN last_seen_at < NOW() - (liveness_ttl_seconds * INTERVAL '1 second')
                         THEN 'degraded'
                     ELSE 'healthy'
