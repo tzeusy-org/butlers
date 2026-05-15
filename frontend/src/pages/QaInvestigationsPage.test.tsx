@@ -127,21 +127,28 @@ describe("QaInvestigationsPage", () => {
     expect(container.innerHTML).not.toContain("Kanban");
   });
 
-  it("filters by state, severity, butler, and time range", () => {
+  it("sends state, severity, butler, and time range filters to the cases API", () => {
     renderPage();
 
-    fireEvent.change(screen.getByLabelText("State"), { target: { value: "pr_open" } });
+    fireEvent.change(screen.getByLabelText("State"), { target: { value: "pr" } });
     expect(screen.getByText("Finance reconciliation failed")).toBeTruthy();
-    expect(screen.queryByText("Health sync stalled")).toBeNull();
+    expect(screen.getByText("Health sync stalled")).toBeTruthy();
+    expect(vi.mocked(useQaCases)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pr",
+      }),
+    );
 
     fireEvent.change(screen.getByLabelText("Severity"), { target: { value: "medium" } });
-    expect(screen.getByText("Nothing matches.")).toBeTruthy();
+    expect(screen.getByText("Finance reconciliation failed")).toBeTruthy();
+    expect(screen.getByText("Health sync stalled")).toBeTruthy();
     expect(vi.mocked(useQaCases)).toHaveBeenCalledWith(
       expect.objectContaining({
         limit: 50,
         offset: 0,
         sev: "medium",
         since: "7d",
+        state: "pr",
       }),
     );
 
@@ -150,12 +157,19 @@ describe("QaInvestigationsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /butlers/i }));
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "health" }));
-    expect(screen.queryByText("Finance reconciliation failed")).toBeNull();
+    expect(screen.getByText("Finance reconciliation failed")).toBeTruthy();
     expect(screen.getByText("Health sync stalled")).toBeTruthy();
+    expect(vi.mocked(useQaCases)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        butler: ["health"],
+        sev: "medium",
+      }),
+    );
 
     fireEvent.change(screen.getByLabelText("Time range"), { target: { value: "24h" } });
     expect(vi.mocked(useQaCases)).toHaveBeenCalledWith(
       expect.objectContaining({
+        butler: ["health"],
         since: "24h",
       }),
     );

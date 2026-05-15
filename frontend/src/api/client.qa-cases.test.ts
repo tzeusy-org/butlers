@@ -57,13 +57,26 @@ describe("getQaCases", () => {
     expect(url).not.toContain("?");
   });
 
-  it("appends severity, since, offset, and limit params", async () => {
+  it("appends severity, since, state, butler, offset, and limit params", async () => {
     mockResponse(EMPTY_PAGE);
-    await getQaCases({ sev: "high", since: "24h", offset: 10, limit: 5 });
+    await getQaCases({
+      sev: "high",
+      since: "24h",
+      state: "diagnose",
+      butler: [" health ", "", "finance"],
+      offset: 10,
+      limit: 5,
+    });
 
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("sev=high");
     expect(url).toContain("since=24h");
+    expect(url).toContain("state=diagnose");
+    expect(new URLSearchParams(url.split("?")[1]).getAll("butler")).toEqual([
+      "health",
+      "finance",
+    ]);
+    expect(url).not.toContain("%20health%20");
     expect(url).toContain("offset=10");
     expect(url).toContain("limit=5");
   });

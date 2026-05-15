@@ -96,6 +96,23 @@ _QA_CASE_SEVERITY_SQL: dict[str, str] = {
     "medium": "COALESCE(f.severity, a.severity) = 2",
     "low": "COALESCE(f.severity, a.severity) IN (3, 4)",
 }
+_QA_CASE_HUMAN_ACTION_SQL = (
+    "a.error_detail ILIKE '%human action%' "
+    "OR a.error_detail ILIKE '%operator%' "
+    "OR a.error_detail ILIKE '%escalat%'"
+)
+_QA_CASE_STATE_SQL: dict[str, str] = {
+    "detect": (
+        "a.status NOT IN ('pr_merged', 'unfixable', 'pr_open', 'investigating') "
+        f"AND NOT (a.status = 'failed' AND ({_QA_CASE_HUMAN_ACTION_SQL}))"
+    ),
+    "diagnose": "a.status = 'investigating'",
+    "pr": "a.status = 'pr_open'",
+    "landed": "a.status = 'pr_merged'",
+    "escalated": (
+        f"a.status = 'unfixable' OR (a.status = 'failed' AND ({_QA_CASE_HUMAN_ACTION_SQL}))"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1478,9 +1495,17 @@ async def list_cases(
         "all",
         description="Filter by mapped case severity",
     ),
+    state: Literal["detect", "diagnose", "pr", "landed", "escalated", "all"] = Query(
+        "all",
+        description="Filter by mapped QA case state",
+    ),
     since: Literal["24h", "7d", "30d", "all"] = Query(
         "7d",
         description="Only include attempts created within this window",
+    ),
+    butler: list[str] | None = Query(
+        None,
+        description="Filter by one or more butler names",
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=100),
@@ -1500,6 +1525,15 @@ async def list_cases(
 
     if sev != "all":
         conditions.append(_QA_CASE_SEVERITY_SQL[sev])
+
+    if state != "all":
+        conditions.append(f"({_QA_CASE_STATE_SQL[state]})")
+
+    butler_filters = [name.strip() for name in butler or [] if name.strip()]
+    if butler_filters:
+        conditions.append(f"a.butler_name = ANY(${idx}::text[])")
+        args.append(butler_filters)
+        idx += 1
 
     where = " WHERE " + " AND ".join(conditions)
     latest_finding_join = """

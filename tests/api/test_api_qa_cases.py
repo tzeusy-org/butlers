@@ -279,6 +279,60 @@ async def test_cases_pagination_passes_offset_limit_and_reports_has_more() -> No
     assert "public.qa_findings" not in pool.fetchval.await_args.args[0]
 
 
+async def test_cases_state_filter_applies_before_pagination() -> None:
+    app, pool = _build_app(
+        rows=[_make_case_row(status="investigating")],
+        total=12,
+    )
+
+    body = (
+        await _call(
+            app,
+            "/api/qa/cases",
+            params={"state": "diagnose", "since": "all", "offset": 10, "limit": 5},
+        )
+    ).json()
+
+    assert body["meta"] == {"total": 12, "offset": 10, "limit": 5, "has_more": False}
+    count_sql = pool.fetchval.await_args.args[0]
+    fetch_sql = pool.fetch.await_args.args[0]
+    assert "a.status = 'investigating'" in count_sql
+    assert "a.status = 'investigating'" in fetch_sql
+    assert fetch_sql.index("a.status = 'investigating'") < fetch_sql.index("OFFSET")
+    assert pool.fetch.await_args.args[-2:] == (10, 5)
+
+
+async def test_cases_butler_filter_applies_before_pagination() -> None:
+    app, pool = _build_app(
+        rows=[_make_case_row(butler_name="health", finding_source_butler="health")],
+        total=1,
+    )
+
+    body = (
+        await _call(
+            app,
+            "/api/qa/cases",
+            params=[
+                ("butler", "health"),
+                ("butler", "finance"),
+                ("since", "all"),
+                ("offset", "50"),
+                ("limit", "10"),
+            ],
+        )
+    ).json()
+
+    assert body["meta"] == {"total": 1, "offset": 50, "limit": 10, "has_more": False}
+    count_args = pool.fetchval.await_args.args
+    fetch_args = pool.fetch.await_args.args
+    assert "a.butler_name = ANY($1::text[])" in count_args[0]
+    assert "a.butler_name = ANY($1::text[])" in fetch_args[0]
+    assert count_args[1] == ["health", "finance"]
+    assert fetch_args[1] == ["health", "finance"]
+    assert fetch_args[0].index("a.butler_name = ANY($1::text[])") < fetch_args[0].index("OFFSET")
+    assert fetch_args[-2:] == (50, 10)
+
+
 def _notes_payload(headline: str = "Agent found the real failure") -> dict[str, Any]:
     return {
         "schema_version": 1,

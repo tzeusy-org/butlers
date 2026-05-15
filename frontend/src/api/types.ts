@@ -3267,7 +3267,9 @@ export interface QaCaseDossier {
 /** Params for listing QA cases */
 export interface QaCasesParams {
   sev?: "high" | "medium" | "low" | "all";
+  state?: QaCaseSummary["state"] | "all";
   since?: "24h" | "7d" | "30d" | "all";
+  butler?: string | string[];
   offset?: number;
   limit?: number;
 }

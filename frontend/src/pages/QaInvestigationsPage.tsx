@@ -15,21 +15,17 @@ const PAGE_SIZE = 50;
 
 type StateFilter =
   | "all"
-  | "dispatch_pending"
-  | "investigating"
-  | "pr_open"
-  | "pr_merged"
-  | "escalated";
+  | QaCaseSummary["state"];
 type SeverityFilter = "all" | QaCaseSummary["sev"];
 type TimeRangeFilter = "24h" | "7d" | "30d" | "all";
 
 const STATE_OPTIONS: { value: StateFilter; label: string }[] = [
   { value: "all", label: "All states" },
-  { value: "dispatch_pending", label: "Dispatch pending" },
-  { value: "investigating", label: "Investigating" },
-  { value: "pr_open", label: "PR open" },
-  { value: "pr_merged", label: "PR merged" },
-  { value: "escalated", label: "Failed / unfixable" },
+  { value: "detect", label: "Detect" },
+  { value: "diagnose", label: "Diagnose" },
+  { value: "pr", label: "PR open" },
+  { value: "landed", label: "Landed" },
+  { value: "escalated", label: "Escalated" },
 ];
 
 const SEVERITY_OPTIONS: { value: SeverityFilter; label: string }[] = [
@@ -78,15 +74,6 @@ function SelectFilter<TValue extends string>({
   );
 }
 
-function matchesState(qaCase: QaCaseSummary, stateFilter: StateFilter): boolean {
-  if (stateFilter === "all") return true;
-  if (stateFilter === "dispatch_pending") return qaCase.state === "detect";
-  if (stateFilter === "investigating") return qaCase.state === "diagnose";
-  if (stateFilter === "pr_open") return qaCase.state === "pr";
-  if (stateFilter === "pr_merged") return qaCase.state === "landed" || qaCase.pr_state === "merged";
-  return qaCase.state === "escalated";
-}
-
 function FilterSkeleton() {
   return (
     <div className="grid gap-3 sm:grid-cols-4">
@@ -114,12 +101,15 @@ export default function QaInvestigationsPage() {
   const [butlerMenuOpen, setButlerMenuOpen] = useState(false);
   const [limit, setLimit] = useState(PAGE_SIZE);
   const butlerMenuRef = useRef<HTMLDivElement | null>(null);
+  const selectedButlerValues = useMemo(() => Array.from(selectedButlers).sort(), [selectedButlers]);
 
-  const casesParams: Pick<QaCasesParams, "limit" | "offset" | "sev" | "since"> = {
+  const casesParams: QaCasesParams = {
     limit,
     offset: 0,
     sev: severityFilter,
     since: timeRange,
+    ...(stateFilter !== "all" ? { state: stateFilter } : {}),
+    ...(selectedButlerValues.length > 0 ? { butler: selectedButlerValues } : {}),
   };
 
   const casesQuery = useQaCases(casesParams);
@@ -133,17 +123,6 @@ export default function QaInvestigationsPage() {
     const liveNames = butlersQuery.data?.data.map((butler) => butler.name) ?? [];
     return Array.from(new Set([...liveNames, ...cases.map((qaCase) => qaCase.butler)])).sort();
   }, [butlersQuery.data?.data, cases]);
-
-  const renderedCases = useMemo(
-    () =>
-      cases.filter((qaCase) => {
-        if (!matchesState(qaCase, stateFilter)) return false;
-        if (severityFilter !== "all" && qaCase.sev !== severityFilter) return false;
-        if (selectedButlers.size > 0 && !selectedButlers.has(qaCase.butler)) return false;
-        return true;
-      }),
-    [cases, selectedButlers, severityFilter, stateFilter],
-  );
 
   useEffect(() => {
     if (!butlerMenuOpen) return undefined;
@@ -222,7 +201,7 @@ export default function QaInvestigationsPage() {
               </p>
             </div>
             <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-              {renderedCases.length} shown / {cases.length} loaded / {total} total
+              {cases.length} shown / {cases.length} loaded / {total} total
             </p>
           </div>
         </div>
@@ -308,11 +287,11 @@ export default function QaInvestigationsPage() {
             <Skeleton key={index} className={cn("h-14 w-full", index % 2 === 0 && "w-11/12")} />
           ))}
         </div>
-      ) : renderedCases.length === 0 ? (
+      ) : cases.length === 0 ? (
         <EmptyLine />
       ) : (
         <CaseList
-          cases={renderedCases}
+          cases={cases}
           selectedId={null}
           onSelect={(id) => navigate(`/qa/investigations/${id}`)}
           className="md:w-full"

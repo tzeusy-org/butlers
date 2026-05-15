@@ -68,7 +68,7 @@ export function useQaSummary() {
 // ---------------------------------------------------------------------------
 
 /** Fetch paginated QA case summaries for the dossier dashboard. */
-export function useQaCases(params?: Pick<QaCasesParams, "limit" | "offset" | "sev" | "since">) {
+export function useQaCases(params?: QaCasesParams) {
   return useQuery({
     queryKey: ["qa-cases", params],
     queryFn: () => getQaCases(params),
