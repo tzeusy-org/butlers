@@ -248,11 +248,11 @@ The following gaps require attention. None have been implemented.
 - **What is missing:** Spec says "Mono footer caption with `opened <HH:MM>` and optional `· merged <HH:MM>`" implying a fixed 24h time format. Implementation uses `<Time value={pr.opened_at} mode="smart" />` which shows relative time ("4 minutes ago") for recent events.
 - **Fix:** Change `mode="smart"` to `mode="absolute"` with `precision="time"` (or use `precision="time"` alone) so the footer always shows a fixed time like `opened 14:32`.
 
-### G11-GAP-8: PR state chip missing "rejected" variant
+### G11-GAP-8: PR state chip missing "rejected" variant — RESOLVED (spec corrected)
 
 - **Files:** `PRPanel.tsx:18-23`, `frontend/src/api/types.ts` (QaPrSummary.state)
-- **What is missing:** Spec lists state chip variants as "drafted/open/merged/closed/rejected". `QaPrSummary.state` type in types.ts only covers 4 values (`drafted|open|merged|closed`). Backend API also has no "rejected" state.
-- **Fix:** If "rejected" is a valid downstream GitHub PR state, add it to `QaPrSummary.state` in both the Python model (`src/butlers/api/routers/qa.py:QaPrSummary`) and `frontend/src/api/types.ts`. Add `rejected` to `prStateClassName` in `PRPanel.tsx` with a red/destructive color. If "rejected" is not a real state, remove it from the spec.
+- **What was noted:** Spec listed state chip variants as "drafted/open/merged/closed/rejected". `QaPrSummary.state` type in types.ts only covered 4 values (`drafted|open|merged|closed`). Backend API also had no "rejected" state.
+- **Resolution:** "rejected" is not a real GitHub PR state and the backend `_pr_state_for_case()` function (`src/butlers/api/routers/qa.py:831`) only produces `drafted|open|merged|closed`. The spec's own API scenario (line 143) already listed only 4 values. The "rejected" entry in the state chip list was a spec authoring error (copy-paste from GitHub's PR state vocabulary, which uses `rejected` in review contexts but not for PR merge state). The fix is to remove "rejected" from the spec rather than add it to the implementation. Spec corrected in `openspec/changes/redesign-qa-dossier/specs/qa-dashboard/spec.md`. Tests added for all 4 valid states in `fix.test.tsx`.
 
 ### G11-GAP-9: EvidenceLog multi-claim hover only highlights first claim
 

@@ -100,4 +100,24 @@ describe("QA dossier fix-column components", () => {
 
     expect(container.innerHTML).toBe("");
   });
+
+  // PR state chip coverage: all 4 valid states must render a chip with the correct label.
+  // "rejected" is NOT a valid state — the backend _pr_state_for_case() only emits
+  // drafted | open | merged | closed (spec correction: G11-GAP-8).
+  it.each([
+    ["drafted", "border-sky-500/40"],
+    ["open", "border-amber-500/40"],
+    ["merged", "border-emerald-500/40"],
+    ["closed", "border-muted-foreground/40"],
+  ] as [QaPrSummary["state"], string][])(
+    "test_pr_panel_state_chip_%s",
+    (state, expectedBorderClass) => {
+      render(<PRPanel pr={{ ...pr, state }} whyThisFix={null} />);
+
+      const chips = screen.getAllByText(state);
+      // At least one chip element (the state badge span) should carry the border class.
+      const chip = chips.find((el) => el.className.includes(expectedBorderClass));
+      expect(chip).toBeTruthy();
+    },
+  );
 });

@@ -119,7 +119,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 #### Scenario: Proposed fix column
 - **WHEN** the Case Dossier renders the right column
 - **THEN** it renders a PR panel (when `pr` is non-null) containing:
-  - State chip (drafted/open/merged/closed/rejected) with appropriate state color from the Dispatch palette
+  - State chip (drafted/open/merged/closed) with appropriate state color from the Dispatch palette
   - Mono `pr #<number> · <state>`
   - Sans-500 14 px PR title
   - Mono caption with branch name, CI status, `+<additions> −<deletions>`
