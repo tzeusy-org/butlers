@@ -25,8 +25,6 @@ class TestDeriveLivenessClockSkew:
 
     def test_recent_heartbeat_is_online(self):
         """Heartbeat 1 minute ago -> online."""
-        from datetime import UTC, datetime, timedelta
-
         ts = datetime.now(UTC) - timedelta(minutes=1)
         assert derive_liveness(ts) == "online"
 
