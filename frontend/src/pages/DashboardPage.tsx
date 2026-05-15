@@ -95,14 +95,12 @@ export default function DashboardPage() {
       {/*
        * Responsive two-column editorial grid.
        * Narrow (< 1024px / lg): single column, narrative stacked above index.
-       * Wide (>= 1024px / lg): 1.4fr / 1fr, gap 56px.
+       * Wide (>= 1024px / lg): 1.4fr / 1fr, gap 56px (gap-14).
        * The lg breakpoint aligns with the sidebar transition so the combined
        * content width stays within the 1280px Page frame.
-       * Tailwind arbitrary value `lg:[grid-template-columns:1.4fr_1fr]`
-       * expresses the non-standard ratio at the breakpoint without extra CSS.
        */}
       <div
-        className="grid gap-8 items-start lg:gap-[56px] lg:[grid-template-columns:1.4fr_1fr]"
+        className="grid gap-8 items-start lg:gap-14 lg:grid-cols-[1.4fr_1fr]"
       >
         {/* Left column: narrative */}
         <div
