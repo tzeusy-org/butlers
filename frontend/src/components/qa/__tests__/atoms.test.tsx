@@ -145,8 +145,8 @@ describe("QA dossier atoms", () => {
 
     // prs landed: +2 vs prior 24h (5 - 3 = +2)
     expect(screen.getByText("+2 vs prior 24h")).toBeTruthy();
-    // mttr: 720s = 12m, 840s = 14m, delta = -120s = -2m → "−2m vs 7d"
-    expect(screen.getByText("−2m vs 7d")).toBeTruthy();
+    // mttr: 720s = 12m, 840s = 14m, delta = -120s = -2m → "−2m vs prior 24h"
+    expect(screen.getByText("−2m vs prior 24h")).toBeTruthy();
     // self-resolved: 80 - 76 = +4pp vs prior week
     expect(screen.getByText("+4pp vs prior week")).toBeTruthy();
   });
