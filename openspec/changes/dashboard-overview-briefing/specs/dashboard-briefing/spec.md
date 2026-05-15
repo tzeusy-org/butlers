@@ -29,7 +29,7 @@ The endpoint SHALL populate `state.attention_items` from two sources before clas
 
 #### Scenario: Notification-derived attention items
 
-- **WHEN** the owner has unread or open notifications in the last 7 days
+- **WHEN** the owner has unread or open notifications in the last 24 hours
 - **THEN** each notification is added to `state.attention_items` as a single attention item
 - **AND** the item carries the notification's own severity level (`high`, `medium`, or `low`)
 - **AND** `source` is `"notification"`

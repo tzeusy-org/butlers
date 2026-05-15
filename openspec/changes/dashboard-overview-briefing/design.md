@@ -120,7 +120,7 @@ If the classification function raises (a malformed state row, missing column, sc
 
 `state.attention_items` is populated from two sources before classification runs:
 
-1. **Notification records** — unread or open notifications from the last 7 days. Each notification contributes one attention item at the notification's own severity.
+1. **Notification records** — unread or open notifications from the last 24 hours. Each notification contributes one attention item at the notification's own severity.
 2. **Audit-log error groups** — rows from `dashboard_audit_log` with `result = 'error'` in the last 7 days, grouped by first-line error summary. A group receives `severity = "high"` when any row in the group originated from a scheduled session (i.e. `trigger_source LIKE 'schedule:%'`); otherwise `severity = "medium"`.
 
 The assignment of `"high"` to scheduled-task failures is intentional: a repeated schedule failure signals the system is not operating as configured and warrants owner attention before a notification is sent. A generic non-scheduled audit error (e.g. a one-off ad-hoc session error) is `"medium"`, keeping it below the `urgent` threshold.
