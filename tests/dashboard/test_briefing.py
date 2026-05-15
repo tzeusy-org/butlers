@@ -73,8 +73,15 @@ def _make_owner_pool(
     owner_fails: bool = False,
     attention_items: list[dict] | None = None,
     butler_statuses: list[dict] | None = None,
+    audit_rows: list[dict] | None = None,
 ) -> AsyncMock:
-    """Build a mock switchboard pool for the briefing endpoint."""
+    """Build a mock switchboard pool for the briefing endpoint.
+
+    Routes pool.fetch calls by SQL keyword:
+        - "notifications"       -> attention_items (notification rows)
+        - "dashboard_audit_log" -> audit_rows (grouped audit error rows)
+        - "butler_registry"     -> butler_statuses
+    """
     pool = AsyncMock()
 
     owner_id = "owner-uuid-1234"
@@ -92,10 +99,13 @@ def _make_owner_pool(
 
     items = attention_items or []
     statuses = butler_statuses or []
+    audits = audit_rows or []
 
     async def _fetch(sql, *args):
         if "notifications" in sql:
             return [_make_record(r) for r in items]
+        if "dashboard_audit_log" in sql:
+            return [_make_record(r) for r in audits]
         if "butler_registry" in sql:
             return [_make_record(r) for r in statuses]
         return []
@@ -1100,3 +1110,293 @@ class TestAuditDerivedAttentionItems:
         item = state["attention_items"][0]
         assert item["butler"] == "multiple"
         assert "2 butlers" in item["description"]
+
+
+# ---------------------------------------------------------------------------
+# _make_owner_pool dispatches dashboard_audit_log (bu-e00sx gap)
+#
+# Verifies that the general-purpose pool helper now routes on
+# "dashboard_audit_log" so tests that mix notification and audit rows
+# exercise the end-to-end audit path through _fetch_dashboard_state.
+# ---------------------------------------------------------------------------
+
+
+class TestOwnerPoolAuditRouting:
+    """Confirm _make_owner_pool routes audit rows into state correctly."""
+
+    async def test_audit_rows_reach_attention_items_via_owner_pool(self):
+        """Audit rows supplied to _make_owner_pool appear in state['attention_items']."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "Webhook delivery failed",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 2,
+                    "butlers": ["health"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ]
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        audit_items = [i for i in state["attention_items"] if i.get("source") == "audit_log"]
+        assert len(audit_items) == 1
+        assert audit_items[0]["severity"] == "medium"
+        assert audit_items[0]["butler"] == "health"
+
+    async def test_audit_rows_reach_audit_issues_via_owner_pool(self):
+        """Audit rows supplied to _make_owner_pool appear in state['audit_issues']."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "Webhook delivery failed",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 2,
+                    "butlers": ["health"],
+                    "has_schedule": True,
+                    "schedule_names": ["daily-check"],
+                }
+            ]
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert len(state["audit_issues"]) == 1
+        assert state["audit_issues"][0]["source"] == "audit_log"
+        assert state["audit_issues"][0]["severity"] == "high"
+
+    async def test_no_audit_rows_owner_pool_leaves_audit_issues_empty(self):
+        """When audit_rows is omitted from _make_owner_pool, audit_issues is empty."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert state["audit_issues"] == []
+
+
+# ---------------------------------------------------------------------------
+# _compute_overview_totals counts audit-derived items (bu-e00sx gap)
+#
+# Verifies that overview_totals.attention_high and attention_medium include
+# audit-derived items, not only notification-derived items.
+# ---------------------------------------------------------------------------
+
+
+class TestOverviewTotalsWithAuditItems:
+    """overview_totals counts must include audit-derived attention items."""
+
+    async def test_mixed_notification_and_audit_totals(self):
+        """attention_high and attention_medium include both notification and audit items."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            # One notification item with high severity
+            attention_items=[
+                {
+                    "id": "notif-001",
+                    "severity": "high",
+                    "source_butler": "calendar",
+                    "channel": "telegram",
+                    "message": "OAuth token expired",
+                    "metadata": {"severity": "high"},
+                    "status": "unread",
+                    "error": None,
+                    "session_id": None,
+                    "trace_id": None,
+                    "created_at": now,
+                }
+            ],
+            # One audit item with medium severity (non-scheduled)
+            audit_rows=[
+                {
+                    "error_summary": "Rate limit exceeded",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 3,
+                    "butlers": ["health"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ],
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        totals = state["overview_totals"]
+        # Both items (notification high + audit medium) must be counted
+        assert totals["attention_total"] == 2
+        assert totals["attention_high"] == 1
+        assert totals["attention_medium"] == 1
+        assert totals["attention_low"] == 0
+
+    async def test_audit_only_totals_without_notifications(self):
+        """When only audit rows are present, totals reflect only audit-derived items."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            # No notifications
+            audit_rows=[
+                {
+                    "error_summary": "Schedule task timeout",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 1,
+                    "butlers": ["calendar"],
+                    "has_schedule": True,
+                    "schedule_names": ["morning-sync"],
+                }
+            ],
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        totals = state["overview_totals"]
+        assert totals["attention_total"] == 1
+        assert totals["attention_high"] == 1
+        assert totals["attention_medium"] == 0
+
+    async def test_multiple_audit_rows_counted_individually(self):
+        """Each audit group row is its own attention item in the totals."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "Scheduled task failure",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 2,
+                    "butlers": ["calendar"],
+                    "has_schedule": True,
+                    "schedule_names": ["daily-sync"],
+                },
+                {
+                    "error_summary": "API rate limit exceeded",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 1,
+                    "butlers": ["health"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                },
+            ],
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        totals = state["overview_totals"]
+        # One scheduled (high) + one non-scheduled (medium)
+        assert totals["attention_total"] == 2
+        assert totals["attention_high"] == 1
+        assert totals["attention_medium"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Audit items appear in top_attention_items in the prompt (bu-e00sx gap)
+#
+# Verifies the end-to-end chain: audit rows -> state['attention_items'] ->
+# top_attention_items in the LLM prompt when audit items rank higher than
+# notification items by severity.
+# ---------------------------------------------------------------------------
+
+
+class TestPromptIncludesAuditItems:
+    """Audit-derived items must surface in the LLM prompt when they rank high."""
+
+    def test_high_severity_audit_item_appears_in_top_attention_items(self):
+        """A high-severity audit item must appear in top_attention_items in the prompt."""
+        state = {
+            "now": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
+            "attention_items": [
+                {
+                    "severity": "high",
+                    "type": "scheduled_task_failure",
+                    "butler": "calendar",
+                    "description": "Scheduled task 'daily-sync' failure on 'calendar': Token expired",
+                    "last_seen_at": "2026-05-13T15:59:00+00:00",
+                    "link": "/audit-log?butler=calendar&operation=session",
+                    "source": "audit_log",
+                    "occurrences": 3,
+                    "error_message": "Token expired",
+                }
+            ],
+            "notification_items": [],
+            "audit_issues": [],
+            "butler_statuses": [],
+            "overview_totals": {
+                "attention_total": 1,
+                "attention_high": 1,
+                "attention_medium": 0,
+                "attention_low": 0,
+                "butlers_total": 0,
+                "butlers_unhealthy": 0,
+            },
+        }
+
+        message = _build_user_message(state, "urgent")
+
+        assert "top_attention_items" in message
+        assert "audit_log" in message
+        assert "scheduled_task_failure" in message
+        assert "Token expired" in message
+
+    def test_audit_item_ranked_above_low_notification_in_prompt(self):
+        """A high-severity audit item ranks above a low-severity notification in top_attention_items."""
+        state = {
+            "now": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
+            "attention_items": [
+                {
+                    "severity": "low",
+                    "type": "notification",
+                    "butler": "telegram",
+                    "description": "Minor routine notification",
+                    "last_seen_at": "2026-05-13T15:59:00+00:00",
+                    "link": "/notifications",
+                    "source": "notification",
+                },
+                {
+                    "severity": "high",
+                    "type": "scheduled_task_failure",
+                    "butler": "calendar",
+                    "description": "Scheduled task 'sync' failure on 'calendar': Token expired",
+                    "last_seen_at": "2026-05-13T15:59:00+00:00",
+                    "link": "/audit-log?butler=calendar&operation=session",
+                    "source": "audit_log",
+                    "occurrences": 2,
+                    "error_message": "Token expired",
+                },
+            ],
+            "notification_items": [],
+            "audit_issues": [],
+            "butler_statuses": [],
+            "overview_totals": {
+                "attention_total": 2,
+                "attention_high": 1,
+                "attention_medium": 0,
+                "attention_low": 1,
+                "butlers_total": 0,
+                "butlers_unhealthy": 0,
+            },
+        }
+
+        message = _build_user_message(state, "urgent")
+
+        import json
+
+        # Parse just the JSON portion from the message
+        json_start = message.index("{")
+        json_end = message.rindex("}") + 1
+        state_summary = json.loads(message[json_start:json_end])
+
+        top = state_summary["top_attention_items"]
+        assert len(top) == 2
+        # The high-severity audit item must appear first (sorted by severity rank)
+        assert top[0]["severity"] == "high"
+        assert top[0]["source"] == "audit_log"
+        # The low-severity notification appears second
+        assert top[1]["severity"] == "low"
+        assert top[1]["source"] == "notification"
