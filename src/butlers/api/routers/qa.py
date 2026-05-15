@@ -1461,7 +1461,7 @@ async def list_cases(
         "all",
         description="Filter by mapped case severity",
     ),
-    since: Literal["24h", "7d", "30d"] = Query(
+    since: Literal["24h", "7d", "30d", "all"] = Query(
         "7d",
         description="Only include attempts created within this window",
     ),
@@ -1472,9 +1472,14 @@ async def list_cases(
     """List QA case summaries from QA-originated healing attempts."""
     pool = _shared_pool(db)
 
-    conditions: list[str] = ["a.qa_patrol_id IS NOT NULL", "a.created_at >= $1"]
-    args: list[Any] = [datetime.now(UTC) - _QA_CASE_SINCE_DELTAS[since]]
-    idx = 2
+    conditions: list[str] = ["a.qa_patrol_id IS NOT NULL"]
+    args: list[Any] = []
+    idx = 1
+
+    if since != "all":
+        conditions.append(f"a.created_at >= ${idx}")
+        args.append(datetime.now(UTC) - _QA_CASE_SINCE_DELTAS[since])
+        idx += 1
 
     if sev != "all":
         conditions.append(_QA_CASE_SEVERITY_SQL[sev])

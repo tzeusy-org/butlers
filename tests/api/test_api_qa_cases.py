@@ -211,6 +211,21 @@ async def test_cases_since_filter_builds_requested_cutoff() -> None:
     assert "a.created_at >= $1" in pool.fetchval.await_args.args[0]
 
 
+async def test_cases_since_all_omits_created_at_cutoff() -> None:
+    app, pool = _build_app(rows=[_make_case_row()], total=1)
+
+    response = await _call(app, "/api/qa/cases", params={"since": "all"})
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["id"] == str(_make_case_row()["id"])
+    count_args = pool.fetchval.await_args.args
+    fetch_args = pool.fetch.await_args.args
+    assert "a.created_at >=" not in count_args[0]
+    assert "a.created_at >=" not in fetch_args[0]
+    assert count_args[1:] == ()
+    assert fetch_args[-2:] == (0, 25)
+
+
 async def test_cases_filter_combinations() -> None:
     app, pool = _build_app(rows=[_make_case_row()], total=1)
 

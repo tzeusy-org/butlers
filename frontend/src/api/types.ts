@@ -3259,7 +3259,7 @@ export interface QaCaseDossier {
 /** Params for listing QA cases */
 export interface QaCasesParams {
   sev?: "high" | "medium" | "low" | "all";
-  since?: "24h" | "7d" | "30d";
+  since?: "24h" | "7d" | "30d" | "all";
   offset?: number;
   limit?: number;
 }

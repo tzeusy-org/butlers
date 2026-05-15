@@ -68,7 +68,7 @@
 ## 9. Cases API endpoints
 
 - [ ] 9.1 Add `QaCaseSummary`, `QaCaseDossier`, `QaPrSummary`, `QaJournalEvent` Pydantic models to `qa.py` per design.md §D8
-- [ ] 9.2 Implement `GET /api/qa/cases` with `limit`, `sev`, `since` query params; returns `PaginatedResponse[QaCaseSummary]` ordered by most recent first
+- [ ] 9.2 Implement `GET /api/qa/cases` with `limit`, `sev`, `since` (`24h`/`7d`/`30d`/`all`) query params; returns `PaginatedResponse[QaCaseSummary]` ordered by most recent first
 - [ ] 9.3 Implement `GET /api/qa/cases/:id` returning `ApiResponse[QaCaseDossier]`; joins `healing_attempts`, the latest linked `qa_findings`, and the most recent 50 `qa_investigation_events`
 - [ ] 9.4 Implement `GET /api/qa/cases/:id/journal` with `cursor`, `limit` (default 50, max 500); returns `PaginatedResponse[QaJournalEvent]`
 - [ ] 9.5 Implement the severity-int → high/medium/low mapping in `src/butlers/core/qa/severity.py` (`map_severity(int) -> Literal["high","medium","low"]`); used by both API and frontend

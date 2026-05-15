@@ -189,6 +189,7 @@ The dossier renderer wants a per-case shape that the existing endpoints don't qu
 
 ```python
 # GET /api/qa/cases?limit=25&sev=high&since=7d
+# since accepts 24h, 7d, 30d, or all.
 class QaCaseSummary(BaseModel):
     id: UUID                          # the healing_attempt id (canonical case id)
     short_id: str                     # "#218" — derived from id, stable per attempt

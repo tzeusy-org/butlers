@@ -66,6 +66,14 @@ describe("getQaCases", () => {
     expect(url).toContain("offset=10");
     expect(url).toContain("limit=5");
   });
+
+  it("appends the explicit all-time since value", async () => {
+    mockResponse(EMPTY_PAGE);
+    await getQaCases({ since: "all" });
+
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("since=all");
+  });
 });
 
 describe("getQaCase", () => {
