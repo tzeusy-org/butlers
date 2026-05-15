@@ -21,14 +21,15 @@
  */
 
 import { Page } from "@/components/ui/page";
-import { Link } from "react-router";
-import type { ReactNode } from "react";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
+import { useButlerHeartbeats } from "@/hooks/use-system";
+import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
+import { useTimeline } from "@/hooks/use-timeline";
 
 import { AttentionList } from "@/components/overview/AttentionList";
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
@@ -39,174 +40,8 @@ import { Headline } from "@/components/overview/Headline";
 import { NextList } from "@/components/overview/NextList";
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
 import { Section } from "@/components/overview/Section";
-import type { QaSummary } from "@/api/types";
-
-type QaWidgetStatus = "running" | "tripped" | "stopped";
-
-function normalizeQaStatus(summary: QaSummary): QaWidgetStatus {
-  if (summary.circuit_breaker.tripped) return "tripped";
-
-  const raw = summary.staffer_status.toLowerCase();
-  if (raw.includes("trip")) return "tripped";
-  if (
-    raw.includes("run") ||
-    raw.includes("active") ||
-    raw.includes("online") ||
-    raw.includes("healthy") ||
-    raw === "ok"
-  ) {
-    return "running";
-  }
-  return "stopped";
-}
-
-function formatPatrolTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-}
-
-function QaWidgetRow({
-  label,
-  children,
-  first = false,
-}: {
-  label: string;
-  children: ReactNode;
-  first?: boolean;
-}) {
-  return (
-    <div
-      role="listitem"
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1fr auto",
-        alignItems: "center",
-        gap: "12px",
-        paddingTop: "10px",
-        paddingBottom: "10px",
-        borderTop: first ? "1px solid var(--border)" : undefined,
-        borderBottom: "1px solid var(--border)",
-      }}
-    >
-      <span
-        className="tnum"
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: "11px",
-          color: "var(--muted-foreground)",
-          lineHeight: 1.4,
-        }}
-      >
-        {label}
-      </span>
-      {children}
-    </div>
-  );
-}
-
-function QaWidgetMonoValue({ children }: { children: ReactNode }) {
-  return (
-    <span
-      className="tnum"
-      style={{
-        fontFamily: "var(--font-mono)",
-        fontSize: "11px",
-        color: "var(--foreground)",
-        lineHeight: 1.4,
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function QaStafferWidget({ summary }: { summary: QaSummary | null | undefined }) {
-  const status = summary ? normalizeQaStatus(summary) : "stopped";
-  const lastPatrol = summary?.last_patrol ?? null;
-
-  return (
-    <Section eyebrow="QA staffer">
-      {!summary || status === "stopped" || !lastPatrol ? (
-        <p
-          style={{
-            fontFamily: "var(--font-serif)",
-            fontSize: "14px",
-            fontStyle: "italic",
-            color: "var(--muted-foreground)",
-            paddingTop: "10px",
-            paddingBottom: "10px",
-          }}
-        >
-          QA staffer not active
-        </p>
-      ) : (
-        <div role="list" aria-label="QA staffer summary">
-          <QaWidgetRow label="status" first>
-            <QaWidgetMonoValue>{status}</QaWidgetMonoValue>
-          </QaWidgetRow>
-
-          <QaWidgetRow label="last patrol">
-            <QaWidgetMonoValue>
-              {formatPatrolTime(lastPatrol.started_at)} · {lastPatrol.status}
-            </QaWidgetMonoValue>
-          </QaWidgetRow>
-
-          <QaWidgetRow label="active cases · now">
-            <span
-              className="tnum"
-              style={{
-                fontFamily: "var(--font-sans)",
-                fontSize: "20px",
-                fontWeight: 500,
-                color: "var(--foreground)",
-                lineHeight: 1,
-              }}
-            >
-              {summary.kpis.active_cases_now}
-            </span>
-          </QaWidgetRow>
-
-          <div role="listitem">
-            <Link
-              to="/qa"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr auto",
-                alignItems: "center",
-                gap: "12px",
-                paddingTop: "10px",
-                paddingBottom: "10px",
-                color: "var(--muted-foreground)",
-                textDecoration: "none",
-                borderBottom: "1px solid var(--border)",
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: "var(--font-sans)",
-                  fontSize: "13px",
-                  fontWeight: 500,
-                  color: "var(--foreground)",
-                  lineHeight: 1.4,
-                }}
-              >
-                Open QA
-              </span>
-              <span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1 }}>
-                →
-              </span>
-            </Link>
-          </div>
-        </div>
-      )}
-    </Section>
-  );
-}
+import { deriveOverviewTriageModel } from "@/components/overview/model";
+import type { Issue } from "@/api/types";
 
 export default function DashboardPage() {
   // Briefing
@@ -217,39 +52,43 @@ export default function DashboardPage() {
   } = useBriefing();
 
   // Supporting data
-  const { data: butlersResponse } = useButlers();
-  const { data: costSummaryResponse } = useCostSummary("today");
-  const { data: issuesResponse } = useIssues();
-  const { data: approvalMetricsResponse } = useApprovalMetrics();
-  const { data: qaSummaryResponse } = useQaSummary();
+  const butlersQuery = useButlers();
+  const costQuery = useCostSummary("today");
+  const issuesQuery = useIssues();
+  const approvalMetricsQuery = useApprovalMetrics();
+  const heartbeatQuery = useButlerHeartbeats();
+  const notificationStatsQuery = useNotificationStats();
+  const qaSummaryQuery = useQaSummary();
+  const timelineQuery = useTimeline({ limit: 5 });
 
   // Derived values
-  const butlers = butlersResponse?.data ?? [];
-  const issues = issuesResponse?.data ?? [];
-  const byButler = costSummaryResponse?.data.by_butler ?? {};
-  const pendingApprovals = approvalMetricsResponse?.data.total_pending ?? 0;
-  const qaSummary = qaSummaryResponse?.data;
+  const model = deriveOverviewTriageModel({
+    butlers: butlersQuery.data?.data ?? [],
+    costs: costQuery.isError ? null : costQuery.data?.data,
+    issues: issuesQuery.data?.data ?? [],
+    heartbeats: heartbeatQuery.isError ? null : heartbeatQuery.data?.data,
+    approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetricsQuery.data?.data,
+    notificationStats: notificationStatsQuery.isError ? null : notificationStatsQuery.data?.data,
+    qaSummary: qaSummaryQuery.isError ? null : qaSummaryQuery.data?.data,
+    timeline: timelineQuery.data?.data ?? [],
+  });
 
-  // Butler index rows: join butlers with cost data and 24h session counts
-  const butlerIndexEntries = butlers
-    .filter((b) => b.type === "butler")
-    .map((b) => ({
-      name: b.name,
-      sessions: b.sessions_24h ?? 0,
-      costUsd: byButler[b.name] ?? 0,
-    }));
+  const attentionItems = model.attentionRows.map((row): Issue => ({
+    severity: row.severity,
+    type: row.kind,
+    butler: row.butlers?.join(", ") ?? "system",
+    description: row.title,
+    link: row.href,
+    error_message: row.detail,
+    occurrences: row.count,
+    butlers: row.butlers,
+  }));
 
-  // NextList: show pending approvals as upcoming items when available
-  const nextItems =
-    pendingApprovals > 0
-      ? [
-          {
-            time: "now",
-            label: `${pendingApprovals} pending approval${pendingApprovals === 1 ? "" : "s"}`,
-            kind: "approval",
-          },
-        ]
-      : [];
+  const nextItems = model.nowRows.map((row) => ({
+    time: "now",
+    label: row.label,
+    kind: row.kind,
+  }));
 
   // Briefing headline and greet with safe fallbacks
   const greet = briefing?.greet ?? "Good morning.";
@@ -292,21 +131,24 @@ export default function DashboardPage() {
           {/* Voice elaboration paragraph */}
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
-          {/* Attention list */}
-          <AttentionList items={issues} />
+          <Section eyebrow="Needs attention">
+            <AttentionList items={attentionItems} />
+          </Section>
 
-          {/* Runtime summary KPI: total / healthy / sessions_24h / pending approvals */}
-          <RuntimeSummaryKpi />
+          <RuntimeSummaryKpi
+            kpis={model.kpis}
+            isLoading={butlersQuery.isLoading}
+            pendingApprovalsAvailable={!approvalMetricsQuery.isError && approvalMetricsQuery.data != null}
+          />
         </div>
 
         {/* Right column: index */}
         <div
           style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-          aria-label="Butler index"
+          aria-label="Operations and now"
         >
-          <ButlerIndex butlers={butlerIndexEntries} />
+          <ButlerIndex butlers={model.operationsRows} />
           <NextList items={nextItems} />
-          <QaStafferWidget summary={qaSummary} />
         </div>
       </div>
     </Page>

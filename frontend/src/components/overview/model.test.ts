@@ -300,6 +300,70 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
+  it("maps healthy statuses to KPIs and active heartbeat metadata to the index", () => {
+    const model = deriveOverviewTriageModel({
+      butlers: [
+        butler({ name: "general", status: "ok", sessions_24h: 3 }),
+        butler({ name: "health", status: "ok", sessions_24h: 4 }),
+      ],
+      heartbeats: {
+        butlers: [
+          {
+            name: "general",
+            last_heartbeat_at: "2026-05-14T11:59:00.000Z",
+            last_session_at: "2026-05-14T11:55:00.000Z",
+            active_session_count: 2,
+            heartbeat_age_seconds: 30,
+          },
+          {
+            name: "health",
+            last_heartbeat_at: "2026-05-14T11:58:00.000Z",
+            last_session_at: null,
+            active_session_count: 0,
+            heartbeat_age_seconds: 60,
+          },
+        ],
+      },
+    });
+
+    expect(model.kpis).toMatchObject({
+      totalButlers: 2,
+      healthyButlers: 2,
+      sessions24h: 7,
+    });
+    expect(model.operationsRows[0]).toMatchObject({
+      name: "general",
+      runtimeState: "active",
+      activeSessionCount: 2,
+      lastSessionAt: "2026-05-14T11:55:00.000Z",
+      needsAttention: false,
+    });
+  });
+
+  it("keeps null last-session fields visible as null instead of inventing activity", () => {
+    const model = deriveOverviewTriageModel({
+      butlers: [butler({ name: "relationship", last_session_started_at: null })],
+      heartbeats: {
+        butlers: [
+          {
+            name: "relationship",
+            last_heartbeat_at: "2026-05-14T11:59:00.000Z",
+            last_session_at: null,
+            active_session_count: 0,
+            heartbeat_age_seconds: 30,
+          },
+        ],
+      },
+    });
+
+    expect(model.operationsRows[0]).toMatchObject({
+      name: "relationship",
+      lastSessionAt: null,
+      heartbeatAgeSeconds: 30,
+      runtimeState: "healthy",
+    });
+  });
+
   it("derives notification failure pressure", () => {
     const model = deriveOverviewTriageModel({
       notificationStats: notificationStats({ total: 9, sent: 7, failed: 2 }),

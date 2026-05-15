@@ -1,5 +1,5 @@
 /**
- * NextList -- right-column upcoming items list.
+ * NextList -- right-column immediate operational items list.
  *
  * Row grid: 50px mono time / 1fr label / auto kind tag.
  * Vertical padding: 10px per row, hairline border separators.
@@ -22,8 +22,8 @@ interface NextListProps {
 
 export function NextList({ items }: NextListProps) {
   return (
-    <Section eyebrow="Next">
-      <div role="list" aria-label="Upcoming items">
+    <Section eyebrow="Now">
+      <div role="list" aria-label="Now">
         {items.map((item, i) => (
           <div
             key={`${item.time}-${item.label}`}

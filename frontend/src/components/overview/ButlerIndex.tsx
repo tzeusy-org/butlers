@@ -1,39 +1,22 @@
-/**
- * ButlerIndex -- right-column butler list with letter-marks, sessions, and cost.
- *
- * Row grid: ButlerMark 16px / 1fr butler name / auto sessions / auto cost
- * Vertical padding: 10px per row, hairline border separators.
- *
- * Uses ButlerMark with tone="neutral" per the spec.
- *
- * Topology: about/lay-and-land/frontend.md §Butler letter-mark, §Row anatomies
- * Doctrine: about/heart-and-soul/design-language.md §Butler hue scope
- */
-
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Section } from "./Section";
-
-interface ButlerIndexEntry {
-  name: string;
-  sessions: number;
-  costUsd: number;
-}
+import type { OverviewButlerIndexRow } from "./model";
 
 interface ButlerIndexProps {
-  butlers: ButlerIndexEntry[];
+  butlers: OverviewButlerIndexRow[];
 }
 
 export function ButlerIndex({ butlers }: ButlerIndexProps) {
   return (
-    <Section eyebrow="Butlers">
-      <div role="list" aria-label="Butler index">
+    <Section eyebrow="Operations">
+      <div role="list" aria-label="Operations">
         {butlers.map((butler, i) => (
           <div
             key={butler.name}
             role="listitem"
             style={{
               display: "grid",
-              gridTemplateColumns: "16px 1fr auto auto",
+              gridTemplateColumns: "16px minmax(0, 1fr) auto minmax(86px, auto)",
               alignItems: "center",
               gap: "8px",
               paddingTop: "10px",
@@ -42,23 +25,39 @@ export function ButlerIndex({ butlers }: ButlerIndexProps) {
               borderBottom: "1px solid var(--border)",
             }}
           >
-            {/* ButlerMark */}
             <ButlerMark name={butler.name} tone="neutral" />
 
-            {/* Butler name */}
-            <span
-              style={{
-                fontFamily: "var(--font-sans)",
-                fontSize: "13px",
-                fontWeight: 400,
-                color: "var(--foreground)",
-                lineHeight: 1.4,
-              }}
-            >
-              {butler.name}
-            </span>
+            <div style={{ minWidth: 0 }}>
+              <p
+                style={{
+                  fontFamily: "var(--font-sans)",
+                  fontSize: "13px",
+                  fontWeight: 400,
+                  color: "var(--foreground)",
+                  lineHeight: 1.4,
+                  margin: 0,
+                }}
+              >
+                {butler.name}
+              </p>
+              <p
+                style={{
+                  fontFamily: "var(--font-serif)",
+                  fontSize: "12px",
+                  color: "var(--muted-foreground)",
+                  lineHeight: 1.4,
+                  margin: 0,
+                  marginTop: "2px",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {runtimeLabel(butler)}
+                {butler.costUsd > 0 ? ` · ${formatCost(butler.costUsd)} today` : ""}
+              </p>
+            </div>
 
-            {/* Sessions count */}
             <span
               className="tnum"
               style={{
@@ -67,11 +66,11 @@ export function ButlerIndex({ butlers }: ButlerIndexProps) {
                 color: "var(--muted-foreground)",
                 lineHeight: 1.4,
               }}
+              aria-label={`${butler.sessions24h} sessions in the last 24 hours`}
             >
-              {butler.sessions}
+              {butler.sessions24h}
             </span>
 
-            {/* Cost */}
             <span
               className="tnum"
               style={{
@@ -79,11 +78,10 @@ export function ButlerIndex({ butlers }: ButlerIndexProps) {
                 fontSize: "11px",
                 color: "var(--muted-foreground)",
                 lineHeight: 1.4,
-                minWidth: "48px",
                 textAlign: "right",
               }}
             >
-              ${butler.costUsd.toFixed(3)}
+              {lastActivityLabel(butler)}
             </span>
           </div>
         ))}
@@ -104,4 +102,47 @@ export function ButlerIndex({ butlers }: ButlerIndexProps) {
       </div>
     </Section>
   );
+}
+
+function runtimeLabel(butler: OverviewButlerIndexRow): string {
+  if (butler.runtimeState === "active") {
+    return `${butler.activeSessionCount} active`;
+  }
+  if (butler.runtimeState === "stale" && butler.heartbeatAgeSeconds != null) {
+    return `stale ${formatDuration(butler.heartbeatAgeSeconds)}`;
+  }
+  return butler.runtimeState;
+}
+
+function lastActivityLabel(butler: OverviewButlerIndexRow): string {
+  if (butler.lastSessionAt) {
+    return `last ${formatDateTime(butler.lastSessionAt)}`;
+  }
+  if (butler.heartbeatAgeSeconds != null) {
+    return `heartbeat ${formatDuration(butler.heartbeatAgeSeconds)}`;
+  }
+  return "no session";
+}
+
+function formatCost(value: number): string {
+  return `$${value.toFixed(3)}`;
+}
+
+function formatDateTime(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "unknown";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
 }

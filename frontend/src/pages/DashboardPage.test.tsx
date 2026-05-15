@@ -29,7 +29,10 @@ vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
 vi.mock("@/hooks/use-costs", () => ({ useCostSummary: vi.fn() }));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
 vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
+vi.mock("@/hooks/use-system", () => ({ useButlerHeartbeats: vi.fn() }));
+vi.mock("@/hooks/use-notifications", () => ({ useNotificationStats: vi.fn() }));
 vi.mock("@/hooks/use-qa", () => ({ useQaSummary: vi.fn() }));
+vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
 
 // ---------------------------------------------------------------------------
 // Imports after mocks are registered
@@ -40,7 +43,10 @@ import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
+import { useButlerHeartbeats } from "@/hooks/use-system";
+import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
+import { useTimeline } from "@/hooks/use-timeline";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -65,62 +71,20 @@ function makeBriefing(
   };
 }
 
-function makeQaSummaryResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    data: {
-      data: {
-        staffer_status: "running",
-        last_patrol_at: null,
-        next_patrol_at: null,
-        last_patrol: null,
-        stats_24h: {
-          patrols: 0,
-          findings: 0,
-          novel: 0,
-          dispatched: 0,
-          prs_opened: 0,
-        },
-        stats_all_time: {
-          prs_merged: 0,
-          prs_failed: 0,
-          success_rate: 1,
-        },
-        kpis: {
-          prs_landed_24h: 0,
-          mttr_24h_seconds: null,
-          self_resolved_7d_pct: 0,
-          active_cases_now: 0,
-        },
-        active_breakdown: {
-          awaiting_ci: 0,
-          escalated_open_cases: 0,
-        },
-        active_sources: [],
-        circuit_breaker: {
-          tripped: false,
-          consecutive_failures: 0,
-        },
-        credentials_status: {
-          gh_token_present: true,
-          provisioning_hint: null,
-        },
-        ...overrides,
-      },
-      meta: {},
-    },
-    isLoading: false,
-    isError: false,
-    error: null,
-  };
-}
-
 function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.") {
   vi.mocked(useBriefing).mockReturnValue(makeBriefing(stateClass, "llm", headline) as AnyMock);
   vi.mocked(useButlers).mockReturnValue({
     data: {
       data: [
         { name: "general", status: "ok", port: 40101, type: "butler", sessions_24h: 3 },
-        { name: "health", status: "ok", port: 40102, type: "butler", sessions_24h: 2 },
+        {
+          name: "health",
+          status: "ok",
+          port: 40102,
+          type: "butler",
+          sessions_24h: 2,
+          last_session_started_at: null,
+        },
       ],
       meta: {},
     },
@@ -157,15 +121,57 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
     isError: false,
     error: null,
   } as AnyMock);
-  vi.mocked(useQaSummary).mockReturnValue(makeQaSummaryResponse() as AnyMock);
+  vi.mocked(useButlerHeartbeats).mockReturnValue({
+    data: {
+      data: {
+        butlers: [
+          {
+            name: "general",
+            last_heartbeat_at: "2026-05-14T11:59:00.000Z",
+            last_session_at: "2026-05-14T11:55:00.000Z",
+            active_session_count: 1,
+            heartbeat_age_seconds: 30,
+          },
+          {
+            name: "health",
+            last_heartbeat_at: "2026-05-14T11:40:00.000Z",
+            last_session_at: "2026-05-14T11:30:00.000Z",
+            active_session_count: 0,
+            heartbeat_age_seconds: 1_200,
+          },
+        ],
+      },
+      meta: {},
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+  vi.mocked(useNotificationStats).mockReturnValue({
+    data: { data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {} }, meta: {} },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+  vi.mocked(useQaSummary).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+  vi.mocked(useTimeline).mockReturnValue({
+    data: { data: [], meta: { cursor: null, has_more: false } },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
 }
 
-function renderPage({ basename }: { basename?: string } = {}): string {
+function renderPage(): string {
   const queryClient = new QueryClient();
-  const initialEntries = basename ? [`${basename}/`] : undefined;
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter basename={basename} initialEntries={initialEntries}>
+      <MemoryRouter>
         <DashboardPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -282,7 +288,33 @@ describe("DashboardPage -- AttentionList", () => {
     setDefaultData();
   });
 
-  it("renders 'Nothing waiting.' when there are no issues", () => {
+  it("renders 'Nothing waiting.' when there are no current attention rows", () => {
+    vi.mocked(useButlerHeartbeats).mockReturnValue({
+      data: {
+        data: {
+          butlers: [
+            {
+              name: "general",
+              last_heartbeat_at: "2026-05-14T11:59:00.000Z",
+              last_session_at: "2026-05-14T11:55:00.000Z",
+              active_session_count: 1,
+              heartbeat_age_seconds: 30,
+            },
+            {
+              name: "health",
+              last_heartbeat_at: "2026-05-14T11:59:00.000Z",
+              last_session_at: "2026-05-14T11:30:00.000Z",
+              active_session_count: 0,
+              heartbeat_age_seconds: 30,
+            },
+          ],
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
     const html = renderPage();
     expect(html).toContain("Nothing waiting.");
   });
@@ -323,11 +355,13 @@ describe("DashboardPage -- RuntimeSummaryKpi", () => {
   it("renders Total butlers KPI cell", () => {
     const html = renderPage();
     expect(html).toContain("Total butlers");
+    expect(html).toContain(">2<");
   });
 
   it("renders Healthy KPI cell", () => {
     const html = renderPage();
     expect(html).toContain("Healthy");
+    expect(html).toContain(">2<");
   });
 
   it("renders Sessions · 24h KPI cell", () => {
@@ -338,6 +372,12 @@ describe("DashboardPage -- RuntimeSummaryKpi", () => {
   it("renders Pending approvals KPI cell", () => {
     const html = renderPage();
     expect(html).toContain("Pending approvals");
+  });
+
+  it("renders stale heartbeat attention outside the KPI strip", () => {
+    const html = renderPage();
+    expect(html).toContain("Needs attention");
+    expect(html).toContain("health heartbeat is stale");
   });
 });
 
@@ -357,123 +397,22 @@ describe("DashboardPage -- ButlerIndex", () => {
     expect(html).toContain("health");
   });
 
-  it("renders the Butlers section eyebrow", () => {
+  it("renders session count and heartbeat-derived last activity metadata", () => {
     const html = renderPage();
-    // The eyebrow text is "Butlers" in HTML; CSS text-transform uppercase
+    expect(html).toContain("active");
+    expect(html).toContain("last");
+  });
+
+  it("renders the Operations section eyebrow", () => {
+    const html = renderPage();
+    // The eyebrow text is "Operations" in HTML; CSS text-transform uppercase
     // applies visually but does not change the serialized string.
-    expect(html).toContain("Butlers");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// QA staffer widget
-// ---------------------------------------------------------------------------
-
-describe("DashboardPage -- QA staffer widget", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setDefaultData();
+    expect(html).toContain("Operations");
   });
 
-  it("renders dispatch summary rows with click-through when QA is active", () => {
-    vi.mocked(useQaSummary).mockReturnValue(
-      makeQaSummaryResponse({
-        last_patrol_at: "2026-05-15T01:23:00Z",
-        last_patrol: {
-          id: "patrol-123",
-          started_at: "2026-05-15T01:23:00Z",
-          completed_at: "2026-05-15T01:24:00Z",
-          status: "clean",
-          findings_count: 0,
-          novel_count: 0,
-          dispatched_count: 0,
-          log_lookback_minutes: 60,
-          sources_polled: ["sessions"],
-          error_detail: null,
-        },
-        stats_24h: {
-          patrols: 1,
-          findings: 0,
-          novel: 0,
-          dispatched: 0,
-          prs_opened: 0,
-        },
-        kpis: {
-          prs_landed_24h: 0,
-          mttr_24h_seconds: null,
-          self_resolved_7d_pct: 0,
-          active_cases_now: 3,
-        },
-        active_breakdown: {
-          awaiting_ci: 1,
-          escalated_open_cases: 0,
-        },
-        active_sources: ["sessions"],
-      }) as AnyMock,
-    );
-
+  it("renders the Now section eyebrow", () => {
     const html = renderPage();
-    expect(html).toContain("QA staffer");
-    expect(html).toContain("running");
-    expect(html).toMatch(/\d{2}:\d{2} · clean/);
-    expect(html).toContain("active cases · now");
-    expect(html).toContain(">3<");
-    expect(html).toContain('href="/qa"');
-    expect(html).not.toContain("recharts");
-  });
-
-  it("keeps the QA click-through under the router basename", () => {
-    vi.mocked(useQaSummary).mockReturnValue(
-      makeQaSummaryResponse({
-        last_patrol_at: "2026-05-15T01:23:00Z",
-        last_patrol: {
-          id: "patrol-123",
-          started_at: "2026-05-15T01:23:00Z",
-          completed_at: "2026-05-15T01:24:00Z",
-          status: "clean",
-          findings_count: 0,
-          novel_count: 0,
-          dispatched_count: 0,
-          log_lookback_minutes: 60,
-          sources_polled: ["sessions"],
-          error_detail: null,
-        },
-      }) as AnyMock,
-    );
-
-    const html = renderPage({ basename: "/butlers-dev" });
-    expect(html).toContain('href="/butlers-dev/qa"');
-  });
-
-  it("renders the serif inactive line and hides count when QA is stopped", () => {
-    vi.mocked(useQaSummary).mockReturnValue(
-      makeQaSummaryResponse({
-        staffer_status: "stopped",
-        last_patrol_at: "2026-05-15T01:23:00Z",
-        last_patrol: {
-          id: "patrol-123",
-          started_at: "2026-05-15T01:23:00Z",
-          completed_at: "2026-05-15T01:24:00Z",
-          status: "clean",
-          findings_count: 0,
-          novel_count: 0,
-          dispatched_count: 0,
-          log_lookback_minutes: 60,
-          sources_polled: ["sessions"],
-          error_detail: null,
-        },
-      }) as AnyMock,
-    );
-
-    const html = renderPage();
-    expect(html).toContain("QA staffer not active");
-    expect(html).not.toContain("active cases · now");
-  });
-
-  it("renders the inactive line when no patrol records exist", () => {
-    const html = renderPage();
-    expect(html).toContain("QA staffer not active");
-    expect(html).not.toContain("active cases · now");
+    expect(html).toContain("Now");
   });
 });
 

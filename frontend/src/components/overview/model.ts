@@ -45,7 +45,6 @@ export interface OverviewRuntimeKpis {
   healthyButlers: number;
   sessions24h: number;
   pendingApprovals: number;
-  needsAttention: number;
 }
 
 export type OverviewRuntimeState =
@@ -179,7 +178,6 @@ export function deriveOverviewTriageModel(
       healthyButlers: butlers.filter((butler) => isHealthyStatus(butler.status)).length,
       sessions24h: butlers.reduce((sum, butler) => sum + (butler.sessions_24h ?? 0), 0),
       pendingApprovals: input.approvalMetrics?.total_pending ?? 0,
-      needsAttention: attentionRows.filter((row) => row.kind !== "old-issues-summary").length,
     },
     attentionRows,
     operationsRows,
