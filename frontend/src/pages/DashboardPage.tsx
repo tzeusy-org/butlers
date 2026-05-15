@@ -21,11 +21,14 @@
  */
 
 import { Page } from "@/components/ui/page";
+import { Link } from "react-router";
+import type { ReactNode } from "react";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
+import { useQaSummary } from "@/hooks/use-qa";
 
 import { AttentionList } from "@/components/overview/AttentionList";
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
@@ -35,6 +38,175 @@ import { Elaboration } from "@/components/overview/Elaboration";
 import { Headline } from "@/components/overview/Headline";
 import { NextList } from "@/components/overview/NextList";
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
+import { Section } from "@/components/overview/Section";
+import type { QaSummary } from "@/api/types";
+
+type QaWidgetStatus = "running" | "tripped" | "stopped";
+
+function normalizeQaStatus(summary: QaSummary): QaWidgetStatus {
+  if (summary.circuit_breaker.tripped) return "tripped";
+
+  const raw = summary.staffer_status.toLowerCase();
+  if (raw.includes("trip")) return "tripped";
+  if (
+    raw.includes("run") ||
+    raw.includes("active") ||
+    raw.includes("online") ||
+    raw.includes("healthy") ||
+    raw === "ok"
+  ) {
+    return "running";
+  }
+  return "stopped";
+}
+
+function formatPatrolTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+}
+
+function QaWidgetRow({
+  label,
+  children,
+  first = false,
+}: {
+  label: string;
+  children: ReactNode;
+  first?: boolean;
+}) {
+  return (
+    <div
+      role="listitem"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr auto",
+        alignItems: "center",
+        gap: "12px",
+        paddingTop: "10px",
+        paddingBottom: "10px",
+        borderTop: first ? "1px solid var(--border)" : undefined,
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      <span
+        className="tnum"
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: "11px",
+          color: "var(--muted-foreground)",
+          lineHeight: 1.4,
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function QaWidgetMonoValue({ children }: { children: ReactNode }) {
+  return (
+    <span
+      className="tnum"
+      style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: "11px",
+        color: "var(--foreground)",
+        lineHeight: 1.4,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function QaStafferWidget({ summary }: { summary: QaSummary | null | undefined }) {
+  const status = summary ? normalizeQaStatus(summary) : "stopped";
+  const lastPatrol = summary?.last_patrol ?? null;
+
+  return (
+    <Section eyebrow="QA staffer">
+      {!summary || status === "stopped" || !lastPatrol ? (
+        <p
+          style={{
+            fontFamily: "var(--font-serif)",
+            fontSize: "14px",
+            fontStyle: "italic",
+            color: "var(--muted-foreground)",
+            paddingTop: "10px",
+            paddingBottom: "10px",
+          }}
+        >
+          QA staffer not active
+        </p>
+      ) : (
+        <div role="list" aria-label="QA staffer summary">
+          <QaWidgetRow label="status" first>
+            <QaWidgetMonoValue>{status}</QaWidgetMonoValue>
+          </QaWidgetRow>
+
+          <QaWidgetRow label="last patrol">
+            <QaWidgetMonoValue>
+              {formatPatrolTime(lastPatrol.started_at)} · {lastPatrol.status}
+            </QaWidgetMonoValue>
+          </QaWidgetRow>
+
+          <QaWidgetRow label="active cases · now">
+            <span
+              className="tnum"
+              style={{
+                fontFamily: "var(--font-sans)",
+                fontSize: "20px",
+                fontWeight: 500,
+                color: "var(--foreground)",
+                lineHeight: 1,
+              }}
+            >
+              {summary.kpis.active_cases_now}
+            </span>
+          </QaWidgetRow>
+
+          <div role="listitem">
+            <Link
+              to="/qa"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto",
+                alignItems: "center",
+                gap: "12px",
+                paddingTop: "10px",
+                paddingBottom: "10px",
+                color: "var(--muted-foreground)",
+                textDecoration: "none",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "var(--font-sans)",
+                  fontSize: "13px",
+                  fontWeight: 500,
+                  color: "var(--foreground)",
+                  lineHeight: 1.4,
+                }}
+              >
+                Open QA
+              </span>
+              <span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1 }}>
+                →
+              </span>
+            </Link>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
 
 export default function DashboardPage() {
   // Briefing
@@ -49,12 +221,14 @@ export default function DashboardPage() {
   const { data: costSummaryResponse } = useCostSummary("today");
   const { data: issuesResponse } = useIssues();
   const { data: approvalMetricsResponse } = useApprovalMetrics();
+  const { data: qaSummaryResponse } = useQaSummary();
 
   // Derived values
   const butlers = butlersResponse?.data ?? [];
   const issues = issuesResponse?.data ?? [];
   const byButler = costSummaryResponse?.data.by_butler ?? {};
   const pendingApprovals = approvalMetricsResponse?.data.total_pending ?? 0;
+  const qaSummary = qaSummaryResponse?.data;
 
   // Butler index rows: join butlers with cost data and 24h session counts
   const butlerIndexEntries = butlers
@@ -132,6 +306,7 @@ export default function DashboardPage() {
         >
           <ButlerIndex butlers={butlerIndexEntries} />
           <NextList items={nextItems} />
+          <QaStafferWidget summary={qaSummary} />
         </div>
       </div>
     </Page>
