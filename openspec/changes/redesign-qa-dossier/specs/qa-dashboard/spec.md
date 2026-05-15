@@ -18,6 +18,7 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
     - **Dossier body** for the selected case (see Case Dossier Layout requirement)
 - **AND** the page uses Inter Tight (sans), JetBrains Mono (mono), Source Serif 4 (serif), and the OKLCH palette tokens already shipped in `frontend/src/index.css` — no new tokens are introduced
 - **AND** the page contains no card chrome, no drop shadows, no gradients, and no recharts components
+- **AND** when no case is selected via `?case=`, the dossier body defaults to the most recent case in the rail (the rail's first row); when the rail is empty, the dossier body is hidden per the Empty case list scenario
 
 #### Scenario: Empty case list
 - **WHEN** the QA staffer has not produced any cases in the last 7 days
@@ -29,7 +30,7 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
 - **THEN** each cell shows:
   - A mono uppercase eyebrow label (`prs landed · 24h`, `mttr · 24h`, `self-resolved · 7d`, `active cases · now`)
   - A large sans-500 tabular-nums numeric value
-  - A mono sub-label describing context (`+2 vs prior 24h`, `−12m vs 7d`, `+4pp vs prior week`, `N awaiting CI · M escalated`)
+  - A mono sub-label describing context (`+2 vs prior 24h`, `−12m vs 7d`, `+4pp vs prior week`, `N awaiting CI · M escalated`, where N = `active_breakdown.awaiting_ci` and M = `active_breakdown.escalated_open_cases`)
 - **AND** when MTTR is computed over an empty sample, the cell shows `—` and the sub-label reads `no terminal cases in 24h`
 
 ### Requirement: Patrol Detail Page
@@ -100,6 +101,12 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 - **THEN** the header row shows: severity glyph, mono `#<short_id>`, mono `· <butler>`, mono `· detected <HH:MM>`, and a right-aligned state track ("detect — diagnose — pr — landed" with an `escalated` variant)
 - **AND** below the row, an H2 sans-500 22 px headline renders the case's `headline` (or `event_summary` as a fallback when `investigation_notes.headline` is null)
 
+#### Scenario: Active dismissal display
+- **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `expires_at > now()`)
+- **THEN** the header renders a mono caption "dismissed until <expires_at>" beneath the sev/id/butler row
+- **AND** a "remove dismissal" pill action is rendered alongside the existing `Retry` / `Dismiss` pills
+- **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/:fingerprint` and triggers a re-fetch of the case so the caption and pill disappear
+
 #### Scenario: Diagnosis column
 - **WHEN** the Case Dossier renders the left column
 - **THEN** it renders these sections in order, each preceded by a mono uppercase eyebrow:
@@ -159,7 +166,8 @@ The `/api/qa/summary` endpoint SHALL include a `kpis` block computed from `heali
 - **AND** `mttr_24h_seconds` is the average `closed_at - created_at` in seconds across `healing_attempts` rows with `closed_at >= now() - 24 hours` AND `status IN ('pr_merged','failed','timeout','unfixable')`; `null` when the sample is empty
 - **AND** `self_resolved_7d_pct` is the float percentage `pr_merged / (pr_merged + unfixable + failed)` over `closed_at >= now() - 7 days`
 - **AND** `active_cases_now` is the count of `healing_attempts` rows with `status IN ('dispatch_pending','investigating','pr_open')`
-- **AND** the summary response also exposes a small `active_breakdown` field: `{ awaiting_ci: int, escalated_open_cases: int }` for the KPI strip sub-label
+- **AND** the summary response also exposes an `active_breakdown` field: `{ awaiting_ci: int, escalated_open_cases: int }`. `awaiting_ci` is the count of `active_cases_now` rows with `status='pr_open'`. `escalated_open_cases` is the count of `healing_attempts` rows with `status IN ('unfixable','failed') AND failed_with_human_action(attempt) AND (closed_at IS NULL OR closed_at >= now() - 7 days)` — it is NOT a subset of `active_cases_now`; it counts terminal-but-unresolved cases that still need operator action
+- **AND** the helper `failed_with_human_action(attempt) -> bool` is the single canonical detector of an "escalated" case (checks `attempt.status IN ('unfixable','failed')` plus a documented human-action substring on the TEXT `error_detail` column: any of `"human action"`, `"operator"`, `"escalat"` via case-insensitive match); both the KPI sub-label and the `state_of_case()` mapping use this helper
 
 ### Requirement: Investigations List Page
 The dashboard SHALL render the case index at `/qa/investigations` using the Dispatch case index pattern: a rule-separated list of `QaCaseSummary` rows. The page does not render a Kanban or a tabular dashboard.

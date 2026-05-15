@@ -179,9 +179,18 @@ A new Prometheus counter `qa_findings_retention_purged_total` tracks deletions p
 | `prs_landed_24h` | `COUNT(*) FROM healing_attempts WHERE status='pr_merged' AND closed_at >= now()-'24 hours'` | Returns int. |
 | `mttr_24h_seconds` | `EXTRACT(EPOCH FROM AVG(closed_at - created_at)) FROM healing_attempts WHERE closed_at >= now()-'24 hours' AND status IN ('pr_merged','failed','timeout','unfixable')` | Returns int seconds or null when sample is empty. UI formats as `Xm` or `Xh Ym`. |
 | `self_resolved_7d_pct` | `100.0 * SUM(CASE WHEN status='pr_merged' THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN status IN ('pr_merged','unfixable','failed') THEN 1 ELSE 0 END), 0) FROM healing_attempts WHERE closed_at >= now()-'7 days'` | Returns float pct; UI shows as integer `%`. |
-| `active_cases_now` | `COUNT(*) FROM healing_attempts WHERE status IN ('dispatch_pending','investigating','pr_open')` | Returns int. UI sub-label: "N awaiting CI · M escalated" using `active_breakdown.awaiting_ci` and `active_breakdown.escalated_open_cases`. |
+| `active_cases_now` | `COUNT(*) FROM healing_attempts WHERE status IN ('dispatch_pending','investigating','pr_open')` | Returns int. The numeric value rendered in the KPI cell. |
 
-All four KPIs are computed in `src/butlers/api/routers/qa.py` inside the `/api/qa/summary` handler and exposed under `kpis: { ... }`. They reuse the existing DB session.
+The KPI strip sub-label under `active cases · now` reads "N awaiting CI · M escalated", driven by an `active_breakdown` block returned alongside `kpis`:
+
+| Sub-label field | SQL source | Notes |
+|---|---|---|
+| `awaiting_ci` | `COUNT(*) FROM healing_attempts WHERE status='pr_open'` | Subset of `active_cases_now`. |
+| `escalated_open_cases` | `COUNT(*) FROM healing_attempts WHERE status IN ('unfixable','failed') AND (error_detail ILIKE '%human action%' OR error_detail ILIKE '%operator%' OR error_detail ILIKE '%escalat%') AND (closed_at IS NULL OR closed_at >= now() - INTERVAL '7 days')` | NOT a subset of `active_cases_now`; counted from terminal-but-unresolved cases that still need operator action. NOTE: `error_detail` is a TEXT column in the shipped schema; the human-action signal is detected via ILIKE-on-documented-substrings (matching the existing pattern at `qa.py` shipped under PR #1647). If `error_detail` is later migrated to JSONB, this query should switch to `error_detail->>'human_action' IS NOT NULL`. |
+
+The single canonical detector for an "escalated" case is `failed_with_human_action(attempt) -> bool` defined in `src/butlers/core/qa/severity.py` (or a sibling helper module). It checks `attempt.status IN ('unfixable','failed')` AND the `error_detail` text matches any of the documented markers (`human action`, `operator`, `escalat`). Both the KPI sub-label query and the `state_of_case()` mapping (see §D8) MUST go through this helper to stay consistent. The helper documents the matched substrings in its docstring so a future migration can replace the text-matching with a structured field cleanly.
+
+All five values (four KPIs + the breakdown) are computed in `src/butlers/api/routers/qa.py` inside the `/api/qa/summary` handler and exposed under `kpis: { ... }` and `active_breakdown: { ... }`. They reuse the existing DB session.
 
 ### D8 — Cases resource shape
 
@@ -275,7 +284,7 @@ URL-driven case selection: `/qa?case=<short_id or uuid>` selects that case in th
 | `wait` | dispatch.py / PR status poller | When the PR is `pr_open` and CI is still pending on a status check. |
 | `merged` | dispatch.py / PR status poller | When the PR transitions to `pr_merged`. |
 | `escalated` | dispatch.py | When the attempt transitions to `unfixable` or `failed` with `error_detail` indicating human action required. |
-| `tick` | `src/butlers/modules/qa/__init__.py` patrol loop | On each patrol cycle, for every attempt still in `pr_open` or `investigating` whose journal had no new events since the last cycle. |
+| `tick` | `src/butlers/modules/qa/__init__.py` patrol loop | On each patrol cycle, for every attempt in `investigating` or `pr_open` whose journal had no new events since the last cycle. Note: `dispatch_pending` is intentionally excluded — those cases are queued for diagnosis and have no narrative work yet for the journal to track; ticking them adds journal noise without operator value. |
 
 Every emission goes through a thin helper `record_event(attempt_id, step, text, detail=None, data=None)` in `src/butlers/core/qa/journal.py` that inserts into `qa_investigation_events`.
 
