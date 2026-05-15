@@ -44,6 +44,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal
 
 import asyncpg
@@ -60,6 +61,7 @@ from butlers.api.models import (
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.config import ConfigError, load_config
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.models import QaFinding
@@ -76,6 +78,11 @@ from butlers.core.qa.severity import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/qa", tags=["qa"])
+
+# Default roster location — mirrors butlers.api.routers.butlers._DEFAULT_ROSTER_DIR
+_DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[4] / "roster"
+# Name of the QA staffer butler in the roster
+_QA_BUTLER_NAME = "qa"
 
 _SYNTHETIC_FINDINGS_ENV = "QA_ALLOW_SYNTHETIC_FINDINGS"
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -156,6 +163,21 @@ def _get_repo_sync_fn():
     Override via ``app.dependency_overrides[_get_repo_sync_fn]`` to inject
     a callable that triggers ``ManagedRepoClone.refresh()``.
     Returns None by default (standalone API mode).
+    """
+    return None
+
+
+def _get_staffer_info_fn():
+    """Dependency stub for the QA staffer static config info callable.
+
+    Override via ``app.dependency_overrides[_get_staffer_info_fn]`` to inject
+    a callable that returns a ``dict`` with keys:
+    - ``port`` (int): the QA daemon's listen port
+    - ``model`` (str | None): the effective model name in use
+    - ``patrol_interval_minutes`` (int): patrol cadence from the QA module config
+
+    Returns ``None`` by default (standalone API mode — values fall back to
+    the roster config file and a DB catalog query).
     """
     return None
 
@@ -418,6 +440,18 @@ class QaSummary(BaseModel):
     credentials_status: QaCredentialsStatus = Field(
         default_factory=QaCredentialsStatus,
         description="GH token and credential availability for QA investigations.",
+    )
+    port: int | None = Field(
+        default=None,
+        description="Daemon listen port of the QA staffer butler.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Effective LLM model name in use by the QA staffer.",
+    )
+    patrol_interval_minutes: int | None = Field(
+        default=None,
+        description="Patrol cadence in minutes from [modules.qa].patrol_interval_minutes.",
     )
 
 
@@ -991,6 +1025,73 @@ def _compute_circuit_breaker_state(
 
 
 # ---------------------------------------------------------------------------
+# Staffer static info helpers — port, model, patrol_interval_minutes
+# ---------------------------------------------------------------------------
+
+
+def _read_staffer_info_from_toml(
+    roster_dir: Path | None = None,
+) -> tuple[int | None, int | None]:
+    """Read port and patrol_interval_minutes from the QA butler's toml.
+
+    Returns ``(port, patrol_interval_minutes)``.  Returns ``(None, None)`` on
+    any config error so that summary construction is never blocked by a missing
+    or malformed config file.
+    """
+    try:
+        target = (roster_dir or _DEFAULT_ROSTER_DIR) / _QA_BUTLER_NAME
+        config = load_config(target)
+        patrol_interval = config.modules.get("qa", {}).get("patrol_interval_minutes")
+        if isinstance(patrol_interval, int):
+            return config.port, patrol_interval
+        return config.port, None
+    except (ConfigError, OSError, ValueError):
+        logger.debug("_read_staffer_info_from_toml: could not read QA butler config", exc_info=True)
+        return None, None
+
+
+async def _fetch_model_from_catalog(pool: asyncpg.Pool) -> str | None:
+    """Return the effective model alias for the QA butler.
+
+    Resolution order:
+    1. The highest-priority enabled override for butler_name='qa'.
+    2. The global highest-priority enabled model in the catalog.
+    3. ``None`` if the catalog is empty or the query fails.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT mc.alias
+            FROM public.butler_model_overrides bmo
+            JOIN public.model_catalog mc ON mc.id = bmo.catalog_entry_id
+            WHERE bmo.butler_name = $1
+              AND bmo.enabled = TRUE
+              AND mc.enabled = TRUE
+            ORDER BY bmo.priority DESC, mc.priority DESC
+            LIMIT 1
+            """,
+            _QA_BUTLER_NAME,
+        )
+        if row is not None:
+            return str(row["alias"])
+
+        # No per-butler override — fall back to the global default model.
+        row = await pool.fetchrow(
+            """
+            SELECT alias
+            FROM public.model_catalog
+            WHERE enabled = TRUE
+            ORDER BY priority DESC
+            LIMIT 1
+            """
+        )
+        return str(row["alias"]) if row is not None else None
+    except Exception:
+        logger.debug("_fetch_model_from_catalog: query failed (non-fatal)", exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # GET /api/qa/summary
 # ---------------------------------------------------------------------------
 
@@ -999,6 +1100,7 @@ def _compute_circuit_breaker_state(
 async def get_qa_summary(
     db: DatabaseManager = Depends(_get_db_manager),
     credentials_status_fn=Depends(_get_credentials_status_fn),
+    staffer_info_fn=Depends(_get_staffer_info_fn),
 ) -> ApiResponse[QaSummary]:
     """Return QA staffer summary: last patrol, 24h stats, all-time stats, active sources."""
     pool = _shared_pool(db)
@@ -1291,6 +1393,26 @@ async def get_qa_summary(
                 "get_qa_summary: credentials_status_fn failed (non-fatal)", exc_info=True
             )
 
+    # Staffer static config: port, model, patrol_interval_minutes
+    staffer_port: int | None = None
+    staffer_model: str | None = None
+    staffer_patrol_interval: int | None = None
+
+    if staffer_info_fn is not None:
+        # Daemon-wired path: get all three fields from the injected callable.
+        try:
+            raw_info = await staffer_info_fn()
+            if isinstance(raw_info, dict):
+                staffer_port = raw_info.get("port")
+                staffer_model = raw_info.get("model")
+                staffer_patrol_interval = raw_info.get("patrol_interval_minutes")
+        except Exception:
+            logger.warning("get_qa_summary: staffer_info_fn failed (non-fatal)", exc_info=True)
+    else:
+        # Standalone API mode: read from butler.toml + model catalog DB query.
+        staffer_port, staffer_patrol_interval = _read_staffer_info_from_toml()
+        staffer_model = await _fetch_model_from_catalog(pool)
+
     summary = QaSummary(
         staffer_status=staffer_status,
         last_patrol_at=last_patrol_at,
@@ -1303,6 +1425,9 @@ async def get_qa_summary(
         active_sources=active_sources,
         circuit_breaker=circuit_breaker,
         credentials_status=credentials_status,
+        port=staffer_port,
+        model=staffer_model,
+        patrol_interval_minutes=staffer_patrol_interval,
     )
     return ApiResponse(data=summary)
 
