@@ -63,7 +63,7 @@ export function QaAtoms() {
         <div className="grid gap-8 md:grid-cols-[320px_1fr]">
           <CaseList cases={cases} selectedId="case-1" onSelect={() => undefined} />
           <div className="space-y-4 border-t border-border/60 pt-4">
-            <CaseDossierHeader case={cases[0]} stage="pr" dismissal={null} />
+            <CaseDossierHeader case={cases[0]} stage="pr" fingerprint={null} dismissal={null} />
             <StateTrack stage="escalated" />
           </div>
         </div>

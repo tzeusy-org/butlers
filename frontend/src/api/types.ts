@@ -3262,6 +3262,8 @@ export interface QaJournalEvent {
 export interface QaCaseDossier {
   case: QaCaseSummary;
   state_track_stage: "detect" | "diagnose" | "pr" | "landed" | "escalated";
+  /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */
+  fingerprint: string | null;
   dismissal: QaActiveDismissal | null;
   investigation_notes: QaInvestigationNotes | null;
   pr: QaPrSummary | null;

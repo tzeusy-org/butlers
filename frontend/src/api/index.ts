@@ -721,6 +721,8 @@ export {
   undismissQaKnownIssue,
   getHealingAttempt,
   listHealingAttempts,
+  retryHealingAttempt,
+  type RetryHealingAttemptResponse,
   getQaCircuitBreaker,
   resetQaCircuitBreaker,
   getQaRepoConfig,

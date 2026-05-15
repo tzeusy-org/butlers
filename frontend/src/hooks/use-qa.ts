@@ -31,6 +31,7 @@ import {
   patchQaAllowedRepo,
   removeQaDismissal,
   resetQaCircuitBreaker,
+  retryHealingAttempt,
   syncQaRepo,
   undismissQaKnownIssue,
   updateQaRepoConfig,
@@ -200,6 +201,24 @@ export function useRemoveDismissal() {
       queryClient.invalidateQueries({ queryKey: ["qa-case"] });
       queryClient.invalidateQueries({ queryKey: ["qa-cases"] });
       queryClient.invalidateQueries({ queryKey: ["qa-known-issues"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
+    },
+  });
+}
+
+/**
+ * Re-dispatch an investigation for a QA case (healing attempt).
+ * Creates a new healing attempt for the same fingerprint.
+ * Only valid when the case is in a terminal state (landed/escalated).
+ */
+export function useRetryHealingAttempt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (attemptId: string) => retryHealingAttempt(attemptId),
+    onSuccess: (_data, attemptId) => {
+      queryClient.invalidateQueries({ queryKey: ["qa-case", attemptId] });
+      queryClient.invalidateQueries({ queryKey: ["qa-cases"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-investigations"] });
       queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
     },
   });

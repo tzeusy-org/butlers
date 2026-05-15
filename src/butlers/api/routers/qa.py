@@ -362,6 +362,7 @@ class QaCaseDossier(BaseModel):
 
     case: QaCaseSummary
     state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated"]
+    fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
     investigation_notes: InvestigationNotes | None = None
     pr: QaPrSummary | None = None
@@ -1755,6 +1756,7 @@ async def get_case(
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,
+        fingerprint=row.get("finding_fingerprint"),
         dismissal=dismissal,
         investigation_notes=_investigation_notes_from_case_row(row),
         pr=_row_to_pr_summary(row),
