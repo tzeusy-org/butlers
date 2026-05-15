@@ -4,7 +4,7 @@
  * Replaces the vertical-D overview layout with the two-column editorial
  * archetype: left column carries the narrative (date eyebrow, Display
  * headline, Voice paragraph, attention list, KPI strip) and right column
- * carries the index (ButlerIndex, NextList).
+ * carries the index (ButlerIndex, OperationsNowList).
  *
  * Layout: two columns 1.4fr / 1fr, gap 56px.
  * Frame: <Page archetype="editorial"> (max-width 1280px, padding 48px 56px).
@@ -14,7 +14,7 @@
  *   useIssues()             -- AttentionList
  *   useButlers()            -- ButlerIndex, RuntimeSummaryKpi
  *   useCostSummary("today") -- ButlerIndex per-butler cost
- *   useApprovalMetrics()    -- RuntimeSummaryKpi "approvals" cell, NextList pending approvals
+ *   useApprovalMetrics()    -- RuntimeSummaryKpi "approvals" cell, OperationsNowList pending approvals
  *
  * bu-1fpvp.2 -- Frontend: replace DashboardPage with editorial layout.
  * bu-bm58r.1 -- Runtime summary KPI card from existing hooks.
@@ -37,7 +37,7 @@ import { ButlerIndex } from "@/components/overview/ButlerIndex";
 import { DateEyebrow } from "@/components/overview/DateEyebrow";
 import { Elaboration } from "@/components/overview/Elaboration";
 import { Headline } from "@/components/overview/Headline";
-import { NextList } from "@/components/overview/NextList";
+import { OperationsNowList } from "@/components/overview/OperationsNowList";
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
 import { Section } from "@/components/overview/Section";
 import { deriveOverviewTriageModel } from "@/components/overview/model";
@@ -71,12 +71,6 @@ export default function DashboardPage() {
     qaSummary: qaSummaryQuery.isError ? null : qaSummaryQuery.data?.data,
     timeline: timelineQuery.data?.data ?? [],
   });
-
-  const nextItems = model.nowRows.map((row) => ({
-    time: "now",
-    label: row.label,
-    kind: row.kind,
-  }));
 
   // Briefing headline and greet with safe fallbacks
   const greet = briefing?.greet ?? "Good morning.";
@@ -136,7 +130,7 @@ export default function DashboardPage() {
           aria-label="Operations and now"
         >
           <ButlerIndex butlers={model.operationsRows} />
-          <NextList items={nextItems} />
+          <OperationsNowList rows={model.nowRows} />
         </div>
       </div>
     </Page>

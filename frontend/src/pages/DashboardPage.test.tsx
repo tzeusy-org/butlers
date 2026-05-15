@@ -6,7 +6,7 @@
  * - AttentionList with items and empty-state fallback
  * - RuntimeSummaryKpi cells (total / healthy / sessions_24h / pending approvals)
  * - ButlerIndex rows
- * - NextList (pending approvals)
+ * - OperationsNowList (pending approvals, QA state, notifications, recent activity)
  * - Five state_class values render without crashing
  *
  * Prior test contracts (Vertical-D hero/secondary regions) are replaced by
@@ -490,5 +490,132 @@ describe("DashboardPage -- loading state", () => {
     const html = renderPage();
     // Falls back to "Checking in."
     expect(html).toContain("Checking in.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OperationsNowList
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- OperationsNowList", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+  });
+
+  it("renders 'Nothing scheduled.' when no now signals are active", () => {
+    const html = renderPage();
+    expect(html).toContain("Nothing scheduled.");
+  });
+
+  it("renders pending approvals row when approvals are pending", () => {
+    vi.mocked(useApprovalMetrics).mockReturnValue({
+      data: { data: { total_pending: 2 }, meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("2 pending approvals");
+    expect(html).toContain('href="/approvals"');
+  });
+
+  it("renders failed notification row when notifications have failures", () => {
+    vi.mocked(useNotificationStats).mockReturnValue({
+      data: {
+        data: { total: 5, sent: 4, failed: 1, by_channel: {}, by_butler: {} },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("1 failed notification");
+    expect(html).toContain('href="/notifications"');
+  });
+
+  it("renders QA row when patrol fails", () => {
+    vi.mocked(useQaSummary).mockReturnValue({
+      data: {
+        data: {
+          staffer_status: "healthy",
+          last_patrol_at: null,
+          next_patrol_at: null,
+          last_patrol: {
+            id: "p1",
+            started_at: "2026-05-14T11:00:00.000Z",
+            completed_at: "2026-05-14T11:01:00.000Z",
+            status: "failed",
+            findings_count: 0,
+            novel_count: 0,
+            dispatched_count: 0,
+            log_lookback_minutes: 60,
+            sources_polled: [],
+            error_detail: "scanner failed",
+          },
+          stats_24h: {
+            patrols_completed: 0,
+            total_findings: 0,
+            novel_findings: 0,
+            dispatched_investigations: 0,
+            prs_opened: 0,
+          },
+          stats_all_time: {
+            total_patrols: 1,
+            total_findings: 0,
+            novel_findings: 0,
+            dispatched_investigations: 0,
+            prs_merged: 0,
+            prs_failed: 0,
+            success_rate: 0,
+          },
+          kpis: {
+            prs_landed_24h: 0,
+            mttr_24h_seconds: null,
+            self_resolved_7d_pct: 0,
+            active_cases_now: 0,
+          },
+          active_breakdown: { awaiting_ci: 0, escalated_open_cases: 0 },
+          active_sources: [],
+          circuit_breaker: { tripped: false, consecutive_failures: 0 },
+          credentials_status: { gh_token_present: null, provisioning_hint: null },
+          port: null,
+          model: null,
+          patrol_interval_minutes: null,
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("QA patrol failed");
+    expect(html).toContain('href="/qa"');
+  });
+
+  it("renders recent timeline activity rows", () => {
+    vi.mocked(useTimeline).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "evt-1",
+            type: "session",
+            butler: "general",
+            timestamp: "2026-05-14T11:55:00.000Z",
+            summary: "general ran health check",
+            data: {},
+          },
+        ],
+        meta: { cursor: null, has_more: false },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("general ran health check");
+    expect(html).toContain('href="/timeline"');
   });
 });
