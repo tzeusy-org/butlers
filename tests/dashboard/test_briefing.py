@@ -902,3 +902,201 @@ class TestDataFetchWarnings:
         assert state["butler_statuses"] == []
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("Could not fetch butler statuses" in r.message for r in warning_records)
+
+
+# ---------------------------------------------------------------------------
+# Audit-derived attention items (bu-5y5ve spec coverage)
+#
+# Validates: a scheduled-task failure in the audit log surfaces as a
+# severity="high" attention item which forces state_class="urgent", while
+# a non-scheduled audit error surfaces as severity="medium".
+# ---------------------------------------------------------------------------
+
+
+def _make_audit_pool(
+    audit_rows: list[dict] | None = None,
+    butler_statuses: list[dict] | None = None,
+) -> AsyncMock:
+    """Build a mock pool that returns the given audit rows for audit queries.
+
+    Notifications query returns [] so audit items are the sole attention source.
+    """
+    pool = AsyncMock()
+    owner_id = "owner-uuid-1234"
+
+    async def _fetchrow(sql, *args):
+        if "public.contacts" in sql and "public.entities" in sql:
+            rec = MagicMock()
+            rec.__getitem__ = MagicMock(return_value=owner_id)
+            return rec
+        return None
+
+    rows = audit_rows or []
+    statuses = butler_statuses or []
+
+    async def _fetch(sql, *args):
+        if "notifications" in sql:
+            return []
+        if "dashboard_audit_log" in sql:
+            return [_make_record(r) for r in rows]
+        if "butler_registry" in sql:
+            return [_make_record(r) for r in statuses]
+        return []
+
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool.fetch = AsyncMock(side_effect=_fetch)
+    return pool
+
+
+class TestAuditDerivedAttentionItems:
+    """Spec requirement: Attention Item Sources — audit-derived path (D7)."""
+
+    async def test_scheduled_audit_failure_becomes_high_severity(self):
+        """An audit error from a scheduled session gets severity='high'.
+
+        This means the item will drive state_class='urgent' even with no
+        owner notification pending (the core of the bu-5y5ve bug report).
+        """
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_audit_pool(
+            audit_rows=[
+                {
+                    "error_summary": "OAuth token expired",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 3,
+                    "butlers": ["calendar"],
+                    "has_schedule": True,
+                    "schedule_names": ["daily-sync"],
+                }
+            ]
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert len(state["attention_items"]) == 1
+        item = state["attention_items"][0]
+        assert item["severity"] == "high"
+        assert item["source"] == "audit_log"
+        assert item["type"] == "scheduled_task_failure"
+        assert item["butler"] == "calendar"
+
+    async def test_scheduled_audit_failure_forces_urgent_state_class(self):
+        """A single high-severity audit item causes the endpoint to return state_class='urgent'.
+
+        This verifies the end-to-end chain: audit query -> attention item ->
+        classify -> 'urgent'.  No notification required.
+        """
+        pool = _make_audit_pool(
+            audit_rows=[
+                {
+                    "error_summary": "OAuth token expired",
+                    "first_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
+                    "occurrences": 1,
+                    "butlers": ["calendar"],
+                    "has_schedule": True,
+                    "schedule_names": ["morning-sync"],
+                }
+            ]
+        )
+        cache = BriefingCache(ttl_seconds=300)
+        app = _make_app(pool, cache)
+
+        with patch(
+            "butlers.api.routers.dashboard_briefing.elaborate_llm",
+            new=AsyncMock(return_value=None),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/dashboard/briefing")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["state_class"] == "urgent"
+
+    async def test_non_scheduled_audit_failure_becomes_medium_severity(self):
+        """An audit error not from a scheduled session gets severity='medium'.
+
+        A single medium-severity item drives state_class='mild', not 'urgent'.
+        """
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_audit_pool(
+            audit_rows=[
+                {
+                    "error_summary": "Unexpected response from API",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 1,
+                    "butlers": ["health"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ]
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert len(state["attention_items"]) == 1
+        item = state["attention_items"][0]
+        assert item["severity"] == "medium"
+        assert item["source"] == "audit_log"
+        assert item["type"] == "audit_error_group"
+
+    async def test_non_scheduled_audit_failure_does_not_force_urgent(self):
+        """A non-scheduled audit error produces 'mild', not 'urgent'.
+
+        Validates the spec: ad-hoc errors stay below the urgent threshold.
+        """
+        pool = _make_audit_pool(
+            audit_rows=[
+                {
+                    "error_summary": "Unexpected response from API",
+                    "first_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
+                    "occurrences": 1,
+                    "butlers": ["health"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ]
+        )
+        cache = BriefingCache(ttl_seconds=300)
+        app = _make_app(pool, cache)
+
+        with patch(
+            "butlers.api.routers.dashboard_briefing.elaborate_llm",
+            new=AsyncMock(return_value=None),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/dashboard/briefing")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["state_class"] == "mild"
+
+    async def test_audit_item_multi_butler_description(self):
+        """When multiple butlers share an error, the description includes the butler count."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_audit_pool(
+            audit_rows=[
+                {
+                    "error_summary": "DB connection timeout",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 5,
+                    "butlers": ["health", "calendar"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ]
+        )
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        item = state["attention_items"][0]
+        assert item["butler"] == "multiple"
+        assert "2 butlers" in item["description"]

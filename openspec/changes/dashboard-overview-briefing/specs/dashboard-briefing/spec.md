@@ -23,6 +23,34 @@ The endpoint `GET /api/dashboard/briefing` SHALL return a JSON object with exact
 - **AND** `state_class` is one of `"urgent"`, `"busy"`, `"mild"`, `"degraded-quiet"`, `"quiet"`
 - **AND** `generated_at` is an ISO 8601 timestamp recording the wall-clock time at which the Briefing object was finalized, set once per composition regardless of whether `source` is `"llm"` or `"fallback"` and regardless of how long the underlying LLM call took
 
+### Requirement: Attention Item Sources
+
+The endpoint SHALL populate `state.attention_items` from two sources before classification: the owner's unread or open notification records, and grouped error entries from the `dashboard_audit_log` table.
+
+#### Scenario: Notification-derived attention items
+
+- **WHEN** the owner has unread or open notifications in the last 7 days
+- **THEN** each notification is added to `state.attention_items` as a single attention item
+- **AND** the item carries the notification's own severity level (`high`, `medium`, or `low`)
+- **AND** `source` is `"notification"`
+
+#### Scenario: Audit-derived attention items
+
+- **WHEN** the `dashboard_audit_log` table contains error-result rows within the last 7 days
+- **THEN** those errors are grouped by their first-line error summary and appended to `state.attention_items`
+- **AND** a grouped entry receives `severity = "high"` when **any** row in the group originated from a scheduled session (`trigger_source` starts with `"schedule:"`)
+- **AND** a grouped entry receives `severity = "medium"` when none of the rows in the group were schedule-triggered
+- **AND** `source` is `"audit_log"`
+
+This means a recurring scheduled-task failure raises `state_class` to `"urgent"` even if the owner has not yet received a notification; this is intentional. Ad-hoc errors that do not originate from a schedule are surfaced as `"medium"` so they contribute to `"busy"` or `"mild"` without forcing `"urgent"`.
+
+#### Scenario: Attention item source fetch failure
+
+- **WHEN** either source query fails with an exception
+- **THEN** that source's items are omitted from `state.attention_items`
+- **AND** the endpoint logs a WARNING and continues with the remaining items
+- **AND** `state_class` is computed from whatever items were successfully retrieved
+
 ### Requirement: State Classification
 
 The endpoint SHALL classify the current dashboard state into one of five `state_class` values using a deterministic function over the attention list and butler health.

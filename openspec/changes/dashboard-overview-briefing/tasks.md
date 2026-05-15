@@ -37,6 +37,31 @@
 - [ ] 4.2 Run `openspec verify dashboard-overview-briefing` after backend implementation lands.
 - [ ] 4.3 Manually verify the endpoint on a running instance: each `state_class` produces the right headline; local-runtime happy path returns `source="llm"` within the configured timeout; fallback path produces a coherent paragraph; cache hit preserves `generated_at`.
 
+## 4a. Spec / Behavior Alignment Fix [bu-5y5ve]
+
+This section records the resolution of bu-5y5ve: a silent behavioral change
+where audit-derived attention items could force `state_class = "urgent"` without
+any spec coverage.
+
+**Decision: option (a) — legitimize the behavior in the spec.**
+
+Rationale: The behavior shipped in commit 4143128f with test coverage already in
+place. Raising `urgent` on a failed scheduled task is the correct call: the
+system is not operating as configured and the owner needs to know. Reverting to
+`medium` would have silently suppressed a real signal. The fix is to close the
+spec gap rather than downgrade the severity.
+
+- [x] 4a.1 Add `Requirement: Attention Item Sources` to the dashboard-briefing spec
+      enumerating both notification-derived and audit-derived attention items and
+      documenting the `"high"` vs `"medium"` severity assignment rule for audit
+      groups. (bu-5y5ve)
+- [x] 4a.2 Add design decision D7 to `design.md` explaining dual-source attention
+      items, the audit severity assignment rationale, and the commit that introduced
+      the behavior. (bu-5y5ve)
+- [x] 4a.3 Add tests for audit-derived attention items producing `state_class =
+      "urgent"` when scheduled, and `"mild"` / `"busy"` when not scheduled.
+      (bu-5y5ve)
+
 ## 5. Follow-Up
 
 - [ ] 5.1 Page restructure (editorial archetype) consumes the briefing. Tracked as a separate change once the endpoint lands.
