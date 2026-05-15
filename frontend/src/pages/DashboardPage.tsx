@@ -1,23 +1,34 @@
 /**
- * DashboardPage -- editorial archetype landing for the Overview page.
+ * DashboardPage -- operational triage cockpit for the Overview page.
  *
- * Replaces the vertical-D overview layout with the two-column editorial
- * archetype: left column carries the narrative (date eyebrow, Display
- * headline, Voice paragraph, attention list, KPI strip) and right column
- * carries the index (ButlerIndex, OperationsNowList).
+ * Composes the full triage cockpit using the editorial archetype:
+ *   - Left column (narrative): date eyebrow + briefing status, Display headline,
+ *     Voice elaboration paragraph, Needs-attention list, KPI strip.
+ *   - Right column (index): enriched Butler index (Operations), operations-now
+ *     signal list (Now).
  *
- * Layout: two columns 1.4fr / 1fr, gap 56px.
- * Frame: <Page archetype="editorial"> (max-width 1280px, padding 48px 56px).
+ * Responsive layout:
+ *   - < lg  (< 1024px): single column, narrative on top, index below.
+ *   - ≥ lg  (≥ 1024px): two columns at 1.4fr / 1fr, gap 56px.
+ *   Frame: <Page archetype="editorial"> (max-width 1280px, responsive padding).
  *
- * Data:
+ * Data sources (no backend aggregation endpoint required):
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
- *   useIssues()             -- AttentionList
+ *   useIssues()             -- AttentionList (client-side stale/severity ordering)
  *   useButlers()            -- ButlerIndex, RuntimeSummaryKpi
  *   useCostSummary("today") -- ButlerIndex per-butler cost
- *   useApprovalMetrics()    -- RuntimeSummaryKpi "approvals" cell, OperationsNowList pending approvals
+ *   useApprovalMetrics()    -- KPI "approvals" cell, OperationsNowList approvals row
+ *   useButlerHeartbeats()   -- RuntimeSummaryKpi runtime state, stale detection
+ *   useNotificationStats()  -- OperationsNowList notification pressure row
+ *   useQaSummary()          -- OperationsNowList QA state row
+ *   useTimeline()           -- OperationsNowList recent activity rows
  *
- * bu-1fpvp.2 -- Frontend: replace DashboardPage with editorial layout.
- * bu-bm58r.1 -- Runtime summary KPI card from existing hooks.
+ * bu-1fpvp.2   -- Frontend: replace DashboardPage with editorial layout.
+ * bu-bm58r.1   -- Runtime summary KPI card from existing hooks.
+ * bu-tn1po.3   -- Needs-attention list (AttentionList).
+ * bu-tn1po.4   -- Promoted KPI strip + enriched butler index (ButlerIndex).
+ * bu-tn1po.5   -- Operations-now signal list (OperationsNowList).
+ * bu-tn1po.6   -- Compose all surfaces into this triage cockpit page.
  */
 
 import { Page } from "@/components/ui/page";
@@ -81,14 +92,15 @@ export default function DashboardPage() {
 
   return (
     <Page archetype="editorial" title="Overview">
-      {/* Two-column editorial grid */}
+      {/*
+       * Responsive two-column editorial grid.
+       * Narrow (< 1024px / lg): single column, narrative stacked above index.
+       * Wide (>= 1024px / lg): 1.4fr / 1fr, gap 56px (gap-14).
+       * The lg breakpoint aligns with the sidebar transition so the combined
+       * content width stays within the 1280px Page frame.
+       */}
       <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1.4fr 1fr",
-          gap: "56px",
-          alignItems: "start",
-        }}
+        className="grid gap-8 items-start lg:gap-14 lg:grid-cols-[1.4fr_1fr]"
       >
         {/* Left column: narrative */}
         <div
