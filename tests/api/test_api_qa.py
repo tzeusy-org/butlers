@@ -191,12 +191,18 @@ def _make_kpi_row(
     mttr_24h_seconds: float | None = None,
     self_resolved_7d_pct: float | None = None,
     active_cases_now: int = 0,
+    prs_landed_prior_24h: int = 0,
+    mttr_prior_24h_seconds: float | None = None,
+    self_resolved_prior_7d_pct: float | None = None,
 ) -> dict[str, Any]:
     return {
         "prs_landed_24h": prs_landed_24h,
         "mttr_24h_seconds": mttr_24h_seconds,
         "self_resolved_7d_pct": self_resolved_7d_pct,
         "active_cases_now": active_cases_now,
+        "prs_landed_prior_24h": prs_landed_prior_24h,
+        "mttr_prior_24h_seconds": mttr_prior_24h_seconds,
+        "self_resolved_prior_7d_pct": self_resolved_prior_7d_pct,
     }
 
 
@@ -278,6 +284,9 @@ class TestGetQaSummary:
             "mttr_24h_seconds": None,
             "self_resolved_7d_pct": 0.0,
             "active_cases_now": 0,
+            "prs_landed_prior_24h": 0,
+            "mttr_prior_24h_seconds": None,
+            "self_resolved_prior_7d_pct": None,
         }
         assert body["data"]["active_breakdown"] == {
             "awaiting_ci": 0,
@@ -315,6 +324,9 @@ class TestGetQaSummary:
             "mttr_24h_seconds": 312.75,
             "self_resolved_7d_pct": 80.0,
             "active_cases_now": 6,
+            "prs_landed_prior_24h": 0,
+            "mttr_prior_24h_seconds": None,
+            "self_resolved_prior_7d_pct": None,
         }
         assert body2["active_breakdown"] == {"awaiting_ci": 2, "escalated_open_cases": 1}
         assert "log_scanner" in body2["active_sources"]
@@ -407,6 +419,50 @@ class TestGetQaSummary:
         active_breakdown_sql = _single_fetchrow_query_containing(pool, "AS escalated_open_cases")
         assert "status IN ('dispatch_pending', 'investigating', 'pr_open')" in kpi_sql
         assert "status IN ('unfixable', 'failed')" in active_breakdown_sql
+
+    async def test_summary_kpi_prior_period_fields_present_in_response(self) -> None:
+        """Prior-period fields are included in the kpis block and default to zero/null."""
+        app, _ = _build_summary_app()
+
+        body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert "prs_landed_prior_24h" in body["kpis"]
+        assert "mttr_prior_24h_seconds" in body["kpis"]
+        assert "self_resolved_prior_7d_pct" in body["kpis"]
+        assert body["kpis"]["prs_landed_prior_24h"] == 0
+        assert body["kpis"]["mttr_prior_24h_seconds"] is None
+        assert body["kpis"]["self_resolved_prior_7d_pct"] is None
+
+    async def test_summary_kpi_prior_period_values_propagated(self) -> None:
+        """Prior-period values set in fixture are reflected in the response."""
+        app, _ = _build_summary_app(
+            kpis=_make_kpi_row(
+                prs_landed_24h=3,
+                mttr_24h_seconds=240.0,
+                self_resolved_7d_pct=75.0,
+                active_cases_now=2,
+                prs_landed_prior_24h=1,
+                mttr_prior_24h_seconds=480.0,
+                self_resolved_prior_7d_pct=60.0,
+            )
+        )
+
+        body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert body["kpis"]["prs_landed_prior_24h"] == 1
+        assert body["kpis"]["mttr_prior_24h_seconds"] == 480.0
+        assert body["kpis"]["self_resolved_prior_7d_pct"] == 60.0
+
+    async def test_summary_kpi_sql_includes_prior_period_columns(self) -> None:
+        """KPI SQL query includes prior-period aggregate columns."""
+        app, pool = _build_summary_app()
+
+        assert (await _call(app, "get", "/api/qa/summary")).status_code == 200
+
+        kpi_sql = _single_fetchrow_query_containing(pool, "active_cases_now")
+        assert "prs_landed_prior_24h" in kpi_sql
+        assert "mttr_prior_24h_seconds" in kpi_sql
+        assert "self_resolved_prior_7d_pct" in kpi_sql
 
 
 class TestListPatrols:

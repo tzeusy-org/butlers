@@ -3139,6 +3139,10 @@ export interface QaKpiBlock {
   mttr_24h_seconds: number | null;
   self_resolved_7d_pct: number;
   active_cases_now: number;
+  /** Prior-period comparison values for delta sub-labels. */
+  prs_landed_prior_24h: number;
+  mttr_prior_24h_seconds: number | null;
+  self_resolved_prior_7d_pct: number | null;
 }
 
 /** Active-case status breakdown for the QA dossier dashboard — GET /api/qa/summary */

@@ -31,6 +31,19 @@ const kpisWithNullMttr: QaKpiBlock = {
   mttr_24h_seconds: null,
   self_resolved_7d_pct: 71,
   active_cases_now: 5,
+  prs_landed_prior_24h: 0,
+  mttr_prior_24h_seconds: null,
+  self_resolved_prior_7d_pct: null,
+};
+
+const kpisWithDeltas: QaKpiBlock = {
+  prs_landed_24h: 5,
+  mttr_24h_seconds: 720,
+  self_resolved_7d_pct: 80,
+  active_cases_now: 2,
+  prs_landed_prior_24h: 3,
+  mttr_prior_24h_seconds: 840,
+  self_resolved_prior_7d_pct: 76,
 };
 
 const activeBreakdown: QaActiveBreakdown = {
@@ -125,5 +138,64 @@ describe("QA dossier atoms", () => {
     fireEvent.click(screen.getByLabelText("Remove dismissal"));
 
     expect(qaHookMocks.removeDismissalMutate).toHaveBeenCalledWith(activeDismissal.fingerprint);
+  });
+
+  it("renders delta sub-labels when prior-period values are available", () => {
+    render(<QaKpiStrip kpis={kpisWithDeltas} active={activeBreakdown} />);
+
+    // prs landed: +2 vs prior 24h (5 - 3 = +2)
+    expect(screen.getByText("+2 vs prior 24h")).toBeTruthy();
+    // mttr: 720s = 12m, 840s = 14m, delta = -120s = -2m → "−2m vs 7d"
+    expect(screen.getByText("−2m vs 7d")).toBeTruthy();
+    // self-resolved: 80 - 76 = +4pp vs prior week
+    expect(screen.getByText("+4pp vs prior week")).toBeTruthy();
+  });
+
+  it("renders negative count delta with minus sign", () => {
+    const kpisNegativeDelta: QaKpiBlock = {
+      ...kpisWithDeltas,
+      prs_landed_24h: 1,
+      prs_landed_prior_24h: 4,
+    };
+    render(<QaKpiStrip kpis={kpisNegativeDelta} active={activeBreakdown} />);
+
+    expect(screen.getByText("−3 vs prior 24h")).toBeTruthy();
+  });
+
+  it("renders zero count delta as +0", () => {
+    const kpisZeroDelta: QaKpiBlock = {
+      ...kpisWithDeltas,
+      prs_landed_24h: 3,
+      prs_landed_prior_24h: 3,
+    };
+    render(<QaKpiStrip kpis={kpisZeroDelta} active={activeBreakdown} />);
+
+    expect(screen.getByText("+0 vs prior 24h")).toBeTruthy();
+  });
+
+  it("falls back to static sub-labels when prior-period values are null", () => {
+    // When prior-period MTTR and self-resolved are null (no prior sample), static fallbacks are used.
+    // prs_landed_prior_24h is 0, which is a real value, so "+0 vs prior 24h" is shown.
+    render(<QaKpiStrip kpis={kpisWithNullMttr} active={activeBreakdown} />);
+
+    // prs_landed_24h=3, prs_landed_prior_24h=0 → delta shown ("+3 vs prior 24h"), not fallback
+    expect(screen.getByText("+3 vs prior 24h")).toBeTruthy();
+
+    // MTTR is null → "no terminal cases in 24h" sub-label (not a delta)
+    expect(screen.getByText("no terminal cases in 24h")).toBeTruthy();
+    // self_resolved_prior_7d_pct is null → fallback to "7d window"
+    expect(screen.getByText("7d window")).toBeTruthy();
+  });
+
+  it("shows no MTTR delta when current MTTR is null even with prior", () => {
+    const kpisNullCurrentMttr: QaKpiBlock = {
+      ...kpisWithDeltas,
+      mttr_24h_seconds: null,
+      mttr_prior_24h_seconds: 600,
+    };
+    render(<QaKpiStrip kpis={kpisNullCurrentMttr} active={activeBreakdown} />);
+
+    // Current MTTR null → cannot show delta; shows null-mttr sub-label
+    expect(screen.getByText("no terminal cases in 24h")).toBeTruthy();
   });
 });

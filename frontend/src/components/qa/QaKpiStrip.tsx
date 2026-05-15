@@ -37,25 +37,88 @@ function formatActiveBreakdown(activeBreakdown: QaActiveBreakdown | null | undef
   return `${awaitingCi} awaiting CI · ${escalated} escalated`;
 }
 
+/**
+ * Format a count delta sub-label: "+2 vs prior 24h" or "−2 vs prior 24h".
+ * Returns null when prior value is not available.
+ */
+function formatCountDelta(
+  current: number,
+  prior: number | null | undefined,
+  window: string,
+): string | null {
+  if (prior == null) return null;
+  const delta = current - prior;
+  const sign = delta >= 0 ? "+" : "−";
+  return `${sign}${Math.abs(delta)} vs prior ${window}`;
+}
+
+/**
+ * Format a duration delta sub-label: "+12m vs prior 24h" or "−12m vs prior 24h".
+ * Returns null when either value is not available (no sample in that window).
+ */
+function formatMttrDelta(
+  currentSeconds: number | null | undefined,
+  priorSeconds: number | null | undefined,
+  window: string,
+): string | null {
+  if (currentSeconds == null || priorSeconds == null) return null;
+  const deltaSeconds = currentSeconds - priorSeconds;
+  const sign = deltaSeconds >= 0 ? "+" : "−";
+  return `${sign}${formatMttr(Math.abs(deltaSeconds))} vs ${window}`;
+}
+
+/**
+ * Format a percentage-point delta sub-label: "+4pp vs prior week" or "−4pp vs prior week".
+ * Returns null when prior value is not available (no sample in that window).
+ */
+function formatPctDelta(
+  current: number,
+  prior: number | null | undefined,
+  window: string,
+): string | null {
+  if (prior == null) return null;
+  const delta = Math.round(current) - Math.round(prior);
+  const sign = delta >= 0 ? "+" : "−";
+  return `${sign}${Math.abs(delta)}pp vs ${window}`;
+}
+
 export function QaKpiStrip({ kpis, active, className }: QaKpiStripProps) {
+  const prsLandedDelta =
+    kpis != null
+      ? formatCountDelta(kpis.prs_landed_24h, kpis.prs_landed_prior_24h, "24h")
+      : null;
+
+  const mttrDelta =
+    kpis != null
+      ? formatMttrDelta(kpis.mttr_24h_seconds, kpis.mttr_prior_24h_seconds, "prior 24h")
+      : null;
+
+  const selfResolvedDelta =
+    kpis != null
+      ? formatPctDelta(kpis.self_resolved_7d_pct, kpis.self_resolved_prior_7d_pct, "prior week")
+      : null;
+
   const cells: KpiCell[] = [
     {
       id: "prs-landed",
       label: "prs landed · 24h",
       value: kpis ? String(kpis.prs_landed_24h) : "—",
-      sub: "24h window",
+      sub: prsLandedDelta ?? "24h window",
     },
     {
       id: "mttr",
       label: "mttr · 24h",
       value: formatMttr(kpis?.mttr_24h_seconds),
-      sub: kpis?.mttr_24h_seconds == null ? "no terminal cases in 24h" : "terminal cases in 24h",
+      sub:
+        kpis?.mttr_24h_seconds == null
+          ? "no terminal cases in 24h"
+          : (mttrDelta ?? "terminal cases in 24h"),
     },
     {
       id: "self-resolved",
       label: "self-resolved · 7d",
       value: formatPercent(kpis?.self_resolved_7d_pct),
-      sub: "7d window",
+      sub: selfResolvedDelta ?? "7d window",
     },
     {
       id: "active-cases",

@@ -289,6 +289,13 @@ class QaKpiBlock(BaseModel):
     mttr_24h_seconds: float | None = None
     self_resolved_7d_pct: float
     active_cases_now: int
+    # Prior-period comparison values for delta sub-labels.
+    # prs_landed_prior_24h: count in the 24h-48h window (prior 24h period).
+    # mttr_prior_24h_seconds: average MTTR in the 24h-48h window; null when sample is empty.
+    # self_resolved_prior_7d_pct: self-resolve rate in the 7d-14d window; null when sample is empty.
+    prs_landed_prior_24h: int = 0
+    mttr_prior_24h_seconds: float | None = None
+    self_resolved_prior_7d_pct: float | None = None
 
 
 class QaActiveBreakdown(BaseModel):
@@ -1050,9 +1057,13 @@ async def get_qa_summary(
         prs_opened=prs_opened_24h,
     )
 
+    cutoff_7d = datetime.now(tz=UTC) - timedelta(days=7)
+    cutoff_48h = datetime.now(tz=UTC) - timedelta(hours=48)
+    cutoff_14d = datetime.now(tz=UTC) - timedelta(days=14)
     kpis_row = await pool.fetchrow(
         """
         SELECT
+            -- Current-period KPIs
             COUNT(*) FILTER (
                 WHERE status = 'pr_merged'
                   AND closed_at >= $1
@@ -1075,16 +1086,43 @@ async def get_qa_summary(
             ) AS self_resolved_7d_pct,
             COUNT(*) FILTER (
                 WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
-            ) AS active_cases_now
+            ) AS active_cases_now,
+            -- Prior-period KPIs (for delta sub-labels)
+            COUNT(*) FILTER (
+                WHERE status = 'pr_merged'
+                  AND closed_at >= $3
+                  AND closed_at < $1
+            ) AS prs_landed_prior_24h,
+            AVG(EXTRACT(EPOCH FROM (closed_at - created_at))) FILTER (
+                WHERE closed_at >= $3
+                  AND closed_at < $1
+                  AND status IN ('pr_merged', 'failed', 'timeout', 'unfixable')
+            ) AS mttr_prior_24h_seconds,
+            (
+                100.0 * COUNT(*) FILTER (
+                    WHERE status = 'pr_merged'
+                      AND closed_at >= $4
+                      AND closed_at < $2
+                ) / NULLIF(
+                    COUNT(*) FILTER (
+                        WHERE status IN ('pr_merged', 'unfixable', 'failed')
+                          AND closed_at >= $4
+                          AND closed_at < $2
+                    ),
+                    0
+                )
+            ) AS self_resolved_prior_7d_pct
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
           AND (
               status IN ('dispatch_pending', 'investigating', 'pr_open')
-              OR closed_at >= $2
+              OR closed_at >= $4
           )
         """,
         cutoff_24h,
-        datetime.now(tz=UTC) - timedelta(days=7),
+        cutoff_7d,
+        cutoff_48h,
+        cutoff_14d,
     )
     kpis = QaKpiBlock(
         prs_landed_24h=int(kpis_row["prs_landed_24h"] or 0) if kpis_row else 0,
@@ -1099,6 +1137,17 @@ async def get_qa_summary(
             else 0.0
         ),
         active_cases_now=int(kpis_row["active_cases_now"] or 0) if kpis_row else 0,
+        prs_landed_prior_24h=int(kpis_row["prs_landed_prior_24h"] or 0) if kpis_row else 0,
+        mttr_prior_24h_seconds=(
+            float(kpis_row["mttr_prior_24h_seconds"])
+            if kpis_row and kpis_row["mttr_prior_24h_seconds"] is not None
+            else None
+        ),
+        self_resolved_prior_7d_pct=(
+            round(float(kpis_row["self_resolved_prior_7d_pct"]), 2)
+            if kpis_row and kpis_row["self_resolved_prior_7d_pct"] is not None
+            else None
+        ),
     )
 
     active_breakdown_row = await pool.fetchrow(
