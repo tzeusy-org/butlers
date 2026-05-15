@@ -13,7 +13,7 @@
  * the editorial layout.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -285,8 +285,14 @@ describe("DashboardPage -- state_class variants", () => {
 
 describe("DashboardPage -- AttentionList", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T12:00:00.000Z"));
     vi.resetAllMocks();
     setDefaultData();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("renders 'Nothing waiting.' when there are no current attention rows", () => {
@@ -321,8 +327,6 @@ describe("DashboardPage -- AttentionList", () => {
   });
 
   it("renders issue descriptions when issues are present", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-14T12:00:00.000Z"));
     vi.mocked(useIssues).mockReturnValue({
       data: {
         data: [
@@ -343,17 +347,11 @@ describe("DashboardPage -- AttentionList", () => {
       isError: false,
       error: null,
     } as AnyMock);
-    try {
-      const html = renderPage();
-      expect(html).toContain("Session failed unexpectedly.");
-    } finally {
-      vi.useRealTimers();
-    }
+    const html = renderPage();
+    expect(html).toContain("Session failed unexpectedly.");
   });
 
   it("renders capped recency-aware issue rows and summarizes old groups under the router basename", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-14T12:00:00.000Z"));
     vi.mocked(useIssues).mockReturnValue({
       data: {
         data: [
@@ -386,19 +384,15 @@ describe("DashboardPage -- AttentionList", () => {
       error: null,
     } as AnyMock);
 
-    try {
-      const html = renderPage({ basename: "/butlers-dev" });
-      expect(html).toContain("Current grouped failure.");
-      expect(html).toContain("general and health");
-      expect(html).toContain("2 occurrences");
-      expect(html).toContain("last seen 1h ago");
-      expect(html).toContain('href="/butlers-dev/issues?group=current"');
-      expect(html).toContain("1 older issue group");
-      expect(html).toContain('href="/butlers-dev/issues"');
-      expect(html).not.toContain("Old audit group.");
-    } finally {
-      vi.useRealTimers();
-    }
+    const html = renderPage({ basename: "/butlers-dev" });
+    expect(html).toContain("Current grouped failure.");
+    expect(html).toContain("general and health");
+    expect(html).toContain("2 occurrences");
+    expect(html).toContain("last seen 1h ago");
+    expect(html).toContain('href="/butlers-dev/issues?group=current"');
+    expect(html).toContain("1 older issue group");
+    expect(html).toContain('href="/butlers-dev/issues"');
+    expect(html).not.toContain("Old audit group.");
   });
 });
 
