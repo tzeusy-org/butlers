@@ -203,7 +203,26 @@ def _get_qa_investigation_notes_parse_total():
         return None
 
 
+def _get_qa_anonymization_failed_total():
+    """Return the qa_anonymization_failed_total Prometheus Counter."""
+    try:
+        from prometheus_client import Counter
+
+        return Counter(
+            "qa_anonymization_failed_total",
+            "Total QA PR payloads rejected by anonymization validation",
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus counter "
+            "'qa_anonymization_failed_total'; metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
 _qa_investigation_notes_parse_total = _get_qa_investigation_notes_parse_total()
+_qa_anonymization_failed_total = _get_qa_anonymization_failed_total()
 
 
 def _set_investigation_notes_span_attributes(
@@ -235,6 +254,64 @@ def _record_investigation_notes_parse(status: ParseStatus) -> None:
             "Failed to record qa_investigation_notes_parse_total metric",
             exc_info=True,
         )
+
+
+def _record_qa_anonymization_failed() -> None:
+    if _qa_anonymization_failed_total is None:
+        return
+    try:
+        _qa_anonymization_failed_total.inc()
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Failed to record qa_anonymization_failed_total metric",
+            exc_info=True,
+        )
+
+
+_ANONYMIZATION_FAILED_ERROR = "anonymization_failed"
+_ANONYMIZATION_FAILURE_EVENT_TEXT = "anonymization validator rejected PR payload"
+
+
+def _is_anonymization_failure_error(error: str | None) -> bool:
+    return error == _ANONYMIZATION_FAILED_ERROR or bool(
+        error and error.startswith(f"{_ANONYMIZATION_FAILED_ERROR}:")
+    )
+
+
+def _clean_validator_reason(reason: str) -> str:
+    """Keep validator reason metadata while dropping raw surrounding context."""
+    one_line = " ".join(reason.split())
+    return one_line.split("; context:", 1)[0].strip()
+
+
+def _format_anonymization_validator_detail(violations: list[str]) -> str:
+    if not violations:
+        return "validator reported residual sensitive content"
+
+    cleaned = [
+        detail for violation in violations[:3] if (detail := _clean_validator_reason(violation))
+    ]
+    if not cleaned:
+        return "validator reported residual sensitive content"
+
+    if len(violations) > len(cleaned):
+        cleaned.append(f"{len(violations) - len(cleaned)} additional validator reason(s)")
+
+    return "; ".join(cleaned)
+
+
+def _anonymization_failure_error(detail: str | None = None) -> str:
+    if not detail:
+        return _ANONYMIZATION_FAILED_ERROR
+    return f"{_ANONYMIZATION_FAILED_ERROR}: {detail}"
+
+
+def _anonymization_failure_detail(error: str | None) -> str:
+    if error and error.startswith(f"{_ANONYMIZATION_FAILED_ERROR}:"):
+        return _clean_validator_reason(
+            error.removeprefix(f"{_ANONYMIZATION_FAILED_ERROR}:").strip()
+        )
+    return "validator reported residual sensitive content"
 
 
 #: Environment variables that must never leak into investigation agent sandboxes.
@@ -1058,6 +1135,48 @@ async def _record_escalation_for_terminal(
         )
 
 
+async def _transition_anonymization_failed_with_journal(
+    pool: asyncpg.Pool,
+    *,
+    attempt_id: uuid.UUID,
+    pr_error: str | None,
+    healing_session_id: uuid.UUID | None,
+) -> None:
+    async def _record(session: asyncpg.Pool | asyncpg.Connection) -> None:
+        transitioned = await update_attempt_status(
+            session,
+            attempt_id,
+            "anonymization_failed",
+            error_detail="PR blocked: residual PII or credentials detected after anonymization",
+            healing_session_id=healing_session_id,
+        )
+        if not transitioned:
+            return
+        try:
+            await record_event(
+                session,
+                attempt_id=attempt_id,
+                step="escalated",
+                text=_ANONYMIZATION_FAILURE_EVENT_TEXT,
+                detail=_anonymization_failure_detail(pr_error),
+            )
+        except Exception as _journal_exc:  # noqa: BLE001
+            logger.debug(
+                "QA dispatch: failed to record anonymization failure journal event "
+                "(attempt=%s): %s",
+                attempt_id,
+                _journal_exc,
+            )
+
+    if isinstance(pool, asyncpg.Pool):
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await _record(conn)
+        return
+
+    await _record(pool)
+
+
 async def _persist_diff_snapshot(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,
@@ -1154,7 +1273,8 @@ async def _create_qa_pr(
     tuple[str | None, int | None, datetime | None, str | None]
         ``(pr_url, pr_number, pr_created_at, error_message)``  — *error_message* is:
         - ``None`` on success,
-        - ``"anonymization_failed"`` when PII validation blocks the PR,
+        - ``"anonymization_failed"`` when PII validation blocks the PR; may
+          include a sanitized validator reason after ``": "``.
         - ``"no_gh_token"`` when no GitHub token is available,
         - ``"repo_not_whitelisted:remote_unavailable"`` when the origin
           remote URL cannot be resolved; PR creation is blocked fail-closed,
@@ -1263,6 +1383,8 @@ async def _create_qa_pr(
     body_clean, body_violations = validate_anonymized(pr_body)
     if not title_clean or not body_clean:
         violations = title_violations + body_violations
+        validator_detail = _format_anonymization_validator_detail(violations)
+        _record_qa_anonymization_failed()
         logger.warning(
             "Anonymization validation failed for QA investigation PR (attempt=%s): "
             "%d violation(s): %s",
@@ -1280,7 +1402,7 @@ async def _create_qa_pr(
                 branch_name,
                 delete_error,
             )
-        return None, None, None, "anonymization_failed"
+        return None, None, None, _anonymization_failure_error(validator_detail)
 
     if _qa_pr_body_contains_raw_evidence_marker(pr_body):
         logger.warning(
@@ -1297,7 +1419,12 @@ async def _create_qa_pr(
                 branch_name,
                 delete_error,
             )
-        return None, None, None, "anonymization_failed"
+        return (
+            None,
+            None,
+            None,
+            _anonymization_failure_error("raw evidence marker detected in PR body"),
+        )
 
     # Step 5: gh pr create
     label_args: list[str] = []
@@ -1674,7 +1801,7 @@ async def _run_investigation_session(
             [] if pr_error == "no_op_branch" else await _capture_commit_diff_snapshot(worktree_path)
         )
 
-        if pr_error == "anonymization_failed":
+        if _is_anonymization_failure_error(pr_error):
             if metrics is not None:
                 _elapsed = (_time.monotonic() - _phase_start) * 1000
                 metrics.record_recovery_phase_duration(
@@ -1698,11 +1825,10 @@ async def _run_investigation_session(
                     )
                 except Exception as _pss_exc:
                     logger.debug("Failed to mark phase session failed: %s", _pss_exc)
-            await update_attempt_status(
+            await _transition_anonymization_failed_with_journal(
                 pool,
-                attempt_id,
-                "anonymization_failed",
-                error_detail="PR blocked: residual PII or credentials detected after anonymization",
+                attempt_id=attempt_id,
+                pr_error=pr_error,
                 healing_session_id=investigation_session_id,
             )
             await _persist_notes_and_remove_worktree(
