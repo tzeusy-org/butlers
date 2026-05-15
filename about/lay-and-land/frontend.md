@@ -361,6 +361,7 @@ butlers add entries here regularly).
 ### Domain components by butler and surface
 | Domain | Folder | Notable components |
 |---|---|---|
+| QA dossier | `qa/` | `QaKpiStrip`, `CaseList`, `CaseDossierHeader`, `StateTrack`, `ClaimAnchoredBlurb`, `EvidenceLog`, `CounterEvidence`, `PRPanel`, `DiffPreview`, `PatrolJournal` |
 | Butlers detail | `butler-detail/` | 13+ tab components |
 | Notifications | `notifications/` | feed, stats bar |
 | Memory | `memory/` | tier cards, browser, ConcentricCircles dialog |
@@ -385,6 +386,8 @@ butlers add entries here regularly).
 | Settings | `settings/` | (small) |
 | Chat | `chat/` | (small) |
 | Secrets | `secrets/` | (small, has top-level table test) |
+
+The `frontend/src/components/qa/` directory hosts the QA dossier surface introduced by the `redesign-qa-dossier` OpenSpec change. It renders each investigation as a living case record rather than a status-and-pipeline dashboard: a 320 px `CaseList` rail of severity-tagged cases, a `CaseDossierHeader` + `StateTrack` state pipe (`detect — diagnose — pr — landed`), a `ClaimAnchoredBlurb` driven by `InvestigationNotes.blurb_segments`, an `EvidenceLog` whose rows highlight on claim hover, a `CounterEvidence` mono table, a `PRPanel` with `DiffPreview` rendering `diff_snapshot[]`, and a full-width `PatrolJournal` for the `qa_investigation_events` timeline. A `QaKpiStrip` at the top of the page shows `prs landed · 24h`, `mttr · 24h`, `self-resolved · 7d`, and `active cases · now`, consuming the `/api/qa/summary` KPI block. All components consume Dispatch design tokens already present in `frontend/src/index.css` and do not introduce new palette entries.
 
 Stability: **Maturing** overall. The list grows with the roster, and
 the shapes of "tab", "detail", "list" components are not yet

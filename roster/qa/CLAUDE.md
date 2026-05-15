@@ -106,4 +106,38 @@ When you are spawned as an LLM session (e.g., for a `force_patrol` dispatch):
 
 ---
 
+## Investigation Notes Artifact
+
+When you are running as an **investigation agent** and reach a terminal step
+(commit ready, or unfixable verdict), you MUST emit a structured artifact
+before signalling completion.
+
+Load and follow the skill at `.agents/skills/investigation-notes/SKILL.md`
+(also accessible as `.claude/skills/investigation-notes/SKILL.md`).
+
+**In brief:** write `./.qa/investigation_notes.json` in your worktree. The
+Pydantic model is `InvestigationNotes` in `src/butlers/core/qa/notes.py`.
+Required fields:
+
+| Field | Purpose |
+|---|---|
+| `schema_version` | Always `1` |
+| `headline` | One-line anonymized case title (renders in the dossier rail) |
+| `hypothesis` | Root-cause claim, 1–2 sentences |
+| `blurb_segments` | Mixed list: plain strings or `{claim, text}` objects anchored to claim ids |
+| `claims` | Dict of claim ids → `{evidence_ids, note}` |
+| `evidence_lines` | Raw log lines: `{id, ts, lvl, butler, msg}` — operator-only, never sent to GitHub |
+| `counter_evidence` | Ruled-out hypotheses: `{hypothesis, verdict, reason}` |
+| `why_this_fix` | One sentence explaining why this fix resolves the root cause |
+| `diff_snapshot` | Leave as `[]` — the dispatcher populates it from `git diff HEAD~1..HEAD` |
+
+Anonymization rule: `headline`, `hypothesis`, and other narrative fields must
+not contain PII. `evidence_lines[].msg` is operator-only and should contain
+the raw log line as observed.
+
+The dispatcher will best-effort-parse a partial emission rather than failing
+the investigation. An empty object `{}` is better than no file.
+
+---
+
 ## Notes to Self

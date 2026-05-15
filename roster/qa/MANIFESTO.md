@@ -14,6 +14,12 @@ and deduplicates findings, and dispatches automated investigation agents that
 propose fixes via PRs. It subsumes per-butler self-healing into a unified
 quality assurance function.
 
+The operator-facing surface is the **QA dossier** at `/qa`. Rather than a
+status dashboard, the dossier presents each investigation as a living case
+record: a claim-anchored diagnosis, inline evidence, counter-evidence, a
+step-by-step journal, and a diff preview of the proposed fix. The case list
+sits in a 320 px left rail; selecting a case opens the full dossier body.
+
 ---
 
 ## Responsibilities
@@ -32,6 +38,16 @@ quality assurance function.
   Switchboard `route()` → `report_finding` tool. This is direct
   butler-to-staffer tool routing — not user-message classification.
 - **Status reporting:** Expose `get_qa_status` and `force_patrol` MCP tools.
+- **Journal capture:** Every QA decision is recorded as a
+  `qa_investigation_events` row (`flagged`, `sampled`, `cross-checked`,
+  `considered`, `concluded`, `drafted`, `wait`, `merged`, `tick`,
+  `escalated`). This row stream is the source of truth for the dossier's
+  patrol journal and patrol-cadence `tick` events.
+- **Investigation notes:** When an investigation agent reaches a terminal
+  state it writes `./.qa/investigation_notes.json` inside its worktree. The
+  dispatcher reads, validates, and persists this artifact into
+  `qa_findings.structured_evidence.investigation_notes` before worktree
+  teardown.
 
 ## Non-Responsibilities
 
@@ -42,6 +58,19 @@ quality assurance function.
 - QA Staffer does **not** access butler schemas directly. It uses only
   `public.v_qa_recent_failures` (sanctioned read-only SQL view) and writes to
   `public.qa_patrols`, `public.qa_findings`, `public.healing_attempts`.
+- QA Staffer does **not** surface raw log lines beyond the private operator
+  dashboard. Any content bound for GitHub (PR titles, PR bodies, commit
+  messages) passes through `anonymize()` + `validate_anonymized()`.
+
+## Retention Policy
+
+Raw evidence stored on `qa_findings.structured_evidence.evidence_lines[]` is
+purged after **30 days** (or 14 days after a case closes, whichever comes
+first). The daily cleanup job runs at 04:00 UTC. It strips only the
+`evidence_lines[]` field; all narrative payload (`headline`, `hypothesis`,
+`why_this_fix`, `diff_snapshot`, `counter_evidence`, `blurb_segments`,
+`claims`) is preserved **indefinitely**. Cases still in a non-terminal state
+are exempt from the 14-day clock until the attempt closes.
 
 ---
 
