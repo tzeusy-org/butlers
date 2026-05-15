@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import butlers.core.qa.dispatch as dispatch_module
 from butlers.core.qa.dispatch import _persist_investigation_notes
 from butlers.core.qa.notes import InvestigationNotes, parse_investigation_notes
 
@@ -78,6 +79,32 @@ class _FakeParseCounter:
         self.counts[self._status] += 1
 
 
+class _FakeSpan:
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+
+    def set_attribute(self, key: str, value: object) -> None:
+        self.attributes[key] = value
+
+
+def test_notes_parse_counter_registered_with_status_label(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class FakeCounter:
+        def __init__(self, name, documentation, labelnames=None):
+            captured["name"] = name
+            captured["documentation"] = documentation
+            captured["labelnames"] = labelnames
+
+    monkeypatch.setattr("prometheus_client.Counter", FakeCounter)
+
+    counter = dispatch_module._get_qa_investigation_notes_parse_total()
+
+    assert isinstance(counter, FakeCounter)
+    assert captured["name"] == "qa_investigation_notes_parse_total"
+    assert captured["labelnames"] == ["status"]
+
+
 def test_full_parse():
     payload = _valid_notes_payload()
 
@@ -145,10 +172,15 @@ async def test_dispatcher_persists_ok_notes(tmp_path: Path, monkeypatch: pytest.
         counter,
     )
 
-    status = await _persist_investigation_notes(pool, attempt_id, tmp_path)
+    span = _FakeSpan()
+    status = await _persist_investigation_notes(pool, attempt_id, tmp_path, otel_span=span)
 
     assert status == "ok"
     assert counter.counts == {"ok": 1, "partial": 0, "failed": 0}
+    assert span.attributes == {
+        "qa.notes_emitted": True,
+        "qa.notes_parse_status": "ok",
+    }
     pool.execute.assert_awaited_once()
     sql, persisted_attempt_id, persisted_payload = pool.execute.await_args.args
     assert "jsonb_set" in sql
@@ -182,6 +214,32 @@ async def test_dispatcher_handles_missing_notes_file(
     pool.execute.assert_not_awaited()
     pool.fetchval.assert_not_awaited()
     assert "emitted no structured notes artifact" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_sets_span_attrs_when_notes_file_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempt_id = uuid.uuid4()
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    pool.fetchval = AsyncMock()
+    counter = _FakeParseCounter()
+    span = _FakeSpan()
+    monkeypatch.setattr(
+        "butlers.core.qa.dispatch._qa_investigation_notes_parse_total",
+        counter,
+    )
+
+    status = await _persist_investigation_notes(pool, attempt_id, tmp_path, otel_span=span)
+
+    assert status == "failed"
+    assert span.attributes == {
+        "qa.notes_emitted": False,
+        "qa.notes_parse_status": "failed",
+    }
+    assert counter.counts == {"ok": 0, "partial": 0, "failed": 1}
 
 
 @pytest.mark.asyncio

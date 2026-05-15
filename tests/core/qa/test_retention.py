@@ -43,6 +43,24 @@ def _module_with_pool(pool: _FakePool) -> QaModule:
     return module
 
 
+def test_retention_counter_registered_without_labels(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class FakeCounter:
+        def __init__(self, name, documentation, labelnames=None):
+            captured["name"] = name
+            captured["documentation"] = documentation
+            captured["labelnames"] = labelnames
+
+    monkeypatch.setattr("prometheus_client.Counter", FakeCounter)
+
+    counter = qa_module._get_qa_findings_retention_purged_total()
+
+    assert isinstance(counter, FakeCounter)
+    assert captured["name"] == "qa_findings_retention_purged_total"
+    assert captured["labelnames"] is None
+
+
 def _row(
     *,
     created_at: datetime,

@@ -206,6 +206,25 @@ def _get_qa_investigation_notes_parse_total():
 _qa_investigation_notes_parse_total = _get_qa_investigation_notes_parse_total()
 
 
+def _set_investigation_notes_span_attributes(
+    span: Any | None,
+    *,
+    notes_emitted: bool,
+    parse_status: ParseStatus,
+) -> None:
+    """Annotate the root QA investigation span with notes artifact telemetry."""
+    if span is None:
+        return
+    try:
+        span.set_attribute("qa.notes_emitted", notes_emitted)
+        span.set_attribute("qa.notes_parse_status", parse_status)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Failed to set QA investigation notes span attributes",
+            exc_info=True,
+        )
+
+
 def _record_investigation_notes_parse(status: ParseStatus) -> None:
     if _qa_investigation_notes_parse_total is None:
         return
@@ -853,6 +872,7 @@ async def _persist_investigation_notes(
     worktree_path: Path,
     *,
     diff_snapshot: list[dict[str, str]] | None = None,
+    otel_span: Any | None = None,
 ) -> ParseStatus:
     """Persist agent-authored structured notes for all findings on an attempt.
 
@@ -865,6 +885,11 @@ async def _persist_investigation_notes(
         raw = notes_path.read_text(encoding="utf-8")
     except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
         _record_investigation_notes_parse("failed")
+        _set_investigation_notes_span_attributes(
+            otel_span,
+            notes_emitted=False,
+            parse_status="failed",
+        )
         logger.info(
             "QA investigation emitted no structured notes artifact "
             "(attempt=%s path=%s); skipping notes persistence",
@@ -874,6 +899,11 @@ async def _persist_investigation_notes(
         return "failed"
     except (OSError, UnicodeDecodeError) as exc:
         _record_investigation_notes_parse("failed")
+        _set_investigation_notes_span_attributes(
+            otel_span,
+            notes_emitted=True,
+            parse_status="failed",
+        )
         logger.warning(
             "Failed to read QA investigation notes artifact "
             "(attempt=%s path=%s): %s; skipping notes persistence",
@@ -885,6 +915,11 @@ async def _persist_investigation_notes(
 
     notes, status = parse_investigation_notes(raw)
     _record_investigation_notes_parse(status)
+    _set_investigation_notes_span_attributes(
+        otel_span,
+        notes_emitted=True,
+        parse_status=status,
+    )
     if notes is None:
         logger.info(
             "QA investigation notes artifact did not parse "
@@ -1059,6 +1094,7 @@ async def _persist_notes_and_remove_worktree(
     delete_branch: bool,
     delete_remote: bool,
     diff_snapshot: list[dict[str, str]] | None = None,
+    otel_span: Any | None = None,
 ) -> None:
     notes_status: ParseStatus = "failed"
     try:
@@ -1067,6 +1103,7 @@ async def _persist_notes_and_remove_worktree(
             attempt_id,
             worktree_path,
             diff_snapshot=diff_snapshot,
+            otel_span=otel_span,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -1575,6 +1612,7 @@ async def _run_investigation_session(
                 worktree_path,
                 delete_branch=True,
                 delete_remote=False,
+                otel_span=_inv_span,
             )
             return
 
@@ -1616,6 +1654,7 @@ async def _run_investigation_session(
                 delete_branch=True,
                 delete_remote=False,
                 diff_snapshot=[],
+                otel_span=_inv_span,
             )
             return
 
@@ -1675,6 +1714,7 @@ async def _run_investigation_session(
                 delete_branch=True,
                 delete_remote=False,
                 diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
             )
             return
 
@@ -1721,6 +1761,7 @@ async def _run_investigation_session(
                 delete_branch=True,
                 delete_remote=False,
                 diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
             )
             return
 
@@ -1776,6 +1817,7 @@ async def _run_investigation_session(
                 delete_branch=True,
                 delete_remote=False,
                 diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
             )
             return
 
@@ -1835,6 +1877,7 @@ async def _run_investigation_session(
                 delete_branch=True,
                 delete_remote=False,
                 diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
             )
             return
 
@@ -1881,6 +1924,7 @@ async def _run_investigation_session(
                 delete_branch=True,
                 delete_remote=False,
                 diff_snapshot=[],
+                otel_span=_inv_span,
             )
             return
 
@@ -1927,6 +1971,7 @@ async def _run_investigation_session(
                 delete_branch=True,
                 delete_remote=False,
                 diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
             )
             return
 
@@ -1976,6 +2021,7 @@ async def _run_investigation_session(
             delete_branch=False,
             delete_remote=False,
             diff_snapshot=diff_snapshot,
+            otel_span=_inv_span,
         )
         # Record success only after DB status update and worktree cleanup succeed,
         # so that no conflicting failure metric is emitted for the same attempt.
@@ -2059,6 +2105,7 @@ async def _run_investigation_session(
             worktree_path,
             delete_branch=True,
             delete_remote=False,
+            otel_span=_inv_span,
         )
     finally:
         if metrics is not None:
