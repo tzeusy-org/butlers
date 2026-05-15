@@ -41,7 +41,6 @@ import { NextList } from "@/components/overview/NextList";
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
 import { Section } from "@/components/overview/Section";
 import { deriveOverviewTriageModel } from "@/components/overview/model";
-import type { Issue } from "@/api/types";
 
 export default function DashboardPage() {
   // Briefing
@@ -72,17 +71,6 @@ export default function DashboardPage() {
     qaSummary: qaSummaryQuery.isError ? null : qaSummaryQuery.data?.data,
     timeline: timelineQuery.data?.data ?? [],
   });
-
-  const attentionItems = model.attentionRows.map((row): Issue => ({
-    severity: row.severity,
-    type: row.kind,
-    butler: row.butlers?.join(", ") ?? "system",
-    description: row.title,
-    link: row.href,
-    error_message: row.detail,
-    occurrences: row.count,
-    butlers: row.butlers,
-  }));
 
   const nextItems = model.nowRows.map((row) => ({
     time: "now",
@@ -132,7 +120,7 @@ export default function DashboardPage() {
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
           <Section eyebrow="Needs attention">
-            <AttentionList items={attentionItems} />
+            <AttentionList items={model.attentionRows} />
           </Section>
 
           <RuntimeSummaryKpi

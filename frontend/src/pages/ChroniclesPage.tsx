@@ -20,7 +20,7 @@ import { Page } from "@/components/ui/page";
 import { Headline } from "@/components/overview/Headline";
 import { Elaboration } from "@/components/overview/Elaboration";
 import { KpiStrip } from "@/components/overview/KpiStrip";
-import { AttentionList } from "@/components/overview/AttentionList";
+import { AttentionList, type AttentionListItem } from "@/components/overview/AttentionList";
 import { Section } from "@/components/overview/Section";
 import { ChroniclesDrilldownPanel } from "@/components/chronicles/ChroniclesDrilldownPanel";
 import { RecentDaysIndex } from "@/components/chronicles/RecentDaysIndex";
@@ -28,7 +28,6 @@ import type {
   ChroniclesAttentionItem,
   ChroniclesKpi,
   ChroniclesVoiceSource,
-  Issue,
 } from "@/api/types";
 
 // ---------------------------------------------------------------------------
@@ -128,19 +127,16 @@ function buildKpiCells(kpi: ChroniclesKpi): React.ComponentProps<typeof KpiStrip
 }
 
 /**
- * Adapt ``ChroniclesAttentionItem[]`` to the ``Issue[]`` shape the existing
- * ``AttentionList`` primitive consumes. We map ``severity`` straight through,
- * fold ``title``/``detail`` into the Issue ``summary`` and ``error_message``
- * slots, and route any ``action_href`` via the issue id (a no-op for v1).
+ * Adapt ``ChroniclesAttentionItem[]`` to the row shape the shared
+ * ``AttentionList`` primitive consumes.
  */
-function adaptAttention(items: ChroniclesAttentionItem[]): Issue[] {
+function adaptAttention(items: ChroniclesAttentionItem[]): AttentionListItem[] {
   return items.map((it) => ({
+    id: `chronicles:${it.kind}:${it.title}`,
     severity: it.severity,
-    type: it.kind,
-    butler: "chronicler",
-    description: it.title,
-    link: it.action_href,
-    error_message: it.detail,
+    title: it.title,
+    detail: it.detail,
+    href: it.action_href,
   }));
 }
 

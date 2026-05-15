@@ -167,11 +167,12 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
   } as AnyMock);
 }
 
-function renderPage(): string {
+function renderPage({ basename = "" }: { basename?: string } = {}): string {
   const queryClient = new QueryClient();
+  const initialEntries = basename ? [`${basename}/`] : ["/"];
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter basename={basename} initialEntries={initialEntries}>
         <DashboardPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -329,6 +330,9 @@ describe("DashboardPage -- AttentionList", () => {
             butler: "general",
             description: "Session failed unexpectedly.",
             link: null,
+            first_seen_at: "2026-05-14T10:00:00.000Z",
+            last_seen_at: "2026-05-14T11:00:00.000Z",
+            occurrences: 1,
           },
         ],
         meta: {},
@@ -339,6 +343,56 @@ describe("DashboardPage -- AttentionList", () => {
     } as AnyMock);
     const html = renderPage();
     expect(html).toContain("Session failed unexpectedly.");
+  });
+
+  it("renders capped recency-aware issue rows and summarizes old groups under the router basename", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T12:00:00.000Z"));
+    vi.mocked(useIssues).mockReturnValue({
+      data: {
+        data: [
+          {
+            severity: "high",
+            type: "session",
+            butler: "general",
+            butlers: ["general", "health"],
+            description: "Current grouped failure.",
+            link: "/issues?group=current",
+            first_seen_at: "2026-05-14T09:00:00.000Z",
+            last_seen_at: "2026-05-14T11:00:00.000Z",
+            occurrences: 2,
+          },
+          {
+            severity: "medium",
+            type: "audit",
+            butler: "finance",
+            description: "Old audit group.",
+            link: "/issues?group=old",
+            first_seen_at: "2026-05-12T09:00:00.000Z",
+            last_seen_at: "2026-05-12T11:00:00.000Z",
+            occurrences: 5,
+          },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    try {
+      const html = renderPage({ basename: "/butlers-dev" });
+      expect(html).toContain("Current grouped failure.");
+      expect(html).toContain("general and health");
+      expect(html).toContain("2 occurrences");
+      expect(html).toContain("last seen 1h ago");
+      expect(html).toContain('href="/butlers-dev/issues?group=current"');
+      expect(html).toContain("1 older issue group");
+      expect(html).toContain('href="/butlers-dev/issues"');
+      expect(html).not.toContain("Old audit group.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

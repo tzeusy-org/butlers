@@ -75,6 +75,7 @@ export interface OverviewAttentionRow {
   detail: string;
   href: string | null;
   count?: number;
+  lastSeenAt?: string | null;
   butlers?: string[];
 }
 
@@ -137,12 +138,20 @@ export function deriveOverviewTriageModel(
   const approvalRows = approvalAttentionRows(input.approvalMetrics);
   const notificationRows = notificationAttentionRows(input.notificationStats);
   const qaRows = qaAttentionRows(input.qaSummary);
-  const recentIssueRows = issueBuckets.recent
-    .slice(0, maxRecentIssueRows)
-    .map((issue) => issueAttentionRow(issue, now));
+  const currentHighIssues = issueBuckets.currentHigh.slice(0, maxRecentIssueRows);
+  const remainingIssueSlots = Math.max(maxRecentIssueRows - currentHighIssues.length, 0);
+  const recentIssues = issueBuckets.recent.slice(0, remainingIssueSlots);
+  const hiddenCurrentIssueGroups =
+    Math.max(issueBuckets.currentHigh.length - currentHighIssues.length, 0) +
+    Math.max(issueBuckets.recent.length - recentIssues.length, 0);
+
+  const currentHighIssueRows = currentHighIssues.map((issue) => issueAttentionRow(issue, now));
+  const recentIssueRows = recentIssues.map((issue) => issueAttentionRow(issue, now));
+  const hiddenOldIssueGroups = options.includeOldIssueRows ? 0 : issueBuckets.old.length;
+  const hiddenIssueGroups = hiddenOldIssueGroups + hiddenCurrentIssueGroups;
 
   const attentionRows = [
-    ...issueBuckets.currentHigh.map((issue) => issueAttentionRow(issue, now)),
+    ...currentHighIssueRows,
     ...runtimeRows,
     ...approvalRows,
     ...notificationRows,
@@ -150,17 +159,20 @@ export function deriveOverviewTriageModel(
     ...recentIssueRows,
   ];
 
-  if (issueBuckets.old.length > 0 && !options.includeOldIssueRows) {
+  if (hiddenIssueGroups > 0) {
+    const onlyOldGroups = hiddenCurrentIssueGroups === 0;
     attentionRows.push({
       id: "issues-old-summary",
       kind: "old-issues-summary",
       severity: "info",
-      title: `${issueBuckets.old.length} older issue group${
-        issueBuckets.old.length === 1 ? "" : "s"
+      title: `${hiddenIssueGroups} ${onlyOldGroups ? "older" : "more"} issue group${
+        hiddenIssueGroups === 1 ? "" : "s"
       }`,
-      detail: "Older groups stay on the issues page unless they become current again.",
+      detail: onlyOldGroups
+        ? "Older groups stay on the issues page unless they become current again."
+        : "The full issue list stays on the issues page.",
       href: "/issues",
-      count: issueBuckets.old.length,
+      count: hiddenIssueGroups,
     });
   }
 
@@ -182,7 +194,7 @@ export function deriveOverviewTriageModel(
     attentionRows,
     operationsRows,
     nowRows,
-    hiddenOldIssueGroups: options.includeOldIssueRows ? 0 : issueBuckets.old.length,
+    hiddenOldIssueGroups,
   };
 }
 
@@ -279,7 +291,7 @@ function compareIssues(a: Issue, b: Issue): number {
   if (!timeA && !timeB) return 0;
   if (!timeA) return 1;
   if (!timeB) return -1;
-  return timeA.localeCompare(timeB);
+  return timeB.localeCompare(timeA);
 }
 
 function issueSeverityRank(severity: string): number {
@@ -298,7 +310,7 @@ function issueSeverityRank(severity: string): number {
 }
 
 function issueSortTimestamp(issue: Issue): string {
-  return issue.first_seen_at ?? issue.last_seen_at ?? "";
+  return issue.last_seen_at ?? issue.first_seen_at ?? "";
 }
 
 function issueAttentionRow(issue: Issue, now: Date): OverviewAttentionRow {
@@ -308,8 +320,8 @@ function issueAttentionRow(issue: Issue, now: Date): OverviewAttentionRow {
   if ((issue.occurrences ?? 0) > 1) {
     details.push(`${issue.occurrences} occurrences`);
   }
-  const age = issueAgeDetail(issue, now);
-  if (age) details.push(age);
+  const recency = issueRecencyDetail(issue, now);
+  if (recency) details.push(recency);
 
   return {
     id: `issue:${issue.type}:${issue.butler}:${issue.description}`,
@@ -318,7 +330,8 @@ function issueAttentionRow(issue: Issue, now: Date): OverviewAttentionRow {
     title: issue.description,
     detail: details.join(" · "),
     href: issue.link,
-    count: issue.occurrences,
+    count: (issue.occurrences ?? 0) > 1 ? issue.occurrences : undefined,
+    lastSeenAt: issue.last_seen_at ?? null,
     butlers: issue.butlers,
   };
 }
@@ -509,20 +522,15 @@ function isHealthyStatus(status: string): boolean {
   return HEALTHY_STATUSES.has(status.toLowerCase());
 }
 
-function issueAgeDetail(issue: Issue, now: Date): string | null {
-  const timestamp = issue.first_seen_at ?? issue.last_seen_at;
+function issueRecencyDetail(issue: Issue, now: Date): string | null {
+  const timestamp = issue.last_seen_at ?? issue.first_seen_at;
   if (!timestamp) return null;
   const parsed = new Date(timestamp);
   if (Number.isNaN(parsed.getTime())) return null;
-  const nowFloored = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const thenFloored = new Date(
-    parsed.getFullYear(),
-    parsed.getMonth(),
-    parsed.getDate(),
-  ).getTime();
-  const diffDays = Math.floor((nowFloored - thenFloored) / (24 * 60 * 60 * 1000));
-  if (diffDays <= 0) return null;
-  return `open for ${diffDays}d`;
+  const diffSeconds = Math.max(0, Math.floor((now.getTime() - parsed.getTime()) / 1000));
+  const prefix = issue.last_seen_at ? "last seen" : "first seen";
+  if (diffSeconds < 60) return `${prefix} just now`;
+  return `${prefix} ${formatDuration(diffSeconds)} ago`;
 }
 
 function formatDuration(seconds: number): string {

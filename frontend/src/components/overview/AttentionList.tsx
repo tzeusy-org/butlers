@@ -13,10 +13,16 @@
 
 import { Link } from "react-router";
 
-import type { Issue } from "@/api/types";
+export interface AttentionListItem {
+  id: string;
+  severity: string;
+  title: string;
+  detail?: string | null;
+  href?: string | null;
+}
 
 interface AttentionListProps {
-  items: Issue[];
+  items: AttentionListItem[];
 }
 
 /**
@@ -60,7 +66,7 @@ export function AttentionList({ items }: AttentionListProps) {
         const { char, color } = severityGlyph(item.severity);
         return (
           <div
-            key={`${item.butler}-${item.type}-${i}`}
+            key={item.id}
             role="listitem"
             style={{
               display: "grid",
@@ -100,28 +106,29 @@ export function AttentionList({ items }: AttentionListProps) {
                   margin: 0,
                 }}
               >
-                {item.description}
+                {item.title}
               </p>
-              <p
-                style={{
-                  fontFamily: "var(--font-serif)",
-                  fontSize: "13px",
-                  color: "var(--muted-foreground)",
-                  lineHeight: 1.5,
-                  margin: 0,
-                  marginTop: "2px",
-                }}
-              >
-                {item.butler}
-                {item.error_message ? `: ${item.error_message}` : ""}
-              </p>
+              {item.detail ? (
+                <p
+                  style={{
+                    fontFamily: "var(--font-serif)",
+                    fontSize: "13px",
+                    color: "var(--muted-foreground)",
+                    lineHeight: 1.5,
+                    margin: 0,
+                    marginTop: "2px",
+                  }}
+                >
+                  {item.detail}
+                </p>
+              ) : null}
             </div>
 
             {/* Action column: arrow link if available */}
-            {item.link ? (
+            {item.href ? (
               <Link
-                to={item.link}
-                aria-label={`View: ${item.description}`}
+                to={item.href}
+                aria-label={`View: ${item.title}`}
                 style={{
                   color: "var(--muted-foreground)",
                   fontSize: "16px",

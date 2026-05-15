@@ -184,7 +184,41 @@ describe("deriveOverviewTriageModel", () => {
       "Current medium issue",
       "1 older issue group",
     ]);
+    expect(model.attentionRows[1]).toMatchObject({
+      href: "/issues",
+      count: 1,
+    });
     expect(model.attentionRows.find((row) => row.title === "Old high issue")).toBeUndefined();
+  });
+
+  it("caps visible issue groups and summarizes hidden groups behind the issues link", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({ description: "Issue 1", last_seen_at: "2026-05-14T11:50:00.000Z" }),
+          issue({ description: "Issue 2", last_seen_at: "2026-05-14T11:40:00.000Z" }),
+          issue({ description: "Issue 3", last_seen_at: "2026-05-14T11:30:00.000Z" }),
+          issue({ description: "Issue 4", last_seen_at: "2026-05-14T11:20:00.000Z" }),
+          issue({ description: "Issue 5", last_seen_at: "2026-05-14T11:10:00.000Z" }),
+          issue({ description: "Old issue", last_seen_at: "2026-05-12T11:00:00.000Z" }),
+        ],
+      },
+      { now: NOW, maxRecentIssueRows: 3 },
+    );
+
+    expect(model.attentionRows.map((row) => row.title)).toEqual([
+      "Issue 1",
+      "Issue 2",
+      "Issue 3",
+      "3 more issue groups",
+    ]);
+    expect(model.attentionRows.find((row) => row.title === "Issue 4")).toBeUndefined();
+    expect(model.attentionRows.find((row) => row.title === "Old issue")).toBeUndefined();
+    expect(model.attentionRows.at(-1)).toMatchObject({
+      kind: "old-issues-summary",
+      href: "/issues",
+      count: 3,
+    });
   });
 
   it("can emit old issue rows when explicitly requested", () => {
@@ -206,27 +240,105 @@ describe("deriveOverviewTriageModel", () => {
       kind: "issue",
       title: "Old issue",
     });
-    expect(model.attentionRows[0]?.detail).toContain("open for 2d");
+    expect(model.attentionRows[0]?.detail).toContain("last seen 2d ago");
   });
 
-  it("uses local calendar days for issue age labels", () => {
+  it("still summarizes capped current groups when old issue rows are included", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({ description: "Issue 1", last_seen_at: "2026-05-14T11:50:00.000Z" }),
+          issue({ description: "Issue 2", last_seen_at: "2026-05-14T11:40:00.000Z" }),
+          issue({ description: "Issue 3", last_seen_at: "2026-05-14T11:30:00.000Z" }),
+          issue({ description: "Issue 4", last_seen_at: "2026-05-14T11:20:00.000Z" }),
+          issue({ description: "Old issue", last_seen_at: "2026-05-12T11:00:00.000Z" }),
+        ],
+      },
+      { now: NOW, includeOldIssueRows: true, maxRecentIssueRows: 2 },
+    );
+
+    expect(model.hiddenOldIssueGroups).toBe(0);
+    expect(model.attentionRows.map((row) => row.title)).toEqual([
+      "Issue 1",
+      "Issue 2",
+      "2 more issue groups",
+      "Old issue",
+    ]);
+    expect(model.attentionRows.at(2)).toMatchObject({
+      kind: "old-issues-summary",
+      href: "/issues",
+      count: 2,
+    });
+  });
+
+  it("uses first-seen recency when last-seen is missing", () => {
     const model = deriveOverviewTriageModel(
       {
         issues: [
           issue({
-            first_seen_at: new Date(2026, 4, 14, 23, 30).toISOString(),
-            last_seen_at: new Date(2026, 4, 14, 23, 30).toISOString(),
+            first_seen_at: "2026-05-14T10:00:00.000Z",
+            last_seen_at: null,
           }),
         ],
       },
       {
-        now: new Date(2026, 4, 15, 0, 30),
-        includeOldIssueRows: true,
-        recentIssueHours: 48,
+        now: NOW,
       },
     );
 
-    expect(model.attentionRows[0]?.detail).toContain("open for 1d");
+    expect(model.attentionRows[0]?.detail).toContain("first seen 2h ago");
+    expect(model.attentionRows[0]?.lastSeenAt).toBeNull();
+  });
+
+  it("keeps issue rows current when timestamps are missing", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            first_seen_at: null,
+            last_seen_at: null,
+            occurrences: 1,
+          }),
+        ],
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows).toHaveLength(1);
+    expect(model.attentionRows[0]).toMatchObject({
+      kind: "issue",
+      title: "General issue",
+      count: undefined,
+    });
+    expect(model.attentionRows[0]?.detail).not.toContain("seen");
+    expect(model.hiddenOldIssueGroups).toBe(0);
+  });
+
+  it("renders multiple-butler issue group metadata", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            butler: "general",
+            butlers: ["general", "health", "relationship"],
+            occurrences: 4,
+            last_seen_at: "2026-05-14T11:30:00.000Z",
+          }),
+        ],
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows[0]).toMatchObject({
+      count: 4,
+      lastSeenAt: "2026-05-14T11:30:00.000Z",
+      butlers: ["general", "health", "relationship"],
+    });
+    expect(model.attentionRows[0]?.detail).toContain(
+      "general, health, and relationship",
+    );
+    expect(model.attentionRows[0]?.detail).toContain("4 occurrences");
+    expect(model.attentionRows[0]?.detail).toContain("last seen 30m ago");
   });
 
   it("handles zero and pending approvals in kpis, attention, and now rows", () => {
