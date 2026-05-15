@@ -618,4 +618,40 @@ describe("DashboardPage -- OperationsNowList", () => {
     expect(html).toContain("general ran health check");
     expect(html).toContain('href="/timeline"');
   });
+
+  it("renders a named 'QA status: unavailable' error row when qaSummary query fails", () => {
+    vi.mocked(useQaSummary).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Network error"),
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("QA status: unavailable");
+    expect(html).toContain('href="/qa"');
+  });
+
+  it("renders a named 'Notification status: unavailable' error row when notificationStats query fails", () => {
+    vi.mocked(useNotificationStats).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Network error"),
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("Notification status: unavailable");
+    expect(html).toContain('href="/notifications"');
+  });
+
+  it("renders a named 'Timeline: unavailable' error row when timeline query fails", () => {
+    vi.mocked(useTimeline).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Network error"),
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("Timeline: unavailable");
+    expect(html).toContain('href="/timeline"');
+  });
 });

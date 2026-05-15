@@ -79,8 +79,11 @@ export default function DashboardPage() {
     heartbeats: heartbeatQuery.isError ? null : heartbeatQuery.data?.data,
     approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetricsQuery.data?.data,
     notificationStats: notificationStatsQuery.isError ? null : notificationStatsQuery.data?.data,
+    notificationStatsError: notificationStatsQuery.isError,
     qaSummary: qaSummaryQuery.isError ? null : qaSummaryQuery.data?.data,
-    timeline: timelineQuery.data?.data ?? [],
+    qaSummaryError: qaSummaryQuery.isError,
+    timeline: timelineQuery.isError ? [] : (timelineQuery.data?.data ?? []),
+    timelineError: timelineQuery.isError,
   });
 
   // Briefing headline and greet with safe fallbacks

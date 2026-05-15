@@ -108,6 +108,9 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
       gh_token_present: null,
       provisioning_hint: null,
     },
+    port: null,
+    model: null,
+    patrol_interval_minutes: null,
     ...overrides,
   };
 }
@@ -612,5 +615,80 @@ describe("deriveOverviewTriageModel", () => {
       sessions24h: 5,
       pendingApprovals: 1,
     });
+  });
+
+  it("emits a named error row for notifications when notificationStatsError is true", () => {
+    const model = deriveOverviewTriageModel({
+      notificationStats: null,
+      notificationStatsError: true,
+    });
+
+    const errorRow = model.nowRows.find((row) => row.id === "now:notifications:error");
+    expect(errorRow).toBeDefined();
+    expect(errorRow).toMatchObject({
+      kind: "error",
+      label: "Notification status: unavailable",
+      href: "/notifications",
+    });
+    // Should NOT emit a normal notification row
+    expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(false);
+  });
+
+  it("emits a named error row for QA when qaSummaryError is true", () => {
+    const model = deriveOverviewTriageModel({
+      qaSummary: null,
+      qaSummaryError: true,
+    });
+
+    const errorRow = model.nowRows.find((row) => row.id === "now:qa:error");
+    expect(errorRow).toBeDefined();
+    expect(errorRow).toMatchObject({
+      kind: "error",
+      label: "QA status: unavailable",
+      href: "/qa",
+    });
+    // Should NOT emit a normal QA row
+    expect(model.nowRows.some((row) => row.id === "now:qa")).toBe(false);
+  });
+
+  it("emits a named error row for timeline when timelineError is true", () => {
+    const model = deriveOverviewTriageModel({
+      timeline: [],
+      timelineError: true,
+    });
+
+    const errorRow = model.nowRows.find((row) => row.id === "now:activity:error");
+    expect(errorRow).toBeDefined();
+    expect(errorRow).toMatchObject({
+      kind: "error",
+      label: "Timeline: unavailable",
+      href: "/timeline",
+    });
+    // Should NOT emit any activity rows
+    expect(model.nowRows.some((row) => row.kind === "activity")).toBe(false);
+  });
+
+  it("does not emit error rows when error flags are false", () => {
+    const model = deriveOverviewTriageModel({
+      notificationStats: notificationStats({ failed: 0 }),
+      notificationStatsError: false,
+      qaSummary: qaSummary(),
+      qaSummaryError: false,
+      timeline: [],
+      timelineError: false,
+    });
+
+    expect(model.nowRows.some((row) => row.kind === "error")).toBe(false);
+  });
+
+  it("prefers the error sentinel over any data when error flag is set alongside non-null data", () => {
+    // Even if data was somehow provided alongside an error flag, error sentinel wins
+    const model = deriveOverviewTriageModel({
+      notificationStats: notificationStats({ failed: 5 }),
+      notificationStatsError: true,
+    });
+
+    expect(model.nowRows.find((row) => row.id === "now:notifications:error")).toBeDefined();
+    expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(false);
   });
 });

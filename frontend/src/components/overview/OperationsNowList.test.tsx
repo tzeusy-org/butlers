@@ -167,4 +167,63 @@ describe("OperationsNowList", () => {
     expect(html).toContain('href="/notifications"');
     expect(html).toContain('href="/timeline"');
   });
+
+  it("renders a QA unavailable error row with correct label and link", () => {
+    const html = render([
+      {
+        id: "now:qa:error",
+        kind: "error",
+        label: "QA status: unavailable",
+        detail: "QA data could not be loaded.",
+        href: "/qa",
+      },
+    ]);
+    expect(html).toContain("QA status: unavailable");
+    expect(html).toContain("unavail");
+    expect(html).toContain('href="/qa"');
+  });
+
+  it("renders a notification unavailable error row with correct label and link", () => {
+    const html = render([
+      {
+        id: "now:notifications:error",
+        kind: "error",
+        label: "Notification status: unavailable",
+        detail: "Notification data could not be loaded.",
+        href: "/notifications",
+      },
+    ]);
+    expect(html).toContain("Notification status: unavailable");
+    expect(html).toContain("unavail");
+    expect(html).toContain('href="/notifications"');
+  });
+
+  it("renders a timeline unavailable error row with correct label and link", () => {
+    const html = render([
+      {
+        id: "now:activity:error",
+        kind: "error",
+        label: "Timeline: unavailable",
+        detail: "Timeline data could not be loaded.",
+        href: "/timeline",
+      },
+    ]);
+    expect(html).toContain("Timeline: unavailable");
+    expect(html).toContain("unavail");
+    expect(html).toContain('href="/timeline"');
+  });
+
+  it("renders error rows with italic style and 'unavail' kind badge", () => {
+    const html = render([
+      {
+        id: "now:qa:error",
+        kind: "error",
+        label: "QA status: unavailable",
+        detail: "QA data could not be loaded.",
+        href: "/qa",
+      },
+    ]);
+    expect(html).toContain("font-style:italic");
+    expect(html).toContain("unavail");
+  });
 });
