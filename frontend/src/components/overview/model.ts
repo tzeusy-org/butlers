@@ -291,7 +291,7 @@ function compareIssues(a: Issue, b: Issue): number {
   if (!timeA && !timeB) return 0;
   if (!timeA) return 1;
   if (!timeB) return -1;
-  return timeB.localeCompare(timeA);
+  return timeA.localeCompare(timeB);
 }
 
 function issueSeverityRank(severity: string): number {
@@ -310,7 +310,9 @@ function issueSeverityRank(severity: string): number {
 }
 
 function issueSortTimestamp(issue: Issue): string {
-  return issue.last_seen_at ?? issue.first_seen_at ?? "";
+  // Spec D4: sort by first_seen_at ascending (older issues first within a severity tier).
+  // Falls back to last_seen_at when first_seen_at is absent.
+  return issue.first_seen_at ?? issue.last_seen_at ?? "";
 }
 
 function issueAttentionRow(issue: Issue, now: Date): OverviewAttentionRow {

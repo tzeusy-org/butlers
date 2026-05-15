@@ -161,6 +161,69 @@ describe("deriveOverviewTriageModel", () => {
     expect(model.attentionRows[5]?.title).toBe("Recent medium issue");
   });
 
+  it("sorts within-severity by first_seen_at ascending (older first, spec D4)", () => {
+    // Three medium issues with different first_seen_at values.
+    // Spec D4: within a severity tier, older unresolved issues (smaller first_seen_at) sort before newer.
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            severity: "medium",
+            description: "Newest medium",
+            first_seen_at: "2026-05-14T11:00:00.000Z",
+            last_seen_at: "2026-05-14T11:59:00.000Z",
+          }),
+          issue({
+            severity: "medium",
+            description: "Oldest medium",
+            first_seen_at: "2026-05-14T08:00:00.000Z",
+            last_seen_at: "2026-05-14T11:59:00.000Z",
+          }),
+          issue({
+            severity: "medium",
+            description: "Middle medium",
+            first_seen_at: "2026-05-14T09:30:00.000Z",
+            last_seen_at: "2026-05-14T11:59:00.000Z",
+          }),
+        ],
+      },
+      { now: NOW },
+    );
+
+    const titles = model.attentionRows
+      .filter((row) => row.kind === "issue")
+      .map((row) => row.title);
+    expect(titles).toEqual(["Oldest medium", "Middle medium", "Newest medium"]);
+  });
+
+  it("falls back to last_seen_at ascending when first_seen_at is absent", () => {
+    // When first_seen_at is missing the fallback is last_seen_at, still ascending (older first).
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            severity: "medium",
+            description: "Later last seen",
+            first_seen_at: null,
+            last_seen_at: "2026-05-14T11:30:00.000Z",
+          }),
+          issue({
+            severity: "medium",
+            description: "Earlier last seen",
+            first_seen_at: null,
+            last_seen_at: "2026-05-14T09:00:00.000Z",
+          }),
+        ],
+      },
+      { now: NOW },
+    );
+
+    const titles = model.attentionRows
+      .filter((row) => row.kind === "issue")
+      .map((row) => row.title);
+    expect(titles).toEqual(["Earlier last seen", "Later last seen"]);
+  });
+
   it("counts old issue groups for summary instead of emitting full rows by default", () => {
     const model = deriveOverviewTriageModel(
       {
