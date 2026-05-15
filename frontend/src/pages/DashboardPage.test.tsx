@@ -321,6 +321,8 @@ describe("DashboardPage -- AttentionList", () => {
   });
 
   it("renders issue descriptions when issues are present", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T12:00:00.000Z"));
     vi.mocked(useIssues).mockReturnValue({
       data: {
         data: [
@@ -341,8 +343,12 @@ describe("DashboardPage -- AttentionList", () => {
       isError: false,
       error: null,
     } as AnyMock);
-    const html = renderPage();
-    expect(html).toContain("Session failed unexpectedly.");
+    try {
+      const html = renderPage();
+      expect(html).toContain("Session failed unexpectedly.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders capped recency-aware issue rows and summarizes old groups under the router basename", () => {
