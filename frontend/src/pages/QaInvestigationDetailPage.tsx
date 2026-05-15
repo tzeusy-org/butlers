@@ -22,7 +22,7 @@ export default function QaInvestigationDetailPage() {
   const caseData = caseQuery.data?.data?.case;
 
   const eyebrow = caseData
-    ? `QA Investigation · #${caseData.short_id}`
+    ? `QA Investigation · ${caseData.short_id}`
     : "QA Investigation";
 
   if (!attemptId || (!caseQuery.isLoading && !caseQuery.data?.data && !caseQuery.isError)) {

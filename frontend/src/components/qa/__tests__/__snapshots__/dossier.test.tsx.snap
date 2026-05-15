@@ -18,8 +18,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
       <p
         class="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum"
       >
-        #
-        abc123
+        #123
          · 
         qa
          · detected 

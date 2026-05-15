@@ -51,7 +51,7 @@ export function CaseDossierHeader({
           aria-label={`${qaCase.sev} severity`}
         />
         <p className="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum">
-          #{qaCase.short_id} · {qaCase.butler} · detected {formatQaDetectedTime(qaCase.detected)}
+          {qaCase.short_id} · {qaCase.butler} · detected {formatQaDetectedTime(qaCase.detected)}
         </p>
         <div className="ml-auto flex items-center gap-2">
           <StateTrack stage={stage} />

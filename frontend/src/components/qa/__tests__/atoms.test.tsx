@@ -47,7 +47,7 @@ const activeDismissal: QaActiveDismissal = {
 const cases: QaCaseSummary[] = [
   {
     id: "case-1",
-    short_id: "mfg",
+    short_id: "#401",
     sev: "high",
     butler: "qa",
     headline: "Runtime args dropped before adapter launch",
@@ -59,7 +59,7 @@ const cases: QaCaseSummary[] = [
   },
   {
     id: "case-2",
-    short_id: "q2",
+    short_id: "#202",
     sev: "medium",
     butler: "health",
     headline: "Measurement sync stalled",

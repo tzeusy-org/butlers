@@ -109,7 +109,7 @@ const journal: QaJournalEvent[] = [
 const fullCase: QaCaseDossier = {
   case: {
     id: "case-1",
-    short_id: "abc123",
+    short_id: "#123",
     sev: "high",
     butler: "qa",
     headline: "Runtime ignored catalog timeout",

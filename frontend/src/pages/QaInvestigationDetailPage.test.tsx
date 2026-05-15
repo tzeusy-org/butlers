@@ -96,8 +96,9 @@ describe("QaInvestigationDetailPage — navigation", () => {
   it("shows the eyebrow with short_id once the case is loaded", () => {
     setCaseState(BASE_DOSSIER);
     const html = renderPage();
-    expect(html).toContain("#218");
-    expect(html).toContain("QA Investigation");
+    // short_id already includes the leading '#' — the eyebrow must not double it
+    expect(html).toContain("QA Investigation · #218");
+    expect(html).not.toContain("##218");
   });
 });
 
