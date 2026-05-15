@@ -132,11 +132,11 @@ function PageHeader({ summary }: { summary: ReturnType<typeof useQaSummary> }) {
   const model = data?.model ?? null;
   const patrolInterval = data?.patrol_interval_minutes ?? null;
 
-  const captionParts: string[] = [];
-  if (port !== null) captionParts.push(`port :${port}`);
-  if (model !== null) captionParts.push(`model ${model}`);
-  if (patrolInterval !== null) captionParts.push(`patrol every ${patrolInterval}m`);
-  const caption = captionParts.join(" · ");
+  const caption = [
+    port !== null && `port :${port}`,
+    model && `model ${model}`,
+    patrolInterval !== null && `patrol every ${patrolInterval}m`,
+  ].filter(Boolean).join(" · ");
 
   return (
     <header className="border-b border-border/60 px-6 py-5">

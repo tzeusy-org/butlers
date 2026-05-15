@@ -176,6 +176,9 @@ def _get_staffer_info_fn():
     - ``model`` (str | None): the effective model name in use
     - ``patrol_interval_minutes`` (int): patrol cadence from the QA module config
 
+    The callable must be an async function with no required arguments, as it is
+    awaited inside ``get_qa_summary``.
+
     Returns ``None`` by default (standalone API mode — values fall back to
     the roster config file and a DB catalog query).
     """
