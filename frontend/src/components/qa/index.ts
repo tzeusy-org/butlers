@@ -1,4 +1,5 @@
 export { CaseDossierHeader } from "./CaseDossierHeader";
+export { CaseDossier } from "./CaseDossier";
 export { CaseList } from "./CaseList";
 export { ClaimAnchoredBlurb } from "./ClaimAnchoredBlurb";
 export { getClaimOrderFromSegments } from "./claimOrder";
@@ -7,6 +8,7 @@ export type { CounterEvidenceItem } from "./CounterEvidence";
 export { DiffPreview } from "./DiffPreview";
 export type { DiffPreviewLine } from "./DiffPreview";
 export { EvidenceLog } from "./EvidenceLog";
+export { PatrolJournal } from "./PatrolJournal";
 export { PRPanel } from "./PRPanel";
 export { QaKpiStrip } from "./QaKpiStrip";
 export { StateTrack } from "./StateTrack";

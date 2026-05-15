@@ -1,0 +1,526 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
+<article
+  class="space-y-8"
+  data-testid="qa-case-dossier"
+>
+  <header
+    class="space-y-2"
+  >
+    <div
+      class="flex flex-wrap items-center gap-2"
+    >
+      <span
+        aria-label="high severity"
+        class="h-2.5 w-2.5 shrink-0 bg-destructive"
+      />
+      <p
+        class="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum"
+      >
+        #
+        abc123
+         · 
+        qa
+         · detected 
+        12:10 AM
+      </p>
+      <div
+        class="ml-auto flex items-center gap-2"
+      >
+        <div
+          aria-label="QA state: pr"
+          class="flex flex-wrap items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] tnum"
+        >
+          <span
+            class="inline-flex items-center gap-1"
+          >
+            <span
+              class="transition-colors duration-fast text-foreground"
+              data-testid="qa-state-track-detect"
+            >
+              detect
+            </span>
+            <span
+              aria-hidden="true"
+              class="text-muted-foreground"
+            >
+              —
+            </span>
+          </span>
+          <span
+            class="inline-flex items-center gap-1"
+          >
+            <span
+              class="transition-colors duration-fast text-foreground"
+              data-testid="qa-state-track-diagnose"
+            >
+              diagnose
+            </span>
+            <span
+              aria-hidden="true"
+              class="text-muted-foreground"
+            >
+              —
+            </span>
+          </span>
+          <span
+            class="inline-flex items-center gap-1"
+          >
+            <span
+              class="transition-colors duration-fast text-foreground"
+              data-testid="qa-state-track-pr"
+            >
+              pr
+            </span>
+            <span
+              aria-hidden="true"
+              class="text-muted-foreground"
+            >
+              —
+            </span>
+          </span>
+          <span
+            class="inline-flex items-center gap-1"
+          >
+            <span
+              class="transition-colors duration-fast text-muted-foreground"
+              data-testid="qa-state-track-landed"
+            >
+              landed
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
+    <h2
+      class="font-sans text-[22px] font-medium leading-[1.2] tracking-normal text-foreground"
+    >
+      Runtime ignored catalog timeout
+    </h2>
+  </header>
+  <div
+    class="grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]"
+  >
+    <section
+      aria-label="Diagnosis"
+      class="space-y-6"
+    >
+      <div
+        class="space-y-2"
+      >
+        <p
+          class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+        >
+          Diagnosis
+        </p>
+        <p
+          class="font-serif text-[17px] leading-8 text-foreground"
+        >
+          <span>
+            The investigation found 
+          </span>
+          <span
+            class="rounded-[2px] underline decoration-border/80 decoration-1 underline-offset-4 transition-colors duration-fast"
+            data-claim-id="c-timeout"
+            data-testid="qa-claim-c-timeout"
+            title="Adapter invocation lacked the timeout argument."
+          >
+            the adapter launched without the catalog timeout
+            <sup
+              class="ml-1 align-super font-mono text-[10px] leading-none text-muted-foreground transition-colors duration-fast"
+              data-testid="qa-claim-c-timeout-marker"
+            >
+              [
+              1
+              ]
+            </sup>
+          </span>
+          <span>
+            , while 
+          </span>
+          <span
+            class="rounded-[2px] underline decoration-border/80 decoration-1 underline-offset-4 transition-colors duration-fast"
+            data-claim-id="c-run"
+            data-testid="qa-claim-c-run"
+            title="Session logs show the runtime started."
+          >
+            the run still completed enough to leave logs
+            <sup
+              class="ml-1 align-super font-mono text-[10px] leading-none text-muted-foreground transition-colors duration-fast"
+              data-testid="qa-claim-c-run-marker"
+            >
+              [
+              2
+              ]
+            </sup>
+          </span>
+          <span>
+            .
+          </span>
+        </p>
+      </div>
+      <div
+        class="space-y-2"
+      >
+        <p
+          class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+        >
+          Hypothesis
+        </p>
+        <p
+          class="font-mono text-[11px] leading-relaxed text-foreground tnum"
+        >
+          Spawner forwarded the outer timeout but not the adapter timeout.
+        </p>
+      </div>
+      <div
+        class="space-y-2"
+      >
+        <p
+          class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+        >
+          Evidence · log fragments
+        </p>
+        <div
+          aria-label="QA evidence log"
+          class="divide-y divide-border/60 border-y border-border/60 font-mono text-[10px]"
+          role="log"
+        >
+          <div
+            class="grid min-h-8 grid-cols-[20px_74px_48px_90px_1fr] items-start gap-2 px-1 py-2 transition-colors duration-fast"
+            data-evidence-id="e-timeout"
+            data-testid="qa-evidence-row-e-timeout"
+          >
+            <span
+              class="text-muted-foreground transition-colors duration-fast"
+              data-testid="qa-evidence-row-e-timeout-claims"
+            >
+              [1]
+            </span>
+            <span
+              class="truncate text-muted-foreground transition-colors duration-fast tnum"
+              data-testid="qa-evidence-row-e-timeout-ts"
+            >
+              08:14:01
+            </span>
+            <span
+              class="truncate text-destructive"
+            >
+              ERROR
+            </span>
+            <span
+              class="truncate text-muted-foreground"
+            >
+              qa
+            </span>
+            <span
+              class="min-w-0 whitespace-pre-wrap break-words text-foreground"
+            >
+              runtime.invoke(prompt) called without timeout
+            </span>
+          </div>
+          <div
+            class="grid min-h-8 grid-cols-[20px_74px_48px_90px_1fr] items-start gap-2 px-1 py-2 transition-colors duration-fast"
+            data-evidence-id="e-run"
+            data-testid="qa-evidence-row-e-run"
+          >
+            <span
+              class="text-muted-foreground transition-colors duration-fast"
+              data-testid="qa-evidence-row-e-run-claims"
+            >
+              [2]
+            </span>
+            <span
+              class="truncate text-muted-foreground transition-colors duration-fast tnum"
+              data-testid="qa-evidence-row-e-run-ts"
+            >
+              08:14:18
+            </span>
+            <span
+              class="truncate text-muted-foreground"
+            >
+              INFO
+            </span>
+            <span
+              class="truncate text-muted-foreground"
+            >
+              switchboard
+            </span>
+            <span
+              class="min-w-0 whitespace-pre-wrap break-words text-foreground"
+            >
+              session record persisted
+            </span>
+          </div>
+        </div>
+      </div>
+      <div
+        class="space-y-2"
+      >
+        <p
+          class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+        >
+          Considered & ruled out
+        </p>
+        <div
+          aria-label="Counter evidence"
+          class="divide-y divide-border/60 border-y border-border/60"
+        >
+          <div
+            class="grid grid-cols-[1fr_auto] gap-3 py-2 font-mono text-[10px] leading-snug tnum"
+          >
+            <p
+              class="min-w-0 text-muted-foreground"
+            >
+              <span
+                class="text-foreground"
+              >
+                Database unavailable
+              </span>
+               · 
+              health checks stayed green
+            </p>
+            <p
+              class="uppercase tracking-[0.12em] text-muted-foreground"
+            >
+              rejected
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section
+      aria-label="Proposed fix"
+      class="space-y-3"
+    >
+      <p
+        class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+      >
+        Proposed fix
+      </p>
+      <section
+        aria-label="Pull request fix"
+        class="space-y-4"
+      >
+        <div
+          class="space-y-2 border-b border-border/60 pb-3"
+        >
+          <div
+            class="flex flex-wrap items-center gap-2"
+          >
+            <span
+              class="border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] tnum border-amber-500/40 text-amber-500"
+            >
+              open
+            </span>
+            <p
+              class="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground tnum"
+            >
+              pr #
+              1677
+               · 
+              open
+            </p>
+            <a
+              class="ml-auto font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline"
+              href="https://github.com/Tzeusy/butlers/pull/1677"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Open PR
+            </a>
+          </div>
+          <h3
+            class="font-sans text-[17px] font-medium leading-tight tracking-normal text-foreground"
+          >
+            Forward catalog timeouts
+          </h3>
+          <p
+            class="font-mono text-[10px] leading-none text-muted-foreground tnum"
+          >
+            agent/bu-9lo5u
+             · ci 
+            pending
+             · +
+            18
+             / -
+            4
+          </p>
+        </div>
+        <div
+          class="space-y-1"
+        >
+          <p
+            class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+          >
+            Why this fix
+          </p>
+          <p
+            class="font-sans text-sm leading-relaxed text-foreground"
+          >
+            The patch forwards the catalog timeout into the adapter call.
+          </p>
+        </div>
+        <div
+          class="space-y-2"
+        >
+          <p
+            class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+          >
+            Diff preview
+          </p>
+          <div
+            aria-label="Diff preview"
+            class="overflow-x-auto border border-border/60 font-mono text-[11px] leading-relaxed tnum"
+          >
+            <div
+              class="grid grid-cols-[24px_minmax(0,1fr)] bg-muted text-muted-foreground"
+              data-testid="qa-diff-line-meta"
+            >
+              <span
+                aria-hidden="true"
+                class="select-none px-2 text-right text-muted-foreground"
+              />
+              <span
+                class="whitespace-pre px-2 py-0.5"
+              >
+                src/butlers/core/spawner.py
+              </span>
+            </div>
+            <div
+              class="grid grid-cols-[24px_minmax(0,1fr)] bg-red-500/10 text-red-950 dark:text-red-100"
+              data-testid="qa-diff-line-minus"
+            >
+              <span
+                aria-hidden="true"
+                class="select-none px-2 text-right text-muted-foreground"
+              >
+                -
+              </span>
+              <span
+                class="whitespace-pre px-2 py-0.5"
+              >
+                runtime.invoke(prompt)
+              </span>
+            </div>
+            <div
+              class="grid grid-cols-[24px_minmax(0,1fr)] bg-emerald-500/10 text-emerald-950 dark:text-emerald-100"
+              data-testid="qa-diff-line-plus"
+            >
+              <span
+                aria-hidden="true"
+                class="select-none px-2 text-right text-muted-foreground"
+              >
+                +
+              </span>
+              <span
+                class="whitespace-pre px-2 py-0.5"
+              >
+                runtime.invoke(prompt, timeout=session_timeout_s)
+              </span>
+            </div>
+          </div>
+        </div>
+        <p
+          class="font-mono text-[10px] leading-none text-muted-foreground tnum"
+        >
+          opened 
+          <time
+            datetime="2026-05-15T00:20:00Z"
+          >
+            2026-05-15T00:20:00Z
+          </time>
+           ·
+           
+          not merged
+        </p>
+      </section>
+    </section>
+  </div>
+  <section
+    aria-label="Patrol journal"
+    class="space-y-3"
+  >
+    <div
+      class="flex flex-wrap items-baseline gap-2"
+    >
+      <p
+        class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+      >
+        Patrol journal · every QA decision on this case
+      </p>
+      <p
+        class="ml-auto font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground tnum"
+      >
+        2
+         
+        entries
+         · patrol every
+         
+        10
+        m
+      </p>
+    </div>
+    <div
+      class="divide-y divide-border/60 border-y border-border/60 font-mono text-[10px] tnum"
+    >
+      <div
+        class="grid grid-cols-[64px_96px_minmax(0,1fr)] gap-3 px-1 py-2"
+      >
+        <time
+          class="text-muted-foreground"
+          datetime="2026-05-15T00:10:00Z"
+        >
+          12:10 AM
+        </time>
+        <span
+          class="uppercase tracking-[0.12em] text-amber-500"
+          data-testid="qa-journal-step-flagged"
+        >
+          flagged
+        </span>
+        <div
+          class="min-w-0 space-y-1"
+        >
+          <p
+            class="whitespace-pre-wrap break-words text-foreground"
+          >
+            Finding flagged by patrol
+          </p>
+          <p
+            class="whitespace-pre-wrap break-words text-muted-foreground"
+          >
+            fingerprint bu-timeout
+          </p>
+        </div>
+      </div>
+      <div
+        class="grid grid-cols-[64px_96px_minmax(0,1fr)] gap-3 px-1 py-2"
+      >
+        <time
+          class="text-muted-foreground"
+          datetime="2026-05-15T00:16:00Z"
+        >
+          12:16 AM
+        </time>
+        <span
+          class="uppercase tracking-[0.12em] text-emerald-500"
+          data-testid="qa-journal-step-concluded"
+        >
+          concluded
+        </span>
+        <div
+          class="min-w-0 space-y-1"
+        >
+          <p
+            class="whitespace-pre-wrap break-words text-foreground"
+          >
+            Investigation selected timeout propagation as root cause
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+</article>
+`;
