@@ -255,6 +255,17 @@ schedules, memory, approvals, costs, healing, ingestion events, model settings,
 modules, notifications, OAuth, provider settings, search, secrets, SSE (live
 updates), state, and timeline.
 
+| Router | Endpoint | Responsibility | Stability |
+|---|---|---|---|
+| **Dashboard Briefing** | `GET /api/dashboard/briefing` | Owner-only editorial opening card: templated greeting, deterministic five-class state headline, and LLM-elaborated paragraph. Served from `BriefingCache` (5-minute per-owner TTL). Falls back to templated paragraph on LLM timeout, error, or voice-lint rejection. | Maturing |
+
+#### Supporting modules
+
+| Module | Source | Responsibility | Stability |
+|---|---|---|---|
+| **BriefingCache** | `src/butlers/api/briefing/cache.py` | In-process LRU+TTL cache (max 64 entries, 5-minute TTL). Keyed on owner contact id. Cache hit preserves the original `generated_at`; eviction triggers a fresh composition. Reset on dashboard restart. | Maturing |
+| **audit_grouping** | `src/butlers/api/audit_grouping.py` | Shared CTE and row-to-domain helpers for normalizing `dashboard_audit_log` error rows into grouped attention items. Used by both the Briefing router and the Issues router. Collapses ephemeral temp-path prefixes before grouping; severity is `critical` for schedule-triggered errors, `warning` otherwise. | Maturing |
+
 ### Auto-discovered butler routes
 
 Each butler can define custom API routes in `roster/{butler}/api/router.py`.
