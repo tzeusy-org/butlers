@@ -27,6 +27,14 @@ vi.mock("@/hooks/use-qa", () => ({
     mutate: vi.fn(),
     isPending: false,
   })),
+  useDismissQaIssue: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+  })),
+  useRetryHealingAttempt: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+  })),
 }));
 
 type UseQaCaseResult = ReturnType<typeof useQaCase>;
@@ -47,6 +55,7 @@ const BASE_CASE_SUMMARY = {
 const BASE_DOSSIER: QaCaseDossier = {
   case: BASE_CASE_SUMMARY,
   state_track_stage: "diagnose",
+  fingerprint: null,
   dismissal: null,
   investigation_notes: null,
   pr: null,

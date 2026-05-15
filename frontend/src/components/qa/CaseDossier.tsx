@@ -75,6 +75,7 @@ export function CaseDossier({
       <CaseDossierHeader
         case={dossier.case}
         stage={dossier.state_track_stage}
+        fingerprint={dossier.fingerprint ?? null}
         dismissal={dossier.dismissal}
       />
 

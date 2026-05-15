@@ -29,6 +29,14 @@ vi.mock("@/hooks/use-qa", () => ({
     mutate: qaHookMocks.removeDismissalMutate,
     isPending: false,
   }),
+  useDismissQaIssue: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
+  useRetryHealingAttempt: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
 }));
 
 afterEach(() => {
@@ -120,6 +128,7 @@ const fullCase: QaCaseDossier = {
     pr_url: "https://github.com/Tzeusy/butlers/pull/1677",
   },
   state_track_stage: "pr",
+  fingerprint: "deadbeef" + "0".repeat(56),
   dismissal: null,
   investigation_notes: notes,
   pr: {

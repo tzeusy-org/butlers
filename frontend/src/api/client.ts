@@ -3626,6 +3626,22 @@ export function getHealingAttempt(attemptId: string): Promise<HealingAttempt> {
   return apiFetch<HealingAttempt>(`/healing/attempts/${encodeURIComponent(attemptId)}`);
 }
 
+export interface RetryHealingAttemptResponse {
+  attempt_id: string;
+  fingerprint: string;
+  status: string;
+}
+
+/** POST /api/healing/attempts/:id/retry — create a new attempt for the same fingerprint */
+export function retryHealingAttempt(
+  attemptId: string,
+): Promise<RetryHealingAttemptResponse> {
+  return apiFetch<RetryHealingAttemptResponse>(
+    `/healing/attempts/${encodeURIComponent(attemptId)}/retry`,
+    { method: "POST" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // QA Staffer API
 // ---------------------------------------------------------------------------

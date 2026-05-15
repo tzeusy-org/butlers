@@ -13,11 +13,21 @@ import { CaseDossierHeader, CaseList, QaKpiStrip, StateTrack } from "@/component
 
 const qaHookMocks = vi.hoisted(() => ({
   removeDismissalMutate: vi.fn(),
+  dismissIssueMutate: vi.fn(),
+  retryAttemptMutate: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-qa", () => ({
   useRemoveDismissal: () => ({
     mutate: qaHookMocks.removeDismissalMutate,
+    isPending: false,
+  }),
+  useDismissQaIssue: () => ({
+    mutate: qaHookMocks.dismissIssueMutate,
+    isPending: false,
+  }),
+  useRetryHealingAttempt: () => ({
+    mutate: qaHookMocks.retryAttemptMutate,
     isPending: false,
   }),
 }));
@@ -87,6 +97,8 @@ const cases: QaCaseSummary[] = [
 describe("QA dossier atoms", () => {
   beforeEach(() => {
     qaHookMocks.removeDismissalMutate.mockReset();
+    qaHookMocks.dismissIssueMutate.mockReset();
+    qaHookMocks.retryAttemptMutate.mockReset();
   });
 
   it("renders null MTTR as an em dash with the terminal-case sublabel", () => {
@@ -126,14 +138,28 @@ describe("QA dossier atoms", () => {
   });
 
   it("renders the active dismissal caption when present", () => {
-    render(<CaseDossierHeader case={cases[0]} stage="pr" dismissal={activeDismissal} />);
+    render(
+      <CaseDossierHeader
+        case={cases[0]}
+        stage="pr"
+        fingerprint={activeDismissal.fingerprint}
+        dismissal={activeDismissal}
+      />,
+    );
 
     expect(screen.getByText(/dismissed until/i)).toBeTruthy();
     expect(screen.getByLabelText("Remove dismissal")).toBeTruthy();
   });
 
   it("invokes the remove dismissal mutation from the header pill", () => {
-    render(<CaseDossierHeader case={cases[0]} stage="pr" dismissal={activeDismissal} />);
+    render(
+      <CaseDossierHeader
+        case={cases[0]}
+        stage="pr"
+        fingerprint={activeDismissal.fingerprint}
+        dismissal={activeDismissal}
+      />,
+    );
 
     fireEvent.click(screen.getByLabelText("Remove dismissal"));
 
@@ -197,5 +223,70 @@ describe("QA dossier atoms", () => {
 
     // Current MTTR null → cannot show delta; shows null-mttr sub-label
     expect(screen.getByText("no terminal cases in 24h")).toBeTruthy();
+  });
+
+  it("renders Dismiss pill when fingerprint present and no active dismissal in non-terminal state", () => {
+    render(
+      <CaseDossierHeader
+        case={cases[1]}
+        stage="diagnose"
+        fingerprint="abc123fingerprint"
+        dismissal={null}
+      />,
+    );
+
+    expect(screen.getByLabelText("Dismiss case")).toBeTruthy();
+    expect(screen.queryByLabelText("Retry investigation")).toBeNull();
+  });
+
+  it("invokes the dismiss mutation with fingerprint when Dismiss pill is clicked", () => {
+    const fp = "abc123fingerprint";
+    render(
+      <CaseDossierHeader
+        case={cases[1]}
+        stage="diagnose"
+        fingerprint={fp}
+        dismissal={null}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Dismiss case"));
+
+    expect(qaHookMocks.dismissIssueMutate).toHaveBeenCalledWith(
+      { fingerprint: fp },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+
+  it("renders Retry pill for terminal stage (landed) and hides Dismiss pill", () => {
+    render(
+      <CaseDossierHeader
+        case={{ ...cases[0], state: "landed" }}
+        stage="landed"
+        fingerprint="fp-landed"
+        dismissal={null}
+      />,
+    );
+
+    expect(screen.getByLabelText("Retry investigation")).toBeTruthy();
+    expect(screen.queryByLabelText("Dismiss case")).toBeNull();
+  });
+
+  it("invokes retry mutation with case id when Retry pill is clicked", () => {
+    render(
+      <CaseDossierHeader
+        case={{ ...cases[0], state: "escalated" }}
+        stage="escalated"
+        fingerprint={null}
+        dismissal={null}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Retry investigation"));
+
+    expect(qaHookMocks.retryAttemptMutate).toHaveBeenCalledWith(
+      cases[0].id,
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 });
