@@ -27,6 +27,7 @@ const KIND_LABELS: Record<OverviewNowRow["kind"], string> = {
   qa: "qa",
   notification: "notif",
   activity: "activity",
+  error: "unavail",
 };
 
 export function OperationsNowList({ rows }: OperationsNowListProps) {
@@ -96,7 +97,13 @@ function NowRow({ row, isFirst }: NowRowProps) {
         style={{
           fontFamily: "var(--font-sans)",
           fontSize: "13px",
-          color: row.href ? "var(--foreground)" : "var(--muted-foreground)",
+          color:
+            row.kind === "error"
+              ? "var(--muted-foreground)"
+              : row.href
+                ? "var(--foreground)"
+                : "var(--muted-foreground)",
+          fontStyle: row.kind === "error" ? "italic" : undefined,
           lineHeight: 1.4,
         }}
       >

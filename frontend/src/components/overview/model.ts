@@ -36,8 +36,11 @@ export interface OverviewDerivationInput {
   heartbeats?: HeartbeatFacts | null;
   approvalMetrics?: ApprovalMetrics | null;
   notificationStats?: NotificationStats | null;
+  notificationStatsError?: boolean;
   qaSummary?: QaSummary | null;
+  qaSummaryError?: boolean;
   timeline?: TimelineEvent[];
+  timelineError?: boolean;
 }
 
 export interface OverviewRuntimeKpis {
@@ -81,7 +84,7 @@ export interface OverviewAttentionRow {
 
 export interface OverviewNowRow {
   id: string;
-  kind: "approval" | "qa" | "notification" | "activity";
+  kind: "approval" | "qa" | "notification" | "activity" | "error";
   label: string;
   detail: string;
   href: string | null;
@@ -422,43 +425,73 @@ function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number):
     });
   }
 
-  const qaState = summarizeQaState(input.qaSummary);
-  if (qaState) {
+  if (input.qaSummaryError) {
     rows.push({
-      id: "now:qa",
-      kind: "qa",
-      label: qaState.title,
-      detail: qaState.detail,
+      id: "now:qa:error",
+      kind: "error",
+      label: "QA status: unavailable",
+      detail: "QA data could not be loaded.",
       href: "/qa",
-      count: qaState.count,
     });
+  } else {
+    const qaState = summarizeQaState(input.qaSummary);
+    if (qaState) {
+      rows.push({
+        id: "now:qa",
+        kind: "qa",
+        label: qaState.title,
+        detail: qaState.detail,
+        href: "/qa",
+        count: qaState.count,
+      });
+    }
   }
 
-  const failedNotifications = input.notificationStats?.failed ?? 0;
-  if (failedNotifications > 0) {
+  if (input.notificationStatsError) {
     rows.push({
-      id: "now:notifications",
-      kind: "notification",
-      label: `${failedNotifications} failed notification${
-        failedNotifications === 1 ? "" : "s"
-      }`,
-      detail: "Delivery failures are present.",
+      id: "now:notifications:error",
+      kind: "error",
+      label: "Notification status: unavailable",
+      detail: "Notification data could not be loaded.",
       href: "/notifications",
-      count: failedNotifications,
     });
+  } else {
+    const failedNotifications = input.notificationStats?.failed ?? 0;
+    if (failedNotifications > 0) {
+      rows.push({
+        id: "now:notifications",
+        kind: "notification",
+        label: `${failedNotifications} failed notification${
+          failedNotifications === 1 ? "" : "s"
+        }`,
+        detail: "Delivery failures are present.",
+        href: "/notifications",
+        count: failedNotifications,
+      });
+    }
   }
 
-  rows.push(
-    ...(input.timeline ?? [])
-      .slice(0, maxTimelineRows)
-      .map((event): OverviewNowRow => ({
-        id: `now:activity:${event.id}`,
-        kind: "activity",
-        label: event.summary,
-        detail: `${event.butler} · ${event.type}`,
-        href: "/timeline",
-      })),
-  );
+  if (input.timelineError) {
+    rows.push({
+      id: "now:activity:error",
+      kind: "error",
+      label: "Timeline: unavailable",
+      detail: "Timeline data could not be loaded.",
+      href: "/timeline",
+    });
+  } else {
+    rows.push(
+      ...(input.timeline ?? [])
+        .slice(0, maxTimelineRows)
+        .map((event): OverviewNowRow => ({
+          id: `now:activity:${event.id}`,
+          kind: "activity",
+          label: event.summary,
+          detail: `${event.butler} · ${event.type}`,
+          href: "/timeline",
+        })),
+    );
+  }
 
   return rows;
 }
