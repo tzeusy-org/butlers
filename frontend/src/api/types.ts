@@ -3144,7 +3144,7 @@ export interface QaKpiBlock {
 /** Active-case status breakdown for the QA dossier dashboard — GET /api/qa/summary */
 export interface QaActiveBreakdown {
   awaiting_ci: number;
-  escalated: number;
+  escalated_open_cases: number;
 }
 
 /** QA staffer summary — GET /api/qa/summary */

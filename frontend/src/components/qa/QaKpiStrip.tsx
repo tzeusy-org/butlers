@@ -33,8 +33,8 @@ function formatPercent(value: number | null | undefined): string {
 
 function formatActiveBreakdown(activeBreakdown: QaActiveBreakdown | null | undefined): string {
   const awaitingCi = activeBreakdown?.awaiting_ci ?? 0;
-  const escalated = activeBreakdown?.escalated ?? 0;
-  return `${awaitingCi} awaiting CI, ${escalated} escalated`;
+  const escalated = activeBreakdown?.escalated_open_cases ?? 0;
+  return `${awaitingCi} awaiting CI · ${escalated} escalated`;
 }
 
 export function QaKpiStrip({ kpis, active, className }: QaKpiStripProps) {

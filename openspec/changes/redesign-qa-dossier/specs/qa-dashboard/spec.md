@@ -29,7 +29,7 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
 - **THEN** each cell shows:
   - A mono uppercase eyebrow label (`prs landed · 24h`, `mttr · 24h`, `self-resolved · 7d`, `active cases · now`)
   - A large sans-500 tabular-nums numeric value
-  - A mono sub-label describing context (`+2 vs prior 24h`, `−12m vs 7d`, `+4pp vs prior week`, `N awaiting CI, M escalated`)
+  - A mono sub-label describing context (`+2 vs prior 24h`, `−12m vs 7d`, `+4pp vs prior week`, `N awaiting CI · M escalated`)
 - **AND** when MTTR is computed over an empty sample, the cell shows `—` and the sub-label reads `no terminal cases in 24h`
 
 ### Requirement: Patrol Detail Page
@@ -159,7 +159,7 @@ The `/api/qa/summary` endpoint SHALL include a `kpis` block computed from `heali
 - **AND** `mttr_24h_seconds` is the average `closed_at - created_at` in seconds across `healing_attempts` rows with `closed_at >= now() - 24 hours` AND `status IN ('pr_merged','failed','timeout','unfixable')`; `null` when the sample is empty
 - **AND** `self_resolved_7d_pct` is the float percentage `pr_merged / (pr_merged + unfixable + failed)` over `closed_at >= now() - 7 days`
 - **AND** `active_cases_now` is the count of `healing_attempts` rows with `status IN ('dispatch_pending','investigating','pr_open')`
-- **AND** the summary response also exposes a small `active_breakdown` field: `{ awaiting_ci: int, escalated: int }` partitioning `active_cases_now` for the KPI strip sub-label
+- **AND** the summary response also exposes a small `active_breakdown` field: `{ awaiting_ci: int, escalated_open_cases: int }` for the KPI strip sub-label
 
 ### Requirement: Investigations List Page
 The dashboard SHALL render the case index at `/qa/investigations` using the Dispatch case index pattern: a rule-separated list of `QaCaseSummary` rows. The page does not render a Kanban or a tabular dashboard.

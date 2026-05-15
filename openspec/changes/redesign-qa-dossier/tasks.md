@@ -60,7 +60,7 @@
 ## 8. KPI extension on /api/qa/summary
 
 - [ ] 8.1 Add `QaKpiBlock` Pydantic model in `src/butlers/api/routers/qa.py` with fields `prs_landed_24h`, `mttr_24h_seconds: int | None`, `self_resolved_7d_pct: float`, `active_cases_now`
-- [ ] 8.2 Add `QaActiveBreakdown` model with `awaiting_ci`, `escalated`
+- [ ] 8.2 Add `QaActiveBreakdown` model with `awaiting_ci`, `escalated_open_cases`
 - [ ] 8.3 Implement the four SQL queries from design.md §D7 inside the summary handler
 - [ ] 8.4 Extend the existing `QaSummary` response model to include `kpis: QaKpiBlock` and `active_breakdown: QaActiveBreakdown`
 - [ ] 8.5 Tests in `tests/api/test_api_qa.py`: (a) empty database returns sensible zero/null values, (b) seeded data returns expected counts, (c) MTTR null when sample empty

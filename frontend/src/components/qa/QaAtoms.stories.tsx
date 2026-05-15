@@ -15,7 +15,7 @@ const kpis: QaKpiBlock = {
 
 const activeBreakdown: QaActiveBreakdown = {
   awaiting_ci: 3,
-  escalated: 1,
+  escalated_open_cases: 1,
 };
 
 const cases: QaCaseSummary[] = [

@@ -35,7 +35,7 @@ const kpisWithNullMttr: QaKpiBlock = {
 
 const activeBreakdown: QaActiveBreakdown = {
   awaiting_ci: 2,
-  escalated: 1,
+  escalated_open_cases: 1,
 };
 
 const activeDismissal: QaActiveDismissal = {
@@ -82,6 +82,13 @@ describe("QA dossier atoms", () => {
     expect(screen.getByText("mttr · 24h")).toBeTruthy();
     expect(screen.getByTestId("qa-kpi-mttr-value").textContent).toBe("—");
     expect(screen.getByText("no terminal cases in 24h")).toBeTruthy();
+  });
+
+  it("renders active breakdown with awaiting CI and escalated open cases", () => {
+    render(<QaKpiStrip kpis={kpisWithNullMttr} active={activeBreakdown} />);
+
+    const activeValue = screen.getByTestId("qa-kpi-active-cases-value");
+    expect(activeValue.nextElementSibling?.textContent).toBe("2 awaiting CI · 1 escalated");
   });
 
   it("marks the active CaseList row and still emits onSelect for row clicks", () => {

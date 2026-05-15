@@ -93,7 +93,7 @@ function makeQaSummaryResponse(overrides: Record<string, unknown> = {}) {
         },
         active_breakdown: {
           awaiting_ci: 0,
-          escalated: 0,
+          escalated_open_cases: 0,
         },
         active_sources: [],
         circuit_breaker: {
@@ -406,7 +406,7 @@ describe("DashboardPage -- QA staffer widget", () => {
         },
         active_breakdown: {
           awaiting_ci: 1,
-          escalated: 0,
+          escalated_open_cases: 0,
         },
         active_sources: ["sessions"],
       }) as AnyMock,

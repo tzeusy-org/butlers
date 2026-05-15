@@ -179,7 +179,7 @@ A new Prometheus counter `qa_findings_retention_purged_total` tracks deletions p
 | `prs_landed_24h` | `COUNT(*) FROM healing_attempts WHERE status='pr_merged' AND closed_at >= now()-'24 hours'` | Returns int. |
 | `mttr_24h_seconds` | `EXTRACT(EPOCH FROM AVG(closed_at - created_at)) FROM healing_attempts WHERE closed_at >= now()-'24 hours' AND status IN ('pr_merged','failed','timeout','unfixable')` | Returns int seconds or null when sample is empty. UI formats as `Xm` or `Xh Ym`. |
 | `self_resolved_7d_pct` | `100.0 * SUM(CASE WHEN status='pr_merged' THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN status IN ('pr_merged','unfixable','failed') THEN 1 ELSE 0 END), 0) FROM healing_attempts WHERE closed_at >= now()-'7 days'` | Returns float pct; UI shows as integer `%`. |
-| `active_cases_now` | `COUNT(*) FROM healing_attempts WHERE status IN ('dispatch_pending','investigating','pr_open')` | Returns int. UI sub-label: "N awaiting CI, M escalated" computed by partitioning the count. |
+| `active_cases_now` | `COUNT(*) FROM healing_attempts WHERE status IN ('dispatch_pending','investigating','pr_open')` | Returns int. UI sub-label: "N awaiting CI · M escalated" using `active_breakdown.awaiting_ci` and `active_breakdown.escalated_open_cases`. |
 
 All four KPIs are computed in `src/butlers/api/routers/qa.py` inside the `/api/qa/summary` handler and exposed under `kpis: { ... }`. They reuse the existing DB session.
 

@@ -200,11 +200,19 @@ def _make_kpi_row(
     }
 
 
-def _make_active_breakdown_row(awaiting_ci: int = 0, escalated: int = 0) -> dict[str, Any]:
+def _make_active_breakdown_row(
+    awaiting_ci: int = 0, escalated_open_cases: int = 0
+) -> dict[str, Any]:
     return {
         "awaiting_ci": awaiting_ci,
-        "escalated": escalated,
+        "escalated_open_cases": escalated_open_cases,
     }
+
+
+def _single_fetchrow_query_containing(pool: MagicMock, needle: str) -> str:
+    queries = [call.args[0] for call in pool.fetchrow.await_args_list if needle in call.args[0]]
+    assert len(queries) == 1
+    return queries[0]
 
 
 def _build_summary_app(
@@ -271,7 +279,10 @@ class TestGetQaSummary:
             "self_resolved_7d_pct": 0.0,
             "active_cases_now": 0,
         }
-        assert body["data"]["active_breakdown"] == {"awaiting_ci": 0, "escalated": 0}
+        assert body["data"]["active_breakdown"] == {
+            "awaiting_ci": 0,
+            "escalated_open_cases": 0,
+        }
 
         # With patrol and stats
         patrol_id = uuid.uuid4()
@@ -286,7 +297,7 @@ class TestGetQaSummary:
                 self_resolved_7d_pct=80.0,
                 active_cases_now=6,
             ),
-            active_breakdown=_make_active_breakdown_row(awaiting_ci=2, escalated=1),
+            active_breakdown=_make_active_breakdown_row(awaiting_ci=2, escalated_open_cases=1),
             pr_stats=_make_pr_stats_row(prs_merged=10, prs_failed=2, total_dispatched=20),
             source_rows=[{"sources_polled": ["log_scanner"]}],
         )
@@ -305,7 +316,7 @@ class TestGetQaSummary:
             "self_resolved_7d_pct": 80.0,
             "active_cases_now": 6,
         }
-        assert body2["active_breakdown"] == {"awaiting_ci": 2, "escalated": 1}
+        assert body2["active_breakdown"] == {"awaiting_ci": 2, "escalated_open_cases": 1}
         assert "log_scanner" in body2["active_sources"]
 
         assert (await _call(_make_503_app(), "get", "/api/qa/summary")).status_code == 503
@@ -339,7 +350,7 @@ class TestGetQaSummary:
                 self_resolved_7d_pct=None,
                 active_cases_now=3,
             ),
-            active_breakdown=_make_active_breakdown_row(awaiting_ci=1, escalated=0),
+            active_breakdown=_make_active_breakdown_row(awaiting_ci=1, escalated_open_cases=0),
         )
 
         body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
@@ -347,27 +358,27 @@ class TestGetQaSummary:
         assert body["kpis"]["mttr_24h_seconds"] is None
         assert body["kpis"]["self_resolved_7d_pct"] == 0.0
         assert body["kpis"]["active_cases_now"] == 3
-        assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated": 0}
+        assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated_open_cases": 0}
 
     async def test_summary_kpi_queries_scope_to_qa_originated_attempts(self) -> None:
         app, pool = _build_summary_app()
 
         assert (await _call(app, "get", "/api/qa/summary")).status_code == 200
 
-        kpi_sql = pool.fetchrow.await_args_list[2].args[0]
-        active_breakdown_sql = pool.fetchrow.await_args_list[3].args[0]
+        kpi_sql = _single_fetchrow_query_containing(pool, "active_cases_now")
+        active_breakdown_sql = _single_fetchrow_query_containing(pool, "AS escalated_open_cases")
         assert "qa_patrol_id IS NOT NULL" in kpi_sql
         assert "qa_patrol_id IS NOT NULL" in active_breakdown_sql
 
     async def test_summary_escalated_count_uses_terminal_human_action_sql(self) -> None:
         app, pool = _build_summary_app(
-            active_breakdown=_make_active_breakdown_row(awaiting_ci=1, escalated=3)
+            active_breakdown=_make_active_breakdown_row(awaiting_ci=1, escalated_open_cases=3)
         )
 
         body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
 
-        assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated": 3}
-        active_breakdown_sql = pool.fetchrow.await_args_list[3].args[0]
+        assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated_open_cases": 3}
+        active_breakdown_sql = _single_fetchrow_query_containing(pool, "AS escalated_open_cases")
         assert "status IN ('unfixable', 'failed')" in active_breakdown_sql
         assert "error_detail ILIKE '%human action%'" in active_breakdown_sql
         assert "error_detail ILIKE '%operator%'" in active_breakdown_sql
@@ -375,6 +386,27 @@ class TestGetQaSummary:
         assert "closed_at IS NULL OR closed_at >= now() - INTERVAL '7 days'" in (
             active_breakdown_sql
         )
+        assert "AS escalated_open_cases" in active_breakdown_sql
+        assert " AS escalated\n" not in active_breakdown_sql
+        assert " AS escalated," not in active_breakdown_sql
+
+    async def test_summary_counts_terminal_human_action_outside_active_cases_now(self) -> None:
+        app, pool = _build_summary_app(
+            kpis=_make_kpi_row(active_cases_now=0),
+            active_breakdown=_make_active_breakdown_row(
+                awaiting_ci=0,
+                escalated_open_cases=1,
+            ),
+        )
+
+        body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert body["kpis"]["active_cases_now"] == 0
+        assert body["active_breakdown"] == {"awaiting_ci": 0, "escalated_open_cases": 1}
+        kpi_sql = _single_fetchrow_query_containing(pool, "active_cases_now")
+        active_breakdown_sql = _single_fetchrow_query_containing(pool, "AS escalated_open_cases")
+        assert "status IN ('dispatch_pending', 'investigating', 'pr_open')" in kpi_sql
+        assert "status IN ('unfixable', 'failed')" in active_breakdown_sql
 
 
 class TestListPatrols:

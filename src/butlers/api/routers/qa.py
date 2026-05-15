@@ -278,7 +278,7 @@ class QaActiveBreakdown(BaseModel):
     """Small active-case status breakdown for the QA dossier dashboard."""
 
     awaiting_ci: int
-    escalated: int
+    escalated_open_cases: int
 
 
 class QaCaseSummary(BaseModel):
@@ -1093,12 +1093,14 @@ async def get_qa_summary(
                 WHERE qa_patrol_id IS NOT NULL
                   AND status = 'pr_open'
             ) AS awaiting_ci,
-            ({escalated_open_cases_sql(qa_only=True)}) AS escalated
+            ({escalated_open_cases_sql(qa_only=True)}) AS escalated_open_cases
         """
     )
     active_breakdown = QaActiveBreakdown(
         awaiting_ci=(int(active_breakdown_row["awaiting_ci"] or 0) if active_breakdown_row else 0),
-        escalated=int(active_breakdown_row["escalated"] or 0) if active_breakdown_row else 0,
+        escalated_open_cases=(
+            int(active_breakdown_row["escalated_open_cases"] or 0) if active_breakdown_row else 0
+        ),
     )
 
     # All-time stats

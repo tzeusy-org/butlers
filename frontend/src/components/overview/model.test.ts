@@ -94,7 +94,7 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
     },
     active_breakdown: {
       awaiting_ci: 0,
-      escalated: 0,
+      escalated_open_cases: 0,
     },
     active_sources: [],
     circuit_breaker: {
