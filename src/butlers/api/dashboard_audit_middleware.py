@@ -12,6 +12,14 @@ may additionally emit explicit audit rows with richer ``operation`` labels via
 handler.  The two layers compose: the middleware provides a safety net; explicit
 emits provide human-readable operation labels for the most sensitive paths.
 
+Cache invalidation (bu-qzjpm):
+When an API mutation produces a row with ``result='error'`` in
+``dashboard_audit_log``, the middleware invalidates the briefing cache so that
+the next GET /api/dashboard/briefing reflects the new error row immediately
+rather than waiting up to 5 minutes for TTL expiry.  The middleware uses
+:meth:`~butlers.api.briefing.cache.BriefingCache.invalidate_all` because it has
+no per-request access to the owner's contact id.
+
 Design constraints
 ------------------
 - Never raise: all errors inside ``dispatch`` are caught and logged.
@@ -40,6 +48,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 from butlers.api.audit_emit import emit_dashboard_audit, redact_body
+from butlers.api.briefing.cache import get_cache
 from butlers.api.deps import get_db_manager
 
 logger = logging.getLogger(__name__)
@@ -197,5 +206,13 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             result=result,
             error=f"HTTP {status_code}" if result == "error" else None,
         )
+
+        # Invalidate the briefing cache when the audit row has result='error'
+        # (category b from bu-qzjpm).  Errors written to dashboard_audit_log
+        # are one of the three sources the briefing reads to compute attention
+        # items; invalidating immediately prevents the cache from serving a
+        # stale 'quiet' briefing to an owner who just saw a failing operation.
+        if result == "error":
+            get_cache().invalidate_all()
 
         return response

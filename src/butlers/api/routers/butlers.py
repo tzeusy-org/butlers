@@ -17,9 +17,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -1011,3 +1013,112 @@ async def force_butler_tick(
                 }
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# Butler eligibility endpoint (category c from bu-qzjpm)
+# ---------------------------------------------------------------------------
+
+_VALID_ELIGIBILITY_STATES = frozenset({"active", "stale", "quarantined"})
+
+
+class EligibilityUpdateRequest(BaseModel):
+    """Request body for PATCH /api/butlers/{name}/eligibility."""
+
+    eligibility_state: str
+    quarantine_reason: str | None = None
+
+
+class EligibilityUpdateResponse(BaseModel):
+    """Response for PATCH /api/butlers/{name}/eligibility."""
+
+    name: str
+    eligibility_state: str
+    quarantine_reason: str | None = None
+
+
+@router.patch(
+    "/{name}/eligibility",
+    response_model=ApiResponse[EligibilityUpdateResponse],
+)
+async def update_butler_eligibility(
+    name: str,
+    body: EligibilityUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+    cache: BriefingCache = Depends(get_cache),
+) -> ApiResponse[EligibilityUpdateResponse]:
+    """Update a butler's eligibility state in the registry.
+
+    Accepted states: ``active``, ``stale``, ``quarantined``.
+
+    When moving a butler back to ``active`` or when setting it to
+    ``quarantined``, the briefing cache is invalidated so that the next
+    GET /api/dashboard/briefing reflects the health change immediately rather
+    than waiting up to 5 minutes for TTL expiry (category c from bu-qzjpm).
+
+    Returns HTTP 400 for an unrecognised eligibility_state.
+    Returns HTTP 404 when the butler is not registered.
+    Returns HTTP 503 when the Switchboard pool is unavailable.
+    """
+    if body.eligibility_state not in _VALID_ELIGIBILITY_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid eligibility_state {body.eligibility_state!r}. "
+                f"Must be one of: {sorted(_VALID_ELIGIBILITY_STATES)}"
+            ),
+        )
+
+    try:
+        pool = db.pool("switchboard")
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+
+    try:
+        row = await pool.fetchrow(
+            """
+            UPDATE butler_registry
+            SET eligibility_state = $2,
+                quarantine_reason = CASE
+                    WHEN $2 = 'quarantined' THEN $3
+                    ELSE NULL
+                END
+            WHERE name = $1
+            RETURNING name, eligibility_state, quarantine_reason
+            """,
+            name,
+            body.eligibility_state,
+            body.quarantine_reason,
+        )
+    except Exception as exc:
+        logger.error("Failed to update butler eligibility for %s: %s", name, exc)
+        raise HTTPException(status_code=500, detail="Failed to update butler eligibility")
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Butler not registered: {name}",
+        )
+
+    # Invalidate the briefing cache so the next briefing request reflects the
+    # updated butler health immediately (category c from bu-qzjpm).
+    owner_id = await resolve_owner_id(pool)
+    if owner_id is not None:
+        cache.invalidate(owner_id)
+    else:
+        cache.invalidate_all()
+
+    await log_audit_entry(
+        db,
+        "switchboard",
+        "butler_eligibility_update",
+        {"name": name, "eligibility_state": body.eligibility_state},
+    )
+
+    return ApiResponse(
+        data=EligibilityUpdateResponse(
+            name=row["name"],
+            eligibility_state=row["eligibility_state"],
+            quarantine_reason=row["quarantine_reason"],
+        )
+    )

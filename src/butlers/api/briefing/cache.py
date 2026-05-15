@@ -14,10 +14,16 @@ Design reference: openspec/changes/dashboard-overview-briefing/design.md D3.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import asyncpg
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Default TTL matches the 5-minute spec contract (D3)
@@ -83,6 +89,44 @@ class BriefingCache:
     def invalidate(self, owner_id: Any) -> None:
         """Remove the cached entry for owner_id (no-op if not present)."""
         self._store.pop(owner_id, None)
+
+    def invalidate_all(self) -> None:
+        """Remove all cached entries.
+
+        Use this when the caller cannot resolve a specific owner_id (e.g. the
+        audit middleware) but knows that some owner-relevant state changed.
+        This is semantically correct for single-tenant deployments where every
+        entry belongs to the same owner.
+        """
+        self._store.clear()
+
+
+# ---------------------------------------------------------------------------
+# Owner-contact resolution helper
+# ---------------------------------------------------------------------------
+
+
+async def resolve_owner_id(pool: asyncpg.Pool) -> object | None:
+    """Return the owner contact id from the public schema, or None.
+
+    Used by mutation endpoints to perform precise per-owner cache invalidation.
+    Errors are swallowed so that a missing or stale contacts table does not
+    block the primary operation.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT c.id
+            FROM public.contacts c
+            JOIN public.entities e ON c.entity_id = e.id
+            WHERE 'owner' = ANY(e.roles)
+            LIMIT 1
+            """
+        )
+        return row["id"] if row is not None else None
+    except Exception as exc:
+        logger.debug("Could not resolve owner id for cache invalidation: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
