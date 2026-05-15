@@ -270,6 +270,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
                     WHEN 'critical' THEN 0
                     WHEN 'error' THEN 0
                     WHEN 'high' THEN 0
+                    WHEN 'failed' THEN 0
                     WHEN 'warning' THEN 1
                     WHEN 'warn' THEN 1
                     WHEN 'medium' THEN 1

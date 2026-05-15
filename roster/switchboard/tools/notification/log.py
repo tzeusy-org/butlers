@@ -1,12 +1,12 @@
-"""Notification logging — log notification deliveries.
+"""Notification logging: log notification deliveries.
 
 Valid ``notifications.status`` values (enforced by DB CHECK constraint):
 
-  sent    — notification delivered successfully; the initial / "unread" state
-  failed  — delivery attempt failed; ``error`` column will be populated
-  read    — user has acknowledged/dismissed the notification (set via API)
+  sent:   notification delivered successfully; the initial / "unread" state
+  failed: delivery attempt failed; ``error`` column will be populated
+  read:   user has acknowledged/dismissed the notification (set via API)
 
-The default on INSERT is ``'sent'``.  Do not use ``'unread'`` — that value
+The default on INSERT is ``'sent'``.  Do not use ``'unread'``: that value
 belongs to the mailbox module, not the notifications table.
 """
 
