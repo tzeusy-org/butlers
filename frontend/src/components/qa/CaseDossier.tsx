@@ -32,7 +32,7 @@ export function CaseDossier({
 }: CaseDossierProps) {
   const caseQuery = useQaCase(caseId);
   const journalQuery = useQaCaseJournal(caseId, { limit: 50 });
-  const [hoveredClaim, setHoveredClaim] = useState<string | null>(null);
+  const [hoveredClaim, setHoveredClaim] = useState<string[] | null>(null);
 
   const dossier = caseQuery.data?.data;
   const notes = dossier?.investigation_notes ?? null;

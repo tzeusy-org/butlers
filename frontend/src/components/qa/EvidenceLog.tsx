@@ -10,8 +10,8 @@ interface EvidenceLogProps {
   evidence: EvidenceLine[];
   claims: ClaimMap;
   claimOrder?: string[];
-  hoveredClaim: string | null;
-  onRowHover: (claimId: string | null) => void;
+  hoveredClaim: string[] | null;
+  onRowHover: (claimIds: string[] | null) => void;
   className?: string;
 }
 
@@ -68,7 +68,8 @@ export function EvidenceLog({
     >
       {evidence.map((row) => {
         const myClaims = evidenceToClaims.get(row.id) ?? [];
-        const active = hoveredClaim !== null && myClaims.includes(hoveredClaim);
+        const active =
+          hoveredClaim !== null && myClaims.some((c) => hoveredClaim.includes(c));
         const claimLabel = myClaims
           .map((claimId) => claimIds.indexOf(claimId) + 1)
           .join(",");
@@ -83,7 +84,7 @@ export function EvidenceLog({
             data-evidence-id={row.id}
             data-testid={`qa-evidence-row-${row.id}`}
             onMouseEnter={() => {
-              if (myClaims.length > 0) onRowHover(myClaims[0]);
+              if (myClaims.length > 0) onRowHover(myClaims);
             }}
             onMouseLeave={() => {
               if (myClaims.length > 0) onRowHover(null);

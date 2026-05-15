@@ -12,8 +12,8 @@ interface ClaimAnchoredBlurbProps {
   segments: ClaimSegment[];
   claims: ClaimMap;
   claimOrder?: string[];
-  hoveredClaim: string | null;
-  onClaimHover: (claimId: string | null) => void;
+  hoveredClaim: string[] | null;
+  onClaimHover: (claimIds: string[] | null) => void;
   className?: string;
 }
 
@@ -49,7 +49,7 @@ export function ClaimAnchoredBlurb({
           return <span key={`segment-${index}`}>{segment}</span>;
         }
 
-        const active = hoveredClaim === segment.claim;
+        const active = hoveredClaim?.includes(segment.claim) ?? false;
         const claim = claims[segment.claim];
         const claimNumber = claimNumbers.get(segment.claim);
 
@@ -63,7 +63,7 @@ export function ClaimAnchoredBlurb({
             data-claim-id={segment.claim}
             data-testid={`qa-claim-${segment.claim}`}
             title={claim?.note}
-            onMouseEnter={() => onClaimHover(segment.claim)}
+            onMouseEnter={() => onClaimHover([segment.claim])}
             onMouseLeave={() => onClaimHover(null)}
           >
             {segment.text}

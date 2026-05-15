@@ -53,7 +53,7 @@ const evidence: QaInvestigationNotes["evidence_lines"] = [
 ];
 
 function DiagnosisHarness() {
-  const [hoveredClaim, setHoveredClaim] = useState<string | null>(null);
+  const [hoveredClaim, setHoveredClaim] = useState<string[] | null>(null);
   const claimOrder = getClaimOrderFromSegments(segments);
 
   return (
@@ -103,6 +103,20 @@ describe("QA diagnosis components", () => {
     );
     expect(screen.getByTestId("qa-claim-c2-marker").className).toContain("text-amber-500");
     expect(screen.getByTestId("qa-claim-c1").className).not.toContain(
+      "bg-[oklch(0.81_0.185_84_/_0.15)]",
+    );
+  });
+
+  it("test_evidence_hover_highlights_all_linked_claims", () => {
+    // e3 is linked to both c1 and c2; hovering it must highlight both claim segments
+    render(<DiagnosisHarness />);
+
+    fireEvent.mouseEnter(screen.getByTestId("qa-evidence-row-e3"));
+
+    expect(screen.getByTestId("qa-claim-c1").className).toContain(
+      "bg-[oklch(0.81_0.185_84_/_0.15)]",
+    );
+    expect(screen.getByTestId("qa-claim-c2").className).toContain(
       "bg-[oklch(0.81_0.185_84_/_0.15)]",
     );
   });
