@@ -66,6 +66,7 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes
 from butlers.core.qa.repo_whitelist import parse_repo_url
 from butlers.core.qa.severity import (
+    escalated_open_cases_sql,
     headline_for_case,
     map_severity,
     short_id_from_uuid,
@@ -1066,19 +1067,15 @@ async def get_qa_summary(
     )
 
     active_breakdown_row = await pool.fetchrow(
-        """
+        f"""
         SELECT
-            COUNT(*) FILTER (WHERE status = 'pr_open') AS awaiting_ci,
-            COUNT(*) FILTER (
-                WHERE (
-                    error_detail ILIKE '%human action%'
-                    OR error_detail ILIKE '%operator%'
-                    OR error_detail ILIKE '%escalat%'
-                )
-            ) AS escalated
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND status IN ('dispatch_pending', 'investigating', 'pr_open')
+            (
+                SELECT COUNT(*)
+                FROM public.healing_attempts
+                WHERE qa_patrol_id IS NOT NULL
+                  AND status = 'pr_open'
+            ) AS awaiting_ci,
+            ({escalated_open_cases_sql(qa_only=True)}) AS escalated
         """
     )
     active_breakdown = QaActiveBreakdown(

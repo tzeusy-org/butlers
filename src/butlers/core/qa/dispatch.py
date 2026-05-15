@@ -84,6 +84,7 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
+from butlers.core.qa.severity import failed_with_human_action
 from butlers.core.qa.triage import TriagedFinding
 
 logger = logging.getLogger(__name__)
@@ -1087,12 +1088,12 @@ def _diff_snapshot_stats(diff_snapshot: list[dict[str, str]]) -> tuple[int, int,
 def _human_action_error_detail(error_detail: str | None) -> bool:
     if not error_detail:
         return False
+    if failed_with_human_action({"status": "failed", "error_detail": error_detail}):
+        return True
     lowered = error_detail.lower()
     return any(
         marker in lowered
         for marker in (
-            "human action",
-            "operator",
             "manual",
             "credential",
             "authorization",

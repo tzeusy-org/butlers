@@ -12,6 +12,9 @@ from butlers.core.qa.notes import InvestigationNotes
 SeverityLabel = Literal["high", "medium", "low"]
 CaseState = Literal["detect", "diagnose", "pr", "landed", "escalated"]
 
+_HUMAN_ACTION_MARKERS = ("human action", "operator", "escalat")
+_HUMAN_ACTION_TERMINAL_STATUSES = frozenset({"unfixable", "failed"})
+
 
 def map_severity(severity: int) -> SeverityLabel:
     """Map the stored 0..4 QA severity integer into a dossier label."""
@@ -46,7 +49,7 @@ def state_of_case(attempt: Mapping[str, Any] | object) -> CaseState:
         return "landed"
     if status in {"pr_open", "drafted"}:
         return "pr"
-    if status == "unfixable" or _is_escalated(attempt):
+    if status == "unfixable" or failed_with_human_action(attempt):
         return "escalated"
     if status == "investigating":
         return "diagnose"
@@ -69,14 +72,50 @@ def headline_for_case(attempt: Mapping[str, Any] | object, finding: QaFinding | 
     return f"{exception_type} in {butler_name}"
 
 
-def _is_escalated(attempt: Mapping[str, Any] | object | None) -> bool:
+def failed_with_human_action(attempt: Mapping[str, Any] | object | None) -> bool:
+    """Return whether a terminal attempt carries a human-action marker.
+
+    The shipped ``healing_attempts.error_detail`` column is TEXT, so markers are
+    matched case-insensitively as substrings. If the schema later moves to a
+    structured JSONB human-action field, replace this with a structured lookup.
+    """
+
     if attempt is None:
+        return False
+    status = _get_field(attempt, "status")
+    if status not in _HUMAN_ACTION_TERMINAL_STATUSES:
         return False
     detail = _get_field(attempt, "error_detail")
     value = getattr(detail, "value", detail)
-    return isinstance(value, str) and any(
-        pattern in value.lower() for pattern in ("human action", "operator", "escalat")
+    if not isinstance(value, str):
+        return False
+    lowered = value.lower()
+    return any(marker in lowered for marker in _HUMAN_ACTION_MARKERS)
+
+
+def escalated_open_cases_sql(*, qa_only: bool = False) -> str:
+    """Return SQL for terminal-but-unresolved human-action QA cases."""
+
+    marker_predicate = _human_action_marker_sql()
+    qa_patrol_predicate = "\n  AND qa_patrol_id IS NOT NULL" if qa_only else ""
+    return f"""
+SELECT COUNT(*)
+FROM public.healing_attempts
+WHERE status IN ('unfixable', 'failed')
+  AND ({marker_predicate})
+  AND (closed_at IS NULL OR closed_at >= now() - INTERVAL '7 days'){qa_patrol_predicate}
+""".strip()
+
+
+def _human_action_marker_sql() -> str:
+    return "\n       OR ".join(
+        f"error_detail ILIKE {_sql_string_literal(f'%{marker}%')}"
+        for marker in _HUMAN_ACTION_MARKERS
     )
+
+
+def _sql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _investigation_notes_headline(finding: QaFinding | None) -> str | None:

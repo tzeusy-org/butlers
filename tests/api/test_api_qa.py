@@ -359,6 +359,23 @@ class TestGetQaSummary:
         assert "qa_patrol_id IS NOT NULL" in kpi_sql
         assert "qa_patrol_id IS NOT NULL" in active_breakdown_sql
 
+    async def test_summary_escalated_count_uses_terminal_human_action_sql(self) -> None:
+        app, pool = _build_summary_app(
+            active_breakdown=_make_active_breakdown_row(awaiting_ci=1, escalated=3)
+        )
+
+        body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated": 3}
+        active_breakdown_sql = pool.fetchrow.await_args_list[3].args[0]
+        assert "status IN ('unfixable', 'failed')" in active_breakdown_sql
+        assert "error_detail ILIKE '%human action%'" in active_breakdown_sql
+        assert "error_detail ILIKE '%operator%'" in active_breakdown_sql
+        assert "error_detail ILIKE '%escalat%'" in active_breakdown_sql
+        assert "closed_at IS NULL OR closed_at >= now() - INTERVAL '7 days'" in (
+            active_breakdown_sql
+        )
+
 
 class TestListPatrols:
     async def test_list_patrols_pagination_and_status_filter(self) -> None:
