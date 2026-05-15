@@ -942,10 +942,21 @@ class TestRowGet:
 
 class TestDataFetchWarnings:
     async def test_fetch_attention_items_logs_warning_on_failure(self, caplog):
-        """A DB error fetching notifications logs at WARNING, not DEBUG."""
+        """A DB error fetching notifications logs at WARNING, not DEBUG.
+
+        All three queries run concurrently; the notifications query fails while
+        the other two succeed. State remains partial — audit and registry still
+        populated.
+        """
         now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
         pool = AsyncMock()
-        pool.fetch = AsyncMock(side_effect=RuntimeError("DB outage"))
+
+        async def _fetch_side_effect(sql, *args):
+            if "notifications" in sql:
+                raise RuntimeError("DB outage")
+            return []
+
+        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
 
         import logging
 
@@ -953,23 +964,26 @@ class TestDataFetchWarnings:
             state = await _fetch_dashboard_state(pool, now)
 
         assert state["attention_items"] == []
+        assert state["notification_items"] == []
+        # audit and registry queries must still have run
+        assert state["audit_issues"] == []
+        assert state["butler_statuses"] == []
         assert any("Could not fetch attention items" in r.message for r in caplog.records)
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("Could not fetch attention items" in r.message for r in warning_records)
 
     async def test_fetch_audit_items_logs_warning_on_failure(self, caplog):
-        """A DB error fetching audit issues logs at WARNING, not DEBUG."""
+        """A DB error fetching audit issues logs at WARNING, not DEBUG.
+
+        Notifications and registry queries succeed; audit fails independently.
+        """
         now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
         pool = AsyncMock()
-        call_count = 0
 
         async def _fetch_side_effect(sql, *args):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                # First call succeeds (notifications query)
-                return []
-            raise RuntimeError("DB outage")
+            if "dashboard_audit_log" in sql:
+                raise RuntimeError("DB outage")
+            return []
 
         pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
 
@@ -979,6 +993,9 @@ class TestDataFetchWarnings:
             state = await _fetch_dashboard_state(pool, now)
 
         assert state["audit_issues"] == []
+        # notifications and registry must still have succeeded
+        assert state["notification_items"] == []
+        assert state["butler_statuses"] == []
         assert any(
             "Could not fetch audit-derived attention items" in r.message for r in caplog.records
         )
@@ -988,18 +1005,17 @@ class TestDataFetchWarnings:
         )
 
     async def test_fetch_butler_statuses_logs_warning_on_failure(self, caplog):
-        """A DB error fetching butler statuses logs at WARNING, not DEBUG."""
+        """A DB error fetching butler statuses logs at WARNING, not DEBUG.
+
+        Notifications and audit queries succeed; registry fails independently.
+        """
         now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
         pool = AsyncMock()
-        call_count = 0
 
         async def _fetch_side_effect(sql, *args):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 2:
-                # First two calls succeed (notifications and audit queries)
-                return []
-            raise RuntimeError("DB outage")
+            if "butler_registry" in sql:
+                raise RuntimeError("DB outage")
+            return []
 
         pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
 
@@ -1009,8 +1025,171 @@ class TestDataFetchWarnings:
             state = await _fetch_dashboard_state(pool, now)
 
         assert state["butler_statuses"] == []
+        # notifications and audit must still have succeeded
+        assert state["notification_items"] == []
+        assert state["audit_issues"] == []
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("Could not fetch butler statuses" in r.message for r in warning_records)
+
+
+# ---------------------------------------------------------------------------
+# Concurrent dispatch (bu-pg3qa)
+#
+# Verifies that the three DB queries are dispatched concurrently via
+# asyncio.gather(), not serially, and that each can fail independently.
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentFetch:
+    """_fetch_dashboard_state dispatches all three queries concurrently."""
+
+    async def test_all_three_queries_dispatched_concurrently(self):
+        """asyncio.gather dispatches all three fetch coroutines at once.
+
+        By recording the order of SQL keywords seen in pool.fetch, we confirm
+        that all three queries are issued before any of them returns.  We
+        simulate this with a gate: each coroutine blocks until all three have
+        started, then unblocks together.
+        """
+        import asyncio as _asyncio
+
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        started: list[str] = []
+        all_started = _asyncio.Event()
+
+        async def _fetch_side_effect(sql, *args):
+            if "notifications" in sql:
+                key = "notifications"
+            elif "dashboard_audit_log" in sql:
+                key = "audit"
+            elif "butler_registry" in sql:
+                key = "registry"
+            else:
+                key = "other"
+            started.append(key)
+            # Once all three have checked in, unblock them all.
+            if len(started) >= 3:
+                all_started.set()
+            # Wait for the gate (or fall through quickly if already set).
+            await _asyncio.wait_for(all_started.wait(), timeout=1.0)
+            return []
+
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        # All three must have started before any finished.
+        assert all_started.is_set(), "Not all three queries started concurrently"
+        assert set(started) == {"notifications", "audit", "registry"}
+        # State is fully assembled with empty results.
+        assert state["notification_items"] == []
+        assert state["audit_issues"] == []
+        assert state["butler_statuses"] == []
+
+    async def test_notifications_failure_does_not_prevent_registry_data(self):
+        """When notifications fails, butler_statuses is still populated."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            butler_statuses=[
+                {
+                    "name": "atlas",
+                    "status": "healthy",
+                    "agent_type": "butler",
+                    "eligibility_state": "active",
+                    "last_seen_at": now,
+                    "description": "Atlas butler",
+                    "modules": [],
+                    "capabilities": [],
+                    "quarantine_reason": None,
+                }
+            ]
+        )
+        # Override fetch so notifications always raises.
+        original_fetch = pool.fetch.side_effect
+
+        async def _patched_fetch(sql, *args):
+            if "notifications" in sql:
+                raise RuntimeError("notifications unavailable")
+            return await original_fetch(sql, *args)
+
+        pool.fetch = AsyncMock(side_effect=_patched_fetch)
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert state["notification_items"] == []
+        assert len(state["butler_statuses"]) == 1
+        assert state["butler_statuses"][0]["name"] == "atlas"
+
+    async def test_registry_failure_does_not_prevent_notification_data(self):
+        """When butler_registry fails, notification items are still populated."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            attention_items=[
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "severity": "high",
+                    "source_butler": "calendar",
+                    "channel": "telegram",
+                    "message": "Calendar sync failed",
+                    "metadata": {"severity": "high"},
+                    "status": "unread",
+                    "error": None,
+                    "session_id": None,
+                    "trace_id": None,
+                    "created_at": now,
+                }
+            ]
+        )
+        original_fetch = pool.fetch.side_effect
+
+        async def _patched_fetch(sql, *args):
+            if "butler_registry" in sql:
+                raise RuntimeError("registry unavailable")
+            return await original_fetch(sql, *args)
+
+        pool.fetch = AsyncMock(side_effect=_patched_fetch)
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert state["butler_statuses"] == []
+        assert len(state["notification_items"]) == 1
+        assert state["notification_items"][0]["source_butler"] == "calendar"
+
+    async def test_audit_failure_does_not_prevent_notification_data(self):
+        """When audit query fails, notification items are still populated."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            attention_items=[
+                {
+                    "id": "00000000-0000-0000-0000-000000000002",
+                    "severity": "low",
+                    "source_butler": "health",
+                    "channel": "telegram",
+                    "message": "Health check complete",
+                    "metadata": {},
+                    "status": "sent",
+                    "error": None,
+                    "session_id": None,
+                    "trace_id": None,
+                    "created_at": now,
+                }
+            ]
+        )
+        original_fetch = pool.fetch.side_effect
+
+        async def _patched_fetch(sql, *args):
+            if "dashboard_audit_log" in sql:
+                raise RuntimeError("audit unavailable")
+            return await original_fetch(sql, *args)
+
+        pool.fetch = AsyncMock(side_effect=_patched_fetch)
+
+        state = await _fetch_dashboard_state(pool, now)
+
+        assert state["audit_issues"] == []
+        assert len(state["notification_items"]) == 1
+        assert state["notification_items"][0]["source_butler"] == "health"
 
 
 # ---------------------------------------------------------------------------

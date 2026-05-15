@@ -28,6 +28,7 @@ Design notes: openspec/changes/dashboard-overview-briefing/design.md
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -242,7 +243,31 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
         },
     }
 
-    # Attention items: unread or failed recent notifications with message context.
+    # Run all three independent queries concurrently; each acquires its own
+    # connection from the pool and handles its own failure in isolation.
+    notif_result, audit_result, registry_result = await asyncio.gather(
+        _fetch_notifications(pool),
+        _fetch_audit_issues(pool),
+        _fetch_butler_statuses(pool),
+        return_exceptions=False,
+    )
+
+    notification_items, notif_attention = notif_result
+    audit_issues, audit_attention = audit_result
+    state["notification_items"] = notification_items
+    state["audit_issues"] = audit_issues
+    state["attention_items"] = notif_attention + audit_attention
+    state["butler_statuses"] = registry_result
+
+    state["overview_totals"] = _compute_overview_totals(state)
+    return state
+
+
+async def _fetch_notifications(pool: Any) -> tuple[list, list]:
+    """Fetch recent notification rows and return (notification_items, attention_items).
+
+    Returns empty lists on failure; logs at WARNING.
+    """
     try:
         rows = await pool.fetch(
             """
@@ -281,6 +306,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
             """
         )
         notification_items = []
+        attention_items = []
         for row in rows:
             severity = _normalize_severity(_row_get(row, "severity"))
             created_at = _isoformat_or_none(_row_get(row, "created_at"))
@@ -302,7 +328,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
                 "created_at": created_at,
             }
             notification_items.append(notification)
-            state["attention_items"].append(
+            attention_items.append(
                 {
                     "severity": severity,
                     "type": "notification",
@@ -316,13 +342,18 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
                     "source": "notification",
                 }
             )
-        state["notification_items"] = notification_items
+        return notification_items, attention_items
     except Exception as exc:
         logger.warning("Could not fetch attention items: %s", exc)
+        return [], []
 
-    # Group recent audit failures into issue-like attention items. Uses the
-    # shared CTE (with tmp-path normalization) so grouping is consistent with
-    # the Issues page. Window is 24 hours; capped at 20 groups.
+
+async def _fetch_audit_issues(pool: Any) -> tuple[list, list]:
+    """Fetch grouped audit errors and return (audit_issues, attention_items).
+
+    Uses the shared CTE helper for consistent grouping with the Issues page.
+    Returns empty lists on failure; logs at WARNING.
+    """
     try:
         rows = await pool.fetch(
             build_audit_group_query(
@@ -331,15 +362,22 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
             )
         )
         audit_issues = []
+        attention_items = []
         for row in rows:
             item = attention_item_from_audit_group_row(row)
             audit_issues.append(item)
-            state["attention_items"].append(item)
-        state["audit_issues"] = audit_issues
+            attention_items.append(item)
+        return audit_issues, attention_items
     except Exception as exc:
         logger.warning("Could not fetch audit-derived attention items: %s", exc)
+        return [], []
 
-    # Butler statuses from the registry.
+
+async def _fetch_butler_statuses(pool: Any) -> list:
+    """Fetch butler health from the registry.
+
+    Returns empty list on failure; logs at WARNING.
+    """
     try:
         rows = await pool.fetch(
             """
@@ -365,7 +403,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
             ORDER BY name ASC
             """
         )
-        state["butler_statuses"] = [
+        return [
             {
                 "name": str(_row_get(row, "name") or "unknown"),
                 "status": str(_row_get(row, "status") or "unknown"),
@@ -381,9 +419,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
         ]
     except Exception as exc:
         logger.warning("Could not fetch butler statuses: %s", exc)
-
-    state["overview_totals"] = _compute_overview_totals(state)
-    return state
+        return []
 
 
 async def _owner_local_now(pool: Any, *, utc_now: datetime | None = None) -> datetime:
