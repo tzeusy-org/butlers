@@ -33,6 +33,7 @@ from butlers.api.routers.dashboard_briefing import (
     _fetch_dashboard_state,
     _get_db_manager,
     _owner_local_now,
+    _row_get,
     get_cache,
 )
 from butlers.core.model_routing import Complexity
@@ -796,3 +797,108 @@ class TestResponseShape:
 
         data = resp.json()["data"]
         assert data["source"] in ("llm", "fallback")
+
+
+# ---------------------------------------------------------------------------
+# _row_get: only catches KeyError, not AttributeError
+# ---------------------------------------------------------------------------
+
+
+class TestRowGet:
+    def test_returns_value_when_key_exists(self):
+        """_row_get returns the value for a present key."""
+        rec = MagicMock()
+        rec.__getitem__ = MagicMock(return_value="calendar")
+        assert _row_get(rec, "name") == "calendar"
+
+    def test_returns_default_on_key_error(self):
+        """_row_get returns the default when the key is absent."""
+        rec = MagicMock()
+        rec.__getitem__ = MagicMock(side_effect=KeyError("missing"))
+        assert _row_get(rec, "missing_col") is None
+        assert _row_get(rec, "missing_col", "fallback") == "fallback"
+
+    def test_does_not_suppress_attribute_error(self):
+        """_row_get lets AttributeError propagate — it is not a missing-column error."""
+        rec = MagicMock()
+        rec.__getitem__ = MagicMock(side_effect=AttributeError("bad attribute"))
+        with pytest.raises(AttributeError):
+            _row_get(rec, "broken")
+
+
+# ---------------------------------------------------------------------------
+# Data-fetch failures log at WARNING
+# ---------------------------------------------------------------------------
+
+
+class TestDataFetchWarnings:
+    async def test_fetch_attention_items_logs_warning_on_failure(self, caplog):
+        """A DB error fetching notifications logs at WARNING, not DEBUG."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=RuntimeError("DB outage"))
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.dashboard_briefing"):
+            state = await _fetch_dashboard_state(pool, now)
+
+        assert state["attention_items"] == []
+        assert any("Could not fetch attention items" in r.message for r in caplog.records)
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Could not fetch attention items" in r.message for r in warning_records)
+
+    async def test_fetch_audit_items_logs_warning_on_failure(self, caplog):
+        """A DB error fetching audit issues logs at WARNING, not DEBUG."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = AsyncMock()
+        call_count = 0
+
+        async def _fetch_side_effect(sql, *args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call succeeds (notifications query)
+                return []
+            raise RuntimeError("DB outage")
+
+        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.dashboard_briefing"):
+            state = await _fetch_dashboard_state(pool, now)
+
+        assert state["audit_issues"] == []
+        assert any(
+            "Could not fetch audit-derived attention items" in r.message for r in caplog.records
+        )
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "Could not fetch audit-derived attention items" in r.message for r in warning_records
+        )
+
+    async def test_fetch_butler_statuses_logs_warning_on_failure(self, caplog):
+        """A DB error fetching butler statuses logs at WARNING, not DEBUG."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = AsyncMock()
+        call_count = 0
+
+        async def _fetch_side_effect(sql, *args):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                # First two calls succeed (notifications and audit queries)
+                return []
+            raise RuntimeError("DB outage")
+
+        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.dashboard_briefing"):
+            state = await _fetch_dashboard_state(pool, now)
+
+        assert state["butler_statuses"] == []
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Could not fetch butler statuses" in r.message for r in warning_records)

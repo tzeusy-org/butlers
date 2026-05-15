@@ -168,7 +168,7 @@ def _row_get(row: Any, key: str, default: Any = None) -> Any:
     """Read asyncpg records and test doubles without assuming every column exists."""
     try:
         return row[key]
-    except Exception:
+    except KeyError:
         return default
 
 
@@ -316,7 +316,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
             )
         state["notification_items"] = notification_items
     except Exception as exc:
-        logger.debug("Could not fetch attention items: %s", exc)
+        logger.warning("Could not fetch attention items: %s", exc)
 
     # Group recent audit failures into issue-like attention items. This mirrors
     # the dashboard issue surface enough for the briefing without probing MCP.
@@ -387,7 +387,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
             state["attention_items"].append(issue)
         state["audit_issues"] = audit_issues
     except Exception as exc:
-        logger.debug("Could not fetch audit-derived attention items: %s", exc)
+        logger.warning("Could not fetch audit-derived attention items: %s", exc)
 
     # Butler statuses from the registry.
     try:
@@ -429,7 +429,7 @@ async def _fetch_dashboard_state(pool: Any, now: datetime) -> dict:
             for row in rows
         ]
     except Exception as exc:
-        logger.debug("Could not fetch butler statuses: %s", exc)
+        logger.warning("Could not fetch butler statuses: %s", exc)
 
     state["overview_totals"] = _compute_overview_totals(state)
     return state
