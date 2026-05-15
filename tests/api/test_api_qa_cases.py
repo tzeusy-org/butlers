@@ -85,6 +85,7 @@ def _build_app(
     fetchval_result: Any | None = None,
     fetchval_side_effect: list[Any] | None = None,
     fetchrow_result: dict[str, Any] | None = None,
+    fetchrow_side_effect: list[dict[str, Any] | None] | None = None,
     fetch_side_effect: list[list[dict[str, Any]]] | None = None,
 ) -> tuple[Any, MagicMock]:
     mock_pool = AsyncMock()
@@ -94,9 +95,20 @@ def _build_app(
         mock_pool.fetchval = AsyncMock(
             return_value=total if fetchval_result is None else fetchval_result
         )
-    mock_pool.fetchrow = AsyncMock(
-        return_value=_r(fetchrow_result) if fetchrow_result is not None else None
-    )
+    if fetchrow_side_effect is not None:
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[_r(row) if row is not None else None for row in fetchrow_side_effect]
+        )
+    elif fetchrow_result is not None:
+
+        async def _fetchrow(sql: str, *_args: Any) -> _MockRecord | None:
+            if "FROM public.qa_dismissals" in sql:
+                return None
+            return _r(fetchrow_result)
+
+        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    else:
+        mock_pool.fetchrow = AsyncMock(return_value=None)
     if fetch_side_effect is not None:
         mock_pool.fetch = AsyncMock(
             side_effect=[[_r(row) for row in page] for page in fetch_side_effect]
@@ -356,6 +368,56 @@ async def test_case_detail_full_notes() -> None:
         "journal event 1",
     ]
     assert "ORDER BY ts DESC" in pool.fetch.await_args.args[0]
+
+
+async def test_case_dossier_includes_active_dismissal() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_894)
+    fingerprint = "d" * 64
+    expires_at = _NOW + timedelta(hours=4)
+    row = _make_case_row(id=attempt_id, finding_fingerprint=fingerprint)
+    dismissal_row = {
+        "fingerprint": fingerprint,
+        "expires_at": expires_at,
+        "reason": None,
+    }
+    app, pool = _build_app(fetchrow_side_effect=[row, dismissal_row], rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    dismissal = response.json()["data"]["dismissal"]
+    assert dismissal == {
+        "fingerprint": fingerprint,
+        "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+        "reason": None,
+    }
+    dismissal_sql, dismissal_fp = pool.fetchrow.await_args_list[1].args
+    assert "FROM public.qa_dismissals" in dismissal_sql
+    assert "dismissed_until > now()" in dismissal_sql
+    assert dismissal_fp == fingerprint
+
+
+async def test_case_dossier_dismissal_is_null_when_expired() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_895)
+    fingerprint = "e" * 64
+    row = _make_case_row(id=attempt_id, finding_fingerprint=fingerprint)
+    app, _pool = _build_app(fetchrow_side_effect=[row, None], rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["dismissal"] is None
+
+
+async def test_case_dossier_dismissal_is_null_when_no_dismissal() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_896)
+    row = _make_case_row(id=attempt_id)
+    app, _pool = _build_app(fetchrow_side_effect=[row, None], rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["dismissal"] is None
 
 
 async def test_cases_returns_raw_evidence_lines() -> None:

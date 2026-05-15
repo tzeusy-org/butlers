@@ -3089,6 +3089,13 @@ export interface QaDismissal {
   created_at: string;
 }
 
+/** Active dismissal embedded in a QA case dossier — GET /api/qa/cases/:id */
+export interface QaActiveDismissal {
+  fingerprint: string;
+  expires_at: string;
+  reason: string | null;
+}
+
 /** A known issue grouped by fingerprint — GET /api/qa/known-issues */
 export interface QaKnownIssue {
   fingerprint: string;
@@ -3251,6 +3258,7 @@ export interface QaJournalEvent {
 export interface QaCaseDossier {
   case: QaCaseSummary;
   state_track_stage: "detect" | "diagnose" | "pr" | "landed" | "escalated";
+  dismissal: QaActiveDismissal | null;
   investigation_notes: QaInvestigationNotes | null;
   pr: QaPrSummary | null;
   journal: QaJournalEvent[];
