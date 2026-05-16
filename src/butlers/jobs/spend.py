@@ -7,20 +7,21 @@ to a workhorse-tier baseline and writes the result back to
 Algorithm
 ---------
 1. Load all spend rules from ``public.spend_rules``.
-2. For each rule whose ``action`` contains a ``model`` key:
-   a. Discover all butler schemas that have a ``sessions`` table.
-   b. Sum ``input_tokens`` and ``output_tokens`` for sessions where
-      ``model = rule_model`` over the trailing 7 days, across all butler
-      schemas (UNION ALL).
-   c. Compute **actual cost** = token volume × pricing for ``rule_model``.
-   d. Identify the **baseline model** — the highest-priority enabled model
+2. Discover all butler schemas that have a ``sessions`` table (once).
+3. Collect the distinct set of model_ids used across all rules.
+4. In one query, sum ``input_tokens`` and ``output_tokens`` per model_id over
+   the trailing 7 days across all butler schemas (UNION ALL + GROUP BY).
+5. For each rule whose ``action`` contains a ``model`` key:
+   a. Look up pre-fetched token totals for the rule model.
+   b. Identify the **baseline model** — the highest-priority enabled model
       in the ``workhorse`` tier from ``public.model_catalog``.  Falls back
       to the cheapest model in ``pricing`` when the catalog is unavailable.
-   e. Compute **baseline cost** = same token volume × pricing for the
+   c. Compute **actual cost** = token volume × pricing for ``rule_model``.
+   d. Compute **baseline cost** = same token volume × pricing for the
       baseline model.
-   f. ``saved_7d = baseline_cost - actual_cost``  (negative = more expensive)
-3. UPDATE ``public.spend_rules SET saved_7d = $1 WHERE id = $2``.
-4. Return a summary dict with counts and totals.
+   e. ``saved_7d = baseline_cost - actual_cost``  (negative = more expensive)
+6. Batch-UPDATE ``public.spend_rules SET saved_7d = $1 WHERE id = $2``.
+7. Return a summary dict with counts and totals.
 
 Idempotency: re-running for the same day produces identical results because
 the 7-day window is purely time-based and the UPDATE is a SET (not an
@@ -69,42 +70,46 @@ async def _discover_session_schemas(pool: asyncpg.Pool) -> tuple[str, ...]:
     return tuple(row["table_schema"] for row in rows)
 
 
-async def _sum_tokens_for_model(
+async def _sum_tokens_for_all_models(
     pool: asyncpg.Pool,
     schemas: tuple[str, ...],
-    model_id: str,
+    model_ids: frozenset[str],
     since: datetime,
-) -> tuple[int, int]:
-    """Return (total_input_tokens, total_output_tokens) for *model_id* since *since*.
+) -> dict[str, tuple[int, int]]:
+    """Return a mapping of model_id → (total_input_tokens, total_output_tokens).
 
-    Queries each butler schema's ``sessions`` table and sums across all schemas.
-    Returns (0, 0) when no schemas are available or no sessions match.
+    Fetches token aggregates for all *model_ids* in a single query using a
+    UNION ALL across all butler schemas, grouped by model.  Returns an empty
+    dict when no schemas are available.  Models with no sessions in the window
+    are absent from the result (callers should treat missing keys as (0, 0)).
     """
-    if not schemas:
-        return 0, 0
+    if not schemas or not model_ids:
+        return {}
 
-    # Build a UNION ALL across all butler schemas
+    # Build a UNION ALL across all butler schemas, each leg filters by the
+    # full set of model_ids and emits the model column for GROUP BY.
     union_parts = [
         f"""
         SELECT
+            model,
             COALESCE(input_tokens, 0) AS input_tokens,
             COALESCE(output_tokens, 0) AS output_tokens
         FROM {schema}.sessions
-        WHERE model = $1 AND started_at >= $2
+        WHERE model = ANY($1::text[]) AND started_at >= $2
         """
         for schema in schemas
     ]
     union_sql = " UNION ALL ".join(union_parts)
     sql = f"""
     SELECT
+        model,
         COALESCE(SUM(input_tokens), 0)::bigint AS total_input,
         COALESCE(SUM(output_tokens), 0)::bigint AS total_output
     FROM ({union_sql}) AS combined
+    GROUP BY model
     """
-    row = await pool.fetchrow(sql, model_id, since)
-    if row is None:
-        return 0, 0
-    return int(row["total_input"]), int(row["total_output"])
+    rows = await pool.fetch(sql, list(model_ids), since)
+    return {row["model"]: (int(row["total_input"]), int(row["total_output"])) for row in rows}
 
 
 async def _get_baseline_model_id(pool: asyncpg.Pool) -> str | None:
@@ -243,26 +248,31 @@ async def compute_spend_rule_savings(
             "spend_rule_savings: no butler session schemas found; saved_7d will be 0 for all rules"
         )
 
+    # Collect the distinct model_ids referenced by rules (asyncpg decodes JSONB automatically)
+    model_ids: set[str] = set()
+    rule_actions: dict[Any, dict] = {}
+    for row in rule_rows:
+        action = row["action"]
+        if not isinstance(action, dict):
+            action = {}
+        rule_actions[row["id"]] = action
+        model_id = action.get("model")
+        if model_id:
+            model_ids.add(model_id)
+
+    # Pre-fetch token aggregates for all model_ids in one batched query
+    token_totals = await _sum_tokens_for_all_models(pool, schemas, frozenset(model_ids), since)
+
     rules_processed = 0
     rules_updated = 0
     rules_skipped = 0
     errors = 0
+    updates: list[tuple[float, Any]] = []
 
     for row in rule_rows:
         rules_processed += 1
         rule_id = row["id"]
-
-        # Extract model from action (may be dict or JSON string)
-        action = row["action"]
-        if isinstance(action, str):
-            import json
-
-            try:
-                action = json.loads(action)
-            except Exception:
-                action = {}
-        if not isinstance(action, dict):
-            action = {}
+        action = rule_actions[rule_id]
 
         rule_model_id = action.get("model")
         if not rule_model_id:
@@ -275,17 +285,13 @@ async def compute_spend_rule_savings(
             continue
 
         try:
-            input_tok, output_tok = await _sum_tokens_for_model(pool, schemas, rule_model_id, since)
+            input_tok, output_tok = token_totals.get(rule_model_id, (0, 0))
 
             actual_cost = estimate_session_cost(pricing, rule_model_id, input_tok, output_tok)
             baseline_cost = estimate_session_cost(pricing, baseline_model_id, input_tok, output_tok)
             saved_7d = baseline_cost - actual_cost
 
-            await pool.execute(
-                "UPDATE public.spend_rules SET saved_7d = $1, updated_at = now() WHERE id = $2",
-                saved_7d,
-                rule_id,
-            )
+            updates.append((saved_7d, rule_id))
             rules_updated += 1
             logger.debug(
                 "spend_rule_savings: rule %s → actual=%.6f baseline=%.6f saved=%.6f (in=%d out=%d)",
@@ -304,6 +310,13 @@ async def compute_spend_rule_savings(
                 type(exc).__name__,
                 exc,
             )
+
+    # Batch-write all saved_7d values in one round-trip
+    if updates:
+        await pool.executemany(
+            "UPDATE public.spend_rules SET saved_7d = $1, updated_at = now() WHERE id = $2",
+            updates,
+        )
 
     logger.info(
         "spend_rule_savings: processed=%d updated=%d skipped=%d errors=%d baseline=%s",

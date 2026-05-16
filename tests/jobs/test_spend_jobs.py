@@ -19,6 +19,7 @@ from butlers.api.pricing import ModelPricing, PricingConfig
 from butlers.jobs.spend import (
     _cheapest_workhorse_from_pricing,
     _discover_session_schemas,
+    _sum_tokens_for_all_models,
     compute_spend_rule_savings,
 )
 
@@ -58,8 +59,8 @@ def _make_pool(
         Row returned by ``pool.fetchrow`` for the baseline model catalog query.
         ``None`` means the catalog query returns None (no baseline from catalog).
 
-    Note: token totals are patched via ``_sum_tokens_for_model`` in tests that
-    need non-zero session data, rather than wiring through the full SQL path.
+    Note: token totals are patched via ``_sum_tokens_for_all_models`` in tests
+    that need non-zero session data, rather than wiring through the full SQL path.
     """
     pool = MagicMock()
 
@@ -86,6 +87,7 @@ def _make_pool(
 
     pool.fetchrow = AsyncMock(side_effect=_async_fetchrow)
     pool.execute = AsyncMock()
+    pool.executemany = AsyncMock()
     return pool
 
 
@@ -134,6 +136,53 @@ async def test_discover_session_schemas_filters_internal_schemas():
 
 
 # ---------------------------------------------------------------------------
+# Unit tests: _sum_tokens_for_all_models
+# ---------------------------------------------------------------------------
+
+
+async def test_sum_tokens_for_all_models_returns_dict_keyed_by_model():
+    """A single batched query returns per-model token totals."""
+    from datetime import UTC, datetime
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {"model": "cheap-model", "total_input": 1_000_000, "total_output": 2_000_000},
+            {"model": "workhorse-model", "total_input": 500_000, "total_output": 300_000},
+        ]
+    )
+    result = await _sum_tokens_for_all_models(
+        pool,
+        schemas=("general", "health"),
+        model_ids=frozenset({"cheap-model", "workhorse-model"}),
+        since=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert result == {
+        "cheap-model": (1_000_000, 2_000_000),
+        "workhorse-model": (500_000, 300_000),
+    }
+    sql = pool.fetch.call_args[0][0]
+    assert "UNION ALL" in sql
+    assert "GROUP BY model" in sql
+
+
+async def test_sum_tokens_for_all_models_returns_empty_for_no_schemas():
+    """Returns empty dict when no butler schemas exist."""
+    from datetime import UTC, datetime
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    result = await _sum_tokens_for_all_models(
+        pool,
+        schemas=(),
+        model_ids=frozenset({"cheap-model"}),
+        since=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert result == {}
+    pool.fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Unit tests: compute_spend_rule_savings — per-rule calculation
 # ---------------------------------------------------------------------------
 
@@ -155,8 +204,8 @@ async def test_compute_savings_basic_calculation():
 
     # 1M input + 1M output tokens for cheap-model over 7 days
     with patch(
-        "butlers.jobs.spend._sum_tokens_for_model",
-        return_value=(1_000_000, 1_000_000),
+        "butlers.jobs.spend._sum_tokens_for_all_models",
+        return_value={"cheap-model": (1_000_000, 1_000_000)},
     ):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
@@ -166,14 +215,16 @@ async def test_compute_savings_basic_calculation():
     assert result["errors"] == 0
     assert result["baseline_model"] == "workhorse-model"
 
-    # Verify UPDATE was called with the correct saved_7d value
-    pool.execute.assert_called_once()
-    call_args = pool.execute.call_args
+    # Verify executemany was called with the correct saved_7d value
+    pool.executemany.assert_called_once()
+    call_args = pool.executemany.call_args
     sql = call_args[0][0]
-    saved_7d = call_args[0][1]
+    batch = call_args[0][1]
 
     assert "UPDATE public.spend_rules" in sql
     assert "saved_7d" in sql
+    assert len(batch) == 1
+    saved_7d = batch[0][0]
 
     # actual = 1M * 0.000001 + 1M * 0.000004 = 1.0 + 4.0 = 5.0
     # baseline = 1M * 0.000003 + 1M * 0.000015 = 3.0 + 15.0 = 18.0
@@ -197,14 +248,14 @@ async def test_compute_savings_negative_when_rule_is_more_expensive():
     pool = _make_pool(rules=rules, baseline_row=baseline_row)
 
     with patch(
-        "butlers.jobs.spend._sum_tokens_for_model",
-        return_value=(500_000, 200_000),
+        "butlers.jobs.spend._sum_tokens_for_all_models",
+        return_value={"expensive-model": (500_000, 200_000)},
     ):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
     assert result["rules_updated"] == 1
 
-    saved_7d = pool.execute.call_args[0][1]
+    saved_7d = pool.executemany.call_args[0][1][0][0]
     # actual = 500K * 0.00001 + 200K * 0.00005 = 5.0 + 10.0 = 15.0
     # baseline = 500K * 0.000003 + 200K * 0.000015 = 1.5 + 3.0 = 4.5
     # saved_7d = 4.5 - 15.0 = -10.5
@@ -226,16 +277,16 @@ async def test_compute_savings_zero_tokens_means_zero_saved():
 
     pool = _make_pool(rules=rules, baseline_row=baseline_row)
 
-    # No sessions matching this model — _sum_tokens_for_model returns (0, 0)
+    # No sessions matching this model — token_totals will be empty dict (0, 0) fallback
     with patch(
-        "butlers.jobs.spend._sum_tokens_for_model",
-        return_value=(0, 0),
+        "butlers.jobs.spend._sum_tokens_for_all_models",
+        return_value={},
     ):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
     assert result["rules_updated"] == 1
 
-    saved_7d = pool.execute.call_args[0][1]
+    saved_7d = pool.executemany.call_args[0][1][0][0]
     assert saved_7d == pytest.approx(0.0, abs=1e-9)
 
 
@@ -254,7 +305,7 @@ async def test_compute_savings_skips_rule_with_no_model():
 
     pool = _make_pool(rules=rules, baseline_row=baseline_row)
 
-    with patch("butlers.jobs.spend._sum_tokens_for_model", return_value=(0, 0)):
+    with patch("butlers.jobs.spend._sum_tokens_for_all_models", return_value={}):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
     assert result["rules_processed"] == 1
@@ -274,7 +325,7 @@ async def test_compute_savings_skips_rule_with_empty_action():
 
     pool = _make_pool(rules=rules, baseline_row=baseline_row)
 
-    with patch("butlers.jobs.spend._sum_tokens_for_model", return_value=(0, 0)):
+    with patch("butlers.jobs.spend._sum_tokens_for_all_models", return_value={}):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
     assert result["rules_skipped"] == 1
@@ -290,7 +341,7 @@ async def test_compute_savings_no_rules_returns_zero_counts():
     pricing = _pricing({"workhorse-model": (0.000003, 0.000015)})
     pool = _make_pool(rules=[], baseline_row={"model_id": "workhorse-model"})
 
-    with patch("butlers.jobs.spend._sum_tokens_for_model", return_value=(0, 0)):
+    with patch("butlers.jobs.spend._sum_tokens_for_all_models", return_value={}):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
     assert result["rules_processed"] == 0
@@ -321,17 +372,18 @@ async def test_compute_savings_multiple_rules_all_updated():
     pool = _make_pool(rules=rules, baseline_row=baseline_row)
 
     with patch(
-        "butlers.jobs.spend._sum_tokens_for_model",
-        return_value=(1_000_000, 1_000_000),
+        "butlers.jobs.spend._sum_tokens_for_all_models",
+        return_value={"cheap-model": (1_000_000, 1_000_000)},
     ):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
     assert result["rules_processed"] == 2
     assert result["rules_updated"] == 2
     # Both rules should have the same saved_7d (same model, same token volume)
-    calls = pool.execute.call_args_list
-    assert len(calls) == 2
-    assert calls[0][0][1] == pytest.approx(calls[1][0][1], rel=1e-6)
+    pool.executemany.assert_called_once()
+    batch = pool.executemany.call_args[0][1]
+    assert len(batch) == 2
+    assert batch[0][0] == pytest.approx(batch[1][0], rel=1e-6)
 
 
 async def test_compute_savings_idempotent():
@@ -350,15 +402,15 @@ async def test_compute_savings_idempotent():
     pool2 = _make_pool(rules=rules, baseline_row=baseline_row)
 
     with patch(
-        "butlers.jobs.spend._sum_tokens_for_model",
-        return_value=(2_000_000, 1_000_000),
+        "butlers.jobs.spend._sum_tokens_for_all_models",
+        return_value={"cheap-model": (2_000_000, 1_000_000)},
     ):
         result1 = await compute_spend_rule_savings(pool1, pricing=pricing)
         result2 = await compute_spend_rule_savings(pool2, pricing=pricing)
 
     assert result1["rules_updated"] == result2["rules_updated"] == 1
-    saved_1 = pool1.execute.call_args[0][1]
-    saved_2 = pool2.execute.call_args[0][1]
+    saved_1 = pool1.executemany.call_args[0][1][0][0]
+    saved_2 = pool2.executemany.call_args[0][1][0][0]
     assert saved_1 == pytest.approx(saved_2, rel=1e-12)
 
 
@@ -384,8 +436,8 @@ async def test_compute_savings_falls_back_to_pricing_baseline_when_catalog_unava
     )
 
     with patch(
-        "butlers.jobs.spend._sum_tokens_for_model",
-        return_value=(1_000_000, 1_000_000),
+        "butlers.jobs.spend._sum_tokens_for_all_models",
+        return_value={"rule-model": (1_000_000, 1_000_000)},
     ):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
