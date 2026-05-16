@@ -10,6 +10,16 @@ import { CounterEvidence } from "./CounterEvidence";
 import { EvidenceLog } from "./EvidenceLog";
 import { PatrolJournal } from "./PatrolJournal";
 import { PRPanel } from "./PRPanel";
+import type { QaCaseDossier } from "@/api/types";
+
+// Stages where the investigation has produced a PR or reached a terminal
+// outcome. If notes are still missing at one of these stages, the artifact
+// was never captured -- avoid implying an in-flight diagnosis.
+const POST_DIAGNOSIS_STAGES = new Set<QaCaseDossier["state_track_stage"]>([
+  "pr",
+  "landed",
+  "escalated",
+]);
 
 interface CaseDossierProps {
   caseId: string | undefined;
@@ -117,6 +127,13 @@ export function CaseDossier({
                 <CounterEvidence items={notes.counter_evidence} />
               </div>
             </>
+          ) : POST_DIAGNOSIS_STAGES.has(dossier.state_track_stage) ? (
+            <div className="space-y-2">
+              <DossierEyebrow>Diagnosis</DossierEyebrow>
+              <p className="font-serif text-[17px] italic leading-8 text-muted-foreground">
+                No investigation notes were captured for this case.
+              </p>
+            </div>
           ) : (
             <div className="space-y-2">
               <DossierEyebrow>Diagnosis</DossierEyebrow>

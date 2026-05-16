@@ -220,6 +220,35 @@ describe("QA case dossier composition", () => {
     expect(screen.queryByText("Patrol journal · every QA decision on this case")).toBeNull();
   });
 
+  it.each([
+    ["pr"],
+    ["landed"],
+    ["escalated"],
+  ] as const)(
+    "renders no-notes-captured copy when stage is %s and notes are missing",
+    (stage) => {
+      qaHookMocks.useQaCase.mockReturnValue(
+        caseResponse({
+          ...fullCase,
+          state_track_stage: stage,
+          investigation_notes: null,
+          journal: [],
+        }),
+      );
+      qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+      render(<CaseDossier caseId="case-1" />);
+
+      expect(
+        screen.getByText("No investigation notes were captured for this case."),
+      ).toBeTruthy();
+      expect(screen.queryByText("Diagnosing…")).toBeNull();
+      expect(
+        screen.queryByText("Investigation notes have not been emitted yet."),
+      ).toBeNull();
+    },
+  );
+
   it("test_dossier_lifts_hover_state", () => {
     render(<CaseDossier caseId="case-1" />);
 
