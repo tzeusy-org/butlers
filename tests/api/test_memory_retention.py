@@ -120,8 +120,8 @@ def _wire_memory_mock(
     async def _fetchrow(sql: str, *args):
         if fetchrow_result is not None:
             return fetchrow_result
-        # Simulate UPDATE RETURNING for retention policy update
-        if "UPDATE public.memory_retention_policies" in sql and args:
+        # Simulate INSERT ... ON CONFLICT DO UPDATE RETURNING for retention policy update
+        if "INSERT INTO public.memory_retention_policies" in sql and args:
             kind = args[0]
             return _make_retention_row(kind=kind, ttl_days=args[1], max_rows=args[2])
         return None

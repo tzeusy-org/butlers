@@ -35,7 +35,9 @@ function RetentionPolicyRow({
           defaultValue={policy.ttl_days ?? ""}
           className="w-24 rounded border px-2 py-1 text-sm"
           onChange={(e) => {
-            const v = e.target.value === "" ? null : parseInt(e.target.value, 10);
+            const val = e.target.value;
+            const v = val === "" ? null : parseInt(val, 10);
+            if (v !== null && isNaN(v)) return;
             onChange(policy.kind, "ttl_days", v);
           }}
         />
@@ -48,7 +50,9 @@ function RetentionPolicyRow({
           defaultValue={policy.max_rows ?? ""}
           className="w-28 rounded border px-2 py-1 text-sm"
           onChange={(e) => {
-            const v = e.target.value === "" ? null : parseInt(e.target.value, 10);
+            const val = e.target.value;
+            const v = val === "" ? null : parseInt(val, 10);
+            if (v !== null && isNaN(v)) return;
             onChange(policy.kind, "max_rows", v);
           }}
         />

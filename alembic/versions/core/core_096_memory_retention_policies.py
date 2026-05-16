@@ -1,7 +1,7 @@
 """memory_retention_policies: add public.memory_retention_policies and public.memory_compaction_log.
 
-Revision ID: core_095
-Revises: core_094
+Revision ID: core_096
+Revises: core_095
 Create Date: 2026-05-16 00:00:00.000000
 
 Adds two tables supporting the §10.1-§10.2 memory fold-in (Phase 8):
@@ -22,8 +22,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_095"
-down_revision = "core_094"
+revision = "core_096"
+down_revision = "core_095"
 branch_labels = None
 depends_on = None
 

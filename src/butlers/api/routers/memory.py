@@ -1756,7 +1756,7 @@ async def get_retention_policies(
             status_code=503,
             detail=(
                 "memory_retention_policies table not available"
-                " — migration core_095 may not have run"
+                " — migration core_096 may not have run"
             ),
         ) from exc
 
@@ -1802,30 +1802,19 @@ async def update_retention_policies(
     updated: list[MemoryRetentionPolicy] = []
     for entry in body.policies:
         row = await pool.fetchrow(
-            "UPDATE public.memory_retention_policies"
-            " SET ttl_days = $2, max_rows = $3, updated_at = now(), updated_by = 'owner'"
-            " WHERE kind = $1"
+            "INSERT INTO public.memory_retention_policies"
+            " (kind, ttl_days, max_rows, updated_by)"
+            " VALUES ($1, $2, $3, 'owner')"
+            " ON CONFLICT (kind) DO UPDATE"
+            "  SET ttl_days = EXCLUDED.ttl_days,"
+            "      max_rows = EXCLUDED.max_rows,"
+            "      updated_at = now(),"
+            "      updated_by = 'owner'"
             " RETURNING kind, ttl_days, max_rows, updated_at, updated_by",
             entry.kind,
             entry.ttl_days,
             entry.max_rows,
         )
-        if row is None:
-            # Kind not in table; insert it (should not happen after seeded migration)
-            row = await pool.fetchrow(
-                "INSERT INTO public.memory_retention_policies"
-                " (kind, ttl_days, max_rows, updated_by)"
-                " VALUES ($1, $2, $3, 'owner')"
-                " ON CONFLICT (kind) DO UPDATE"
-                "  SET ttl_days = EXCLUDED.ttl_days,"
-                "      max_rows = EXCLUDED.max_rows,"
-                "      updated_at = now(),"
-                "      updated_by = 'owner'"
-                " RETURNING kind, ttl_days, max_rows, updated_at, updated_by",
-                entry.kind,
-                entry.ttl_days,
-                entry.max_rows,
-            )
         updated.append(
             MemoryRetentionPolicy(
                 kind=row["kind"],
@@ -1876,7 +1865,7 @@ async def get_compaction_log(
         raise HTTPException(
             status_code=503,
             detail=(
-                "memory_compaction_log table not available — migration core_095 may not have run"
+                "memory_compaction_log table not available — migration core_096 may not have run"
             ),
         ) from exc
 

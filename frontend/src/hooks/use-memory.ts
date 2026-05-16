@@ -369,7 +369,7 @@ export function useMemoryInspect(params?: MemoryInspectParams) {
   return useQuery({
     queryKey: ["memory-inspect", params],
     queryFn: () => inspectMemory(params),
-    enabled: params?.q != null && params.q.length > 0,
+    enabled: (params?.q != null && params.q.length > 0) || !!params?.kind,
   });
 }
 
