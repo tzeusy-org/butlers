@@ -17,6 +17,7 @@ All mutations append to ``public.audit_log`` via ``audit.append()``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -187,7 +188,7 @@ async def get_butler_prompt(
             butler_name=name,
             prompt=row["prompt"],
             version=row["version"],
-            updated_at=str(row["updated_at"]),
+            updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
             updated_by=row["updated_by"],
         )
 
@@ -210,25 +211,25 @@ async def update_butler_prompt(
     _assert_butler_exists(name, configs)
     pool = await _get_shared_pool(db)
 
-    # Determine next version number.
-    _version_sql = (
-        "SELECT COALESCE(MAX(version), 0) FROM public.system_prompt_history WHERE butler_name = $1"
-    )
-    current_version: int = (await pool.fetchval(_version_sql, name)) or 0
-    new_version = current_version + 1
-
-    # Insert new version.
+    # Insert new version atomically — no separate SELECT to avoid races.
     row = await pool.fetchrow(
         """
         INSERT INTO public.system_prompt_history (butler_name, prompt, version, updated_by)
-        VALUES ($1, $2, $3, $4)
+        VALUES (
+            $1,
+            $2,
+            (SELECT COALESCE(MAX(version), 0) + 1
+             FROM public.system_prompt_history
+             WHERE butler_name = $1),
+            $3
+        )
         RETURNING butler_name, prompt, version, updated_at, updated_by
         """,
         name,
         body.prompt,
-        new_version,
         body.actor,
     )
+    new_version: int = row["version"]
 
     try:
         await audit_append(
@@ -245,7 +246,7 @@ async def update_butler_prompt(
         butler_name=row["butler_name"],
         prompt=row["prompt"],
         version=row["version"],
-        updated_at=str(row["updated_at"]),
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
         updated_by=row["updated_by"],
     )
 
@@ -290,7 +291,7 @@ async def get_butler_prompt_history(
             butler_name=r["butler_name"],
             prompt=r["prompt"],
             version=r["version"],
-            updated_at=str(r["updated_at"]),
+            updated_at=r["updated_at"].isoformat() if r["updated_at"] else "",
             updated_by=r["updated_by"],
         )
         for r in rows
@@ -430,23 +431,26 @@ async def get_butler_memory_access(
             timeout=_MCP_CALL_TIMEOUT_S,
         )
 
-        import json
-
         payload: dict = {}
         if result.content:
             text = result.content[0].text if hasattr(result.content[0], "text") else ""
             if text:
                 try:
-                    payload = json.loads(text)
+                    parsed = json.loads(text)
+                    if isinstance(parsed, dict):
+                        payload = parsed
                 except (json.JSONDecodeError, AttributeError):
                     pass
+
+        raw_drops = payload.get("drops_7d")
+        drops_7d = int(raw_drops) if raw_drops not in (None, "") else 0
 
         ma = MemoryAccess(
             read=payload.get("read", []),
             write=payload.get("write", []),
             namespace=payload.get("namespace"),
             embedding_model=payload.get("embedding_model"),
-            drops_7d=int(payload.get("drops_7d", 0)),
+            drops_7d=drops_7d,
         )
 
     except (ButlerUnreachableError, TimeoutError):

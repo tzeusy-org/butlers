@@ -13,7 +13,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 
-import { useButlerMemoryAccess, useButlerPrompt, useButlerTools, useKillButler } from "@/hooks/use-butler-management";
+import { useButlerMemoryAccess, useButlerPrompt, useButlerTools, useKillButler, useUpdateButlerPrompt } from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
 import { useRuntimeConfig } from "@/hooks/use-butlers";
 import { cn } from "@/lib/utils";
@@ -216,14 +216,11 @@ function PromptEditModal({
   currentPrompt: string;
 }) {
   const [draft, setDraft] = useState(currentPrompt);
-  const mutation = useKillButler(butlerName); // reuse query client invalidation pattern
-  const { mutate: updatePrompt, isPending } = {
-    mutate: (_body: { prompt: string }) => {
-      // Lazy import to avoid top-level hook ordering issues.
-      onClose();
-    },
-    isPending: false,
-  };
+  const { mutate: updatePrompt, isPending } = useUpdateButlerPrompt(butlerName);
+
+  function handleSave() {
+    updatePrompt({ prompt: draft }, { onSuccess: () => { onClose(); setDraft(""); } });
+  }
 
   return (
     <div
@@ -264,7 +261,7 @@ function PromptEditModal({
             type="button"
             disabled={isPending || draft === currentPrompt}
             className="rounded border border-border px-3 py-1.5 font-mono text-[11px] text-foreground hover:bg-muted disabled:opacity-50"
-            onClick={() => updatePrompt({ prompt: draft })}
+            onClick={handleSave}
           >
             {isPending ? "saving…" : "save version →"}
           </button>
@@ -411,11 +408,11 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
   const { data } = useButlerHourlyActivity(butlerName);
   const buckets = data?.data?.buckets ?? [];
 
-  // Build a 24-slot array from the hourly buckets.
+  // Build a 24-slot array from the hourly buckets (local timezone, matching HourlyActivityBucket).
   const values: number[] = Array(24).fill(0);
   for (const bucket of buckets) {
-    const hour = new Date(bucket.hour).getUTCHours();
-    values[hour] = bucket.session_count;
+    const hourIndex = new Date(bucket.hour_start).getHours();
+    values[hourIndex] = bucket.sessions_count;
   }
 
   const max = Math.max(...values, 1);
