@@ -306,3 +306,51 @@ class TestSpawnerDispatchFailures:
         assert insert_call is not None
         error_message = insert_call[0][3]  # 4th positional arg
         assert len(error_message) <= 4096
+
+    async def test_failure_row_inserted_when_session_create_fails(self, tmp_path: Path) -> None:
+        """A dispatch_failures row is written even when session_create raises.
+
+        session_id is nullable in the table, so early-stage failures (before a
+        session row exists) should still be recorded.
+        """
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+            ) as mock_quota,
+            patch(
+                "butlers.core.spawner.session_create",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("DB unavailable"),
+            ),
+        ):
+            from butlers.core.model_routing import QuotaStatus
+
+            mock_quota.return_value = QuotaStatus(
+                allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None
+            )
+
+            result = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter(msg="this should not matter"),
+            ).trigger("hello", "tick")
+
+        assert result.success is False
+        # Even though session_id was never created, a dispatch_failures row should be inserted
+        execute_calls = [str(c) for c in mock_pool.execute.call_args_list]
+        insert_calls = [c for c in execute_calls if _INSERT_SQL_FRAGMENT in c]
+        assert len(insert_calls) == 1, (
+            f"Expected dispatch_failures INSERT even when session_create raises, got: {execute_calls}"
+        )
