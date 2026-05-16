@@ -1,7 +1,7 @@
 """pending_actions: add why and evidence columns.
 
-Revision ID: core_096
-Revises: core_095
+Revision ID: core_097
+Revises: core_096
 Create Date: 2026-05-16 00:00:00.000000
 
 Phase 6 of the settings-redesign epic (bu-5xiu9).
@@ -33,8 +33,8 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-revision = "core_096"
-down_revision = "core_095"
+revision = "core_097"
+down_revision = "core_096"
 branch_labels = None
 depends_on = None
 

@@ -1176,6 +1176,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - Telegram user-client conversation-history batches must preserve `sender.participants` / `owner_sender_id` through `message_inbox.raw_payload`; durable-buffer routing must derive the non-owner sender and pass `source_id` so identity resolution can anchor downstream memory facts to the contact instead of the owner.
 - `frontend/src/components/chronicles/MapWidgetInner.tsx` must guard `map.addSource(...)` / `map.addLayer(...)` behind `map.isStyleLoaded()` (or `map.once('load', ...)`); calling them synchronously after `new maplibreGl.Map(...)` throws `Style is not done loading` and renders the user-visible `Failed to load the map. Try again` fallback even when valid trail data exists.
 - Frontend links under the `/butlers-dev` mount must respect the routing surface: React Router `Link to` values should stay app-internal (for example `/butlers/lifestyle`) because `createBrowserRouter(..., { basename })` prefixes them; raw `<a href>` targets still need an explicit `import.meta.env.BASE_URL` prefix if they must leave React Router navigation.
+- Core Alembic migration revisions must stay globally unique and linear; `tests/config/test_migration_contract.py` now asserts duplicate `revision` IDs fail before compose migrations do.
 
 ### Backup strategy (bu-t102m)
 - Strategy chosen: filesystem pg_dump cron. Simplest defensible approach for an owner-sovereign, single-instance system. No new external dependencies (no Minio/S3, no WAL archiving).

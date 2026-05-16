@@ -74,6 +74,7 @@ def test_all_migration_chains_integrity() -> None:
         for m in modules:
             rev = getattr(m, "revision", None)
             assert rev is not None, f"{chain}: migration missing 'revision'"
+            assert rev not in revisions, f"{chain}: duplicate migration revision {rev!r}"
             assert callable(getattr(m, "upgrade", None)), f"{chain}/{rev}: upgrade() not callable"
             assert callable(getattr(m, "downgrade", None)), (
                 f"{chain}/{rev}: downgrade() not callable"

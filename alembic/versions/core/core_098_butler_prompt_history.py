@@ -1,7 +1,7 @@
 """butler prompt history: system_prompt_history and butler_tools tables.
 
-Revision ID: core_097
-Revises: core_096
+Revision ID: core_098
+Revises: core_097
 Create Date: 2026-05-16 00:00:00.000000
 
 Phase 7 of the settings-redesign epic.  Creates two public tables:
@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_097"
-down_revision = "core_096"
+revision = "core_098"
+down_revision = "core_097"
 branch_labels = None
 depends_on = None
 
