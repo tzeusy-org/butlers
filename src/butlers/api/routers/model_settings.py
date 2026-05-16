@@ -502,6 +502,15 @@ async def update_catalog_entry(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
 
+    changed_fields = ", ".join(updates.keys())
+    await audit.append(
+        pool,
+        "owner",
+        "model.update",
+        target=str(entry_id),
+        note=changed_fields,
+    )
+
     return ApiResponse[ModelCatalogEntry](data=_row_to_catalog_entry(row))
 
 

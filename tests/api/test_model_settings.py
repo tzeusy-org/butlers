@@ -345,6 +345,84 @@ async def test_verify_all_accepted_after_interval(app, audit_append_spy, monkeyp
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# §4.1  PUT /api/settings/models/{id} — full edit endpoint
+# ---------------------------------------------------------------------------
+
+
+async def test_update_catalog_entry_200_writes_audit(app, audit_append_spy):
+    """PUT /api/settings/models/{id} returns 200 and calls audit.append('model.update')."""
+    entry_id = uuid.uuid4()
+    updated_row = _make_catalog_row(
+        entry_id=entry_id, alias="renamed", complexity_tier="cheap", priority=3
+    )
+    _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
+
+    payload = {
+        "alias": "renamed",
+        "model_id": "claude-haiku-4",
+        "complexity_tier": "cheap",
+        "priority": 3,
+        "enabled": True,
+        "extra_args": [],
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(f"/api/settings/models/{entry_id}", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["alias"] == "renamed"
+    # audit.append must have been called with action="model.update"
+    audit_append_spy.assert_awaited_once()
+    call_kwargs = audit_append_spy.call_args
+    assert call_kwargs.args[2] == "model.update"
+    assert call_kwargs.kwargs["target"] == str(entry_id)
+
+
+async def test_update_catalog_entry_422_invalid_tier(app, audit_append_spy):
+    """PUT /api/settings/models/{id} returns 422 when complexity_tier is not canonical."""
+    entry_id = uuid.uuid4()
+    _app_with_pool(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/settings/models/{entry_id}",
+            json={"complexity_tier": "ultra"},
+        )
+    assert resp.status_code == 422
+    audit_append_spy.assert_not_awaited()
+
+
+async def test_update_catalog_entry_404_missing_entry(app, audit_append_spy):
+    """PUT /api/settings/models/{id} returns 404 when catalog entry does not exist."""
+    entry_id = uuid.uuid4()
+    # fetchrow returns None → 404
+    _app_with_pool(app, fetchrow_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/settings/models/{entry_id}",
+            json={"alias": "ghost"},
+        )
+    assert resp.status_code == 404
+    audit_append_spy.assert_not_awaited()
+
+
+async def test_update_catalog_entry_422_no_fields(app, audit_append_spy):
+    """PUT /api/settings/models/{id} returns 422 when no fields are provided."""
+    entry_id = uuid.uuid4()
+    _app_with_pool(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(f"/api/settings/models/{entry_id}", json={})
+    assert resp.status_code == 422
+    audit_append_spy.assert_not_awaited()
+
+
 async def test_model_failures_404_on_missing_entry(app):
     """GET /api/settings/models/{id}/failures returns 404 when catalog entry absent."""
     _, mock_pool = _app_with_pool(app, fetchval_result=None)
