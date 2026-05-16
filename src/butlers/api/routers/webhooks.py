@@ -9,7 +9,17 @@ Provides full CRUD over ``public.webhooks`` plus a test-fire endpoint:
 * ``DELETE /api/webhooks/{id}``      — delete a registration.
 * ``POST   /api/webhooks/{id}/test`` — synthesize a test event, dispatch, return result.
 
-Payloads are signed with HMAC-SHA256 using the per-row ``secret_hash`` field.
+Payload signing
+---------------
+Secrets are stored encrypted with AES-256-GCM (see
+:mod:`butlers.core.crypto.aes_gcm`).  On dispatch the plaintext is decrypted
+and used directly as the HMAC-SHA256 key — the standard webhook verification
+pattern that receivers can replicate without knowledge of server internals.
+
+The server-side key is loaded from the ``WEBHOOK_SECRET_KEY`` environment
+variable (64-hex-char, 32 bytes).  The daemon will fail loudly at the first
+encrypt/decrypt call if this variable is missing.
+
 Retries follow the ``retry_policy`` JSONB column (``{"max_attempts": N,
 "backoff_seconds": M}``).
 """
@@ -32,6 +42,7 @@ from pydantic import BaseModel
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
+from butlers.core.crypto import aes_gcm
 
 logger = logging.getLogger(__name__)
 
@@ -107,13 +118,23 @@ class WebhookTestResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _hash_secret(secret: str) -> str:
-    """One-way hash of the webhook secret for storage."""
-    return hashlib.sha256(secret.encode()).hexdigest()
+def _encrypt_secret(secret: str) -> bytes:
+    """Encrypt a webhook secret with AES-256-GCM for storage."""
+    return aes_gcm.encrypt(secret)
+
+
+def _decrypt_secret(ciphertext: bytes) -> str:
+    """Decrypt a stored AES-256-GCM webhook secret to plaintext."""
+    return aes_gcm.decrypt(ciphertext)
 
 
 def _sign_payload(payload: bytes, secret: str) -> str:
-    """HMAC-SHA256 signature of *payload* using *secret*."""
+    """HMAC-SHA256 signature of *payload* using the plaintext *secret*.
+
+    This is the standard webhook signing pattern: the receiver can verify by
+    computing ``HMAC-SHA256(secret, body)`` with their shared secret directly,
+    without any additional hashing step.
+    """
     return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
 
@@ -146,18 +167,20 @@ def _row_to_model(row: dict | object) -> WebhookRow:
 async def _dispatch_webhook(
     endpoint: str,
     payload: dict,
-    secret_hash: str | None,
+    secret_encrypted: bytes | None,
     retry_policy: RetryPolicy,
 ) -> WebhookTestResult:
     """Fire the webhook and return the result including latency.
 
-    ``secret_hash`` is already the stored hash; we use it as the signing key
-    directly (callers store the hash so plaintext secret is not retrievable).
+    If *secret_encrypted* is provided it is decrypted to the plaintext secret
+    which is then used as the HMAC-SHA256 signing key — the standard pattern
+    that allows receivers to verify with their shared plaintext secret.
     """
     raw = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
-    if secret_hash:
-        sig = hmac.new(secret_hash.encode(), raw, hashlib.sha256).hexdigest()
+    if secret_encrypted:
+        plaintext_secret = _decrypt_secret(secret_encrypted)
+        sig = _sign_payload(raw, plaintext_secret)
         headers["X-Butler-Signature"] = f"sha256={sig}"
 
     max_attempts = retry_policy.max_attempts
@@ -235,13 +258,17 @@ async def create_webhook(
     body: WebhookCreate,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[WebhookRow]:
-    """Create a new webhook registration."""
+    """Create a new webhook registration.
+
+    If *secret* is supplied it is encrypted with AES-256-GCM before insert.
+    The plaintext secret is never persisted.
+    """
     try:
         pool = db.pool("switchboard")
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    secret_hash = _hash_secret(body.secret) if body.secret else None
+    secret_encrypted = _encrypt_secret(body.secret) if body.secret is not None else None
     now = datetime.now(UTC)
     row_id = str(uuid.uuid4())
 
@@ -249,7 +276,7 @@ async def create_webhook(
 
     row = await pool.fetchrow(
         "INSERT INTO public.webhooks "
-        "(id, endpoint, events, enabled, secret_hash, retry_policy, created_at, updated_at) "
+        "(id, endpoint, events, enabled, secret_encrypted, retry_policy, created_at, updated_at) "
         "VALUES ($1::uuid, $2, $3::jsonb, $4, $5, $6::jsonb, $7, $8) "
         "RETURNING id, endpoint, events, enabled, last_test_at, last_test_ok, "
         "          retry_policy, created_at, updated_at",
@@ -257,7 +284,7 @@ async def create_webhook(
         body.endpoint,
         json.dumps(body.events),
         body.enabled,
-        secret_hash,
+        secret_encrypted,
         json.dumps(rp_json),
         now,
         now,
@@ -314,7 +341,7 @@ async def update_webhook(
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
     existing = await pool.fetchrow(
-        "SELECT id, endpoint, events, enabled, secret_hash, last_test_at, last_test_ok, "
+        "SELECT id, endpoint, events, enabled, secret_encrypted, last_test_at, last_test_ok, "
         "       retry_policy, created_at, updated_at "
         "FROM public.webhooks WHERE id = $1::uuid",
         str(webhook_id),
@@ -337,13 +364,13 @@ async def update_webhook(
         existing_rp = json.loads(existing_rp)
     new_rp = body.retry_policy.model_dump() if body.retry_policy is not None else existing_rp
 
-    new_secret_hash = (
-        _hash_secret(body.secret) if body.secret is not None else existing["secret_hash"]
+    new_secret_encrypted = (
+        _encrypt_secret(body.secret) if body.secret is not None else existing["secret_encrypted"]
     )
 
     row = await pool.fetchrow(
         "UPDATE public.webhooks "
-        "SET endpoint = $1, events = $2::jsonb, enabled = $3, secret_hash = $4, "
+        "SET endpoint = $1, events = $2::jsonb, enabled = $3, secret_encrypted = $4, "
         "    retry_policy = $5::jsonb, updated_at = $6 "
         "WHERE id = $7::uuid "
         "RETURNING id, endpoint, events, enabled, last_test_at, last_test_ok, "
@@ -351,7 +378,7 @@ async def update_webhook(
         new_endpoint,
         json.dumps(new_events),
         new_enabled,
-        new_secret_hash,
+        new_secret_encrypted,
         json.dumps(new_rp),
         now,
         str(webhook_id),
@@ -411,7 +438,8 @@ async def test_webhook(
 ) -> ApiResponse[WebhookTestResult]:
     """Synthesize a ``webhook.test`` event and fire it at the registered endpoint.
 
-    Signs the payload with the stored secret hash (HMAC-SHA256).
+    Decrypts the stored AES-256-GCM secret and signs the payload with
+    HMAC-SHA256(plaintext_secret, body) — the standard webhook signing pattern.
     Returns the receiver HTTP status code and latency.
     Retries per the ``retry_policy`` column.
     """
@@ -421,7 +449,7 @@ async def test_webhook(
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
     row = await pool.fetchrow(
-        "SELECT id, endpoint, events, enabled, secret_hash, last_test_at, last_test_ok, "
+        "SELECT id, endpoint, events, enabled, secret_encrypted, last_test_at, last_test_ok, "
         "       retry_policy, created_at, updated_at "
         "FROM public.webhooks WHERE id = $1::uuid",
         str(webhook_id),
@@ -446,7 +474,7 @@ async def test_webhook(
     result = await _dispatch_webhook(
         endpoint=row["endpoint"],
         payload=test_payload,
-        secret_hash=row["secret_hash"],
+        secret_encrypted=row["secret_encrypted"],
         retry_policy=retry_policy,
     )
     result.webhook_id = webhook_id  # type: ignore[assignment]

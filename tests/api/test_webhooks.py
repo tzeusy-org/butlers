@@ -2,14 +2,18 @@
 
 Covers:
 - GET /api/webhooks returns list from DB.
-- POST /api/webhooks creates a row and returns it.
+- POST /api/webhooks creates a row with AES-GCM encrypted secret.
 - DELETE /api/webhooks/{id} removes a row.
 - POST /api/webhooks/{id}/test returns a test result.
 - 503 when switchboard pool unavailable.
+- Signing uses the plaintext secret (decrypt then HMAC).
+- Missing WEBHOOK_SECRET_KEY causes encrypt to fail loudly.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import uuid
 from datetime import UTC, datetime
@@ -21,11 +25,16 @@ from httpx import ASGITransport, AsyncClient
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.webhooks import _get_db_manager
+from butlers.core.crypto import aes_gcm
 
 pytestmark = pytest.mark.unit
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WH_ID = str(uuid.uuid4())
+
+# Fixed test key — 32 bytes as 64 hex chars.
+_TEST_KEY = bytes(range(32))
+_TEST_KEY_HEX = _TEST_KEY.hex()
 
 
 def _make_webhook_record(overrides: dict | None = None) -> dict:
@@ -34,7 +43,7 @@ def _make_webhook_record(overrides: dict | None = None) -> dict:
         "endpoint": "https://example.com/hook",
         "events": json.dumps(["data.export", "permission.set"]),
         "enabled": True,
-        "secret_hash": None,
+        "secret_encrypted": None,
         "last_test_at": None,
         "last_test_ok": None,
         "retry_policy": json.dumps({"max_attempts": 3, "backoff_seconds": 2}),
@@ -119,12 +128,14 @@ async def test_list_webhooks_returns_rows(app):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/webhooks
+# POST /api/webhooks  (encryption path)
 # ---------------------------------------------------------------------------
 
 
-async def test_create_webhook(app):
-    """POST creates a webhook and returns the new row."""
+async def test_create_webhook(app, monkeypatch):
+    """POST creates a webhook; secret is encrypted before insert."""
+    monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
+
     created_row = _make_webhook_record()
     pool = _make_pool()
     pool.fetchrow = AsyncMock(return_value=_make_record(created_row))
@@ -146,6 +157,40 @@ async def test_create_webhook(app):
     assert resp.status_code == 201
     data = resp.json()["data"]
     assert data["endpoint"] == "https://example.com/hook"
+
+    # Verify the INSERT was called with bytes (not a hash string).
+    call_args = pool.fetchrow.call_args
+    # The 5th positional arg ($5) is secret_encrypted.
+    positional = call_args[0]
+    # positional[0] = SQL, then $1..$8 follow
+    secret_arg = positional[5]  # $5 = secret_encrypted
+    assert isinstance(secret_arg, bytes), "secret should be stored as encrypted bytes"
+    # Decrypt and verify round-trip.
+    assert aes_gcm.decrypt(secret_arg, key=_TEST_KEY) == "mysecret"
+
+
+async def test_create_webhook_no_secret(app, monkeypatch):
+    """POST without a secret stores NULL for secret_encrypted."""
+    monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
+
+    created_row = _make_webhook_record()
+    pool = _make_pool()
+    pool.fetchrow = AsyncMock(return_value=_make_record(created_row))
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/webhooks",
+                json={"endpoint": "https://example.com/hook"},
+            )
+
+    assert resp.status_code == 201
+    # secret_encrypted arg should be None
+    call_args = pool.fetchrow.call_args[0]
+    secret_arg = call_args[5]
+    assert secret_arg is None
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +225,7 @@ async def test_delete_webhook_not_found(app):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/webhooks/{id}/test
+# POST /api/webhooks/{id}/test  (signing path)
 # ---------------------------------------------------------------------------
 
 
@@ -229,6 +274,106 @@ async def test_test_webhook_returns_result(app):
     data = resp.json()["data"]
     assert data["ok"] is True
     assert data["status_code"] == 200
+
+
+# ---------------------------------------------------------------------------
+# Signing decrypts then HMAC-signs (not hash-of-hash)
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_uses_plaintext_secret_for_signing(monkeypatch):
+    """_dispatch_webhook decrypts the stored secret before HMAC signing.
+
+    Verifies that the X-Butler-Signature header is HMAC-SHA256(plaintext, body)
+    — the standard pattern a receiver can replicate with their shared plaintext
+    secret.
+    """
+    monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
+
+    from butlers.api.routers.webhooks import RetryPolicy, _dispatch_webhook
+
+    plaintext = "correct-horse-battery-staple"
+    encrypted = aes_gcm.encrypt(plaintext, key=_TEST_KEY)
+
+    payload = {"event": "webhook.test", "webhook_id": str(uuid.uuid4()), "timestamp": "now"}
+    raw = json.dumps(payload).encode()
+    expected_sig = hmac.new(plaintext.encode(), raw, hashlib.sha256).hexdigest()
+
+    captured_headers: dict = {}
+
+    async def fake_post(self, url, *, content, headers, **kwargs):
+        captured_headers.update(headers)
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        return mock_resp
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_post):
+        await _dispatch_webhook(
+            endpoint="https://example.com/hook",
+            payload=payload,
+            secret_encrypted=encrypted,
+            retry_policy=RetryPolicy(max_attempts=1, backoff_seconds=0),
+        )
+
+    sig_header = captured_headers.get("X-Butler-Signature", "")
+    assert sig_header == f"sha256={expected_sig}"
+
+
+async def test_dispatch_no_secret_no_signature():
+    """_dispatch_webhook with no secret does not add X-Butler-Signature header."""
+    from butlers.api.routers.webhooks import RetryPolicy, _dispatch_webhook
+
+    captured_headers: dict = {}
+
+    async def fake_post(self, url, *, content, headers, **kwargs):
+        captured_headers.update(headers)
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        return mock_resp
+
+    import httpx
+
+    payload = {"event": "webhook.test", "webhook_id": str(uuid.uuid4()), "timestamp": "now"}
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_post):
+        await _dispatch_webhook(
+            endpoint="https://example.com/hook",
+            payload=payload,
+            secret_encrypted=None,
+            retry_policy=RetryPolicy(max_attempts=1, backoff_seconds=0),
+        )
+
+    assert "X-Butler-Signature" not in captured_headers
+
+
+# ---------------------------------------------------------------------------
+# Missing-key error path
+# ---------------------------------------------------------------------------
+
+
+async def test_create_webhook_missing_key_fails(app, monkeypatch):
+    """POST /api/webhooks returns 500 when WEBHOOK_SECRET_KEY is absent.
+
+    The encrypt helper raises RuntimeError (fail-loud); FastAPI converts
+    unhandled exceptions to HTTP 500 responses.
+    """
+    monkeypatch.delenv("WEBHOOK_SECRET_KEY", raising=False)
+
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/webhooks",
+            json={"endpoint": "https://example.com/hook", "secret": "s"},
+        )
+    # Missing key is a hard fail — should not succeed.
+    assert resp.status_code == 500
 
 
 # ---------------------------------------------------------------------------
