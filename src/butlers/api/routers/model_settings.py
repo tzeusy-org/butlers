@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -31,6 +32,8 @@ from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.pricing import ModelPricing, PricingConfig, TieredModelPricing
 from butlers.core.model_routing import resolve_model
+from butlers.core.runtimes.base import get_adapter
+from butlers.core.spawner import resolve_provider_config
 
 logger = logging.getLogger(__name__)
 
@@ -627,11 +630,6 @@ async def verify_all_models(
             t0 = time.monotonic()
             ok = False
             try:
-                import os
-
-                from butlers.core.runtimes.base import get_adapter
-                from butlers.core.spawner import resolve_provider_config
-
                 adapter_cls = get_adapter(runtime_type)
                 provider_config = await resolve_provider_config(pool, model_id)
                 try:
@@ -1288,9 +1286,6 @@ async def test_catalog_entry(
     extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
 
     try:
-        from butlers.core.runtimes.base import get_adapter
-        from butlers.core.spawner import resolve_provider_config
-
         adapter_cls = get_adapter(runtime_type)
         provider_config = await resolve_provider_config(pool, model_id)
         try:
@@ -1299,8 +1294,6 @@ async def test_catalog_entry(
             adapter = adapter_cls()
     except ValueError as exc:
         return ApiResponse[ModelTestResult](data=ModelTestResult(success=False, error=str(exc)))
-
-    import os
 
     t0 = time.monotonic()
     try:

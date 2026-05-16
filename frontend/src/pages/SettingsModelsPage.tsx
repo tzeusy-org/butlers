@@ -19,6 +19,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { ApiError } from "@/api/index.ts";
 import type { ComplexityTier, ModelCatalogEntry } from "@/api/types.ts";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -384,10 +385,10 @@ export default function SettingsModelsPage() {
         toast.success(`Verified ${ok}/${total} models${failed > 0 ? ` · ${failed} failed` : ""}`);
       },
       onError: (err) => {
-        const msg = err instanceof Error ? err.message : "Verify all failed";
-        if (msg.includes("429") || msg.toLowerCase().includes("recently")) {
+        if (err instanceof ApiError && err.status === 429) {
           toast.warning("Verify all was called recently — wait 60 seconds before retrying.");
         } else {
+          const msg = err instanceof Error ? err.message : "Verify all failed";
           toast.error(msg);
         }
       },
