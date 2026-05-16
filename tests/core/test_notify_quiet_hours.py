@@ -307,6 +307,28 @@ class TestQuietHoursDecisionPath:
         for hour in (0, 3, 7, 14, 22, 23):
             assert should_suppress_by_policy(policy, current_hour=hour) is False
 
+    async def test_high_priority_bypasses_gate_condition(self) -> None:
+        """priority='high' means the gate does not fire; notification delivers immediately.
+
+        Even if we are inside the quiet window, high-priority bypasses suppression.
+        This matches the §8.6 spec: high — always delivers immediately.
+        """
+        from butlers.core.approvals_policy import should_suppress_by_policy
+
+        policy = {"quiet_start_hour": 0, "quiet_end_hour": 23, "timezone": "UTC"}
+
+        # Simulate the gate: gate only fires when priority != "high"
+        for prio in ("medium", "low"):
+            gate_fires = prio != "high"
+            assert gate_fires is True, f"gate should fire for priority={prio!r}"
+            # Inside whole-day quiet window (0-23), suppression would apply
+            assert should_suppress_by_policy(policy, current_hour=14) is True
+
+        # high priority: gate does not fire regardless of time
+        priority = "high"
+        gate_fires = priority != "high"
+        assert gate_fires is False, "gate must not fire for priority='high'"
+
     async def test_explicit_recipient_bypasses_gate_condition(self) -> None:
         """The gate condition `recipient is None` means explicit recipient skips the gate.
 

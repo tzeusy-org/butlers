@@ -460,13 +460,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # Approvals-policy quiet-hours gate: suppress owner-default pages.
             # Applies only when no explicit contact_id or recipient is given
             # (i.e. the notification is destined for the owner via the default
-            # resolution path) and the intent is send/insight.
-            _policy_pool = daemon.db.pool if daemon.db is not None else None
+            # resolution path), the intent is send/insight, and priority is not
+            # high (high-priority always delivers immediately, per §8.6 spec).
             if (
-                _policy_pool is not None
+                _notify_pool is not None
                 and contact_id is None
                 and recipient is None
                 and intent in {"send", "insight"}
+                and priority != "high"
             ):
                 from datetime import UTC as _PUTC
                 from datetime import datetime as _pdatetime
@@ -478,7 +479,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 )
 
                 try:
-                    _policy = await get_approvals_policy_quiet_hours(_policy_pool)
+                    _policy = await get_approvals_policy_quiet_hours(_notify_pool)
                 except Exception:
                     logger.debug(
                         "notify() failed to fetch approvals_policy; delivering immediately",
