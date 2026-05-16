@@ -1054,39 +1054,42 @@ def _read_staffer_info_from_toml(
 
 
 async def _fetch_model_from_catalog(pool: asyncpg.Pool) -> str | None:
-    """Return the effective model alias for the QA butler.
+    """Return the effective model alias QA would spawn for medium-complexity work.
 
-    Resolution order:
-    1. The highest-priority enabled override for butler_name='qa'.
-    2. The global highest-priority enabled model in the catalog.
-    3. ``None`` if the catalog is empty or the query fails.
+    Mirrors the spawn-time resolution performed by
+    ``butlers.core.model_routing._RESOLVE_SQL`` (read-only — no round-robin
+    counter mutation), restricted to ``complexity_tier = 'medium'`` because
+    that is the tier QA uses for its investigations.
+
+    Resolution rules:
+    - A row in ``public.butler_model_overrides`` for ``butler_name='qa'`` may
+      override any of ``enabled``, ``complexity_tier``, ``priority``; missing
+      override columns fall back to the catalog row (``COALESCE``).
+    - Only candidates with effective ``enabled = TRUE`` and effective
+      ``complexity_tier = 'medium'`` are considered.
+    - The candidate with the highest effective priority wins; ties broken
+      deterministically by ``mc.created_at ASC, mc.id ASC`` (matching the
+      spawn-time row ordering).
+    - Returns ``None`` if no medium-tier candidate is enabled, or on query
+      failure (debug-logged, non-fatal).
     """
     try:
         row = await pool.fetchrow(
             """
             SELECT mc.alias
-            FROM public.butler_model_overrides bmo
-            JOIN public.model_catalog mc ON mc.id = bmo.catalog_entry_id
-            WHERE bmo.butler_name = $1
-              AND bmo.enabled = TRUE
-              AND mc.enabled = TRUE
-            ORDER BY bmo.priority DESC, mc.priority DESC
+            FROM public.model_catalog mc
+            LEFT JOIN public.butler_model_overrides bmo
+                ON bmo.catalog_entry_id = mc.id
+                AND bmo.butler_name = $1
+            WHERE
+                COALESCE(bmo.enabled, mc.enabled) = TRUE
+                AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'
+            ORDER BY COALESCE(bmo.priority, mc.priority) DESC,
+                     mc.created_at ASC,
+                     mc.id ASC
             LIMIT 1
             """,
             _QA_BUTLER_NAME,
-        )
-        if row is not None:
-            return str(row["alias"])
-
-        # No per-butler override — fall back to the global default model.
-        row = await pool.fetchrow(
-            """
-            SELECT alias
-            FROM public.model_catalog
-            WHERE enabled = TRUE
-            ORDER BY priority DESC
-            LIMIT 1
-            """
         )
         return str(row["alias"]) if row is not None else None
     except Exception:

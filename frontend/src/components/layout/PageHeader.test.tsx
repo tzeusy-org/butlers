@@ -197,6 +197,56 @@ describe("PageHeader", () => {
     window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, openListener);
   });
 
+  it("uppercases known acronyms in auto-built breadcrumbs (qa -> QA)", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/qa"]}>
+          <PageHeader />
+        </MemoryRouter>,
+      );
+    });
+
+    const nav = container.querySelector("nav");
+    expect(nav).not.toBeNull();
+    expect(nav?.textContent).toContain("QA");
+    expect(nav?.textContent).not.toContain("Qa");
+  });
+
+  it("uppercases known acronyms even in nested segments (qa/investigations)", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/qa/investigations"]}>
+          <PageHeader />
+        </MemoryRouter>,
+      );
+    });
+
+    const nav = container.querySelector("nav");
+    expect(nav?.textContent).toContain("QA");
+    expect(nav?.textContent).toContain("Investigations");
+    expect(nav?.textContent).not.toContain("Qa /");
+  });
+
+  it("applies the dossier eyebrow typography to the breadcrumb nav", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/qa"]}>
+          <PageHeader />
+        </MemoryRouter>,
+      );
+    });
+
+    const nav = container.querySelector("nav");
+    expect(nav).not.toBeNull();
+    const className = nav?.getAttribute("class") ?? "";
+    expect(className).toContain("font-mono");
+    expect(className).toContain("text-[10px]");
+    expect(className).toContain("uppercase");
+    expect(className).toContain("tracking-[0.14em]");
+    expect(className).toContain("text-muted-foreground");
+    expect(className).toContain("tabular-nums");
+  });
+
   it("renders sibling butler navigation in the shell bar on butler detail routes", () => {
     act(() => {
       root.render(

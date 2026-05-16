@@ -22,7 +22,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
          · 
         qa
          · detected 
-        12:10 AM
+        formatted(2026-05-15T00:10:00Z)
       </p>
       <div
         class="ml-auto flex items-center gap-2"

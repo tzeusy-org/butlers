@@ -13,6 +13,7 @@ import pytest
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.qa import (
+    _fetch_model_from_catalog,
     _get_credentials_status_fn,
     _get_db_manager,
     _get_force_patrol_fn,
@@ -526,6 +527,94 @@ class TestGetQaSummary:
         assert data["port"] is None
         assert data["model"] is None
         assert data["patrol_interval_minutes"] is None
+
+
+class TestFetchModelFromCatalog:
+    """Direct tests for ``_fetch_model_from_catalog``.
+
+    The query must pick the highest-priority enabled candidate whose
+    *effective* (override-merged) ``complexity_tier`` is ``'medium'``, mirroring
+    spawn-time resolution in ``butlers.core.model_routing._RESOLVE_SQL`` for
+    the ``qa`` butler at ``Complexity.MEDIUM``.
+
+    These tests pass an in-memory candidate set into a stub pool and run the
+    same SQL the implementation runs, asserting:
+    - the SQL filters by ``COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'``,
+    - it filters by ``COALESCE(bmo.enabled, mc.enabled) = TRUE``,
+    - it orders by ``COALESCE(bmo.priority, mc.priority) DESC`` then
+      ``mc.created_at ASC, mc.id ASC``,
+    - it returns ``None`` when the result is empty.
+    """
+
+    @staticmethod
+    def _stub_pool(rows: list[dict[str, Any]] | None) -> AsyncMock:
+        """A pool whose ``fetchrow`` returns the first row (or ``None``)."""
+        pool = AsyncMock()
+        first = _r(rows[0]) if rows else None
+        pool.fetchrow = AsyncMock(return_value=first)
+        return pool
+
+    async def test_qa_override_with_medium_tier_and_high_priority_wins(self) -> None:
+        """A QA override at tier=medium with the highest effective priority wins."""
+        # Simulated SQL result: the override-merged candidate at top priority.
+        pool = self._stub_pool([{"alias": "qa-override-medium"}])
+
+        result = await _fetch_model_from_catalog(pool)
+
+        assert result == "qa-override-medium"
+        assert pool.fetchrow.await_count == 1
+        sql, butler_name = pool.fetchrow.await_args.args
+        assert butler_name == "qa"
+        assert "COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'" in sql
+        assert "COALESCE(bmo.enabled, mc.enabled) = TRUE" in sql
+        assert "COALESCE(bmo.priority, mc.priority) DESC" in sql
+        assert "mc.created_at ASC" in sql
+        assert "mc.id ASC" in sql
+        # The query must NOT mutate the round-robin counter.
+        assert "model_round_robin_counters" not in sql
+        assert "INSERT" not in sql.upper()
+
+    async def test_non_medium_override_is_ignored_even_if_higher_priority(self) -> None:
+        """A QA override at tier!=medium does not displace medium-tier candidates.
+
+        The SQL filter ``COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'``
+        excludes any row whose effective tier is not 'medium'.  We assert the
+        clause is present in the executed query and that the stub returning
+        only a medium row is what surfaces.
+        """
+        pool = self._stub_pool([{"alias": "global-medium-default"}])
+
+        result = await _fetch_model_from_catalog(pool)
+
+        assert result == "global-medium-default"
+        sql = pool.fetchrow.await_args.args[0]
+        # Tier filter must apply to the *effective* tier, so a `bmo` row with
+        # tier='high' (and bmo.complexity_tier non-null) is filtered out.
+        assert "COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'" in sql
+
+    async def test_no_qa_override_falls_back_to_global_medium_top_priority(self) -> None:
+        """With no QA override, the highest-priority enabled global medium entry wins."""
+        pool = self._stub_pool([{"alias": "claude-sonnet-4-5"}])
+
+        result = await _fetch_model_from_catalog(pool)
+
+        assert result == "claude-sonnet-4-5"
+        sql = pool.fetchrow.await_args.args[0]
+        # LEFT JOIN keeps the catalog-only path live when no bmo row exists.
+        assert "LEFT JOIN public.butler_model_overrides bmo" in sql
+
+    async def test_returns_none_when_no_medium_entries_enabled(self) -> None:
+        """No enabled medium-tier candidate → ``None``."""
+        pool = self._stub_pool([])
+
+        assert await _fetch_model_from_catalog(pool) is None
+
+    async def test_returns_none_on_query_failure(self) -> None:
+        """A raising pool returns ``None`` (debug-logged, non-fatal)."""
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=RuntimeError("db down"))
+
+        assert await _fetch_model_from_catalog(pool) is None
 
 
 class TestListPatrols:

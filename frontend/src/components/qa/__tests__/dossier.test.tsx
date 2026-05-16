@@ -22,6 +22,17 @@ vi.mock("@/components/ui/time", () => ({
   Time: ({ value }: { value: string }) => <time dateTime={value}>{value}</time>,
 }));
 
+// Pin the "detected at" formatter so the dossier snapshot is stable across
+// timezones. The real helper renders local-time strings; tests for the helper
+// itself live in __tests__/utils.test.ts.
+vi.mock("@/components/qa/utils", async () => {
+  const actual = await vi.importActual<typeof import("../utils")>("../utils");
+  return {
+    ...actual,
+    formatQaDetectedTime: (ts: string) => `formatted(${ts})`,
+  };
+});
+
 vi.mock("@/hooks/use-qa", () => ({
   useQaCase: qaHookMocks.useQaCase,
   useQaCaseJournal: qaHookMocks.useQaCaseJournal,

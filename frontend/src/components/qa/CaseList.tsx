@@ -8,6 +8,8 @@ interface CaseListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   className?: string;
+  /** Header label reflecting the active time-range filter, e.g. "Cases · last 7d". */
+  headerLabel?: string;
 }
 
 const prStateClass: Record<NonNullable<QaCaseSummary["pr_state"]>, string> = {
@@ -26,11 +28,17 @@ function formatAge(seconds: number): string {
   return `${Math.floor(hours / 24)}d old`;
 }
 
-export function CaseList({ cases, selectedId, onSelect, className }: CaseListProps) {
+export function CaseList({
+  cases,
+  selectedId,
+  onSelect,
+  className,
+  headerLabel = "Cases · last 7d",
+}: CaseListProps) {
   return (
     <aside className={cn("w-full md:w-[320px]", className)} aria-label="QA cases">
       <div className="border-b border-border/60 pb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground tnum">
-        Cases · last 7d
+        {headerLabel}
       </div>
       <div className="divide-y divide-border/60 border-b border-border/60">
         {cases.map((qaCase) => {

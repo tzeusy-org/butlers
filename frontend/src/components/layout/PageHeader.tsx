@@ -17,6 +17,20 @@ interface PageHeaderProps {
   hideBreadcrumbs?: boolean
 }
 
+// Known acronyms that should render fully uppercased rather than title-cased.
+// Keep this list tight — only true acronyms used as URL segments.
+const BREADCRUMB_ACRONYMS: Record<string, string> = {
+  qa: 'QA',
+  api: 'API',
+  ui: 'UI',
+}
+
+function formatSegment(segment: string): string {
+  const lower = segment.toLowerCase()
+  if (BREADCRUMB_ACRONYMS[lower]) return BREADCRUMB_ACRONYMS[lower]
+  return segment.charAt(0).toUpperCase() + segment.slice(1)
+}
+
 function buildBreadcrumbs(pathname: string): Breadcrumb[] {
   const segments = pathname.split('/').filter(Boolean)
   const crumbs: Breadcrumb[] = [{ label: 'Home', path: '/' }]
@@ -25,7 +39,7 @@ function buildBreadcrumbs(pathname: string): Breadcrumb[] {
   for (const segment of segments) {
     currentPath += `/${segment}`
     crumbs.push({
-      label: segment.charAt(0).toUpperCase() + segment.slice(1),
+      label: formatSegment(segment),
       path: currentPath,
     })
   }
@@ -94,12 +108,12 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
 
         {/* Breadcrumbs */}
         {!activeButlerName && !shouldHideBreadcrumbs && (
-          <nav className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <nav className="flex items-center gap-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground tabular-nums">
             {crumbs.map((crumb, i) => (
               <span key={i} className="flex items-center gap-1.5">
-                {i > 0 && <span>/</span>}
+                {i > 0 && <span aria-hidden="true">/</span>}
                 {crumb.path ? (
-                  <Link to={crumb.path} className="hover:text-foreground transition-colors">
+                  <Link to={crumb.path} className="transition-colors hover:text-foreground">
                     {crumb.label}
                   </Link>
                 ) : (

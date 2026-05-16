@@ -22,7 +22,7 @@ import { useQaCases, useQaSummary } from "@/hooks/use-qa";
 import { useDarkMode } from "@/hooks/useDarkMode";
 
 // ---------------------------------------------------------------------------
-// Severity filter types
+// Severity + time-range filter types
 // ---------------------------------------------------------------------------
 
 type SeverityFilter = "all" | "high" | "medium" | "low";
@@ -34,6 +34,21 @@ const SEVERITY_OPTIONS: Array<{ value: SeverityFilter; label: string }> = [
   { value: "low", label: "Low" },
 ];
 
+type SinceFilter = "24h" | "7d" | "30d" | "all";
+
+const SINCE_OPTIONS: Array<{ value: SinceFilter; label: string }> = [
+  { value: "24h", label: "24h" },
+  { value: "7d", label: "7d" },
+  { value: "30d", label: "30d" },
+  { value: "all", label: "All" },
+];
+
+/** Human-readable label for the active time range, used in CaseList. */
+function caseListSinceLabel(since: SinceFilter): string {
+  if (since === "all") return "Cases · all cases";
+  return `Cases · last ${since}`;
+}
+
 // ---------------------------------------------------------------------------
 // Sticky top bar
 // ---------------------------------------------------------------------------
@@ -41,9 +56,13 @@ const SEVERITY_OPTIONS: Array<{ value: SeverityFilter; label: string }> = [
 function StickyTopBar({
   severity,
   onSeverityChange,
+  since,
+  onSinceChange,
 }: {
   severity: SeverityFilter;
   onSeverityChange: (sev: SeverityFilter) => void;
+  since: SinceFilter;
+  onSinceChange: (since: SinceFilter) => void;
 }) {
   const { theme, setTheme, resolvedTheme } = useDarkMode();
 
@@ -57,24 +76,49 @@ function StickyTopBar({
 
   return (
     <div className="sticky top-0 z-20 flex items-center justify-between border-b border-border/60 bg-background/95 px-6 py-2 backdrop-blur-sm">
-      {/* Severity filter */}
-      <div className="flex items-center gap-1" role="group" aria-label="Filter by severity">
-        {SEVERITY_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => onSeverityChange(opt.value)}
-            className={[
-              "rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              severity === opt.value
-                ? "bg-foreground text-background"
-                : "text-muted-foreground hover:text-foreground",
-            ].join(" ")}
-            aria-pressed={severity === opt.value}
-          >
-            {opt.label}
-          </button>
-        ))}
+      <div className="flex items-center gap-4">
+        {/* Severity filter */}
+        <div className="flex items-center gap-1" role="group" aria-label="Filter by severity">
+          {SEVERITY_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => onSeverityChange(opt.value)}
+              className={[
+                "rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                severity === opt.value
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+              aria-pressed={severity === opt.value}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Divider between filter groups */}
+        <span aria-hidden="true" className="h-4 w-px bg-border/60" />
+
+        {/* Time range filter */}
+        <div className="flex items-center gap-1" role="group" aria-label="Time range">
+          {SINCE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => onSinceChange(opt.value)}
+              className={[
+                "rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                since === opt.value
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+              aria-pressed={since === opt.value}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Theme toggle */}
@@ -180,13 +224,14 @@ function DossierPlaceholder({ children }: { children: React.ReactNode }) {
 export default function QaOverviewPage() {
   const [params, setParams] = useSearchParams();
   const [severity, setSeverity] = useState<SeverityFilter>("all");
+  const [since, setSince] = useState<SinceFilter>("7d");
 
   const selectedCaseId = params.get("case") ?? undefined;
 
   const summary = useQaSummary();
   const cases = useQaCases({
     sev: severity === "all" ? undefined : severity,
-    since: "7d",
+    since,
   });
 
   const casesData = cases.data?.data ?? [];
@@ -206,7 +251,12 @@ export default function QaOverviewPage() {
 
   return (
     <div className="flex min-h-full flex-col">
-      <StickyTopBar severity={severity} onSeverityChange={setSeverity} />
+      <StickyTopBar
+        severity={severity}
+        onSeverityChange={setSeverity}
+        since={since}
+        onSinceChange={setSince}
+      />
 
       <PageHeader summary={summary} />
 
@@ -234,6 +284,7 @@ export default function QaOverviewPage() {
               cases={casesData}
               selectedId={effectiveCaseId ?? null}
               onSelect={handleCaseSelect}
+              headerLabel={caseListSinceLabel(since)}
             />
           )}
         </div>

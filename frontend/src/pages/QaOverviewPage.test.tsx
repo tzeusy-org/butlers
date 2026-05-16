@@ -208,6 +208,36 @@ describe("QaOverviewPage -- dossier shell", () => {
     expect(html).toContain("Low");
   });
 
+  it("renders the time-range filter group with the four preset pills", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain('aria-label="Time range"');
+    // Each preset should appear inside an aria-pressed button.
+    expect(html).toMatch(/aria-pressed="(true|false)"[^>]*>24h</);
+    expect(html).toMatch(/aria-pressed="(true|false)"[^>]*>7d</);
+    expect(html).toMatch(/aria-pressed="(true|false)"[^>]*>30d</);
+  });
+
+  it("defaults the case list header to 'Cases · last 7d' and asks the hook for since=7d", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain("Cases · last 7d");
+
+    const lastCallArgs = (useQaCases as AnyMock).mock.calls.at(-1)?.[0];
+    expect(lastCallArgs).toMatchObject({ since: "7d" });
+
+    // The 7d pill should be the active (pressed) one by default.
+    expect(html).toMatch(/aria-pressed="true"[^>]*>7d</);
+  });
+
   it("renders case list rows when cases are present", () => {
     (useQaCases as AnyMock).mockReturnValue({
       data: { data: [MOCK_CASE_1, MOCK_CASE_2] },
