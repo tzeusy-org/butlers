@@ -2077,6 +2077,41 @@ class Spawner:
                     input_tokens=_ledger_input_tokens,
                     output_tokens=_ledger_output_tokens or 0,
                 )
+            # Emit per-call cost event to the live WS spend stream.
+            # Uses the same token counts as the DB ledger (best-effort early capture).
+            # Lazy import avoids a circular dependency: core → api.
+            if _ledger_input_tokens is not None:
+                try:
+                    from butlers.api.pricing import estimate_session_cost, load_pricing
+                    from butlers.api.routers.spend import emit_spend_event
+
+                    _pricing = load_pricing()
+                    _cost_usd = estimate_session_cost(
+                        _pricing,
+                        model or "unknown",
+                        _ledger_input_tokens,
+                        _ledger_output_tokens or 0,
+                    )
+                    emit_spend_event(
+                        {
+                            "kind": "call",
+                            "ts": time.time(),
+                            "butler": self._config.name,
+                            "model": model or "unknown",
+                            "tokens_in": _ledger_input_tokens,
+                            "tokens_out": _ledger_output_tokens or 0,
+                            "cost_usd": _cost_usd,
+                            "session_id": str(session_id) if session_id else "",
+                            "extra": {},
+                        }
+                    )
+                except Exception:
+                    logger.debug(
+                        "emit_spend_event failed for session=%s butler=%s (non-fatal)",
+                        session_id,
+                        self._config.name,
+                        exc_info=True,
+                    )
             # Clear session context before ending span so tool handlers
             # arriving after this point don't attach to a finished span.
             clear_active_session_context()
