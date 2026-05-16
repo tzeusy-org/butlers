@@ -313,6 +313,13 @@ import type {
   ActivityFeed,
   ActivityFeedParams,
   ButlerMemoryStats,
+  PromptVersion,
+  PromptUpdateRequest,
+  ButlerTool,
+  ToolUpdateRequest,
+  MemoryAccess,
+  KillRequest,
+  KillResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -4530,4 +4537,71 @@ export function getMessengerDeadLetters(
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch<MessengerDeadLetterSummary>(`/messenger/dead-letters${qs ? `?${qs}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — butler management (§9.2)
+// ---------------------------------------------------------------------------
+
+/** GET /api/butlers/{name}/prompt — current versioned system prompt. */
+export function getButlerPrompt(name: string): Promise<ApiResponse<PromptVersion>> {
+  return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`);
+}
+
+/** PUT /api/butlers/{name}/prompt — update prompt, snapshots prior version. */
+export function updateButlerPrompt(
+  name: string,
+  body: PromptUpdateRequest,
+): Promise<ApiResponse<PromptVersion>> {
+  return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** GET /api/butlers/{name}/prompt/history — version history newest-first. */
+export function getButlerPromptHistory(
+  name: string,
+  params?: { limit?: number; offset?: number },
+): Promise<PaginatedResponse<PromptVersion>> {
+  const sp = new URLSearchParams();
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<PromptVersion>>(
+    `/butlers/${name}/prompt/history${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** GET /api/butlers/{name}/tools — list tool grants. */
+export function getButlerTools(name: string): Promise<ApiResponse<ButlerTool[]>> {
+  return apiFetch<ApiResponse<ButlerTool[]>>(`/butlers/${name}/tools`);
+}
+
+/** PUT /api/butlers/{name}/tools/{tool} — upsert tool grant/scope. */
+export function updateButlerTool(
+  name: string,
+  tool: string,
+  body: ToolUpdateRequest,
+): Promise<ApiResponse<ButlerTool>> {
+  return apiFetch<ApiResponse<ButlerTool>>(`/butlers/${name}/tools/${tool}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** GET /api/butlers/{name}/memory-access — memory tier access metadata. */
+export function getButlerMemoryAccess(name: string): Promise<ApiResponse<MemoryAccess>> {
+  return apiFetch<ApiResponse<MemoryAccess>>(`/butlers/${name}/memory-access`);
+}
+
+/** POST /api/butlers/{name}/kill — initiate graceful shutdown. */
+export function killButler(name: string, body: KillRequest): Promise<ApiResponse<KillResponse>> {
+  return apiFetch<ApiResponse<KillResponse>>(`/butlers/${name}/kill`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }

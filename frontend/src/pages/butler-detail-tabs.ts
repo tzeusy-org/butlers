@@ -36,11 +36,11 @@ export const BASE_TABS_RESIDENT = [
 ] as const;
 
 /**
- * Non-spec extension tab: Models.
+ * Non-spec extension tabs: Models and Manage (Phase 7 fold-in).
  * Operator-only; not part of the 10 mandated base tabs.
- * Does not appear in resident mode.
+ * Do not appear in resident mode.
  */
-export const OPERATOR_EXTENSION_TABS = ["models"] as const;
+export const OPERATOR_EXTENSION_TABS = ["models", "manage"] as const;
 
 // Butler-specific conditional tabs (health, switchboard routing, education reviews).
 // Appended after the base tabs; visible regardless of mode.

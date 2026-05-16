@@ -969,3 +969,27 @@ export type {
   ActivityFeed,
   ActivityFeedParams,
 } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Phase 7 — butler management (§9.2)
+// ---------------------------------------------------------------------------
+
+export {
+  getButlerPrompt,
+  updateButlerPrompt,
+  getButlerPromptHistory,
+  getButlerTools,
+  updateButlerTool,
+  getButlerMemoryAccess,
+  killButler,
+} from "./client.ts";
+
+export type {
+  PromptVersion,
+  PromptUpdateRequest,
+  ButlerTool,
+  ToolUpdateRequest,
+  MemoryAccess,
+  KillRequest,
+  KillResponse,
+} from "./types.ts";

@@ -4726,3 +4726,59 @@ export interface ButlerMemoryStats {
   /** Rules created in the last 24 hours. */
   rules_24h: number;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 7 — butler management (§9.2)
+// ---------------------------------------------------------------------------
+
+/** A versioned snapshot of a butler's system prompt. */
+export interface PromptVersion {
+  butler_name: string;
+  prompt: string;
+  version: number;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+/** Request body for PUT /api/butlers/{name}/prompt. */
+export interface PromptUpdateRequest {
+  prompt: string;
+  actor?: string;
+}
+
+/** A tool grant entry for a butler. */
+export interface ButlerTool {
+  name: string;
+  description: string | null;
+  allowed: boolean;
+  scope: string | null;
+}
+
+/** Request body for PUT /api/butlers/{name}/tools/{tool}. */
+export interface ToolUpdateRequest {
+  allowed: boolean;
+  scope?: string | null;
+  actor?: string;
+}
+
+/** Memory tier access metadata for a butler. */
+export interface MemoryAccess {
+  read: ("short" | "mid" | "long")[];
+  write: ("short" | "mid" | "long")[];
+  namespace: string | null;
+  embedding_model: string | null;
+  drops_7d: number;
+}
+
+/** Request body for POST /api/butlers/{name}/kill. */
+export interface KillRequest {
+  grace_seconds?: number;
+  actor?: string;
+}
+
+/** Response for POST /api/butlers/{name}/kill. */
+export interface KillResponse {
+  butler_name: string;
+  grace_seconds: number;
+  status: string;
+}

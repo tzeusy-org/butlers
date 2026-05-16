@@ -36,6 +36,7 @@ from butlers.api.routers.approvals import router as approvals_router
 from butlers.api.routers.audit import router as audit_router
 from butlers.api.routers.blob_storage import router as blob_storage_router
 from butlers.api.routers.butler_logs import router as butler_logs_router
+from butlers.api.routers.butler_management import router as butler_management_router
 from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
@@ -234,6 +235,7 @@ def create_app(
     app.include_router(approvals_router)
     app.include_router(butler_logs_router)
     app.include_router(butlers_router)
+    app.include_router(butler_management_router)
     app.include_router(notifications_router)
     app.include_router(butler_notifications_router)
     app.include_router(issues_router)

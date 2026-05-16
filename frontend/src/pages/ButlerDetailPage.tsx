@@ -130,6 +130,11 @@ const ButlerSpendTab = lazy(
   () => import("@/components/butler-detail/ButlerSpendTab.tsx"),
 );
 
+// Management tab (lazy) — bu-g4d49 Phase 7 fold-in
+const ButlerManagementTab = lazy(
+  () => import("@/components/butler-detail/ButlerManagementTab.tsx"),
+);
+
 const detailTabTriggerClassName =
   "h-auto flex-none rounded-none px-3 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.10em] " +
   "data-[state=active]:border-transparent data-[state=active]:bg-transparent " +
@@ -353,7 +358,10 @@ export default function ButlerDetailPage() {
               )}
               <DetailTabTrigger value="memory">Memory</DetailTabTrigger>
               {mode === "operator" && (
-                <DetailTabTrigger value="models">Models</DetailTabTrigger>
+                <>
+                  <DetailTabTrigger value="models">Models</DetailTabTrigger>
+                  <DetailTabTrigger value="manage">Manage</DetailTabTrigger>
+                </>
               )}
               {showCollectionsTab && (
                 <DetailTabTrigger value="collections">Collections</DetailTabTrigger>
@@ -462,6 +470,12 @@ export default function ButlerDetailPage() {
           <TabsContent value="models">
             <Suspense fallback={<TabFallback label="models" />}>
               <ButlerModelOverridesTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="manage">
+            <Suspense fallback={<TabFallback label="manage" />}>
+              <ButlerManagementTab butlerName={name} />
             </Suspense>
           </TabsContent>
 
