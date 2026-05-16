@@ -61,3 +61,10 @@ name = "insight-delivery-cycle"
 cron = "0 8 * * *"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
+
+# Spend rule 7-day savings computation (§5.4) — runs daily at 04:15 UTC (off-peak)
+[[butler.schedule]]
+name = "spend-rule-savings"
+cron = "15 4 * * *"
+dispatch_mode = "job"
+job_name = "spend_rule_savings"
