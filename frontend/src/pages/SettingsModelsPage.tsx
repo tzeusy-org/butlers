@@ -16,7 +16,7 @@
  * bu-q2nz3 — Phase 2: /settings/models page
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/index.ts";
@@ -87,7 +87,17 @@ interface EditModelDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
+/**
+ * Inner form component. Mounted only when the dialog is open so that `useState`
+ * always initializes from current `model` props — no `useEffect` sync needed.
+ */
+function EditModelForm({
+  model,
+  onOpenChange,
+}: {
+  model: ModelCatalogEntry;
+  onOpenChange: (open: boolean) => void;
+}) {
   const updateEntry = useUpdateModelCatalogEntry();
 
   const [alias, setAlias] = useState(model.alias);
@@ -99,20 +109,6 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
     model.extra_args.length > 0 ? JSON.stringify(model.extra_args) : "",
   );
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
-  // Reset form state each time the dialog is opened so stale edits from a
-  // previous (cancelled) session are never surfaced on re-open.
-  useEffect(() => {
-    if (open) {
-      setAlias(model.alias);
-      setModelId(model.model_id);
-      setComplexityTier(model.complexity_tier);
-      setPriority(String(model.priority));
-      setEnabled(model.enabled);
-      setArgs(model.extra_args.length > 0 ? JSON.stringify(model.extra_args) : "");
-      setFieldErrors({});
-    }
-  }, [open, model]);
 
   const validate = (): boolean => {
     const errors: Record<string, string> = {};
@@ -180,6 +176,158 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
   };
 
   return (
+    <>
+      <div className="grid gap-4 py-2">
+        {/* Alias */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="edit-alias" className="font-mono text-[11px] uppercase tracking-widest">
+            Alias
+          </Label>
+          <Input
+            id="edit-alias"
+            value={alias}
+            onChange={(e) => setAlias(e.target.value)}
+            placeholder="e.g. claude-sonnet"
+            aria-invalid={!!fieldErrors.alias}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.alias && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.alias}</p>
+          )}
+        </div>
+
+        {/* Model ID */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="edit-model-id"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Model ID
+          </Label>
+          <Input
+            id="edit-model-id"
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+            placeholder="e.g. claude-sonnet-4-6"
+            aria-invalid={!!fieldErrors.model_id}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.model_id && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.model_id}</p>
+          )}
+        </div>
+
+        {/* Complexity tier */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="edit-tier"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Complexity tier
+          </Label>
+          <Select
+            value={complexityTier}
+            onValueChange={(v) => setComplexityTier(v as ComplexityTier)}
+          >
+            <SelectTrigger id="edit-tier" className="font-mono text-sm w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TIER_ORDER.map((t) => (
+                <SelectItem key={t} value={t} className="font-mono text-sm">
+                  {TIER_LABEL[t]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {fieldErrors.complexity_tier && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.complexity_tier}</p>
+          )}
+        </div>
+
+        {/* Priority */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="edit-priority"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Priority
+          </Label>
+          <Input
+            id="edit-priority"
+            type="number"
+            min={0}
+            value={priority}
+            onChange={(e) => setPriority(e.target.value)}
+            aria-invalid={!!fieldErrors.priority}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.priority && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.priority}</p>
+          )}
+        </div>
+
+        {/* Enabled toggle */}
+        <div className="flex items-center gap-3">
+          <Switch
+            id="edit-enabled"
+            checked={enabled}
+            onCheckedChange={setEnabled}
+            aria-label="Enabled"
+          />
+          <Label
+            htmlFor="edit-enabled"
+            className="font-mono text-[11px] uppercase tracking-widest cursor-pointer"
+          >
+            {enabled ? "Enabled" : "Disabled"}
+          </Label>
+        </div>
+
+        {/* Args (JSON array) */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="edit-args" className="font-mono text-[11px] uppercase tracking-widest">
+            Args (JSON array)
+          </Label>
+          <Textarea
+            id="edit-args"
+            value={args}
+            onChange={(e) => setArgs(e.target.value)}
+            placeholder='e.g. ["--max-turns", "10"]'
+            rows={3}
+            aria-invalid={!!fieldErrors.args}
+            className="font-mono text-xs resize-y"
+          />
+          {fieldErrors.args && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.args}</p>
+          )}
+        </div>
+      </div>
+
+      <DialogFooter>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onOpenChange(false)}
+          disabled={updateEntry.isPending}
+          className="font-mono text-[10px] uppercase tracking-widest"
+        >
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          onClick={handleSave}
+          disabled={updateEntry.isPending}
+          className="font-mono text-[10px] uppercase tracking-widest"
+        >
+          {updateEntry.isPending ? "Saving…" : "Save →"}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
+  return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
@@ -190,152 +338,7 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
             Edit the configuration for this model catalog entry.
           </DialogDescription>
         </DialogHeader>
-
-        <div className="grid gap-4 py-2">
-          {/* Alias */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="edit-alias" className="font-mono text-[11px] uppercase tracking-widest">
-              Alias
-            </Label>
-            <Input
-              id="edit-alias"
-              value={alias}
-              onChange={(e) => setAlias(e.target.value)}
-              placeholder="e.g. claude-sonnet"
-              aria-invalid={!!fieldErrors.alias}
-              className="font-mono text-sm"
-            />
-            {fieldErrors.alias && (
-              <p className="font-mono text-[10px] text-destructive">{fieldErrors.alias}</p>
-            )}
-          </div>
-
-          {/* Model ID */}
-          <div className="grid gap-1.5">
-            <Label
-              htmlFor="edit-model-id"
-              className="font-mono text-[11px] uppercase tracking-widest"
-            >
-              Model ID
-            </Label>
-            <Input
-              id="edit-model-id"
-              value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-              placeholder="e.g. claude-sonnet-4-6"
-              aria-invalid={!!fieldErrors.model_id}
-              className="font-mono text-sm"
-            />
-            {fieldErrors.model_id && (
-              <p className="font-mono text-[10px] text-destructive">{fieldErrors.model_id}</p>
-            )}
-          </div>
-
-          {/* Complexity tier */}
-          <div className="grid gap-1.5">
-            <Label
-              htmlFor="edit-tier"
-              className="font-mono text-[11px] uppercase tracking-widest"
-            >
-              Complexity tier
-            </Label>
-            <Select
-              value={complexityTier}
-              onValueChange={(v) => setComplexityTier(v as ComplexityTier)}
-            >
-              <SelectTrigger id="edit-tier" className="font-mono text-sm w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TIER_ORDER.map((t) => (
-                  <SelectItem key={t} value={t} className="font-mono text-sm">
-                    {TIER_LABEL[t]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {fieldErrors.complexity_tier && (
-              <p className="font-mono text-[10px] text-destructive">{fieldErrors.complexity_tier}</p>
-            )}
-          </div>
-
-          {/* Priority */}
-          <div className="grid gap-1.5">
-            <Label
-              htmlFor="edit-priority"
-              className="font-mono text-[11px] uppercase tracking-widest"
-            >
-              Priority
-            </Label>
-            <Input
-              id="edit-priority"
-              type="number"
-              min={0}
-              value={priority}
-              onChange={(e) => setPriority(e.target.value)}
-              aria-invalid={!!fieldErrors.priority}
-              className="font-mono text-sm"
-            />
-            {fieldErrors.priority && (
-              <p className="font-mono text-[10px] text-destructive">{fieldErrors.priority}</p>
-            )}
-          </div>
-
-          {/* Enabled toggle */}
-          <div className="flex items-center gap-3">
-            <Switch
-              id="edit-enabled"
-              checked={enabled}
-              onCheckedChange={setEnabled}
-              aria-label="Enabled"
-            />
-            <Label
-              htmlFor="edit-enabled"
-              className="font-mono text-[11px] uppercase tracking-widest cursor-pointer"
-            >
-              {enabled ? "Enabled" : "Disabled"}
-            </Label>
-          </div>
-
-          {/* Args (JSON array) */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="edit-args" className="font-mono text-[11px] uppercase tracking-widest">
-              Args (JSON array)
-            </Label>
-            <Textarea
-              id="edit-args"
-              value={args}
-              onChange={(e) => setArgs(e.target.value)}
-              placeholder='e.g. ["--max-turns", "10"]'
-              rows={3}
-              aria-invalid={!!fieldErrors.args}
-              className="font-mono text-xs resize-y"
-            />
-            {fieldErrors.args && (
-              <p className="font-mono text-[10px] text-destructive">{fieldErrors.args}</p>
-            )}
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onOpenChange(false)}
-            disabled={updateEntry.isPending}
-            className="font-mono text-[10px] uppercase tracking-widest"
-          >
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={updateEntry.isPending}
-            className="font-mono text-[10px] uppercase tracking-widest"
-          >
-            {updateEntry.isPending ? "Saving…" : "Save →"}
-          </Button>
-        </DialogFooter>
+        {open && <EditModelForm model={model} onOpenChange={onOpenChange} />}
       </DialogContent>
     </Dialog>
   );
