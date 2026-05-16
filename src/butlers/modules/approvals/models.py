@@ -69,6 +69,21 @@ def _parse_optional_jsonb(value: Any) -> dict[str, Any] | None:
     return _parse_jsonb(value)
 
 
+def _parse_jsonb_list(value: Any) -> list[str]:
+    """Parse a JSONB array value (may be a raw string from asyncpg without a codec).
+
+    asyncpg can return JSONB columns as raw JSON strings when no custom codec is
+    registered.  ``list(string)`` would iterate over characters instead of JSON
+    elements, so we must decode the string first.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        return list(parsed) if parsed else []
+    return list(value)
+
+
 @dataclass
 class PendingAction:
     """A tool invocation awaiting human approval.
@@ -151,7 +166,7 @@ class PendingAction:
             execution_result=_parse_optional_jsonb(_get("execution_result")),
             approval_rule_id=_parse_optional_uuid(_get("approval_rule_id")),
             why=_get("why"),
-            evidence=list(_get("evidence") or []),
+            evidence=_parse_jsonb_list(_get("evidence")),
         )
 
 

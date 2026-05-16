@@ -1804,24 +1804,24 @@ async def approve_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
+    # Use a single connection for the read, optional edits update, approve, and audit
+    # so that an edits UPDATE cannot succeed while the approve transition fails.
     async with target_pool.acquire() as conn:
         action_row = await conn.fetchrow(
             "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
         )
 
-    # Apply edits to tool args before approval
-    if request.edits and action_row is not None:
-        raw_args = action_row["tool_args"]
-        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-        tool_args.update(request.edits)
-        async with target_pool.acquire() as conn:
+        # Apply edits to tool args before approval (same connection, no partial update risk)
+        if request.edits and action_row is not None:
+            raw_args = action_row["tool_args"]
+            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            tool_args.update(request.edits)
             await conn.execute(
                 "UPDATE pending_actions SET tool_args = $1 WHERE id = $2",
                 json.dumps(tool_args),
                 parsed_id,
             )
 
-    async with target_pool.acquire() as conn:
         result = await approvals_ops.approve_action(
             conn,
             action_id=action_id,
