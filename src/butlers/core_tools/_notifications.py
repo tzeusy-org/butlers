@@ -457,6 +457,63 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "notify() failed to defer notification; delivering immediately"
                             )
 
+            # Approvals-policy quiet-hours gate: suppress owner-default pages.
+            # Applies only when no explicit contact_id or recipient is given
+            # (i.e. the notification is destined for the owner via the default
+            # resolution path) and the intent is send/insight.
+            _policy_pool = daemon.db.pool if daemon.db is not None else None
+            if (
+                _policy_pool is not None
+                and contact_id is None
+                and recipient is None
+                and intent in {"send", "insight"}
+            ):
+                from datetime import UTC as _PUTC
+                from datetime import datetime as _pdatetime
+                from zoneinfo import ZoneInfo as _PZoneInfo
+
+                from butlers.core.approvals_policy import (
+                    get_approvals_policy_quiet_hours,
+                    should_suppress_by_policy,
+                )
+
+                try:
+                    _policy = await get_approvals_policy_quiet_hours(_policy_pool)
+                except Exception:
+                    logger.debug(
+                        "notify() failed to fetch approvals_policy; delivering immediately",
+                        exc_info=True,
+                    )
+                    _policy = None
+
+                if _policy is not None:
+                    _policy_tz_name = _policy.get("timezone", "UTC")
+                    try:
+                        _policy_tz = _PZoneInfo(_policy_tz_name)
+                    except Exception:
+                        _policy_tz = _PZoneInfo("UTC")
+                    _policy_now_local = _pdatetime.now(_PUTC).astimezone(_policy_tz)
+                    _policy_current_hour = _policy_now_local.hour
+
+                    if should_suppress_by_policy(_policy, current_hour=_policy_current_hour):
+                        logger.info(
+                            "notify() suppressed owner page during quiet hours "
+                            "(policy tz=%s hour=%d quiet=%s-%s channel=%s butler=%s)",
+                            _policy_tz_name,
+                            _policy_current_hour,
+                            _policy.get("quiet_start_hour"),
+                            _policy.get("quiet_end_hour"),
+                            channel,
+                            butler_name,
+                        )
+                        return {
+                            "status": "suppressed_quiet_hours",
+                            "channel": channel,
+                            "quiet_start_hour": _policy.get("quiet_start_hour"),
+                            "quiet_end_hour": _policy.get("quiet_end_hour"),
+                            "timezone": _policy_tz_name,
+                        }
+
             client = daemon.switchboard_client
             if client is None and butler_name != "switchboard":
                 return {
