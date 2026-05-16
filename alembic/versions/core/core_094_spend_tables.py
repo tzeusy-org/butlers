@@ -1,7 +1,7 @@
 """spend_tables: add public.spend_rules and public.spend_ceiling.
 
-Revision ID: core_092
-Revises: core_091
+Revision ID: core_094
+Revises: core_093
 Create Date: 2026-05-16 00:00:00.000000
 
 Adds two tables supporting the §5.0–5.2 spend dashboard:
@@ -9,14 +9,17 @@ Adds two tables supporting the §5.0–5.2 spend dashboard:
   public.spend_rules  — ordered routing rules (condition→action, position-sorted)
   public.spend_ceiling — singleton monthly USD ceiling (id=1 always)
 
+Rebased past core_092 (audit_log) and core_093 (complexity_tier_rename)
+which merged into main after this change was originally authored.
+
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "core_092"
-down_revision = "core_091"
+revision = "core_094"
+down_revision = "core_093"
 branch_labels = None
 depends_on = None
 

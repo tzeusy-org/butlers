@@ -13,7 +13,7 @@
 // No chart library. SVG rendered by hand.
 // ---------------------------------------------------------------------------
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useMemo, useRef } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   Card,
@@ -124,7 +124,7 @@ interface KpiCellProps {
 
 function KpiCell({ label, value, sub }: KpiCellProps) {
   return (
-    <div className="flex flex-col gap-1 p-4 border-r last:border-r-0">
+    <div className="flex flex-col gap-1 p-4">
       <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{label}</span>
       <span className="text-2xl tabular-nums font-semibold">{value}</span>
       {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
@@ -357,7 +357,7 @@ function BreakdownSection() {
   })
 
   const breakdown = data?.data?.breakdown ?? {}
-  const entries = Object.entries(breakdown).sort(([, a], [, b]) => b - a)
+  const entries = useMemo(() => Object.entries(breakdown).sort(([, a], [, b]) => b - a), [breakdown])
   const maxValue = entries[0]?.[1] ?? 0
 
   return (
@@ -585,7 +585,7 @@ function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
         className="w-24 text-xs border rounded px-2 py-1 bg-background"
         value={value}
         min="0.01"
-        step="1"
+        step="0.01"
         onChange={(e) => setValue(e.target.value)}
         autoFocus
       />

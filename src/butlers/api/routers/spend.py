@@ -44,7 +44,7 @@ from butlers.api.deps import (
 )
 from butlers.api.models import ApiResponse, CostSummary, DailyCost, ScheduleCost, TopSession
 from butlers.api.pricing import PricingConfig, estimate_session_cost
-from butlers.api.routers.audit import log_audit_entry
+from butlers.api.routers.audit import append as audit_append
 from butlers.core.sessions import sessions_daily, sessions_summary
 
 logger = logging.getLogger(__name__)
@@ -737,14 +737,6 @@ async def get_costs_by_schedule(
 # ---------------------------------------------------------------------------
 
 
-def _get_spend_db_manager() -> DatabaseManager:
-    """Dependency: require DB manager for spend mutation endpoints."""
-    try:
-        return get_db_manager()
-    except RuntimeError:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-
 @router.get("/breakdown", response_model=ApiResponse[dict])
 async def get_spend_breakdown(
     by: Literal["butler", "model", "feature"] = Query(
@@ -956,12 +948,6 @@ class SpendRuleUpdate(BaseModel):
     action: dict | None = None
 
 
-def _require_spend_db(db: DatabaseManager | None = Depends(_get_db_manager)) -> DatabaseManager:
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db
-
-
 @router.get("/rules", response_model=ApiResponse[list[SpendRule]])
 async def list_spend_rules(
     db: DatabaseManager | None = Depends(_get_db_manager),
@@ -1015,34 +1001,37 @@ async def create_spend_rule(
         pool = db.pool("switchboard")
         now = datetime.now(tz=UTC)
 
-        if body.position is None:
-            max_pos = await pool.fetchval(
-                "SELECT COALESCE(MAX(position), -1) FROM public.spend_rules"
-            )
-            position = int(max_pos) + 1
-        else:
-            position = body.position
-            # Shift existing rules down
-            await pool.execute(
-                "UPDATE public.spend_rules SET position = position + 1, updated_at = $1 "
-                "WHERE position >= $2",
-                now,
-                position,
-            )
-
-        row = await pool.fetchrow(
-            "INSERT INTO public.spend_rules (position, condition, action, created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5) "
-            "RETURNING id, position, condition, action, saved_7d, created_at, updated_at",
-            position,
-            json.dumps(body.condition),
-            json.dumps(body.action),
-            now,
-            now,
-        )
-
         def _dec(v: object) -> dict:
             return v if isinstance(v, dict) else json.loads(v)  # type: ignore[arg-type]
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if body.position is None:
+                    max_pos = await conn.fetchval(
+                        "SELECT COALESCE(MAX(position), -1) FROM public.spend_rules"
+                    )
+                    position = int(max_pos) + 1
+                else:
+                    position = body.position
+                    # Shift existing rules down atomically inside this transaction
+                    await conn.execute(
+                        "UPDATE public.spend_rules SET position = position + 1, updated_at = $1 "
+                        "WHERE position >= $2",
+                        now,
+                        position,
+                    )
+
+                row = await conn.fetchrow(
+                    "INSERT INTO public.spend_rules "
+                    "(position, condition, action, created_at, updated_at) "
+                    "VALUES ($1, $2, $3, $4, $5) "
+                    "RETURNING id, position, condition, action, saved_7d, created_at, updated_at",
+                    position,
+                    json.dumps(body.condition),
+                    json.dumps(body.action),
+                    now,
+                    now,
+                )
 
         rule = SpendRule(
             id=str(row["id"]),
@@ -1060,12 +1049,16 @@ async def create_spend_rule(
         raise HTTPException(status_code=500, detail="Failed to create spend rule") from exc
 
     # Audit log — fire and forget; never breaks primary operation
-    await log_audit_entry(
-        db,
-        butler="switchboard",
-        operation="spend.rule.create",
-        request_summary={"condition": body.condition, "action": body.action, "position": position},
-    )
+    try:
+        await audit_append(
+            db.pool("switchboard"),
+            actor="owner",
+            action="spend.rule.create",
+            target=f"rule:{rule.id}",
+            note=f"position={position} condition={body.condition} action={body.action}",
+        )
+    except Exception:
+        logger.warning("Audit append failed for spend.rule.create", exc_info=True)
     return ApiResponse[SpendRule](data=rule)
 
 
@@ -1087,44 +1080,64 @@ async def update_spend_rule(
         pool = db.pool("switchboard")
         now = datetime.now(tz=UTC)
 
-        # Validate rule exists
-        existing = await pool.fetchrow(
-            "SELECT id, position, condition, action, saved_7d, created_at, updated_at "
-            "FROM public.spend_rules WHERE id = $1",
-            uuid.UUID(rule_id),
-        )
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Spend rule not found")
-
         def _dec2(v: object) -> dict:
             return v if isinstance(v, dict) else json.loads(v)  # type: ignore[arg-type]
 
-        new_condition = (
-            body.condition if body.condition is not None else _dec2(existing["condition"])
-        )
-        new_action = body.action if body.action is not None else _dec2(existing["action"])
-        new_position = body.position if body.position is not None else existing["position"]
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Validate rule exists inside the transaction to prevent TOCTOU races
+                existing = await conn.fetchrow(
+                    "SELECT id, position, condition, action, saved_7d, created_at, updated_at "
+                    "FROM public.spend_rules WHERE id = $1",
+                    uuid.UUID(rule_id),
+                )
+                if existing is None:
+                    raise HTTPException(status_code=404, detail="Spend rule not found")
 
-        if body.position is not None and body.position != existing["position"]:
-            # Shift other rules to make room at new position
-            await pool.execute(
-                "UPDATE public.spend_rules SET position = position + 1, updated_at = $1 "
-                "WHERE position >= $2 AND id != $3",
-                now,
-                new_position,
-                uuid.UUID(rule_id),
-            )
+                new_condition = (
+                    body.condition if body.condition is not None else _dec2(existing["condition"])
+                )
+                new_action = body.action if body.action is not None else _dec2(existing["action"])
+                new_position = body.position if body.position is not None else existing["position"]
 
-        row = await pool.fetchrow(
-            "UPDATE public.spend_rules SET position=$1, condition=$2, action=$3, updated_at=$4 "
-            "WHERE id=$5 "
-            "RETURNING id, position, condition, action, saved_7d, created_at, updated_at",
-            new_position,
-            json.dumps(new_condition),
-            json.dumps(new_action),
-            now,
-            uuid.UUID(rule_id),
-        )
+                if body.position is not None and body.position != existing["position"]:
+                    old_position = existing["position"]
+                    # Shift intermediate rules in the right direction to maintain dense ordering
+                    if new_position < old_position:
+                        # Moving up: shift rules between [new_position, old_position) down by 1
+                        await conn.execute(
+                            "UPDATE public.spend_rules "
+                            "SET position = position + 1, updated_at = $1 "
+                            "WHERE position >= $2 AND position < $3 AND id != $4",
+                            now,
+                            new_position,
+                            old_position,
+                            uuid.UUID(rule_id),
+                        )
+                    else:
+                        # Moving down: shift rules between (old_position, new_position] up by 1
+                        await conn.execute(
+                            "UPDATE public.spend_rules "
+                            "SET position = position - 1, updated_at = $1 "
+                            "WHERE position > $2 AND position <= $3 AND id != $4",
+                            now,
+                            old_position,
+                            new_position,
+                            uuid.UUID(rule_id),
+                        )
+
+                row = await conn.fetchrow(
+                    "UPDATE public.spend_rules "
+                    "SET position=$1, condition=$2, action=$3, updated_at=$4 "
+                    "WHERE id=$5 "
+                    "RETURNING id, position, condition, action, saved_7d, created_at, updated_at",
+                    new_position,
+                    json.dumps(new_condition),
+                    json.dumps(new_action),
+                    now,
+                    uuid.UUID(rule_id),
+                )
+
         rule = SpendRule(
             id=str(row["id"]),
             position=row["position"],
@@ -1140,17 +1153,16 @@ async def update_spend_rule(
         logger.warning("Failed to update spend rule %s: %s", rule_id, exc)
         raise HTTPException(status_code=500, detail="Failed to update spend rule") from exc
 
-    await log_audit_entry(
-        db,
-        butler="switchboard",
-        operation="spend.rule.update",
-        request_summary={
-            "rule_id": rule_id,
-            "condition": new_condition,
-            "action": new_action,
-            "position": new_position,
-        },
-    )
+    try:
+        await audit_append(
+            db.pool("switchboard"),
+            actor="owner",
+            action="spend.rule.update",
+            target=f"rule:{rule_id}",
+            note=f"position={new_position} condition={new_condition} action={new_action}",
+        )
+    except Exception:
+        logger.warning("Audit append failed for spend.rule.update", exc_info=True)
     return ApiResponse[SpendRule](data=rule)
 
 
@@ -1171,32 +1183,37 @@ async def delete_spend_rule(
         pool = db.pool("switchboard")
         now = datetime.now(tz=UTC)
 
-        row = await pool.fetchrow(
-            "DELETE FROM public.spend_rules WHERE id = $1 RETURNING position",
-            uuid.UUID(rule_id),
-        )
-        if row is None:
-            raise HTTPException(status_code=404, detail="Spend rule not found")
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "DELETE FROM public.spend_rules WHERE id = $1 RETURNING position",
+                    uuid.UUID(rule_id),
+                )
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Spend rule not found")
 
-        deleted_position = row["position"]
-        await pool.execute(
-            "UPDATE public.spend_rules SET position = position - 1, updated_at = $1 "
-            "WHERE position > $2",
-            now,
-            deleted_position,
-        )
+                deleted_position = row["position"]
+                await conn.execute(
+                    "UPDATE public.spend_rules SET position = position - 1, updated_at = $1 "
+                    "WHERE position > $2",
+                    now,
+                    deleted_position,
+                )
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("Failed to delete spend rule %s: %s", rule_id, exc)
         raise HTTPException(status_code=500, detail="Failed to delete spend rule") from exc
 
-    await log_audit_entry(
-        db,
-        butler="switchboard",
-        operation="spend.rule.delete",
-        request_summary={"rule_id": rule_id},
-    )
+    try:
+        await audit_append(
+            db.pool("switchboard"),
+            actor="owner",
+            action="spend.rule.delete",
+            target=f"rule:{rule_id}",
+        )
+    except Exception:
+        logger.warning("Audit append failed for spend.rule.delete", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1250,10 +1267,14 @@ async def update_spend_ceiling(
         logger.warning("Failed to update spend ceiling: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to update spend ceiling") from exc
 
-    await log_audit_entry(
-        db,
-        butler="switchboard",
-        operation="spend.ceiling.update",
-        request_summary={"monthly_usd": body.monthly_usd},
-    )
+    try:
+        await audit_append(
+            db.pool("switchboard"),
+            actor="owner",
+            action="spend.ceiling.update",
+            target="ceiling:1",
+            note=f"monthly_usd={body.monthly_usd}",
+        )
+    except Exception:
+        logger.warning("Audit append failed for spend.ceiling.update", exc_info=True)
     return ApiResponse[SpendCeiling](data=ceiling)
