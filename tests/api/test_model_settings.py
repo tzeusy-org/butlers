@@ -386,3 +386,40 @@ async def test_model_failures_422_on_bad_since(app):
     ) as client:
         resp = await client.get(f"/api/settings/models/{entry_id}/failures?since=badvalue")
     assert resp.status_code == 422
+
+
+async def test_model_failures_returns_real_rows(app):
+    """GET /api/settings/models/{id}/failures returns real rows from dispatch_failures."""
+    from datetime import UTC, datetime
+
+    entry_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    failure_ts = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
+
+    failure_row = {
+        "ts": failure_ts,
+        "error_code": "TimeoutError",
+        "error_message": "Session timed out after 30s",
+        "butler": "general",
+        "session_id": session_id,
+    }
+
+    _, mock_pool = _app_with_pool(app)
+    # fetchval: first call → entry exists (entry_id), second call → since_ts, third → total count
+    mock_pool.fetchval = AsyncMock(side_effect=[entry_id, failure_ts, 1])
+    mock_pool.fetch = AsyncMock(return_value=[_mock_record(failure_row)])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/failures?since=24h&limit=10")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["total"] == 1
+    rows = body["data"]
+    assert len(rows) == 1
+    assert rows[0]["error_code"] == "TimeoutError"
+    assert rows[0]["error_message"] == "Session timed out after 30s"
+    assert rows[0]["butler"] == "general"
+    assert rows[0]["session_id"] == str(session_id)
