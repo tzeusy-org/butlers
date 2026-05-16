@@ -168,30 +168,30 @@ async def _dispatch_webhook(
     last_status: int | None = None
     last_latency: float | None = None
 
-    for attempt in range(max_attempts):
-        t0 = time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=_TEST_TIMEOUT_SECONDS) as client:
+    async with httpx.AsyncClient(timeout=_TEST_TIMEOUT_SECONDS) as client:
+        for attempt in range(max_attempts):
+            t0 = time.monotonic()
+            try:
                 resp = await client.post(endpoint, content=raw, headers=headers)
-            last_latency = (time.monotonic() - t0) * 1000
-            last_status = resp.status_code
-            if resp.is_success:
-                return WebhookTestResult(
-                    webhook_id=wh_id,
-                    status_code=last_status,
-                    latency_ms=last_latency,
-                    ok=True,
+                last_latency = (time.monotonic() - t0) * 1000
+                last_status = resp.status_code
+                if resp.is_success:
+                    return WebhookTestResult(
+                        webhook_id=wh_id,
+                        status_code=last_status,
+                        latency_ms=last_latency,
+                        ok=True,
+                    )
+                last_error = f"HTTP {resp.status_code}"
+            except httpx.RequestError as exc:
+                last_latency = (time.monotonic() - t0) * 1000
+                last_error = str(exc)
+                logger.warning(
+                    "Webhook dispatch attempt %d/%d failed: %s", attempt + 1, max_attempts, exc
                 )
-            last_error = f"HTTP {resp.status_code}"
-        except Exception as exc:
-            last_latency = (time.monotonic() - t0) * 1000
-            last_error = str(exc)
-            logger.warning(
-                "Webhook dispatch attempt %d/%d failed: %s", attempt + 1, max_attempts, exc
-            )
 
-        if attempt < max_attempts - 1:
-            await asyncio.sleep(backoff)
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(backoff)
 
     return WebhookTestResult(
         webhook_id=wh_id,
