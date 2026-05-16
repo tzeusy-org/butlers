@@ -620,7 +620,7 @@ export function getCostSummary(
   }
   if (butler) sp.set("butler", butler);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<ApiResponse<CostSummary>>(`/costs/summary${qs}`);
+  return apiFetch<ApiResponse<CostSummary>>(`/spend${qs}`);
 }
 
 /** Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD) and/or a butler. */
@@ -634,13 +634,13 @@ export function getDailyCosts(
   if (to) params.set("to", to);
   if (butler) params.set("butler", butler);
   const query = params.toString() ? `?${params.toString()}` : "";
-  return apiFetch<ApiResponse<DailyCost[]>>(`/costs/daily${query}`);
+  return apiFetch<ApiResponse<DailyCost[]>>(`/spend/daily${query}`);
 }
 
 /** Fetch most expensive sessions. */
 export function getTopSessions(limit?: number): Promise<ApiResponse<TopSession[]>> {
   const params = limit ? `?limit=${limit}` : "";
-  return apiFetch<ApiResponse<TopSession[]>>(`/costs/top-sessions${params}`);
+  return apiFetch<ApiResponse<TopSession[]>>(`/spend/top-sessions${params}`);
 }
 
 // ---------------------------------------------------------------------------
