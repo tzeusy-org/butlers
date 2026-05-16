@@ -333,7 +333,7 @@ from butlers.api.models.approval import (  # noqa: E402
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
 )
-from butlers.api.models.audit import AuditEntry  # noqa: E402
+from butlers.api.models.audit import AuditEntry, AuditLogEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
 from butlers.api.models.connector import (  # noqa: E402
     ConnectorCheckpoint,
@@ -395,6 +395,7 @@ __all__ = [
     "ApprovalRuleCreateRequest",
     "ApprovalRuleFromActionRequest",
     "AuditEntry",
+    "AuditLogEntry",
     "AutonomySuggestion",
     "AutonomySuggestionDismissRequest",
     "AutonomySuggestionVelocity",
