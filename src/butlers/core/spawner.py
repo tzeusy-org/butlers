@@ -91,6 +91,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_GLOBAL_SESSIONS = 3
 _global_semaphore: asyncio.Semaphore | None = None
 
+# Lazily-populated pricing config cache — loaded once from pricing.toml on first
+# session close that emits a spend event, then reused for the process lifetime.
+# Avoids disk I/O on every session completion.
+_cached_pricing: object | None = None  # PricingConfig when populated
+
 # Last-resort model id used only when the model catalog returns nothing
 # (no matching entry or DB unreachable). This is a hard-coded fallback
 # constant, not config — nothing in git can override it. It exists so that
@@ -2085,7 +2090,12 @@ class Spawner:
                     from butlers.api.pricing import estimate_session_cost, load_pricing
                     from butlers.api.routers.spend import emit_spend_event
 
-                    _pricing = load_pricing()
+                    # Cache pricing config at module level so pricing.toml is not
+                    # read from disk on every session close (hot path).
+                    global _cached_pricing
+                    if _cached_pricing is None:
+                        _cached_pricing = load_pricing()
+                    _pricing = _cached_pricing
                     _cost_usd = estimate_session_cost(
                         _pricing,
                         model or "unknown",
