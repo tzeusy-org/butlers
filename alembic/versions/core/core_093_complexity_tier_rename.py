@@ -56,6 +56,11 @@ def upgrade() -> None:
     # 2. Remap complexity_tier values in model_catalog
     # ------------------------------------------------------------------
     op.execute("""
+        ALTER TABLE public.model_catalog
+        DROP CONSTRAINT IF EXISTS chk_model_catalog_complexity_tier
+    """)
+
+    op.execute("""
         UPDATE public.model_catalog
         SET complexity_tier = CASE complexity_tier
             WHEN 'extra_high'   THEN 'reasoning'
@@ -69,11 +74,6 @@ def upgrade() -> None:
         WHERE complexity_tier IN ('extra_high', 'high', 'medium', 'trivial', 'discretion', 'self_healing')
     """)
 
-    # 2a. Drop old CHECK constraint and add new one on model_catalog
-    op.execute("""
-        ALTER TABLE public.model_catalog
-        DROP CONSTRAINT IF EXISTS chk_model_catalog_complexity_tier
-    """)
     op.execute(f"""
         ALTER TABLE public.model_catalog
         ADD CONSTRAINT chk_model_catalog_complexity_tier
@@ -83,6 +83,11 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 3. Remap complexity_tier values in butler_model_overrides
     # ------------------------------------------------------------------
+    op.execute("""
+        ALTER TABLE public.butler_model_overrides
+        DROP CONSTRAINT IF EXISTS chk_butler_model_overrides_complexity_tier
+    """)
+
     op.execute("""
         UPDATE public.butler_model_overrides
         SET complexity_tier = CASE complexity_tier
@@ -97,11 +102,6 @@ def upgrade() -> None:
         WHERE complexity_tier IN ('extra_high', 'high', 'medium', 'trivial', 'discretion', 'self_healing')
     """)
 
-    # 3a. Drop old CHECK constraint and add new one on butler_model_overrides
-    op.execute("""
-        ALTER TABLE public.butler_model_overrides
-        DROP CONSTRAINT IF EXISTS chk_butler_model_overrides_complexity_tier
-    """)
     op.execute(f"""
         ALTER TABLE public.butler_model_overrides
         ADD CONSTRAINT chk_butler_model_overrides_complexity_tier
@@ -113,6 +113,11 @@ def upgrade() -> None:
     #    (old counters become best-effort; merge by summing counts for
     #    high+extra_high→reasoning, discretion+self_healing→specialty)
     # ------------------------------------------------------------------
+    op.execute("""
+        ALTER TABLE public.model_round_robin_counters
+        DROP CONSTRAINT IF EXISTS chk_rr_complexity_tier
+    """)
+
     # Merge rows that map to the same new tier before renaming to avoid PK conflicts.
     op.execute("""
         INSERT INTO public.model_round_robin_counters
@@ -143,11 +148,6 @@ def upgrade() -> None:
         WHERE complexity_tier IN ('extra_high', 'high', 'medium', 'trivial', 'discretion', 'self_healing')
     """)
 
-    # 4a. Drop old CHECK constraint and add new one on model_round_robin_counters
-    op.execute("""
-        ALTER TABLE public.model_round_robin_counters
-        DROP CONSTRAINT IF EXISTS chk_rr_complexity_tier
-    """)
     op.execute(f"""
         ALTER TABLE public.model_round_robin_counters
         ADD CONSTRAINT chk_rr_complexity_tier
