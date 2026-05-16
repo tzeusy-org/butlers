@@ -139,6 +139,9 @@ import type {
   PricingMap,
   ModelCatalogCreate,
   ModelCatalogUpdate,
+  ModelPriorityDelta,
+  VerifyAllResult,
+  FailureEntry,
   ModelTestResult,
   ButlerModelOverride,
   ButlerModelOverrideUpsert,
@@ -3244,6 +3247,37 @@ export function getModelUsageDetail(
 ): Promise<ApiResponse<TokenUsageDetail>> {
   return apiFetch<ApiResponse<TokenUsageDetail>>(
     `/settings/models/${encodeURIComponent(id)}/usage`,
+  );
+}
+
+/** PUT /api/settings/models/{id}/priority — adjust priority by delta */
+export function updateModelPriority(
+  id: string,
+  body: ModelPriorityDelta,
+): Promise<ApiResponse<ModelCatalogEntry>> {
+  return apiFetch<ApiResponse<ModelCatalogEntry>>(
+    `/settings/models/${encodeURIComponent(id)}/priority`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** POST /api/settings/models/verify-all — re-verify every enabled model */
+export function verifyAllModels(): Promise<ApiResponse<VerifyAllResult>> {
+  return apiFetch<ApiResponse<VerifyAllResult>>("/settings/models/verify-all", {
+    method: "POST",
+  });
+}
+
+/** GET /api/settings/models/{id}/failures — recent failure tail */
+export function getModelFailures(
+  id: string,
+  since = "24h",
+): Promise<PaginatedResponse<FailureEntry>> {
+  return apiFetch<PaginatedResponse<FailureEntry>>(
+    `/settings/models/${encodeURIComponent(id)}/failures?since=${encodeURIComponent(since)}`,
   );
 }
 
