@@ -16,7 +16,7 @@
  * bu-q2nz3 — Phase 2: /settings/models page
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/index.ts";
@@ -28,10 +28,12 @@ import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -97,6 +99,20 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
     model.extra_args.length > 0 ? JSON.stringify(model.extra_args) : "",
   );
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // Reset form state each time the dialog is opened so stale edits from a
+  // previous (cancelled) session are never surfaced on re-open.
+  useEffect(() => {
+    if (open) {
+      setAlias(model.alias);
+      setModelId(model.model_id);
+      setComplexityTier(model.complexity_tier);
+      setPriority(String(model.priority));
+      setEnabled(model.enabled);
+      setArgs(model.extra_args.length > 0 ? JSON.stringify(model.extra_args) : "");
+      setFieldErrors({});
+    }
+  }, [open, model]);
 
   const validate = (): boolean => {
     const errors: Record<string, string> = {};
@@ -165,11 +181,14 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px]" aria-describedby={undefined}>
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle className="font-mono text-sm">
             Edit model — <span className="text-muted-foreground">{model.alias}</span>
           </DialogTitle>
+          <DialogDescription className="font-mono text-[11px]">
+            Edit the configuration for this model catalog entry.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 py-2">
@@ -283,21 +302,14 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
             <Label htmlFor="edit-args" className="font-mono text-[11px] uppercase tracking-widest">
               Args (JSON array)
             </Label>
-            <textarea
+            <Textarea
               id="edit-args"
               value={args}
               onChange={(e) => setArgs(e.target.value)}
               placeholder='e.g. ["--max-turns", "10"]'
               rows={3}
               aria-invalid={!!fieldErrors.args}
-              className={[
-                "font-mono text-xs rounded-md border border-input bg-transparent px-3 py-2",
-                "resize-y w-full outline-none transition-[color,box-shadow]",
-                "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]",
-                fieldErrors.args ? "border-destructive" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
+              className="font-mono text-xs resize-y"
             />
             {fieldErrors.args && (
               <p className="font-mono text-[10px] text-destructive">{fieldErrors.args}</p>
