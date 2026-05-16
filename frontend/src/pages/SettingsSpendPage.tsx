@@ -13,7 +13,7 @@
 // No chart library. SVG rendered by hand.
 // ---------------------------------------------------------------------------
 
-import { useState, useMemo, useRef, useEffect } from "react"
+import { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   Card,
@@ -627,30 +627,18 @@ export default function SettingsSpendPage() {
   const forecast = forecastData?.data
 
   // §5.3 — Connect to the spend stream and update KPIs incrementally.
-  // streamedCostUsd accumulates per-call costs since the last page fetch.
-  // We track the MTD baseline from the last server response so that incremental
-  // additions don't double-count cost already included in the polled forecast.
-  const baselineMtdRef = useRef<number | null>(null)
+  // streamedCostUsd is a monotonic cumulative counter of live "call" events
+  // received since mount.  Snapshot events are excluded so this value does NOT
+  // overlap with the server-fetched MTD baseline in the polled forecast.
   const { streamedCostUsd } = useSpendStream()
 
-  // When the polled forecast refreshes, record the new MTD as the baseline and
-  // invalidate the streamed delta so we don't double-count.
-  useEffect(() => {
-    if (forecast != null) {
-      baselineMtdRef.current = forecast.mtd_usd
-    }
-  }, [forecast?.mtd_usd])  // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Compose a live forecast by layering the stream delta on top of the polled data.
+  // Compose a live forecast by adding the monotonic stream total directly on top
+  // of the polled MTD baseline.  No subtraction needed because streamedCostUsd
+  // only counts real-time events that arrived after the snapshot.
   const liveForecast = useMemo(() => {
     if (!forecast) return forecast
-    if (baselineMtdRef.current === null) return forecast
-    // streamedCostUsd includes all events since page load (including those already
-    // captured in the last polled baseline), so we subtract the baseline to get only
-    // the genuinely new spend since the last poll.
-    const streamDelta = Math.max(0, streamedCostUsd - (baselineMtdRef.current ?? 0))
-    if (streamDelta === 0) return forecast
-    const liveMtd = forecast.mtd_usd + streamDelta
+    if (streamedCostUsd === 0) return forecast
+    const liveMtd = forecast.mtd_usd + streamedCostUsd
     const daysIn = forecast.days_in_month
     const daysElapsed = Math.max(forecast.days_elapsed, 1)
     const liveProjected = (liveMtd / daysElapsed) * daysIn
@@ -661,13 +649,23 @@ export default function SettingsSpendPage() {
     }
   }, [forecast, streamedCostUsd])
 
-  // When new spend events arrive, also invalidate queries so summary/breakdown
-  // refresh on the next natural polling cycle (no forced immediate refetch).
-  useEffect(() => {
-    if (streamedCostUsd > 0) {
+  // When new spend events arrive, invalidate the breakdown query on the next
+  // natural polling cycle.  Throttled to at most once per 30 s to avoid
+  // excessive invalidations when events are frequent.
+  const lastInvalidationRef = useRef<number>(0)
+  const invalidateBreakdown = useCallback(() => {
+    const now = Date.now()
+    if (now - lastInvalidationRef.current > 30_000) {
+      lastInvalidationRef.current = now
       queryClient.invalidateQueries({ queryKey: ["spend-breakdown"] })
     }
-  }, [streamedCostUsd, queryClient])
+  }, [queryClient])
+
+  useEffect(() => {
+    if (streamedCostUsd > 0) {
+      invalidateBreakdown()
+    }
+  }, [streamedCostUsd, invalidateBreakdown])
 
   return (
     <Page archetype="overview" title="Spend">

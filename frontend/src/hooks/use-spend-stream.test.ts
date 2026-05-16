@@ -116,7 +116,7 @@ describe("useSpendStream", () => {
     expect(result.current.status).toBe("open")
   })
 
-  it("populates events from snapshot message", () => {
+  it("populates events from snapshot message but does not count toward streamedCostUsd", () => {
     const { result } = renderHook(() => useSpendStream())
     const snapEvent = makeCallEvent({ cost_usd: 0.001 })
 
@@ -127,7 +127,9 @@ describe("useSpendStream", () => {
 
     expect(result.current.events).toHaveLength(1)
     expect(result.current.events[0].cost_usd).toBe(0.001)
-    expect(result.current.streamedCostUsd).toBeCloseTo(0.001)
+    // Snapshot events are excluded from the monotonic counter — those costs are
+    // already captured in the server-fetched MTD baseline.
+    expect(result.current.streamedCostUsd).toBe(0)
   })
 
   it("appends individual call events", () => {
@@ -169,18 +171,21 @@ describe("useSpendStream", () => {
     expect(lastWsInstance).toBeNull()
   })
 
-  it("respects maxEvents cap", () => {
+  it("respects maxEvents cap on the sliding window", () => {
     const { result } = renderHook(() => useSpendStream({ maxEvents: 3 }))
 
     act(() => {
       lastWsInstance!.simulateOpen()
       lastWsInstance!.simulateMessage({ kind: "snapshot", events: [] })
       for (let i = 0; i < 5; i++) {
-        lastWsInstance!.simulateMessage(makeCallEvent({ cost_usd: 0.001 * i }))
+        lastWsInstance!.simulateMessage(makeCallEvent({ cost_usd: 0.001 * (i + 1) }))
       }
     })
 
+    // Sliding window is capped at 3 events
     expect(result.current.events).toHaveLength(3)
+    // But the monotonic counter includes ALL 5 live events
+    expect(result.current.streamedCostUsd).toBeCloseTo(0.001 + 0.002 + 0.003 + 0.004 + 0.005)
   })
 
   it("transitions to 'closed' on disconnect", () => {

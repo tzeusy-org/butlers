@@ -83,9 +83,10 @@ export interface UseSpendStreamResult {
   /** Current connection state. */
   status: "connecting" | "open" | "closed"
   /**
-   * Incremental MTD spend derived from the streamed events.
-   * Callers that already have a server-fetched MTD baseline should ADD
-   * this value to obtain the live running total.
+   * Monotonically increasing cumulative spend from live events received since
+   * the hook mounted.  Snapshot events are excluded from this counter — only
+   * real-time "call" events increment it.  Callers should use this to derive
+   * the incremental spend since a known server-fetched MTD baseline.
    */
   streamedCostUsd: number
 }
@@ -95,6 +96,10 @@ export function useSpendStream(options: UseSpendStreamOptions = {}): UseSpendStr
 
   const [events, setEvents] = useState<SpendCallEvent[]>([])
   const [status, setStatus] = useState<"connecting" | "open" | "closed">("closed")
+  // Monotonic cumulative counter for live "call" events only.  Stored as state
+  // so that React re-renders are triggered only by actual new spend, not by
+  // events leaving the sliding window.
+  const [streamedCostUsd, setStreamedCostUsd] = useState<number>(0)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -132,6 +137,9 @@ export function useSpendStream(options: UseSpendStreamOptions = {}): UseSpendStr
           return
         }
         if (msg.kind === "snapshot") {
+          // Snapshot populates the sliding window but does NOT increment the
+          // cumulative counter — those costs are already captured in the
+          // server-fetched MTD baseline the caller holds.
           setEvents((prev) => {
             const combined = [...prev, ...msg.events]
             return combined.slice(-maxEvents)
@@ -141,6 +149,8 @@ export function useSpendStream(options: UseSpendStreamOptions = {}): UseSpendStr
             const next = [...prev, msg]
             return next.slice(-maxEvents)
           })
+          // Increment monotonic counter for every live call event.
+          setStreamedCostUsd((prev) => prev + msg.cost_usd)
         }
         // "ping" — ignore
       }
@@ -175,8 +185,6 @@ export function useSpendStream(options: UseSpendStreamOptions = {}): UseSpendStr
       setStatus("closed")
     }
   }, [disabled, maxEvents])
-
-  const streamedCostUsd = events.reduce((sum, e) => sum + e.cost_usd, 0)
 
   return { events, status, streamedCostUsd }
 }
