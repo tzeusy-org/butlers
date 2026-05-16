@@ -1152,3 +1152,137 @@ async def test_spend_ceiling_rejects_non_positive(app):
         resp = await client.put("/api/spend/ceiling", json={"monthly_usd": -5.0})
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# §5.3 — WS /api/spend/stream
+# ---------------------------------------------------------------------------
+
+
+async def test_spend_stream_connect_and_receive_event(app):
+    """WS /api/spend/stream: connecting delivers snapshot then live call event."""
+    from fastapi.testclient import TestClient
+
+    from butlers.api.routers.spend import _spend_recent, _spend_subscribers, emit_spend_event
+
+    # Ensure clean state for this test
+    _spend_recent.clear()
+    _spend_subscribers.clear()
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/spend/stream") as ws:
+            # First message must be the snapshot (empty ring buffer)
+            snap = json.loads(ws.receive_text())
+            assert snap["kind"] == "snapshot"
+            assert isinstance(snap["events"], list)
+
+            # Emit a synthetic cost event
+            event = {
+                "kind": "call",
+                "ts": 1_700_000_000.0,
+                "butler": "home",
+                "model": "claude-sonnet-4-20250514",
+                "tokens_in": 1000,
+                "tokens_out": 500,
+                "cost_usd": 0.00003,
+                "session_id": "sess-abc",
+                "extra": {},
+            }
+            emit_spend_event(event)
+
+            # The connected subscriber should immediately receive the event
+            msg = json.loads(ws.receive_text())
+            assert msg["kind"] == "call"
+            assert msg["butler"] == "home"
+            assert msg["cost_usd"] == pytest.approx(0.00003)
+
+
+async def test_spend_stream_snapshot_includes_recent_events(app):
+    """WS snapshot contains events added before the connection was opened."""
+    from fastapi.testclient import TestClient
+
+    from butlers.api.routers.spend import _spend_recent, _spend_subscribers, emit_spend_event
+
+    _spend_recent.clear()
+    _spend_subscribers.clear()
+
+    # Pre-populate recent ring buffer
+    pre_event = {
+        "kind": "call",
+        "ts": 1_699_000_000.0,
+        "butler": "atlas",
+        "model": "claude-haiku-35-20241022",
+        "tokens_in": 200,
+        "tokens_out": 100,
+        "cost_usd": 0.000001,
+        "session_id": "pre-sess",
+        "extra": {},
+    }
+    emit_spend_event(pre_event)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/spend/stream") as ws:
+            snap = json.loads(ws.receive_text())
+            assert snap["kind"] == "snapshot"
+            assert len(snap["events"]) == 1
+            assert snap["events"][0]["butler"] == "atlas"
+
+
+async def test_spend_stream_auth_rejected_when_key_configured(app, monkeypatch):
+    """WS /api/spend/stream closes with 1008 when api_key is wrong."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "secret-key")
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        with pytest.raises(Exception):
+            # Wrong key — should be rejected (close code 1008 or connection refused)
+            with client.websocket_connect("/api/spend/stream?api_key=wrong-key") as ws:
+                ws.receive_text()
+
+
+async def test_spend_stream_auth_accepted_with_correct_key(app, monkeypatch):
+    """WS /api/spend/stream accepts connection when api_key matches."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "correct-key")
+
+    from fastapi.testclient import TestClient
+
+    from butlers.api.routers.spend import _spend_recent, _spend_subscribers
+
+    _spend_recent.clear()
+    _spend_subscribers.clear()
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/spend/stream?api_key=correct-key") as ws:
+            snap = json.loads(ws.receive_text())
+            assert snap["kind"] == "snapshot"
+
+
+async def test_emit_spend_event_updates_ring_buffer():
+    """emit_spend_event adds to the ring buffer and drops oldest when full."""
+    from butlers.api.routers.spend import (
+        _STREAM_RECENT_MAX,
+        _spend_recent,
+        _spend_subscribers,
+        emit_spend_event,
+    )
+
+    _spend_recent.clear()
+    _spend_subscribers.clear()
+
+    for i in range(_STREAM_RECENT_MAX + 5):
+        emit_spend_event(
+            {
+                "kind": "call",
+                "ts": float(i),
+                "butler": "test",
+                "model": "model-x",
+                "tokens_in": 1,
+                "tokens_out": 1,
+                "cost_usd": 0.000001,
+            }
+        )
+
+    assert len(_spend_recent) == _STREAM_RECENT_MAX
+    # Newest events should be kept (last 50)
+    assert _spend_recent[-1]["ts"] == float(_STREAM_RECENT_MAX + 4)

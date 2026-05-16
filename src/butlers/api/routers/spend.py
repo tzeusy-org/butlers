@@ -16,20 +16,32 @@ Routes (§5.0):
   PUT  /api/spend/rules/{id}       — §5.2 update routing rule
   DELETE /api/spend/rules/{id}     — §5.2 delete routing rule
   PUT  /api/spend/ceiling          — §5.2 set monthly ceiling
+  WS   /api/spend/stream           — §5.3 per-call cost event stream
 """
 
 from __future__ import annotations
 
 import asyncio
 import calendar
+import hmac
 import json
 import logging
+import os
+import time
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
@@ -53,6 +65,144 @@ router = APIRouter(prefix="/api/spend", tags=["spend"])
 
 _STATUS_TIMEOUT_S = 5.0
 _SESSIONS_SUMMARY_TOOL = "sessions_summary"
+
+# ---------------------------------------------------------------------------
+# §5.3 — Spend event pub/sub broker
+# ---------------------------------------------------------------------------
+
+# Maximum events retained for reconnect snapshot
+_STREAM_RECENT_MAX = 50
+
+# Maximum WS subscriber queue depth before oldest events are dropped
+_STREAM_QUEUE_MAXSIZE = 256
+
+
+class SpendEvent(BaseModel):
+    """A single per-call cost event emitted on the spend stream."""
+
+    kind: str = "call"
+    ts: float
+    butler: str
+    model: str
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float
+    session_id: str = ""
+    extra: dict = {}
+
+
+# Global pub/sub state — module-level singleton so tests can reset between runs
+_spend_subscribers: list[asyncio.Queue] = []
+_spend_recent: list[dict] = []  # ring buffer of recent raw events
+
+
+def emit_spend_event(event: dict) -> None:
+    """Publish a per-call cost event to all connected WS subscribers.
+
+    Also appends to the ring buffer so new subscribers receive a snapshot
+    of the most-recent events on connect.
+
+    Call this from any place that records per-call costs (e.g. the runtime
+    cost reporter or spawner session-close path).
+
+    ``event`` must be a dict matching the ``SpendEvent`` shape.
+    """
+    if "ts" not in event:
+        event = {**event, "ts": time.time()}
+
+    # Maintain ring buffer (discard oldest if full)
+    _spend_recent.append(event)
+    if len(_spend_recent) > _STREAM_RECENT_MAX:
+        _spend_recent.pop(0)
+
+    dead: list[asyncio.Queue] = []
+    for q in _spend_subscribers:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        try:
+            _spend_subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+def _auth_ws_api_key(token: str | None) -> bool:
+    """Return True if the provided token matches the configured DASHBOARD_API_KEY.
+
+    When DASHBOARD_API_KEY is not set in the environment, all tokens are
+    accepted (auth disabled — consistent with ``ApiKeyMiddleware``).
+    """
+    expected = os.environ.get("DASHBOARD_API_KEY") or None
+    if expected is None:
+        return True
+    if not token:
+        return False
+    return hmac.compare_digest(token, expected)
+
+
+@router.websocket("/stream")
+async def spend_stream(
+    websocket: WebSocket,
+    api_key: str | None = Query(None),
+) -> None:
+    """WebSocket stream of per-call cost events (§5.3).
+
+    Authentication: pass the dashboard API key via ``?api_key=<key>`` at
+    upgrade time (browsers cannot set ``X-API-Key`` headers on WS upgrades).
+    When ``DASHBOARD_API_KEY`` is not configured, all connections are allowed.
+
+    On connect the server sends a ``snapshot`` message containing recent
+    cost events (up to the last 50) so that client KPIs are not blank on
+    reconnect.  Subsequent messages are individual ``call`` events as they
+    arrive in real time.
+
+    Event payload shape::
+
+        {"kind": "call", "ts": <unix float>, "butler": "...",
+         "model": "...", "tokens_in": N, "tokens_out": N,
+         "cost_usd": N, "session_id": "...", "extra": {}}
+
+    Snapshot payload shape::
+
+        {"kind": "snapshot", "events": [...recent call events...]}
+
+    The connection is kept open until the client disconnects.
+    """
+    if not _auth_ws_api_key(api_key):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
+    await websocket.accept()
+
+    # Send snapshot of recent events so the client KPIs are immediately populated
+    snapshot = {"kind": "snapshot", "events": list(_spend_recent)}
+    try:
+        await websocket.send_text(json.dumps(snapshot))
+    except WebSocketDisconnect:
+        return
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
+    _spend_subscribers.append(queue)
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                await websocket.send_text(json.dumps(event))
+            except TimeoutError:
+                # Send keepalive ping to detect stale connections
+                try:
+                    await websocket.send_text(json.dumps({"kind": "ping"}))
+                except WebSocketDisconnect:
+                    break
+            except WebSocketDisconnect:
+                break
+    finally:
+        try:
+            _spend_subscribers.remove(queue)
+        except ValueError:
+            pass
 
 
 def _get_db_manager() -> DatabaseManager | None:
