@@ -68,6 +68,16 @@
   --severity-medium: oklch(0.769 0.189 84.0);   /* amber  — #f59e0b */
   --severity-high:   oklch(0.627 0.257 29.2);   /* red    — #ef4444 */
 
+  /* Attention-tint rail tokens
+   *
+   * Named aliases for the two state colors used by .attention-row rails and
+   * tint backgrounds. Kept separate from --severity-* so consumers reference
+   * them by intent (attention signal) rather than severity level.
+   * See about/heart-and-soul/design-language.md § Attention-tint exception.
+   */
+  --red:   oklch(0.627 0.257 29.2);   /* matches --severity-high  — #ef4444 */
+  --amber: oklch(0.769 0.189 84.0);   /* matches --severity-medium — #f59e0b */
+
   /* Permanence */
   --permanence-fleeting:  oklch(0.708 0 0);        /* neutral gray              — chroma 0 (achromatic) */
   --permanence-medium:    oklch(0.6 0.110 184.7);  /* teal-blue                 — chroma 0.118 → 0.110 */
@@ -386,6 +396,10 @@ body {
   --severity-medium: oklch(0.810 0.185 84.0);
   --severity-high:   oklch(0.685 0.250 29.2);
 
+  /* Attention-tint rail tokens — lifted to match dark-mode severity */
+  --red:   oklch(0.685 0.250 29.2);   /* matches dark --severity-high  */
+  --amber: oklch(0.810 0.185 84.0);   /* matches dark --severity-medium */
+
   /* Permanence — muted to match evening-glance dark-primary commitment */
   --permanence-fleeting:  oklch(0.556 0 0);                        /* achromatic — no change */
   --permanence-medium:    oklch(0.696 0.115 162.5);                /* teal   — chroma 0.170 → 0.115 */
@@ -484,4 +498,33 @@ body {
  * ---------------------------------------------------------------------------*/
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+ * Attention-tint pattern
+ *
+ * The single permitted exception to the state-color-on-background
+ * prohibition (see about/heart-and-soul/design-language.md §
+ * Attention-tint exception).
+ *
+ * Usage:
+ *   <tr class="attention-row" data-tone="red">...</tr>
+ *   <div class="attention-row" data-tone="amber">...</div>
+ *
+ * Rules:
+ * - Apply ONLY to rows or panels that demand human attention right now
+ *   (open approval, auth-renewal, model in error, spend near ceiling,
+ *   webhook failure).
+ * - Routine status rows (healthy, idle, neutral) must NOT carry this class.
+ * - A row already showing a Sev glyph or other affordance must NOT also
+ *   carry this class — one affordance per signal.
+ * - Two tones only: red (critical) and amber (warning). No other hues.
+ * ---------------------------------------------------------------------------*/
+.attention-row[data-tone="red"] {
+  background: oklch(0.685 0.250 29 / 0.06);
+  border-left: 2px solid var(--red);
+}
+.attention-row[data-tone="amber"] {
+  background: oklch(0.810 0.185 84 / 0.05);
+  border-left: 2px solid var(--amber);
 }

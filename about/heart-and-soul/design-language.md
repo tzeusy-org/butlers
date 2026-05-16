@@ -827,6 +827,35 @@ Bloomberg-grade density at a fraction of Bloomberg's noise. Empty
 state for the attention list is the Voice register doing its job:
 `Nothing waiting.` in serif italic, no celebration, no illustration.
 
+#### Attention-tint exception
+
+> Status: **single permitted exception** to the state-color-on-background
+> prohibition — approved by openspec/changes/redesign-settings-dispatch-console/.
+
+Rows or panels that *demand human attention right now* may carry a
+**4–7% alpha background tint** in the state color, paired with a **2px left
+rail** in the same color. This is one affordance, not two: the tint and
+the rail travel together as a single signal unit.
+
+Permitted use cases:
+- Open approval awaiting human decision
+- Auth-renewal required for a connected provider
+- Model in error or rate-limited state
+- Spend within 10% of monthly ceiling
+- Webhook failure in the last 24 hours
+
+Constraints:
+- The pattern applies **only** to "demands attention now" states. Routine
+  status (healthy, idle, neutral) receives no tint, no rail.
+- A row already carrying a `Sev` glyph or any other affordance does
+  **not** also receive the tint — *one affordance per signal* still applies.
+- Two tones only: `red` (4–7% alpha) for critical states, `amber` (4–6%
+  alpha) for warning states. No other hues enter the background.
+
+The canonical CSS lives in `frontend/src/index.css` under the OKLCH
+palette section. The pattern is implemented by the `.attention-row`
+class with `data-tone="red"` or `data-tone="amber"` attributes.
+
 ### KPI strip
 
 The KPI strip replaces card chrome with tabular-nums plus hairline
@@ -836,7 +865,8 @@ mega-number that screams; the alignment is the design.
 
 ### Butler hue scope
 
-> Status: non-negotiable.
+> Status: non-negotiable (with one documented exception — see
+> [Attention-tint exception](#attention-tint-exception) above).
 
 Each butler has one hue from the categorical palette. The hue appears
 **only on the butler letter-mark** (the colored squircle with the
@@ -844,6 +874,11 @@ initial). It does not appear on backgrounds, borders, buttons,
 headers, or any other chrome. This rule is what keeps the dashboard
 from reading like a SaaS product. It augments the existing token
 rule (Non-negotiable 1): named hues only resolve onto the letter-mark.
+
+The sole exception is the attention-tint pattern described above, which
+permits a 4–7% alpha state-color tint on rows or panels requiring
+immediate human action. That exception is scoped, bounded, and single-
+purpose; it does not weaken the general prohibition.
 
 ### Motion budget
 
