@@ -983,7 +983,7 @@ class Spawner:
             For non-ingestion triggers (scheduler, tick), this should be None.
         complexity:
             Task complexity tier used to select a model from the catalog.
-            Defaults to ``Complexity.MEDIUM``.  The catalog is queried with this
+            Defaults to ``Complexity.WORKHORSE``.  The catalog is queried with this
             tier; when no catalog entry matches the TOML-configured model is used.
         cwd:
             Optional working directory for the runtime invocation. When ``None``,

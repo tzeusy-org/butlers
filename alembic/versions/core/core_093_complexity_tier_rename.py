@@ -1,7 +1,7 @@
 """complexity_tier_rename: rename complexity tiers to canonical six + add last_verified columns.
 
-Revision ID: core_092
-Revises: core_091
+Revision ID: core_093
+Revises: core_092
 Create Date: 2026-05-16 00:00:00.000000
 
 Renames the six legacy complexity_tier values to the canonical six:
@@ -27,8 +27,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_092"
-down_revision = "core_091"
+revision = "core_093"
+down_revision = "core_092"
 branch_labels = None
 depends_on = None
 
