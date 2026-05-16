@@ -2,13 +2,20 @@
 # Launch Butlers via Docker Compose (dev by default, --prod for production DB).
 #
 # Usage:
-#   ./scripts/compose.sh                           # dev database (default)
-#   ./scripts/compose.sh --prod                    # production database
-#   ./scripts/compose.sh --hotreload               # volume-mount source for live changes
+#   ./scripts/compose.sh                           # dev database, hotreload on (default)
+#   ./scripts/compose.sh --prod                    # production database, baked image
+#   ./scripts/compose.sh --no-hotreload            # dev mode without source volume-mount
+#   ./scripts/compose.sh --hotreload               # explicit (already on for dev; no-op)
 #   ./scripts/compose.sh --skip-oauth-check        # skip OAuth gate
 #   ./scripts/compose.sh --skip-tailscale-check    # skip tailscale serve setup
 #   ./scripts/compose.sh --audio                   # include live-listener (needs /dev/snd)
 #   ./scripts/compose.sh --observability           # enable observability stack (Prometheus, Grafana, Tempo)
+#
+# Dev defaults to hotreload because the baked image only re-bakes when this
+# script rebuilds it -- editing src/ on the host has no effect on a baked
+# dashboard-api or butlers-up container until rebuild + restart. Hotreload
+# variants volume-mount src/ and pick up edits immediately. Pass
+# --no-hotreload to reproduce the prod-style baked-image path in dev.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,11 +28,15 @@ COMPOSE_ENV=()
 SKIP_TAILSCALE=false
 OBSERVABILITY=false
 BUTLERS_MODE=dev
+# Hotreload defaults to on for dev, off for prod; resolved after arg parsing.
+# Tri-state: empty = use mode default; true/false = user opted in/out.
+HOTRELOAD_OPT=""
 
 for arg in "$@"; do
   case "$arg" in
     --prod)                 BUTLERS_MODE=prod ;;
-    --hotreload)            PROFILES+=(hotreload) ;;
+    --hotreload)            HOTRELOAD_OPT=true ;;
+    --no-hotreload)         HOTRELOAD_OPT=false ;;
     --audio)                PROFILES+=(audio) ;;
     --observability)        OBSERVABILITY=true ;;
     --skip-oauth-check)     COMPOSE_ENV+=("SKIP_OAUTH_CHECK=true") ;;
@@ -33,6 +44,19 @@ for arg in "$@"; do
     *)                      echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done
+
+# Resolve hotreload default: dev mode opts in unless --no-hotreload is set;
+# prod mode opts out unless --hotreload is set (rarely useful but allowed).
+if [ -z "$HOTRELOAD_OPT" ]; then
+  if [ "$BUTLERS_MODE" = "dev" ]; then
+    HOTRELOAD_OPT=true
+  else
+    HOTRELOAD_OPT=false
+  fi
+fi
+if [ "$HOTRELOAD_OPT" = "true" ]; then
+  PROFILES+=(hotreload)
+fi
 
 # ── Load environment-specific database config ──────────────────────────
 ENV_FILE="${PROJECT_DIR}/.env.${BUTLERS_MODE}"
