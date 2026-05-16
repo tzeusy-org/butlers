@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -19,6 +20,11 @@ from typing import Any
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+# Sentinel used when a retention policy row explicitly sets max_rows = NULL
+# (meaning "no row cap").  Passing this to run_episode_cleanup ensures the
+# capacity-enforcement branch never fires without requiring a signature change.
+_NO_ROW_CAP: int = sys.maxsize
 
 type _DeterministicScheduleJobHandler = Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[Any]
@@ -111,14 +117,69 @@ async def _run_memory_consolidation_job(
     return await run_consolidation(pool=pool, embedding_engine=None, cc_spawner=None)
 
 
+async def _fetch_retention_policy(pool: asyncpg.Pool, kind: str) -> dict[str, Any]:
+    """Fetch a row from public.memory_retention_policies by kind.
+
+    Falls back to an empty dict (no policy) when the table does not exist
+    (migration core_096 not yet applied) so the cleanup jobs remain safe to
+    run on un-migrated databases.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT ttl_days, max_rows FROM public.memory_retention_policies WHERE kind = $1",
+            kind,
+        )
+        if row is not None:
+            return {"ttl_days": row["ttl_days"], "max_rows": row["max_rows"]}
+    except Exception:
+        pass
+    return {}
+
+
+async def _log_compaction(pool: asyncpg.Pool, kind: str, rows_removed: int) -> None:
+    """Insert one row into public.memory_compaction_log; best-effort (no raise)."""
+    try:
+        await pool.execute(
+            "INSERT INTO public.memory_compaction_log (kind, rows_removed) VALUES ($1, $2)",
+            kind,
+            rows_removed,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to log compaction for kind=%r rows_removed=%d",
+            kind,
+            rows_removed,
+            exc_info=True,
+        )
+
+
 async def _run_memory_episode_cleanup_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run memory episode cleanup directly without spawning an LLM runtime session."""
+    """Run memory episode cleanup directly without spawning an LLM runtime session.
+
+    Consults public.memory_retention_policies for 'event' and 'transcript' kinds
+    to determine the max_rows cap.  Falls back to the default (10 000) when the
+    policy table is not yet available (migration core_096 not applied).
+
+    Logs the number of removed rows to public.memory_compaction_log after each run.
+    """
     from butlers.modules.memory.consolidation import run_episode_cleanup
 
-    max_entries = 10000
+    # Load policy from DB (kind='event' governs general episode capacity).
+    policy = await _fetch_retention_policy(pool, "event")
+    # "max_rows" absent  → table not yet migrated → fall back to 10 000.
+    # "max_rows" = None  → explicit "no limit" in DB → use sys.maxsize so the
+    #                       capacity step in run_episode_cleanup never triggers.
+    if "max_rows" not in policy:
+        max_entries = 10000
+    elif policy["max_rows"] is None:
+        max_entries = _NO_ROW_CAP
+    else:
+        max_entries = int(policy["max_rows"])
+
+    # job_args override takes precedence for backward compatibility.
     if job_args is not None:
         unknown_args = sorted(set(job_args) - {"max_entries"})
         if unknown_args:
@@ -138,23 +199,51 @@ async def _run_memory_episode_cleanup_job(
                 )
             max_entries = raw_max_entries
 
-    return await run_episode_cleanup(pool=pool, max_entries=max_entries)
+    result = await run_episode_cleanup(pool=pool, max_entries=max_entries)
+    total_removed = result.get("expired_deleted", 0) + result.get("capacity_deleted", 0)
+    if total_removed > 0:
+        await _log_compaction(pool, "event", total_removed)
+    return result
 
 
 async def _run_memory_purge_superseded_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Purge superseded facts older than a threshold."""
+    """Purge superseded facts older than a threshold.
+
+    Consults public.memory_retention_policies for 'fact' kind to determine
+    the ttl_days threshold.  Falls back to 7 days when the policy table is
+    not yet available.
+
+    Logs the number of removed rows to public.memory_compaction_log.
+    """
     from butlers.modules.memory.storage import purge_superseded_facts
 
-    older_than_days = 7
+    policy = await _fetch_retention_policy(pool, "fact")
+    # "ttl_days" absent  → table not yet migrated → fall back to 7.
+    # "ttl_days" = None  → explicit "no TTL" in DB → skip purge (return early).
+    if "ttl_days" not in policy:
+        older_than_days: int | None = 7
+    elif policy["ttl_days"] is None:
+        older_than_days = None  # no TTL cap; skip purge below
+    else:
+        older_than_days = int(policy["ttl_days"])
+
     if job_args is not None and "older_than_days" in job_args:
         raw = job_args["older_than_days"]
         if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
             older_than_days = raw
 
-    return await purge_superseded_facts(pool, older_than_days=older_than_days)
+    if older_than_days is None:
+        # Policy explicitly says no TTL → skip fact purge.
+        return {"superseded_deleted": 0, "ha_state_deleted": 0, "skipped": "no_ttl_policy"}
+
+    result = await purge_superseded_facts(pool, older_than_days=older_than_days)
+    total_removed = result.get("superseded_deleted", 0) + result.get("ha_state_deleted", 0)
+    if total_removed > 0:
+        await _log_compaction(pool, "fact", total_removed)
+    return result
 
 
 _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {

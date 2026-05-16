@@ -3,6 +3,9 @@
 Provides read-only endpoints for browsing memory data across all butler
 databases that expose memory tables. The router gracefully skips pools where
 memory tables are unavailable, so dedicated-memory deployments are optional.
+
+Also exposes admin endpoints for retention policies, compaction log, and
+the inspect search bar (§10.2).
 """
 
 from __future__ import annotations
@@ -21,16 +24,21 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.memory import (
     ButlerMemoryStats,
+    CompactionLogEntry,
     EntityDetail,
     EntityInfoEntry,
     EntitySummary,
     Episode,
     Fact,
     MemoryActivity,
+    MemoryInspectResult,
+    MemoryRetentionPolicy,
     MemoryStats,
     Rule,
     UpdateEntityRequest,
+    UpdateRetentionPoliciesRequest,
 )
+from butlers.api.routers import audit as _audit
 
 logger = logging.getLogger(__name__)
 
@@ -1724,3 +1732,293 @@ async def get_butler_memory_stats(
     )
 
     return ApiResponse[ButlerMemoryStats](data=stats)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/retention-policies
+# ---------------------------------------------------------------------------
+
+
+@router.get("/retention-policies", response_model=ApiResponse[list[MemoryRetentionPolicy]])
+async def get_retention_policies(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[MemoryRetentionPolicy]]:
+    """Return all rows from public.memory_retention_policies."""
+    pool = _any_pool(db)
+    try:
+        rows = await pool.fetch(
+            "SELECT kind, ttl_days, max_rows, updated_at, updated_by"
+            " FROM public.memory_retention_policies"
+            " ORDER BY kind"
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "memory_retention_policies table not available"
+                " — migration core_096 may not have run"
+            ),
+        ) from exc
+
+    policies = [
+        MemoryRetentionPolicy(
+            kind=r["kind"],
+            ttl_days=r["ttl_days"],
+            max_rows=r["max_rows"],
+            updated_at=str(r["updated_at"]),
+            updated_by=r["updated_by"],
+        )
+        for r in rows
+    ]
+    return ApiResponse[list[MemoryRetentionPolicy]](data=policies)
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/memory/retention-policies
+# ---------------------------------------------------------------------------
+
+
+@router.put("/retention-policies", response_model=ApiResponse[list[MemoryRetentionPolicy]])
+async def update_retention_policies(
+    body: UpdateRetentionPoliciesRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[MemoryRetentionPolicy]]:
+    """Bulk-update retention policies; one audit entry per changed row."""
+    pool = _any_pool(db)
+
+    if not body.policies:
+        raise HTTPException(status_code=400, detail="policies list must not be empty")
+
+    # Validate kinds
+    _VALID_KINDS = {"event", "fact", "preference", "summary", "transcript", "embedding"}
+    for entry in body.policies:
+        if entry.kind not in _VALID_KINDS:
+            valid = ", ".join(sorted(_VALID_KINDS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid kind '{entry.kind}'. Must be one of: {valid}",
+            )
+
+    updated: list[MemoryRetentionPolicy] = []
+    for entry in body.policies:
+        row = await pool.fetchrow(
+            "INSERT INTO public.memory_retention_policies"
+            " (kind, ttl_days, max_rows, updated_by)"
+            " VALUES ($1, $2, $3, 'owner')"
+            " ON CONFLICT (kind) DO UPDATE"
+            "  SET ttl_days = EXCLUDED.ttl_days,"
+            "      max_rows = EXCLUDED.max_rows,"
+            "      updated_at = now(),"
+            "      updated_by = 'owner'"
+            " RETURNING kind, ttl_days, max_rows, updated_at, updated_by",
+            entry.kind,
+            entry.ttl_days,
+            entry.max_rows,
+        )
+        updated.append(
+            MemoryRetentionPolicy(
+                kind=row["kind"],
+                ttl_days=row["ttl_days"],
+                max_rows=row["max_rows"],
+                updated_at=str(row["updated_at"]),
+                updated_by=row["updated_by"],
+            )
+        )
+        try:
+            await _audit.append(
+                pool,
+                "owner",
+                "memory.retention_policy",
+                target=f"kind:{entry.kind}",
+                note=f"ttl_days={entry.ttl_days} max_rows={entry.max_rows}",
+            )
+        except _audit.AuditTableNotAvailableError:
+            raise HTTPException(
+                status_code=503,
+                detail="Audit log is not available — migration core_092 may not have run",
+            )
+
+    return ApiResponse[list[MemoryRetentionPolicy]](data=updated)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/compaction-log
+# ---------------------------------------------------------------------------
+
+
+@router.get("/compaction-log", response_model=ApiResponse[list[CompactionLogEntry]])
+async def get_compaction_log(
+    limit: int = Query(50, ge=1, le=500, description="Max entries to return"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[CompactionLogEntry]]:
+    """Return recent compaction events from public.memory_compaction_log."""
+    pool = _any_pool(db)
+    try:
+        rows = await pool.fetch(
+            "SELECT id, ts, kind, rows_removed, bytes_freed"
+            " FROM public.memory_compaction_log"
+            " ORDER BY ts DESC"
+            " LIMIT $1",
+            limit,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "memory_compaction_log table not available — migration core_096 may not have run"
+            ),
+        ) from exc
+
+    entries = [
+        CompactionLogEntry(
+            id=r["id"],
+            ts=str(r["ts"]),
+            kind=r["kind"],
+            rows_removed=r["rows_removed"],
+            bytes_freed=r["bytes_freed"],
+        )
+        for r in rows
+    ]
+    return ApiResponse[list[CompactionLogEntry]](data=entries)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/inspect
+# ---------------------------------------------------------------------------
+
+_INSPECT_VALID_KINDS = {"episode", "fact", "rule"}
+
+
+@router.get("/inspect", response_model=PaginatedResponse[MemoryInspectResult])
+async def inspect_memory(
+    q: str | None = Query(None, description="Full-text search query"),
+    kind: str | None = Query(None, description="Filter by kind: episode|fact|rule"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[MemoryInspectResult]:
+    """Search across memory tiers (episodes, facts, rules) with optional kind filter."""
+    if kind is not None and kind not in _INSPECT_VALID_KINDS:
+        valid = ", ".join(sorted(_INSPECT_VALID_KINDS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid kind '{kind}'. Must be one of: {valid}",
+        )
+
+    target_kinds = [kind] if kind else list(_INSPECT_VALID_KINDS)
+    row_limit = offset + limit
+
+    async def _query_pool(_: str, pool: object) -> list[dict]:
+        results: list[dict] = []
+
+        if "episode" in target_kinds:
+            ep_cond = ""
+            ep_args: list[object] = []
+            idx = 1
+            if q:
+                ep_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
+                ep_args.append(q)
+                idx += 1
+            ep_rows = await pool.fetch(
+                f"SELECT id, butler, content, created_at, metadata"
+                f" FROM episodes{ep_cond}"
+                f" ORDER BY created_at DESC"
+                f" LIMIT ${idx}",
+                *ep_args,
+                row_limit,
+            )
+            for r in ep_rows:
+                results.append(
+                    {
+                        "id": str(r["id"]),
+                        "kind": "episode",
+                        "content": r["content"] or "",
+                        "butler": r["butler"],
+                        "created_at": str(r["created_at"]),
+                        "metadata": _parse_jsonb(r["metadata"]),
+                    }
+                )
+
+        if "fact" in target_kinds:
+            fact_cond = ""
+            fact_args: list[object] = []
+            idx = 1
+            if q:
+                fact_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
+                fact_args.append(q)
+                idx += 1
+            fact_rows = await pool.fetch(
+                f"SELECT id, source_butler, content, created_at, metadata"
+                f" FROM facts{fact_cond}"
+                f" ORDER BY created_at DESC"
+                f" LIMIT ${idx}",
+                *fact_args,
+                row_limit,
+            )
+            for r in fact_rows:
+                results.append(
+                    {
+                        "id": str(r["id"]),
+                        "kind": "fact",
+                        "content": r["content"] or "",
+                        "butler": r["source_butler"],
+                        "created_at": str(r["created_at"]),
+                        "metadata": _parse_jsonb(r["metadata"]),
+                    }
+                )
+
+        if "rule" in target_kinds:
+            rule_cond = ""
+            rule_args: list[object] = []
+            idx = 1
+            if q:
+                rule_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
+                rule_args.append(q)
+                idx += 1
+            rule_rows = await pool.fetch(
+                f"SELECT id, source_butler, content, created_at, metadata"
+                f" FROM rules{rule_cond}"
+                f" ORDER BY created_at DESC"
+                f" LIMIT ${idx}",
+                *rule_args,
+                row_limit,
+            )
+            for r in rule_rows:
+                results.append(
+                    {
+                        "id": str(r["id"]),
+                        "kind": "rule",
+                        "content": r["content"] or "",
+                        "butler": r["source_butler"],
+                        "created_at": str(r["created_at"]),
+                        "metadata": _parse_jsonb(r["metadata"]),
+                    }
+                )
+        return results
+
+    per_pool = await _fan_out_memory_queries(db, query_name="inspect", query_fn=_query_pool)
+
+    merged: list[dict] = []
+    for pool_results in per_pool:
+        merged.extend(pool_results)
+
+    # Sort by created_at DESC across all pools
+    merged.sort(key=lambda r: r["created_at"], reverse=True)
+    total = len(merged)
+    page = merged[offset : offset + limit]
+
+    data = [
+        MemoryInspectResult(
+            id=r["id"],
+            kind=r["kind"],
+            content=r["content"][:200] + ("..." if len(r["content"]) > 200 else ""),
+            butler=r["butler"],
+            created_at=r["created_at"],
+            metadata=r["metadata"],
+        )
+        for r in page
+    ]
+    return PaginatedResponse[MemoryInspectResult](
+        data=data,
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
