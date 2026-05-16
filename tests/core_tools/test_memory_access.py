@@ -76,7 +76,7 @@ def _register_and_grab(daemon, pool=None):
 
 
 async def test_memory_access_no_module_returns_empty():
-    """When no memory module is loaded, read/write are empty lists."""
+    """When no memory module is loaded, read/write are empty lists but namespace is always set."""
     daemon = SimpleNamespace(_modules=[])
     tool = _register_and_grab(daemon, pool=None)
 
@@ -84,13 +84,13 @@ async def test_memory_access_no_module_returns_empty():
 
     assert result["read"] == []
     assert result["write"] == []
-    assert result["namespace"] is None
+    assert result["namespace"] == "memory-butler"
     assert result["embedding_model"] is None
     assert result["drops_7d"] == 0
 
 
 async def test_memory_access_no_pool_returns_empty():
-    """When pool is None even with a memory module, degrades to empty lists."""
+    """When pool is None even with a memory module, degrades to empty lists but namespace is set."""
     daemon = SimpleNamespace(_modules=[_make_memory_module()])
     tool = _register_and_grab(daemon, pool=None)
 
@@ -98,6 +98,7 @@ async def test_memory_access_no_pool_returns_empty():
 
     assert result["read"] == []
     assert result["write"] == []
+    assert result["namespace"] == "memory-butler"
     assert result["drops_7d"] == 0
 
 

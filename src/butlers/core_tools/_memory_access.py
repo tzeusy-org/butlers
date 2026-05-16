@@ -75,16 +75,17 @@ def register_memory_access_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 "drops_7d": 3
             }
         """
-        # Detect whether the memory module is loaded and active.
-        has_memory = any(
-            getattr(mod, "name", None) == "memory" for mod in getattr(daemon, "_modules", [])
+        # Detect the memory module and resolve its config in a single pass.
+        memory_mod = next(
+            (m for m in getattr(daemon, "_modules", []) if getattr(m, "name", None) == "memory"),
+            None,
         )
 
-        if not has_memory or pool is None:
+        if memory_mod is None or pool is None:
             return {
                 "read": [],
                 "write": [],
-                "namespace": None,
+                "namespace": ctx.butler_name,
                 "embedding_model": None,
                 "drops_7d": 0,
             }
@@ -92,16 +93,13 @@ def register_memory_access_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable
         drops_7d = await _query_drops_7d(pool)
 
         # Resolve the embedding model name from the memory module config if
-        # available, falling back to the known default.
-        embedding_model: str | None = None
-        for mod in daemon._modules:
-            if getattr(mod, "name", None) == "memory":
-                cfg = getattr(mod, "_config", None)
-                if cfg is not None:
-                    embedding_model = getattr(cfg, "embedding_model", None)
-                break
-        if embedding_model is None:
-            embedding_model = "all-MiniLM-L6-v2"
+        # available, falling back to the known project default (all-MiniLM-L6-v2).
+        cfg = getattr(memory_mod, "_config", None)
+        embedding_model: str = (
+            getattr(cfg, "embedding_model", None) or "all-MiniLM-L6-v2"
+            if cfg is not None
+            else "all-MiniLM-L6-v2"
+        )
 
         return {
             "read": list(_MEMORY_STORES),
