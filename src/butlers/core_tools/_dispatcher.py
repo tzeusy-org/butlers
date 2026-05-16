@@ -8,6 +8,7 @@ from typing import Any
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._infra import register_infra_tools
 from butlers.core_tools._media import register_media_tools
+from butlers.core_tools._memory_access import register_memory_access_tool
 from butlers.core_tools._messenger import register_messenger_tools
 from butlers.core_tools._module_mgmt import register_module_mgmt_tools
 from butlers.core_tools._notifications import register_notification_tools
@@ -34,6 +35,7 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
       9. Routing tool (route.execute)  — always registered, no group gate
       10. Switchboard tools (ingest, route_to_butler, connector.heartbeat, backfill.*)
       11. Messenger tools (delivery prefs, deferred notifications, delivery ops)
+      12. Memory-access tool (memory_access) — always registered, degrades gracefully
     """
     register_state_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
@@ -46,3 +48,4 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_routing_tools(ctx, mcp, _core_tool)
     register_switchboard_tools(ctx, mcp, _core_tool)
     register_messenger_tools(ctx, mcp, _core_tool)
+    register_memory_access_tool(ctx, mcp, _core_tool)

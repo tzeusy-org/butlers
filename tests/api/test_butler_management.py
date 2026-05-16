@@ -379,6 +379,43 @@ async def test_get_memory_access_offline_butler_returns_empty(app):
     assert data["write"] == []
 
 
+async def test_get_memory_access_online_butler_returns_real_data(app):
+    """When butler is online and memory_access tool responds, returns real data."""
+    import json
+
+    from butlers.api.deps import get_mcp_manager
+
+    payload = {
+        "read": ["episodes", "facts", "rules"],
+        "write": ["episodes", "facts", "rules"],
+        "namespace": "qa",
+        "embedding_model": "all-MiniLM-L6-v2",
+        "drops_7d": 5,
+    }
+    mock_result = MagicMock()
+    mock_result.content = [MagicMock(text=json.dumps(payload))]
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(return_value=mock_result)
+    mock_manager = MagicMock()
+    mock_manager.get_client = AsyncMock(return_value=mock_client)
+
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/butlers/qa/memory-access")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["read"] == ["episodes", "facts", "rules"]
+    assert data["write"] == ["episodes", "facts", "rules"]
+    assert data["namespace"] == "qa"
+    assert data["embedding_model"] == "all-MiniLM-L6-v2"
+    assert data["drops_7d"] == 5
+
+    mock_client.call_tool.assert_called_once_with("memory_access", {})
+
+
 # ---------------------------------------------------------------------------
 # POST /api/butlers/{name}/kill
 # ---------------------------------------------------------------------------
