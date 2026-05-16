@@ -32,6 +32,7 @@ import {
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
+import { useApprovalsStream } from "@/hooks/use-approvals-stream.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys
@@ -566,6 +567,11 @@ function HistorySection() {
 
 export default function ApprovalsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Live updates via WebSocket stream (§8.3).
+  // Cache invalidation is handled inside useApprovalsStream; the refetchInterval
+  // below acts as a safety net when the WS is disconnected.
+  useApprovalsStream();
 
   const { data, isLoading } = useQuery({
     queryKey: Q.pending(),

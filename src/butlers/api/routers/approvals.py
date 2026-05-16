@@ -6,18 +6,23 @@ Provides REST API access to the approvals subsystem for dashboard integration:
 - Standing approval rules CRUD
 - Approvals policy (quiet hours)
 - Metrics for monitoring approval workflows
+- WebSocket /api/approvals/stream for live events (§8.3)
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
+import hmac
 import json
 import logging
+import os
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
@@ -59,6 +64,67 @@ from butlers.modules.approvals.sensitivity import redact_constraints, redact_too
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
+
+# ---------------------------------------------------------------------------
+# §8.3 — Approvals WebSocket event broker
+# ---------------------------------------------------------------------------
+
+# Ring buffer of the last N events (snapshot-on-connect)
+_APPROVALS_RING_BUFFER_SIZE = 50
+_approvals_ring: collections.deque[dict] = collections.deque(maxlen=_APPROVALS_RING_BUFFER_SIZE)
+
+# Per-subscriber asyncio.Queue; filled by emit_approvals_event(), drained by WS handler
+_approvals_subscribers: list[asyncio.Queue] = []
+
+_APPROVALS_WS_KEEPALIVE_S = 30.0
+_APPROVALS_QUEUE_MAXSIZE = 256
+
+
+def emit_approvals_event(
+    kind: str,
+    approval_id: str,
+    *,
+    butler: str | None = None,
+    tool_name: str | None = None,
+    status: str | None = None,
+    **extra,
+) -> None:
+    """Publish an approvals event to all connected WS subscribers.
+
+    Adds the event to the ring buffer (snapshot-on-connect) and broadcasts
+    to all active subscriber queues.  Drops slow subscribers whose queues
+    are full rather than blocking.
+
+    ``kind`` is one of: ``created``, ``approved``, ``rejected``, ``deferred``,
+    ``executed``, ``expired``.
+    """
+    event: dict = {
+        "kind": kind,
+        "ts": time.time(),
+        "approval_id": approval_id,
+    }
+    if butler is not None:
+        event["butler"] = butler
+    if tool_name is not None:
+        event["tool_name"] = tool_name
+    if status is not None:
+        event["status"] = status
+    event.update(extra)
+
+    _approvals_ring.append(event)
+
+    dead: list[asyncio.Queue] = []
+    for q in _approvals_subscribers:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        try:
+            _approvals_subscribers.remove(q)
+        except ValueError:
+            pass
+
 
 # Cache mapping (butler_name, table_name) -> has_table to avoid repeated system catalog queries
 _TABLE_CACHE: dict[tuple[str, str], bool] = {}
@@ -602,6 +668,15 @@ async def approve_action(
     action_resp = ApprovalAction(
         **{k: result[k] for k in ApprovalAction.model_fields if k in result}
     )
+    # Emit stream event
+    _emit_kind_legacy = "executed" if action_resp.status == "executed" else "approved"
+    emit_approvals_event(
+        _emit_kind_legacy,
+        action_id,
+        butler=action_butler,
+        tool_name=action_resp.tool_name,
+        status=action_resp.status,
+    )
     return ApiResponse(data=action_resp)
 
 
@@ -787,6 +862,13 @@ async def reject_action(
 
     result.setdefault("butler", action_butler)
     action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    emit_approvals_event(
+        "rejected",
+        action_id,
+        butler=action_butler,
+        tool_name=action.tool_name,
+        status="rejected",
+    )
     return ApiResponse(data=action)
 
 
@@ -815,6 +897,10 @@ async def expire_stale_actions(
                 expired_ids.extend(str(row["id"]) for row in rows)
         except Exception:
             logger.warning("Failed to expire stale actions from a pool", exc_info=True)
+
+    # Emit stream events for each expired action
+    for eid in expired_ids:
+        emit_approvals_event("expired", eid, status="expired")
 
     response = ExpireStaleActionsResponse(
         expired_count=len(expired_ids),
@@ -1862,6 +1948,15 @@ async def approve_approval(
     action_resp = ApprovalAction(
         **{k: result[k] for k in ApprovalAction.model_fields if k in result}
     )
+    # Emit stream event: approved → executed if dispatch succeeded, else just approved
+    _emit_kind = "executed" if action_resp.status == "executed" else "approved"
+    emit_approvals_event(
+        _emit_kind,
+        action_id,
+        butler=action_butler,
+        tool_name=action_resp.tool_name,
+        status=action_resp.status,
+    )
     return ApiResponse(data=action_resp)
 
 
@@ -1905,6 +2000,14 @@ async def deny_approval(
 
     result.setdefault("butler", action_butler)
     action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    emit_approvals_event(
+        "rejected",
+        action_id,
+        butler=action_butler,
+        tool_name=action.tool_name,
+        status="rejected",
+        reason=request.reason,
+    )
     return ApiResponse(data=action)
 
 
@@ -1963,4 +2066,82 @@ async def defer_approval(
 
     pa = PendingAction.from_row(updated)
     tc = await _resolve_target_contact(db_mgr, pa)
+    emit_approvals_event(
+        "deferred",
+        action_id,
+        butler=action_butler,
+        tool_name=pa.tool_name,
+        status="pending",
+        hours=request.hours,
+        new_expires_at=new_expires_at.isoformat(),
+    )
     return ApiResponse(data=_pending_action_to_api(pa, action_butler, tc))
+
+
+# ---------------------------------------------------------------------------
+# §8.3 — WebSocket /api/approvals/stream
+# ---------------------------------------------------------------------------
+
+
+@router.websocket("/stream")
+async def approvals_stream(
+    websocket: WebSocket,
+    api_key: str | None = Query(default=None),
+) -> None:
+    """WebSocket endpoint — ws[s]://host/api/approvals/stream?api_key=<key>.
+
+    WS upgrades cannot set arbitrary headers so authentication is via query param
+    (same pattern as /api/spend/stream and /api/settings/stream).
+
+    On connect:
+    1. Validates the api_key against DASHBOARD_API_KEY (if configured).
+    2. Sends a snapshot of the most recent N events from the ring buffer.
+    3. Streams live events as they are emitted by approvals state transitions.
+    4. Sends a keepalive JSON ping every 30 s to prevent proxy timeouts.
+    """
+    # Auth gate — mirror ApiKeyMiddleware logic for WS connections
+    configured_key: str | None = os.environ.get("DASHBOARD_API_KEY") or None
+    if configured_key:
+        if not api_key or not hmac.compare_digest(api_key, configured_key):
+            await websocket.close(code=4401)
+            return
+
+    await websocket.accept()
+
+    # Subscribe first so no live events are missed while the snapshot is sent.
+    # Events emitted after subscription but before/during snapshot delivery will
+    # be queued and delivered immediately after the snapshot loop finishes.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=_APPROVALS_QUEUE_MAXSIZE)
+    _approvals_subscribers.append(queue)
+
+    # Snapshot: send buffered recent events so new clients don't start empty
+    snapshot = list(_approvals_ring)
+    for event in snapshot:
+        try:
+            await websocket.send_json({"snapshot": True, **event})
+        except Exception:
+            try:
+                _approvals_subscribers.remove(queue)
+            except ValueError:
+                pass
+            return
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=_APPROVALS_WS_KEEPALIVE_S)
+                await websocket.send_json(event)
+            except TimeoutError:
+                # Keepalive ping so proxies don't drop the connection
+                try:
+                    await websocket.send_json({"kind": "ping", "ts": time.time()})
+                except Exception:
+                    break
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                break
+    finally:
+        try:
+            _approvals_subscribers.remove(queue)
+        except ValueError:
+            pass
