@@ -1,7 +1,7 @@
 """webhooks: replace secret_hash with secret_encrypted (AES-256-GCM).
 
-Revision ID: core_099
-Revises: core_098
+Revision ID: core_100
+Revises: core_099
 Create Date: 2026-05-16 00:00:00.000000
 
 Phase 4 follow-up (bu-pe9um).  The original ``secret_hash`` column stored a
@@ -34,8 +34,8 @@ from alembic import op
 
 logger = logging.getLogger(__name__)
 
-revision = "core_099"
-down_revision = "core_098"
+revision = "core_100"
+down_revision = "core_099"
 branch_labels = None
 depends_on = None
 
@@ -97,7 +97,7 @@ def upgrade() -> None:
     affected = row[0] if row else 0
     if affected:
         logger.warning(
-            "core_099 upgrade: %d webhook row(s) had a non-NULL secret_hash. "
+            "core_100 upgrade: %d webhook row(s) had a non-NULL secret_hash. "
             "The original plaintext secret cannot be recovered from a SHA-256 hash. "
             "secret_encrypted will be NULL for these rows. "
             "Re-supply the secret via PUT /api/webhooks/{id} to re-enable signing.",
