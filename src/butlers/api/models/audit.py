@@ -10,7 +10,6 @@ introduced in core_092.  This is the model returned by the
 
 from __future__ import annotations
 
-import ipaddress
 from datetime import datetime
 from uuid import UUID
 
@@ -50,12 +49,7 @@ class AuditLogEntry(BaseModel):
     def from_record(cls, row: object) -> AuditLogEntry:
         """Build an AuditLogEntry from an asyncpg Record."""
         raw_ip = row["ip"]  # type: ignore[index]
-        ip_str: str | None = None
-        if raw_ip is not None:
-            if isinstance(raw_ip, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
-                ip_str = str(raw_ip)
-            else:
-                ip_str = str(raw_ip)
+        ip_str = str(raw_ip) if raw_ip is not None else None
         return cls(
             id=row["id"],  # type: ignore[index]
             ts=row["ts"],  # type: ignore[index]

@@ -24,6 +24,7 @@ import logging
 import uuid
 from datetime import datetime
 
+import asyncpg
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from prometheus_client import Counter
@@ -35,6 +36,19 @@ from butlers.api.models.audit import AuditEntry, AuditLogEntry
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/audit-log", tags=["audit"])
+
+# ---------------------------------------------------------------------------
+# Custom exception — raised by append() when the table is not yet migrated
+# ---------------------------------------------------------------------------
+
+
+class AuditTableNotAvailableError(Exception):
+    """Raised by ``append()`` when ``public.audit_log`` does not exist.
+
+    Callers (HTTP endpoints) should propagate this as HTTP 503 so that
+    missing-table conditions surface explicitly rather than silently failing.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Prometheus counter — incremented per successful append to public.audit_log
@@ -52,11 +66,11 @@ def _get_db_manager() -> DatabaseManager:
     raise RuntimeError("DatabaseManager not initialized")
 
 
-def _empty_audit_page(*, limit: int) -> PaginatedResponse[AuditLogEntry]:
+def _empty_audit_page(*, offset: int, limit: int) -> PaginatedResponse[AuditLogEntry]:
     """Return an empty audit payload for degraded-read scenarios."""
     return PaginatedResponse[AuditLogEntry](
         data=[],
-        meta=PaginationMeta(total=0, offset=0, limit=limit),
+        meta=PaginationMeta(total=0, offset=offset, limit=limit),
     )
 
 
@@ -113,7 +127,7 @@ async def log_audit_entry(
 
 
 async def append(
-    pool,
+    pool: asyncpg.Pool | asyncpg.Connection,
     actor: str,
     action: str,
     *,
@@ -126,11 +140,16 @@ async def append(
 
     Increments ``audit_log_appended_total{action}`` on success.
 
+    Accepts either an asyncpg pool or an already-acquired connection so that
+    callers can run the audit insert inside the same SQL transaction as the
+    state change being audited (§D17 atomicity requirement).
+
     Parameters
     ----------
     pool:
-        asyncpg connection pool targeting the database that holds
-        ``public.audit_log``.
+        asyncpg connection pool **or** an existing asyncpg connection.  Pass a
+        connection when the caller needs the audit insert to participate in the
+        same open transaction (atomicity).
     actor:
         Identity of the actor that triggered the change (e.g. ``"owner"``
         or a butler name).
@@ -151,19 +170,30 @@ async def append(
     -------
     int
         The ``id`` of the newly-inserted row.
+
+    Raises
+    ------
+    AuditTableNotAvailableError
+        When ``public.audit_log`` does not exist (migration not yet applied).
+        Callers should propagate this as HTTP 503.
     """
-    row_id: int = await pool.fetchval(
-        "INSERT INTO public.audit_log "
-        "(actor, action, target, note, ip, request_id) "
-        "VALUES ($1, $2, $3, $4, $5::inet, $6) "
-        "RETURNING id",
-        actor,
-        action,
-        target,
-        note,
-        ip,
-        request_id,
-    )
+    try:
+        row_id: int = await pool.fetchval(
+            "INSERT INTO public.audit_log "
+            "(actor, action, target, note, ip, request_id) "
+            "VALUES ($1, $2, $3, $4, $5::inet, $6) "
+            "RETURNING id",
+            actor,
+            action,
+            target,
+            note,
+            ip,
+            request_id,
+        )
+    except UndefinedTableError as exc:
+        raise AuditTableNotAvailableError(
+            "public.audit_log is not available — migration core_092 may not have run"
+        ) from exc
     audit_log_appended_total.labels(action=action).inc()
     return row_id
 
@@ -175,12 +205,13 @@ async def append(
 
 @router.get("", response_model=PaginatedResponse[AuditLogEntry])
 async def list_audit_log(
-    since: str | None = Query(None, description="ISO 8601 timestamp lower bound"),
-    actor: str | None = Query(None, description="Filter by actor (exact match)"),
-    action: str | None = Query(None, description="Filter by action (exact match)"),
+    offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(
         100, ge=1, le=1000, description="Max records to return (default 100, max 1000)"
     ),
+    since: datetime | None = Query(None, description="ISO 8601 timestamp lower bound"),
+    actor: str | None = Query(None, description="Filter by actor (exact match)"),
+    action: str | None = Query(None, description="Filter by action (exact match)"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[AuditLogEntry]:
     """Return paginated audit log entries from ``public.audit_log``.
@@ -196,9 +227,8 @@ async def list_audit_log(
     idx = 1
 
     if since is not None:
-        parsed_since = datetime.fromisoformat(since)
         conditions.append(f"ts >= ${idx}")
-        args.append(parsed_since)
+        args.append(since)
         idx += 1
 
     if actor is not None:
@@ -218,29 +248,33 @@ async def list_audit_log(
     try:
         total = await pool.fetchval(count_sql, *args) or 0
     except UndefinedTableError:
-        logger.info("public.audit_log missing; returning empty audit log payload")
-        return _empty_audit_page(limit=limit)
+        raise HTTPException(
+            status_code=503,
+            detail="Audit log is not available — migration core_092 may not have run",
+        )
 
-    # Data query — server-side LIMIT only (no offset for this endpoint)
+    # Data query with offset + limit pagination
     data_sql = (
         f"SELECT id, ts, actor, action, target, note, ip, request_id "
         f"FROM public.audit_log{where_clause} "
         f"ORDER BY ts DESC "
-        f"LIMIT ${idx}"
+        f"OFFSET ${idx} LIMIT ${idx + 1}"
     )
-    args.append(limit)
+    args.extend([offset, limit])
 
     try:
         rows = await pool.fetch(data_sql, *args)
     except UndefinedTableError:
-        logger.info("public.audit_log missing during fetch; returning empty audit log payload")
-        return _empty_audit_page(limit=limit)
+        raise HTTPException(
+            status_code=503,
+            detail="Audit log is not available — migration core_092 may not have run",
+        )
 
     entries = [AuditLogEntry.from_record(row) for row in rows]
 
     return PaginatedResponse[AuditLogEntry](
         data=entries,
-        meta=PaginationMeta(total=total, offset=0, limit=limit),
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
 
 
@@ -257,6 +291,7 @@ async def get_audit_log_entry(
     """Return a single audit log entry by its integer id.
 
     Raises HTTP 404 if no row with the given id exists.
+    Raises HTTP 503 if the audit_log table has not yet been migrated.
     """
     pool = db.credential_shared_pool()
 
@@ -268,7 +303,10 @@ async def get_audit_log_entry(
             entry_id,
         )
     except UndefinedTableError:
-        raise HTTPException(status_code=404, detail="Audit log entry not found")
+        raise HTTPException(
+            status_code=503,
+            detail="Audit log is not available — migration core_092 may not have run",
+        )
 
     if row is None:
         raise HTTPException(status_code=404, detail="Audit log entry not found")
@@ -283,6 +321,7 @@ async def get_audit_log_entry(
 __all__ = [
     "AuditEntry",
     "AuditLogEntry",
+    "AuditTableNotAvailableError",
     "append",
     "audit_log_appended_total",
     "log_audit_entry",

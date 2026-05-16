@@ -4,6 +4,7 @@ Covers:
 - Notification test helpers (row factory, app builders for list/stats/error endpoints)
 - Butler API scaffolding (roster directory setup, mock MCP client managers, test app factory)
 - Shared app fixture (module-scoped) to avoid per-test create_app() overhead
+- audit_append_spy: reusable fixture for asserting audit.append() calls in endpoint tests
 """
 
 from __future__ import annotations
@@ -463,3 +464,39 @@ def clear_dependency_overrides(request: pytest.FixtureRequest) -> None:
     if "app" in request.fixturenames:
         shared_app = request.getfixturevalue("app")
         shared_app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Audit append spy — reused by Phase 2-8 endpoint tests (R9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def audit_append_spy(monkeypatch):
+    """Spy on ``butlers.api.routers.audit.append`` without hitting the database.
+
+    Replaces ``append`` with an ``AsyncMock`` that records every call and
+    returns a monotonically-incrementing row id (starting from 1).
+
+    Usage::
+
+        async def test_something(audit_append_spy):
+            # ... trigger endpoint that calls audit.append() ...
+            audit_append_spy.assert_awaited_once_with(
+                pool_or_conn, "owner", "some_action",
+                target="resource:42", note="reason",
+            )
+
+    The fixture is function-scoped (default) so each test starts clean.
+    """
+    import butlers.api.routers.audit as _audit_mod
+
+    _counter = [0]
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        _counter[0] += 1
+        return _counter[0]
+
+    mock = AsyncMock(side_effect=_fake_append)
+    monkeypatch.setattr(_audit_mod, "append", mock)
+    return mock

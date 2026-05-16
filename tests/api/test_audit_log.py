@@ -3,8 +3,10 @@
 Covers:
 - Static-check: no destructive statements targeting audit_log exist in repo code.
 - audit.append() helper: inserts row, increments Prometheus counter, returns id.
-- GET /api/audit-log: returns PaginatedResponse[AuditLogEntry], filters, ts DESC.
+- audit.append() raises AuditTableNotAvailableError on UndefinedTableError.
+- GET /api/audit-log: returns PaginatedResponse[AuditLogEntry], filters, ts DESC, offset.
 - GET /api/audit-log/{id}: returns ApiResponse[AuditLogEntry] or 404.
+- GET /api/audit-log and /{id} return HTTP 503 when table is missing.
 - AuditLogEntry.from_record: IP coercion, None fields.
 """
 
@@ -18,12 +20,18 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.models.audit import AuditLogEntry
-from butlers.api.routers.audit import _get_db_manager, append, audit_log_appended_total
+from butlers.api.routers.audit import (
+    AuditTableNotAvailableError,
+    _get_db_manager,
+    append,
+    audit_log_appended_total,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -219,6 +227,25 @@ async def test_append_increments_prometheus_counter():
     assert after == before + 1
 
 
+async def test_append_raises_audit_table_not_available_error_on_undefined_table():
+    """append() MUST raise AuditTableNotAvailableError, not the raw asyncpg error."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(side_effect=UndefinedTableError("relation does not exist"))
+
+    with pytest.raises(AuditTableNotAvailableError):
+        await append(pool, "owner", "some_action")
+
+
+async def test_append_accepts_connection_for_atomicity():
+    """append() works with an asyncpg connection, enabling same-transaction writes."""
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=42)
+
+    row_id = await append(conn, "owner", "model_priority_change")
+    assert row_id == 42
+    conn.fetchval.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # GET /api/audit-log
 # ---------------------------------------------------------------------------
@@ -338,6 +365,47 @@ def test_list_audit_log_order_ts_desc():
     assert "ORDER BY ts DESC" in sql
 
 
+def test_list_audit_log_offset_param_passed_to_sql():
+    """offset parameter is included in the SQL OFFSET clause."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?offset=50&limit=25")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    # offset and limit are the last two args; OFFSET should appear in SQL
+    assert "OFFSET" in sql
+    args = fetch_call[1:]
+    # offset=50 should be second-to-last, limit=25 should be last
+    assert args[-2] == 50
+    assert args[-1] == 25
+
+
+def test_list_audit_log_offset_reflected_in_meta():
+    """offset value is returned in the pagination meta."""
+    row = _sample_row()
+    app, _, _ = _make_audit_app([row])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?offset=10")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["offset"] == 10
+
+
+def test_list_audit_log_table_missing_returns_503():
+    """UndefinedTableError on count query surfaces as HTTP 503."""
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(side_effect=UndefinedTableError("relation does not exist"))
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = mock_pool
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app)
+    resp = client.get("/api/audit-log")
+    assert resp.status_code == 503
+
+
 # ---------------------------------------------------------------------------
 # GET /api/audit-log/{id}
 # ---------------------------------------------------------------------------
@@ -379,3 +447,18 @@ def test_get_audit_log_entry_by_id_not_found():
     client = TestClient(app)
     resp = client.get("/api/audit-log/9999")
     assert resp.status_code == 404
+
+
+def test_get_audit_log_entry_table_missing_returns_503():
+    """UndefinedTableError on fetchrow surfaces as HTTP 503, not 404."""
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(side_effect=UndefinedTableError("relation does not exist"))
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = mock_pool
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app)
+    resp = client.get("/api/audit-log/1")
+    assert resp.status_code == 503
