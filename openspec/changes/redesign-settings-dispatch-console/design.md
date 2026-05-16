@@ -149,7 +149,80 @@ No backwards-compatibility shims. No "legacy" route alias. The old `/settings` U
 | Audit retention | Indefinite, no expiry — committed. |
 | Approval auto-decisions copy | "auto-approve" (not "merge", not "land") — neutral, descriptive. |
 
-## D14a. Phase dependency DAG
+## D15. Async job ownership (R7 wiring closure)
+
+Every async / scheduled job and storage primitive in this change has a single owning module/bead. Where the owner is implicit, it is named here.
+
+| Concern | Owner module | Owner bead | Notes |
+|---|---|---|---|
+| **Approval re-presentation timer** (defer mechanism) | `src/butlers/modules/approvals/scheduler.py` (extend the existing approvals scheduler) | `bu-5xiu9` (Phase 6 — Approvals) | The defer endpoint stores `expires_at = max(current, now + hours)` and the existing approvals scheduler consumes it. No separate cron. |
+| **Notification dispatcher quiet-hours consultation** | `src/butlers/modules/approvals/notifier.py` (or wherever the existing notify-on-pending logic lives — confirm during B8 implementation) | `bu-5xiu9` (Phase 6 — Approvals) | The dispatcher reads `approvals_policy.quiet_*` before paging; this is a synchronous check, not a separate job. |
+| **Spend rules `saved_7d` daily computation** | `src/butlers/api/routers/spend.py` (new background task) | `bu-dvb7i` (Phase 3 — Spend) | Triggered by the dashboard daemon scheduler at a fixed UTC time (default 04:15). |
+| **Memory cleanup job (retention)** | `src/butlers/modules/memory/cleanup.py` (extend existing) | `bu-1kzbg` (Phase 8 — Memory) | Existing job extended to read `memory_retention_policies` per kind. |
+| **Verify-all rate-limit storage** | In-memory module global keyed by minute window (Python `time.monotonic()`-bucketed dict) in `src/butlers/api/routers/model_settings.py` | `bu-q2nz3` (Phase 2 — Models page) | Single-process FastAPI worker (the existing dashboard daemon is single-worker per the deployment topology). On daemon restart the limit resets; this is acceptable for v1. If we move to multi-worker, switch to a DB-backed sequence. |
+| **Settings Console aggregator cache** | In-memory TTL=10s cache keyed by `actor` identity (single-tenant: a single "owner" identity, so effectively global). | `bu-ju4kh` (Phase 5 — Console) | If multi-tenant is added later, the cache key becomes `(actor, key)`. v1 has one owner per deployment. |
+| **AttentionStrip cap** | Server caps `attention[]` at 5 items; UI renders all returned items + a "…N more" indicator if `_truncated_count > 0` field is non-zero. | `bu-ju4kh` (Phase 5 — Console) | Prevents wall-of-attention. |
+| **Webhook delivery retries** | Existing `httpx` async client in `src/butlers/api/routers/webhooks.py` consults `retry_policy` per row; no separate retry queue. | `bu-vz6pi` (Phase 4 — Permissions) | After exhaustion → `last_test_ok=false` + an attention item surfaces via the Console aggregator. |
+
+## D16. Authentication contract (R10 critical closure)
+
+Every mutation endpoint and every WebSocket endpoint introduced by this change SHALL require authentication. The dashboard authentication primitive in the codebase is the existing `ApiKeyMiddleware` consuming `DASHBOARD_API_KEY` via the `X-API-Key` header.
+
+| Surface | Auth requirement | Failure mode |
+|---|---|---|
+| `DELETE /api/data/wipe` | **MUST** require valid `X-API-Key`. If `DASHBOARD_API_KEY` is unset on the server, the endpoint MUST refuse with `503 Service Unavailable` body `{error: "auth_unconfigured"}` — the endpoint is not reachable at all without configured auth. Plus the phrase check on top. | 503 (auth unconfigured), 401 (wrong key), 422 (phrase mismatch). |
+| `DELETE /api/data/export` | Require `X-API-Key`. Signed URL has 60-minute TTL and is single-use. | 401 (wrong key). |
+| `PUT /api/permissions/{butler}/{perm}` | Require `X-API-Key`. | 401. |
+| `PUT /api/spend/ceiling`, all `/api/spend/rules` writes, all `/api/webhooks` writes, all `/api/settings/models/*` writes, all `/api/approvals/{id}/*` mutations, all `/api/butlers/{name}/*` mutations | Require `X-API-Key`. | 401. |
+| `WS /api/settings/stream`, `WS /api/spend/stream`, `WS /api/approvals/stream` | Require auth at the HTTP upgrade. Two acceptable patterns: (a) `?api_key=<value>` query parameter validated before upgrade; (b) session cookie if dashboard has session auth. Choose (a) for v1 — simplest, matches existing pattern. | 401 (upgrade refused). |
+
+**Reason field secret filter**: `PUT /api/permissions/{butler}/{perm}` rejects with `422 {error: "reason_contains_credential"}` if the `reason` matches case-insensitive `(password|token|secret|api[_-]?key|credential|private[_-]?key)`. This prevents the audit log from accidentally storing credentials in plain text. Implemented as a helper `validate_no_secrets(text) -> None` in `src/butlers/api/security.py`.
+
+**Webhook secret retrieval**: No endpoint returns `secret` after creation. `POST /api/webhooks` returns the secret ONCE in the response body and never again. The DB stores `secret_hash` (HMAC key for signing, not a cryptographic hash of an unknowable secret — clarify in implementation: this is the symmetric signing key, stored encrypted-at-rest via the secrets manager). `GET /api/webhooks` and `GET /api/webhooks/{id}` SHALL NOT include the `secret` field; they MAY include a `secret_id` (UUID) or `secret_prefix` (first 6 chars + ellipsis) for human identification. Secret rotation is `PUT /api/webhooks/{id} {regenerate_secret: true}` which returns the new value once.
+
+## D17. Failure-mode contracts (R7 closure)
+
+| Endpoint | Failure mode | Behavior |
+|---|---|---|
+| `audit.append()` | Audit table missing | Raises `AuditTableNotAvailableError`. Mutation endpoint propagates the exception; HTTP 503 with body `{error: "audit_unavailable"}`. The mutation MUST NOT have been committed if the audit append failed (use a SQL transaction wrapping both the state change and the audit append). |
+| `DELETE /api/data/wipe` | Partial-drop failure (drop of schema X fails mid-wipe) | All drops are wrapped in a single SQL transaction. If any drop fails, the entire wipe rolls back; HTTP 500 with body `{error: "wipe_partial_failure", failed_at: "<step>"}`. The audit_log retains the failed-attempt entry as the first row appended in the transaction. |
+| `GET /api/settings/console` | A sub-system aggregation fails (e.g., spend backend is down) | The endpoint returns a partial response: header counts that succeeded + `attention[]` items composed from sub-systems that responded. Failed sub-systems contribute one `attention` item `{tone: "amber", kind: "system", text: "Spend aggregation failed: <error_id>", action_route: "/settings/spend"}` so the operator notices. Cache TTL still applies. |
+| `POST /api/settings/models/verify-all` | A single model verification fails | The failed model's row gets `last_verified_ok=false` and a transition (if applicable) to `state="error"`. The endpoint returns 200 with per-model results; failures are not the whole-call failure. The audit.append records the run, not per-model. |
+| `WS /api/settings/stream` (and siblings) | Client disconnects mid-stream | The server cleans up the subscription; reconnection emits a full snapshot before resuming incremental events. No retained backlog. |
+
+## D18. Migration safety contracts (R10 closure)
+
+**Two-phase `complexity_tier` migration** (replaces the one-shot in tasks.md §3.1):
+
+Phase 1a (this change): expand the CHECK constraint to accept BOTH old AND new values (`trivial|medium|high|extra_high|discretion|self_healing|reasoning|workhorse|cheap|specialty|local|legacy`). Add the three `last_verified_*` columns. Ship code that emits ONLY new values; add a deprecation log for any caller still emitting old values.
+
+Phase 1b (separate change, ≥ 7 days after Phase 1a soaks): drop old values from the CHECK constraint. The runtime selector accepts only new values; any row still holding an old value is normalized in this migration's `UPDATE` step. Deprecation logging removed.
+
+This eliminates the inconsistency window R10 flagged.
+
+**`costs.py` → `spend.py` deprecation period**:
+
+Phase 3 ships dual mounts: BOTH `/api/costs/*` (existing) AND `/api/spend/*` (new). Both routes call the same handlers. `/api/costs/*` responses include `Deprecation: true` and `Sunset: <date 90 days out>` headers per RFC 8594. Frontend hooks update to `/api/spend/*` immediately. After 90 days, a separate change deletes `/api/costs/*`.
+
+This eliminates the breaking-change risk for any external consumer.
+
+**Pending actions `why`/`evidence` migration soaking**:
+
+Phase 6 ships nullable columns with backfill `NULL` / `'[]'`. The UI tolerates null. After 7 days of agent rollout, a follow-up migration MAY add `NOT NULL` if observed agent emission is ≥ 99%. This follow-up is OUT of scope for this change (a future bead). Counter `approvals_created_without_evidence_total` is added in Phase 6 to monitor.
+
+## D19. Forecast sanity (R10 closure)
+
+The naive forecast `mtd / max(days_elapsed, 1) × days_in_month` is unreliable in the first 2 calendar days of a month (high variance). Implementation rules:
+
+- If `days_elapsed < 3`, the API returns `projected_eom_usd` AND a sibling field `projection_confidence: "low"`.
+- If `days_elapsed >= 3`, `projection_confidence: "normal"`.
+- The Console aggregator's `attention` item "spend within 10% of ceiling" SHALL NOT fire when `projection_confidence == "low"` to prevent false positives early in the month.
+
+Out of scope: smarter estimator (weekend adjustment, per-butler decay). Tracked as future work.
+
+## D15–D19 finalize the wiring/security/migration risks surfaced by R7 and R10 reconciliation passes. Phase 0–8 tasks below reference these contracts.
+
+## D14. Acceptance criteria (matches PLAN.md §7)
 
 The work breaks into phases that share a hard dependency on Phase 0 (doctrine) and Phase 1 (foundations: audit log + model routing). Once Phase 1 lands, Phases 2–4 and 6–8 can run in parallel; Phase 5 (Console) requires all sub-pages to ship first. Cleanup (Phase 11) and Report (Phase 12) gate behind all preceding phases.
 

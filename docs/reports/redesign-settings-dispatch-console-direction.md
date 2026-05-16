@@ -117,3 +117,52 @@ The planning artifacts are complete. `beads-coordinator` should:
 5. Report (`bu-jcsso`) is the final close-out.
 
 The implementation does **not** belong to `/project-direction`. This report is the explicit handoff.
+
+---
+
+## 10. Round 2 reconciliation summary (R6–R10)
+
+A second pass of 5 parallel reconciliation agents covered post-fix verification (R6), end-to-end implementation chains (R7), bead quality (R8), test/quality-gate coverage (R9), and production risk/security (R10). All five findings rolled back into the changeset; `openspec validate` still passes.
+
+**Verdicts:** R6 NEEDS-EDIT (two stale `/api/audit` paths) → fixed. R7 NEEDS-EDIT (5 wiring gaps) → closed via new design.md §D15. R8 NEEDS-EDIT (3 beads too wide, 3 ambiguity nits) → addressed via bead `notes` (splits deferred to coordinator's discretion). R9 NEEDS-EDIT (audit-spy fixture + test-DB isolation for wipe + GeneralSettingsCard.test deletion) → folded into tasks.md. R10 **FIX-FIRST** (CRITICAL: wipe auth, complexity_tier one-shot, audit silent-failure) → all three closed below.
+
+**New design.md sections added in Round 2:**
+- **§D15 Async job ownership** — every async/scheduled job assigned a single owning module/bead (approval re-presentation timer, notification dispatcher quiet-hours check, spend rules `saved_7d` daily job, memory cleanup, verify-all rate-limit storage, Console aggregator cache, AttentionStrip cap, webhook delivery retries).
+- **§D16 Authentication contract** — every mutation endpoint and WS endpoint requires `X-API-Key`; wipe endpoint refuses with `503 {auth_unconfigured}` if `DASHBOARD_API_KEY` is unset; WS endpoints require `?api_key=<value>` query param at upgrade; reason field rejects credential patterns via `validate_no_secrets()`; webhook secret returned once, never echoed.
+- **§D17 Failure-mode contracts** — `audit.append()` raises `AuditTableNotAvailableError` on missing table (no silent skip); audit row commits in same SQL transaction as the state change (atomic); wipe wraps all drops in one transaction (atomic rollback on any failure); Console aggregator returns partial response with amber attention item on sub-system failure rather than erroring the whole call; WS reconnect emits full snapshot.
+- **§D18 Migration safety contracts** — complexity_tier becomes a TWO-PHASE migration (Phase 1a expands CHECK to accept old+new, Phase 1b drops old after 7-day soak); costs.py rename ships dual-mounted for 90 days with `Deprecation` + `Sunset` headers per RFC 8594; pending_actions why/evidence soak for 7 days, `NOT NULL` deferred to follow-up.
+- **§D19 Forecast sanity** — `projection_confidence: "low" | "normal"` based on `days_elapsed`; Console "spend near ceiling" suppressed when confidence is low to avoid false positives in the first 2 days of a month.
+
+**Spec-delta updates in Round 2:**
+- `dashboard-audit-log/spec.md` — added scenario for `audit.append()` raising on missing table; clarified same-transaction guarantee.
+- `dashboard-permissions/spec.md` — added scenarios for wipe auth, wipe partial-drop rollback, reason credential filter, webhook secret never echoed (added `secret_prefix` field for identification).
+- `dashboard-settings-console/spec.md` — added scenarios for AttentionStrip cap (5 items + `attention_truncated_count`), partial sub-system failure handling, WS auth at upgrade.
+- `dashboard-spend-dashboard/spec.md` — added `projection_confidence` field to forecast response.
+
+**Tasks.md updates in Round 2:**
+- §2.2 — `audit.append()` contract includes raise-on-missing + same-transaction.
+- §2.2.1, §2.2.2 — new sub-tasks for the audit-spy fixture + negative test.
+- §3.1, §3.1.2 — two-phase migration with §3.1.2 marking Phase 1b as a separate follow-up bead.
+- §3.5 — verify-all rate-limit storage explicitly in-memory; probe prompt fixed; per-model failure handling.
+- §5.0 — costs.py dual-mount with 90-day deprecation window.
+- §6.4 — permissions endpoint requires X-API-Key + reason credential filter.
+- §6.5 — wipe endpoint auth ordering (auth before phrase) + single-transaction drops.
+- §7.1 — Console caps attention[]; partial-failure mode; WS auth at upgrade.
+- §8.6 — notification dispatcher location pinned to `src/butlers/modules/approvals/notifier.py`; re-presentation owned by existing scheduler.
+- §11.2 — GeneralSettingsCard.test.tsx deletion explicitly listed; §11.2.1 adds orphan-import lint check.
+- §12.2 — pre-flight check that `bu-9gzel` (doctrine PR) is merged before writing the report.
+
+**Bead annotations in Round 2:**
+Each foundation/page bead (`bu-h31sp`, `bu-5tnp0`, `bu-vz6pi`, `bu-dvb7i`, `bu-q2nz3`, `bu-ju4kh`, `bu-5xiu9`, `bu-ufqyb`, `bu-jcsso`) received a `notes:` entry summarizing the R6–R10 contract changes that bind it. View with `bd show <id>`.
+
+**Bead splits considered but deferred:**
+- R8 recommended splitting `bu-5tnp0` (catalog foundation) into 1b + 1c, `bu-vz6pi` (permissions) into matrix / data-ops / webhooks, and `bu-5xiu9` (approvals) for agent-contract isolation. These splits are reasonable but the current bead descriptions are now sharp enough that the coordinator can subdivide in flight if a bead grows too large for a single PR. **Recommendation:** keep current 12-bead structure; if a worker reports a bead as too wide during execution, split via `bd create --deps discovered-from:<parent>` then.
+
+**Risks NOT closed (deferred to follow-up beads after epic):**
+- `complexity_tier` Phase 1b (drop old CHECK values after 7-day soak).
+- `/api/costs/*` sunset (delete after 90-day deprecation).
+- `pending_actions.why/evidence` `NOT NULL` constraint (after 7-day agent rollout soak, if emission ≥ 99%).
+- Smarter spend estimator (replace naive linear extrapolation).
+- Future top-level `/audit-log` page (`/settings/permissions` only shows the reel today).
+
+**Final status:** The changeset captures all 14 first-round findings + the 11 second-round findings (5 wiring, 11 risk, plus bead/test recommendations). `openspec validate` clean. Dispatch-ready when the three foundation beads (`bu-9gzel`, `bu-h31sp`, `bu-5tnp0`) are ready to pick up.

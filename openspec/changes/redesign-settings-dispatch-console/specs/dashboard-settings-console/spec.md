@@ -29,8 +29,20 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 - **THEN** the response is `ApiResponse[SettingsConsole]` where `SettingsConsole` contains:
   - `header: {active_butlers: int, spend_mtd_usd: float, open_approvals: int, models_verified: int, models_total: int}`
   - `attention: AttentionItem[]` where `AttentionItem = {tone: "red"|"amber", kind: str, text: str, action_route: str}`
-- **AND** the response is cached server-side for 10 seconds (revalidated on cache miss).
+  - `attention_truncated_count: int` — items beyond the cap (0 if `attention.length <= 5`)
+- **AND** the server caps `attention[]` at 5 items; items beyond 5 are surfaced via `attention_truncated_count` so the UI can render a `"...N more →"` indicator linking to `/audit-log`.
+- **AND** the response is cached server-side for 10 seconds (revalidated on cache miss). The cache is in-memory keyed by `actor` identity; in single-owner deployments the cache is effectively global.
 - **AND** the response uses tabular-nums-friendly types (integers and floats; never formatted strings).
+
+#### Scenario: Sub-system aggregation failure is reported, not propagated
+- **WHEN** one sub-system aggregation fails (e.g., spend backend unavailable) while `GET /api/settings/console` is responding
+- **THEN** the endpoint still returns 200 with the partial header (fields that succeeded) and the partial `attention[]` array
+- **AND** the failed sub-system contributes one `attention` item `{tone: "amber", kind: "system", text: "<subsystem> aggregation failed: <error_id>", action_route: "<subsystem route>"}` so the operator notices.
+
+#### Scenario: WebSocket requires authentication at upgrade
+- **WHEN** a client requests `WS /api/settings/stream` without a valid `?api_key=<value>` query param matching the server's `DASHBOARD_API_KEY`
+- **THEN** the upgrade is refused with `401 Unauthorized` (or the WS-equivalent close code 4401 if upgrade has already happened).
+- **AND** the same auth requirement applies to `WS /api/spend/stream` and `WS /api/approvals/stream`.
 
 #### Scenario: Attention items composed from sub-systems
 - **WHEN** the aggregator runs

@@ -12,8 +12,15 @@ The dashboard SHALL maintain a single, append-only audit log used by every mutat
 #### Scenario: audit.append helper contract
 - **WHEN** a mutation endpoint succeeds
 - **THEN** it calls `audit.append(actor, action, target=None, note=None, ip=None, request_id=None) -> int` returning the new row id
-- **AND** the call is made AFTER the state change committed and BEFORE the HTTP response is returned
-- **AND** Prometheus counter `audit_log_appended_total{action}` is incremented.
+- **AND** the call is made INSIDE the same SQL transaction as the state change (commit only after the audit row is written)
+- **AND** Prometheus counter `audit_log_appended_total{action}` is incremented after commit.
+
+#### Scenario: audit.append raises on missing table
+- **WHEN** `audit.append()` is called and `public.audit_log` does not exist (migration failed or rolled back)
+- **THEN** the helper SHALL raise `AuditTableNotAvailableError` (or the equivalent SQLAlchemy `ProgrammingError`)
+- **AND** the helper SHALL NOT silently skip or log-and-continue
+- **AND** the calling endpoint propagates the exception; the HTTP response is `503 Service Unavailable` with body `{error: "audit_unavailable"}`
+- **AND** because the transaction includes both the state change and the audit append, the state change is rolled back automatically.
 
 ### Requirement: Audit Log Read API
 The dashboard SHALL expose paginated read access to the audit log.

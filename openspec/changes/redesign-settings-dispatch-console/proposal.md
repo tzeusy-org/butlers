@@ -84,7 +84,7 @@ The redesign assets in `pr/overview/settings-refactor/` propose a **Console + th
 ## Impact
 
 **Doctrine**
-- `about/heart-and-soul/design-language.md` — append the 4–7% attention-tint pattern + 2px state-color left rail to §1b. This is the only state-color-on-background exception in the system.
+- `about/heart-and-soul/design-language.md` — append the 4–7% attention-tint pattern + 2px state-color left rail under `### Butler hue scope` (line ~837) and/or `### Attention list` (line ~820). This is the only state-color-on-background exception in the system.
 
 **Database (Alembic migrations)**
 - New: `public.audit_log`, `public.permissions`, `public.webhooks`, `public.spend_rules`.
@@ -94,7 +94,7 @@ The redesign assets in `pr/overview/settings-refactor/` propose a **Console + th
 - New: `public.memory_retention_policies` keyed by `kind` for the memory retention table.
 
 **Backend (Python)**
-- `src/butlers/api/routers/audit.py` — extend with `audit.append()` helper called by every mutation endpoint in scope; expose `GET /api/audit`, `GET /api/audit/{id}`.
+- `src/butlers/api/routers/audit.py` — extend with `audit.append()` helper called by every mutation endpoint in scope; expose `GET /api/audit-log`, `GET /api/audit-log/{id}` (existing prefix preserved).
 - `src/butlers/api/routers/settings_console.py` (NEW) — `GET /api/settings/console`, `WS /api/settings/stream`.
 - `src/butlers/api/routers/spend.py` (NEW) — `GET /api/spend*`, rules CRUD, ceiling, `WS /api/spend/stream`.
 - `src/butlers/api/routers/permissions.py` (NEW) — matrix CRUD, mandatory `reason`.
