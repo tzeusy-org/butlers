@@ -1824,7 +1824,7 @@ class TestCatalogModelResolution:
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_resolve:
-            await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
+            await spawner.trigger("prompt", "tick", complexity=Complexity.REASONING)
         mock_resolve.assert_not_called()
 
         # With pool → complexity forwarded; default is MEDIUM
@@ -1845,12 +1845,12 @@ class TestCatalogModelResolution:
             ) as mock_resolve2,
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner2.trigger("prompt", "tick", complexity=Complexity.HIGH)
+            await spawner2.trigger("prompt", "tick", complexity=Complexity.REASONING)
         mock_resolve2.assert_called_once()
         assert mock_resolve2.call_args[0][1] == "test-butler"
-        assert mock_resolve2.call_args[0][2] == Complexity.HIGH
+        assert mock_resolve2.call_args[0][2] == Complexity.REASONING
 
-        # Default complexity is MEDIUM
+        # Default complexity is WORKHORSE
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -1863,7 +1863,7 @@ class TestCatalogModelResolution:
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner2.trigger("prompt", "tick")
         mock_resolve3.assert_called_once()
-        assert mock_resolve3.call_args[0][2] == Complexity.MEDIUM
+        assert mock_resolve3.call_args[0][2] == Complexity.WORKHORSE
 
     async def test_extra_args_merging(self, tmp_path: Path):
         """Catalog extra_args are forwarded verbatim; empty args omits the kwarg."""
@@ -2049,7 +2049,7 @@ class TestCatalogModelResolution:
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
+            await spawner.trigger("prompt", "tick", complexity=Complexity.REASONING)
 
         # Two entries: "session" + "llm_api_call" (egress)
         assert len(audit_entries) == 2
@@ -2057,7 +2057,7 @@ class TestCatalogModelResolution:
         llm_entry = next(e for e in audit_entries if "provider" in e["data"])
         assert session_entry["data"]["model"] == "claude-opus-4-20250514"
         assert session_entry["data"]["runtime_type"] == DEFAULT_RUNTIME_TYPE
-        assert session_entry["data"]["complexity"] == "high"
+        assert session_entry["data"]["complexity"] == "reasoning"
         assert session_entry["data"]["resolution_source"] == "catalog"
         assert llm_entry["data"]["provider"] == "anthropic"
         assert llm_entry["data"]["model"] == "claude-opus-4-20250514"

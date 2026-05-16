@@ -1,15 +1,16 @@
 """Dynamic model routing — catalog-based model selection with per-butler overrides.
 
 Provides:
-- ``Complexity`` enum (trivial / medium / high / extra_high / discretion)
-- ``resolve_model(pool, butler_name, complexity_tier)`` — single-query resolution
-  that respects per-butler overrides and falls back to global catalog entries.
+- ``Complexity`` enum (canonical six: reasoning / workhorse / cheap / specialty / local / legacy)
+- ``resolve_model(pool, butler_name, complexity_tier)`` — highest-priority enabled model
+  in tier whose state ∈ {verified, untested}; falls through canonical tier order if none
+  qualify in the requested tier.
 - ``QuotaStatus`` dataclass — result of a pre-spawn token quota check.
 - ``check_token_quota(pool, catalog_entry_id)`` — CTE-based single-query quota check.
 - ``record_token_usage(pool, ...)`` — best-effort ledger INSERT.
 
-Resolution strategy
--------------------
+Resolution strategy (§3.2 routing contract)
+--------------------------------------------
 For a given ``butler_name`` and ``complexity_tier``:
 
 1. Join ``public.model_catalog mc`` with ``public.butler_model_overrides bmo``
@@ -17,14 +18,16 @@ For a given ``butler_name`` and ``complexity_tier``:
 2. Effective enabled:  ``COALESCE(bmo.enabled, mc.enabled)``
 3. Effective priority: ``COALESCE(bmo.priority, mc.priority)``
 4. Effective tier:     ``COALESCE(bmo.complexity_tier, mc.complexity_tier)``
-5. Filter: effective enabled = true AND effective tier = $complexity_tier.
-6. Among entries with the highest effective priority, assign deterministic
-   indices ordered by ``mc.created_at ASC, mc.id ASC``.
-7. Atomically increment a per-``(butler_name, complexity_tier)`` counter in
-   ``public.model_round_robin_counters`` and select the candidate at index
-   ``counter % candidate_count`` (round-robin).
+5. Filter: effective enabled = true AND effective tier = $complexity_tier
+   AND state ∈ {verified, untested} (where state column does not yet exist,
+   state is treated as always untested/verified — all enabled entries qualify).
+6. Select the highest-priority enabled entry.  Among ties at the same priority,
+   use a round-robin counter in ``public.model_round_robin_counters``.
+7. If no entry qualifies in the requested tier, fall through to the next tier
+   in canonical order: reasoning → workhorse → cheap → specialty → local → legacy.
 8. Return the selected row as (runtime_type, model_id, extra_args,
-   catalog_entry_id, session_timeout_s), or None if no matching entries exist.
+   catalog_entry_id, session_timeout_s), or None if no matching entries exist
+   in any tier at or below the requested tier.
 """
 
 from __future__ import annotations
@@ -41,14 +44,75 @@ logger = logging.getLogger(__name__)
 
 
 class Complexity(enum.StrEnum):
-    """Task complexity tiers used for model selection."""
+    """Canonical complexity tiers used for model selection.
 
-    TRIVIAL = "trivial"
-    MEDIUM = "medium"
-    HIGH = "high"
-    EXTRA_HIGH = "extra_high"
-    DISCRETION = "discretion"
-    SELF_HEALING = "self_healing"
+    Canonical order (highest to lowest capability):
+        reasoning → workhorse → cheap → specialty → local → legacy
+
+    Old vocabulary (trivial/medium/high/extra_high/discretion/self_healing) was
+    retired in migration core_092.  Any code still emitting the old values will
+    trigger a loud deprecation warning via ``_check_deprecated_tier()``.
+    """
+
+    REASONING = "reasoning"
+    WORKHORSE = "workhorse"
+    CHEAP = "cheap"
+    SPECIALTY = "specialty"
+    LOCAL = "local"
+    LEGACY = "legacy"
+
+
+# Canonical fallthrough order for §3.2 routing contract.
+TIER_FALLTHROUGH_ORDER: tuple[str, ...] = (
+    "reasoning",
+    "workhorse",
+    "cheap",
+    "specialty",
+    "local",
+    "legacy",
+)
+
+# Mapping from old vocabulary to new (for deprecation shim).
+_DEPRECATED_TIER_MAP: dict[str, str] = {
+    "trivial": "cheap",
+    "medium": "workhorse",
+    "high": "reasoning",
+    "extra_high": "reasoning",
+    "discretion": "specialty",
+    "self_healing": "specialty",
+}
+
+
+def _check_deprecated_tier(tier_value: str) -> str:
+    """Fail-loud on legacy tier vocabulary; remap and log a deprecation warning.
+
+    Callers that have not been updated to the new canonical tier names will
+    see a loud WARNING in the application logs.  The call is NOT silently
+    accepted — this function remaps the value but always logs so the caller
+    is visible and can be fixed.
+
+    Parameters
+    ----------
+    tier_value:
+        The raw tier string provided by the caller.
+
+    Returns
+    -------
+    str
+        The canonical tier value (possibly remapped from deprecated vocabulary).
+    """
+    if tier_value in _DEPRECATED_TIER_MAP:
+        canonical = _DEPRECATED_TIER_MAP[tier_value]
+        logger.warning(
+            "DEPRECATED complexity_tier value %r received — caller must be updated. "
+            "Remapping to canonical value %r. "
+            "Old vocabulary (trivial/medium/high/extra_high/discretion/self_healing) "
+            "was retired in migration core_092.",
+            tier_value,
+            canonical,
+        )
+        return canonical
+    return tier_value
 
 
 @dataclasses.dataclass
@@ -81,6 +145,11 @@ class QuotaStatus:
 # 1. Find all enabled candidates at the highest effective priority for the tier.
 # 2. Atomically increment a round-robin counter for (butler_name, complexity_tier).
 # 3. Select the candidate at index (counter % total) for fair rotation.
+#
+# §3.2 routing contract: highest-priority enabled model in tier whose
+# state ∈ {verified, untested}.  The state column does not yet exist in the
+# schema; until it does, all enabled entries are treated as qualifying
+# (state implicitly = untested).
 _RESOLVE_SQL = """
 WITH candidates AS (
     SELECT
@@ -173,21 +242,41 @@ VALUES ($1, $2, $3, $4, $5)
 """
 
 
+def _parse_extra_args(raw_extra: object) -> list[str]:
+    """Coerce asyncpg JSONB result for extra_args to list[str]."""
+    if raw_extra is None:
+        return []
+    if isinstance(raw_extra, list):
+        return raw_extra
+    if isinstance(raw_extra, str):
+        parsed = json.loads(raw_extra)
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
 async def resolve_model(
     pool: asyncpg.Pool,
     butler_name: str,
     complexity_tier: Complexity | str,
+    *,
+    allow_tier_fallthrough: bool = True,
 ) -> tuple[str, str, list[str], uuid.UUID, int] | None:
     """Resolve the best model for a butler and complexity tier.
 
-    Queries ``public.model_catalog`` with an optional ``public.butler_model_overrides``
-    LEFT JOIN.  Per-butler overrides can remap enabled state, priority, and
-    complexity tier without duplicating the catalog row.
+    Implements the §3.2 routing contract:
+      - Selects the highest-priority enabled model in ``complexity_tier`` whose
+        state ∈ {verified, untested}.  (State column not yet in schema; all
+        enabled entries are treated as untested/qualifying.)
+      - When ``allow_tier_fallthrough=True`` (default) and no model qualifies
+        in the requested tier, falls through to the next tier in canonical order:
+        reasoning → workhorse → cheap → specialty → local → legacy.
+      - When multiple entries share the highest effective priority for a tier,
+        selection rotates round-robin via an atomic counter.
 
-    When multiple entries share the highest effective priority for a tier,
-    selection rotates round-robin using an atomic counter in
-    ``public.model_round_robin_counters``.  Each ``(butler_name,
-    complexity_tier)`` pair maintains an independent counter.
+    Deprecation shim: if the caller passes a legacy tier string
+    (trivial/medium/high/extra_high/discretion/self_healing), a LOUD WARNING is
+    logged and the value is remapped to the canonical equivalent.  The call is
+    never silently accepted without the warning.
 
     Parameters
     ----------
@@ -197,15 +286,20 @@ async def resolve_model(
         The butler identity name (e.g. ``"general"``).  Used to look up any
         per-butler overrides; if none exist the global catalog is used directly.
     complexity_tier:
-        A ``Complexity`` enum value or its string equivalent
-        (``"trivial"``, ``"medium"``, ``"high"``, ``"extra_high"``, ``"discretion"``,
-        ``"self_healing"``).
+        A ``Complexity`` enum value or its string equivalent using the canonical
+        vocabulary (``"reasoning"``, ``"workhorse"``, ``"cheap"``, ``"specialty"``,
+        ``"local"``, ``"legacy"``).
+    allow_tier_fallthrough:
+        When True (default), fall through to the next tier in canonical order if
+        no entry qualifies in the requested tier.  Set to False to restrict
+        resolution to the exact requested tier only.
 
     Returns
     -------
     tuple[str, str, list[str], uuid.UUID, int] | None
         ``(runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s)``
-        for the selected entry, or ``None`` if no enabled entries match.
+        for the selected entry, or ``None`` if no enabled entries match in any
+        qualifying tier.
         ``extra_args`` is a list of CLI token strings (e.g. ``["--config", "k=v"]``).
         ``catalog_entry_id`` is the UUID primary key of the matched catalog row.
         ``session_timeout_s`` is the per-session runtime timeout from the catalog row.
@@ -213,31 +307,34 @@ async def resolve_model(
     if isinstance(complexity_tier, Complexity):
         tier_value = complexity_tier.value
     else:
-        tier_value = str(complexity_tier)
+        tier_value = _check_deprecated_tier(str(complexity_tier))
 
-    row = await pool.fetchrow(_RESOLVE_SQL, butler_name, tier_value)
-    if row is None:
-        return None
-
-    # asyncpg returns JSONB columns as strings; parse them explicitly.
-    raw_extra = row["extra_args"]
-    if raw_extra is None:
-        extra_args: list[str] = []
-    elif isinstance(raw_extra, str):
-        parsed = json.loads(raw_extra)
-        extra_args = parsed if isinstance(parsed, list) else []
-    elif isinstance(raw_extra, list):
-        extra_args = raw_extra
+    # Build the fallthrough sequence starting from the requested tier.
+    if allow_tier_fallthrough and tier_value in TIER_FALLTHROUGH_ORDER:
+        start_idx = TIER_FALLTHROUGH_ORDER.index(tier_value)
+        tiers_to_try = TIER_FALLTHROUGH_ORDER[start_idx:]
     else:
-        extra_args = []
+        tiers_to_try = (tier_value,)
 
-    return (
-        row["runtime_type"],
-        row["model_id"],
-        extra_args,
-        row["id"],
-        row["session_timeout_s"],
-    )
+    for tier in tiers_to_try:
+        row = await pool.fetchrow(_RESOLVE_SQL, butler_name, tier)
+        if row is not None:
+            if tier != tier_value:
+                logger.debug(
+                    "resolve_model: no entry in tier %r for butler %r; fell through to %r",
+                    tier_value,
+                    butler_name,
+                    tier,
+                )
+            return (
+                row["runtime_type"],
+                row["model_id"],
+                _parse_extra_args(row["extra_args"]),
+                row["id"],
+                row["session_timeout_s"],
+            )
+
+    return None
 
 
 async def check_token_quota(

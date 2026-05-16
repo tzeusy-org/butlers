@@ -533,13 +533,13 @@ class TestFetchModelFromCatalog:
     """Direct tests for ``_fetch_model_from_catalog``.
 
     The query must pick the highest-priority enabled candidate whose
-    *effective* (override-merged) ``complexity_tier`` is ``'medium'``, mirroring
+    *effective* (override-merged) ``complexity_tier`` is ``'workhorse'``, mirroring
     spawn-time resolution in ``butlers.core.model_routing._RESOLVE_SQL`` for
-    the ``qa`` butler at ``Complexity.MEDIUM``.
+    the ``qa`` butler at ``Complexity.WORKHORSE``.
 
     These tests pass an in-memory candidate set into a stub pool and run the
     same SQL the implementation runs, asserting:
-    - the SQL filters by ``COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'``,
+    - the SQL filters by ``COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'workhorse'``,
     - it filters by ``COALESCE(bmo.enabled, mc.enabled) = TRUE``,
     - it orders by ``COALESCE(bmo.priority, mc.priority) DESC`` then
       ``mc.created_at ASC, mc.id ASC``,
@@ -554,18 +554,18 @@ class TestFetchModelFromCatalog:
         pool.fetchrow = AsyncMock(return_value=first)
         return pool
 
-    async def test_qa_override_with_medium_tier_and_high_priority_wins(self) -> None:
-        """A QA override at tier=medium with the highest effective priority wins."""
+    async def test_qa_override_with_workhorse_tier_and_high_priority_wins(self) -> None:
+        """A QA override at tier=workhorse with the highest effective priority wins."""
         # Simulated SQL result: the override-merged candidate at top priority.
-        pool = self._stub_pool([{"alias": "qa-override-medium"}])
+        pool = self._stub_pool([{"alias": "qa-override-workhorse"}])
 
         result = await _fetch_model_from_catalog(pool)
 
-        assert result == "qa-override-medium"
+        assert result == "qa-override-workhorse"
         assert pool.fetchrow.await_count == 1
         sql, butler_name = pool.fetchrow.await_args.args
         assert butler_name == "qa"
-        assert "COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'" in sql
+        assert "COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'workhorse'" in sql
         assert "COALESCE(bmo.enabled, mc.enabled) = TRUE" in sql
         assert "COALESCE(bmo.priority, mc.priority) DESC" in sql
         assert "mc.created_at ASC" in sql
@@ -574,26 +574,26 @@ class TestFetchModelFromCatalog:
         assert "model_round_robin_counters" not in sql
         assert "INSERT" not in sql.upper()
 
-    async def test_non_medium_override_is_ignored_even_if_higher_priority(self) -> None:
-        """A QA override at tier!=medium does not displace medium-tier candidates.
+    async def test_non_workhorse_override_is_ignored_even_if_higher_priority(self) -> None:
+        """A QA override at tier!=workhorse does not displace workhorse-tier candidates.
 
-        The SQL filter ``COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'``
-        excludes any row whose effective tier is not 'medium'.  We assert the
+        The SQL filter ``COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'workhorse'``
+        excludes any row whose effective tier is not 'workhorse'.  We assert the
         clause is present in the executed query and that the stub returning
-        only a medium row is what surfaces.
+        only a workhorse row is what surfaces.
         """
-        pool = self._stub_pool([{"alias": "global-medium-default"}])
+        pool = self._stub_pool([{"alias": "global-workhorse-default"}])
 
         result = await _fetch_model_from_catalog(pool)
 
-        assert result == "global-medium-default"
+        assert result == "global-workhorse-default"
         sql = pool.fetchrow.await_args.args[0]
         # Tier filter must apply to the *effective* tier, so a `bmo` row with
-        # tier='high' (and bmo.complexity_tier non-null) is filtered out.
-        assert "COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'medium'" in sql
+        # tier='reasoning' (and bmo.complexity_tier non-null) is filtered out.
+        assert "COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'workhorse'" in sql
 
-    async def test_no_qa_override_falls_back_to_global_medium_top_priority(self) -> None:
-        """With no QA override, the highest-priority enabled global medium entry wins."""
+    async def test_no_qa_override_falls_back_to_global_workhorse_top_priority(self) -> None:
+        """With no QA override, the highest-priority enabled global workhorse entry wins."""
         pool = self._stub_pool([{"alias": "claude-sonnet-4-5"}])
 
         result = await _fetch_model_from_catalog(pool)

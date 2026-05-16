@@ -474,12 +474,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             if isinstance(_raw_entity_id, str) and _raw_entity_id.strip():
                 _route_sender_entity_id = _raw_entity_id.strip()
 
-            # Extract complexity from envelope input; default to MEDIUM on missing/invalid.
+            # Extract complexity from envelope input; default to WORKHORSE on missing/invalid.
             _raw_route_complexity = parsed_route.input.complexity
             try:
                 _route_complexity = Complexity(_raw_route_complexity)
             except ValueError:
-                _route_complexity = Complexity.MEDIUM
+                _route_complexity = Complexity.WORKHORSE
 
             async def _process_route(
                 _inbox_id: uuid.UUID,

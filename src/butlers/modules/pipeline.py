@@ -444,10 +444,9 @@ def _build_routing_prompt(
         "and let it decide whether and how to respond.\n\n"
         "For each route_to_butler call, set the `complexity` parameter based on how much "
         "reasoning the target butler will need:\n"
-        "- trivial: simple lookups, status checks, factual one-liners\n"
-        "- medium: typical requests, summaries, moderate analysis (default)\n"
-        "- high: multi-step reasoning, planning, significant synthesis\n"
-        "- extra_high: deep research, very long synthesis, complex multi-domain tasks\n\n"
+        "- cheap: simple lookups, status checks, factual one-liners\n"
+        "- workhorse: typical requests, summaries, moderate analysis (default)\n"
+        "- reasoning: multi-step reasoning, planning, significant synthesis or deep research\n\n"
         "After routing, respond with a brief text summary of your routing decisions.\n\n"
     ]
 
@@ -1744,7 +1743,7 @@ class MessagePipeline:
                             prompt=routing_prompt,
                             trigger_source="tick",
                             request_id=request_id,
-                            complexity=Complexity.TRIVIAL,
+                            complexity=Complexity.CHEAP,
                         )
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000

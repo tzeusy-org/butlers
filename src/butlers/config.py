@@ -65,7 +65,7 @@ class LoggingConfig:
 
 
 _ALLOWED_SCHEDULE_COMPLEXITIES: frozenset[str] = frozenset(
-    {"trivial", "medium", "high", "extra_high", "discretion", "self_healing"}
+    {"reasoning", "workhorse", "cheap", "specialty", "local", "legacy"}
 )
 
 

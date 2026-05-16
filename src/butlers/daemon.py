@@ -910,7 +910,7 @@ class ButlerDaemon:
         prompt: str | None = None,
         job_name: str | None = None,
         job_args: dict[str, Any] | None = None,
-        complexity: Complexity = Complexity.MEDIUM,
+        complexity: Complexity = Complexity.WORKHORSE,
         max_token_budget: int | None = None,
     ) -> Any:
         """Dispatch one scheduled task via deterministic jobs or prompt fallback.

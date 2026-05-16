@@ -3,7 +3,7 @@
 Provides a lightweight, concurrent-limited wrapper around the RuntimeAdapter
 registry specifically for single-turn discretion inference.  Callers supply a
 prompt and optional system prompt; the dispatcher resolves the appropriate
-model from ``public.model_catalog`` at the ``Complexity.DISCRETION`` tier,
+model from ``public.model_catalog`` at the ``Complexity.SPECIALTY`` tier,
 lazily instantiates the matching adapter, and invokes it with no tools and
 a strict timeout.
 
@@ -105,7 +105,7 @@ class DiscretionDispatcher:
         butler_name: str = "__discretion__",
         max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
-        complexity_tier: Complexity = Complexity.DISCRETION,
+        complexity_tier: Complexity = Complexity.SPECIALTY,
     ) -> None:
         self._pool = pool
         self._butler_name = butler_name
@@ -162,7 +162,7 @@ class DiscretionDispatcher:
         """Invoke the discretion-tier model with *prompt* and return the response text.
 
         Resolution order:
-        1. Query ``public.model_catalog`` for ``Complexity.DISCRETION``.
+        1. Query ``public.model_catalog`` for ``Complexity.SPECIALTY``.
         2. Raise ``RuntimeError`` if no enabled catalog entry matches.
         3. Acquire the concurrency semaphore.
         4. Invoke the adapter with ``asyncio.wait_for`` enforcing ``timeout_s``.

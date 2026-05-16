@@ -54,8 +54,8 @@ class MockMCPServer:
                 prompt: Self-contained prompt for the target butler.
                 context: Optional — key details and context the target butler
                     needs to act on this request.
-                complexity: Task complexity tier — one of "trivial", "medium",
-                    "high", "extra_high". Defaults to "medium" when omitted.
+                complexity: Task complexity tier — one of "cheap", "workhorse",
+                    "reasoning", "specialty", "local", "legacy". Defaults to "workhorse" when omitted.
             """
             self._captures.append(
                 {

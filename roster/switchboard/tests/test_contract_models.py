@@ -245,41 +245,41 @@ def test_unknown_or_newer_schema_version_fails_deterministically(
 class TestRouteInputV1Complexity:
     """Tests for the complexity field on RouteInputV1."""
 
-    def test_complexity_defaults_to_medium_when_absent(self) -> None:
+    def test_complexity_defaults_to_workhorse_when_absent(self) -> None:
         payload = _valid_route_payload()
         # complexity not set in input
         envelope = parse_route_envelope(payload)
-        assert envelope.input.complexity == "medium"
+        assert envelope.input.complexity == "workhorse"
 
-    def test_complexity_medium_explicit(self) -> None:
+    def test_complexity_workhorse_explicit(self) -> None:
         payload = _valid_route_payload()
-        payload["input"]["complexity"] = "medium"
+        payload["input"]["complexity"] = "workhorse"
         envelope = parse_route_envelope(payload)
-        assert envelope.input.complexity == "medium"
+        assert envelope.input.complexity == "workhorse"
 
-    def test_complexity_trivial_accepted(self) -> None:
+    def test_complexity_cheap_accepted(self) -> None:
         payload = _valid_route_payload()
-        payload["input"]["complexity"] = "trivial"
+        payload["input"]["complexity"] = "cheap"
         envelope = parse_route_envelope(payload)
-        assert envelope.input.complexity == "trivial"
+        assert envelope.input.complexity == "cheap"
 
-    def test_complexity_high_accepted(self) -> None:
+    def test_complexity_reasoning_accepted(self) -> None:
         payload = _valid_route_payload()
-        payload["input"]["complexity"] = "high"
+        payload["input"]["complexity"] = "reasoning"
         envelope = parse_route_envelope(payload)
-        assert envelope.input.complexity == "high"
+        assert envelope.input.complexity == "reasoning"
 
-    def test_complexity_extra_high_accepted(self) -> None:
+    def test_complexity_specialty_accepted(self) -> None:
         payload = _valid_route_payload()
-        payload["input"]["complexity"] = "extra_high"
+        payload["input"]["complexity"] = "specialty"
         envelope = parse_route_envelope(payload)
-        assert envelope.input.complexity == "extra_high"
+        assert envelope.input.complexity == "specialty"
 
     def test_complexity_normalizes_to_lowercase(self) -> None:
         payload = _valid_route_payload()
-        payload["input"]["complexity"] = "HIGH"
+        payload["input"]["complexity"] = "REASONING"
         envelope = parse_route_envelope(payload)
-        assert envelope.input.complexity == "high"
+        assert envelope.input.complexity == "reasoning"
 
     def test_complexity_invalid_value_raises(self) -> None:
         payload = _valid_route_payload()
@@ -289,12 +289,20 @@ class TestRouteInputV1Complexity:
         error = exc_info.value.errors()[0]
         assert error["type"] == "invalid_complexity"
 
+    def test_complexity_old_vocabulary_raises(self) -> None:
+        """Old vocabulary (trivial/medium/high/extra_high) is now invalid."""
+        for old_value in ("trivial", "medium", "high", "extra_high", "discretion", "self_healing"):
+            payload = _valid_route_payload()
+            payload["input"]["complexity"] = old_value
+            with pytest.raises(ValidationError):
+                parse_route_envelope(payload)
+
     def test_route_v1_envelope_with_complexity_roundtrip(self) -> None:
         """Envelope with complexity field validates and roundtrips correctly."""
         payload = _valid_route_payload()
-        payload["input"]["complexity"] = "high"
+        payload["input"]["complexity"] = "reasoning"
         envelope = parse_route_envelope(payload)
-        assert envelope.input.complexity == "high"
+        assert envelope.input.complexity == "reasoning"
         assert envelope.input.prompt == "summarize this message"
 
 

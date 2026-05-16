@@ -392,7 +392,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         _complexity_values = {c.value for c in Complexity}
         _raw_complexity = complexity.strip().lower() if isinstance(complexity, str) else ""
         _normalized_complexity = (
-            _raw_complexity if _raw_complexity in _complexity_values else Complexity.MEDIUM.value
+            _raw_complexity if _raw_complexity in _complexity_values else Complexity.WORKHORSE.value
         )
 
         # Forward attachment metadata from routing context so target

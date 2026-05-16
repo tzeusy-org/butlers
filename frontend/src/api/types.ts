@@ -2368,8 +2368,8 @@ export interface IngestionRuleListParams {
 // Model catalog
 // ---------------------------------------------------------------------------
 
-/** Valid complexity tier values for the model catalog. */
-export type ComplexityTier = "trivial" | "medium" | "high" | "extra_high" | "discretion" | "self_healing";
+/** Valid complexity tier values for the model catalog (canonical six). */
+export type ComplexityTier = "reasoning" | "workhorse" | "cheap" | "specialty" | "local" | "legacy";
 
 /** Per-model pricing (USD per 1M tokens). Keyed by model_id. */
 export interface ModelPricingEntry {

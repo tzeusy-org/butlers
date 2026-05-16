@@ -103,7 +103,7 @@ job_name = "chronicler_project_spotify"
 name = "chronicler_day_close"
 cron = "5 1 * * *"
 dispatch_mode = "prompt"
-complexity = "high"
+complexity = "reasoning"
 prompt = """
 Run the Chronicler day-close interpretation for yesterday:
 1. Use the owner's configured timezone from your system prompt. Compute

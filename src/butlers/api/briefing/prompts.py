@@ -155,7 +155,7 @@ async def elaborate_llm(pool: Any, state: dict, state_class: str) -> str | None:
     dispatcher = DiscretionDispatcher(
         pool,
         butler_name=BRIEFING_RUNTIME_BUTLER_NAME,
-        complexity_tier=Complexity.TRIVIAL,
+        complexity_tier=Complexity.CHEAP,
     )
     try:
         text = (

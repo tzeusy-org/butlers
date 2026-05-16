@@ -35,7 +35,7 @@ catalog_router = APIRouter(prefix="/api/settings/models", tags=["model-catalog"]
 pricing_router = APIRouter(prefix="/api/settings", tags=["pricing"])
 butler_model_router = APIRouter(prefix="/api/butlers", tags=["butlers", "model-overrides"])
 
-_COMPLEXITY_TIERS = ("trivial", "medium", "high", "extra_high", "discretion", "self_healing")
+_COMPLEXITY_TIERS = ("reasoning", "workhorse", "cheap", "specialty", "local", "legacy")
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -74,7 +74,7 @@ class ModelCatalogCreate(BaseModel):
     runtime_type: str
     model_id: str
     extra_args: list[str] = Field(default_factory=list)
-    complexity_tier: str = "medium"
+    complexity_tier: str = "workhorse"
     enabled: bool = True
     priority: int = 0
     session_timeout_s: int = Field(default=1800, gt=0)
@@ -330,12 +330,13 @@ async def list_catalog_entries(
         LEFT JOIN public.token_limits tl ON tl.catalog_entry_id = mc.id
         ORDER BY
             CASE mc.complexity_tier
-                WHEN 'trivial'     THEN 1
-                WHEN 'medium'      THEN 2
-                WHEN 'high'        THEN 3
-                WHEN 'extra_high'  THEN 4
-                WHEN 'discretion'  THEN 5
-                ELSE 6
+                WHEN 'reasoning' THEN 1
+                WHEN 'workhorse' THEN 2
+                WHEN 'cheap'     THEN 3
+                WHEN 'specialty' THEN 4
+                WHEN 'local'     THEN 5
+                WHEN 'legacy'    THEN 6
+                ELSE 7
             END,
             mc.priority DESC,
             mc.alias ASC
@@ -842,7 +843,7 @@ async def delete_butler_model_override(
 )
 async def resolve_model_preview(
     name: str,
-    complexity: str = Query(default="medium", description="Complexity tier to resolve"),
+    complexity: str = Query(default="workhorse", description="Complexity tier to resolve"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ResolveModelResponse]:
     """Preview which model would be selected for a butler + complexity tier.

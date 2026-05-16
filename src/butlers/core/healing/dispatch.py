@@ -658,7 +658,7 @@ async def _run_healing_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="healing",
-            complexity=Complexity.SELF_HEALING,
+            complexity=Complexity.SPECIALTY,
             cwd=str(worktree_path),
             bypass_butler_semaphore=True,
             timeout_override=config.timeout_minutes * 60,
@@ -1276,7 +1276,7 @@ async def dispatch_healing(
         # -------------------------------------------------------------------
         model_result = None
         try:
-            model_result = await resolve_model(pool, butler_name, Complexity.SELF_HEALING)
+            model_result = await resolve_model(pool, butler_name, Complexity.SPECIALTY)
         except Exception as model_exc:
             logger.warning(
                 "Model resolution failed for self_healing tier (butler=%s): %s",
