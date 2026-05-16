@@ -111,14 +111,61 @@ async def _run_memory_consolidation_job(
     return await run_consolidation(pool=pool, embedding_engine=None, cc_spawner=None)
 
 
+async def _fetch_retention_policy(pool: asyncpg.Pool, kind: str) -> dict[str, Any]:
+    """Fetch a row from public.memory_retention_policies by kind.
+
+    Falls back to an empty dict (no policy) when the table does not exist
+    (migration core_095 not yet applied) so the cleanup jobs remain safe to
+    run on un-migrated databases.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT ttl_days, max_rows FROM public.memory_retention_policies WHERE kind = $1",
+            kind,
+        )
+        if row is not None:
+            return {"ttl_days": row["ttl_days"], "max_rows": row["max_rows"]}
+    except Exception:
+        pass
+    return {}
+
+
+async def _log_compaction(pool: asyncpg.Pool, kind: str, rows_removed: int) -> None:
+    """Insert one row into public.memory_compaction_log; best-effort (no raise)."""
+    try:
+        await pool.execute(
+            "INSERT INTO public.memory_compaction_log (kind, rows_removed) VALUES ($1, $2)",
+            kind,
+            rows_removed,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to log compaction for kind=%r rows_removed=%d",
+            kind,
+            rows_removed,
+            exc_info=True,
+        )
+
+
 async def _run_memory_episode_cleanup_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run memory episode cleanup directly without spawning an LLM runtime session."""
+    """Run memory episode cleanup directly without spawning an LLM runtime session.
+
+    Consults public.memory_retention_policies for 'event' and 'transcript' kinds
+    to determine the max_rows cap.  Falls back to the default (10 000) when the
+    policy table is not yet available (migration core_095 not applied).
+
+    Logs the number of removed rows to public.memory_compaction_log after each run.
+    """
     from butlers.modules.memory.consolidation import run_episode_cleanup
 
-    max_entries = 10000
+    # Load policy from DB (kind='event' governs general episode capacity).
+    policy = await _fetch_retention_policy(pool, "event")
+    max_entries = int(policy.get("max_rows") or 10000)
+
+    # job_args override takes precedence for backward compatibility.
     if job_args is not None:
         unknown_args = sorted(set(job_args) - {"max_entries"})
         if unknown_args:
@@ -138,23 +185,40 @@ async def _run_memory_episode_cleanup_job(
                 )
             max_entries = raw_max_entries
 
-    return await run_episode_cleanup(pool=pool, max_entries=max_entries)
+    result = await run_episode_cleanup(pool=pool, max_entries=max_entries)
+    total_removed = result.get("expired_deleted", 0) + result.get("capacity_deleted", 0)
+    if total_removed > 0:
+        await _log_compaction(pool, "event", total_removed)
+    return result
 
 
 async def _run_memory_purge_superseded_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Purge superseded facts older than a threshold."""
+    """Purge superseded facts older than a threshold.
+
+    Consults public.memory_retention_policies for 'fact' kind to determine
+    the ttl_days threshold.  Falls back to 7 days when the policy table is
+    not yet available.
+
+    Logs the number of removed rows to public.memory_compaction_log.
+    """
     from butlers.modules.memory.storage import purge_superseded_facts
 
-    older_than_days = 7
+    policy = await _fetch_retention_policy(pool, "fact")
+    older_than_days = int(policy.get("ttl_days") or 7)
+
     if job_args is not None and "older_than_days" in job_args:
         raw = job_args["older_than_days"]
         if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
             older_than_days = raw
 
-    return await purge_superseded_facts(pool, older_than_days=older_than_days)
+    result = await purge_superseded_facts(pool, older_than_days=older_than_days)
+    total_removed = result.get("superseded_deleted", 0) + result.get("ha_state_deleted", 0)
+    if total_removed > 0:
+        await _log_compaction(pool, "fact", total_removed)
+    return result
 
 
 _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {

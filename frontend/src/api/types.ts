@@ -1301,6 +1301,54 @@ export interface MemoryActivity {
   created_at: string;
 }
 
+/** A memory retention policy row. */
+export interface MemoryRetentionPolicy {
+  kind: string;
+  ttl_days: number | null;
+  max_rows: number | null;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+/** One entry in a bulk PUT retention policy request. */
+export interface UpdateRetentionPolicyEntry {
+  kind: string;
+  ttl_days: number | null;
+  max_rows: number | null;
+}
+
+/** Bulk update request body for PUT /api/memory/retention-policies. */
+export interface UpdateRetentionPoliciesRequest {
+  policies: UpdateRetentionPolicyEntry[];
+}
+
+/** A compaction log entry. */
+export interface CompactionLogEntry {
+  id: number;
+  ts: string;
+  kind: string;
+  rows_removed: number;
+  bytes_freed: number | null;
+}
+
+/** A single memory inspect search result. */
+export interface MemoryInspectResult {
+  id: string;
+  kind: string;
+  content: string;
+  butler: string | null;
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
+/** Query parameters for GET /api/memory/inspect. */
+export interface MemoryInspectParams {
+  q?: string;
+  kind?: string;
+  offset?: number;
+  limit?: number;
+}
+
 /** Query parameters for episode list endpoints. */
 export interface EpisodeParams {
   butler?: string;

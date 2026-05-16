@@ -16,9 +16,12 @@ import {
   getFact,
   getFacts,
   getMemoryActivity,
+  getMemoryCompactionLog,
+  getMemoryRetentionPolicies,
   getMemoryStats,
   getRule,
   getRules,
+  inspectMemory,
   mergeEntity,
   promoteEntity,
   revealEntitySecret,
@@ -27,6 +30,7 @@ import {
   unlinkEntityContact,
   updateEntity,
   updateEntityInfo,
+  updateMemoryRetentionPolicies,
   getDunbarRanking,
 } from "@/api/index.ts";
 import type {
@@ -36,9 +40,11 @@ import type {
   EpisodeParams,
   Fact,
   FactParams,
+  MemoryInspectParams,
   RuleParams,
   UpdateEntityInfoRequest,
   UpdateEntityRequest,
+  UpdateRetentionPoliciesRequest,
 } from "@/api/types.ts";
 
 /** Fetch aggregated memory statistics. */
@@ -325,6 +331,45 @@ export function useUnlinkContact() {
       void queryClient.invalidateQueries({ queryKey: ["contact"] });
       void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
     },
+  });
+}
+
+/** Fetch retention policies. */
+export function useMemoryRetentionPolicies() {
+  return useQuery({
+    queryKey: ["memory-retention-policies"],
+    queryFn: () => getMemoryRetentionPolicies(),
+    staleTime: 60_000,
+  });
+}
+
+/** Bulk-update retention policies. */
+export function useUpdateMemoryRetentionPolicies() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: UpdateRetentionPoliciesRequest) =>
+      updateMemoryRetentionPolicies(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-retention-policies"] });
+    },
+  });
+}
+
+/** Fetch compaction log entries. */
+export function useMemoryCompactionLog(limit?: number) {
+  return useQuery({
+    queryKey: ["memory-compaction-log", limit],
+    queryFn: () => getMemoryCompactionLog(limit),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Inspect memory (search across tiers). */
+export function useMemoryInspect(params?: MemoryInspectParams) {
+  return useQuery({
+    queryKey: ["memory-inspect", params],
+    queryFn: () => inspectMemory(params),
+    enabled: params?.q != null && params.q.length > 0,
   });
 }
 

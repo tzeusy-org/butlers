@@ -186,3 +186,48 @@ class ButlerMemoryStats(BaseModel):
     entities_24h: int = 0
     total_rules: int = 0
     rules_24h: int = 0
+
+
+class MemoryRetentionPolicy(BaseModel):
+    """A single row from public.memory_retention_policies."""
+
+    kind: str
+    ttl_days: int | None = None
+    max_rows: int | None = None
+    updated_at: str
+    updated_by: str | None = None
+
+
+class UpdateRetentionPolicyEntry(BaseModel):
+    """One entry in a bulk PUT request for retention policies."""
+
+    kind: str
+    ttl_days: int | None = None
+    max_rows: int | None = None
+
+
+class UpdateRetentionPoliciesRequest(BaseModel):
+    """Bulk update request for retention policies."""
+
+    policies: list[UpdateRetentionPolicyEntry]
+
+
+class CompactionLogEntry(BaseModel):
+    """A single row from public.memory_compaction_log."""
+
+    id: int
+    ts: str
+    kind: str
+    rows_removed: int
+    bytes_freed: int | None = None
+
+
+class MemoryInspectResult(BaseModel):
+    """A single result from the memory inspect search."""
+
+    id: str
+    kind: str  # "episode", "fact", "rule"
+    content: str
+    butler: str | None = None
+    created_at: str
+    metadata: dict = {}

@@ -101,8 +101,13 @@ import type {
   Fact,
   FactParams,
   MemoryActivity,
+  MemoryInspectParams,
+  MemoryInspectResult,
+  MemoryRetentionPolicy,
   MemoryRule,
   MemoryStats,
+  CompactionLogEntry,
+  UpdateRetentionPoliciesRequest,
   RuleParams,
   ThreadAffinitySettings,
   ThreadAffinitySettingsUpdate,
@@ -1540,6 +1545,49 @@ export function getMemoryActivity(
 ): Promise<ApiResponse<MemoryActivity[]>> {
   const params = limit != null ? `?limit=${limit}` : "";
   return apiFetch<ApiResponse<MemoryActivity[]>>(`/memory/activity${params}`);
+}
+
+// ---------------------------------------------------------------------------
+// Memory retention policies
+// ---------------------------------------------------------------------------
+
+/** Fetch all retention policies. */
+export function getMemoryRetentionPolicies(): Promise<ApiResponse<MemoryRetentionPolicy[]>> {
+  return apiFetch<ApiResponse<MemoryRetentionPolicy[]>>("/memory/retention-policies");
+}
+
+/** Bulk-update retention policies. */
+export function updateMemoryRetentionPolicies(
+  body: UpdateRetentionPoliciesRequest,
+): Promise<ApiResponse<MemoryRetentionPolicy[]>> {
+  return apiFetch<ApiResponse<MemoryRetentionPolicy[]>>("/memory/retention-policies", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Fetch recent compaction log entries. */
+export function getMemoryCompactionLog(
+  limit?: number,
+): Promise<ApiResponse<CompactionLogEntry[]>> {
+  const params = limit != null ? `?limit=${limit}` : "";
+  return apiFetch<ApiResponse<CompactionLogEntry[]>>(`/memory/compaction-log${params}`);
+}
+
+/** Search memory (inspect). */
+export function inspectMemory(
+  params?: MemoryInspectParams,
+): Promise<PaginatedResponse<MemoryInspectResult>> {
+  const sp = new URLSearchParams();
+  if (params?.q) sp.set("q", params.q);
+  if (params?.kind) sp.set("kind", params.kind);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<MemoryInspectResult>>(
+    qs ? `/memory/inspect?${qs}` : "/memory/inspect",
+  );
 }
 
 // ---------------------------------------------------------------------------
