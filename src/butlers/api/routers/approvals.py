@@ -2,8 +2,9 @@
 
 Provides REST API access to the approvals subsystem for dashboard integration:
 - Pending action queue with filtering and pagination
-- Decision endpoints (approve/reject)
+- Decision endpoints (approve/reject/defer)
 - Standing approval rules CRUD
+- Approvals policy (quiet hours)
 - Metrics for monitoring approval workflows
 """
 
@@ -12,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import asyncpg
@@ -29,16 +30,23 @@ from butlers.api.models.approval import (
     ApprovalAction,
     ApprovalActionApproveRequest,
     ApprovalActionRejectRequest,
+    ApprovalApproveRequest,
+    ApprovalDeferRequest,
+    ApprovalDenyRequest,
+    ApprovalDetail,
     ApprovalMetrics,
     ApprovalRule,
     ApprovalRuleCreateRequest,
     ApprovalRuleFromActionRequest,
+    ApprovalsPolicy,
+    ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
     TargetContact,
 )
+from butlers.api.routers import audit as audit_router
 from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
@@ -179,6 +187,44 @@ def _pending_action_to_api(
         execution_result=action.execution_result,
         approval_rule_id=str(action.approval_rule_id) if action.approval_rule_id else None,
         target_contact=target_contact,
+        why=action.why,
+        evidence=action.evidence,
+    )
+
+
+def _pending_action_to_detail(action: PendingAction, butler_name: str) -> ApprovalDetail:
+    """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
+    title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
+    proposed_action = {
+        "tool_name": action.tool_name,
+        "tool_args": redact_tool_args(action.tool_name, action.tool_args),
+        "agent_summary": action.agent_summary,
+    }
+    return ApprovalDetail(
+        id=str(action.id),
+        title=title,
+        butler=butler_name,
+        created_at=action.requested_at,
+        expires_at=action.expires_at,
+        why=action.why,
+        evidence=action.evidence,
+        proposed_action=proposed_action,
+        status=action.status.value,
+        decided_by=action.decided_by,
+        decided_at=action.decided_at,
+    )
+
+
+def _pending_action_to_summary(action: PendingAction, butler_name: str) -> ApprovalSummary:
+    """Convert a PendingAction to a compact ApprovalSummary for the flat-list endpoint."""
+    return ApprovalSummary(
+        id=str(action.id),
+        butler=butler_name,
+        tool_name=action.tool_name,
+        status=action.status.value,
+        created_at=action.requested_at,
+        expires_at=action.expires_at,
+        why=action.why,
     )
 
 
@@ -1167,6 +1213,199 @@ async def get_metrics(
 
 
 # ---------------------------------------------------------------------------
+# New Dispatch-language endpoints (§8.1-§8.7)
+# ---------------------------------------------------------------------------
+
+_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed"}
+_WAITING_STATUSES = {"pending"}
+
+_ACTOR_DASHBOARD = "dashboard:rest-api"
+
+
+@router.get("")
+async def list_approvals_flat(
+    state: str = Query(default="all", description="waiting|decided|all"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ApprovalSummary]]:
+    """Flat list of approvals — GET /api/approvals?state=waiting|decided|all.
+
+    Complements the existing ``GET /api/approvals/actions`` paginated endpoint.
+    Returns up to ``limit`` summaries ordered ``created_at DESC``.
+    """
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    if not named_pools:
+        return ApiResponse(data=[])
+
+    status_filter: list[str]
+    if state == "waiting":
+        status_filter = list(_WAITING_STATUSES)
+    elif state == "decided":
+        status_filter = list(_DECIDED_STATUSES)
+    else:
+        status_filter = []
+
+    all_rows: list[tuple[str, asyncpg.Record]] = []
+    for butler_name, pool in named_pools:
+        try:
+            async with pool.acquire() as conn:
+                if status_filter:
+                    rows = await conn.fetch(
+                        "SELECT * FROM pending_actions "
+                        "WHERE status = ANY($1::text[]) "
+                        "ORDER BY requested_at DESC LIMIT $2",
+                        status_filter,
+                        limit,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        "SELECT * FROM pending_actions ORDER BY requested_at DESC LIMIT $1",
+                        limit,
+                    )
+                all_rows.extend((butler_name, row) for row in rows)
+        except Exception:
+            logger.warning("Failed to query pending_actions for flat list", exc_info=True)
+
+    all_rows.sort(key=lambda pair: pair[1]["requested_at"], reverse=True)
+    page_rows = all_rows[:limit]
+
+    summaries = []
+    for butler_name, row in page_rows:
+        pa = PendingAction.from_row(row)
+        summaries.append(_pending_action_to_summary(pa, butler_name))
+
+    return ApiResponse(data=summaries)
+
+
+@router.get("/history")
+async def list_approvals_history(
+    since: str | None = Query(default=None, description="ISO 8601 timestamp"),
+    limit: int = Query(default=30, ge=1, le=500),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ApprovalSummary]]:
+    """Decided approvals history — GET /api/approvals/history?since=.
+
+    Returns up to ``limit`` decided (approved|rejected|expired|executed) approvals
+    ordered ``decided_at DESC``.
+    """
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    if not named_pools:
+        return ApiResponse(data=[])
+
+    since_dt: datetime | None = None
+    if since is not None:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+
+    decided_statuses = list(_DECIDED_STATUSES)
+    all_rows: list[tuple[str, asyncpg.Record]] = []
+
+    for butler_name, pool in named_pools:
+        try:
+            async with pool.acquire() as conn:
+                if since_dt is not None:
+                    rows = await conn.fetch(
+                        "SELECT * FROM pending_actions "
+                        "WHERE status = ANY($1::text[]) AND decided_at >= $2 "
+                        "ORDER BY decided_at DESC LIMIT $3",
+                        decided_statuses,
+                        since_dt,
+                        limit,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        "SELECT * FROM pending_actions "
+                        "WHERE status = ANY($1::text[]) "
+                        "ORDER BY decided_at DESC LIMIT $2",
+                        decided_statuses,
+                        limit,
+                    )
+                all_rows.extend((butler_name, row) for row in rows)
+        except Exception:
+            logger.warning("Failed to query history from a pool", exc_info=True)
+
+    all_rows.sort(
+        key=lambda pair: pair[1]["decided_at"] or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    page_rows = all_rows[:limit]
+
+    summaries = [
+        _pending_action_to_summary(PendingAction.from_row(row), name) for name, row in page_rows
+    ]
+    return ApiResponse(data=summaries)
+
+
+@router.get("/policy")
+async def get_approvals_policy(
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalsPolicy]:
+    """Read the quiet-hours policy singleton — GET /api/approvals/policy."""
+    pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    if pool is None:
+        return ApiResponse(data=ApprovalsPolicy())
+
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM public.approvals_policy WHERE id = 1")
+    except Exception:
+        logger.warning("Failed to read approvals_policy", exc_info=True)
+        return ApiResponse(data=ApprovalsPolicy())
+
+    if row is None:
+        return ApiResponse(data=ApprovalsPolicy())
+
+    return ApiResponse(
+        data=ApprovalsPolicy(
+            quiet_start_hour=row["quiet_start_hour"],
+            quiet_end_hour=row["quiet_end_hour"],
+            timezone=row["timezone"] or "UTC",
+        )
+    )
+
+
+@router.put("/policy")
+async def update_approvals_policy(
+    request: ApprovalsPolicy = Body(...),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalsPolicy]:
+    """Update the quiet-hours policy singleton — PUT /api/approvals/policy."""
+    pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    if pool is None:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO public.approvals_policy
+                    (id, quiet_start_hour, quiet_end_hour, timezone, updated_at)
+                VALUES (1, $1, $2, $3, now())
+                ON CONFLICT (id) DO UPDATE
+                    SET quiet_start_hour = EXCLUDED.quiet_start_hour,
+                        quiet_end_hour   = EXCLUDED.quiet_end_hour,
+                        timezone         = EXCLUDED.timezone,
+                        updated_at       = now()
+                """,
+                request.quiet_start_hour,
+                request.quiet_end_hour,
+                request.timezone,
+            )
+            try:
+                await audit_router.append(conn, _ACTOR_DASHBOARD, "approvals.policy")
+            except audit_router.AuditTableNotAvailableError:
+                logger.warning("audit_log table not available; skipping audit for policy update")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update policy: {exc}") from exc
+
+    return ApiResponse(data=request)
+
+
+# ---------------------------------------------------------------------------
 # Autonomy suggestions endpoints
 # ---------------------------------------------------------------------------
 
@@ -1507,3 +1746,221 @@ async def dismiss_suggestion(
 
     suggestion = _row_to_autonomy_suggestion(dict(updated))
     return ApiResponse(data=suggestion)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch dossier — dynamic routes (must follow all literal paths)
+# These must be declared LAST so they do not shadow literal routes such as
+# /suggestions, /history, /policy, /metrics, etc.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{action_id}")
+async def get_approval_detail(
+    action_id: str,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalDetail]:
+    """Full dossier for one approval — GET /api/approvals/{id}."""
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    if not named_pools:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    for butler_name, pool in named_pools:
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+            if row is not None:
+                pa = PendingAction.from_row(row)
+                return ApiResponse(data=_pending_action_to_detail(pa, butler_name))
+        except Exception:
+            continue
+
+    raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+
+
+@router.post("/{action_id}/approve")
+async def approve_approval(
+    action_id: str,
+    request: ApprovalApproveRequest = Body(default=ApprovalApproveRequest()),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
+) -> ApiResponse[ApprovalAction]:
+    """Approve a pending action — POST /api/approvals/{id}/approve {edits?: object}.
+
+    Applies any ``edits`` to the tool args before executing, then audits the action.
+    """
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    action_butler, target_pool = found
+
+    # Use a single connection for the read, optional edits update, approve, and audit
+    # so that an edits UPDATE cannot succeed while the approve transition fails.
+    async with target_pool.acquire() as conn:
+        action_row = await conn.fetchrow(
+            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
+        )
+
+        # Apply edits to tool args before approval (same connection, no partial update risk)
+        if request.edits and action_row is not None:
+            raw_args = action_row["tool_args"]
+            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            tool_args.update(request.edits)
+            await conn.execute(
+                "UPDATE pending_actions SET tool_args = $1 WHERE id = $2",
+                json.dumps(tool_args),
+                parsed_id,
+            )
+
+        result = await approvals_ops.approve_action(
+            conn,
+            action_id=action_id,
+            create_rule=False,
+        )
+        try:
+            edits_note = json.dumps(request.edits) if request.edits else None
+            await audit_router.append(
+                conn, _ACTOR_DASHBOARD, "approval.approve", target=action_id, note=edits_note
+            )
+        except audit_router.AuditTableNotAvailableError:
+            logger.warning("audit_log table not available; skipping audit for approve")
+
+    if "error" in result:
+        error_msg = result["error"]
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        if "cannot transition" in error_msg.lower():
+            raise HTTPException(status_code=409, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    if action_row is not None:
+        tool_name = action_row["tool_name"]
+        raw_args = action_row["tool_args"]
+        tool_args_for_dispatch = (
+            json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        )
+        if request.edits:
+            tool_args_for_dispatch.update(request.edits)
+
+        dispatch_result = await _dispatch_approved_action(
+            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args_for_dispatch
+        )
+        if dispatch_result is not None:
+            result = dispatch_result
+
+    result.setdefault("butler", action_butler)
+    action_resp = ApprovalAction(
+        **{k: result[k] for k in ApprovalAction.model_fields if k in result}
+    )
+    return ApiResponse(data=action_resp)
+
+
+@router.post("/{action_id}/deny")
+async def deny_approval(
+    action_id: str,
+    request: ApprovalDenyRequest = Body(default=ApprovalDenyRequest()),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalAction]:
+    """Deny (reject) a pending action — POST /api/approvals/{id}/deny {reason?: str}."""
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    action_butler, target_pool = found
+
+    async with target_pool.acquire() as conn:
+        result = await approvals_ops.reject_action(
+            conn,
+            action_id=action_id,
+            reason=request.reason,
+        )
+        try:
+            await audit_router.append(
+                conn, _ACTOR_DASHBOARD, "approval.deny", target=action_id, note=request.reason
+            )
+        except audit_router.AuditTableNotAvailableError:
+            logger.warning("audit_log table not available; skipping audit for deny")
+
+    if "error" in result:
+        error_msg = result["error"]
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        if "cannot transition" in error_msg.lower():
+            raise HTTPException(status_code=409, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    result.setdefault("butler", action_butler)
+    action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    return ApiResponse(data=action)
+
+
+@router.post("/{action_id}/defer")
+async def defer_approval(
+    action_id: str,
+    request: ApprovalDeferRequest = Body(...),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalAction]:
+    """Defer an approval by extending its expiry — POST /api/approvals/{id}/defer {hours: int}.
+
+    ``hours`` must be in [1, 168].  The action's ``expires_at`` is extended by the
+    given number of hours and the action remains in ``pending`` state.
+    """
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    action_butler, target_pool = found
+
+    now = datetime.now(UTC)
+    new_expires_at = now + timedelta(hours=request.hours)
+
+    async with target_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+
+        if row["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot defer action with status '{row['status']}'; "
+                    "only 'pending' actions can be deferred"
+                ),
+            )
+
+        updated = await conn.fetchrow(
+            "UPDATE pending_actions SET expires_at = $1 WHERE id = $2 RETURNING *",
+            new_expires_at,
+            parsed_id,
+        )
+        try:
+            await audit_router.append(
+                conn, _ACTOR_DASHBOARD, "approval.defer", target=action_id, note=str(request.hours)
+            )
+        except audit_router.AuditTableNotAvailableError:
+            logger.warning("audit_log table not available; skipping audit for defer")
+
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Failed to defer approval")
+
+    pa = PendingAction.from_row(updated)
+    tc = await _resolve_target_contact(db_mgr, pa)
+    return ApiResponse(data=_pending_action_to_api(pa, action_butler, tc))

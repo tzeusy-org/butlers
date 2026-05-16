@@ -9,11 +9,17 @@ import type {
   ApprovalActionApproveRequest,
   ApprovalActionParams,
   ApprovalActionRejectRequest,
+  ApprovalApproveRequest,
+  ApprovalDeferRequest,
+  ApprovalDenyRequest,
+  ApprovalDetail,
   ApprovalMetrics,
   ApprovalRule,
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
+  ApprovalsPolicy,
+  ApprovalSummary,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
@@ -2031,6 +2037,94 @@ export function getRuleSuggestions(
 
 export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
   return apiFetch<ApiResponse<ApprovalMetrics>>("/approvals/metrics");
+}
+
+// ---------------------------------------------------------------------------
+// New Dispatch-language approvals API (§8.3)
+// ---------------------------------------------------------------------------
+
+export function getApprovalsFlat(
+  state?: "waiting" | "decided" | "all",
+  limit?: number,
+): Promise<ApiResponse<ApprovalSummary[]>> {
+  const qs = new URLSearchParams();
+  if (state) qs.set("state", state);
+  if (limit != null) qs.set("limit", String(limit));
+  const s = qs.toString();
+  return apiFetch<ApiResponse<ApprovalSummary[]>>(s ? `/approvals?${s}` : "/approvals");
+}
+
+export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
+  return apiFetch<ApiResponse<ApprovalDetail>>(
+    `/approvals/${encodeURIComponent(actionId)}`,
+  );
+}
+
+export function approveApproval(
+  actionId: string,
+  request?: ApprovalApproveRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/${encodeURIComponent(actionId)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request ?? {}),
+    },
+  );
+}
+
+export function denyApproval(
+  actionId: string,
+  request?: ApprovalDenyRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/${encodeURIComponent(actionId)}/deny`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request ?? {}),
+    },
+  );
+}
+
+export function deferApproval(
+  actionId: string,
+  request: ApprovalDeferRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/${encodeURIComponent(actionId)}/defer`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export function getApprovalsPolicy(): Promise<ApiResponse<ApprovalsPolicy>> {
+  return apiFetch<ApiResponse<ApprovalsPolicy>>("/approvals/policy");
+}
+
+export function updateApprovalsPolicy(
+  policy: ApprovalsPolicy,
+): Promise<ApiResponse<ApprovalsPolicy>> {
+  return apiFetch<ApiResponse<ApprovalsPolicy>>("/approvals/policy", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(policy),
+  });
+}
+
+export function getApprovalsHistory(
+  since?: string,
+  limit?: number,
+): Promise<ApiResponse<ApprovalSummary[]>> {
+  const qs = new URLSearchParams();
+  if (since) qs.set("since", since);
+  if (limit != null) qs.set("limit", String(limit));
+  const s = qs.toString();
+  return apiFetch<ApiResponse<ApprovalSummary[]>>(s ? `/approvals/history?${s}` : "/approvals/history");
 }
 
 function autonomySuggestionSearchParams(params?: AutonomySuggestionParams): URLSearchParams {

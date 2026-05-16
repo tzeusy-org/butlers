@@ -1,353 +1,635 @@
-import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router";
+/**
+ * ApprovalsPage — /approvals
+ *
+ * Dispatch dossier layout (§8.4):
+ *   - Left rail: pending approval summaries (rule-separated rows)
+ *   - Right pane: dossier for the selected approval
+ *     - title headline (sans 500, 22px)
+ *     - why: serif paragraph (max-width 50ch)
+ *     - evidence: mono lines (rule-separated)
+ *     - proposed_action summary
+ *     - primary Approve button, secondary Deny / Defer pill buttons
+ *   - Policy section: quiet-hours editor
+ *   - History section: last 30 decided approvals
+ *
+ * No Kanban columns. No charts. No cards.
+ *
+ * bu-5xiu9 — Phase 6: /approvals replacement
+ */
+
+import { useState } from "react";
 import { toast } from "sonner";
-import type { ApprovalAction, ApprovalActionParams } from "@/api/types";
-import { ActionTable } from "@/components/approvals/action-table";
-import { ActionDetailDialog } from "@/components/approvals/action-detail-dialog";
-import { ApprovalMetricsBar } from "@/components/approvals/approval-metrics";
-import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner";
-import { HistoryTable } from "@/components/approvals/history-table";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  useApprovalAction,
-  useApprovalActions,
-  useApprovalMetrics,
-  useAutonomySuggestions,
-  useConfirmAutonomySuggestion,
-  useDismissAutonomySuggestion,
-  useExpireStaleActions,
-} from "@/hooks/use-approvals";
-import { useAutoRefresh } from "@/hooks/use-auto-refresh";
+  approveApproval,
+  deferApproval,
+  denyApproval,
+  getApprovalDetail,
+  getApprovalsFlat,
+  getApprovalsHistory,
+  getApprovalsPolicy,
+  updateApprovalsPolicy,
+} from "@/api/index.ts";
+import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
 
-const PAGE_SIZE = 20;
-const HISTORY_LIMIT = 10;
-const RESOLVED_STATUSES = new Set(["approved", "rejected", "expired", "executed"]);
+// ---------------------------------------------------------------------------
+// Query keys
+// ---------------------------------------------------------------------------
 
-const STATUS_OPTIONS = [
-  { value: "all", label: "All statuses" },
-  { value: "pending", label: "Pending" },
-  { value: "approved", label: "Approved" },
-  { value: "rejected", label: "Rejected" },
-  { value: "expired", label: "Expired" },
-  { value: "executed", label: "Executed" },
-] as const;
-
-interface FilterState {
-  tool_name: string;
-  status: string;
-  butler: string;
-}
-
-const EMPTY_FILTERS: FilterState = {
-  tool_name: "",
-  status: "pending",
-  butler: "",
+const Q = {
+  pending: () => ["approvals", "flat", "waiting"] as const,
+  detail: (id: string) => ["approvals", "detail", id] as const,
+  history: () => ["approvals", "history"] as const,
+  policy: () => ["approvals", "policy"] as const,
 };
 
-export default function ApprovalsPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
-  const [page, setPage] = useState(0);
-  const [selectedAction, setSelectedAction] = useState<ApprovalAction | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [pendingSuggestionIds, setPendingSuggestionIds] = useState<Set<string>>(new Set());
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  const actionIdParam = searchParams.get("action");
+function fmtTs(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
 
-  useAutoRefresh(); // Auto-refresh enabled
+function statusColor(status: string): string {
+  switch (status) {
+    case "pending": return "text-amber-600 dark:text-amber-400";
+    case "approved": return "text-green-600 dark:text-green-400";
+    case "executed": return "text-blue-600 dark:text-blue-400";
+    case "rejected": return "text-red-600 dark:text-red-400";
+    case "expired": return "text-muted-foreground";
+    default: return "text-foreground";
+  }
+}
 
-  const params: ApprovalActionParams = {
-    offset: page * PAGE_SIZE,
-    limit: PAGE_SIZE,
-    ...(filters.tool_name ? { tool_name: filters.tool_name } : {}),
-    ...(filters.status !== "all" ? { status: filters.status } : {}),
-    ...(filters.butler ? { butler: filters.butler } : {}),
+// ---------------------------------------------------------------------------
+// Rail item
+// ---------------------------------------------------------------------------
+
+function RailItem({
+  summary,
+  selected,
+  onSelect,
+}: {
+  summary: ApprovalSummary;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className={[
+        "w-full text-left px-3 py-3 border-b border-border last:border-b-0",
+        "transition-colors focus:outline-none",
+        selected ? "bg-foreground/5" : "hover:bg-foreground/[0.03]",
+      ].join(" ")}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs text-muted-foreground truncate">
+          {summary.butler}
+        </span>
+        <span className={`font-mono text-[10px] uppercase tracking-wider ${statusColor(summary.status)}`}>
+          {summary.status}
+        </span>
+      </div>
+      <div className="mt-0.5 text-sm font-medium truncate">
+        {summary.tool_name.replace(/_/g, " ")}
+      </div>
+      {summary.why && (
+        <div className="mt-0.5 text-xs text-muted-foreground line-clamp-1 italic">
+          {summary.why}
+        </div>
+      )}
+      <div className="mt-1 text-[10px] font-mono text-muted-foreground">
+        {fmtTs(summary.created_at)}
+      </div>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dossier pane
+// ---------------------------------------------------------------------------
+
+function Dossier({
+  actionId,
+  onDecision,
+}: {
+  actionId: string;
+  onDecision: () => void;
+}) {
+  const qc = useQueryClient();
+  const [deferHours, setDeferHours] = useState("24");
+  const [denyReason, setDenyReason] = useState("");
+  const [showDeny, setShowDeny] = useState(false);
+  const [showDefer, setShowDefer] = useState(false);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: Q.detail(actionId),
+    queryFn: () => getApprovalDetail(actionId),
+    enabled: !!actionId,
+  });
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: Q.pending() });
+    qc.invalidateQueries({ queryKey: Q.history() });
+    qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+    onDecision();
   };
 
-  const { data: metricsResponse, isLoading: metricsLoading } = useApprovalMetrics();
-  const { data: actionsResponse, isLoading: actionsLoading } = useApprovalActions(params);
-  const { data: historyResponse, isLoading: historyLoading } = useApprovalActions({
-    offset: 0,
-    limit: 50,
+  const approveMut = useMutation({
+    mutationFn: () => approveApproval(actionId),
+    onSuccess: () => { toast.success("Approved"); invalidate(); },
+    onError: (e: Error) => toast.error(`Approve failed: ${e.message}`),
   });
-  const { data: deepLinkedAction } = useApprovalAction(actionIdParam ?? "");
-  const { data: suggestionsResponse } = useAutonomySuggestions({ status: "pending", limit: 20 });
-  const confirmSuggestion = useConfirmAutonomySuggestion();
-  const dismissSuggestion = useDismissAutonomySuggestion();
-  const expireMutation = useExpireStaleActions();
 
-  // Open dialog when ?action=<id> is present and the action data loads
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (actionIdParam && deepLinkedAction?.data) {
-      setSelectedAction(deepLinkedAction.data);
-      setDialogOpen(true);
-    }
-  }, [actionIdParam, deepLinkedAction]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  const denyMut = useMutation({
+    mutationFn: () => denyApproval(actionId, { reason: denyReason || undefined }),
+    onSuccess: () => { toast.success("Denied"); setShowDeny(false); invalidate(); },
+    onError: (e: Error) => toast.error(`Deny failed: ${e.message}`),
+  });
 
-  const metrics = metricsResponse?.data;
-  const actions = actionsResponse?.data ?? [];
-  const meta = actionsResponse?.meta;
-  const total = meta?.total ?? 0;
-  const hasMore = meta?.has_more ?? false;
-  const pendingSuggestions = (suggestionsResponse?.data ?? []).filter(
-    (s) => s.status === "pending",
-  );
-  const activeSuggestionsCount = pendingSuggestions.length;
+  const deferMut = useMutation({
+    mutationFn: () => {
+      const h = parseInt(deferHours, 10);
+      if (isNaN(h) || h < 1 || h > 168) {
+        throw new Error("Hours must be 1–168");
+      }
+      return deferApproval(actionId, { hours: h });
+    },
+    onSuccess: () => { toast.success("Deferred"); setShowDefer(false); invalidate(); },
+    onError: (e: Error) => toast.error(`Defer failed: ${e.message}`),
+  });
 
-  const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
-  const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
-
-  function addPendingId(id: string) {
-    setPendingSuggestionIds((prev) => new Set([...prev, id]));
-  }
-
-  function removePendingId(id: string) {
-    setPendingSuggestionIds((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-  }
-
-  function handleConfirmSuggestion(id: string) {
-    addPendingId(id);
-    confirmSuggestion.mutate(id, {
-      onSuccess: () => {
-        toast.success("Standing rule created from suggestion");
-        removePendingId(id);
-      },
-      onError: (err) => {
-        toast.error(`Failed to confirm suggestion: ${err instanceof Error ? err.message : String(err)}`);
-        removePendingId(id);
-      },
-    });
-  }
-
-  function handleDismissSuggestion(id: string) {
-    addPendingId(id);
-    dismissSuggestion.mutate(
-      { suggestionId: id },
-      {
-        onSuccess: () => {
-          toast.success("Suggestion dismissed");
-          removePendingId(id);
-        },
-        onError: (err) => {
-          toast.error(`Failed to dismiss suggestion: ${err instanceof Error ? err.message : String(err)}`);
-          removePendingId(id);
-        },
-      },
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
+        loading…
+      </div>
     );
   }
 
-  function handleFilterChange(key: keyof FilterState, value: string) {
-    setFilters((prev) => ({ ...prev, [key]: value }));
-    setPage(0);
+  if (error || !data?.data) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
+        failed to load dossier
+      </div>
+    );
   }
 
-  function handleClearFilters() {
-    setFilters(EMPTY_FILTERS);
-    setPage(0);
-  }
-
-  function handleActionClick(action: ApprovalAction) {
-    setSelectedAction(action);
-    setDialogOpen(true);
-    setSearchParams((prev) => {
-      prev.set("action", action.id);
-      return prev;
-    });
-  }
-
-  function handleDialogClose(open: boolean) {
-    setDialogOpen(open);
-    if (!open) {
-      setSearchParams((prev) => {
-        prev.delete("action");
-        return prev;
-      });
-    }
-  }
-
-  function handleExpireStale() {
-    if (confirm("Expire all stale pending actions?")) {
-      expireMutation.mutate({});
-    }
-  }
-
-  const historyActions = (historyResponse?.data ?? [])
-    .filter((a) => RESOLVED_STATUSES.has(a.status))
-    .slice(0, HISTORY_LIMIT);
-
-  const hasActiveFilters =
-    filters.tool_name !== "" || filters.status !== "pending" || filters.butler !== "";
+  const detail: ApprovalDetail = data.data;
+  const isPending = detail.status === "pending";
 
   return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Approvals</h1>
-          <p className="text-muted-foreground mt-1">
-            Manage approval-gated actions and standing rules.
-          </p>
+    <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      {/* Title */}
+      <div>
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
+          {detail.butler} · {fmtTs(detail.created_at)}
+          {detail.expires_at && (
+            <span className="ml-2">expires {fmtTs(detail.expires_at)}</span>
+          )}
         </div>
-        <Button variant="outline" asChild>
-          <Link to="/approvals/rules">Standing Rules</Link>
-        </Button>
+        <h2 className="text-[22px] font-medium leading-tight">{detail.title}</h2>
+        <span className={`text-xs font-mono uppercase tracking-wide ${statusColor(detail.status)}`}>
+          {detail.status}
+        </span>
       </div>
 
-      {/* Metrics */}
-      {metrics && !metricsLoading && (
-        <ApprovalMetricsBar metrics={metrics} activeSuggestionsCount={activeSuggestionsCount} />
-      )}
+      {/* Why — serif paragraph, max-width 50ch */}
+      <div className="border-t border-border pt-4">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
+          Why
+        </div>
+        {detail.why ? (
+          <p
+            className="text-base leading-relaxed text-foreground"
+            style={{ fontFamily: "Georgia, 'Times New Roman', serif", maxWidth: "50ch" }}
+          >
+            {detail.why}
+          </p>
+        ) : (
+          <p
+            className="text-sm text-muted-foreground italic"
+            style={{ fontFamily: "Georgia, 'Times New Roman', serif", maxWidth: "50ch" }}
+          >
+            No rationale provided.
+          </p>
+        )}
+      </div>
 
-      {/* Autonomy Suggestions Banner */}
-      {pendingSuggestions.length > 0 && (
-        <AutonomySuggestionsBanner
-          suggestions={pendingSuggestions}
-          onConfirm={handleConfirmSuggestion}
-          onDismiss={handleDismissSuggestion}
-          pendingIds={pendingSuggestionIds}
-        />
-      )}
-
-      {/* Filters */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Filter Actions</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-4">
-            <div>
-              <label className="text-sm font-medium">Tool Name</label>
-              <Input
-                placeholder="Filter by tool..."
-                value={filters.tool_name}
-                onChange={(e) => handleFilterChange("tool_name", e.target.value)}
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium">Status</label>
-              <Select
-                value={filters.status}
-                onValueChange={(value) => handleFilterChange("status", value)}
+      {/* Evidence — mono lines, rule-separated */}
+      {detail.evidence && detail.evidence.length > 0 && (
+        <div className="border-t border-border pt-4">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
+            Evidence
+          </div>
+          <div>
+            {detail.evidence.map((line, i) => (
+              <div
+                key={i}
+                className={[
+                  "py-1.5 font-mono text-xs text-foreground",
+                  i > 0 ? "border-t border-border/50" : "",
+                ].join(" ")}
               >
-                <SelectTrigger className="mt-1">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUS_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Proposed action */}
+      <div className="border-t border-border pt-4">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
+          Proposed Action
+        </div>
+        <div className="font-mono text-sm">
+          <span className="text-foreground font-medium">
+            {detail.proposed_action.tool_name}
+          </span>
+          {detail.proposed_action.agent_summary && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              {detail.proposed_action.agent_summary}
             </div>
+          )}
+          <pre className="mt-2 text-[11px] bg-muted/30 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap">
+            {JSON.stringify(detail.proposed_action.tool_args, null, 2)}
+          </pre>
+        </div>
+      </div>
+
+      {/* Decision buttons (only for pending) */}
+      {isPending && (
+        <div className="border-t border-border pt-4 space-y-3">
+          {/* Primary approve */}
+          <button
+            onClick={() => approveMut.mutate()}
+            disabled={approveMut.isPending}
+            className={[
+              "w-full py-2.5 px-4 rounded font-medium text-sm",
+              "bg-foreground text-background",
+              "hover:opacity-90 disabled:opacity-50 transition-opacity",
+            ].join(" ")}
+          >
+            {approveMut.isPending ? "Approving…" : "Approve"}
+          </button>
+
+          {/* Secondary deny / defer row */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setShowDeny(!showDeny); setShowDefer(false); }}
+              className={[
+                "flex-1 py-1.5 px-3 rounded text-sm border transition-colors",
+                "border-border text-foreground hover:border-foreground/40",
+                showDeny ? "border-foreground/40" : "",
+              ].join(" ")}
+            >
+              Deny
+            </button>
+            <button
+              onClick={() => { setShowDefer(!showDefer); setShowDeny(false); }}
+              className={[
+                "flex-1 py-1.5 px-3 rounded text-sm border transition-colors",
+                "border-border text-foreground hover:border-foreground/40",
+                showDefer ? "border-foreground/40" : "",
+              ].join(" ")}
+            >
+              Defer
+            </button>
+          </div>
+
+          {/* Deny expansion */}
+          {showDeny && (
+            <div className="space-y-2 p-3 rounded border border-border">
+              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                Reason (optional)
+              </label>
+              <input
+                value={denyReason}
+                onChange={(e) => setDenyReason(e.target.value)}
+                placeholder="No reason given"
+                className={[
+                  "w-full px-2 py-1.5 text-sm border border-border rounded",
+                  "bg-background focus:outline-none focus:border-foreground/40",
+                ].join(" ")}
+              />
+              <button
+                onClick={() => denyMut.mutate()}
+                disabled={denyMut.isPending}
+                className="w-full py-1.5 px-3 rounded text-sm bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {denyMut.isPending ? "Denying…" : "Confirm Deny"}
+              </button>
+            </div>
+          )}
+
+          {/* Defer expansion */}
+          {showDefer && (
+            <div className="space-y-2 p-3 rounded border border-border">
+              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                Hours to defer (1–168)
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={168}
+                value={deferHours}
+                onChange={(e) => setDeferHours(e.target.value)}
+                className={[
+                  "w-full px-2 py-1.5 text-sm border border-border rounded",
+                  "bg-background focus:outline-none focus:border-foreground/40",
+                ].join(" ")}
+              />
+              <button
+                onClick={() => deferMut.mutate()}
+                disabled={deferMut.isPending}
+                className="w-full py-1.5 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors"
+              >
+                {deferMut.isPending ? "Deferring…" : "Confirm Defer"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Policy section
+// ---------------------------------------------------------------------------
+
+function PolicySection() {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<ApprovalsPolicy>({
+    quiet_start_hour: null,
+    quiet_end_hour: null,
+    timezone: "UTC",
+  });
+
+  const { data } = useQuery({
+    queryKey: Q.policy(),
+    queryFn: getApprovalsPolicy,
+  });
+
+  const policy = data?.data;
+
+  const saveMut = useMutation({
+    mutationFn: () => updateApprovalsPolicy(draft),
+    onSuccess: () => {
+      toast.success("Policy saved");
+      qc.invalidateQueries({ queryKey: Q.policy() });
+      setEditing(false);
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  });
+
+  function startEdit() {
+    setDraft(policy ?? { quiet_start_hour: null, quiet_end_hour: null, timezone: "UTC" });
+    setEditing(true);
+  }
+
+  return (
+    <div className="border-t border-border mt-8 pt-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+            Quiet Hours Policy
+          </div>
+          <div className="text-sm text-muted-foreground mt-0.5">
+            Suppress approval paging during these hours
+          </div>
+        </div>
+        {!editing && (
+          <button
+            onClick={startEdit}
+            className="text-xs font-mono px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors"
+          >
+            Edit
+          </button>
+        )}
+      </div>
+
+      {!editing && policy && (
+        <div className="font-mono text-sm space-y-1">
+          <div>
+            <span className="text-muted-foreground">Start:</span>{" "}
+            {policy.quiet_start_hour != null ? `${policy.quiet_start_hour}:00` : "—"}
+          </div>
+          <div>
+            <span className="text-muted-foreground">End:</span>{" "}
+            {policy.quiet_end_hour != null ? `${policy.quiet_end_hour}:00` : "—"}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Timezone:</span> {policy.timezone}
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-sm font-medium">Butler</label>
-              <Input
-                placeholder="Filter by butler..."
-                value={filters.butler}
-                onChange={(e) => handleFilterChange("butler", e.target.value)}
-                className="mt-1"
+              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
+                Start hour (0–23)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={draft.quiet_start_hour ?? ""}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    quiet_start_hour:
+                      e.target.value === "" ? null : parseInt(e.target.value, 10),
+                  }))
+                }
+                placeholder="None"
+                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
               />
             </div>
-            <div className="flex items-end gap-2">
-              {hasActiveFilters && (
-                <Button variant="outline" onClick={handleClearFilters}>
-                  Clear
-                </Button>
-              )}
-              <Button variant="outline" onClick={handleExpireStale}>
-                Expire stale
-              </Button>
+            <div>
+              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
+                End hour (0–23)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={draft.quiet_end_hour ?? ""}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    quiet_end_hour:
+                      e.target.value === "" ? null : parseInt(e.target.value, 10),
+                  }))
+                }
+                placeholder="None"
+                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+              />
             </div>
           </div>
-        </CardContent>
-      </Card>
+          <div>
+            <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
+              Timezone (IANA)
+            </label>
+            <input
+              value={draft.timezone}
+              onChange={(e) => setDraft((d) => ({ ...d, timezone: e.target.value }))}
+              placeholder="UTC"
+              className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => saveMut.mutate()}
+              disabled={saveMut.isPending}
+              className="px-3 py-1.5 text-sm bg-foreground text-background rounded hover:opacity-90 disabled:opacity-50 transition-opacity"
+            >
+              {saveMut.isPending ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              className="px-3 py-1.5 text-sm border border-border rounded hover:border-foreground/40 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
-      {/* Actions table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Actions
-            {total > 0 && (
-              <span className="ml-2 text-sm font-normal text-muted-foreground">
-                ({rangeStart}–{rangeEnd} of {total})
-              </span>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {actionsLoading ? (
-            <div className="text-center text-muted-foreground py-8">Loading...</div>
-          ) : (
-            <>
-              <ActionTable actions={actions} onActionClick={handleActionClick} />
+// ---------------------------------------------------------------------------
+// History section
+// ---------------------------------------------------------------------------
 
-              {/* Pagination */}
-              {total > PAGE_SIZE && (
-                <div className="flex items-center justify-between mt-4">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPage((p) => Math.max(0, p - 1))}
-                    disabled={page === 0}
-                  >
-                    Previous
-                  </Button>
-                  <span className="text-sm text-muted-foreground">
-                    Page {page + 1} of {Math.ceil(total / PAGE_SIZE)}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPage((p) => p + 1)}
-                    disabled={!hasMore}
-                  >
-                    Next
-                  </Button>
-                </div>
-              )}
-            </>
+function HistorySection() {
+  const { data, isLoading } = useQuery({
+    queryKey: Q.history(),
+    queryFn: () => getApprovalsHistory(undefined, 30),
+  });
+
+  const items = data?.data ?? [];
+
+  return (
+    <div className="border-t border-border mt-8 pt-6">
+      <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-4">
+        History (last 30)
+      </div>
+      {isLoading && (
+        <div className="text-sm text-muted-foreground font-mono">loading…</div>
+      )}
+      {!isLoading && items.length === 0 && (
+        <div className="text-sm text-muted-foreground font-mono">No decided approvals yet.</div>
+      )}
+      {items.map((item, i) => (
+        <div
+          key={item.id}
+          className={["py-2 flex items-center gap-3", i > 0 ? "border-t border-border/50" : ""].join(
+            " ",
           )}
-        </CardContent>
-      </Card>
+        >
+          <span className={`font-mono text-[10px] uppercase w-16 shrink-0 ${statusColor(item.status)}`}>
+            {item.status}
+          </span>
+          <span className="text-sm truncate flex-1">{item.tool_name.replace(/_/g, " ")}</span>
+          <span className="font-mono text-xs text-muted-foreground shrink-0">{item.butler}</span>
+          <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+            {fmtTs(item.created_at)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-      {/* History */}
-      <Card>
-        <CardHeader>
-          <CardTitle>History</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {historyLoading ? (
-            <div className="text-center text-muted-foreground py-8">Loading...</div>
-          ) : (
-            <HistoryTable actions={historyActions} onActionClick={handleActionClick} />
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
+export default function ApprovalsPage() {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const { data, isLoading } = useQuery({
+    queryKey: Q.pending(),
+    queryFn: () => getApprovalsFlat("waiting", 100),
+    refetchInterval: 15_000,
+  });
+
+  const pending = data?.data ?? [];
+  const firstId = pending[0]?.id;
+  const effectiveSelected = selectedId ?? firstId ?? null;
+
+  function handleDecision() {
+    setSelectedId(null);
+  }
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      {/* Page header */}
+      <div className="px-6 pt-6 pb-4 border-b border-border shrink-0">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
+          system · approvals
+        </div>
+        <h1 className="text-2xl font-medium">Approvals</h1>
+      </div>
+
+      {/* Two-pane body */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Left rail */}
+        <div className="w-72 shrink-0 border-r border-border overflow-y-auto">
+          {isLoading && (
+            <div className="p-4 text-sm text-muted-foreground font-mono">loading…</div>
           )}
-        </CardContent>
-      </Card>
+          {!isLoading && pending.length === 0 && (
+            <div className="p-4 text-sm text-muted-foreground font-mono">No pending approvals.</div>
+          )}
+          {pending.map((summary) => (
+            <RailItem
+              key={summary.id}
+              summary={summary}
+              selected={summary.id === effectiveSelected}
+              onSelect={() => setSelectedId(summary.id)}
+            />
+          ))}
+        </div>
 
-      {/* Action detail dialog */}
-      <ActionDetailDialog
-        action={selectedAction}
-        open={dialogOpen}
-        onOpenChange={handleDialogClose}
-      />
+        {/* Right dossier pane */}
+        {effectiveSelected ? (
+          <Dossier
+            key={effectiveSelected}
+            actionId={effectiveSelected}
+            onDecision={handleDecision}
+          />
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">
+            Select a pending approval to review.
+          </div>
+        )}
+      </div>
+
+      {/* Bottom sections — policy and history */}
+      <div className="px-6 pb-8 border-t border-border overflow-y-auto shrink-0 max-h-[40vh]">
+        <PolicySection />
+        <HistorySection />
+      </div>
     </div>
   );
 }
