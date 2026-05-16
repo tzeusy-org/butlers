@@ -2435,3 +2435,173 @@ class TestIngestionEventIdPropagation:
         assert kwargs.get("ingestion_event_id") is None, (
             "Internal triggers must not invent an ingestion_event_id"
         )
+
+
+# ---------------------------------------------------------------------------
+# emit_spend_event wiring — bu-eu38w
+# ---------------------------------------------------------------------------
+
+
+class TestEmitSpendEventWiring:
+    """Verify that spawner calls emit_spend_event with the right payload."""
+
+    async def test_emit_spend_event_called_with_correct_payload(self, tmp_path: Path):
+        """After session closes, emit_spend_event receives kind/butler/model/tokens/session_id."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(name="my-butler")
+        mock_pool = AsyncMock()
+        session_uuid = uuid.UUID("00000000-0000-0000-0000-000000000042")
+
+        adapter = MockAdapter(
+            result_text="hello",
+            usage={"input_tokens": 1000, "output_tokens": 500},
+        )
+
+        captured_events: list[dict] = []
+
+        def _fake_emit(event: dict) -> None:
+            captured_events.append(event)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=(
+                    "codex",
+                    "claude-sonnet-4-20250514",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    600,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(
+                    allowed=True,
+                    usage_24h=0,
+                    usage_30d=0,
+                    limit_24h=None,
+                    limit_30d=None,
+                ),
+            ),
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
+            patch(
+                "butlers.api.routers.spend.emit_spend_event",
+                side_effect=_fake_emit,
+            ),
+        ):
+            mock_create.return_value = session_uuid
+            result = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        assert len(captured_events) == 1, "emit_spend_event must be called exactly once"
+        ev = captured_events[0]
+        assert ev["kind"] == "call"
+        assert ev["butler"] == "my-butler"
+        assert ev["model"] == "claude-sonnet-4-20250514"
+        assert ev["tokens_in"] == 1000
+        assert ev["tokens_out"] == 500
+        assert ev["session_id"] == str(session_uuid)
+        assert isinstance(ev["cost_usd"], float)
+        assert "ts" in ev
+
+    async def test_emit_spend_event_not_called_when_no_token_usage(self, tmp_path: Path):
+        """When adapter reports no usage, emit_spend_event is not called."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(name="my-butler")
+
+        # No usage dict → _ledger_input_tokens remains None
+        adapter = MockAdapter(result_text="ok", usage=None)
+
+        captured_events: list[dict] = []
+
+        def _fake_emit(event: dict) -> None:
+            captured_events.append(event)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock),
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,  # static fallback — no catalog_entry_id
+            ),
+            patch(
+                "butlers.api.routers.spend.emit_spend_event",
+                side_effect=_fake_emit,
+            ),
+        ):
+            result = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                runtime=adapter,
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        assert captured_events == [], "emit_spend_event must not be called when no token usage"
+
+    async def test_emit_spend_event_broker_failure_does_not_break_session(self, tmp_path: Path):
+        """A broker error in emit_spend_event must never propagate to the session result."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(name="my-butler")
+        mock_pool = AsyncMock()
+        session_uuid = uuid.UUID("00000000-0000-0000-0000-000000000099")
+
+        adapter = MockAdapter(
+            result_text="ok",
+            usage={"input_tokens": 100, "output_tokens": 50},
+        )
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=(
+                    "codex",
+                    "claude-haiku-35-20241022",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    600,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(
+                    allowed=True,
+                    usage_24h=0,
+                    usage_30d=0,
+                    limit_24h=None,
+                    limit_30d=None,
+                ),
+            ),
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
+            patch(
+                "butlers.api.routers.spend.emit_spend_event",
+                side_effect=RuntimeError("broker exploded"),
+            ),
+        ):
+            mock_create.return_value = session_uuid
+            result = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("hello", "tick")
+
+        # Session must succeed despite broker error
+        assert result.success is True
+        assert result.error is None

@@ -91,6 +91,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_GLOBAL_SESSIONS = 3
 _global_semaphore: asyncio.Semaphore | None = None
 
+# Lazily-populated pricing config cache — loaded once from pricing.toml on first
+# session close that emits a spend event, then reused for the process lifetime.
+# Avoids disk I/O on every session completion.
+_cached_pricing: object | None = None  # PricingConfig when populated
+
 # Last-resort model id used only when the model catalog returns nothing
 # (no matching entry or DB unreachable). This is a hard-coded fallback
 # constant, not config — nothing in git can override it. It exists so that
@@ -2077,6 +2082,46 @@ class Spawner:
                     input_tokens=_ledger_input_tokens,
                     output_tokens=_ledger_output_tokens or 0,
                 )
+            # Emit per-call cost event to the live WS spend stream.
+            # Uses the same token counts as the DB ledger (best-effort early capture).
+            # Lazy import avoids a circular dependency: core → api.
+            if _ledger_input_tokens is not None:
+                try:
+                    from butlers.api.pricing import estimate_session_cost, load_pricing
+                    from butlers.api.routers.spend import emit_spend_event
+
+                    # Cache pricing config at module level so pricing.toml is not
+                    # read from disk on every session close (hot path).
+                    global _cached_pricing
+                    if _cached_pricing is None:
+                        _cached_pricing = load_pricing()
+                    _pricing = _cached_pricing
+                    _cost_usd = estimate_session_cost(
+                        _pricing,
+                        model or "unknown",
+                        _ledger_input_tokens,
+                        _ledger_output_tokens or 0,
+                    )
+                    emit_spend_event(
+                        {
+                            "kind": "call",
+                            "ts": time.time(),
+                            "butler": self._config.name,
+                            "model": model or "unknown",
+                            "tokens_in": _ledger_input_tokens,
+                            "tokens_out": _ledger_output_tokens or 0,
+                            "cost_usd": _cost_usd,
+                            "session_id": str(session_id) if session_id else "",
+                            "extra": {},
+                        }
+                    )
+                except Exception:
+                    logger.debug(
+                        "emit_spend_event failed for session=%s butler=%s (non-fatal)",
+                        session_id,
+                        self._config.name,
+                        exc_info=True,
+                    )
             # Clear session context before ending span so tool handlers
             # arriving after this point don't attach to a finished span.
             clear_active_session_context()
