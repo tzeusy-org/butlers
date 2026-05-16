@@ -13,7 +13,7 @@
 // No chart library. SVG rendered by hand.
 // ---------------------------------------------------------------------------
 
-import { useState, useMemo, useRef } from "react"
+import { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   Card,
@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
+import { useSpendStream } from "@/hooks/use-spend-stream"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -616,6 +617,7 @@ function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
 // ---------------------------------------------------------------------------
 
 export default function SettingsSpendPage() {
+  const queryClient = useQueryClient()
   const { data: forecastData, isLoading: forecastLoading } = useQuery({
     queryKey: ["spend-forecast"],
     queryFn: fetchForecast,
@@ -624,11 +626,52 @@ export default function SettingsSpendPage() {
 
   const forecast = forecastData?.data
 
+  // §5.3 — Connect to the spend stream and update KPIs incrementally.
+  // streamedCostUsd is a monotonic cumulative counter of live "call" events
+  // received since mount.  Snapshot events are excluded so this value does NOT
+  // overlap with the server-fetched MTD baseline in the polled forecast.
+  const { streamedCostUsd } = useSpendStream()
+
+  // Compose a live forecast by adding the monotonic stream total directly on top
+  // of the polled MTD baseline.  No subtraction needed because streamedCostUsd
+  // only counts real-time events that arrived after the snapshot.
+  const liveForecast = useMemo(() => {
+    if (!forecast) return forecast
+    if (streamedCostUsd === 0) return forecast
+    const liveMtd = forecast.mtd_usd + streamedCostUsd
+    const daysIn = forecast.days_in_month
+    const daysElapsed = Math.max(forecast.days_elapsed, 1)
+    const liveProjected = (liveMtd / daysElapsed) * daysIn
+    return {
+      ...forecast,
+      mtd_usd: liveMtd,
+      projected_eom_usd: liveProjected,
+    }
+  }, [forecast, streamedCostUsd])
+
+  // When new spend events arrive, invalidate the breakdown query on the next
+  // natural polling cycle.  Throttled to at most once per 30 s to avoid
+  // excessive invalidations when events are frequent.
+  const lastInvalidationRef = useRef<number>(0)
+  const invalidateBreakdown = useCallback(() => {
+    const now = Date.now()
+    if (now - lastInvalidationRef.current > 30_000) {
+      lastInvalidationRef.current = now
+      queryClient.invalidateQueries({ queryKey: ["spend-breakdown"] })
+    }
+  }, [queryClient])
+
+  useEffect(() => {
+    if (streamedCostUsd > 0) {
+      invalidateBreakdown()
+    }
+  }, [streamedCostUsd, invalidateBreakdown])
+
   return (
     <Page archetype="overview" title="Spend">
       <div className="space-y-6">
         {/* KPI strip */}
-        {forecastLoading && !forecast ? (
+        {forecastLoading && !liveForecast ? (
           <Card>
             <CardContent className="p-0">
               <div className="grid grid-cols-4 divide-x">
@@ -641,8 +684,8 @@ export default function SettingsSpendPage() {
               </div>
             </CardContent>
           </Card>
-        ) : forecast ? (
-          <KpiStrip forecast={forecast} />
+        ) : liveForecast ? (
+          <KpiStrip forecast={liveForecast} />
         ) : null}
 
         {/* Forecast SVG chart */}
@@ -653,21 +696,21 @@ export default function SettingsSpendPage() {
                 <CardTitle className="text-sm">Forecast</CardTitle>
                 <CardDescription className="text-xs mt-0.5">
                   Solid = actual MTD spend. Dashed = linear projection to end of month.
-                  {forecast?.ceiling_usd != null
+                  {liveForecast?.ceiling_usd != null
                     ? " Red hairline = monthly ceiling."
                     : ""}
                 </CardDescription>
               </div>
-              {forecast && (
-                <CeilingEdit currentCeiling={forecast.ceiling_usd} />
+              {liveForecast && (
+                <CeilingEdit currentCeiling={liveForecast.ceiling_usd} />
               )}
             </div>
           </CardHeader>
           <CardContent>
-            {forecastLoading && !forecast ? (
+            {forecastLoading && !liveForecast ? (
               <Skeleton className="h-48 w-full" />
-            ) : forecast ? (
-              <ForecastChart days={forecast.days} ceiling_usd={forecast.ceiling_usd} />
+            ) : liveForecast ? (
+              <ForecastChart days={liveForecast.days} ceiling_usd={liveForecast.ceiling_usd} />
             ) : (
               <p className="text-xs text-muted-foreground">No forecast data available.</p>
             )}
