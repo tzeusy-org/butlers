@@ -1865,6 +1865,35 @@ class Spawner:
                     error=error_msg,
                 )
 
+            # Record dispatch failure in public.dispatch_failures (best-effort).
+            # Gated only on pool and catalog_entry_id — session_id is nullable so
+            # early-stage failures (e.g. session_create raising) are still tracked.
+            # TOML-fallback dispatches have no catalog_entry_id and are not tracked.
+            if self._pool is not None and catalog_entry_id is not None:
+                try:
+                    _error_code = type(exc).__name__
+                    _error_message = error_msg[:4096] if error_msg else None
+                    await self._pool.execute(
+                        """
+                        INSERT INTO public.dispatch_failures
+                            (catalog_entry_id, error_code, error_message, butler, session_id)
+                        VALUES ($1, $2, $3, $4, $5)
+                        """,
+                        catalog_entry_id,
+                        _error_code,
+                        _error_message,
+                        self._config.name,
+                        session_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to record dispatch failure for catalog_entry_id=%s session=%s",
+                        catalog_entry_id,
+                        session_id,
+                        exc_info=True,
+                    )
+
+            if self._pool is not None and session_id is not None:
                 # Write process-level diagnostics (best-effort)
                 proc_info = runtime.last_process_info
                 if proc_info is not None:
