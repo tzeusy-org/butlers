@@ -141,7 +141,7 @@ async def session_create(
             UUID; internally-triggered sessions (tick, schedule, trigger) pass
             None.
         complexity: Optional complexity tier used for model selection (e.g.
-            ``"trivial"``, ``"medium"``, ``"high"``). Defaults to ``"medium"``
+            ``"cheap"``, ``"workhorse"``, ``"reasoning"``). Defaults to ``"workhorse"``
             at the database level when not provided.
         resolution_source: Optional source of model resolution (e.g.
             ``"catalog"``, ``"toml_fallback"``). Defaults to

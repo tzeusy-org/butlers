@@ -60,10 +60,10 @@ def _register_and_grab_trigger():
 
 async def test_trigger_accepts_complexity_kwarg():
     trigger, spawner = _register_and_grab_trigger()
-    result = await trigger(prompt="hello", complexity="medium")
+    result = await trigger(prompt="hello", complexity="workhorse")
     assert result["success"] is True
     assert len(spawner.calls) == 1
-    assert spawner.calls[0]["complexity"] is Complexity.MEDIUM
+    assert spawner.calls[0]["complexity"] is Complexity.WORKHORSE
     assert spawner.calls[0]["prompt"] == "hello"
     assert spawner.calls[0]["trigger_source"] == "trigger"
 

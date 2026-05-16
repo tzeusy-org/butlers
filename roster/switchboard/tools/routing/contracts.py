@@ -403,7 +403,7 @@ class RouteRequestContextV1(BaseModel):
 
 
 _ALLOWED_COMPLEXITY_VALUES: frozenset[str] = frozenset(
-    {"trivial", "medium", "high", "extra_high", "discretion", "self_healing"}
+    {"reasoning", "workhorse", "cheap", "specialty", "local", "legacy"}
 )
 
 
@@ -415,7 +415,7 @@ class RouteInputV1(BaseModel):
     prompt: NonEmptyStr
     context: NonEmptyStr | dict[str, Any] | None = None
     conversation_history: str | None = None
-    complexity: str = "medium"
+    complexity: str = "workhorse"
     attachments: list[dict[str, Any]] | None = None
 
     @field_validator("complexity")

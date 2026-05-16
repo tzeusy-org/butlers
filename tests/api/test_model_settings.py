@@ -29,7 +29,7 @@ def _make_catalog_row(
     alias="claude-sonnet",
     runtime_type="claude",
     model_id="claude-sonnet-4-6",
-    complexity_tier="medium",
+    complexity_tier="workhorse",
     enabled=True,
     priority=0,
     session_timeout_s=1800,
@@ -104,8 +104,8 @@ def _app_with_pool(
 
 async def test_catalog_list_and_503(app):
     rows = [
-        _make_catalog_row(alias="claude-haiku", complexity_tier="trivial"),
-        _make_catalog_row(alias="claude-sonnet", complexity_tier="medium"),
+        _make_catalog_row(alias="claude-haiku", complexity_tier="cheap"),
+        _make_catalog_row(alias="claude-sonnet", complexity_tier="workhorse"),
     ]
     # Happy path
     _app_with_pool(app, fetch_rows=rows)
@@ -139,7 +139,7 @@ async def test_catalog_list_and_503(app):
                 "alias": "new-model",
                 "runtime_type": "codex",
                 "model_id": "gpt-5",
-                "complexity_tier": "medium",
+                "complexity_tier": "workhorse",
                 "enabled": True,
                 "priority": 0,
             },
@@ -153,7 +153,7 @@ async def test_catalog_list_and_503(app):
                 "alias": "claude-sonnet",
                 "runtime_type": "claude",
                 "model_id": "claude-sonnet-4-6",
-                "complexity_tier": "medium",
+                "complexity_tier": "workhorse",
             },
             asyncpg.UniqueViolationError("uq_model_catalog_alias"),
             "INSERT 1",
@@ -197,13 +197,13 @@ async def test_catalog_create_error_paths(
 
 
 async def test_resolve_model_preview_200_and_422_for_invalid(app):
-    catalog_row = _make_catalog_row(complexity_tier="medium")
+    catalog_row = _make_catalog_row(complexity_tier="workhorse")
     app2, mock_pool = _app_with_pool(app)
     mock_pool.fetchrow = AsyncMock(side_effect=[_mock_record(catalog_row), None])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        r200 = await client.get("/api/butlers/general/resolve-model?complexity=medium")
+        r200 = await client.get("/api/butlers/general/resolve-model?complexity=workhorse")
         r422 = await client.get("/api/butlers/general/resolve-model?complexity=invalid")
     assert r200.status_code == 200
     assert r422.status_code == 422

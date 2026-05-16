@@ -297,7 +297,7 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
     (
         "model_round_robin_counters",
         "INSERT INTO public.model_round_robin_counters (butler_name, complexity_tier, counter)"
-        " VALUES ('acl-probe-butler', 'medium', 0)"
+        " VALUES ('acl-probe-butler', 'workhorse', 0)"
         " ON CONFLICT (butler_name, complexity_tier) DO NOTHING",
     ),
     (

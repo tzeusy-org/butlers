@@ -7,7 +7,7 @@ alias = "claude-haiku"
 runtime_type = "claude"
 model_id = "claude-haiku-4-5-20251001"
 extra_args = []
-complexity_tier = "trivial"
+complexity_tier = "cheap"
 priority = 10
 enabled = false
 
@@ -16,7 +16,7 @@ alias = "claude-sonnet"
 runtime_type = "claude"
 model_id = "claude-sonnet-4-6"
 extra_args = []
-complexity_tier = "medium"
+complexity_tier = "workhorse"
 priority = 10
 enabled = false
 
@@ -25,7 +25,7 @@ alias = "claude-opus"
 runtime_type = "claude"
 model_id = "claude-opus-4-6"
 extra_args = []
-complexity_tier = "high"
+complexity_tier = "reasoning"
 priority = 10
 enabled = false
 
@@ -34,7 +34,7 @@ alias = "gpt-5.4-mini"
 runtime_type = "codex"
 model_id = "gpt-5.4-mini"
 extra_args = []
-complexity_tier = "trivial"
+complexity_tier = "cheap"
 priority = 25
 enabled = true
 
@@ -43,7 +43,7 @@ alias = "gpt-5.3-spark"
 runtime_type = "codex"
 model_id = "gpt-5.3-codex-spark"
 extra_args = []
-complexity_tier = "medium"
+complexity_tier = "workhorse"
 priority = 20
 enabled = true
 
@@ -52,7 +52,7 @@ alias = "gpt-5.4"
 runtime_type = "codex"
 model_id = "gpt-5.4"
 extra_args = []
-complexity_tier = "high"
+complexity_tier = "workhorse"
 priority = 0
 enabled = true
 
@@ -61,7 +61,7 @@ alias = "gpt-5.4-high"
 runtime_type = "codex"
 model_id = "gpt-5.4"
 extra_args = ["--config", "model_reasoning_effort=high"]
-complexity_tier = "extra_high"
+complexity_tier = "reasoning"
 priority = 0
 enabled = true
 
@@ -70,7 +70,7 @@ alias = "gemini-2.5-flash"
 runtime_type = "gemini"
 model_id = "gemini-2.5-flash"
 extra_args = []
-complexity_tier = "trivial"
+complexity_tier = "cheap"
 priority = 10
 enabled = false
 
@@ -79,7 +79,7 @@ alias = "gemini-2.5-pro"
 runtime_type = "gemini"
 model_id = "gemini-2.5-pro"
 extra_args = []
-complexity_tier = "high"
+complexity_tier = "workhorse"
 priority = 10
 enabled = false
 
@@ -88,7 +88,7 @@ alias = "minimax-m2.5"
 runtime_type = "opencode"
 model_id = "opencode-go/minimax-m2.5"
 extra_args = []
-complexity_tier = "medium"
+complexity_tier = "workhorse"
 priority = 20
 enabled = true
 
@@ -97,7 +97,7 @@ alias = "glm-5"
 runtime_type = "opencode"
 model_id = "opencode-go/glm-5"
 extra_args = []
-complexity_tier = "medium"
+complexity_tier = "workhorse"
 priority = 20
 enabled = true
 
@@ -106,7 +106,7 @@ alias = "minimax-m2.7"
 runtime_type = "opencode"
 model_id = "opencode-go/minimax-m2.7"
 extra_args = []
-complexity_tier = "medium"
+complexity_tier = "workhorse"
 priority = 20
 enabled = true
 
@@ -115,7 +115,7 @@ alias = "minimax-m2.7-highspeed"
 runtime_type = "opencode"
 model_id = "opencode-go/minimax-m2.7-highspeed"
 extra_args = []
-complexity_tier = "medium"
+complexity_tier = "workhorse"
 priority = 15
 enabled = true
 
@@ -124,7 +124,7 @@ alias = "kimi-k2.5"
 runtime_type = "opencode"
 model_id = "opencode-go/kimi-k2.5"
 extra_args = []
-complexity_tier = "high"
+complexity_tier = "reasoning"
 priority = 20
 enabled = true
 
@@ -133,7 +133,7 @@ alias = "qwen3-coder-480b"
 runtime_type = "opencode"
 model_id = "opencode-go/qwen3-coder-480b"
 extra_args = []
-complexity_tier = "high"
+complexity_tier = "reasoning"
 priority = 20
 enabled = true
 
@@ -147,7 +147,7 @@ alias = "ollama-default"
 runtime_type = "opencode"
 model_id = "ollama/qwen2.5-coder:7b"
 extra_args = []
-complexity_tier = "trivial"
+complexity_tier = "local"
 priority = 5
 enabled = false
 
@@ -156,7 +156,7 @@ alias = "ollama-light"
 runtime_type = "opencode"
 model_id = "ollama/llama3.3:latest"
 extra_args = []
-complexity_tier = "medium"
+complexity_tier = "local"
 priority = 5
 enabled = false
 
@@ -165,13 +165,13 @@ alias = "ollama-heavy"
 runtime_type = "opencode"
 model_id = "ollama/deepseek-r1:32b"
 extra_args = []
-complexity_tier = "high"
+complexity_tier = "local"
 priority = 5
 enabled = false
 
 # ---------------------------------------------------------------------------
-# Discretion tier — lightweight local models for real-time message filtering
-# (connector discretion layer).  Requires Ollama with the specified model.
+# Specialty tier — lightweight local models for real-time message filtering
+# (connector discretion layer) and self-healing sessions.
 # ---------------------------------------------------------------------------
 
 [[models]]
@@ -179,12 +179,12 @@ alias = "discretion-qwen3.5-9b"
 runtime_type = "opencode"
 model_id = "ollama/qwen3.5:9b"
 extra_args = []
-complexity_tier = "discretion"
+complexity_tier = "specialty"
 priority = 10
 enabled = true
 
 # ---------------------------------------------------------------------------
-# Self-healing tier — dedicated model for healing agent sessions that
+# Specialty tier — dedicated model for healing agent sessions that
 # investigate and propose fixes for butler errors.  Disabled by default;
 # enable when the self-healing module is configured.
 # ---------------------------------------------------------------------------
@@ -194,6 +194,6 @@ alias = "healing-sonnet"
 runtime_type = "claude"
 model_id = "claude-sonnet-4-6"
 extra_args = []
-complexity_tier = "self_healing"
+complexity_tier = "specialty"
 priority = 10
 enabled = false

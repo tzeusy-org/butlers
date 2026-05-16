@@ -30,7 +30,7 @@ _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
 _ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
 _ALLOWED_COMPLEXITY_VALUES = {c.value for c in Complexity}
-_DEFAULT_COMPLEXITY = Complexity.MEDIUM.value
+_DEFAULT_COMPLEXITY = Complexity.WORKHORSE.value
 
 # Pattern to find candidate skill names in prompt text (kebab-case words).
 _SKILL_NAME_PATTERN = re.compile(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b")
@@ -207,11 +207,11 @@ def _parse_complexity_from_db_row(row: asyncpg.Record, task_name: str) -> Comple
         return Complexity(raw_complexity)
     except ValueError:
         logger.warning(
-            "Unknown complexity value %r for task %s; defaulting to medium",
+            "Unknown complexity value %r for task %s; defaulting to workhorse",
             raw_complexity,
             task_name,
         )
-        return Complexity.MEDIUM
+        return Complexity.WORKHORSE
 
 
 def _normalize_schedule_dispatch(

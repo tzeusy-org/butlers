@@ -133,7 +133,7 @@ async def _insert_catalog_entry(
         """
         INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, complexity_tier, enabled, priority)
-        VALUES ($1, 'claude', 'test-model', 'medium', $2, 0)
+        VALUES ($1, 'claude', 'test-model', 'workhorse', $2, 0)
         RETURNING id
         """,
         alias,

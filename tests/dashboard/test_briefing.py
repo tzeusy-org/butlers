@@ -567,7 +567,7 @@ class TestLlmHappyPath:
         dispatcher_cls.assert_called_once_with(
             pool,
             butler_name="__dashboard_briefing__",
-            complexity_tier=Complexity.TRIVIAL,
+            complexity_tier=Complexity.CHEAP,
         )
         dispatcher.call.assert_awaited_once()
 

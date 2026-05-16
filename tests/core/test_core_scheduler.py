@@ -216,14 +216,14 @@ async def test_schedule_create_and_list(pool):
         "list-task",
         "0 9 * * *",
         "list me",
-        complexity="high",
+        complexity="reasoning",
         timezone="America/New_York",
         display_title="List Task",
     )
     assert task_id is not None
     tasks = await schedule_list(pool)
     task = next((t for t in tasks if t["name"] == "list-task"), None)
-    assert task is not None and task["complexity"] == "high"
+    assert task is not None and task["complexity"] == "reasoning"
     assert task["timezone"] == "America/New_York" and task["dispatch_mode"] == "prompt"
     assert task["last_result"] is None
 
@@ -283,11 +283,9 @@ async def test_schedule_validation(pool):
         await schedule_create(pool, "bad-complexity", "0 9 * * *", "work", complexity="ultra")
 
     # Complexity: valid accepted
-    t2 = await schedule_create(
-        pool, "good-complexity", "0 9 * * *", "work", complexity="extra_high"
-    )
+    t2 = await schedule_create(pool, "good-complexity", "0 9 * * *", "work", complexity="reasoning")
     row = await pool.fetchrow("SELECT complexity FROM scheduled_tasks WHERE id = $1", t2)
-    assert row["complexity"] == "extra_high"
+    assert row["complexity"] == "reasoning"
 
     # Complexity: invalid on update
     with pytest.raises(ValueError, match="complexity"):

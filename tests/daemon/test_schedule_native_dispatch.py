@@ -76,7 +76,7 @@ class TestNativeScheduleDispatch:
             await daemon._dispatch_scheduled_task(
                 trigger_source="schedule:eligibility_sweep",
                 job_name="eligibility_sweep",
-                complexity=Complexity.HIGH,
+                complexity=Complexity.REASONING,
             )
         mock_spawner.trigger.assert_not_awaited()
 
@@ -93,7 +93,7 @@ class TestNativeScheduleDispatch:
             )
 
     async def test_prompt_dispatch_complexity_and_fallback(self, tmp_path):
-        """Non-native schedule falls back to spawner; complexity forwarded; defaults to MEDIUM."""
+        """Non-native schedule falls back to spawner; complexity forwarded; defaults to WORKHORSE."""
         daemon, mock_spawner = self._make_daemon(tmp_path, "general", 41101)
 
         # Non-native falls back to spawner
@@ -106,7 +106,7 @@ class TestNativeScheduleDispatch:
         mock_spawner.trigger.assert_awaited_once_with(
             prompt="run memory cleanup",
             trigger_source="schedule:non-native-prompt-task",
-            complexity=Complexity.MEDIUM,
+            complexity=Complexity.WORKHORSE,
             max_token_budget=None,
         )
 
@@ -116,15 +116,15 @@ class TestNativeScheduleDispatch:
         await daemon._dispatch_scheduled_task(
             prompt="complex task",
             trigger_source="schedule:complex-task",
-            complexity=Complexity.HIGH,
+            complexity=Complexity.REASONING,
         )
         call_kwargs = mock_spawner.trigger.call_args.kwargs
-        assert call_kwargs["complexity"] is Complexity.HIGH
+        assert call_kwargs["complexity"] is Complexity.REASONING
 
-        # Default complexity is MEDIUM
+        # Default complexity is WORKHORSE
         mock_spawner.trigger.reset_mock()
         mock_spawner.trigger.return_value = spawner_result
         await daemon._dispatch_scheduled_task(
             prompt="routine task", trigger_source="schedule:routine"
         )
-        assert mock_spawner.trigger.call_args.kwargs["complexity"] is Complexity.MEDIUM
+        assert mock_spawner.trigger.call_args.kwargs["complexity"] is Complexity.WORKHORSE

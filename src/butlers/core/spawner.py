@@ -950,7 +950,7 @@ class Spawner:
         max_turns: int = 20,
         parent_context: Context | None = None,
         request_id: str | None = None,
-        complexity: Complexity = Complexity.MEDIUM,
+        complexity: Complexity = Complexity.WORKHORSE,
         cwd: str | None = None,
         bypass_butler_semaphore: bool = False,
         max_token_budget: int | None = None,
@@ -983,7 +983,7 @@ class Spawner:
             For non-ingestion triggers (scheduler, tick), this should be None.
         complexity:
             Task complexity tier used to select a model from the catalog.
-            Defaults to ``Complexity.MEDIUM``.  The catalog is queried with this
+            Defaults to ``Complexity.WORKHORSE``.  The catalog is queried with this
             tier; when no catalog entry matches the TOML-configured model is used.
         cwd:
             Optional working directory for the runtime invocation. When ``None``,
@@ -1292,7 +1292,7 @@ class Spawner:
         max_turns: int = 20,
         parent_context: Context | None = None,
         request_id: str | None = None,
-        complexity: Complexity = Complexity.MEDIUM,
+        complexity: Complexity = Complexity.WORKHORSE,
         cwd: str | None = None,
         max_token_budget: int | None = None,
         env_override: dict[str, str] | None = None,

@@ -1664,7 +1664,7 @@ async def _run_investigation_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SELF_HEALING,
+            complexity=Complexity.SPECIALTY,
             cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
@@ -3021,7 +3021,7 @@ async def _run_review_followup_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SELF_HEALING,
+            complexity=Complexity.SPECIALTY,
             cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
@@ -3482,10 +3482,10 @@ async def dispatch_qa_investigation(
         # ---------------------------------------------------------------
         model_result = None
         try:
-            model_result = await resolve_model(pool, finding.source_butler, Complexity.SELF_HEALING)
+            model_result = await resolve_model(pool, finding.source_butler, Complexity.SPECIALTY)
         except Exception as model_exc:
             logger.warning(
-                "Model resolution failed for self_healing tier (butler=%s): %s",
+                "Model resolution failed for specialty tier (butler=%s): %s",
                 finding.source_butler,
                 model_exc,
             )

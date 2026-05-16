@@ -266,15 +266,15 @@ async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
     assert result2["status"] == "accepted"
     assert captured["request_context"]["source_channel"] == "telegram_bot"
 
-    # Complexity: high explicit; invalid → medium; missing → medium
+    # Complexity: reasoning explicit; invalid → workhorse; missing → workhorse
     captured.clear()
-    await fn(butler="health", prompt="test", complexity="high")
-    assert captured["input"]["complexity"] == "high"
+    await fn(butler="health", prompt="test", complexity="reasoning")
+    assert captured["input"]["complexity"] == "reasoning"
 
     captured.clear()
     await fn(butler="health", prompt="test", complexity="extreme")
-    assert captured["input"]["complexity"] == "medium"
+    assert captured["input"]["complexity"] == "workhorse"
 
     captured.clear()
     await fn(butler="health", prompt="test")
-    assert captured["input"]["complexity"] == "medium"
+    assert captured["input"]["complexity"] == "workhorse"
