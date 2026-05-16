@@ -23,6 +23,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import asyncpg
 from asyncpg.exceptions import UndefinedTableError
@@ -32,6 +33,9 @@ from prometheus_client import Counter
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.audit import AuditEntry, AuditLogEntry
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 

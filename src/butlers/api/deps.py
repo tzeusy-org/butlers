@@ -474,6 +474,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         cli_auth,
         conversations,
         dashboard_briefing,
+        data_ops,
         general_settings,
         google_health,
         healing,
@@ -485,6 +486,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         notifications,
         oauth,
         owntracks,
+        permissions,
         preferences,
         provider_settings,
         qa,
@@ -498,6 +500,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         system,
         telegram_auth,
         timeline,
+        webhooks,
     )
 
     # Wire static routers (existing core routers)
@@ -512,6 +515,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         cli_auth,
         conversations,
         dashboard_briefing,
+        data_ops,
         general_settings,
         google_health,
         healing,
@@ -523,6 +527,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         notifications,
         oauth,
         owntracks,
+        permissions,
         preferences,
         provider_settings,
         qa,
@@ -536,6 +541,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         system,
         telegram_auth,
         timeline,
+        webhooks,
     ]:
         app.dependency_overrides[module._get_db_manager] = get_db_manager
 

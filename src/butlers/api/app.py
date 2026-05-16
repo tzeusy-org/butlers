@@ -43,6 +43,7 @@ from butlers.api.routers.calendar_workspace import (
 from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
+from butlers.api.routers.data_ops import router as data_ops_router
 from butlers.api.routers.general_settings import router as general_settings_router
 from butlers.api.routers.google_health import router as google_health_router
 from butlers.api.routers.healing import router as healing_router
@@ -65,6 +66,7 @@ from butlers.api.routers.notifications import (
 )
 from butlers.api.routers.oauth import router as oauth_router
 from butlers.api.routers.owntracks import router as owntracks_router
+from butlers.api.routers.permissions import router as permissions_router
 from butlers.api.routers.preferences import router as preferences_router
 from butlers.api.routers.provider_settings import router as provider_settings_router
 from butlers.api.routers.qa import router as qa_router
@@ -86,6 +88,7 @@ from butlers.api.routers.steam import router as steam_router
 from butlers.api.routers.system import router as system_router
 from butlers.api.routers.telegram_auth import router as telegram_auth_router
 from butlers.api.routers.timeline import router as timeline_router
+from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
 
 logger = logging.getLogger(__name__)
@@ -272,6 +275,9 @@ def create_app(
     app.include_router(runtime_config_router)
     app.include_router(system_router)
     app.include_router(dashboard_briefing_router)
+    app.include_router(permissions_router)
+    app.include_router(data_ops_router)
+    app.include_router(webhooks_router)
 
     # --- Auto-discovered Butler Routers ---
     # Mount after static/core routers so dynamic routes cannot shadow
