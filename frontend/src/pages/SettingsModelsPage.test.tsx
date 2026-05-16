@@ -1,5 +1,5 @@
 /**
- * SettingsModelsPage — Vitest coverage for /settings/models (bu-1pxfh)
+ * SettingsModelsPage — /settings/models
  *
  * Satisfies OpenSpec §4.7: happy-path + one error-state model row.
  *
@@ -20,10 +20,14 @@
  *   - Row action links render (Test, Edit, Delete)
  *   - Disabled model row carries opacity-60 class
  *   - Breadcrumb counter reflects model count + verified count
+ *   - EditModelDialog: open/close, validation, save payload, success/error callbacks (bu-mjo90)
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+// @vitest-environment jsdom
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { render, cleanup, fireEvent, screen, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -37,10 +41,13 @@ import type { ModelCatalogEntry } from "@/api/types";
 vi.mock("@/hooks/use-model-catalog", () => ({
   useModelCatalog: vi.fn(),
   useUpdateModelCatalogEntry: vi.fn(),
-  useTestModelCatalogEntry: vi.fn(),
-  useDeleteModelCatalogEntry: vi.fn(),
-  useUpdateModelPriority: vi.fn(),
-  useVerifyAllModels: vi.fn(),
+  useTestModelCatalogEntry: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useDeleteModelCatalogEntry: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+  })),
+  useUpdateModelPriority: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useVerifyAllModels: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("sonner", () => ({
@@ -59,10 +66,6 @@ vi.mock("sonner", () => ({
 import {
   useModelCatalog,
   useUpdateModelCatalogEntry,
-  useTestModelCatalogEntry,
-  useDeleteModelCatalogEntry,
-  useUpdateModelPriority,
-  useVerifyAllModels,
 } from "@/hooks/use-model-catalog";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -94,27 +97,6 @@ function makeModel(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntr
   };
 }
 
-/** A no-op mutation stub that covers the minimal mutation interface. */
-function makeMutationStub() {
-  return {
-    mutate: vi.fn(),
-    mutateAsync: vi.fn(),
-    isPending: false,
-    isSuccess: false,
-    isError: false,
-    isIdle: true,
-    error: null,
-    data: undefined,
-    reset: vi.fn(),
-    status: "idle",
-    submittedAt: 0,
-    variables: undefined,
-    context: undefined,
-    failureCount: 0,
-    failureReason: null,
-  };
-}
-
 function setHookState({
   entries = [] as ModelCatalogEntry[],
   isLoading = false,
@@ -133,16 +115,26 @@ function setHookState({
     isSuccess: !isLoading && !isError,
   } as AnyMock);
 
-  vi.mocked(useUpdateModelCatalogEntry).mockReturnValue(makeMutationStub() as AnyMock);
-  vi.mocked(useTestModelCatalogEntry).mockReturnValue(makeMutationStub() as AnyMock);
-  vi.mocked(useDeleteModelCatalogEntry).mockReturnValue(makeMutationStub() as AnyMock);
-  vi.mocked(useUpdateModelPriority).mockReturnValue(makeMutationStub() as AnyMock);
-  vi.mocked(useVerifyAllModels).mockReturnValue(makeMutationStub() as AnyMock);
+  vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as AnyMock);
 }
 
 function renderPage(): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <SettingsModelsPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function mountPage() {
+  const queryClient = new QueryClient();
+  return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <SettingsModelsPage />
@@ -158,6 +150,10 @@ function renderPage(): string {
 beforeEach(() => {
   vi.resetAllMocks();
   setHookState({ entries: [] });
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 // ---------------------------------------------------------------------------
@@ -509,5 +505,227 @@ describe("SettingsModelsPage — canonical tier order", () => {
     expect(cheap).toBeLessThan(specialty);
     expect(specialty).toBeLessThan(local);
     expect(local).toBeLessThan(legacy);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EditModelDialog — open/close, validation, save payload, callbacks (bu-mjo90)
+// ---------------------------------------------------------------------------
+
+describe("SettingsModelsPage — EditModelDialog", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as AnyMock);
+    setHookState({ entries: [makeModel()] });
+  });
+
+  // -------------------------------------------------------------------------
+  // Static-markup contract
+  // -------------------------------------------------------------------------
+
+  it("renders an Edit button for each model row", () => {
+    setHookState({
+      entries: [makeModel(), makeModel({ id: "entry-2", alias: "claude-haiku" })],
+    });
+    const html = renderPage();
+    const editButtons = html.match(/aria-label="Edit /g) ?? [];
+    expect(editButtons).toHaveLength(2);
+  });
+
+  it("renders the Edit button with correct aria-label for the model alias", () => {
+    setHookState({ entries: [makeModel({ alias: "my-model" })] });
+    const html = renderPage();
+    expect(html).toContain('aria-label="Edit my-model"');
+  });
+
+  // -------------------------------------------------------------------------
+  // Dialog open / close interaction
+  // -------------------------------------------------------------------------
+
+  it("opens the edit dialog when the Edit button is clicked", async () => {
+    mountPage();
+    const editBtn = screen.getByLabelText("Edit claude-sonnet");
+    await act(async () => {
+      fireEvent.click(editBtn);
+    });
+    // Dialog title should appear
+    expect(screen.getByText(/Edit model/)).toBeTruthy();
+  });
+
+  it("closes the dialog when Cancel is clicked", async () => {
+    mountPage();
+    const editBtn = screen.getByLabelText("Edit claude-sonnet");
+    await act(async () => {
+      fireEvent.click(editBtn);
+    });
+    // Dialog title visible
+    expect(screen.getByText(/Edit model/)).toBeTruthy();
+
+    const cancelBtn = screen.getByRole("button", { name: /cancel/i });
+    await act(async () => {
+      fireEvent.click(cancelBtn);
+    });
+    // Dialog title gone
+    expect(screen.queryByText(/Edit model/)).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Validation
+  // -------------------------------------------------------------------------
+
+  it("shows validation error when alias is cleared before save", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const aliasInput = screen.getByLabelText(/^alias$/i);
+    await act(async () => {
+      fireEvent.change(aliasInput, { target: { value: "" } });
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    expect(screen.getByText("Alias is required")).toBeTruthy();
+    expect(vi.mocked(useUpdateModelCatalogEntry)().mutate).not.toHaveBeenCalled();
+  });
+
+  it("shows validation error for invalid JSON in args field", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const argsField = screen.getByLabelText(/args/i);
+    await act(async () => {
+      fireEvent.change(argsField, { target: { value: "not-valid-json" } });
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    expect(screen.getByText("Invalid JSON")).toBeTruthy();
+    expect(vi.mocked(useUpdateModelCatalogEntry)().mutate).not.toHaveBeenCalled();
+  });
+
+  it("shows validation error when args is not a JSON array", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const argsField = screen.getByLabelText(/args/i);
+    await act(async () => {
+      fireEvent.change(argsField, { target: { value: '{"key": "val"}' } });
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    expect(screen.getByText("Must be a JSON array")).toBeTruthy();
+  });
+
+  // -------------------------------------------------------------------------
+  // Happy-path save
+  // -------------------------------------------------------------------------
+
+  it("calls mutate with correct payload on valid save", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    // Change alias
+    const aliasInput = screen.getByLabelText(/^alias$/i);
+    await act(async () => {
+      fireEvent.change(aliasInput, { target: { value: "renamed-sonnet" } });
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "model-1",
+        body: expect.objectContaining({
+          alias: "renamed-sonnet",
+          complexity_tier: "workhorse",
+          priority: 10,
+          enabled: true,
+          extra_args: [],
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("calls onSuccess toast and closes dialog when mutate resolves", async () => {
+    const { toast } = await import("sonner");
+    let savedCallbacks: { onSuccess?: () => void; onError?: () => void } = {};
+    const mutate = vi.fn((_payload, callbacks) => {
+      savedCallbacks = callbacks;
+    });
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    // Simulate success
+    await act(async () => {
+      savedCallbacks.onSuccess?.();
+    });
+
+    expect(toast.success).toHaveBeenCalled();
+    expect(screen.queryByText(/Edit model/)).toBeNull();
+  });
+
+  it("shows error toast and keeps dialog open when mutate fails", async () => {
+    const { toast } = await import("sonner");
+    let savedCallbacks: { onSuccess?: () => void; onError?: ((err: Error) => void) } = {};
+    const mutate = vi.fn((_payload, callbacks) => {
+      savedCallbacks = callbacks;
+    });
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    // Simulate error
+    await act(async () => {
+      savedCallbacks.onError?.(new Error("Network failure"));
+    });
+
+    expect(toast.error).toHaveBeenCalled();
+    // Dialog remains open
+    expect(screen.getByText(/Edit model/)).toBeTruthy();
   });
 });

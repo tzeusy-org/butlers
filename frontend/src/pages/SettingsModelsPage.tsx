@@ -23,6 +23,22 @@ import { ApiError } from "@/api/index.ts";
 import type { ComplexityTier, ModelCatalogEntry } from "@/api/types.ts";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   useDeleteModelCatalogEntry,
   useModelCatalog,
@@ -57,6 +73,261 @@ const TIER_LABEL: Record<ComplexityTier, string> = {
 };
 
 type StateFilter = "all" | "verified" | "attention" | "offline" | "deprecated";
+
+// ---------------------------------------------------------------------------
+// Edit model dialog
+// ---------------------------------------------------------------------------
+
+interface EditModelDialogProps {
+  /** The catalog entry to edit. Each ModelRow owns exactly one dialog instance. */
+  model: ModelCatalogEntry;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
+  const updateEntry = useUpdateModelCatalogEntry();
+
+  const [alias, setAlias] = useState(model.alias);
+  const [modelId, setModelId] = useState(model.model_id);
+  const [complexityTier, setComplexityTier] = useState<ComplexityTier>(model.complexity_tier);
+  const [priority, setPriority] = useState(String(model.priority));
+  const [enabled, setEnabled] = useState(model.enabled);
+  const [args, setArgs] = useState(
+    model.extra_args.length > 0 ? JSON.stringify(model.extra_args) : "",
+  );
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const validate = (): boolean => {
+    const errors: Record<string, string> = {};
+    if (!alias.trim()) errors.alias = "Alias is required";
+    if (!modelId.trim()) errors.model_id = "Model ID is required";
+    if (!TIER_ORDER.includes(complexityTier))
+      errors.complexity_tier = "Must be one of the six canonical tiers";
+    const parsedPriority = parseInt(priority, 10);
+    if (isNaN(parsedPriority) || parsedPriority < 0)
+      errors.priority = "Priority must be a non-negative integer";
+    if (args.trim()) {
+      try {
+        const parsed = JSON.parse(args);
+        if (!Array.isArray(parsed)) errors.args = "Must be a JSON array";
+      } catch {
+        errors.args = "Invalid JSON";
+      }
+    }
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleSave = () => {
+    if (!validate()) return;
+
+    let extraArgs: string[] | undefined;
+    if (args.trim()) {
+      try {
+        extraArgs = JSON.parse(args) as string[];
+      } catch {
+        return;
+      }
+    } else {
+      extraArgs = [];
+    }
+
+    updateEntry.mutate(
+      {
+        id: model.id,
+        body: {
+          alias: alias.trim(),
+          model_id: modelId.trim(),
+          complexity_tier: complexityTier,
+          priority: parseInt(priority, 10),
+          enabled,
+          extra_args: extraArgs,
+        },
+      },
+      {
+        onSuccess: () => {
+          toast.success(`Saved changes to ${alias.trim()}`);
+          onOpenChange(false);
+        },
+        onError: (err) => {
+          const msg =
+            err instanceof ApiError && err.status === 422
+              ? "Validation error — check your inputs"
+              : err instanceof Error
+                ? err.message
+                : "Failed to save model";
+          toast.error(msg);
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[520px]" aria-describedby={undefined}>
+        <DialogHeader>
+          <DialogTitle className="font-mono text-sm">
+            Edit model — <span className="text-muted-foreground">{model.alias}</span>
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="grid gap-4 py-2">
+          {/* Alias */}
+          <div className="grid gap-1.5">
+            <Label htmlFor="edit-alias" className="font-mono text-[11px] uppercase tracking-widest">
+              Alias
+            </Label>
+            <Input
+              id="edit-alias"
+              value={alias}
+              onChange={(e) => setAlias(e.target.value)}
+              placeholder="e.g. claude-sonnet"
+              aria-invalid={!!fieldErrors.alias}
+              className="font-mono text-sm"
+            />
+            {fieldErrors.alias && (
+              <p className="font-mono text-[10px] text-destructive">{fieldErrors.alias}</p>
+            )}
+          </div>
+
+          {/* Model ID */}
+          <div className="grid gap-1.5">
+            <Label
+              htmlFor="edit-model-id"
+              className="font-mono text-[11px] uppercase tracking-widest"
+            >
+              Model ID
+            </Label>
+            <Input
+              id="edit-model-id"
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              placeholder="e.g. claude-sonnet-4-6"
+              aria-invalid={!!fieldErrors.model_id}
+              className="font-mono text-sm"
+            />
+            {fieldErrors.model_id && (
+              <p className="font-mono text-[10px] text-destructive">{fieldErrors.model_id}</p>
+            )}
+          </div>
+
+          {/* Complexity tier */}
+          <div className="grid gap-1.5">
+            <Label
+              htmlFor="edit-tier"
+              className="font-mono text-[11px] uppercase tracking-widest"
+            >
+              Complexity tier
+            </Label>
+            <Select
+              value={complexityTier}
+              onValueChange={(v) => setComplexityTier(v as ComplexityTier)}
+            >
+              <SelectTrigger id="edit-tier" className="font-mono text-sm w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TIER_ORDER.map((t) => (
+                  <SelectItem key={t} value={t} className="font-mono text-sm">
+                    {TIER_LABEL[t]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {fieldErrors.complexity_tier && (
+              <p className="font-mono text-[10px] text-destructive">{fieldErrors.complexity_tier}</p>
+            )}
+          </div>
+
+          {/* Priority */}
+          <div className="grid gap-1.5">
+            <Label
+              htmlFor="edit-priority"
+              className="font-mono text-[11px] uppercase tracking-widest"
+            >
+              Priority
+            </Label>
+            <Input
+              id="edit-priority"
+              type="number"
+              min={0}
+              value={priority}
+              onChange={(e) => setPriority(e.target.value)}
+              aria-invalid={!!fieldErrors.priority}
+              className="font-mono text-sm"
+            />
+            {fieldErrors.priority && (
+              <p className="font-mono text-[10px] text-destructive">{fieldErrors.priority}</p>
+            )}
+          </div>
+
+          {/* Enabled toggle */}
+          <div className="flex items-center gap-3">
+            <Switch
+              id="edit-enabled"
+              checked={enabled}
+              onCheckedChange={setEnabled}
+              aria-label="Enabled"
+            />
+            <Label
+              htmlFor="edit-enabled"
+              className="font-mono text-[11px] uppercase tracking-widest cursor-pointer"
+            >
+              {enabled ? "Enabled" : "Disabled"}
+            </Label>
+          </div>
+
+          {/* Args (JSON array) */}
+          <div className="grid gap-1.5">
+            <Label htmlFor="edit-args" className="font-mono text-[11px] uppercase tracking-widest">
+              Args (JSON array)
+            </Label>
+            <textarea
+              id="edit-args"
+              value={args}
+              onChange={(e) => setArgs(e.target.value)}
+              placeholder='e.g. ["--max-turns", "10"]'
+              rows={3}
+              aria-invalid={!!fieldErrors.args}
+              className={[
+                "font-mono text-xs rounded-md border border-input bg-transparent px-3 py-2",
+                "resize-y w-full outline-none transition-[color,box-shadow]",
+                "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+                fieldErrors.args ? "border-destructive" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            />
+            {fieldErrors.args && (
+              <p className="font-mono text-[10px] text-destructive">{fieldErrors.args}</p>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            disabled={updateEntry.isPending}
+            className="font-mono text-[10px] uppercase tracking-widest"
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={updateEntry.isPending}
+            className="font-mono text-[10px] uppercase tracking-widest"
+          >
+            {updateEntry.isPending ? "Saving…" : "Save →"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Filter chip sub-component
@@ -171,6 +442,7 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
   const updateEntry = useUpdateModelCatalogEntry();
   const testEntry = useTestModelCatalogEntry();
   const deleteEntry = useDeleteModelCatalogEntry();
+  const [editOpen, setEditOpen] = useState(false);
 
   const toggleEnabled = () => {
     updateEntry.mutate(
@@ -263,11 +535,12 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
         Test →
       </button>
 
-      {/* Edit action (placeholder — full edit dialog is out of scope for Phase 2) */}
+      {/* Edit action — opens full edit dialog */}
       <button
-        onClick={() => toast.info(`Edit for ${model.alias} — coming soon`)}
+        onClick={() => setEditOpen(true)}
         className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground
           hover:text-foreground transition-colors whitespace-nowrap"
+        aria-label={`Edit ${model.alias}`}
       >
         Edit →
       </button>
@@ -281,6 +554,9 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
       >
         Delete →
       </button>
+
+      {/* Edit dialog — rendered outside the grid row to avoid stacking context issues */}
+      <EditModelDialog model={model} open={editOpen} onOpenChange={setEditOpen} />
     </div>
   );
 }
