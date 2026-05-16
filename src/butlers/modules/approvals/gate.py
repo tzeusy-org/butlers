@@ -344,11 +344,76 @@ def _make_gate_wrapper(
     4. If the target is unresolvable: require approval (conservative default).
     """
 
+    _WHY_MAX_CHARS = 2000
+    _EVIDENCE_MAX_ITEMS = 50
+    _EVIDENCE_ITEM_MAX_CHARS = 500
+
     async def gate_wrapper(**kwargs: Any) -> dict[str, Any]:
         tool_args = dict(kwargs)
         action_id = uuid.uuid4()
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=expiry_hours)
+
+        # Extract and validate why/evidence from tool kwargs (§8.2 agent contract).
+        # These are gate-level metadata, not forwarded to the underlying tool.
+        raw_why: str | None = tool_args.pop("_why", None) or tool_args.pop("why", None)
+        raw_evidence: list | None = tool_args.pop("_evidence", None) or tool_args.pop(
+            "evidence", None
+        )
+
+        if raw_why is None:
+            logger.warning(
+                "Gate wrapper: tool %r called without 'why' rationale (action=%s)",
+                tool_name,
+                action_id,
+            )
+            why: str | None = None
+        elif not isinstance(raw_why, str):
+            logger.warning(
+                "Gate wrapper: tool %r 'why' is not a string (%r); ignoring",
+                tool_name,
+                type(raw_why).__name__,
+            )
+            why = None
+        elif len(raw_why) > _WHY_MAX_CHARS:
+            logger.warning(
+                "Gate wrapper: tool %r 'why' exceeds %d chars (%d); truncating",
+                tool_name,
+                _WHY_MAX_CHARS,
+                len(raw_why),
+            )
+            why = raw_why[:_WHY_MAX_CHARS]
+        else:
+            why = raw_why
+
+        evidence: list[str] = []
+        if raw_evidence is not None:
+            if not isinstance(raw_evidence, list):
+                logger.warning(
+                    "Gate wrapper: tool %r 'evidence' is not a list (%r); ignoring",
+                    tool_name,
+                    type(raw_evidence).__name__,
+                )
+            else:
+                if len(raw_evidence) > _EVIDENCE_MAX_ITEMS:
+                    logger.warning(
+                        "Gate wrapper: tool %r 'evidence' has %d items (max %d); truncating",
+                        tool_name,
+                        len(raw_evidence),
+                        _EVIDENCE_MAX_ITEMS,
+                    )
+                    raw_evidence = raw_evidence[:_EVIDENCE_MAX_ITEMS]
+                for item in raw_evidence:
+                    item_str = str(item)
+                    if len(item_str) > _EVIDENCE_ITEM_MAX_CHARS:
+                        logger.warning(
+                            "Gate wrapper: tool %r evidence item truncated from %d to %d chars",
+                            tool_name,
+                            len(item_str),
+                            _EVIDENCE_ITEM_MAX_CHARS,
+                        )
+                        item_str = item_str[:_EVIDENCE_ITEM_MAX_CHARS]
+                    evidence.append(item_str)
 
         # Generate agent summary
         agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(tool_args)}"
@@ -384,8 +449,8 @@ def _make_gate_wrapper(
             await pool.execute(
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                "requested_at, expires_at, decided_by) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                "requested_at, expires_at, decided_by, why, evidence) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 action_id,
                 tool_name,
                 json.dumps(tool_args),
@@ -395,6 +460,8 @@ def _make_gate_wrapper(
                 now,
                 expires_at,
                 "role:owner",
+                why,
+                json.dumps(evidence),
             )
             await record_approval_event(
                 pool,
@@ -456,8 +523,8 @@ def _make_gate_wrapper(
             await pool.execute(
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                "requested_at, expires_at, approval_rule_id, decided_by) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                "requested_at, expires_at, approval_rule_id, decided_by, why, evidence) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                 action_id,
                 tool_name,
                 json.dumps(tool_args),
@@ -468,6 +535,8 @@ def _make_gate_wrapper(
                 expires_at,
                 rule_id,
                 f"rule:{rule_id}",
+                why,
+                json.dumps(evidence),
             )
             await record_approval_event(
                 pool,
@@ -520,8 +589,8 @@ def _make_gate_wrapper(
         await pool.execute(
             "INSERT INTO pending_actions "
             "(id, tool_name, tool_args, agent_summary, session_id, status, "
-            "requested_at, expires_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "requested_at, expires_at, why, evidence) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             action_id,
             tool_name,
             json.dumps(tool_args),
@@ -530,6 +599,8 @@ def _make_gate_wrapper(
             ActionStatus.PENDING.value,
             now,
             expires_at,
+            why,
+            json.dumps(evidence),
         )
         await record_approval_event(
             pool,

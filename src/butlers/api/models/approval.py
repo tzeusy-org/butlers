@@ -44,6 +44,68 @@ class ApprovalAction(BaseModel):
     execution_result: dict[str, Any] | None = None
     approval_rule_id: str | None = None
     target_contact: TargetContact | None = None
+    why: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ApprovalDetail(BaseModel):
+    """Full dossier for a single approval — returned by GET /api/approvals/{id}.
+
+    Includes all ApprovalAction fields plus the dossier-specific fields:
+    ``title`` (human-readable headline), ``proposed_action`` (summary of the
+    tool call being approved), and the Dispatch-language ``why`` / ``evidence``
+    rationale block.
+    """
+
+    id: str
+    title: str
+    butler: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    why: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    proposed_action: dict[str, Any]
+    status: str
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+
+
+class ApprovalSummary(BaseModel):
+    """Compact approval item for the flat-list GET /api/approvals endpoint."""
+
+    id: str
+    butler: str
+    tool_name: str
+    status: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    why: str | None = None
+
+
+class ApprovalsPolicy(BaseModel):
+    """Quiet-hours policy singleton — GET/PUT /api/approvals/policy."""
+
+    quiet_start_hour: int | None = Field(default=None, ge=0, le=23)
+    quiet_end_hour: int | None = Field(default=None, ge=0, le=23)
+    timezone: str = "UTC"
+
+
+class ApprovalApproveRequest(BaseModel):
+    """Request body for POST /api/approvals/{id}/approve."""
+
+    edits: dict[str, Any] | None = Field(default=None, description="Optional edits to tool args")
+
+
+class ApprovalDenyRequest(BaseModel):
+    """Request body for POST /api/approvals/{id}/deny."""
+
+    reason: str | None = Field(default=None, description="Reason for denial")
+
+
+class ApprovalDeferRequest(BaseModel):
+    """Request body for POST /api/approvals/{id}/defer."""
+
+    hours: int = Field(..., ge=1, le=168, description="Hours to defer (1–168 inclusive)")
 
 
 class ApprovalRule(BaseModel):

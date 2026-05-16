@@ -1473,6 +1473,57 @@ export interface ApprovalAction {
   execution_result?: Record<string, unknown> | null;
   approval_rule_id?: string | null;
   target_contact?: TargetContact | null;
+  why?: string | null;
+  evidence?: string[];
+}
+
+/** Compact summary for GET /api/approvals flat-list endpoint. */
+export interface ApprovalSummary {
+  id: string;
+  butler: string;
+  tool_name: string;
+  status: string;
+  created_at: string;
+  expires_at?: string | null;
+  why?: string | null;
+}
+
+/** Full dossier for GET /api/approvals/{id}. */
+export interface ApprovalDetail {
+  id: string;
+  title: string;
+  butler: string;
+  created_at: string;
+  expires_at?: string | null;
+  why?: string | null;
+  evidence?: string[];
+  proposed_action: {
+    tool_name: string;
+    tool_args: Record<string, unknown>;
+    agent_summary?: string | null;
+  };
+  status: string;
+  decided_by?: string | null;
+  decided_at?: string | null;
+}
+
+/** Quiet-hours policy singleton. */
+export interface ApprovalsPolicy {
+  quiet_start_hour?: number | null;
+  quiet_end_hour?: number | null;
+  timezone: string;
+}
+
+export interface ApprovalApproveRequest {
+  edits?: Record<string, unknown> | null;
+}
+
+export interface ApprovalDenyRequest {
+  reason?: string | null;
+}
+
+export interface ApprovalDeferRequest {
+  hours: number;
 }
 
 export interface ApprovalRule {

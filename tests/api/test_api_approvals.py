@@ -5,6 +5,7 @@ Keeps: list paginated structure, 404/422 error paths (parametrized),
        graceful empty when no approvals table.
 
 Extended (bu-d3fhz): butler filter param + butler field on ApprovalAction.
+Extended (bu-5xiu9): defer bounds, policy round-trip, audit.append on verbs.
 """
 
 from __future__ import annotations
@@ -294,3 +295,389 @@ async def test_list_executed_actions_butler_filter(app):
     assert len(actions) == 1
     assert actions[0]["butler"] == "home"
     assert actions[0]["tool_name"] == "notify"
+
+
+# ---------------------------------------------------------------------------
+# §8.7 — defer bounds, policy round-trip, audit.append on verbs
+# ---------------------------------------------------------------------------
+
+
+def _make_pending_row(*, tool_name="send_email", status="pending"):
+    """Return a dict matching pending_actions columns including why/evidence."""
+    return {
+        "id": uuid4(),
+        "tool_name": tool_name,
+        "tool_args": {"to": "user@example.com", "subject": "Hello"},
+        "status": status,
+        "requested_at": _NOW,
+        "agent_summary": "Test action",
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": None,
+        "decided_at": None,
+        "execution_result": None,
+        "approval_rule_id": None,
+        "why": "Sending a welcome email to new user",
+        "evidence": ["User signed up at 2026-05-16T10:00:00Z", "Email not yet sent"],
+    }
+
+
+@pytest.mark.parametrize(
+    "hours,expected_status",
+    [
+        (1, 200),  # lower bound inclusive
+        (168, 200),  # upper bound inclusive
+        (0, 422),  # below lower bound
+        (169, 422),  # above upper bound
+    ],
+    ids=["hours-1-ok", "hours-168-ok", "hours-0-422", "hours-169-422"],
+)
+async def test_defer_hours_bounds(app, hours, expected_status):
+    """POST /api/approvals/{id}/defer validates 1 ≤ hours ≤ 168."""
+    from butlers.api.routers.approvals import _get_db_manager
+
+    action_id = uuid4()
+    pending_row = _make_pending_row(status="pending")
+    pending_row["id"] = action_id
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
+    mock_conn.execute = AsyncMock()
+    # audit.append uses fetchval
+    mock_conn.fetchval = AsyncMock(return_value=1)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    mock_pool.fetchrow = AsyncMock(return_value=pending_row)
+
+    # to_regclass returns truthy so _find_named_approvals_pools includes this pool
+    def fetchval_side(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return 1
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
+    # Updated fetchrow to return the action when queried by ID
+    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
+    # fetchrow for the deferred update
+    updated_row = dict(pending_row)
+    updated_row["expires_at"] = _NOW
+
+    async def fetchrow_side(*args, **kwargs):
+        return pending_row if "id" in str(args) else updated_row
+
+    mock_conn.fetchrow = AsyncMock(side_effect=lambda *a, **k: pending_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            f"/api/approvals/{action_id}/defer",
+            json={"hours": hours},
+        )
+
+    assert resp.status_code == expected_status, f"hours={hours}: {resp.text}"
+
+
+async def test_policy_round_trip(app):
+    """GET /api/approvals/policy returns 200; PUT persists and returns updated policy."""
+    from butlers.api.routers.approvals import _get_db_manager
+
+    policy_row = {
+        "id": 1,
+        "quiet_start_hour": 22,
+        "quiet_end_hour": 7,
+        "timezone": "America/New_York",
+        "updated_at": _NOW,
+    }
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=policy_row)
+    mock_conn.execute = AsyncMock()
+
+    def fetchval_side(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return 1
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # GET
+        get_resp = await client.get("/api/approvals/policy")
+        assert get_resp.status_code == 200
+        policy = get_resp.json()["data"]
+        assert policy["quiet_start_hour"] == 22
+        assert policy["quiet_end_hour"] == 7
+        assert policy["timezone"] == "America/New_York"
+
+        # PUT — update and verify 200 with updated values
+        put_resp = await client.put(
+            "/api/approvals/policy",
+            json={"quiet_start_hour": 23, "quiet_end_hour": 8, "timezone": "UTC"},
+        )
+        assert put_resp.status_code == 200
+        updated = put_resp.json()["data"]
+        assert updated["quiet_start_hour"] == 23
+        assert updated["timezone"] == "UTC"
+
+    # Verify conn.execute was called for the INSERT/ON CONFLICT UPDATE
+    mock_conn.execute.assert_called()
+
+
+async def test_approve_audits_action(app):
+    """POST /api/approvals/{id}/approve calls audit.append('approval.approve', ...)."""
+    from unittest.mock import patch
+
+    import butlers.api.routers.audit as audit_router
+    from butlers.api.routers.approvals import _get_db_manager
+
+    action_id = uuid4()
+    pending_row = _make_pending_row(status="pending")
+    pending_row["id"] = action_id
+
+    approved_result = {
+        "id": str(action_id),
+        "tool_name": "send_email",
+        "tool_args": {"to": "user@example.com", "subject": "Hello"},
+        "status": "approved",
+        "requested_at": _NOW.isoformat(),
+        "butler": "general",
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": "dashboard:rest-api",
+        "decided_at": _NOW.isoformat(),
+        "execution_result": None,
+        "approval_rule_id": None,
+    }
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
+    mock_conn.execute = AsyncMock()
+
+    def fetchval_side(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return 1
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    mock_pool.fetchrow = AsyncMock(return_value=pending_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    audit_calls = []
+
+    async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
+        audit_calls.append({"actor": actor, "action": action, "target": target, "note": note})
+        return 1
+
+    with patch.object(audit_router, "append", fake_append):
+        with patch(
+            "butlers.modules.approvals.operations.approve_action",
+            AsyncMock(return_value=approved_result),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(f"/api/approvals/{action_id}/approve", json={})
+
+    assert resp.status_code == 200, resp.text
+    # audit.append must have been called with approval.approve
+    approve_audits = [c for c in audit_calls if c["action"] == "approval.approve"]
+    assert len(approve_audits) >= 1
+    assert approve_audits[0]["target"] == str(action_id)
+
+
+async def test_deny_audits_action(app):
+    """POST /api/approvals/{id}/deny calls audit.append('approval.deny', ...)."""
+    from unittest.mock import patch
+
+    import butlers.api.routers.audit as audit_router
+    from butlers.api.routers.approvals import _get_db_manager
+
+    action_id = uuid4()
+    pending_row = _make_pending_row(status="pending")
+    pending_row["id"] = action_id
+
+    rejected_result = {
+        "id": str(action_id),
+        "tool_name": "send_email",
+        "tool_args": {},
+        "status": "rejected",
+        "requested_at": _NOW.isoformat(),
+        "butler": "general",
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": "dashboard:rest-api",
+        "decided_at": _NOW.isoformat(),
+        "execution_result": None,
+        "approval_rule_id": None,
+    }
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
+    mock_conn.execute = AsyncMock()
+
+    def fetchval_side(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return 1
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    mock_pool.fetchrow = AsyncMock(return_value=pending_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    audit_calls = []
+
+    async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
+        audit_calls.append({"actor": actor, "action": action, "target": target, "note": note})
+        return 1
+
+    with patch.object(audit_router, "append", fake_append):
+        with patch(
+            "butlers.modules.approvals.operations.reject_action",
+            AsyncMock(return_value=rejected_result),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    f"/api/approvals/{action_id}/deny",
+                    json={"reason": "Not authorized"},
+                )
+
+    assert resp.status_code == 200, resp.text
+    deny_audits = [c for c in audit_calls if c["action"] == "approval.deny"]
+    assert len(deny_audits) >= 1
+    assert deny_audits[0]["target"] == str(action_id)
+    assert deny_audits[0]["note"] == "Not authorized"
+
+
+async def test_why_and_evidence_returned_on_actions_list(app):
+    """GET /api/approvals/actions includes why and evidence on each action row."""
+    row = _make_pending_row()
+    app, _ = _app_with_mock_db(app, fetch_rows=[row], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions")
+    assert resp.status_code == 200
+    actions = resp.json()["data"]
+    assert len(actions) == 1
+    assert actions[0]["why"] == "Sending a welcome email to new user"
+    assert actions[0]["evidence"] == [
+        "User signed up at 2026-05-16T10:00:00Z",
+        "Email not yet sent",
+    ]
+
+
+async def test_why_null_evidence_empty_on_legacy_rows(app):
+    """Legacy rows (why=NULL, evidence=[]) are returned with why=null and evidence=[]."""
+    legacy_row = {
+        "id": uuid4(),
+        "tool_name": "send_email",
+        "tool_args": {"to": "user@example.com"},
+        "status": "pending",
+        "requested_at": _NOW,
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": None,
+        "decided_at": None,
+        "execution_result": None,
+        "approval_rule_id": None,
+        "why": None,
+        "evidence": [],
+    }
+    app, _ = _app_with_mock_db(app, fetch_rows=[legacy_row], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions")
+    assert resp.status_code == 200
+    actions = resp.json()["data"]
+    assert len(actions) == 1
+    assert actions[0]["why"] is None
+    assert actions[0]["evidence"] == []

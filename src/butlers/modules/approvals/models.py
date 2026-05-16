@@ -88,6 +88,8 @@ class PendingAction:
     decided_at: datetime | None = None
     execution_result: dict[str, Any] | None = None
     approval_rule_id: uuid.UUID | None = None
+    why: str | None = None
+    evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -104,6 +106,8 @@ class PendingAction:
             "decided_at": self.decided_at.isoformat() if self.decided_at else None,
             "execution_result": self.execution_result,
             "approval_rule_id": str(self.approval_rule_id) if self.approval_rule_id else None,
+            "why": self.why,
+            "evidence": self.evidence,
         }
         return d
 
@@ -123,34 +127,31 @@ class PendingAction:
             decided_at=_parse_optional_datetime(data.get("decided_at")),
             execution_result=_parse_optional_jsonb(data.get("execution_result")),
             approval_rule_id=_parse_optional_uuid(data.get("approval_rule_id")),
+            why=data.get("why"),
+            evidence=list(data.get("evidence") or []),
         )
 
     @classmethod
     def from_row(cls, row: Any) -> PendingAction:
         """Reconstruct a PendingAction from a database row (asyncpg Record or mapping)."""
+        _get = lambda key, default=None: (  # noqa: E731
+            row.get(key, default) if hasattr(row, "get") else row[key]
+        )
         return cls(
             id=_parse_uuid(row["id"]),
             tool_name=row["tool_name"],
             tool_args=_parse_jsonb(row["tool_args"]),
             status=ActionStatus(row["status"]),
             requested_at=_parse_datetime(row["requested_at"]),
-            agent_summary=row.get("agent_summary") if hasattr(row, "get") else row["agent_summary"],
-            session_id=_parse_optional_uuid(
-                row.get("session_id") if hasattr(row, "get") else row["session_id"]
-            ),
-            expires_at=_parse_optional_datetime(
-                row.get("expires_at") if hasattr(row, "get") else row["expires_at"]
-            ),
-            decided_by=row.get("decided_by") if hasattr(row, "get") else row["decided_by"],
-            decided_at=_parse_optional_datetime(
-                row.get("decided_at") if hasattr(row, "get") else row["decided_at"]
-            ),
-            execution_result=_parse_optional_jsonb(
-                row.get("execution_result") if hasattr(row, "get") else row["execution_result"]
-            ),
-            approval_rule_id=_parse_optional_uuid(
-                row.get("approval_rule_id") if hasattr(row, "get") else row["approval_rule_id"]
-            ),
+            agent_summary=_get("agent_summary"),
+            session_id=_parse_optional_uuid(_get("session_id")),
+            expires_at=_parse_optional_datetime(_get("expires_at")),
+            decided_by=_get("decided_by"),
+            decided_at=_parse_optional_datetime(_get("decided_at")),
+            execution_result=_parse_optional_jsonb(_get("execution_result")),
+            approval_rule_id=_parse_optional_uuid(_get("approval_rule_id")),
+            why=_get("why"),
+            evidence=list(_get("evidence") or []),
         )
 
 
