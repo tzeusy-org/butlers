@@ -154,7 +154,7 @@ async def test_audit_log_returns_paginated_structure(app):
     pool.fetchval = AsyncMock(return_value=0)
     pool.execute = AsyncMock()
     db = MagicMock(spec=DatabaseManager)
-    db.pool.return_value = pool
+    db.credential_shared_pool.return_value = pool
     app.dependency_overrides[_audit_get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

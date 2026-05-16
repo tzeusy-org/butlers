@@ -326,7 +326,7 @@ class TestAuditReadEndpoint:
         mock_pool.fetchval = AsyncMock(return_value=0)
         mock_pool.fetch = AsyncMock(return_value=[])
         mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.pool.return_value = mock_pool
+        mock_db.credential_shared_pool.return_value = mock_pool
 
         app = create_app(api_key="")
         app.dependency_overrides[_audit_get_db] = lambda: mock_db
