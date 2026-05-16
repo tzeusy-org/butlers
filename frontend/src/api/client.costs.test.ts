@@ -95,7 +95,7 @@ describe("getDailyCosts — date range params", () => {
     mockResponse({ data: [] });
     await getDailyCosts();
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/costs/daily");
+    expect(url).toContain("/spend/daily");
     expect(url).not.toContain("?");
   });
 

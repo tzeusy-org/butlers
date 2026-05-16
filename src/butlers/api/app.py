@@ -42,7 +42,6 @@ from butlers.api.routers.calendar_workspace import (
 )
 from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.conversations import router as conversations_router
-from butlers.api.routers.costs import router as costs_router
 from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
 from butlers.api.routers.general_settings import router as general_settings_router
 from butlers.api.routers.google_health import router as google_health_router
@@ -79,6 +78,7 @@ from butlers.api.routers.sessions import (
 from butlers.api.routers.sessions import (
     router as sessions_router,
 )
+from butlers.api.routers.spend import router as spend_router
 from butlers.api.routers.spotify import router as spotify_router
 from butlers.api.routers.sse import router as sse_router
 from butlers.api.routers.state import router as state_router
@@ -234,7 +234,7 @@ def create_app(
     app.include_router(notifications_router)
     app.include_router(butler_notifications_router)
     app.include_router(issues_router)
-    app.include_router(costs_router)
+    app.include_router(spend_router)
     app.include_router(sessions_router)
     app.include_router(butler_sessions_router)
     app.include_router(activity_feed_router)

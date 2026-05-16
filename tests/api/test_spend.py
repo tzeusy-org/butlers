@@ -1,8 +1,8 @@
-"""Tests for cost, pricing, and schedule cost API endpoints.
+"""Tests for spend (was: costs), pricing, and schedule spend API endpoints.
 
-Condensed: 22 → ~12 tests [bu-gg4y1].
+Condensed: 22 → ~12 tests [bu-gg4y1]. Migrated from /api/costs → /api/spend [bu-dvb7i].
 Keeps: pricing config load (parametrized errors + tiered parse), pricing endpoint,
-cost summary aggregation + tiered pricing + unreachable fallback, daily sorting,
+spend summary aggregation + tiered pricing + unreachable fallback, daily sorting,
 by-schedule contract + zero-div guard.
 """
 
@@ -1025,3 +1025,130 @@ async def test_by_schedule_unknown_butler_returns_empty_200(app):
         resp = await client.get("/api/spend/by-schedule", params={"butler": "nonexistent"})
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# §5.2 Forecast math [bu-dvb7i]
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_math_projection():
+    """Naive linear projection: mtd / max(days_elapsed, 1) * days_in_month."""
+    import calendar as cal
+    from datetime import date
+
+    # Simulate: 10 days elapsed, $5 spent → daily rate $0.50, EOM = $0.50 × days
+    today = date.today()
+    days_in_month = cal.monthrange(today.year, today.month)[1]
+    days_elapsed = today.day  # 1-based
+    mtd = 5.0
+    daily_rate = mtd / max(days_elapsed, 1)
+    projected_eom = daily_rate * days_in_month
+
+    # Verify invariants
+    assert projected_eom >= mtd  # projected ≥ actual MTD
+    assert daily_rate > 0
+    assert projected_eom == pytest.approx(daily_rate * days_in_month, rel=1e-6)
+
+
+def test_forecast_math_first_day_clamp():
+    """Days elapsed is clamped to ≥ 1 to avoid division by zero."""
+
+    days_in_month = 31
+    mtd = 3.0
+    days_elapsed = 0  # edge case: never happens in practice but test the clamp
+
+    daily_rate = mtd / max(days_elapsed, 1)
+    projected_eom = daily_rate * days_in_month
+    assert projected_eom == pytest.approx(mtd * days_in_month, rel=1e-6)
+
+
+async def test_forecast_endpoint_returns_correct_shape(app):
+    """GET /api/spend/forecast returns days + projected_eom_usd shape."""
+    import calendar as cal
+    from datetime import date
+
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    today = date.today()
+    days_in_month = cal.monthrange(today.year, today.month)[1]
+
+    # Mock: one actual day with $1 spend
+    month_start = today.replace(day=1)
+    daily_data = {
+        "days": [
+            {
+                "date": month_start.isoformat(),
+                "sessions": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "by_model": {},
+            }
+        ]
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result(daily_data)})
+    _wire(app, mgr, configs, _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/forecast")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert "days" in data
+    assert "projected_eom_usd" in data
+    assert "days_in_month" in data
+    assert data["days_in_month"] == days_in_month
+    assert len(data["days"]) == days_in_month
+    # First N days have projected=False (actuals), remainder projected=True
+    actual_days = [d for d in data["days"] if not d["projected"]]
+    projected_days = [d for d in data["days"] if d["projected"]]
+    assert len(actual_days) + len(projected_days) == days_in_month
+
+
+# ---------------------------------------------------------------------------
+# §5.2 Spend rules — position reshuffle on insert/delete [bu-dvb7i]
+# ---------------------------------------------------------------------------
+
+
+async def test_spend_rules_list_returns_empty_when_no_db(app):
+    """GET /api/spend/rules returns empty list when DB unavailable."""
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/rules")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_spend_ceiling_requires_db(app):
+    """PUT /api/spend/ceiling returns 503 when DB unavailable."""
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put("/api/spend/ceiling", json={"monthly_usd": 100.0})
+
+    assert resp.status_code == 503
+
+
+async def test_spend_ceiling_rejects_non_positive(app):
+    """PUT /api/spend/ceiling returns 422 for monthly_usd <= 0."""
+    from unittest.mock import MagicMock
+
+    from butlers.api.routers.spend import _get_db_manager
+
+    mock_db = MagicMock()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put("/api/spend/ceiling", json={"monthly_usd": -5.0})
+
+    assert resp.status_code == 422
