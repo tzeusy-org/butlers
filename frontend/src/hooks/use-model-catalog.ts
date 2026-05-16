@@ -9,19 +9,23 @@ import {
   deleteModelCatalogEntry,
   deleteButlerModelOverride,
   fetchPricingMap,
+  getModelFailures,
   listModelCatalog,
   listButlerModelOverrides,
   resolveButlerModel,
   testModelCatalogEntry,
   updateModelCatalogEntry,
+  updateModelPriority,
   upsertButlerModelOverrides,
   setModelTokenLimits,
   resetModelUsage,
   getModelUsageDetail,
+  verifyAllModels,
 } from "@/api/index.ts";
 import type {
   ModelCatalogCreate,
   ModelCatalogUpdate,
+  ModelPriorityDelta,
   ButlerModelOverrideUpsert,
   TokenLimitsRequest,
   ResetUsageRequest,
@@ -185,5 +189,48 @@ export function useModelUsageDetail(entryId: string, enabled = false) {
     queryFn: () => getModelUsageDetail(entryId),
     enabled: !!entryId && enabled,
     staleTime: 10_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 hooks (bu-q2nz3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mutation to adjust a model's priority by a delta.
+ *
+ * On success, invalidates the catalog query so the page re-fetches the
+ * server-sorted list (no client-side reorder — the server is the source of
+ * truth for sort order per §4.3).
+ */
+export function useUpdateModelPriority() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ModelPriorityDelta }) =>
+      updateModelPriority(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["model-catalog"] });
+    },
+  });
+}
+
+/** Mutation to trigger a parallel re-verification of all enabled models. */
+export function useVerifyAllModels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: verifyAllModels,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["model-catalog"] });
+    },
+  });
+}
+
+/** Query recent failure entries for a single model catalog entry. */
+export function useModelFailures(entryId: string, since = "24h", enabled = false) {
+  return useQuery({
+    queryKey: ["model-failures", entryId, since],
+    queryFn: () => getModelFailures(entryId, since),
+    enabled: !!entryId && enabled,
+    staleTime: 30_000,
   });
 }

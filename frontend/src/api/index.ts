@@ -486,6 +486,9 @@ export {
   setModelTokenLimits,
   resetModelUsage,
   getModelUsageDetail,
+  updateModelPriority,
+  verifyAllModels,
+  getModelFailures,
 } from "./client.ts";
 
 export type {
@@ -495,6 +498,9 @@ export type {
   PricingMap,
   ModelCatalogCreate,
   ModelCatalogUpdate,
+  ModelPriorityDelta,
+  VerifyAllResult,
+  FailureEntry,
   ModelTestResult,
   ButlerModelOverride,
   ButlerModelOverrideUpsert,

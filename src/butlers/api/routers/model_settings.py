@@ -13,9 +13,12 @@ directly via the shared credential pool.  Writes mutate those tables directly
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import time
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -23,11 +26,14 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+import butlers.api.routers.audit as audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
-from butlers.api.models import ApiResponse
+from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.pricing import ModelPricing, PricingConfig, TieredModelPricing
 from butlers.core.model_routing import resolve_model
+from butlers.core.runtimes.base import get_adapter
+from butlers.core.spawner import resolve_provider_config
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +42,12 @@ pricing_router = APIRouter(prefix="/api/settings", tags=["pricing"])
 butler_model_router = APIRouter(prefix="/api/butlers", tags=["butlers", "model-overrides"])
 
 _COMPLEXITY_TIERS = ("reasoning", "workhorse", "cheap", "specialty", "local", "legacy")
+
+# Rate-limit sentinel for POST /verify-all: seconds since epoch of last accepted run.
+# Process-global; resets on daemon restart. Sufficient for once-per-minute gate.
+_verify_all_last_run: float = 0.0
+_VERIFY_ALL_MIN_INTERVAL_S = 60.0
+_VERIFY_ALL_CONCURRENCY = 8
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -65,6 +77,35 @@ class ModelCatalogEntry(BaseModel):
     usage_30d: int = 0
     limit_24h: int | None = None
     limit_30d: int | None = None
+    # Verification fields (added by core_093 migration)
+    last_verified_at: datetime | None = None
+    last_verified_latency_ms: int | None = None
+    last_verified_ok: bool | None = None
+
+
+class ModelPriorityDelta(BaseModel):
+    """Request body for PUT /api/settings/models/{id}/priority."""
+
+    delta: int
+
+
+class VerifyAllResult(BaseModel):
+    """Response from POST /api/settings/models/verify-all."""
+
+    accepted: bool
+    total: int = 0
+    ok: int = 0
+    failed: int = 0
+
+
+class FailureEntry(BaseModel):
+    """A single model failure record from GET /api/settings/models/{id}/failures."""
+
+    ts: datetime
+    error_code: str | None = None
+    error_message: str | None = None
+    butler: str | None = None
+    session_id: str | None = None
 
 
 class ModelCatalogCreate(BaseModel):
@@ -239,6 +280,7 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
     raw_usage_30d = _row_value(row, "usage_30d", 0)
     raw_limit_24h = _row_value(row, "limit_24h", None)
     raw_limit_30d = _row_value(row, "limit_30d", None)
+    raw_latency = _row_value(row, "last_verified_latency_ms", None)
     return ModelCatalogEntry(
         id=row["id"],
         alias=row["alias"],
@@ -253,6 +295,9 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         usage_30d=int(raw_usage_30d) if raw_usage_30d is not None else 0,
         limit_24h=int(raw_limit_24h) if raw_limit_24h is not None else None,
         limit_30d=int(raw_limit_30d) if raw_limit_30d is not None else None,
+        last_verified_at=_row_value(row, "last_verified_at", None),
+        last_verified_latency_ms=int(raw_latency) if raw_latency is not None else None,
+        last_verified_ok=_row_value(row, "last_verified_ok", None),
     )
 
 
@@ -321,6 +366,7 @@ async def list_catalog_entries(
         SELECT
             mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
             mc.complexity_tier, mc.enabled, mc.priority, mc.session_timeout_s,
+            mc.last_verified_at, mc.last_verified_latency_ms, mc.last_verified_ok,
             COALESCE(ua.usage_24h, 0) AS usage_24h,
             COALESCE(ua.usage_30d, 0) AS usage_30d,
             tl.limit_24h,
@@ -339,6 +385,7 @@ async def list_catalog_entries(
                 ELSE 7
             END,
             mc.priority DESC,
+            mc.enabled DESC,
             mc.alias ASC
         """
     )
@@ -480,6 +527,266 @@ async def delete_catalog_entry(
         raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
 
     return ApiResponse[dict](data={"deleted": True, "id": str(entry_id)})
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/settings/models/{entry_id}/priority — adjust priority by delta
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.put("/{entry_id}/priority", response_model=ApiResponse[ModelCatalogEntry])
+async def update_model_priority(
+    entry_id: UUID,
+    body: ModelPriorityDelta,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ModelCatalogEntry]:
+    """Adjust a model's priority by ``delta``.
+
+    Stores ``max(0, current + delta)`` — priority is clamped at zero; no error is raised
+    when clamping occurs.  On success, ``audit.append("model.priority", ...)`` is called.
+    """
+    pool = _shared_pool(db)
+
+    row = await pool.fetchrow(
+        """
+        UPDATE public.model_catalog
+           SET priority   = GREATEST(0, priority + $1),
+               updated_at = now()
+         WHERE id = $2
+        RETURNING id, alias, runtime_type, model_id, extra_args,
+                  complexity_tier, enabled, priority, session_timeout_s,
+                  last_verified_at, last_verified_latency_ms, last_verified_ok
+        """,
+        body.delta,
+        entry_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
+
+    await audit.append(
+        pool,
+        "owner",
+        "model.priority",
+        target=str(entry_id),
+        note=str(body.delta),
+    )
+
+    return ApiResponse[ModelCatalogEntry](data=_row_to_catalog_entry(row))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/settings/models/verify-all — parallel 1-token verification
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.post("/verify-all", response_model=ApiResponse[VerifyAllResult])
+async def verify_all_models(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[VerifyAllResult]:
+    """Issue a 1-token completion against every enabled model in parallel.
+
+    Bounded concurrency = 8.  Rate-limited to once per minute system-wide:
+    subsequent calls within the window return HTTP 429.
+
+    Writes ``last_verified_at``, ``last_verified_latency_ms``, and
+    ``last_verified_ok`` for each model.  Calls
+    ``audit.append("models.verify_all")`` once per accepted run.
+    """
+    global _verify_all_last_run  # noqa: PLW0603
+
+    now = time.monotonic()
+    if now - _verify_all_last_run < _VERIFY_ALL_MIN_INTERVAL_S:
+        raise HTTPException(
+            status_code=429,
+            detail="verify-all was called recently — wait at least 60 seconds between runs",
+        )
+    _verify_all_last_run = now
+
+    pool = _shared_pool(db)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, runtime_type, model_id, extra_args
+        FROM public.model_catalog
+        WHERE enabled = true
+        """
+    )
+
+    if not rows:
+        await audit.append(pool, "owner", "models.verify_all")
+        return ApiResponse[VerifyAllResult](
+            data=VerifyAllResult(accepted=True, total=0, ok=0, failed=0)
+        )
+
+    sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
+
+    async def _verify_one(row: Any) -> bool:
+        entry_id = row["id"]
+        runtime_type = row["runtime_type"]
+        model_id = row["model_id"]
+        extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
+
+        async with sem:
+            t0 = time.monotonic()
+            ok = False
+            try:
+                adapter_cls = get_adapter(runtime_type)
+                provider_config = await resolve_provider_config(pool, model_id)
+                try:
+                    adapter = adapter_cls(provider_config=provider_config)
+                except TypeError:
+                    adapter = adapter_cls()
+
+                result_text, _, _ = await adapter.invoke(
+                    prompt="Reply with exactly: OK",
+                    system_prompt="You are a test assistant. Reply concisely.",
+                    mcp_servers={},
+                    env=dict(os.environ),
+                    max_turns=1,
+                    model=model_id,
+                    runtime_args=extra_args or None,
+                    timeout=30,
+                )
+                ok = bool(result_text and result_text.strip())
+            except Exception as exc:
+                logger.warning("verify-all: model %s/%s failed: %s", runtime_type, model_id, exc)
+                ok = False
+
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            ts = datetime.now(UTC)
+
+            try:
+                await pool.execute(
+                    """
+                    UPDATE public.model_catalog
+                       SET last_verified_at        = $1,
+                           last_verified_latency_ms = $2,
+                           last_verified_ok         = $3,
+                           updated_at               = now()
+                     WHERE id = $4
+                    """,
+                    ts,
+                    latency_ms,
+                    ok,
+                    entry_id,
+                )
+            except Exception as exc:
+                logger.warning("verify-all: failed to persist result for %s: %s", entry_id, exc)
+
+            return ok
+
+    results = await asyncio.gather(*[_verify_one(r) for r in rows], return_exceptions=False)
+
+    ok_count = sum(1 for r in results if r is True)
+    failed_count = len(results) - ok_count
+
+    await audit.append(pool, "owner", "models.verify_all")
+
+    return ApiResponse[VerifyAllResult](
+        data=VerifyAllResult(
+            accepted=True,
+            total=len(results),
+            ok=ok_count,
+            failed=failed_count,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/models/{entry_id}/failures — recent failure tail
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.get(
+    "/{entry_id}/failures",
+    response_model=PaginatedResponse[FailureEntry],
+)
+async def get_model_failures(
+    entry_id: UUID,
+    since: str = Query(
+        "24h",
+        description="Lookback window. Accepts '24h', '7d', '30d', or an ISO-8601 timestamp.",
+    ),
+    limit: int = Query(50, ge=1, le=500, description="Max records to return"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[FailureEntry]:
+    """Return recent failure entries for a model catalog entry.
+
+    Queries ``public.dispatch_failures`` (if present) ordered ``ts DESC``.
+    When the table does not exist (migration not yet applied) returns an empty
+    page rather than 503 — failure history is informational and not critical.
+    """
+    pool = _shared_pool(db)
+
+    # Verify the catalog entry exists
+    exists = await pool.fetchval(
+        "SELECT 1 FROM public.model_catalog WHERE id = $1",
+        entry_id,
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
+
+    # Resolve the ``since`` window to a UTC datetime
+    since_ts: datetime
+    _WINDOW_MAP = {
+        "24h": "24 hours",
+        "7d": "7 days",
+        "30d": "30 days",
+    }
+    if since in _WINDOW_MAP:
+        since_ts_row = await pool.fetchval(f"SELECT now() - interval '{_WINDOW_MAP[since]}'")
+        since_ts = since_ts_row
+    else:
+        try:
+            since_ts = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid 'since' value '{since}'. Use '24h', '7d', '30d', or ISO-8601.",
+            )
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT ts, error_code, error_message, butler, session_id
+            FROM public.dispatch_failures
+            WHERE catalog_entry_id = $1
+              AND ts >= $2
+            ORDER BY ts DESC
+            LIMIT $3
+            """,
+            entry_id,
+            since_ts,
+            limit,
+        )
+        total = await pool.fetchval(
+            "SELECT count(*) FROM public.dispatch_failures"
+            " WHERE catalog_entry_id = $1 AND ts >= $2",
+            entry_id,
+            since_ts,
+        )
+    except asyncpg.exceptions.UndefinedTableError:
+        # Table not yet migrated — return empty page gracefully
+        return PaginatedResponse[FailureEntry](
+            data=[],
+            meta=PaginationMeta(total=0, offset=0, limit=limit),
+        )
+
+    entries = [
+        FailureEntry(
+            ts=row["ts"],
+            error_code=row["error_code"],
+            error_message=row["error_message"],
+            butler=row["butler"],
+            session_id=str(row["session_id"]) if row["session_id"] else None,
+        )
+        for row in rows
+    ]
+
+    return PaginatedResponse[FailureEntry](
+        data=entries,
+        meta=PaginationMeta(total=int(total or 0), offset=0, limit=limit),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -979,9 +1286,6 @@ async def test_catalog_entry(
     extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
 
     try:
-        from butlers.core.runtimes.base import get_adapter
-        from butlers.core.spawner import resolve_provider_config
-
         adapter_cls = get_adapter(runtime_type)
         provider_config = await resolve_provider_config(pool, model_id)
         try:
@@ -990,8 +1294,6 @@ async def test_catalog_entry(
             adapter = adapter_cls()
     except ValueError as exc:
         return ApiResponse[ModelTestResult](data=ModelTestResult(success=False, error=str(exc)))
-
-    import os
 
     t0 = time.monotonic()
     try:

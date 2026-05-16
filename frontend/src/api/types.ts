@@ -2399,6 +2399,34 @@ export interface ModelCatalogEntry {
   limit_24h: number | null;
   /** Configured 30d token limit; null = unlimited. */
   limit_30d: number | null;
+  /** ISO-8601 timestamp of last verification attempt; null = never verified. */
+  last_verified_at: string | null;
+  /** Latency of last verification call in milliseconds; null = never verified. */
+  last_verified_latency_ms: number | null;
+  /** Whether the last verification succeeded; null = never verified. */
+  last_verified_ok: boolean | null;
+}
+
+/** Request body for PUT /api/settings/models/{id}/priority. */
+export interface ModelPriorityDelta {
+  delta: number;
+}
+
+/** Response from POST /api/settings/models/verify-all. */
+export interface VerifyAllResult {
+  accepted: boolean;
+  total: number;
+  ok: number;
+  failed: number;
+}
+
+/** A single failure record from GET /api/settings/models/{id}/failures. */
+export interface FailureEntry {
+  ts: string;
+  error_code: string | null;
+  error_message: string | null;
+  butler: string | null;
+  session_id: string | null;
 }
 
 /** Request body for creating a catalog entry. */

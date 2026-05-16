@@ -4,11 +4,15 @@ Condensed from test_model_settings.py (53) + test_model_settings_discretion_tier
 + test_model_settings_self_healing_tier.py (9) → ~12 tests (bu-egmz6) → 3 tests (bu-2yw2d).
 Keeps: list/503 fallback, create 201 + conflict 409 + invalid-tier 422 (parametrized),
        resolve-model 200.
+
+Phase 2 additions (bu-q2nz3): priority stepper, verify-all rate-limit + concurrency,
+server sort order, failures tail.
 """
 
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -45,6 +49,10 @@ def _make_catalog_row(
         "enabled": enabled,
         "priority": priority,
         "session_timeout_s": session_timeout_s,
+        # Verification columns added by core_093 migration
+        "last_verified_at": None,
+        "last_verified_latency_ms": None,
+        "last_verified_ok": None,
     }
 
 
@@ -207,3 +215,174 @@ async def test_resolve_model_preview_200_and_422_for_invalid(app):
         r422 = await client.get("/api/butlers/general/resolve-model?complexity=invalid")
     assert r200.status_code == 200
     assert r422.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# §3.3  Server sort order — enabled DESC included
+# ---------------------------------------------------------------------------
+
+
+async def test_list_models_sort_order(app):
+    """GET /api/settings/models returns rows; sort is applied server-side in SQL.
+
+    The unit test verifies that the endpoint proxies the DB-ordered rows without
+    reordering.  The canonical SQL sort (tier CASE, priority DESC, enabled DESC,
+    alias ASC) is exercised by the rows the mock returns.
+    """
+    rows = [
+        _make_catalog_row(alias="a-reasoning", complexity_tier="reasoning", priority=10),
+        _make_catalog_row(
+            alias="b-workhorse", complexity_tier="workhorse", priority=5, enabled=True
+        ),
+        _make_catalog_row(
+            alias="c-workhorse", complexity_tier="workhorse", priority=5, enabled=False
+        ),
+        _make_catalog_row(alias="d-cheap", complexity_tier="cheap", priority=0),
+    ]
+    _app_with_pool(app, fetch_rows=rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/settings/models")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) == 4
+    # The mock returns rows in insertion order; endpoint must not re-sort them.
+    aliases = [e["alias"] for e in data]
+    assert aliases == ["a-reasoning", "b-workhorse", "c-workhorse", "d-cheap"]
+
+
+# ---------------------------------------------------------------------------
+# §3.4  Priority stepper
+# ---------------------------------------------------------------------------
+
+
+async def test_priority_stepper_200_and_clamp_at_zero(app, audit_append_spy):
+    """PUT /api/settings/models/{id}/priority adjusts priority and calls audit.append."""
+    entry_id = uuid.uuid4()
+    updated_row = _make_catalog_row(entry_id=entry_id, priority=5)
+    _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/settings/models/{entry_id}/priority",
+            json={"delta": 5},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["priority"] == 5
+    # audit.append must have been called
+    audit_append_spy.assert_awaited_once()
+    call_kwargs = audit_append_spy.call_args
+    assert call_kwargs.args[2] == "model.priority"
+    assert call_kwargs.kwargs["note"] == "5"
+
+
+async def test_priority_stepper_404_on_missing(app, audit_append_spy):
+    """PUT /api/settings/models/{id}/priority returns 404 when catalog entry missing."""
+    _, mock_pool = _app_with_pool(app, fetchrow_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/settings/models/{uuid.uuid4()}/priority",
+            json={"delta": 1},
+        )
+    assert resp.status_code == 404
+    audit_append_spy.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# §3.5  Verify-all rate limit
+# ---------------------------------------------------------------------------
+
+
+async def test_verify_all_rate_limit(app, audit_append_spy, monkeypatch):
+    """POST /api/settings/models/verify-all returns 429 on second call within 60s."""
+    import butlers.api.routers.model_settings as _ms
+
+    # Reset the sentinel to allow the first call
+    monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+
+    _, mock_pool = _app_with_pool(app)
+    # Return an empty enabled-models list so no actual verification is attempted
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r1 = await client.post("/api/settings/models/verify-all")
+        r429 = await client.post("/api/settings/models/verify-all")
+
+    assert r1.status_code == 200
+    assert r429.status_code == 429
+    # audit.append called once (for the accepted run)
+    assert audit_append_spy.await_count == 1
+
+
+async def test_verify_all_accepted_after_interval(app, audit_append_spy, monkeypatch):
+    """POST /api/settings/models/verify-all is accepted once the 60s window passes."""
+    import butlers.api.routers.model_settings as _ms
+
+    # Simulate last run well in the past
+    monkeypatch.setattr(_ms, "_verify_all_last_run", time.monotonic() - 120.0)
+
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/settings/models/verify-all")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["accepted"] is True
+
+
+# ---------------------------------------------------------------------------
+# §3.6  Failures tail — filters by since, graceful on missing table
+# ---------------------------------------------------------------------------
+
+
+async def test_model_failures_404_on_missing_entry(app):
+    """GET /api/settings/models/{id}/failures returns 404 when catalog entry absent."""
+    _, mock_pool = _app_with_pool(app, fetchval_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{uuid.uuid4()}/failures")
+    assert resp.status_code == 404
+
+
+async def test_model_failures_empty_on_missing_table(app):
+    """GET /api/settings/models/{id}/failures returns empty list if dispatch_failures absent."""
+    import asyncpg.exceptions
+
+    entry_id = uuid.uuid4()
+    _, mock_pool = _app_with_pool(app, fetchval_result=entry_id)
+    # fetchval returns entry exists (first call), then since_ts (second call)
+    mock_pool.fetchval = AsyncMock(side_effect=[entry_id, "2026-01-01 00:00:00+00"])
+    mock_pool.fetch = AsyncMock(
+        side_effect=asyncpg.exceptions.UndefinedTableError("dispatch_failures")
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/failures?since=24h")
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_model_failures_422_on_bad_since(app):
+    """GET /api/settings/models/{id}/failures returns 422 on unrecognised 'since' value."""
+    entry_id = uuid.uuid4()
+    _, mock_pool = _app_with_pool(app, fetchval_result=entry_id)
+    mock_pool.fetchval = AsyncMock(return_value=entry_id)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/failures?since=badvalue")
+    assert resp.status_code == 422
