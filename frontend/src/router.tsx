@@ -15,6 +15,7 @@ import RuleDetailPage from './pages/RuleDetailPage.tsx'
 import EpisodeDetailPage from './pages/EpisodeDetailPage.tsx'
 import SettingsPage from './pages/SettingsPage.tsx'
 import SettingsSpendPage from './pages/SettingsSpendPage.tsx'
+import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
 import ContactsPage from './pages/ContactsPage.tsx'
 import ContactDetailPage from './pages/ContactDetailPage.tsx'
@@ -109,6 +110,7 @@ export const router = createBrowserRouter(
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsPage /> },
         { path: '/settings/spend', element: <SettingsSpendPage /> },
+        { path: '/settings/permissions', element: <SettingsPermissionsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
         { path: '/education', element: <EducationPage /> },
         // Relationship butler: legacy paths redirect into unified canonical pages.
