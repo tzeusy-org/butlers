@@ -458,6 +458,8 @@ async def test_webhook(
         str(webhook_id),
     )
 
-    await audit.append(pool, "owner", "webhook.test", target=str(webhook_id), note=f"ok={result.ok}")
+    await audit.append(
+        pool, "owner", "webhook.test", target=str(webhook_id), note=f"ok={result.ok}"
+    )
 
     return ApiResponse(data=result)
