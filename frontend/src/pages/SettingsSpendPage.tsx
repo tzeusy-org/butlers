@@ -625,7 +625,7 @@ export default function SettingsSpendPage() {
   const forecast = forecastData?.data
 
   return (
-    <Page title="Spend">
+    <Page archetype="overview" title="Spend">
       <div className="space-y-6">
         {/* KPI strip */}
         {forecastLoading && !forecast ? (

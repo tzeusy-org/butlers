@@ -6,31 +6,31 @@ import { Badge } from "@/components/ui/badge";
 // ---------------------------------------------------------------------------
 
 const COMPLEXITY_LABELS: Record<ComplexityTier, string> = {
-  trivial: "Trivial",
-  medium: "Medium",
-  high: "High",
-  extra_high: "Extra High",
-  discretion: "Discretion",
-  self_healing: "Self Healing",
+  reasoning: "Reasoning",
+  workhorse: "Workhorse",
+  cheap: "Cheap",
+  specialty: "Specialty",
+  local: "Local",
+  legacy: "Legacy",
 };
 
 const COMPLEXITY_COLORS: Record<ComplexityTier, string> = {
-  trivial: "bg-slate-500 text-white hover:bg-slate-500/90",
-  medium: "bg-blue-600 text-white hover:bg-blue-600/90",
-  high: "bg-amber-600 text-white hover:bg-amber-600/90",
-  extra_high: "bg-red-600 text-white hover:bg-red-600/90",
-  discretion: "bg-purple-600 text-white hover:bg-purple-600/90",
-  self_healing: "bg-teal-600 text-white hover:bg-teal-600/90",
+  reasoning: "bg-red-600 text-white hover:bg-red-600/90",
+  workhorse: "bg-blue-600 text-white hover:bg-blue-600/90",
+  cheap: "bg-slate-500 text-white hover:bg-slate-500/90",
+  specialty: "bg-purple-600 text-white hover:bg-purple-600/90",
+  local: "bg-teal-600 text-white hover:bg-teal-600/90",
+  legacy: "bg-zinc-600 text-white hover:bg-zinc-600/90",
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const COMPLEXITY_TIERS: ComplexityTier[] = [
-  "trivial",
-  "medium",
-  "high",
-  "extra_high",
-  "discretion",
-  "self_healing",
+  "reasoning",
+  "workhorse",
+  "cheap",
+  "specialty",
+  "local",
+  "legacy",
 ];
 
 // eslint-disable-next-line react-refresh/only-export-components

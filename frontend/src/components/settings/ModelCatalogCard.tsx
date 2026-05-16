@@ -390,7 +390,7 @@ function defaultFormValues(entry?: ModelCatalogEntry | null): ModelFormValues {
     runtime_type: entry?.runtime_type ?? "claude",
     model_id: entry?.model_id ?? "",
     extra_args_raw: entry ? JSON.stringify(entry.extra_args, null, 2) : "[]",
-    complexity_tier: entry?.complexity_tier ?? "medium",
+    complexity_tier: entry?.complexity_tier ?? "workhorse",
     priority: String(entry?.priority ?? 0),
     session_timeout_s: String(entry?.session_timeout_s ?? 1800),
     enabled: entry?.enabled ?? true,
@@ -1059,7 +1059,7 @@ export function ModelCatalogCard() {
                       <TableCell colSpan={11} className="py-2 px-0">
                         <div className="flex items-center gap-2">
                           <ComplexityBadge tier={tier} />
-                          {tier === "discretion" && (
+                          {tier === "specialty" && (
                             <TooltipProvider>
                               <Tooltip>
                                 <TooltipTrigger asChild>
