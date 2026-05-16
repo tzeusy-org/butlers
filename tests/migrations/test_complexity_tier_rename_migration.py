@@ -180,12 +180,12 @@ async def test_upgrade_remaps_model_catalog_tiers(migration_pool: asyncpg.Pool) 
         "discretion": "specialty",
         "self_healing": "specialty",
     }
-    for alias, old_tier in old_to_new.items():
+    for old_tier, expected_new in old_to_new.items():
         await pool.execute(
             "INSERT INTO public.model_catalog (alias, runtime_type, model_id, complexity_tier)"
             " VALUES ($1, 'codex', 'test-model', $2)",
-            alias,
-            alias,  # use the alias itself as the old tier
+            old_tier,
+            old_tier,  # alias == old tier name; migration will rename it
         )
 
     await _run_upgrade(pool)
@@ -227,14 +227,14 @@ async def test_upgrade_remaps_butler_model_overrides_tiers(migration_pool: async
         "discretion": "specialty",
         "self_healing": "specialty",
     }
-    for butler_name, old_tier in old_to_new.items():
+    for old_tier_name, expected_new in old_to_new.items():
         await pool.execute(
             "INSERT INTO public.butler_model_overrides"
             " (butler_name, catalog_entry_id, complexity_tier)"
             " VALUES ($1, $2, $3)",
-            butler_name,
+            old_tier_name,
             catalog_id,
-            old_tier,
+            old_tier_name,  # seed OLD vocabulary so the migration's UPDATE is exercised
         )
 
     await _run_upgrade(pool)
