@@ -101,6 +101,23 @@ async def _run_switchboard_insight_delivery_cycle_job(
     return await delivery_cycle(pool, notify_fn=None)
 
 
+async def _run_switchboard_spend_rule_savings_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Compute and persist 7-day savings per spend rule (§5.4).
+
+    Runs daily (scheduled at 04:15 UTC by default) and updates
+    ``public.spend_rules.saved_7d`` with the difference between the
+    workhorse-tier baseline cost and the actual cost incurred by each
+    rule's chosen model over the trailing 7 days.
+    """
+    del job_args
+    from butlers.jobs.spend import compute_spend_rule_savings
+
+    return await compute_spend_rule_savings(pool)
+
+
 # ---------------------------------------------------------------------------
 # Memory maintenance jobs
 # ---------------------------------------------------------------------------
@@ -844,6 +861,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "switchboard": {
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
+            "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
         },
         "qa": {
