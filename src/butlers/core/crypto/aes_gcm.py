@@ -108,10 +108,10 @@ def decrypt(ciphertext: bytes, *, key: bytes | None = None) -> str:
     """
     if key is None:
         key = get_key()
-    if len(ciphertext) < _NONCE_BYTES + 1:
+    if len(ciphertext) < _NONCE_BYTES + 16:
         raise ValueError(
             f"ciphertext is too short ({len(ciphertext)} bytes); "
-            f"minimum is {_NONCE_BYTES + 1} bytes."
+            f"minimum is {_NONCE_BYTES + 16} bytes (nonce + GCM tag)."
         )
     nonce = ciphertext[:_NONCE_BYTES]
     ct = ciphertext[_NONCE_BYTES:]

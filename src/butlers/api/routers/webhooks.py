@@ -268,7 +268,7 @@ async def create_webhook(
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    secret_encrypted = _encrypt_secret(body.secret) if body.secret else None
+    secret_encrypted = _encrypt_secret(body.secret) if body.secret is not None else None
     now = datetime.now(UTC)
     row_id = str(uuid.uuid4())
 

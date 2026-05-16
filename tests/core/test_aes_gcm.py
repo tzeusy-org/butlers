@@ -111,7 +111,7 @@ def test_blob_length():
 
 
 def test_decrypt_truncated_raises():
-    """Blob shorter than 13 bytes raises ValueError."""
+    """Blob shorter than 28 bytes (nonce + GCM tag minimum) raises ValueError."""
     with pytest.raises(ValueError, match="too short"):
         aes_gcm.decrypt(b"\x00" * 5, key=_TEST_KEY)
 
