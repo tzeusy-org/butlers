@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -105,3 +106,48 @@ class IngestionEventRollup(BaseModel):
     total_output_tokens: int = 0
     total_cost: float = 0.0
     by_butler: dict[str, ButlerRollupEntry] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Priority contacts models
+# ---------------------------------------------------------------------------
+
+
+class PriorityContactEntry(BaseModel):
+    """One row in public.priority_contacts, joined to public.contacts for display.
+
+    ``name`` is the canonical contact name from public.contacts.  It may be
+    None if the contact has no display name set.
+
+    ``contact_info_values`` is a list of non-sensitive channel identifiers
+    (email addresses, Telegram handles, etc.) derived from public.contact_info
+    rows where ``secured = false``.  Credential-bearing rows (secured = true)
+    are excluded.
+    """
+
+    contact_id: UUID
+    butler: str
+    added_at: datetime
+    added_by: str | None = None
+    name: str | None = None
+    contact_info_values: list[str] = Field(default_factory=list)
+
+
+class PriorityContactAddRequest(BaseModel):
+    """Request body for POST /api/ingestion/priority-contacts.
+
+    Role mutations are NOT accepted here — the handler returns HTTP 400 if a
+    ``roles`` field is present.  Use PATCH /api/contacts to update contact roles.
+    """
+
+    contact_id: UUID
+    butler: str
+
+
+class PriorityContactAddResponse(BaseModel):
+    """Response body for POST /api/ingestion/priority-contacts (201)."""
+
+    contact_id: UUID
+    butler: str
+    added_at: datetime
+    added_by: str | None = None

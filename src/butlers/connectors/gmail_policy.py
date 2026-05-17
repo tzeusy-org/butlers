@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from prometheus_client import Counter
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -483,6 +487,113 @@ def load_known_contacts_from_file(path: str) -> frozenset[str]:
         return frozenset()
 
 
+# ---------------------------------------------------------------------------
+# DB-backed priority contacts cache (15-min TTL)
+# ---------------------------------------------------------------------------
+
+#: TTL in seconds for the DB-backed priority contacts cache.
+_PRIORITY_CONTACTS_TTL = 900  # 15 minutes
+
+
+class GmailPolicyEvaluator:
+    """DB-backed priority contact evaluator with 15-minute TTL cache.
+
+    Loads priority contacts for ``butler='gmail'`` from ``public.priority_contacts``
+    joined to ``public.contact_info`` to resolve email addresses.  The cache
+    refreshes automatically when it is older than 15 minutes.
+
+    Flat-file fallback (GMAIL_KNOWN_CONTACTS_PATH)
+    -----------------------------------------------
+    If the DB is unreachable during a cache refresh, the evaluator retains its
+    previous cache and logs a warning.  When the previous cache is empty (e.g.
+    on the first call before any successful DB load), the evaluator consults the
+    flat-file at ``known_contacts_path`` as a one-cycle fallback.  DB results
+    always take precedence on any conflict; the flat-file is ignored once the DB
+    has been successfully queried at least once.
+
+    The flat-file path and reader are deprecated and will be removed in §4.7
+    (cleanup bead, Wave 3) once the DB-wiring bead has been measured stable.
+
+    Spec: ingestion-priority-contacts §Requirement: GmailPolicyEvaluator wiring
+    Spec: ingestion-priority-contacts §Requirement: GMAIL_KNOWN_CONTACTS_PATH deprecation
+    """
+
+    def __init__(
+        self,
+        db_pool: asyncpg.Pool | None = None,
+        known_contacts_path: str | None = None,
+        ttl: float = _PRIORITY_CONTACTS_TTL,
+    ) -> None:
+        self._db_pool = db_pool
+        self._known_contacts_path = known_contacts_path
+        self._ttl = ttl
+        self._cache: frozenset[str] = frozenset()
+        self._cache_loaded_at: float = 0.0
+        self._db_ever_loaded: bool = False
+
+    def _cache_expired(self) -> bool:
+        return (time.monotonic() - self._cache_loaded_at) >= self._ttl
+
+    async def _refresh_from_db(self) -> None:
+        """Reload the contact set from DB.  On failure, retain previous cache."""
+        if self._db_pool is None:
+            logger.debug("GmailPolicyEvaluator: no DB pool configured; skipping DB refresh")
+            return
+
+        try:
+            rows = await self._db_pool.fetch(
+                """
+                SELECT DISTINCT ci.value
+                FROM public.priority_contacts pc
+                JOIN public.contact_info ci ON ci.contact_id = pc.contact_id
+                WHERE pc.butler = 'gmail'
+                  AND ci.type = 'email'
+                  AND ci.secured = false
+                  AND ci.value IS NOT NULL
+                """
+            )
+            self._cache = frozenset(_normalize_email(row["value"]) for row in rows)
+            self._cache_loaded_at = time.monotonic()
+            self._db_ever_loaded = True
+            logger.debug(
+                "GmailPolicyEvaluator: refreshed %d priority contact emails from DB",
+                len(self._cache),
+            )
+        except Exception:
+            logger.warning(
+                "GmailPolicyEvaluator: DB refresh failed; retaining previous cache (%d entries)",
+                len(self._cache),
+                exc_info=True,
+            )
+
+    async def get_known_contacts(self) -> frozenset[str]:
+        """Return the current set of known-contact email addresses.
+
+        Refreshes from DB if the cache has expired.  Falls back to the flat-file
+        only when the DB has never been successfully loaded and the cache is empty.
+        """
+        if self._cache_expired():
+            await self._refresh_from_db()
+
+        # One-cycle flat-file fallback: consult the file only when the DB has
+        # never returned any rows (DB was unreachable since startup or this is
+        # the very first call and the DB refresh failed).
+        if not self._db_ever_loaded and not self._cache and self._known_contacts_path:
+            flat_contacts = load_known_contacts_from_file(self._known_contacts_path)
+            logger.debug(
+                "GmailPolicyEvaluator: DB not yet loaded; using flat-file fallback (%d entries)",
+                len(flat_contacts),
+            )
+            return flat_contacts
+
+        return self._cache
+
+    async def is_priority_sender(self, sender_address: str) -> bool:
+        """Return True if ``sender_address`` is a recognized priority contact."""
+        known = await self.get_known_contacts()
+        return _normalize_email(sender_address) in known
+
+
 __all__ = [
     # Label filtering
     "LabelFilterPolicy",
@@ -507,4 +618,6 @@ __all__ = [
     # Helpers
     "load_known_contacts_from_file",
     "_normalize_email",
+    # DB-backed evaluator
+    "GmailPolicyEvaluator",
 ]
