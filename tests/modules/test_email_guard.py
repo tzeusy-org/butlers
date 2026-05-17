@@ -226,3 +226,106 @@ class TestCheckEmailRecipient:
 
         assert decision.allowed is False
         assert decision.reason == "parked"
+
+
+# ---------------------------------------------------------------------------
+# emit_approvals_event 'created' emission tests [bu-jg0kt]
+# ---------------------------------------------------------------------------
+
+
+class TestEmailGuardEmitsCreatedEvent:
+    """email_guard.py must emit 'created' approval WS events when parking actions."""
+
+    async def test_no_rule_park_emits_created(self) -> None:
+        """No standing rule: check_email_recipient emits kind='created' with status='pending'."""
+        from unittest.mock import MagicMock
+
+        pool = AsyncMock()
+        mock_emit = MagicMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.api.routers.approvals.emit_approvals_event",
+                new=mock_emit,
+            ),
+        ):
+            decision = await check_email_recipient(
+                pool, butler_name="home", **_COMMON_KWARGS
+            )
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
+        mock_emit.assert_called_once()
+        call_kwargs = mock_emit.call_args
+        assert call_kwargs.args[0] == "created"
+        assert call_kwargs.kwargs.get("butler") == "home"
+        assert call_kwargs.kwargs.get("tool_name") == "notify"
+        assert call_kwargs.kwargs.get("status") == "pending"
+
+    async def test_context_mismatch_park_emits_created(self) -> None:
+        """Context mismatch park: check_email_recipient emits kind='created'."""
+        from unittest.mock import MagicMock
+
+        pool = AsyncMock()
+        mock_emit = MagicMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.email_guard._get_email_context",
+                new=AsyncMock(return_value="work"),
+            ),
+            patch(
+                "butlers.api.routers.approvals.emit_approvals_event",
+                new=mock_emit,
+            ),
+        ):
+            decision = await check_email_recipient(
+                pool,
+                butler_name="home",
+                msg_context="personal",
+                **_COMMON_KWARGS,
+            )
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
+        mock_emit.assert_called_once()
+        call_kwargs = mock_emit.call_args
+        assert call_kwargs.args[0] == "created"
+        assert call_kwargs.kwargs.get("butler") == "home"
+        assert call_kwargs.kwargs.get("status") == "pending"
+
+    async def test_emit_created_survives_broker_failure(self) -> None:
+        """emit_approvals_event raising must not prevent email guard from parking the action."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.api.routers.approvals.emit_approvals_event",
+                side_effect=RuntimeError("broker down"),
+            ),
+        ):
+            decision = await check_email_recipient(
+                pool, butler_name="home", **_COMMON_KWARGS
+            )
+
+        # Guard must still park the action even when emit raises
+        assert decision.allowed is False
+        assert decision.reason == "parked"
+        assert decision.action_id is not None

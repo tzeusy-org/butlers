@@ -253,6 +253,7 @@ async def apply_approval_gates(
     mcp: Any,
     approval_config: ApprovalConfig | None,
     pool: Any,
+    butler_name: str | None = None,
 ) -> dict[str, Any]:
     """Wrap gated tools on the FastMCP server with approval interception.
 
@@ -269,6 +270,9 @@ async def apply_approval_gates(
         configured.
     pool:
         The asyncpg connection pool for the butler's database.
+    butler_name:
+        The name of the butler that owns this gate (used for WS event
+        attribution).  Pass ``None`` when the name is unavailable.
 
     Returns
     -------
@@ -309,6 +313,7 @@ async def apply_approval_gates(
             expiry_hours=effective_expiry_hours,
             risk_tier=effective_risk_tier,
             rule_precedence=approval_config.rule_precedence,
+            butler_name=butler_name,
         )
 
         # Replace the tool's handler on the MCP server
@@ -324,6 +329,7 @@ def _make_gate_wrapper(
     expiry_hours: int,
     risk_tier: ApprovalRiskTier,
     rule_precedence: tuple[str, ...],
+    butler_name: str | None = None,
 ) -> Any:
     """Create an async wrapper function that intercepts gated tool calls.
 
@@ -347,6 +353,21 @@ def _make_gate_wrapper(
     _WHY_MAX_CHARS = 2000
     _EVIDENCE_MAX_ITEMS = 50
     _EVIDENCE_ITEM_MAX_CHARS = 500
+
+    def _emit_created(action_id: uuid.UUID, status: str) -> None:
+        """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
+        try:
+            from butlers.api.routers.approvals import emit_approvals_event
+
+            emit_approvals_event(
+                "created",
+                str(action_id),
+                butler=butler_name,
+                tool_name=tool_name,
+                status=status,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("gate: emit_approvals_event('created') failed; ignoring", exc_info=True)
 
     async def gate_wrapper(**kwargs: Any) -> dict[str, Any]:
         tool_args = dict(kwargs)
@@ -463,6 +484,7 @@ def _make_gate_wrapper(
                 why,
                 json.dumps(evidence),
             )
+            _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
                 pool,
                 ApprovalEventType.ACTION_QUEUED,
@@ -538,6 +560,7 @@ def _make_gate_wrapper(
                 why,
                 json.dumps(evidence),
             )
+            _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
                 pool,
                 ApprovalEventType.ACTION_QUEUED,
@@ -602,6 +625,7 @@ def _make_gate_wrapper(
             why,
             json.dumps(evidence),
         )
+        _emit_created(action_id, ActionStatus.PENDING.value)
         await record_approval_event(
             pool,
             ApprovalEventType.ACTION_QUEUED,
