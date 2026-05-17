@@ -1,9 +1,12 @@
-"""Regression tests for ?butler= filter on /api/memory/episodes.
+"""Tests for memory API endpoints.
 
-Verifies:
-- Filter present + matching butler → fan-out restricted to that pool only
-- Filter absent → all rows across pools returned (existing behaviour)
-- Filter present + unknown butler → empty 200 (pool never queried; early exit)
+Covers:
+- ?butler= filter on /api/memory/episodes
+  - Filter present + matching butler → fan-out restricted to that pool only
+  - Filter absent → all rows across pools returned (existing behaviour)
+  - Filter present + unknown butler → empty 200 (pool never queried; early exit)
+- GET /api/memory/reembed/pending — count stale embeddings per tier
+- POST /api/memory/reembed — trigger a synchronous re-embed run
 """
 
 from __future__ import annotations
@@ -206,3 +209,260 @@ async def test_episodes_butler_filter_combined_with_consolidated(app):
     assert any(
         "consolidated = $2" in call.args[0] and False in call.args[1:] for call in fetch_calls
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for reembed endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def _make_reembed_db(
+    app,
+    *,
+    known_butlers: list[str] | None = None,
+) -> tuple[AsyncMock, MagicMock]:
+    """Wire app with a minimal mock DB for reembed endpoint tests.
+
+    Returns (pool_mock, db_mock) for assertion inspection.
+    """
+    if known_butlers is None:
+        known_butlers = ["memory"]
+
+    pool_mock = AsyncMock()
+    db_mock = MagicMock()
+    db_mock.butler_names = known_butlers
+
+    def _pool(name: str):
+        if name not in known_butlers:
+            raise KeyError(f"No pool for butler: {name}")
+        return pool_mock
+
+    db_mock.pool = MagicMock(side_effect=_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+    return pool_mock, db_mock
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/reembed/pending
+# ---------------------------------------------------------------------------
+
+
+async def test_reembed_pending_returns_counts_for_all_tiers(app, monkeypatch):
+    """GET returns tier counts from count_pending() wrapped in ApiResponse."""
+    from butlers.modules.memory import reembedding as _reembedding
+
+    _make_reembed_db(app)
+
+    expected_counts = {"episodes": 3, "facts": 7, "rules": 1}
+
+    async def _fake_count_pending(pool, current_model, tier=None):
+        return dict(expected_counts)
+
+    monkeypatch.setattr(_reembedding, "count_pending", _fake_count_pending)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/memory/reembed/pending",
+            params={"butler": "memory", "current_model": "all-MiniLM-L6-v2"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    data = body["data"]
+    assert data["counts"] == expected_counts
+    assert data["total"] == 11  # 3 + 7 + 1
+    assert data["current_model"] == "all-MiniLM-L6-v2"
+
+
+async def test_reembed_pending_uses_default_model_when_omitted(app, monkeypatch):
+    """GET uses the default embedding model when current_model is not specified."""
+    from butlers.modules.memory import reembedding as _reembedding
+
+    _make_reembed_db(app)
+    captured: list[str] = []
+
+    async def _fake_count_pending(pool, current_model, tier=None):
+        captured.append(current_model)
+        return {"episodes": 0, "facts": 0, "rules": 0}
+
+    monkeypatch.setattr(_reembedding, "count_pending", _fake_count_pending)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/reembed/pending", params={"butler": "memory"})
+
+    assert resp.status_code == 200
+    assert captured == ["all-MiniLM-L6-v2"]
+
+
+async def test_reembed_pending_404_for_unknown_butler(app):
+    """GET returns 404 when the requested butler pool is not registered."""
+    _make_reembed_db(app, known_butlers=["memory"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/reembed/pending", params={"butler": "nonexistent"})
+
+    assert resp.status_code == 404
+
+
+async def test_reembed_pending_400_on_bad_tier(app, monkeypatch):
+    """GET returns 400 when count_pending raises ValueError for an invalid tier."""
+    from butlers.modules.memory import reembedding as _reembedding
+
+    _make_reembed_db(app)
+
+    async def _fake_count_pending(pool, current_model, tier=None):
+        raise ValueError("Unknown tier 'bogus'. Must be one of: ['episodes', 'facts', 'rules']")
+
+    monkeypatch.setattr(_reembedding, "count_pending", _fake_count_pending)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/memory/reembed/pending",
+            params={"butler": "memory", "current_model": "all-MiniLM-L6-v2"},
+        )
+
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/reembed
+# ---------------------------------------------------------------------------
+
+
+async def test_reembed_post_dry_run_returns_result(app, monkeypatch):
+    """POST with dry_run=true returns ReembedResult without writing to DB."""
+    from butlers.modules.memory import reembedding as _reembedding
+    from butlers.modules.memory.tools import _helpers as _helpers_mod
+
+    _make_reembed_db(app)
+
+    # Stub embedding engine — avoids loading sentence-transformers in tests.
+    mock_engine = MagicMock()
+    mock_engine.model_name = "all-MiniLM-L6-v2"
+    monkeypatch.setattr(_helpers_mod, "get_embedding_engine", lambda model_name: mock_engine)
+
+    dry_run_result = _reembedding.ReembedResult(
+        dry_run=True,
+        current_model="all-MiniLM-L6-v2",
+        tiers_processed=["episodes", "facts", "rules"],
+        counts={"episodes": 2, "facts": 5, "rules": 0},
+        errors=[],
+    )
+
+    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size):
+        return dry_run_result
+
+    monkeypatch.setattr(_reembedding, "run", _fake_run)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/memory/reembed",
+            json={"butler": "memory", "dry_run": True, "batch_size": 50},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["dry_run"] is True
+    assert data["counts"] == {"episodes": 2, "facts": 5, "rules": 0}
+    assert data["total"] == 7
+    assert data["errors"] == []
+    assert data["current_model"] == "all-MiniLM-L6-v2"
+
+
+async def test_reembed_post_live_run_passes_correct_args(app, monkeypatch):
+    """POST with dry_run=false passes correct params to reembedding.run()."""
+    from butlers.modules.memory import reembedding as _reembedding
+    from butlers.modules.memory.tools import _helpers as _helpers_mod
+
+    _make_reembed_db(app)
+
+    mock_engine = MagicMock()
+    mock_engine.model_name = "all-MiniLM-L6-v2"
+    monkeypatch.setattr(_helpers_mod, "get_embedding_engine", lambda model_name: mock_engine)
+
+    captured: list[dict] = []
+
+    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size):
+        captured.append({"dry_run": dry_run, "tiers": tiers, "batch_size": batch_size})
+        return _reembedding.ReembedResult(
+            dry_run=False,
+            current_model="all-MiniLM-L6-v2",
+            tiers_processed=["facts"],
+            counts={"facts": 12},
+            errors=[],
+        )
+
+    monkeypatch.setattr(_reembedding, "run", _fake_run)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/memory/reembed",
+            json={
+                "butler": "memory",
+                "dry_run": False,
+                "tiers": ["facts"],
+                "batch_size": 100,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert len(captured) == 1
+    call = captured[0]
+    assert call["dry_run"] is False
+    assert call["tiers"] == ["facts"]
+    assert call["batch_size"] == 100
+
+
+async def test_reembed_post_400_on_invalid_tier(app, monkeypatch):
+    """POST returns 400 when reembedding.run raises ValueError for invalid tiers."""
+    from butlers.modules.memory import reembedding as _reembedding
+    from butlers.modules.memory.tools import _helpers as _helpers_mod
+
+    _make_reembed_db(app)
+
+    mock_engine = MagicMock()
+    mock_engine.model_name = "all-MiniLM-L6-v2"
+    monkeypatch.setattr(_helpers_mod, "get_embedding_engine", lambda model_name: mock_engine)
+
+    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size):
+        raise ValueError("Unknown tiers: ['bogus']")
+
+    monkeypatch.setattr(_reembedding, "run", _fake_run)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/memory/reembed",
+            json={"butler": "memory", "dry_run": True, "tiers": ["bogus"]},
+        )
+
+    assert resp.status_code == 400
+
+
+async def test_reembed_post_404_for_unknown_butler(app):
+    """POST returns 404 when the requested butler pool is not registered."""
+    _make_reembed_db(app, known_butlers=["memory"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/memory/reembed",
+            json={"butler": "nonexistent", "dry_run": True},
+        )
+
+    assert resp.status_code == 404
