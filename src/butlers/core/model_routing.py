@@ -206,6 +206,7 @@ candidates AS (
     FROM all_candidates ac
     JOIN winning w
         ON ac.effective_tier = w.effective_tier
+        AND ac.tier_ord = w.tier_ord
         AND ac.effective_priority = w.max_priority
 ),
 next_counter AS (

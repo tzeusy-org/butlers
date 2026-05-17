@@ -46,6 +46,9 @@ def _make_catalog_row(
         "model_id": model_id,
         "extra_args": json.dumps(extra_args or []),
         "complexity_tier": complexity_tier,
+        # effective_tier mirrors complexity_tier in mock rows (SQL alias for
+        # COALESCE(bmo.complexity_tier, mc.complexity_tier) in _RESOLVE_SQL).
+        "effective_tier": complexity_tier,
         "enabled": enabled,
         "priority": priority,
         "session_timeout_s": session_timeout_s,
