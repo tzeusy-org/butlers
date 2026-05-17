@@ -157,6 +157,7 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "module.states",
         "module.set_enabled",
         "correct",
+        # Added in #1712 and #1714 respectively; always registered on every butler.
         "memory_access",
         "shutdown",
     }
