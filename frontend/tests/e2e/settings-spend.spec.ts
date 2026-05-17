@@ -190,6 +190,7 @@ test("spend: page renders and KPI strip shows spend totals", async ({ page, base
   // Monthly Ceiling cell is present (value is "—" since ceiling_usd is null)
   const ceilingCell = page.getByTestId("kpi-ceiling");
   await expect(ceilingCell.getByText("Monthly Ceiling")).toBeVisible();
+  await expect(ceilingCell.getByText("—")).toBeVisible();
 
   // Days in Month cell shows the correct count — scoped to avoid matching the
   // SVG x-axis label that also renders "31".
@@ -197,8 +198,9 @@ test("spend: page renders and KPI strip shows spend totals", async ({ page, base
   await expect(daysCell.getByText("Days in Month")).toBeVisible();
   await expect(daysCell.getByText(String(DAYS_IN_MONTH))).toBeVisible();
 
-  // Days elapsed sub-label
-  await expect(page.getByText(`${DAYS_ELAPSED} days elapsed`)).toBeVisible();
+  // Days elapsed sub-label — scoped to mtdCell to avoid potential strict-mode
+  // collisions if the same text appears elsewhere on the page.
+  await expect(mtdCell.getByText(`${DAYS_ELAPSED} days elapsed`)).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
