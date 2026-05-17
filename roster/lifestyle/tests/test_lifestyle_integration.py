@@ -249,7 +249,8 @@ async def lifestyle_pool(provisioned_postgres_pool):
                 observed_at TIMESTAMPTZ DEFAULT now(),
                 invalid_at TIMESTAMPTZ,
                 retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal'
+                sensitivity TEXT NOT NULL DEFAULT 'normal',
+                embedding_model_version TEXT DEFAULT 'unknown'
             )
         """)
 
@@ -283,6 +284,7 @@ def _make_mock_embedding_engine() -> MagicMock:
     """Return a deterministic fake EmbeddingEngine for tests."""
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
     return engine
 
 

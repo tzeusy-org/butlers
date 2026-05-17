@@ -401,7 +401,8 @@ async def dunbar_pool(provisioned_postgres_pool):
                 invalid_at TIMESTAMPTZ,
                 retention_class TEXT NOT NULL DEFAULT 'operational',
                 sensitivity TEXT NOT NULL DEFAULT 'normal',
-                search_vector tsvector
+                search_vector tsvector,
+                embedding_model_version TEXT DEFAULT 'unknown'
             )
         """)
         await p.execute(
@@ -1345,7 +1346,8 @@ async def simple_pool(provisioned_postgres_pool):
                 observed_at TIMESTAMPTZ DEFAULT now(),
                 invalid_at TIMESTAMPTZ,
                 retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal'
+                sensitivity TEXT NOT NULL DEFAULT 'normal',
+                embedding_model_version TEXT DEFAULT 'unknown'
             )
         """)
         await p.execute(

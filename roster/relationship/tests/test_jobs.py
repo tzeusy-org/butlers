@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS facts (
     sensitivity TEXT NOT NULL DEFAULT 'normal',
     idempotency_key TEXT,
     observed_at TIMESTAMPTZ DEFAULT now(),
-    invalid_at TIMESTAMPTZ
+    invalid_at TIMESTAMPTZ,
+    embedding_model_version TEXT DEFAULT 'unknown'
 )
 """
 
@@ -1093,7 +1094,8 @@ CREATE TABLE IF NOT EXISTS facts (
     observed_at TIMESTAMPTZ DEFAULT now(),
     invalid_at TIMESTAMPTZ,
     retention_class TEXT NOT NULL DEFAULT 'operational',
-    sensitivity TEXT NOT NULL DEFAULT 'normal'
+    sensitivity TEXT NOT NULL DEFAULT 'normal',
+    embedding_model_version TEXT DEFAULT 'unknown'
 )
 """
 

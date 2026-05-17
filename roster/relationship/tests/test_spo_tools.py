@@ -38,6 +38,7 @@ def mock_embedding_engine():
 
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
 
     with patch("butlers.modules.memory.tools.get_embedding_engine", return_value=engine):
         # Reset module-level _embedding_engine cache in each relationship tool
@@ -148,7 +149,8 @@ async def pool(provisioned_postgres_pool):
                 observed_at TIMESTAMPTZ DEFAULT now(),
                 invalid_at TIMESTAMPTZ,
                 retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal'
+                sensitivity TEXT NOT NULL DEFAULT 'normal',
+                embedding_model_version TEXT DEFAULT 'unknown'
             )
         """)
         await p.execute("""

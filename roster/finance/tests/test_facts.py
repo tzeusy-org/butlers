@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS facts (
     observed_at         TIMESTAMPTZ DEFAULT now(),
     invalid_at          TIMESTAMPTZ,
     retention_class     TEXT NOT NULL DEFAULT 'operational',
-    sensitivity         TEXT NOT NULL DEFAULT 'normal'
+    sensitivity         TEXT NOT NULL DEFAULT 'normal',
+    embedding_model_version TEXT DEFAULT 'unknown'
 )
 """
 _DDL_EPISODES = """
@@ -113,7 +114,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     request_id       TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     retention_class  TEXT NOT NULL DEFAULT 'operational',
-    sensitivity      TEXT NOT NULL DEFAULT 'normal'
+    sensitivity      TEXT NOT NULL DEFAULT 'normal',
+    embedding_model_version TEXT DEFAULT 'unknown'
 )
 """
 _DDL_MEMORY_LINKS = """
@@ -182,6 +184,7 @@ async def pool_with_owner(pool):
 def _mock_embedding_engine():
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
     return engine
 
 
