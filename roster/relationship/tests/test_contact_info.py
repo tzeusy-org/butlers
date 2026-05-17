@@ -24,6 +24,7 @@ def patch_embedding_engine():
     """Patch the embedding engine so store_fact works without a real model."""
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
 
     with patch(
         "butlers.modules.memory.tools.get_embedding_engine",
@@ -183,7 +184,8 @@ async def pool(provisioned_postgres_pool):
                 observed_at TIMESTAMPTZ DEFAULT now(),
                 invalid_at TIMESTAMPTZ,
                 retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal'
+                sensitivity TEXT NOT NULL DEFAULT 'normal',
+                embedding_model_version TEXT DEFAULT 'unknown'
             )
         """)
 
