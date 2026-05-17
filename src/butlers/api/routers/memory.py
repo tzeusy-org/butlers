@@ -2108,15 +2108,10 @@ async def run_reembed(
     from butlers.modules.memory import reembedding as _reembedding
     from butlers.modules.memory.tools import get_embedding_engine
 
-    if body.butler is not None:
-        try:
-            pool = db.pool(body.butler)
-        except KeyError:
-            raise HTTPException(
-                status_code=404, detail=f"No pool available for butler '{body.butler}'"
-            )
-    else:
-        pool = _any_pool(db)
+    try:
+        pool = db.pool(body.butler)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"No pool available for butler '{body.butler}'")
 
     try:
         engine = get_embedding_engine(body.current_model)

@@ -8,7 +8,7 @@ Provides models for the three-tier memory subsystem:
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Episode(BaseModel):
@@ -254,13 +254,13 @@ class ReembedPendingCounts(BaseModel):
 class ReembedRunRequest(BaseModel):
     """Request body for POST /api/memory/reembed."""
 
-    butler: str | None = None
-    """Butler schema to operate on.  When None, the first available pool is used."""
+    butler: str
+    """Butler schema to operate on."""
     dry_run: bool = True
     """When True (default), count and log only — no DB writes are performed."""
     tiers: list[str] | None = None
     """Subset of tiers to process (episodes, facts, rules).  None → all tiers."""
-    batch_size: int = 50
+    batch_size: int = Field(default=50, ge=1, le=500)
     """Rows per DB round-trip (1–500, default 50)."""
     current_model: str = _DEFAULT_EMBEDDING_MODEL
     """Embedding model currently configured.  Defaults to all-MiniLM-L6-v2."""

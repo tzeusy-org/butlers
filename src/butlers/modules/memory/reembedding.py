@@ -17,6 +17,7 @@ MCP tool wrapper or a background task without pulling in the MCP layer.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -274,11 +275,13 @@ async def _process_tier(
             break
 
         # Embed all texts in one batch call for throughput.
+        # embed_batch is CPU-bound (sentence-transformers inference); offload to
+        # a thread so the event loop is not blocked during the encode call.
         texts = [row[content_col] for row in rows]
         row_ids = [row["id"] for row in rows]
 
         try:
-            vectors = engine.embed_batch(texts)
+            vectors = await asyncio.to_thread(engine.embed_batch, texts)
         except Exception as exc:  # noqa: BLE001
             msg = f"embed_batch failed for {table}: {exc}"
             logger.error(msg)
