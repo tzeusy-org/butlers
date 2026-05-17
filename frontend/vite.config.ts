@@ -9,6 +9,9 @@ export default defineConfig({
     // Installs global browser API stubs (e.g. ResizeObserver) before each test
     // file so that jsdom-incompatible primitives work without per-file boilerplate.
     setupFiles: ["./src/test/setup.ts"],
+    // Exclude Playwright e2e specs — they import @playwright/test which
+    // conflicts with vitest's own test() when picked up by vitest's file scan.
+    exclude: ["**/tests/e2e/**", "**/node_modules/**"],
   },
   plugins: [tailwindcss(), react()],
   resolve: {

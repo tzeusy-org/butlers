@@ -150,6 +150,7 @@ async def check_email_recipient(
     EmailGuardDecision
         ``.allowed=True`` if delivery may proceed, ``False`` if parked.
     """
+
     def _emit_created(action_id: uuid.UUID, status: str) -> None:
         """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
         try:

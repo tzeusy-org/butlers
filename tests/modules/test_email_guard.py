@@ -256,9 +256,7 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=mock_emit,
             ),
         ):
-            decision = await check_email_recipient(
-                pool, butler_name="home", **_COMMON_KWARGS
-            )
+            decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
 
         assert decision.allowed is False
         assert decision.reason == "parked"
@@ -321,9 +319,7 @@ class TestEmailGuardEmitsCreatedEvent:
                 side_effect=RuntimeError("broker down"),
             ),
         ):
-            decision = await check_email_recipient(
-                pool, butler_name="home", **_COMMON_KWARGS
-            )
+            decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
 
         # Guard must still park the action even when emit raises
         assert decision.allowed is False

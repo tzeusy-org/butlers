@@ -92,14 +92,13 @@ def register_memory_access_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable
 
         drops_7d = await _query_drops_7d(pool)
 
-        # Resolve the embedding model name from the memory module config if
-        # available, falling back to the known project default (all-MiniLM-L6-v2).
+        # Resolve the embedding model name from the memory module config.
+        # ``MemoryModuleConfig.embedding_model`` always has a string default
+        # ("all-MiniLM-L6-v2"), so the config-sourced path is authoritative.
+        # The ``or`` fallback is kept only for defensiveness against test
+        # doubles or malformed modules that pass ``embedding_model=None``.
         cfg = getattr(memory_mod, "_config", None)
-        embedding_model: str = (
-            getattr(cfg, "embedding_model", None) or "all-MiniLM-L6-v2"
-            if cfg is not None
-            else "all-MiniLM-L6-v2"
-        )
+        embedding_model: str = getattr(cfg, "embedding_model", None) or "all-MiniLM-L6-v2"
 
         return {
             "read": list(_MEMORY_STORES),

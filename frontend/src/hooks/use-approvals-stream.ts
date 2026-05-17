@@ -101,7 +101,10 @@ export function useApprovalsStream({
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const onEventRef = useRef(onEvent);
-  onEventRef.current = onEvent;
+  // connectRef lets ws.onclose schedule a reconnect without triggering
+  // no-use-before-define (the connect useCallback references itself via
+  // the ref rather than the binding that appears later in the source).
+  const connectRef = useRef<() => void>(() => undefined);
 
   const disconnect = useCallback(() => {
     mountedRef.current = false;
@@ -155,11 +158,19 @@ export function useApprovalsStream({
       if (!mountedRef.current) return;
       // Exponential back-off: 1 s → 2 s → 4 s → … capped at 30 s
       retryTimerRef.current = setTimeout(() => {
-        if (mountedRef.current) connect();
+        if (mountedRef.current) connectRef.current();
       }, retryDelayRef.current);
       retryDelayRef.current = Math.min(retryDelayRef.current * 2, 30_000);
     };
   }, [enabled, apiKey, qc]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
+
+  useEffect(() => {
+    onEventRef.current = onEvent;
+  }, [onEvent]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -168,7 +179,7 @@ export function useApprovalsStream({
       disconnect();
       // Note: mountedRef.current is already set to false by disconnect().
       // The next effect re-run (StrictMode or dependency change) sets it back to
-      // true on line 165 before calling connect(), so no extra reset is needed here.
+      // true before calling connect(), so no extra reset is needed here.
     };
   }, [connect, disconnect, enabled]);
 

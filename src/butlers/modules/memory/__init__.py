@@ -170,6 +170,12 @@ class MemoryModuleConfig(ToolGroupMixin, BaseModel):
     # leave this unset and let the module infer it from context.
     catalog_source_schema: str = ""
 
+    # Embedding model identifier surfaced to the dashboard via the
+    # ``memory_access`` core tool.  Mirrors the model loaded by
+    # ``butlers.modules.memory.embedding.EmbeddingEngine`` — keep this
+    # value in sync if the embedding engine is ever swapped out.
+    embedding_model: str = "all-MiniLM-L6-v2"
+
 
 class MemoryModule(Module):
     """Memory module providing MCP tools for memory CRUD, retrieval, and preferences."""

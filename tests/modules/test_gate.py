@@ -399,7 +399,9 @@ class TestGateEmitsCreatedEvent:
             ),
             patch(
                 "butlers.modules.approvals.gate.execute_approved_action",
-                new=AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"})),
+                new=AsyncMock(
+                    return_value=ExecutionResult(success=True, result={"status": "sent"})
+                ),
             ),
             patch(
                 "butlers.api.routers.approvals.emit_approvals_event",
@@ -488,7 +490,9 @@ class TestGateEmitsCreatedEvent:
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
             patch(
                 "butlers.modules.approvals.gate.execute_approved_action",
-                new=AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"})),
+                new=AsyncMock(
+                    return_value=ExecutionResult(success=True, result={"status": "sent"})
+                ),
             ),
             patch(
                 "butlers.api.routers.approvals.emit_approvals_event",

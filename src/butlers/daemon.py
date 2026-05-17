@@ -157,6 +157,8 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "module.states",
         "module.set_enabled",
         "correct",
+        "memory_access",
+        "shutdown",
     }
 )
 

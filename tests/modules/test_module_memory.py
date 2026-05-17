@@ -752,6 +752,47 @@ class TestToolGroups:
         assert len(tools) == 25
 
 
+class TestEmbeddingModelConfig:
+    """Verify ``embedding_model`` round-trips through MemoryModuleConfig.
+
+    The ``memory_access`` core tool reads ``embedding_model`` from the
+    validated module config to surface the active embedding model to the
+    dashboard.  This contract requires the field to exist on
+    ``MemoryModuleConfig`` with a sensible default and to round-trip cleanly
+    through ``model_validate`` (the same path the daemon uses when loading
+    raw toml dicts).
+    """
+
+    def test_default_value_matches_engine_model(self):
+        """Default embedding_model matches the model the EmbeddingEngine loads."""
+        cfg = MemoryModuleConfig()
+        assert cfg.embedding_model == "all-MiniLM-L6-v2"
+
+    def test_field_round_trips_through_model_validate(self):
+        """Custom embedding_model survives the toml -> dict -> validate flow."""
+        # Simulates what daemon._validate_module_configs() does with a raw
+        # ``[modules.memory]`` dict produced by butlers.config.
+        raw_from_toml = {"embedding_model": "text-embedding-3-small"}
+        cfg = MemoryModuleConfig.model_validate(raw_from_toml)
+        assert cfg.embedding_model == "text-embedding-3-small"
+
+    def test_model_dump_emits_embedding_model(self):
+        """model_dump round-trips the field so DB-backed loaders see it."""
+        cfg = MemoryModuleConfig(embedding_model="custom-model")
+        dumped = cfg.model_dump()
+        assert dumped["embedding_model"] == "custom-model"
+        # Re-validating the dump yields an equivalent config — the round-trip
+        # any DB-backed config loader would perform.
+        round_tripped = MemoryModuleConfig.model_validate(dumped)
+        assert round_tripped.embedding_model == "custom-model"
+
+    def test_default_round_trips_through_model_dump(self):
+        """When toml omits embedding_model, the default flows through model_dump."""
+        cfg = MemoryModuleConfig.model_validate({})
+        dumped = cfg.model_dump()
+        assert dumped["embedding_model"] == "all-MiniLM-L6-v2"
+
+
 class TestRegistryDiscovery:
     """Verify MemoryModule is found by default_registry()."""
 
