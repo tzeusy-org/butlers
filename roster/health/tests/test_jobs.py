@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS public.facts (
     sensitivity TEXT NOT NULL DEFAULT 'normal',
     idempotency_key TEXT,
     observed_at TIMESTAMPTZ DEFAULT now(),
-    invalid_at TIMESTAMPTZ
+    invalid_at TIMESTAMPTZ,
+    embedding_model_version TEXT DEFAULT 'unknown'
 )
 """
 
