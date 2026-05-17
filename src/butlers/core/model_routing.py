@@ -140,54 +140,86 @@ class QuotaStatus:
     limit_30d: int | None
 
 
-# SQL that performs the full resolution in a single round-trip.
-# Uses CTEs to:
-# 1. Find all enabled candidates at the highest effective priority for the tier.
-# 2. Atomically increment a round-robin counter for (butler_name, complexity_tier).
-# 3. Select the candidate at index (counter % total) for fair rotation.
+# SQL that resolves the best model across an ordered tier list in a single round-trip.
 #
-# §3.2 routing contract: highest-priority enabled model in tier whose
-# state ∈ {verified, untested}.  The state column does not yet exist in the
-# schema; until it does, all enabled entries are treated as qualifying
-# (state implicitly = untested).
+# Accepts:
+#   $1 — butler_name (text)
+#   $2 — ordered tiers to try (text[]), e.g. ['reasoning','workhorse','cheap']
+#
+# Strategy (§3.2 routing contract):
+# 1. tier_order:    Enumerate provided tiers with their fallthrough position (ord).
+# 2. all_candidates: Join catalog + overrides for all qualifying models across every
+#                   provided tier, carrying effective_tier, effective_priority, and ord.
+# 3. winning:       Find the first tier (lowest ord) that has at least one qualifying
+#                   model; also record its max priority so step 4 can filter to
+#                   top-priority entries only.
+# 4. candidates:    Narrow to top-priority models in the winning tier, decorated with
+#                   a stable round-robin row number (created_at ASC, id ASC tie-break).
+# 5. next_counter:  INSERT...SELECT from `winning` — fires ONLY when a winning tier
+#                   exists, so empty-tier fallthrough attempts never increment any
+#                   counter.  Atomically increments the per-(butler, tier) counter.
+# 6. Final SELECT:  Picks the candidate at index (counter % total).
+#
+# Returns: (runtime_type, model_id, extra_args, id, session_timeout_s, effective_tier)
+# Returns no rows when no qualifying model exists in any provided tier.
 _RESOLVE_SQL = """
-WITH candidates AS (
+WITH
+tier_order AS (
+    SELECT t.tier, t.ord
+    FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
+),
+all_candidates AS (
     SELECT
         mc.runtime_type,
         mc.model_id,
         mc.extra_args,
         mc.id,
         mc.session_timeout_s,
-        ROW_NUMBER() OVER (ORDER BY mc.created_at ASC, mc.id ASC) - 1 AS rn,
-        COUNT(*) OVER () AS total
+        mc.created_at,
+        COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
+        COALESCE(bmo.priority, mc.priority) AS effective_priority,
+        t.ord AS tier_ord
     FROM public.model_catalog mc
     LEFT JOIN public.butler_model_overrides bmo
-        ON bmo.catalog_entry_id = mc.id
-        AND bmo.butler_name = $1
-    WHERE
-        COALESCE(bmo.enabled, mc.enabled) = true
-        AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
-        AND COALESCE(bmo.priority, mc.priority) = (
-            SELECT MAX(COALESCE(bmo2.priority, mc2.priority))
-            FROM public.model_catalog mc2
-            LEFT JOIN public.butler_model_overrides bmo2
-                ON bmo2.catalog_entry_id = mc2.id
-                AND bmo2.butler_name = $1
-            WHERE
-                COALESCE(bmo2.enabled, mc2.enabled) = true
-                AND COALESCE(bmo2.complexity_tier, mc2.complexity_tier) = $2
-        )
+        ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    JOIN tier_order t
+        ON COALESCE(bmo.complexity_tier, mc.complexity_tier) = t.tier
+    WHERE COALESCE(bmo.enabled, mc.enabled) = true
+),
+winning AS (
+    SELECT effective_tier, tier_ord, MAX(effective_priority) AS max_priority
+    FROM all_candidates
+    GROUP BY effective_tier, tier_ord
+    ORDER BY tier_ord ASC
+    LIMIT 1
+),
+candidates AS (
+    SELECT
+        ac.runtime_type,
+        ac.model_id,
+        ac.extra_args,
+        ac.id,
+        ac.session_timeout_s,
+        ac.effective_tier,
+        ROW_NUMBER() OVER (ORDER BY ac.created_at ASC, ac.id ASC) - 1 AS rn,
+        COUNT(*) OVER () AS total
+    FROM all_candidates ac
+    JOIN winning w
+        ON ac.effective_tier = w.effective_tier
+        AND ac.tier_ord = w.tier_ord
+        AND ac.effective_priority = w.max_priority
 ),
 next_counter AS (
     INSERT INTO public.model_round_robin_counters
         (butler_name, complexity_tier, counter, updated_at)
-    VALUES ($1, $2, 0, now())
+    SELECT $1, w.effective_tier, 0, now() FROM winning w
     ON CONFLICT (butler_name, complexity_tier)
-    DO UPDATE SET counter = public.model_round_robin_counters.counter + 1,
-                  updated_at = now()
+    DO UPDATE SET
+        counter = public.model_round_robin_counters.counter + 1,
+        updated_at = now()
     RETURNING counter
 )
-SELECT c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s
+SELECT c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier
 FROM candidates c, next_counter nc
 WHERE c.rn = (nc.counter % c.total)
 """
@@ -309,32 +341,34 @@ async def resolve_model(
     else:
         tier_value = _check_deprecated_tier(str(complexity_tier))
 
-    # Build the fallthrough sequence starting from the requested tier.
+    # Build the ordered tier list for the single-query resolver.
     if allow_tier_fallthrough and tier_value in TIER_FALLTHROUGH_ORDER:
         start_idx = TIER_FALLTHROUGH_ORDER.index(tier_value)
-        tiers_to_try = TIER_FALLTHROUGH_ORDER[start_idx:]
+        tiers_to_try = list(TIER_FALLTHROUGH_ORDER[start_idx:])
     else:
-        tiers_to_try = (tier_value,)
+        tiers_to_try = [tier_value]
 
-    for tier in tiers_to_try:
-        row = await pool.fetchrow(_RESOLVE_SQL, butler_name, tier)
-        if row is not None:
-            if tier != tier_value:
-                logger.debug(
-                    "resolve_model: no entry in tier %r for butler %r; fell through to %r",
-                    tier_value,
-                    butler_name,
-                    tier,
-                )
-            return (
-                row["runtime_type"],
-                row["model_id"],
-                _parse_extra_args(row["extra_args"]),
-                row["id"],
-                row["session_timeout_s"],
-            )
+    # Single query resolves across all candidate tiers, incrementing the counter
+    # only for the tier actually used.  Empty tiers never touch their counters.
+    row = await pool.fetchrow(_RESOLVE_SQL, butler_name, tiers_to_try)
+    if row is None:
+        return None
 
-    return None
+    effective_tier = row["effective_tier"]
+    if effective_tier != tier_value:
+        logger.debug(
+            "resolve_model: no entry in tier %r for butler %r; fell through to %r",
+            tier_value,
+            butler_name,
+            effective_tier,
+        )
+    return (
+        row["runtime_type"],
+        row["model_id"],
+        _parse_extra_args(row["extra_args"]),
+        row["id"],
+        row["session_timeout_s"],
+    )
 
 
 async def check_token_quota(
