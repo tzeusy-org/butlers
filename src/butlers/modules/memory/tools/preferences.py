@@ -108,6 +108,7 @@ async def set_preference(
     predicate: str,
     value: str,
     *,
+    embedding_engine: Any | None = None,
     permanence: str = PREFERENCE_PERMANENCE_DEFAULT,
     importance: float = PREFERENCE_IMPORTANCE_DEFAULT,
     metadata: dict[str, Any] | None = None,
@@ -126,6 +127,9 @@ async def set_preference(
         pool: asyncpg connection pool.
         predicate: Preference predicate in ``preferences:<domain>_<name>`` format.
         value: Preference value string (stored as fact content).
+        embedding_engine: Optional pre-built EmbeddingEngine. When provided,
+            this engine is used directly; when omitted the module-default engine
+            (all-MiniLM-L6-v2) is used via ``get_embedding_engine()``.
         permanence: Permanence level override (default ``"stable"``).
         importance: Importance score override (default ``8.0``).
         metadata: Optional JSONB metadata to merge into the stored fact.
@@ -164,13 +168,13 @@ async def set_preference(
     scope = _derive_scope(predicate)
     owner_entity_id, owner_name = await _resolve_owner(pool)
 
-    embedding_engine = get_embedding_engine()
+    _engine = embedding_engine if embedding_engine is not None else get_embedding_engine()
     result = await _storage.store_fact(
         pool,
         owner_name,
         predicate,
         value,
-        embedding_engine,
+        _engine,
         importance=importance,
         permanence=permanence,
         scope=scope,

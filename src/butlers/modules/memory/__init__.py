@@ -220,11 +220,34 @@ class MemoryModule(Module):
         return self._db.pool
 
     def _get_embedding_engine(self):
-        """Lazy-load and return the shared embedding engine singleton."""
-        if self._embedding_engine is None:
-            from butlers.modules.memory.tools import get_embedding_engine
+        """Return the shared embedding engine for the configured model.
 
-            self._embedding_engine = get_embedding_engine()
+        Lazy-loads the engine on first call.  If the configured
+        ``embedding_model`` has changed since the engine was last built (e.g.
+        because a hot-reload updated the runtime config), the cached reference
+        is cleared so the correct engine is returned on the next call.
+
+        The underlying ``get_embedding_engine`` helper keeps a per-model cache,
+        so only the first request for a given model name triggers a model load.
+        """
+        from butlers.modules.memory.tools import get_embedding_engine
+
+        configured_model = self._config.embedding_model
+        if self._embedding_engine is not None:
+            active_model = getattr(self._embedding_engine, "_model_name", None)
+            if active_model != configured_model:
+                logger.warning(
+                    "embedding_model changed from %r to %r — rebuilding engine reference. "
+                    "WARNING: existing stored embeddings were generated with the old model "
+                    "and will produce incorrect similarity scores against new embeddings. "
+                    "Re-embed all stored memories before relying on search results.",
+                    active_model,
+                    configured_model,
+                )
+                self._embedding_engine = None
+
+        if self._embedding_engine is None:
+            self._embedding_engine = get_embedding_engine(configured_model)
         return self._embedding_engine
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
@@ -278,6 +301,7 @@ class MemoryModule(Module):
                 module._get_pool(),
                 content,
                 butler,
+                embedding_engine=module._get_embedding_engine(),
                 session_id=session_id,
                 importance=importance,
                 request_context=request_context,
@@ -1235,6 +1259,7 @@ class MemoryModule(Module):
                     module._get_pool(),
                     predicate,
                     value,
+                    embedding_engine=module._get_embedding_engine(),
                     permanence=permanence,
                     importance=importance,
                     metadata=metadata,

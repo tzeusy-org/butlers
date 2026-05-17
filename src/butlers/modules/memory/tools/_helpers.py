@@ -63,25 +63,39 @@ _storage = _load_module("storage")
 _search = _load_module("search")
 
 # ---------------------------------------------------------------------------
-# Embedding engine (loaded once, shared across all tool invocations)
+# Embedding engine (loaded once per model name, shared across all tool invocations)
 # ---------------------------------------------------------------------------
 
 _embedding_mod = _load_module("embedding")
 EmbeddingEngine = _embedding_mod.EmbeddingEngine
 
+_DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
-def get_embedding_engine() -> Any:
-    """Get or create the shared EmbeddingEngine singleton.
+# Singleton cache keyed by model name.  A new entry is created whenever a
+# different model name is requested for the first time.  Changing the
+# embedding_model config field produces a fresh engine (and therefore a fresh
+# model load) without evicting engines still in use by other callers.
+_embedding_engines: dict[str, Any] = {}
 
-    Lazy-loads the model on first call.
+
+def get_embedding_engine(model_name: str = _DEFAULT_EMBEDDING_MODEL) -> Any:
+    """Get or create the shared EmbeddingEngine singleton for *model_name*.
+
+    Engines are cached by model name.  Requesting a new model name produces a
+    fresh ``EmbeddingEngine`` instance; subsequent calls with the same name
+    return the cached instance.
+
+    Args:
+        model_name: Sentence-transformers model identifier (default
+            ``"all-MiniLM-L6-v2"``).  Matches the default of
+            ``MemoryModuleConfig.embedding_model``.
+
+    Returns:
+        The ``EmbeddingEngine`` instance for the requested model.
     """
-    global _embedding_engine
-    if _embedding_engine is None:
-        _embedding_engine = EmbeddingEngine()
-    return _embedding_engine
-
-
-_embedding_engine: Any = None
+    if model_name not in _embedding_engines:
+        _embedding_engines[model_name] = EmbeddingEngine(model_name)
+    return _embedding_engines[model_name]
 
 
 # ---------------------------------------------------------------------------

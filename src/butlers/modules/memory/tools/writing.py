@@ -77,6 +77,7 @@ async def memory_store_episode(
     content: str,
     butler: str,
     *,
+    embedding_engine: Any | None = None,
     session_id: str | None = None,
     importance: float = 5.0,
     request_context: dict[str, Any] | None = None,
@@ -90,6 +91,9 @@ async def memory_store_episode(
         pool: asyncpg connection pool.
         content: Episode text.
         butler: Name of the source butler.
+        embedding_engine: Optional pre-built EmbeddingEngine. When provided,
+            this engine is used directly; when omitted the module-default engine
+            (all-MiniLM-L6-v2) is used via ``get_embedding_engine()``.
         session_id: Optional UUID string of the source runtime session.
         importance: Importance rating (default 5.0).
         request_context: Optional dict with 'tenant_id' and 'request_id' for
@@ -101,7 +105,7 @@ async def memory_store_episode(
         pool,
         content,
         butler,
-        get_embedding_engine(),
+        embedding_engine if embedding_engine is not None else get_embedding_engine(),
         session_id=parsed_session_id,
         importance=importance,
         tenant_id=tenant_id,
