@@ -100,6 +100,9 @@ export function useApprovalsStream({
   const retryDelayRef = useRef<number>(1000);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  // Stable ref for the latest onEvent callback — updated in an effect so that
+  // ws.onmessage always calls the most-recent version without closing over a
+  // stale prop value and without triggering a reconnect on every render.
   const onEventRef = useRef(onEvent);
   // connectRef lets ws.onclose schedule a reconnect without triggering
   // no-use-before-define (the connect useCallback references itself via
@@ -164,6 +167,7 @@ export function useApprovalsStream({
     };
   }, [enabled, apiKey, qc]);
 
+  // Keep connectRef and onEventRef pointing at the latest callbacks.
   useEffect(() => {
     connectRef.current = connect;
   }, [connect]);

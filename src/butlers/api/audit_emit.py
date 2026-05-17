@@ -123,8 +123,12 @@ def build_user_context(
         forwarded_for = request.headers.get("x-forwarded-for")
         if forwarded_for:
             # X-Forwarded-For may be a comma-separated chain; first entry is
-            # the original client.
-            context["forwarded_for"] = forwarded_for.split(",")[0].strip()
+            # the original client.  Guard against degenerate inputs like
+            # ``", 10.0.0.1"`` whose first slot strips to an empty string —
+            # storing ``forwarded_for=""`` would be misleading noise.
+            first_ip = forwarded_for.split(",")[0].strip()
+            if first_ip:
+                context["forwarded_for"] = first_ip
 
         user_agent = request.headers.get("user-agent")
         if user_agent:
@@ -213,16 +217,16 @@ async def emit_dashboard_audit(
     if trace_id:
         request_summary["trace_id"] = trace_id
 
-    if user_context is None:
-        user_context = build_user_context(request)
-
-    # Pre-coerce non-JSON-safe values (e.g. UUIDs in path_params) to strings,
-    # then hand the codec a plain dict — wrapping with json.dumps() here would
-    # double-encode and store a JSONB string scalar instead of an object.
-    safe_summary = json.loads(json.dumps(request_summary, default=str))
-    safe_context = json.loads(json.dumps(user_context, default=str))
-
     try:
+        if user_context is None:
+            user_context = build_user_context(request)
+
+        # Pre-coerce non-JSON-safe values (e.g. UUIDs in path_params) to strings,
+        # then hand the codec a plain dict — wrapping with json.dumps() here would
+        # double-encode and store a JSONB string scalar instead of an object.
+        safe_summary = json.loads(json.dumps(request_summary, default=str))
+        safe_context = json.loads(json.dumps(user_context, default=str))
+
         pool = db_manager.pool("switchboard")
         await pool.execute(
             "INSERT INTO dashboard_audit_log "
