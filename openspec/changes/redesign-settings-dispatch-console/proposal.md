@@ -23,7 +23,7 @@ The redesign assets in `pr/overview/settings-refactor/` propose a **Console + th
   - Routing contract: highest-priority enabled model with `state ∈ {verified, untested}` wins; fall through to next tier.
   - **PLAN.md's `PUT /api/models/{id}/role` is dropped** — `role` is a free-text label in the existing schema (`extra_args` or `description`); no dedicated endpoint is needed. The existing `PUT /api/settings/models/{id}` already accepts `extra_args` updates.
 - **API additions** (dashboard-spend-dashboard NEW capability — REPLACES the existing `costs.py` router):
-  - The existing `src/butlers/api/routers/costs.py` is **renamed** to `spend.py`. Old `/api/costs/*` endpoints (`/api/costs/summary`, `/api/costs/daily`, `/api/costs/top-sessions`, `/api/costs/by-schedule`) are renamed to `/api/spend/*` (`/api/spend?period=...`, `/api/spend/daily`, `/api/spend/top-sessions`, `/api/spend/by-schedule`). Frontend consumers (`use-costs.ts` or equivalent hooks) update accordingly.
+  - The existing `src/butlers/api/routers/costs.py` is **renamed** to `spend.py`. Old `/api/costs/*` endpoints (`/api/costs/summary`, `/api/costs/daily`, `/api/costs/top-sessions`, `/api/costs/by-schedule`) are renamed to `/api/spend/*` (`/api/spend/summary`, `/api/spend/daily`, `/api/spend/top-sessions`, `/api/spend/by-schedule`). Frontend consumers (`use-spend.ts` or equivalent hooks) update accordingly.
   - `GET /api/spend?period=24h|7d|30d|90d|ytd|all`
   - `GET /api/spend/breakdown?by=butler|model|feature`
   - `GET /api/spend/forecast` — projected month-end land + daily series (naive `mtd ÷ days_elapsed × days_in_month` for v1).

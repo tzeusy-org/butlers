@@ -17,7 +17,7 @@ The page SHALL render these surfaces:
 3. **Runtime KPI strip**: four promoted operational KPIs derived from
    `GET /api/butlers` and `GET /api/approvals/metrics`.
 4. **Operations**: right-column butler scan list derived from `GET /api/butlers`
-   and `GET /api/costs/summary?period=today`.
+   and `GET /api/spend/summary?period=today`.
 5. **Now**: right-column immediate operational items derived from existing
    approval, QA, notification, and activity endpoints.
 
@@ -139,13 +139,13 @@ tabular-numeric, and visually calm.
 The home page SHALL render a right-column `Operations` section summarizing the
 active domain butlers. The section is a scan list, not a chart.
 
-#### Scenario: Operations rows join butler and cost summaries
+#### Scenario: Operations rows join butler and spend summaries
 
 - **WHEN** `GET /api/butlers` returns butler rows
 - **THEN** `Operations` renders only rows whose `type` is `"butler"`
 - **AND** each row shows the butler identity, session count from `sessions_24h`,
-  and today's cost from `GET /api/costs/summary?period=today` `by_butler`
-- **AND** missing cost data renders as an explicit zero or unavailable value,
+  and today's spend from `GET /api/spend/summary?period=today` `by_butler`
+- **AND** missing spend data renders as an explicit zero or unavailable value,
   not by hiding the row
 
 #### Scenario: Operations handles empty, loading, and error states
@@ -280,7 +280,7 @@ approvals.
   the briefing response remains the six-field API contract consumed by the
   Overview page.
 - Current endpoint sources: `GET /api/dashboard/briefing`, `GET /api/issues`,
-  `GET /api/butlers`, `GET /api/costs/summary?period=today`,
+  `GET /api/butlers`, `GET /api/spend/summary?period=today`,
   `GET /api/approvals/metrics`, `GET /api/qa/summary`,
   `GET /api/qa/investigations`, `GET /api/notifications/stats`,
   `GET /api/timeline`, and `GET /api/sessions`.

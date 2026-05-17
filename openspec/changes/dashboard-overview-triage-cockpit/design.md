@@ -65,7 +65,7 @@ implementation uses:
 | KPI: sessions · 24h | `GET /api/butlers` `sessions_24h` via `useButlers()` |
 | KPI: pending approvals | `GET /api/approvals/metrics` via `useApprovalMetrics()` |
 | Operations: butler sessions/status | `GET /api/butlers` via `useButlers()` |
-| Operations: cost today | `GET /api/costs/summary?period=today` via `useCostSummary("today")` |
+| Operations: spend today | `GET /api/spend/summary?period=today` via `useSpendSummary("today")` |
 | Now: pending approvals | `GET /api/approvals/metrics` via `useApprovalMetrics()` |
 | Now: QA state | `GET /api/qa/summary` via `useQaSummary()` and, if active PR/investigation detail is needed, `GET /api/qa/investigations` |
 | Now: failed notification pressure | `GET /api/notifications/stats` via `useNotificationStats()` |

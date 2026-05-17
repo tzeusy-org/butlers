@@ -201,7 +201,7 @@ Suggested archive names (when ready):
 | bu-iuol4.6 | Backend: GET /api/butlers/{name}/analytics/latency-stats | P2 | blocked | Latency stats endpoint not delivered |
 | bu-iuol4.8 | Backend: add last_session_started_at to ButlerSummary | P3 | open | ButlerSummary extension not delivered |
 | bu-iuol4.11 | Backend: extend ModuleStatus with oauth/credential health | P3 | open | ModuleStatus extension not delivered |
-| bu-iuol4.12 | Backend: verify ?butler= filter on /api/costs/summary and /api/memory/episodes | P3 | open | Filter verification not done |
+| bu-iuol4.12 | Backend: verify ?butler= filter on /api/spend/summary and /api/memory/episodes | P3 | open | Filter verification not done |
 
 ### Discovered follow-ups from sibling beads
 

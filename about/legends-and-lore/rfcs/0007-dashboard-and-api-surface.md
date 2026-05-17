@@ -117,8 +117,8 @@ Admission-control decisions that did not launch a runtime session (for example c
 | `GET /api/notifications/stats` | `ApiResponse<NotificationStats>` | Delivery statistics |
 | `GET /api/issues` | `ApiResponse<Issue[]>` | Grouped error issues |
 | `GET /api/audit-log` | `PaginatedResponse<AuditEntry>` | Operation history |
-| `GET /api/costs/summary` | `ApiResponse<CostSummary>` | Cost aggregates (filter: period) |
-| `GET /api/costs/daily` | `ApiResponse<DailyCost[]>` | Per-day costs |
+| `GET /api/spend/summary` | `ApiResponse<SpendSummary>` | Spend aggregates (filter: period) |
+| `GET /api/spend/daily` | `ApiResponse<DailySpend[]>` | Per-day spend |
 | `GET /api/search` | `ApiResponse<SearchResults>` | Cross-domain search (groups: sessions, state, contacts) |
 | `GET /api/qa/summary` | `ApiResponse<QaSummary>` | QA staffer status, patrol rollup, circuit breaker |
 | `GET /api/qa/cases` | `PaginatedResponse<QaCaseSummary>` | QA case rail summaries for the dossier renderer (filters: sev, since, offset, limit) |
