@@ -11,8 +11,8 @@ is applied lazily on read (pg 11+).  There is no table rewrite.
 Existing rows receive the default value 'unknown', because the model that
 produced their embeddings is not recorded anywhere.  A one-time backfill via
 the memory_reembed MCP tool will update each row to the current model name
-and regenerate its embedding.  New writes produced after this migration will
-always record the producing model name.
+and regenerate its embedding.  New writes after this migration explicitly
+record the producing model name in all INSERT/UPDATE paths (storage.py).
 """
 
 from __future__ import annotations

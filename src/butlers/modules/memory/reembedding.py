@@ -286,25 +286,29 @@ async def _process_tier(
             break
 
         # Write back embeddings and model version in a single transaction.
+        # Use executemany so the transaction is not left in an aborted state
+        # if one row fails — a single failed execute inside a transaction makes
+        # all subsequent commands fail with "current transaction is aborted".
         async with pool.acquire() as conn:
-            async with conn.transaction():
-                for row_id, vector in zip(row_ids, vectors, strict=True):
-                    try:
-                        await conn.execute(
-                            f"""
-                            UPDATE {table}
-                            SET embedding = $1::vector,
-                                embedding_model_version = $2
-                            WHERE id = $3
-                            """,
-                            str(vector),
-                            current_model,
-                            row_id,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        msg = f"update failed for {table} id={row_id}: {exc}"
-                        logger.error(msg)
-                        errors.append(msg)
+            try:
+                async with conn.transaction():
+                    await conn.executemany(
+                        f"""
+                        UPDATE {table}
+                        SET embedding = $1::vector,
+                            embedding_model_version = $2
+                        WHERE id = $3
+                        """,
+                        [
+                            (str(vector), current_model, row_id)
+                            for row_id, vector in zip(row_ids, vectors, strict=True)
+                        ],
+                    )
+            except Exception as exc:  # noqa: BLE001
+                msg = f"batch update failed for {table}: {exc}"
+                logger.error(msg)
+                errors.append(msg)
+                break
 
         total += batch_size_actual
 

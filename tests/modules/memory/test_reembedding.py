@@ -38,13 +38,15 @@ def _make_pool(fetch_results: list | None = None, fetchrow_result=None) -> Async
     - pool.acquire() is an async context manager returning a connection mock.
     - conn.fetchrow() returns fetchrow_result (a dict-like).
     - conn.fetch() returns fetch_results (a list of dict-like rows).
-    - conn.execute() is an AsyncMock (returns nothing).
+    - conn.execute() is an AsyncMock (returns nothing; used for count queries).
+    - conn.executemany() is an AsyncMock (returns nothing; used for batch UPDATEs).
     - conn.transaction() is an async context manager (no-op).
     """
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value=fetchrow_result)
     conn.fetch = AsyncMock(return_value=fetch_results or [])
     conn.execute = AsyncMock()
+    conn.executemany = AsyncMock()
 
     # transaction() is an async context manager.
     txn_ctx = AsyncMock()
@@ -178,7 +180,7 @@ class TestRunDryRun:
 
         result = await run(pool, engine, dry_run=True)
 
-        conn.execute.assert_not_called()
+        conn.executemany.assert_not_called()
         assert result.dry_run is True
         assert result.current_model == "new-model"
         assert set(result.tiers_processed) == set(ALL_TIERS)
@@ -194,7 +196,7 @@ class TestRunDryRun:
         # 1 row found in first fetch — should be reflected in counts.
         assert result.counts["facts"] == 1
         # No writes.
-        conn.execute.assert_not_called()
+        conn.executemany.assert_not_called()
 
     async def test_dry_run_no_rows_returns_zero(self) -> None:
         pool, _ = _make_pool(fetch_results=[])
@@ -212,7 +214,7 @@ class TestRunDryRun:
 
 class TestRunFull:
     async def test_updates_embedding_and_model_version(self) -> None:
-        """Full run calls UPDATE for each row in the batch."""
+        """Full run calls executemany UPDATE for the batch."""
         row_id = uuid.uuid4()
         stale_rows = [{"id": row_id, "content": "test content"}]
 
@@ -227,13 +229,17 @@ class TestRunFull:
 
         assert result.dry_run is False
         assert result.counts["facts"] == 1
-        # execute() was called exactly once (one row, one UPDATE).
-        conn.execute.assert_called_once()
-        call_args = conn.execute.call_args
-        assert "UPDATE" in call_args[0][0]
-        assert "embedding_model_version" in call_args[0][0]
-        assert call_args[0][2] == "new-model"  # model name param
-        assert call_args[0][3] == row_id  # row id param
+        # executemany() was called once per batch with the UPDATE SQL.
+        conn.executemany.assert_called_once()
+        call_args = conn.executemany.call_args
+        sql = call_args[0][0]
+        rows = call_args[0][1]
+        assert "UPDATE" in sql
+        assert "embedding_model_version" in sql
+        # executemany rows: (vector_str, model_name, row_id)
+        assert len(rows) == 1
+        assert rows[0][1] == "new-model"  # model name
+        assert rows[0][2] == row_id  # row id
 
     async def test_batch_size_respected(self) -> None:
         """With batch_size=2, a batch of 2 triggers a second fetch."""
@@ -260,7 +266,7 @@ class TestRunFull:
         result = await run(pool, engine, dry_run=False, tiers=["rules"])
 
         assert result.counts["rules"] == 0
-        conn.execute.assert_not_called()
+        conn.executemany.assert_not_called()
 
     async def test_invalid_tier_raises_before_db_access(self) -> None:
         pool, conn = _make_pool()

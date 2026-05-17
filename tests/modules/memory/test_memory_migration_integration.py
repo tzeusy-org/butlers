@@ -101,6 +101,7 @@ def _fake_embedding_engine() -> MagicMock:
     """Return a mock embedding engine that returns a deterministic 384-float vector."""
     engine = MagicMock()
     engine.embed.return_value = [0.0] * 384
+    engine.model_name = "test-model"
     return engine
 
 

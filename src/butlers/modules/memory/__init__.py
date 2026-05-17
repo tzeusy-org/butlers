@@ -1376,14 +1376,15 @@ class MemoryModule(Module):
             1. Run with ``dry_run=True`` (the default) to preview how many rows
                need re-embedding per tier.
             2. Review the counts; if acceptable, call with ``dry_run=False``.
-            3. The tool processes rows in batches and returns a summary.  For very
-               large deployments (tens of thousands of rows) call repeatedly — each
-               invocation pages through the next ``batch_size`` rows.
+            3. A single invocation processes **all** stale rows across all
+               requested tiers, paging through them internally in ``batch_size``
+               chunks.  The call returns when all stale rows are processed (or an
+               error stops a batch).
 
             Args:
                 dry_run: Preview-only when True (default).  No DB writes are made.
                 tiers: Subset of tiers to process (default: all tiers).
-                batch_size: Rows per batch (1–500, default 50).
+                batch_size: Rows per DB round-trip (1–500, default 50).
 
             Returns:
                 Dict with keys:
@@ -1392,11 +1393,11 @@ class MemoryModule(Module):
                 - ``tiers_processed`` (list[str])
                 - ``counts`` (dict): rows re-embedded (or found stale) per tier
                 - ``total`` (int): sum across all tiers
-                - ``errors`` (list[str]): non-fatal per-row errors
+                - ``errors`` (list[str]): non-fatal batch errors
 
             In dry-run mode, ``counts`` reflects the first batch found per tier,
-            not the full table count.  Use ``memory_reembed_pending_count`` or
-            call ``count_pending`` directly for exact totals.
+            not the full table count.  Use ``memory_reembed_pending_count`` for
+            exact totals without re-embedding.
             """
             try:
                 result = await _reembedding.run(
