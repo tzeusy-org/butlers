@@ -12,14 +12,20 @@ You are a senior Butlers reviewer running two guardrail passes on a redesign pla
 
 ### Inputs
 
+- **Section 0 (Design intent)** — passed inline; binding for both passes.
 - **Phase A report** — sub-pages, components, design tokens.
-- **Phase B report** — component classification, current implementation.
+- **Phase B report** — component classification, current implementation. The `## Butlers touched` table in Phase B's output names exactly which manifestos are in scope.
 - **Phase C report** — API delta and proposed backend work.
-- Redesign bundle at `{{bundle_path}}`.
-- **Manifestos** — every butler under `roster/{butler}/MANIFESTO.md`. Read the manifesto for every butler whose page or surface area is touched by the redesign.
+- **Redesign bundle** at `{{bundle_path}}`.
+- **Manifestos** — read only the manifestos named in Phase B's `## Butlers touched` table at `roster/{butler}/MANIFESTO.md`. Do not skim every manifesto in the roster.
+- **Pricing reference** — `references/llm-pricing.md` (read by Pass 1).
 - **Doctrine** — `about/heart-and-soul/` documents the project's non-negotiables. Load only the docs relevant to the redesign's domain.
 
 ### Pass 1 — LLM-cost feasibility audit
+
+**Pricing source:** before computing any dollar figure, read `references/llm-pricing.md` in full. Use its rate table, frequency-estimation cadences, sanity-default rows, and verdict thresholds. If `last_verified` in that file is more than 60 days old, fetch live pricing from anthropic.com/pricing and note any drift before proceeding.
+
+**Intent gate:** before the cost math runs, read Section 0 of the brief draft (passed inline). Any feature that violates a "What we are deliberately NOT doing" bullet is **automatically red** regardless of cost — flag it as `intent-conflict-red` with the cited bullet.
 
 Goal: for every feature that requires LLM inference (auto-summaries, drafts, classifications, semantic search, agentic decisions, "smart" suggestions, narrative captions, anything that calls the LLM CLI Spawner), estimate cost and assign a verdict.
 
@@ -31,15 +37,15 @@ Identify LLM-driven features by scanning Phase A's component list and Phase C's 
 
 For each LLM-driven feature, produce one row:
 
-| Feature | Trigger model (per-action / per-page-view / per-user-per-day) | Estimated input tokens | Estimated output tokens | Model class | Estimated $/action | Frequency at 100 active users | Estimated $/day | Verdict |
+| Feature | Trigger model | tokens_in | tokens_out | Model class | $/call | Freq/user/day | $/user/day (v1: users=1) | $/user/day (sensitivity: users=100) | Verdict |
 
-Estimate inputs/outputs by inspecting the component's content. Use Claude Sonnet pricing for model class unless the design implies otherwise. Frequency estimates should be honest — a "live status pill that recomposes every 4s" runs ~21,600 times per user per day; spell that out, do not round it down.
+Rates come from `references/llm-pricing.md`. Frequency estimates come from the same file's cadence table; for unmeasured features, cite the sanity-default row used. Frequency estimates should be honest — a "live status pill that recomposes every 4s" runs ~21,600 times per user per day; spell that out, do not round it down.
 
-Verdicts:
+Verdicts (per `references/llm-pricing.md` thresholds):
 
 - **green** — < $0.05 per active user per day; ship as designed.
-- **yellow** — $0.05–$0.50 per active user per day; ship but recommend cache/throttle/debounce strategy in the verdict notes.
-- **red** — > $0.50 per active user per day, OR triggers on a hot loop (sub-minute cadence), OR has no obvious cache strategy. **Red features must be de-scoped or escalated before they reach the spec phase.**
+- **yellow** — $0.05–$0.50 per active user per day; ship but the row's verdict notes must name a concrete cache/throttle/debounce/pre-compute strategy.
+- **red** — > $0.50 per active user per day, OR sub-minute trigger cadence, OR no obvious cache strategy, OR intent-conflict-red per the intent gate above. **Red features must be de-scoped, reshaped, or escalated before they reach the spec phase.**
 
 For every `red`, provide:
 - The cost arithmetic that produced the verdict.

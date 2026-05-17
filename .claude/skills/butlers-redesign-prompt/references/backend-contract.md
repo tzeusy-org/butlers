@@ -35,13 +35,18 @@ The "Data needed" column should be specific enough that a backend engineer could
 
 For each affordance, decide its API status. One row per endpoint:
 
-| Path | Method | Status | Existing handler (if any) | Request shape | Response shape | Drives affordance(s) |
+| Path | Method | Status | Existing handler (if any) | Request shape | Response shape | Evidence | Drives affordance(s) |
 
 Status values:
 - `exists` — endpoint already returns exactly what the affordance needs.
 - `extend` — endpoint exists but needs new fields or a new query parameter; cite file:line of the current handler.
 - `new` — endpoint must be created from scratch.
 - `unclear` — cannot determine from the bundle alone; needs user clarification.
+
+Evidence values (mandatory per row — drives downstream trust):
+- `live-endpoint` — shape verified against an actual handler under `roster/*/api/` or `src/butlers/api/`. Cite file:line.
+- `spec` — shape verified against an OpenSpec capability spec under `openspec/`. Cite spec section.
+- `fixture` — shape inferred from `data.jsx` / `*-data.jsx` mock data only. **A `fixture`-only row must be marked `status: unclear`** regardless of how plausible the shape looks. The spec phase will treat these as open questions for the user.
 
 For `extend`, specify the delta precisely (which fields, default values, backward-compatibility plan). For `new`, draft the Pydantic-style schema for both request and response.
 
