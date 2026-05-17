@@ -113,6 +113,9 @@ import type {
   MemoryRule,
   MemoryStats,
   CompactionLogEntry,
+  ReembedPendingCounts,
+  ReembedRunRequest,
+  ReembedRunResult,
   UpdateRetentionPoliciesRequest,
   RuleParams,
   ThreadAffinitySettings,
@@ -1586,6 +1589,30 @@ export function getMemoryCompactionLog(
 ): Promise<ApiResponse<CompactionLogEntry[]>> {
   const params = limit != null ? `?limit=${limit}` : "";
   return apiFetch<ApiResponse<CompactionLogEntry[]>>(`/memory/compaction-log${params}`);
+}
+
+/** Count stale embeddings per tier — GET /api/memory/reembed/pending. */
+export function getReembedPending(
+  butler?: string,
+  currentModel?: string,
+): Promise<ApiResponse<ReembedPendingCounts>> {
+  const sp = new URLSearchParams();
+  if (butler) sp.set("butler", butler);
+  if (currentModel) sp.set("current_model", currentModel);
+  const qs = sp.toString();
+  return apiFetch<ApiResponse<ReembedPendingCounts>>(
+    qs ? `/memory/reembed/pending?${qs}` : "/memory/reembed/pending",
+  );
+}
+
+/** Trigger a synchronous re-embedding run — POST /api/memory/reembed. */
+export function runReembed(
+  body: ReembedRunRequest,
+): Promise<ApiResponse<ReembedRunResult>> {
+  return apiFetch<ApiResponse<ReembedRunResult>>("/memory/reembed", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 /** Search memory (inspect). */

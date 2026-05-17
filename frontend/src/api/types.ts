@@ -4782,3 +4782,46 @@ export interface KillResponse {
   grace_seconds: number;
   status: string;
 }
+
+// ---------------------------------------------------------------------------
+// Memory re-embedding (bu-9bqsy)
+// Mirrors src/butlers/api/models/memory.py: ReembedPendingCounts,
+// ReembedRunRequest, ReembedRunResult
+// ---------------------------------------------------------------------------
+
+/** Per-tier counts of rows whose stored embedding is stale. */
+export interface ReembedPendingCounts {
+  /** Stale row count per tier: episodes, facts, rules. */
+  counts: Record<string, number>;
+  /** Sum of all tier counts. */
+  total: number;
+  /** Model name used as the reference point for staleness. */
+  current_model: string;
+}
+
+/** Request body for POST /api/memory/reembed. */
+export interface ReembedRunRequest {
+  /** Butler schema to operate on. */
+  butler: string;
+  /** When true (default), count and log only — no DB writes are performed. */
+  dry_run?: boolean;
+  /** Subset of tiers to process (episodes, facts, rules). Null → all tiers. */
+  tiers?: string[] | null;
+  /** Rows per DB round-trip (1–500, default 50). */
+  batch_size?: number;
+  /** Embedding model currently configured. */
+  current_model?: string;
+}
+
+/** Response from POST /api/memory/reembed. */
+export interface ReembedRunResult {
+  dry_run: boolean;
+  current_model: string;
+  tiers_processed: string[];
+  /** Rows re-embedded (or found stale in dry_run) per tier. */
+  counts: Record<string, number>;
+  /** Sum across all tiers. */
+  total: number;
+  /** Non-fatal per-batch errors encountered during the run. */
+  errors: string[];
+}
