@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-qg test-qg-serial test-qg-parallel check bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -45,6 +45,12 @@ test-e2e-validate:
 test-e2e-benchmark:
 	E2E_BENCHMARK_MODELS="$(BENCHMARK_MODELS)" uv run pytest tests/e2e/ -v -s --benchmark \
 		$(if $(BENCHMARK_MODELS_FLAG),--benchmark-models=$(BENCHMARK_MODELS_FLAG),)
+
+# Frontend Playwright e2e tests — requires dev server running on localhost:5173
+# Start the server first: cd frontend && npm run dev
+# Install browsers once: cd frontend && npm run test:e2e:install
+test-e2e-frontend:
+	cd frontend && npm run test:e2e
 
 # Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
 # --dist loadfile keeps tests from the same file on the same worker so module-scoped fixtures
