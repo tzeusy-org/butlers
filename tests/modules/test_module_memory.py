@@ -346,10 +346,20 @@ class TestToolDelegation:
 
     async def test_memory_store_episode_delegates(self):
         mod, tools, pool, writing, *_ = await self._setup_and_register()
+        # Pre-set the engine so that _get_embedding_engine() does not load
+        # the real sentence-transformers model during the unit test.
+        mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         writing.memory_store_episode = AsyncMock(return_value={"id": "abc"})
         await tools["memory_store_episode"](content="test", butler="memory")
         writing.memory_store_episode.assert_called_once_with(
-            pool, "test", "memory", session_id=None, importance=5.0, request_context=None
+            pool,
+            "test",
+            "memory",
+            embedding_engine=mod._embedding_engine,
+            session_id=None,
+            importance=5.0,
+            request_context=None,
         )
 
     async def test_memory_store_fact_delegates(self):
@@ -791,6 +801,123 @@ class TestEmbeddingModelConfig:
         cfg = MemoryModuleConfig.model_validate({})
         dumped = cfg.model_dump()
         assert dumped["embedding_model"] == "all-MiniLM-L6-v2"
+
+
+class TestGetEmbeddingEngineSingleton:
+    """Verify get_embedding_engine() caches by model name and produces a fresh
+    instance for a new model name."""
+
+    def test_same_model_returns_same_instance(self):
+        """Calling get_embedding_engine() twice with the same model name yields
+        the identical cached object."""
+        from butlers.modules.memory.tools._helpers import get_embedding_engine
+
+        with patch("butlers.modules.memory.tools._helpers.EmbeddingEngine") as MockEng:
+            MockEng.return_value = MagicMock(name="engine-a")
+            from butlers.modules.memory.tools import _helpers
+
+            # Clear cache to get a clean slate for this test.
+            saved = dict(_helpers._embedding_engines)
+            _helpers._embedding_engines.clear()
+            try:
+                e1 = get_embedding_engine("model-x")
+                e2 = get_embedding_engine("model-x")
+                assert e1 is e2
+                MockEng.assert_called_once_with("model-x")
+            finally:
+                _helpers._embedding_engines.clear()
+                _helpers._embedding_engines.update(saved)
+
+    def test_different_model_returns_different_instance(self):
+        """A new model name produces a fresh EmbeddingEngine, not the cached one."""
+        from butlers.modules.memory.tools._helpers import get_embedding_engine
+
+        with patch("butlers.modules.memory.tools._helpers.EmbeddingEngine") as MockEng:
+            eng_a = MagicMock(name="engine-a")
+            eng_b = MagicMock(name="engine-b")
+            MockEng.side_effect = [eng_a, eng_b]
+
+            from butlers.modules.memory.tools import _helpers
+
+            saved = dict(_helpers._embedding_engines)
+            _helpers._embedding_engines.clear()
+            try:
+                e1 = get_embedding_engine("model-x")
+                e2 = get_embedding_engine("model-y")
+                assert e1 is not e2
+                assert e1 is eng_a
+                assert e2 is eng_b
+            finally:
+                _helpers._embedding_engines.clear()
+                _helpers._embedding_engines.update(saved)
+
+    def test_default_model_is_minilm(self):
+        """Default model name is all-MiniLM-L6-v2."""
+        from butlers.modules.memory.tools._helpers import _DEFAULT_EMBEDDING_MODEL
+
+        assert _DEFAULT_EMBEDDING_MODEL == "all-MiniLM-L6-v2"
+
+
+class TestModuleEmbeddingEngineWiring:
+    """Verify MemoryModule._get_embedding_engine() uses the configured model
+    and that a model change invalidates the cached engine reference."""
+
+    def test_uses_configured_model(self):
+        """_get_embedding_engine() calls get_embedding_engine with the configured model."""
+        mod = MemoryModule()
+        cfg = MemoryModuleConfig(embedding_model="custom-test-model")
+        mod._config = cfg
+
+        with patch("butlers.modules.memory.tools.get_embedding_engine") as mock_ge:
+            fake_engine = MagicMock(name="custom-engine")
+            fake_engine._model_name = "custom-test-model"
+            mock_ge.return_value = fake_engine
+
+            result = mod._get_embedding_engine()
+            mock_ge.assert_called_once_with("custom-test-model")
+            assert result is fake_engine
+
+    def test_model_change_clears_cached_engine(self):
+        """When embedding_model changes, _get_embedding_engine() drops the old
+        cached engine reference so the next call rebuilds it."""
+        mod = MemoryModule()
+        cfg_a = MemoryModuleConfig(embedding_model="model-a")
+        mod._config = cfg_a
+
+        old_engine = MagicMock(name="engine-a")
+        old_engine._model_name = "model-a"
+        mod._embedding_engine = old_engine
+
+        # Now change the config to a different model.
+        cfg_b = MemoryModuleConfig(embedding_model="model-b")
+        mod._config = cfg_b
+
+        with patch("butlers.modules.memory.tools.get_embedding_engine") as mock_ge:
+            new_engine = MagicMock(name="engine-b")
+            new_engine._model_name = "model-b"
+            mock_ge.return_value = new_engine
+
+            result = mod._get_embedding_engine()
+            mock_ge.assert_called_once_with("model-b")
+            assert result is new_engine
+            # The cached reference is now the new engine.
+            assert mod._embedding_engine is new_engine
+
+    def test_same_model_reuses_cached_engine(self):
+        """When model has not changed, _get_embedding_engine() returns the
+        existing cached engine without calling get_embedding_engine again."""
+        mod = MemoryModule()
+        cfg = MemoryModuleConfig(embedding_model="model-a")
+        mod._config = cfg
+
+        cached_engine = MagicMock(name="engine-a")
+        cached_engine._model_name = "model-a"
+        mod._embedding_engine = cached_engine
+
+        with patch("butlers.modules.memory.tools.get_embedding_engine") as mock_ge:
+            result = mod._get_embedding_engine()
+            mock_ge.assert_not_called()
+            assert result is cached_engine
 
 
 class TestRegistryDiscovery:
