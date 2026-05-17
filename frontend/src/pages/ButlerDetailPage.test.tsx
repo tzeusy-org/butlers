@@ -447,8 +447,8 @@ describe("ButlerDetailPage — Gate-B B2 tab vocabulary constants", () => {
     expect([...BASE_TABS_RESIDENT]).toEqual(expected);
   });
 
-  it("OPERATOR_EXTENSION_TABS contains models (non-spec operator-only tab)", () => {
-    expect([...OPERATOR_EXTENSION_TABS]).toEqual(["models"]);
+  it("OPERATOR_EXTENSION_TABS contains models and manage (non-spec operator-only tabs)", () => {
+    expect([...OPERATOR_EXTENSION_TABS]).toEqual(["models", "manage"]);
   });
 
   it("BASE_TABS_OPERATOR does not include models (models is an extension, not a base tab)", () => {
@@ -660,13 +660,14 @@ describe("ButlerDetailPage — Gate-B B2 localStorage persistence", () => {
 // ---------------------------------------------------------------------------
 
 describe("ButlerDetailPage — Gate-B B2 getAllTabs helper", () => {
-  it("operator mode returns all 10 base tabs + models for a regular butler", () => {
+  it("operator mode returns all 10 base tabs + models + manage for a regular butler", () => {
     const tabs = getAllTabs("other", "operator");
     expect(tabs).toContain("overview");
     expect(tabs).toContain("sessions");
     expect(tabs).toContain("skills");
     expect(tabs).toContain("models");
-    expect([...tabs]).toHaveLength(11); // 10 base + 1 extension
+    expect(tabs).toContain("manage");
+    expect([...tabs]).toHaveLength(12); // 10 base + 2 extension (models, manage)
   });
 
   it("resident mode returns 7 dispatch vocabulary tabs for a regular butler", () => {

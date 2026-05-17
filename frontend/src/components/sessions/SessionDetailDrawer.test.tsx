@@ -294,7 +294,7 @@ describe("SessionDetailDrawer", () => {
       data: {
         data: {
           ...SESSION_DETAIL,
-          complexity: "high",
+          complexity: "workhorse",
           resolution_source: null,
           process_log: null,
         },
@@ -305,7 +305,7 @@ describe("SessionDetailDrawer", () => {
     renderDrawer();
 
     expect(document.body.textContent).toContain("Complexity");
-    expect(document.body.textContent).toContain("High");
+    expect(document.body.textContent).toContain("Workhorse");
   });
 
   it("shows resolution_source when present", () => {

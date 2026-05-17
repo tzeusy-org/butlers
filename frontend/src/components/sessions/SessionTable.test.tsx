@@ -48,11 +48,12 @@ describe("SessionTable model and complexity columns", () => {
   });
 
   it("renders a ComplexityBadge for known complexity tiers", () => {
-    const tiers = ["trivial", "medium", "high", "extra_high"] as const;
+    // Current canonical tiers: reasoning/workhorse/cheap/specialty/local/legacy
+    const tiers = ["reasoning", "workhorse", "cheap", "specialty", "local", "legacy"] as const;
     for (const tier of tiers) {
       const html = renderTable([makeSession({ complexity: tier })]);
-      // Badge text for that tier should appear
-      expect(html.toLowerCase()).toContain(tier.replace("_", " ").replace("extra high", "extra high"));
+      // Badge text for that tier should appear (label matches capitalized tier name)
+      expect(html.toLowerCase()).toContain(tier);
     }
   });
 
@@ -61,23 +62,23 @@ describe("SessionTable model and complexity columns", () => {
     expect(html).toMatch(/—|&#x2014;|\u2014|&mdash;/);
   });
 
-  it("shows complexity badge label for medium tier", () => {
-    const html = renderTable([makeSession({ complexity: "medium" })]);
-    expect(html).toContain("Medium");
+  it("shows complexity badge label for workhorse tier", () => {
+    const html = renderTable([makeSession({ complexity: "workhorse" })]);
+    expect(html).toContain("Workhorse");
   });
 
-  it("shows complexity badge label for high tier", () => {
-    const html = renderTable([makeSession({ complexity: "high" })]);
-    expect(html).toContain("High");
+  it("shows complexity badge label for reasoning tier", () => {
+    const html = renderTable([makeSession({ complexity: "reasoning" })]);
+    expect(html).toContain("Reasoning");
   });
 
-  it("shows complexity badge label for extra_high tier", () => {
-    const html = renderTable([makeSession({ complexity: "extra_high" })]);
-    expect(html).toContain("Extra High");
+  it("shows complexity badge label for cheap tier", () => {
+    const html = renderTable([makeSession({ complexity: "cheap" })]);
+    expect(html).toContain("Cheap");
   });
 
-  it("shows complexity badge label for trivial tier", () => {
-    const html = renderTable([makeSession({ complexity: "trivial" })]);
-    expect(html).toContain("Trivial");
+  it("shows complexity badge label for specialty tier", () => {
+    const html = renderTable([makeSession({ complexity: "specialty" })]);
+    expect(html).toContain("Specialty");
   });
 });
