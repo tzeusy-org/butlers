@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -23,7 +23,7 @@ import QuizHistoryList from "@/components/education/QuizHistoryList";
 
 export default function EducationPage() {
   const { data: mindMapsResponse, isLoading } = useMindMaps({ status: "active" });
-  const mindMaps = mindMapsResponse?.data ?? [];
+  const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse]);
 
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);

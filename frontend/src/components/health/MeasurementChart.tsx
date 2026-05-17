@@ -121,7 +121,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
   };
 
   const { data, isLoading } = useMeasurements(params);
-  const measurements = data?.data ?? [];
+  const measurements = useMemo(() => data?.data ?? [], [data]);
 
   // Build chart data
   const chartData = useMemo(() => {

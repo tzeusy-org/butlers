@@ -97,7 +97,7 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
   const { refetchInterval } = useAutoRefresh(60_000)
   const { data, isLoading, isError } = useSessionStripeData(windowHours, refetchInterval)
 
-  const sessions = data?.data ?? []
+  const sessions = useMemo(() => data?.data ?? [], [data])
 
   // Memoize the pivot and name-ordering so they don't rerun on every render.
   // currentWindow() recomputes on every render so the pivot always aligns with
