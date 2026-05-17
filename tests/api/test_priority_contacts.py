@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -200,7 +201,7 @@ async def test_post_priority_contact_409_on_duplicate(app):
     pool.fetchval = AsyncMock(return_value=True)  # contact exists
 
     async def _raise_duplicate(*_args, **_kwargs):
-        raise Exception("duplicate key value violates unique constraint")
+        raise asyncpg.UniqueViolationError()
 
     pool.fetchrow = AsyncMock(side_effect=_raise_duplicate)
     _app_with_mock_db(app, shared_pool=pool)

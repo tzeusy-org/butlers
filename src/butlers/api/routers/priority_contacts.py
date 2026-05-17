@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from butlers.api.db import DatabaseManager
@@ -191,13 +192,12 @@ async def add_priority_contact(
             body.butler,
             "dashboard",
         )
+    except asyncpg.UniqueViolationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Priority contact ({body.contact_id}, {body.butler}) already exists",
+        ) from exc
     except Exception as exc:
-        exc_str = str(exc)
-        if "duplicate key" in exc_str or "unique" in exc_str.lower():
-            raise HTTPException(
-                status_code=409,
-                detail=f"Priority contact ({body.contact_id}, {body.butler}) already exists",
-            ) from exc
         raise HTTPException(status_code=500, detail="Failed to insert priority contact") from exc
 
     # Emit audit entry
