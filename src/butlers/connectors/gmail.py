@@ -67,11 +67,11 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
     INGESTION_TIER_METADATA,
+    GmailPolicyEvaluator,
     LabelFilterPolicy,
     MessagePolicyResult,
     PolicyTierAssigner,
     evaluate_message_policy,
-    load_known_contacts_from_file,
     parse_label_list,
 )
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -548,13 +548,21 @@ class GmailConnectorRuntime:
             exclude=list(config.gmail_label_exclude),
         )
 
-        # Policy tier assigner (per docs/switchboard/email_priority_queuing.md §2)
-        known_contacts: frozenset[str] = frozenset()
-        if config.gmail_known_contacts_path:
-            known_contacts = load_known_contacts_from_file(config.gmail_known_contacts_path)
+        # DB-backed priority contact evaluator (15-min TTL cache).
+        # Falls back to the flat-file on DB failure or before the first successful
+        # DB load (one-cycle fallback per GMAIL_KNOWN_CONTACTS_PATH deprecation spec).
+        self._gmail_policy_evaluator = GmailPolicyEvaluator(
+            db_pool=db_pool,
+            known_contacts_path=config.gmail_known_contacts_path,
+        )
+
+        # Policy tier assigner (per docs/switchboard/email_priority_queuing.md §2).
+        # Initialised with an empty known_contacts set; refreshed before each poll
+        # cycle via _refresh_policy_tier_assigner().  The flat-file path is retained
+        # as a one-cycle fallback handled by GmailPolicyEvaluator.
         self._policy_tier_assigner = PolicyTierAssigner(
             user_email=config.gmail_user_email or "",
-            known_contacts=known_contacts,
+            known_contacts=frozenset(),
         )
 
         # Ingestion policy evaluators (replaces SourceFilterEvaluator).
@@ -577,6 +585,15 @@ class GmailConnectorRuntime:
             connector_type=config.connector_provider,
             endpoint_identity=config.connector_endpoint_identity,
         )
+
+    async def _refresh_policy_tier_assigner(self) -> None:
+        """Refresh the PolicyTierAssigner's known_contacts from the DB-backed evaluator.
+
+        Called before each poll cycle so that the in-memory contact set stays
+        current without blocking individual message evaluations.
+        """
+        known_contacts = await self._gmail_policy_evaluator.get_known_contacts()
+        self._policy_tier_assigner.known_contacts = known_contacts
 
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
@@ -873,6 +890,9 @@ class GmailConnectorRuntime:
         """Polling-based ingestion loop: poll for history changes and ingest new messages."""
         while self._running:
             try:
+                # Refresh priority contacts cache before each poll cycle (15-min TTL).
+                await self._refresh_policy_tier_assigner()
+
                 # Load current cursor
                 cursor = await self._load_cursor()
 
@@ -943,6 +963,9 @@ class GmailConnectorRuntime:
                         last_poll_time = current_time
 
                 if notification_received:
+                    # Refresh priority contacts cache before ingesting (15-min TTL).
+                    await self._refresh_policy_tier_assigner()
+
                     # Load current cursor
                     cursor = await self._load_cursor()
 

@@ -1,0 +1,198 @@
+"""Unit tests for GmailPolicyEvaluator — DB-backed priority contact cache.
+
+Covers:
+- DB-primary lookup: returns contacts from DB rows
+- 15-min TTL: refreshes when cache is expired, skips when fresh
+- Fail-open on DB error: retains previous cache
+- Flat-file fallback: consulted only when DB has never loaded
+- DB results take precedence once DB has been loaded
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from butlers.connectors.gmail_policy import GmailPolicyEvaluator
+
+pytestmark = pytest.mark.unit
+
+
+def _make_db_row(email: str):
+    m = MagicMock()
+    m.__getitem__ = MagicMock(side_effect=lambda key: email if key == "value" else None)
+    return m
+
+
+def _make_pool(emails: list[str] | None = None, *, raises: Exception | None = None):
+    pool = AsyncMock()
+    if raises is not None:
+        pool.fetch = AsyncMock(side_effect=raises)
+    else:
+        pool.fetch = AsyncMock(return_value=[_make_db_row(e) for e in (emails or [])])
+    return pool
+
+
+# ---------------------------------------------------------------------------
+# DB-primary lookup
+# ---------------------------------------------------------------------------
+
+
+async def test_evaluator_loads_contacts_from_db():
+    pool = _make_pool(["alice@example.com", "bob@example.com"])
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
+
+    contacts = await evaluator.get_known_contacts()
+
+    assert "alice@example.com" in contacts
+    assert "bob@example.com" in contacts
+    pool.fetch.assert_awaited_once()
+
+
+async def test_evaluator_normalizes_email_addresses():
+    pool = _make_pool(["Alice@Example.COM", " BOB@EXAMPLE.COM "])
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
+
+    contacts = await evaluator.get_known_contacts()
+
+    assert "alice@example.com" in contacts
+    assert "bob@example.com" in contacts
+
+
+# ---------------------------------------------------------------------------
+# TTL behaviour
+# ---------------------------------------------------------------------------
+
+
+async def test_evaluator_does_not_refresh_within_ttl():
+    pool = _make_pool(["alice@example.com"])
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
+
+    await evaluator.get_known_contacts()  # first load
+    await evaluator.get_known_contacts()  # should NOT re-query
+
+    assert pool.fetch.await_count == 1
+
+
+async def test_evaluator_refreshes_after_ttl_expiry():
+    pool = _make_pool(["alice@example.com"])
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=0.0)  # zero TTL → always expired
+
+    await evaluator.get_known_contacts()
+    await evaluator.get_known_contacts()
+
+    assert pool.fetch.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Fail-open on DB error
+# ---------------------------------------------------------------------------
+
+
+async def test_evaluator_retains_cache_on_db_error():
+    """On DB failure after a successful load, the previous cache is retained."""
+    pool = AsyncMock()
+    # First call succeeds with alice; second call fails.
+    pool.fetch = AsyncMock(
+        side_effect=[
+            [_make_db_row("alice@example.com")],
+            RuntimeError("DB connection refused"),
+        ]
+    )
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=0.0)  # zero TTL → always re-queries
+
+    first = await evaluator.get_known_contacts()
+    second = await evaluator.get_known_contacts()
+
+    assert "alice@example.com" in first
+    # Cache retained from first successful load
+    assert "alice@example.com" in second
+
+
+async def test_evaluator_empty_on_first_db_error_without_flatfile():
+    """If DB fails on the very first call and no flat-file is configured, return empty."""
+    pool = _make_pool(raises=RuntimeError("DB unavailable"))
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
+
+    contacts = await evaluator.get_known_contacts()
+
+    assert len(contacts) == 0
+
+
+# ---------------------------------------------------------------------------
+# Flat-file fallback
+# ---------------------------------------------------------------------------
+
+
+async def test_evaluator_uses_flatfile_when_db_never_loaded():
+    """Flat-file is consulted only when DB has never successfully loaded."""
+    pool = _make_pool(raises=RuntimeError("DB unavailable"))
+    flat_contacts = frozenset(["charlie@example.com"])
+
+    evaluator = GmailPolicyEvaluator(db_pool=pool, known_contacts_path="/fake/path.json", ttl=900)
+
+    with patch(
+        "butlers.connectors.gmail_policy.load_known_contacts_from_file",
+        return_value=flat_contacts,
+    ):
+        contacts = await evaluator.get_known_contacts()
+
+    assert "charlie@example.com" in contacts
+
+
+async def test_evaluator_ignores_flatfile_after_successful_db_load():
+    """Once the DB has loaded successfully, the flat-file is NOT consulted."""
+    pool = AsyncMock()
+    # First call returns DB contacts; second call fails but DB was already loaded.
+    pool.fetch = AsyncMock(
+        side_effect=[
+            [_make_db_row("alice@example.com")],
+            RuntimeError("DB unavailable"),
+        ]
+    )
+    evaluator = GmailPolicyEvaluator(db_pool=pool, known_contacts_path="/fake/path.json", ttl=0.0)
+
+    with patch(
+        "butlers.connectors.gmail_policy.load_known_contacts_from_file",
+        return_value=frozenset(["charlie@example.com"]),
+    ) as mock_ff:
+        await evaluator.get_known_contacts()  # DB loads alice
+        contacts = await evaluator.get_known_contacts()  # DB fails; retain alice, ignore flat-file
+
+    mock_ff.assert_not_called()
+    assert "alice@example.com" in contacts
+    assert "charlie@example.com" not in contacts
+
+
+# ---------------------------------------------------------------------------
+# is_priority_sender convenience method
+# ---------------------------------------------------------------------------
+
+
+async def test_is_priority_sender_true():
+    pool = _make_pool(["alice@example.com"])
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
+
+    result = await evaluator.is_priority_sender("alice@example.com")
+
+    assert result is True
+
+
+async def test_is_priority_sender_false():
+    pool = _make_pool(["alice@example.com"])
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
+
+    result = await evaluator.is_priority_sender("unknown@example.com")
+
+    assert result is False
+
+
+async def test_is_priority_sender_normalizes_input():
+    pool = _make_pool(["alice@example.com"])
+    evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
+
+    # Input with display name and uppercase should still match
+    result = await evaluator.is_priority_sender("Alice Smith <ALICE@EXAMPLE.COM>")
+
+    assert result is True

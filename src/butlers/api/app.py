@@ -69,6 +69,7 @@ from butlers.api.routers.oauth import router as oauth_router
 from butlers.api.routers.owntracks import router as owntracks_router
 from butlers.api.routers.permissions import router as permissions_router
 from butlers.api.routers.preferences import router as preferences_router
+from butlers.api.routers.priority_contacts import router as priority_contacts_router
 from butlers.api.routers.provider_settings import router as provider_settings_router
 from butlers.api.routers.qa import router as qa_router
 from butlers.api.routers.runtime_config import router as runtime_config_router
@@ -272,6 +273,7 @@ def create_app(
     app.include_router(secrets_router)
     app.include_router(state_router)
     app.include_router(ingestion_events_router)
+    app.include_router(priority_contacts_router)
     app.include_router(timeline_router)
     app.include_router(calendar_workspace_router)
     app.include_router(search_router)
