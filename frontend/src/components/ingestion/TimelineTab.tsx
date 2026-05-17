@@ -751,8 +751,8 @@ function EventRowSkeleton() {
 // ingestion strip needs to derive items from ConnectorSummary data client-side.
 // ---------------------------------------------------------------------------
 
-function ConnectorAttentionStrip() {
-  const { data: connectorsResp } = useConnectorSummaries();
+function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
+  const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
   const connectors = connectorsResp?.data ?? [];
 
   // Filter to connectors that need attention:
@@ -1099,7 +1099,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
   return (
     <div className="space-y-4">
       {/* §2.9 Connector Attention Strip — unhealthy connectors above the table */}
-      <ConnectorAttentionStrip />
+      <ConnectorAttentionStrip isActive={isActive} />
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between gap-4 flex-wrap">
