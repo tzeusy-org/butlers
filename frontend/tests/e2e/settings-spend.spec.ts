@@ -64,9 +64,11 @@ const MOCK_FORECAST = {
     mtd_usd: 2.20,
     ceiling_usd: null,
   },
+  meta: {},
 };
 
 const MOCK_FORECAST_WITH_CEILING = {
+  ...MOCK_FORECAST,
   data: {
     ...MOCK_FORECAST.data,
     ceiling_usd: 10.0,
@@ -81,10 +83,12 @@ const MOCK_BREAKDOWN = {
       calendar: 0.7,
     },
   },
+  meta: {},
 };
 
 const MOCK_RULES = {
   data: [],
+  meta: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -295,6 +299,11 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
   // After success the edit form collapses and the ceiling appears in the KPI strip.
   // MOCK_FORECAST_WITH_CEILING has ceiling_usd = 10.0 -> "$10.00"
   await expect(page.getByText("$10.00")).toBeVisible();
+
+  // The chart must now render the ceiling hairline (red dashed line stroke-dasharray="4 2")
+  const chart = page.getByRole("img", { name: /spend forecast chart/i });
+  const ceilingHairline = chart.locator('line[stroke-dasharray="4 2"]');
+  await expect(ceilingHairline).toBeVisible();
 
   // The "Set ceiling" button is replaced by "Edit ceiling ($10.00)"
   await expect(page.getByRole("button", { name: /edit ceiling/i })).toBeVisible();
