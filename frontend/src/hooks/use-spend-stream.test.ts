@@ -34,7 +34,7 @@ interface MockWsInstance {
   simulateClose: () => void
 }
 
-let lastWsInstance: MockWsInstance | null = null
+const instances: MockWebSocket[] = []
 
 class MockWebSocket implements MockWsInstance {
   onopen: ((ev: Event) => void) | null = null
@@ -49,8 +49,9 @@ class MockWebSocket implements MockWsInstance {
     }
   })
 
-  constructor(_url: string) {
-    lastWsInstance = this
+  constructor(url: string) {
+    void url // Mark parameter as intentionally unused in mock
+    instances.push(this)
   }
 
   simulateOpen() {
@@ -64,6 +65,10 @@ class MockWebSocket implements MockWsInstance {
   simulateClose() {
     this.onclose?.({ type: "close" } as CloseEvent)
   }
+}
+
+function getLastWsInstance(): MockWebSocket | null {
+  return instances.length > 0 ? instances[instances.length - 1] : null
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +96,7 @@ function makeCallEvent(overrides: Partial<SpendCallEvent> = {}): SpendCallEvent 
 
 describe("useSpendStream", () => {
   beforeEach(() => {
-    lastWsInstance = null
+    instances.length = 0
     vi.stubGlobal("WebSocket", MockWebSocket)
     vi.useFakeTimers()
   })
@@ -111,7 +116,7 @@ describe("useSpendStream", () => {
   it("transitions to 'open' when WS connects", () => {
     const { result } = renderHook(() => useSpendStream())
     act(() => {
-      lastWsInstance!.simulateOpen()
+      getLastWsInstance()!.simulateOpen()
     })
     expect(result.current.status).toBe("open")
   })
@@ -121,8 +126,8 @@ describe("useSpendStream", () => {
     const snapEvent = makeCallEvent({ cost_usd: 0.001 })
 
     act(() => {
-      lastWsInstance!.simulateOpen()
-      lastWsInstance!.simulateMessage({ kind: "snapshot", events: [snapEvent] })
+      getLastWsInstance()!.simulateOpen()
+      getLastWsInstance()!.simulateMessage({ kind: "snapshot", events: [snapEvent] })
     })
 
     expect(result.current.events).toHaveLength(1)
@@ -136,12 +141,12 @@ describe("useSpendStream", () => {
     const { result } = renderHook(() => useSpendStream())
 
     act(() => {
-      lastWsInstance!.simulateOpen()
+      getLastWsInstance()!.simulateOpen()
       // Empty snapshot first
-      lastWsInstance!.simulateMessage({ kind: "snapshot", events: [] })
+      getLastWsInstance()!.simulateMessage({ kind: "snapshot", events: [] })
       // Then two live events
-      lastWsInstance!.simulateMessage(makeCallEvent({ cost_usd: 0.001 }))
-      lastWsInstance!.simulateMessage(makeCallEvent({ cost_usd: 0.002 }))
+      getLastWsInstance()!.simulateMessage(makeCallEvent({ cost_usd: 0.001 }))
+      getLastWsInstance()!.simulateMessage(makeCallEvent({ cost_usd: 0.002 }))
     })
 
     expect(result.current.events).toHaveLength(2)
@@ -152,14 +157,14 @@ describe("useSpendStream", () => {
     const { result } = renderHook(() => useSpendStream())
 
     act(() => {
-      lastWsInstance!.simulateOpen()
-      lastWsInstance!.simulateMessage({ kind: "snapshot", events: [] })
+      getLastWsInstance()!.simulateOpen()
+      getLastWsInstance()!.simulateMessage({ kind: "snapshot", events: [] })
     })
 
     const eventsBefore = result.current.events
 
     act(() => {
-      lastWsInstance!.simulateMessage({ kind: "ping" })
+      getLastWsInstance()!.simulateMessage({ kind: "ping" })
     })
 
     // Reference equality — state must not have changed
@@ -168,17 +173,17 @@ describe("useSpendStream", () => {
 
   it("does not connect when disabled=true", () => {
     renderHook(() => useSpendStream({ disabled: true }))
-    expect(lastWsInstance).toBeNull()
+    expect(getLastWsInstance()).toBeNull()
   })
 
   it("respects maxEvents cap on the sliding window", () => {
     const { result } = renderHook(() => useSpendStream({ maxEvents: 3 }))
 
     act(() => {
-      lastWsInstance!.simulateOpen()
-      lastWsInstance!.simulateMessage({ kind: "snapshot", events: [] })
+      getLastWsInstance()!.simulateOpen()
+      getLastWsInstance()!.simulateMessage({ kind: "snapshot", events: [] })
       for (let i = 0; i < 5; i++) {
-        lastWsInstance!.simulateMessage(makeCallEvent({ cost_usd: 0.001 * (i + 1) }))
+        getLastWsInstance()!.simulateMessage(makeCallEvent({ cost_usd: 0.001 * (i + 1) }))
       }
     })
 
@@ -192,12 +197,12 @@ describe("useSpendStream", () => {
     const { result } = renderHook(() => useSpendStream())
 
     act(() => {
-      lastWsInstance!.simulateOpen()
+      getLastWsInstance()!.simulateOpen()
     })
 
     expect(result.current.status).toBe("open")
 
-    const prevInstance = lastWsInstance!
+    const prevInstance = getLastWsInstance()!
 
     act(() => {
       prevInstance.simulateClose()
