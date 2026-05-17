@@ -40,6 +40,7 @@ const MOCK_MATRIX = {
       },
     },
   },
+  meta: {},
 };
 
 const MOCK_WEBHOOKS = {
@@ -56,9 +57,10 @@ const MOCK_WEBHOOKS = {
       updated_at: "2026-01-01T00:00:00Z",
     },
   ],
+  meta: {},
 };
 
-const MOCK_AUDIT_LOG = { data: [] };
+const MOCK_AUDIT_LOG = { data: [], meta: {} };
 
 // ---------------------------------------------------------------------------
 // Helper: install all baseline API mocks
@@ -137,6 +139,7 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
             },
           },
         },
+        meta: {},
       };
 
       // Intercept the subsequent GET /api/permissions after PUT to return updated data
@@ -148,7 +151,7 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
         }
       });
 
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: null }) });
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: null, meta: {} }) });
     } else {
       route.continue();
     }
@@ -239,26 +242,31 @@ test("permissions: webhook test action updates last-tested indicator", async ({ 
 
   const testedAt = "2026-05-17T12:00:00.000Z";
 
+  // State flag: set to true when the POST /test fires so subsequent GET /webhooks
+  // returns the updated data. Using a flag (rather than a request counter) is robust
+  // to React StrictMode double-invoking effects during the initial page load.
+  let testTriggered = false;
+
   // Mock the test endpoint
   await page.route(`**/api/webhooks/${WEBHOOK_ID}/test`, (route) => {
     if (route.request().method() === "POST") {
+      testTriggered = true;
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: { ok: true, status_code: 200, latency_ms: 42 } }),
+        body: JSON.stringify({ data: { ok: true, status_code: 200, latency_ms: 42 }, meta: {} }),
       });
     } else {
       route.continue();
     }
   });
 
-  // After the test, the reload() call fetches webhooks again with updated last_test_at
-  let webhookFetchCount = 0;
+  // After the test, the reload() call fetches webhooks again with updated last_test_at.
+  // Only return the updated webhook data after testTriggered is set by the POST above.
   await page.route("**/api/webhooks", (route) => {
     if (route.request().method() === "GET") {
-      webhookFetchCount += 1;
-      if (webhookFetchCount >= 2) {
-        // Second fetch (after test): return updated webhook with last_test_at set
+      if (testTriggered) {
+        // Post-test fetch: return webhook with last_test_at set
         const updated = {
           data: [
             {
@@ -267,6 +275,7 @@ test("permissions: webhook test action updates last-tested indicator", async ({ 
               last_test_ok: true,
             },
           ],
+          meta: {},
         };
         route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(updated) });
       } else {
