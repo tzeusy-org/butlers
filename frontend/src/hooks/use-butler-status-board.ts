@@ -6,7 +6,7 @@
 //   useButlers           → name, status, type, description, sessions_24h
 //   useRegistry          → eligibility_state per butler
 //   useButlerHeartbeats  → last_session_at, active_session_count, heartbeat_age_seconds
-//   useCostSummary       → cost today per butler
+//   useSpendSummary      → cost today per butler
 //   useQuery (sessions)  → raw session list for 24h hourly bucketing (stable key, rolling ISO since)
 //   useQueries (runtime) → max_concurrent per butler via per-butler runtime-config queries
 //
@@ -22,7 +22,7 @@ import { getRuntimeConfig, getSessions } from "@/api/index.ts"
 import { useButlers } from "@/hooks/use-butlers"
 import { useRegistry } from "@/hooks/use-general"
 import { useButlerHeartbeats } from "@/hooks/use-system"
-import { useCostSummary } from "@/hooks/use-costs"
+import { useSpendSummary } from "@/hooks/use-spend"
 import { bucketSessionsByHour } from "@/lib/session-buckets"
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 
@@ -150,7 +150,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
   const butlersQuery = useButlers()
   const registryQuery = useRegistry()
   const heartbeatsQuery = useButlerHeartbeats()
-  const costQuery = useCostSummary("today")
+  const costQuery = useSpendSummary("today")
 
   // Fetch sessions for the past 24h for hourly bucketing.
   // The query key is stable ("sessions-24h") while queryFn recomputes the ISO

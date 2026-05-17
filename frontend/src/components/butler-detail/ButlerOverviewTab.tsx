@@ -27,7 +27,7 @@ import { useApprovalActions } from "@/hooks/use-approvals"
 import { useButler } from "@/hooks/use-butlers"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
-import { useCostSummary } from "@/hooks/use-costs"
+import { useSpendSummary } from "@/hooks/use-spend"
 import type { ActivityEventType, ApprovalAction } from "@/api/types"
 
 interface ButlerOverviewTabProps {
@@ -147,7 +147,7 @@ function OverviewSkeleton() {
 export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
   const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName)
   const { rows } = useButlerStatusBoard()
-  const costQuery = useCostSummary("today")
+  const costQuery = useSpendSummary("today")
   const approvalsQuery = useApprovalActions({ status: "pending", butler: butlerName, limit: 5 })
   const {
     data: activityFeedData,

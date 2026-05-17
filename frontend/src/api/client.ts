@@ -46,8 +46,8 @@ import type {
   ContactListResponse,
   ContactParams,
   ContactsSyncTriggerResponse,
-  CostSummary,
-  DailyCost,
+  SpendSummary,
+  DailySpend,
   ErrorResponse,
   Group,
   GroupListResponse,
@@ -634,7 +634,7 @@ export function getCostSummary(
   from?: string,
   to?: string,
   butler?: string,
-): Promise<ApiResponse<CostSummary>> {
+): Promise<ApiResponse<SpendSummary>> {
   const sp = new URLSearchParams();
   if (from && to) {
     sp.set("from", from);
@@ -644,21 +644,21 @@ export function getCostSummary(
   }
   if (butler) sp.set("butler", butler);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<ApiResponse<CostSummary>>(`/spend${qs}`);
+  return apiFetch<ApiResponse<SpendSummary>>(`/spend${qs}`);
 }
 
-/** Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD) and/or a butler. */
+/** Fetch daily spend breakdown, optionally scoped to a date range (YYYY-MM-DD) and/or a butler. */
 export function getDailyCosts(
   from?: string,
   to?: string,
   butler?: string,
-): Promise<ApiResponse<DailyCost[]>> {
+): Promise<ApiResponse<DailySpend[]>> {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   if (butler) params.set("butler", butler);
   const query = params.toString() ? `?${params.toString()}` : "";
-  return apiFetch<ApiResponse<DailyCost[]>>(`/spend/daily${query}`);
+  return apiFetch<ApiResponse<DailySpend[]>>(`/spend/daily${query}`);
 }
 
 /** Fetch most expensive sessions. */

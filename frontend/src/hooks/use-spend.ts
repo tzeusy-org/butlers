@@ -1,5 +1,5 @@
 /**
- * TanStack Query hooks for the costs API.
+ * TanStack Query hooks for the spend API.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -15,7 +15,7 @@ import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 const DATE_FMT = "yyyy-MM-dd";
 
 /**
- * Format a Date as YYYY-MM-DD for cost API query params.
+ * Format a Date as YYYY-MM-DD for spend API query params.
  * Uses the owner timezone so that day boundaries match the window anchor —
  * dates from useTimeWindow are UTC instants representing owner-tz midnight,
  * and formatting them in local browser time would give the wrong date string.
@@ -28,7 +28,7 @@ export function formatCostDate(d: Date, tz: string = OWNER_TZ_DEFAULT): string {
 // Hooks
 // ---------------------------------------------------------------------------
 
-/** Fetch aggregate cost summary with auto-refresh.
+/** Fetch aggregate spend summary with auto-refresh.
  *
  * When `from` and `to` are provided they override `period` and the server
  * computes the summary over the custom [from, to] date range. Dates are
@@ -38,7 +38,7 @@ export function formatCostDate(d: Date, tz: string = OWNER_TZ_DEFAULT): string {
  * When `butler` is provided, the query is scoped to that butler only.
  * Supported by the backend since bu-iuol4.12.
  */
-export function useCostSummary(period?: string, from?: Date, to?: Date, butler?: string) {
+export function useSpendSummary(period?: string, from?: Date, to?: Date, butler?: string) {
   const fromStr = from ? formatCostDate(from) : undefined;
   const toStr = to ? formatCostDate(to) : undefined;
 
@@ -50,7 +50,7 @@ export function useCostSummary(period?: string, from?: Date, to?: Date, butler?:
 }
 
 /**
- * Fetch daily cost breakdown, optionally scoped to a date range and/or a butler.
+ * Fetch daily spend breakdown, optionally scoped to a date range and/or a butler.
  * Accepts Date objects; converts to YYYY-MM-DD for the API.
  * Falls back to the API default (last 7 days) when from/to are omitted.
  *
@@ -59,7 +59,7 @@ export function useCostSummary(period?: string, from?: Date, to?: Date, butler?:
  * @param [options.butler]          - Butler name to scope the query (cache is partitioned per butler).
  * @param [options.refetchInterval] - Override the default 60s polling interval. Pass `false` to disable.
  */
-export function useDailyCosts(
+export function useDailySpend(
   from?: Date,
   to?: Date,
   options?: { refetchInterval?: number | false; butler?: string },

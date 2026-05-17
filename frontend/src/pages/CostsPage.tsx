@@ -20,7 +20,7 @@ import { Scrubber } from "@/components/workspace/Scrubber"
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Page } from "@/components/ui/page"
-import { useCostSummary, useDailyCosts, formatCostDate } from "@/hooks/use-costs"
+import { useSpendSummary, useDailySpend, formatCostDate } from "@/hooks/use-spend"
 import { useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ function formatTokens(n: number): string {
   return String(n)
 }
 
-// fmtDate is provided by formatCostDate from @/hooks/use-costs (tz-aware).
+// fmtDate is provided by formatCostDate from @/hooks/use-spend (tz-aware).
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -71,7 +71,7 @@ export default function CostsPage() {
   // Pass the explicit date range to the summary endpoint so summary cards
   // always reflect the same window as the chart. The period param is omitted
   // because from/to takes precedence on the server.
-  const { data: summaryResponse, isLoading: summaryLoading } = useCostSummary(
+  const { data: summaryResponse, isLoading: summaryLoading } = useSpendSummary(
     undefined,
     timeWindow.from,
     timeWindow.to,
@@ -80,7 +80,7 @@ export default function CostsPage() {
     data: dailyResponse,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailyCosts(timeWindow.from, timeWindow.to, {
+  } = useDailySpend(timeWindow.from, timeWindow.to, {
     refetchInterval: timeWindow.pollingDisabled ? false : 60_000,
   })
 

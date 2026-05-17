@@ -54,8 +54,8 @@ vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(() => ({ data: null, isLoading: false, error: null })),
 }));
 
-vi.mock("@/hooks/use-costs", () => ({
-  useCostSummary: vi.fn(() => ({ data: null, isLoading: false })),
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(() => ({ data: null, isLoading: false })),
 }));
 
 vi.mock("@/hooks/use-notifications", () => ({

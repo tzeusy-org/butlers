@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 
 import Sidebar from "@/components/layout/Sidebar";
-import { useCostSummary } from "@/hooks/use-costs";
+import { useSpendSummary } from "@/hooks/use-spend";
 import { useBadgeCounts } from "@/hooks/use-qa-badge";
 import { resetUseButlersMock, setUseButlersState } from "@/test-utils/use-butlers";
 
@@ -14,8 +14,8 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(),
 }));
 
-vi.mock("@/hooks/use-costs", () => ({
-  useCostSummary: vi.fn(),
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-qa-badge", () => ({
@@ -47,10 +47,10 @@ describe("Sidebar", () => {
     vi.resetAllMocks();
     resetUseButlersMock();
     // Default cost mock — must be re-set after resetAllMocks
-    vi.mocked(useCostSummary).mockReturnValue({
+    vi.mocked(useSpendSummary).mockReturnValue({
       data: { data: { total_cost_usd: 26.27 } },
       isLoading: false,
-    } as ReturnType<typeof useCostSummary>);
+    } as ReturnType<typeof useSpendSummary>);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);

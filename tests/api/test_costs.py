@@ -23,7 +23,7 @@ from butlers.api.deps import (
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.models import CostSummary, ScheduleCost
+from butlers.api.models import ScheduleCost, SpendSummary
 from butlers.api.pricing import (
     ModelPricing,
     PricingConfig,
@@ -249,7 +249,7 @@ async def test_cost_summary_zero_butlers(app):
         resp = await client.get("/api/spend")
     data = resp.json()["data"]
     assert data["total_cost_usd"] == 0.0
-    CostSummary.model_validate(data)
+    SpendSummary.model_validate(data)
 
 
 async def test_cost_summary_aggregates_multiple_butlers(app):
@@ -436,7 +436,7 @@ async def test_cost_summary_date_range_aggregates_sessions_daily(app):
     assert data["period"] == "2026-03-01/2026-03-02"
     # by_model includes aggregated costs
     assert "claude-sonnet-4-20250514" in data["by_model"]
-    CostSummary.model_validate(data)
+    SpendSummary.model_validate(data)
 
 
 async def test_cost_summary_date_range_multi_butler(app):
@@ -482,7 +482,7 @@ async def test_cost_summary_date_range_multi_butler(app):
     assert data["total_input_tokens"] == 3000
     assert data["by_butler"]["a"] > 0
     assert data["by_butler"]["b"] > 0
-    CostSummary.model_validate(data)
+    SpendSummary.model_validate(data)
 
 
 async def test_cost_summary_date_range_only_from_returns_422(app):
@@ -578,7 +578,7 @@ async def test_cost_summary_butler_filter_returns_only_that_butler(app):
     assert data["total_sessions"] == 5
     # gen must not appear in by_butler
     assert "gen" not in data["by_butler"]
-    CostSummary.model_validate(data)
+    SpendSummary.model_validate(data)
 
 
 async def test_cost_summary_staffer_uses_db_when_session_tool_absent(app):
@@ -604,7 +604,7 @@ async def test_cost_summary_staffer_uses_db_when_session_tool_absent(app):
     assert data["total_sessions"] == 5
     assert data["total_cost_usd"] == pytest.approx(0.105, abs=1e-4)
     mgr.get_client.assert_not_called()
-    CostSummary.model_validate(data)
+    SpendSummary.model_validate(data)
 
 
 async def test_cost_summary_no_butler_filter_returns_aggregated(app):
@@ -635,7 +635,7 @@ async def test_cost_summary_no_butler_filter_returns_aggregated(app):
     assert data["total_sessions"] == 8
     assert "sw" in data["by_butler"]
     assert "gen" in data["by_butler"]
-    CostSummary.model_validate(data)
+    SpendSummary.model_validate(data)
 
 
 async def test_cost_summary_unknown_butler_returns_empty_200(app):
@@ -660,7 +660,7 @@ async def test_cost_summary_unknown_butler_returns_empty_200(app):
     assert data["total_cost_usd"] == 0.0
     assert data["total_sessions"] == 0
     assert data["by_butler"] == {}
-    CostSummary.model_validate(data)
+    SpendSummary.model_validate(data)
 
 
 # ---------------------------------------------------------------------------

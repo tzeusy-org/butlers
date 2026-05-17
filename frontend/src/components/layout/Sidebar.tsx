@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
-import { useCostSummary } from '@/hooks/use-costs'
+import { useSpendSummary } from '@/hooks/use-spend'
 import { useBadgeCounts } from '@/hooks/use-qa-badge'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import {
@@ -384,7 +384,7 @@ function SidebarFooter({
   isLoading: boolean
   isError: boolean
 }) {
-  const { data: costResponse } = useCostSummary('today')
+  const { data: costResponse } = useSpendSummary('today')
   const cost = costResponse?.data.total_cost_usd
 
   if (isLoading) {
@@ -670,7 +670,7 @@ function MobileSidebar({
   badgeCounts: Record<string, number>
   onNavClick?: () => void
 }) {
-  const { data: costResponse, isLoading } = useCostSummary('today')
+  const { data: costResponse, isLoading } = useSpendSummary('today')
   const cost = costResponse?.data.total_cost_usd
 
   return (

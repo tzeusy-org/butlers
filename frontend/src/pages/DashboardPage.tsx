@@ -16,7 +16,7 @@
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
  *   useIssues()             -- AttentionList (client-side stale/severity ordering)
  *   useButlers()            -- ButlerIndex, RuntimeSummaryKpi
- *   useCostSummary("today") -- ButlerIndex per-butler cost
+ *   useSpendSummary("today") -- ButlerIndex per-butler cost
  *   useApprovalMetrics()    -- KPI "approvals" cell, OperationsNowList approvals row
  *   useButlerHeartbeats()   -- RuntimeSummaryKpi runtime state, stale detection
  *   useNotificationStats()  -- OperationsNowList notification pressure row
@@ -34,7 +34,7 @@
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
-import { useCostSummary } from "@/hooks/use-costs";
+import { useSpendSummary } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlerHeartbeats } from "@/hooks/use-system";
@@ -63,7 +63,7 @@ export default function DashboardPage() {
 
   // Supporting data
   const butlersQuery = useButlers();
-  const costQuery = useCostSummary("today");
+  const costQuery = useSpendSummary("today");
   const issuesQuery = useIssues();
   const approvalMetricsQuery = useApprovalMetrics();
   const heartbeatQuery = useButlerHeartbeats();

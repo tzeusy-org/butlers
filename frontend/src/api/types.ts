@@ -285,11 +285,11 @@ export interface TimelineParams {
 }
 
 // ---------------------------------------------------------------------------
-// Costs
+// Spend
 // ---------------------------------------------------------------------------
 
-/** Aggregate cost summary across all butlers. */
-export interface CostSummary {
+/** Aggregate spend summary across all butlers. */
+export interface SpendSummary {
   total_cost_usd: number;
   total_sessions: number;
   total_input_tokens: number;
@@ -298,8 +298,8 @@ export interface CostSummary {
   by_model: Record<string, number>;
 }
 
-/** Cost data for a single day. */
-export interface DailyCost {
+/** Spend data for a single day. */
+export interface DailySpend {
   date: string;
   cost_usd: number;
   sessions: number;

@@ -268,8 +268,8 @@ class MCPToolCallResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CostSummary(BaseModel):
-    """Aggregate cost summary across all butlers."""
+class SpendSummary(BaseModel):
+    """Aggregate spend summary across all butlers."""
 
     period: str = "today"
     total_cost_usd: float
@@ -280,8 +280,8 @@ class CostSummary(BaseModel):
     by_model: dict[str, float] = Field(default_factory=dict)
 
 
-class DailyCost(BaseModel):
-    """Cost data for a single day."""
+class DailySpend(BaseModel):
+    """Spend data for a single day."""
 
     date: str
     cost_usd: float
@@ -403,7 +403,7 @@ __all__ = [
     "ApiResponse",
     "ButlerMemoryStats",
     "ButlerConfigResponse",
-    "CostSummary",
+    "SpendSummary",
     "ButlerDetail",
     "ButlerSummary",
     "ConversationCreateRequest",
@@ -423,7 +423,7 @@ __all__ = [
     "ConnectorSummary",
     "DailyActivity",
     "DailyActivityBucket",
-    "DailyCost",
+    "DailySpend",
     "derive_liveness",
     "Episode",
     "Fact",

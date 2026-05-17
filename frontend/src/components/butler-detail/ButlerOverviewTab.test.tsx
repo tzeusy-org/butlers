@@ -13,8 +13,8 @@ vi.mock("@/hooks/use-butler-status-board", () => ({
   useButlerStatusBoard: vi.fn(),
 }))
 
-vi.mock("@/hooks/use-costs", () => ({
-  useCostSummary: vi.fn(),
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(),
 }))
 
 vi.mock("@/hooks/use-approvals", () => ({
@@ -31,7 +31,7 @@ vi.mock("@/components/ui/time", () => ({
 
 import { useButler } from "@/hooks/use-butlers"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
-import { useCostSummary } from "@/hooks/use-costs"
+import { useSpendSummary } from "@/hooks/use-spend"
 import { useApprovalActions } from "@/hooks/use-approvals"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
 
@@ -106,10 +106,10 @@ beforeEach(() => {
     },
   })
 
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: { data: { by_butler: { general: 1.23 }, total_cost_usd: 1.23 }, meta: {} },
     isLoading: false,
-  } as unknown as ReturnType<typeof useCostSummary>)
+  } as unknown as ReturnType<typeof useSpendSummary>)
 
   vi.mocked(useApprovalActions).mockReturnValue({
     data: {

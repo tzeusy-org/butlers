@@ -53,8 +53,8 @@ vi.mock("@/hooks/use-general", () => ({
   useSetEligibility: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
-vi.mock("@/hooks/use-costs", () => ({
-  useCostSummary: vi.fn(),
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-notifications", () => ({
@@ -86,7 +86,7 @@ vi.mock("@/components/ui/time", () => ({
 
 import { useButler } from "@/hooks/use-butlers";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
-import { useCostSummary } from "@/hooks/use-costs";
+import { useSpendSummary } from "@/hooks/use-spend";
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
 import type { ActivityFeed, ButlerDetail } from "@/api/types";
 
@@ -207,10 +207,10 @@ function setupDefaultMocks({
     },
   });
 
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: costSummary24h ? { data: costSummary24h, meta: {} } : undefined,
     isLoading: costLoading,
-  } as ReturnType<typeof useCostSummary>);
+  } as ReturnType<typeof useSpendSummary>);
 
   vi.mocked(useButlerActivityFeed).mockReturnValue({
     data: { events: activityEvents },
