@@ -42,7 +42,7 @@ interface MockWsInstance {
   simulateClose(code?: number): void;
 }
 
-let lastWsInstance: MockWsInstance | null = null;
+const instances: MockWebSocket[] = [];
 const wsConstructorSpy = vi.fn();
 
 class MockWebSocket implements MockWsInstance {
@@ -56,7 +56,7 @@ class MockWebSocket implements MockWsInstance {
   constructor(url: string) {
     this.url = url;
     wsConstructorSpy(url);
-    lastWsInstance = this;
+    instances.push(this);
   }
 
   simulateMessage(data: unknown): void {
@@ -70,13 +70,17 @@ class MockWebSocket implements MockWsInstance {
   }
 }
 
+function getLastWsInstance(): MockWsInstance | null {
+  return instances.length > 0 ? instances[instances.length - 1] : null;
+}
+
 // ---------------------------------------------------------------------------
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   vi.stubGlobal("WebSocket", MockWebSocket);
-  lastWsInstance = null;
+  instances.length = 0;
   wsConstructorSpy.mockClear();
   mockInvalidateQueries.mockClear();
 });
@@ -117,7 +121,7 @@ describe("useApprovalsStream", () => {
     const onEvent = vi.fn();
     renderHook(() => useApprovalsStream({ onEvent }));
     act(() => {
-      lastWsInstance?.simulateMessage({ kind: "approved", ts: 1, approval_id: "abc" });
+      getLastWsInstance()?.simulateMessage({ kind: "approved", ts: 1, approval_id: "abc" });
     });
     expect(onEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "approved", approval_id: "abc" }),
@@ -127,7 +131,7 @@ describe("useApprovalsStream", () => {
   it("invalidates approvals queries on state-transition events", () => {
     renderHook(() => useApprovalsStream());
     act(() => {
-      lastWsInstance?.simulateMessage({
+      getLastWsInstance()?.simulateMessage({
         kind: "approved",
         ts: 1,
         approval_id: "abc",
@@ -148,7 +152,7 @@ describe("useApprovalsStream", () => {
   it("does NOT invalidate queries for snapshot events", () => {
     renderHook(() => useApprovalsStream());
     act(() => {
-      lastWsInstance?.simulateMessage({
+      getLastWsInstance()?.simulateMessage({
         kind: "approved",
         ts: 1,
         approval_id: "abc",
@@ -161,14 +165,14 @@ describe("useApprovalsStream", () => {
   it("does NOT invalidate queries for ping events", () => {
     renderHook(() => useApprovalsStream());
     act(() => {
-      lastWsInstance?.simulateMessage({ kind: "ping", ts: 1 });
+      getLastWsInstance()?.simulateMessage({ kind: "ping", ts: 1 });
     });
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
   it("closes the WebSocket on unmount", () => {
     const { unmount } = renderHook(() => useApprovalsStream());
-    const ws = lastWsInstance;
+    const ws = getLastWsInstance();
     act(() => {
       unmount();
     });
