@@ -11,7 +11,10 @@
     "test": "vitest run",
     "story": "ladle serve",
     "story:build": "ladle build",
-    "story:test": "vitest run --reporter=verbose src/**/*.a11y.test.tsx"
+    "story:test": "vitest run --reporter=verbose src/**/*.a11y.test.tsx",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",
@@ -62,7 +65,8 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.0",
     "vite": "^7.3.1",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@playwright/test": "^1.50.0"
   },
   "overrides": {
     "minimatch": "^10.2.2"
