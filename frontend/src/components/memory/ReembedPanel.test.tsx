@@ -172,7 +172,7 @@ describe("ReembedPanel", () => {
 
   it("opens the confirmation modal when Run re-embed is clicked", () => {
     setHooks({});
-    renderPanel();
+    renderPanel("general");
 
     const runBtn = screen.getByRole("button", { name: /run re-embed/i });
     expect(screen.queryByTestId("dialog")).toBeNull();
@@ -184,7 +184,7 @@ describe("ReembedPanel", () => {
   it("does not call mutate if the modal is cancelled", () => {
     const mutate = vi.fn();
     setHooks({ mutate });
-    renderPanel();
+    renderPanel("general");
 
     fireEvent.click(screen.getByRole("button", { name: /run re-embed/i }));
     // Cancel button inside the modal
@@ -216,9 +216,23 @@ describe("ReembedPanel", () => {
   // Loading state
   // -------------------------------------------------------------------------
 
+  it("disables both buttons when no butler is provided", () => {
+    setHooks({});
+    renderPanel(); // no butler
+
+    const buttons = screen.getAllByRole("button");
+    const actionButtons = buttons.filter(
+      (b) => b.textContent?.match(/dry-run|re-embed/i),
+    );
+    expect(actionButtons.length).toBeGreaterThan(0);
+    actionButtons.forEach((btn) => {
+      expect((btn as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
   it("disables both buttons during mutation", () => {
     setHooks({ isPending: true });
-    renderPanel();
+    renderPanel("general");
 
     const buttons = screen.getAllByRole("button");
     const actionButtons = buttons.filter(
@@ -231,13 +245,13 @@ describe("ReembedPanel", () => {
 
   it("shows 'Running dry-run…' text while dry-run mutation is in flight", () => {
     setHooks({ isPending: true, variables: { dry_run: true } });
-    renderPanel();
+    renderPanel("general");
     expect(screen.getByText(/Running dry-run/)).toBeDefined();
   });
 
   it("shows 'Re-embedding…' text while live mutation is in flight", () => {
     setHooks({ isPending: true, variables: { dry_run: false } });
-    renderPanel();
+    renderPanel("general");
     expect(screen.getByText(/Re-embedding/)).toBeDefined();
   });
 });

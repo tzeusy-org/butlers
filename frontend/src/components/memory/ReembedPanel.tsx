@@ -110,11 +110,11 @@ export default function ReembedPanel({ butler }: ReembedPanelProps) {
   const pending = pendingResp?.data;
 
   function handleDryRun() {
-    if (!pending) return;
+    if (!pending || !butler) return;
     setLastResult(null);
     reembedMutation.mutate(
       {
-        butler: butler ?? pending.current_model, // fallback: backend picks default
+        butler,
         dry_run: true,
         current_model: pending.current_model,
       },
@@ -128,11 +128,11 @@ export default function ReembedPanel({ butler }: ReembedPanelProps) {
 
   function handleRunConfirmed() {
     setConfirmOpen(false);
-    if (!pending) return;
+    if (!pending || !butler) return;
     setLastResult(null);
     reembedMutation.mutate(
       {
-        butler: butler ?? pending.current_model,
+        butler,
         dry_run: false,
         current_model: pending.current_model,
       },
@@ -197,11 +197,16 @@ export default function ReembedPanel({ butler }: ReembedPanelProps) {
           )}
 
           {/* Actions */}
+          {!butler && pending && (
+            <p className="text-muted-foreground text-xs">
+              No butler selected — actions are disabled.
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               size="sm"
-              disabled={isPending || !pending}
+              disabled={isPending || !pending || !butler}
               onClick={handleDryRun}
             >
               {isPending && reembedMutation.variables?.dry_run
@@ -211,7 +216,7 @@ export default function ReembedPanel({ butler }: ReembedPanelProps) {
             <Button
               variant="destructive"
               size="sm"
-              disabled={isPending || !pending}
+              disabled={isPending || !pending || !butler}
               onClick={() => setConfirmOpen(true)}
             >
               {isPending && !reembedMutation.variables?.dry_run
@@ -231,7 +236,7 @@ export default function ReembedPanel({ butler }: ReembedPanelProps) {
                 <span className="font-mono font-medium">
                   {lastResult.total.toLocaleString()}
                 </span>{" "}
-                rows across {lastResult.tiers_processed.join(", ")}.
+                rows across {lastResult.tiers_processed.map(tierLabel).join(", ")}.
               </p>
               {Object.keys(lastResult.counts).length > 0 && (
                 <ul className="mt-1 list-inside list-disc text-xs text-muted-foreground">
