@@ -99,11 +99,11 @@ Required query support:
 - Includes `butlers` (distinct butler names participating in the group).
 - Endpoint response ordering is newest-first by `last_seen_at`.
 
-## Costs Contract
+## Spend Contract
 
-- `GET /api/costs/summary?period={today|7d|30d|90d}` -> `ApiResponse<CostSummary>`
-- `GET /api/costs/daily` -> `ApiResponse<DailyCost[]>`
-- `GET /api/costs/top-sessions?limit=...` -> `ApiResponse<TopSession[]>`
+- `GET /api/spend/summary?period={today|7d|30d|90d}` -> `ApiResponse<SpendSummary>`
+- `GET /api/spend/daily` -> `ApiResponse<DailySpend[]>`
+- `GET /api/spend/top-sessions?limit=...` -> `ApiResponse<TopSession[]>`
 
 ## Audit Contract
 

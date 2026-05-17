@@ -279,13 +279,13 @@ The following is the complete endpoint inventory grouped by domain.
 - **AND** the dashboard treats schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode
 - **AND** schedule failures for both execution modes surface through `GET /api/issues` as `scheduled_task_failure:<schedule-name>`
 
-#### Costs
+#### Spend
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/costs/summary` | Aggregate cost summary (MCP fan-out) |
-| GET | `/api/costs/daily` | Daily cost time series (MCP fan-out) |
-| GET | `/api/costs/top-sessions` | Most expensive sessions (MCP fan-out) |
-| GET | `/api/costs/by-schedule` | Per-schedule cost analysis (MCP fan-out) |
+| GET | `/api/spend/summary` | Aggregate cost summary (MCP fan-out) |
+| GET | `/api/spend/daily` | Daily cost time series (MCP fan-out) |
+| GET | `/api/spend/top-sessions` | Most expensive sessions (MCP fan-out) |
+| GET | `/api/spend/by-schedule` | Per-schedule cost analysis (MCP fan-out) |
 
 #### Memory
 | Method | Path | Purpose |
@@ -389,8 +389,8 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 | Backfill jobs | 30s | `useBackfillJobs`, `useBackfillJob` |
 | Connector detail | 30s | `useConnectorDetail` |
 | Calendar workspace | 30s (default, overridable) | `useCalendarWorkspace` |
-| Cost summary | 60s | `useCostSummary` |
-| Daily costs | 60s | `useDailyCosts` |
+| Spend summary | 60s | `useSpendSummary` |
+| Daily spend | 60s | `useDailySpend` |
 | Top sessions | 60s | `useTopSessions` |
 | Connectors list/summary | 60s | `useConnectorSummaries`, `useCrossConnectorSummary`, `useIngestionOverview`, `useConnectorStats` |
 | Connector fanout | 120s | `useConnectorFanout` |
@@ -521,11 +521,11 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 - **THEN** it returns the estimated USD cost, or `0.0` for unknown models
 - **AND** a warning is logged once per unknown model ID
 
-#### Scenario: Cost endpoints use MCP fan-out
-- **WHEN** cost summary, daily costs, or top-sessions endpoints are called
+#### Scenario: Spend endpoints use MCP fan-out
+- **WHEN** spend summary, daily spend, or top-sessions endpoints are called
 - **THEN** each butler is queried via MCP tools (`sessions_summary`, `sessions_daily`, `top_sessions`) in parallel
 - **AND** per-model token counts from each butler are converted to USD using the pricing config
-- **AND** results are merged across butlers (e.g., daily costs are aggregated by date)
+- **AND** results are merged across butlers (e.g., daily spend is aggregated by date)
 
 ### Requirement: Audit Log
 `src/butlers/api/routers/audit.py` queries the switchboard butler's `dashboard_audit_log` table and provides a `log_audit_entry()` helper for other routers to record write operations.
