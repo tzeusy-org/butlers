@@ -187,6 +187,7 @@ def patch_embedding_engine():
     """Patch get_embedding_engine so store_fact does not require a real ML model."""
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
     with patch("butlers.modules.memory.tools.get_embedding_engine", return_value=engine):
         for mod_name in ("butlers.tools.relationship.feed",):
             mod = sys.modules.get(mod_name)

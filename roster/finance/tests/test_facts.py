@@ -2499,6 +2499,7 @@ class TestBulkRecordTransactions:
 
         mock_engine = MagicMock()
         mock_engine.embed.return_value = [0.1] * 384
+        mock_engine.model_name = "test-model"
 
         with _patch(
             "butlers.tools.finance.facts._get_embedding_engine",
