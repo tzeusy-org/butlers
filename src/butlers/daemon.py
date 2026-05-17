@@ -1254,7 +1254,7 @@ class ButlerDaemon:
             return {}
 
         pool = self.db.pool
-        originals = await apply_approval_gates(self.mcp, approval_config, pool)
+        originals = await apply_approval_gates(self.mcp, approval_config, pool, self.config.name)
 
         for mod in self._active_modules:
             if mod.name == "approvals" and hasattr(mod, "set_approval_policy"):

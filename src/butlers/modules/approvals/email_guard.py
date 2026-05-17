@@ -110,6 +110,7 @@ async def check_email_recipient(
     session_id: str | uuid.UUID | None = None,
     expiry_hours: int = 72,
     msg_context: str | None = None,
+    butler_name: str | None = None,
 ) -> EmailGuardDecision:
     """Check whether an outbound email to *email_target* is permitted.
 
@@ -140,12 +141,32 @@ async def check_email_recipient(
         ``contact_info.context`` tag causes the delivery to be parked for
         approval (even if a standing rule exists).  Unclassified (NULL)
         address context never conflicts.
+    butler_name:
+        The name of the butler that owns this guard (used for WS event
+        attribution).  Pass ``None`` when the name is unavailable.
 
     Returns
     -------
     EmailGuardDecision
         ``.allowed=True`` if delivery may proceed, ``False`` if parked.
     """
+    def _emit_created(action_id: uuid.UUID, tool: str, status: str) -> None:
+        """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
+        try:
+            from butlers.api.routers.approvals import emit_approvals_event
+
+            emit_approvals_event(
+                "created",
+                str(action_id),
+                butler=butler_name,
+                tool_name=tool,
+                status=status,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "email guard: emit_approvals_event('created') failed; ignoring", exc_info=True
+            )
+
     from butlers.identity import resolve_contact_by_channel
 
     contact = await resolve_contact_by_channel(pool, "email", email_target)
@@ -189,6 +210,7 @@ async def check_email_recipient(
                     now,
                     expires_at,
                 )
+                _emit_created(action_id, park_tool_name, ActionStatus.PENDING.value)
                 logger.warning(
                     "email guard: context mismatch — blocked delivery to %s %r "
                     "(msg_context=%r, address_context=%r) — parked as pending_action %s",
@@ -268,6 +290,7 @@ async def check_email_recipient(
             now,
             expires_at,
         )
+        _emit_created(action_id, park_tool_name, ActionStatus.PENDING.value)
         logger.warning(
             "email guard: blocked delivery to %s %r — parked as pending_action %s",
             contact_desc,

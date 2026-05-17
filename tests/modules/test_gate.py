@@ -352,3 +352,150 @@ class TestGateOwnerPrimaryRequirement:
 
         assert result_secondary.get("status") == "pending_approval"
         assert "action_id" in result_secondary
+
+
+# ---------------------------------------------------------------------------
+# emit_approvals_event 'created' emission tests [bu-jg0kt]
+# ---------------------------------------------------------------------------
+
+
+class TestGateEmitsCreatedEvent:
+    """gate.py must emit 'created' approval WS events at every approval-creation site."""
+
+    async def _call_gate_patched(
+        self,
+        tool_args: dict,
+        *,
+        resolved_contact: Any,
+        pool: AsyncMock,
+        butler_name: str | None = None,
+        original_fn: AsyncMock | None = None,
+    ) -> tuple[dict, MagicMock]:
+        """Run the gate wrapper with emit_approvals_event patched; return (result, mock)."""
+        if original_fn is None:
+            original_fn = _make_original_fn()
+
+        from butlers.modules.approvals.executor import ExecutionResult
+
+        wrapper = _make_gate_wrapper(
+            tool_name="telegram_send_message",
+            original_fn=original_fn,
+            pool=pool,
+            expiry_hours=72,
+            risk_tier=MagicMock(value="medium"),
+            rule_precedence=("contact_role", "standing_rule"),
+            butler_name=butler_name,
+        )
+
+        mock_emit = MagicMock()
+        with (
+            patch(
+                "butlers.modules.approvals.gate._resolve_target_contact",
+                new=AsyncMock(return_value=resolved_contact),
+            ),
+            patch(
+                "butlers.modules.approvals.gate.record_approval_event",
+                new=AsyncMock(),
+            ),
+            patch(
+                "butlers.modules.approvals.gate.execute_approved_action",
+                new=AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"})),
+            ),
+            patch(
+                "butlers.api.routers.approvals.emit_approvals_event",
+                new=mock_emit,
+            ),
+        ):
+            result = await wrapper(**tool_args)
+
+        return result, mock_emit
+
+    async def test_owner_auto_approve_emits_created(self) -> None:
+        """Owner-targeted primary channel: gate emits kind='created' with status='approved'."""
+        owner = _owner_contact()
+        pool = _make_pool(fetchrow_return={"is_primary": True})
+
+        result, mock_emit = await self._call_gate_patched(
+            {"chat_id": "12345", "message": "hello"},
+            resolved_contact=owner,
+            pool=pool,
+            butler_name="home",
+        )
+
+        assert result == {"status": "sent"}
+        mock_emit.assert_called_once()
+        call_kwargs = mock_emit.call_args
+        assert call_kwargs.args[0] == "created"
+        assert call_kwargs.kwargs.get("butler") == "home"
+        assert call_kwargs.kwargs.get("tool_name") == "telegram_send_message"
+        assert call_kwargs.kwargs.get("status") == "approved"
+
+    async def test_park_pending_emits_created(self) -> None:
+        """No-rule path: gate emits kind='created' with status='pending'."""
+        owner = _owner_contact()
+        # Non-primary → falls through to park
+        pool = _make_pool(fetchrow_return={"is_primary": False})
+
+        with (
+            patch(
+                "butlers.modules.approvals.gate._resolve_target_contact",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
+        ):
+            mock_emit = MagicMock()
+            with patch("butlers.api.routers.approvals.emit_approvals_event", new=mock_emit):
+                wrapper = _make_gate_wrapper(
+                    tool_name="telegram_send_message",
+                    original_fn=_make_original_fn(),
+                    pool=pool,
+                    expiry_hours=72,
+                    risk_tier=MagicMock(value="medium"),
+                    rule_precedence=("contact_role", "standing_rule"),
+                    butler_name="home",
+                )
+                result = await wrapper(chat_id="99999", message="hi non-primary")
+
+        assert result.get("status") == "pending_approval"
+        mock_emit.assert_called_once()
+        call_kwargs = mock_emit.call_args
+        assert call_kwargs.args[0] == "created"
+        assert call_kwargs.kwargs.get("status") == "pending"
+        assert call_kwargs.kwargs.get("butler") == "home"
+
+    async def test_emit_created_survives_import_failure(self) -> None:
+        """If emit_approvals_event import fails, gate wrapper must not crash."""
+        owner = _owner_contact()
+        pool = _make_pool(fetchrow_return={"is_primary": True})
+
+        from butlers.modules.approvals.executor import ExecutionResult
+
+        wrapper = _make_gate_wrapper(
+            tool_name="telegram_send_message",
+            original_fn=_make_original_fn(),
+            pool=pool,
+            expiry_hours=72,
+            risk_tier=MagicMock(value="medium"),
+            rule_precedence=("contact_role", "standing_rule"),
+            butler_name="home",
+        )
+
+        with (
+            patch(
+                "butlers.modules.approvals.gate._resolve_target_contact",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
+            patch(
+                "butlers.modules.approvals.gate.execute_approved_action",
+                new=AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"})),
+            ),
+            patch(
+                "butlers.api.routers.approvals.emit_approvals_event",
+                side_effect=RuntimeError("broker down"),
+            ),
+        ):
+            result = await wrapper(chat_id="12345", message="hello")
+
+        # Must succeed even when emit raises
+        assert result == {"status": "sent"}
