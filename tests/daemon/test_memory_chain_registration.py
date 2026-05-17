@@ -107,13 +107,13 @@ class TestMemoryChainRegistration:
         root = _load_migration(_EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_003"
+        current = "mem_004"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
             path.append(current)
         path.reverse()
-        assert path == ["mem_001", "mem_002", "mem_003"]
+        assert path == ["mem_001", "mem_002", "mem_003", "mem_004"]
 
 
 class TestRelationshipChainRegistration:
