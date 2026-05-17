@@ -279,11 +279,13 @@ async def _run_memory_purge_superseded_job(
 
     if older_than_days is None:
         # Policy explicitly says no TTL → skip fact purge.
-        return {"superseded_deleted": 0, "ha_state_deleted": 0, "skipped": "no_ttl_policy"}
+        # Keys match purge_superseded_facts's return contract.
+        return {"deleted": 0, "deleted_ha_state": 0, "skipped": "no_ttl_policy"}
 
     size_before = await _table_size_bytes(pool, "facts")
     result = await purge_superseded_facts(pool, older_than_days=older_than_days)
-    total_removed = result.get("superseded_deleted", 0) + result.get("ha_state_deleted", 0)
+    # purge_superseded_facts returns {"deleted", "deleted_ha_state"}.
+    total_removed = result.get("deleted", 0) + result.get("deleted_ha_state", 0)
     if total_removed > 0:
         size_after = await _table_size_bytes(pool, "facts")
         bytes_freed: int | None = None

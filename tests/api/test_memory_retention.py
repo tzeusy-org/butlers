@@ -447,7 +447,7 @@ async def test_purge_superseded_uses_policy_ttl_days():
 
     with patch(
         "butlers.modules.memory.storage.purge_superseded_facts",
-        new=AsyncMock(return_value={"superseded_deleted": 5, "ha_state_deleted": 0}),
+        new=AsyncMock(return_value={"deleted": 5, "deleted_ha_state": 0}),
     ) as mock_purge:
         with patch("butlers.scheduled_jobs._table_size_bytes", new=AsyncMock(return_value=None)):
             await _run_memory_purge_superseded_job(pool, None)
@@ -564,7 +564,7 @@ async def test_purge_superseded_passes_bytes_freed_to_log_compaction():
 
     with patch(
         "butlers.modules.memory.storage.purge_superseded_facts",
-        new=AsyncMock(return_value={"superseded_deleted": 10, "ha_state_deleted": 2}),
+        new=AsyncMock(return_value={"deleted": 10, "deleted_ha_state": 2}),
     ):
         with patch(
             "butlers.scheduled_jobs._table_size_bytes",
