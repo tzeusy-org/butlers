@@ -205,6 +205,7 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             trace_id=trace_id,
             result=result,
             error=f"HTTP {status_code}" if result == "error" else None,
+            request=request,
         )
 
         # Invalidate the briefing cache when the audit row has result='error'

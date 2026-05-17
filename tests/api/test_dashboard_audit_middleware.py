@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from butlers.api.app import create_app
-from butlers.api.audit_emit import emit_dashboard_audit, redact_body
+from butlers.api.audit_emit import build_user_context, emit_dashboard_audit, redact_body
 from butlers.api.db import DatabaseManager
 
 pytestmark = pytest.mark.unit
@@ -91,6 +91,31 @@ class TestEmitDashboardAudit:
         assert "INSERT INTO dashboard_audit_log" in call_args[0]
         assert call_args[1] == "relationship"
         assert call_args[2] == "contact_info_delete"
+        # user_context defaults to owner principal even when no request/context
+        # is supplied — never the legacy empty dict.
+        user_context = call_args[6]
+        assert isinstance(user_context, dict)
+        assert user_context["principal"] == "owner"
+        assert user_context["source"] == "dashboard"
+
+    async def test_explicit_user_context_overrides_default(self):
+        mock_pool = AsyncMock()
+        mock_pool.execute = AsyncMock()
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        await emit_dashboard_audit(
+            mock_db,
+            butler="approvals",
+            operation="suggestion.confirm",
+            method="POST",
+            path="/api/approvals/suggestions/abc/confirm",
+            user_context={"principal": "owner", "actor": "dashboard:rest-api"},
+        )
+
+        call_args = mock_pool.execute.call_args[0]
+        user_context = call_args[6]
+        assert user_context == {"principal": "owner", "actor": "dashboard:rest-api"}
 
     async def test_noop_when_db_manager_is_none(self):
         # Should not raise
@@ -140,6 +165,49 @@ class TestEmitDashboardAudit:
         assert isinstance(summary, dict)
         assert summary["body"]["type"] == "email"
         assert summary["body"]["value"] == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# Unit: build_user_context
+# ---------------------------------------------------------------------------
+
+
+class TestBuildUserContext:
+    def test_default_principal_is_owner_without_request(self):
+        ctx = build_user_context()
+        assert ctx == {"principal": "owner", "source": "dashboard"}
+
+    def test_extracts_client_ip_and_headers_from_request(self):
+        from starlette.requests import Request as StarletteRequest
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/relationship/contacts",
+            "headers": [
+                (b"x-api-key", b"super-secret"),
+                (b"user-agent", b"butlers-cli/0.1"),
+                (b"x-forwarded-for", b"203.0.113.7, 10.0.0.1"),
+            ],
+            "client": ("10.0.0.1", 51234),
+            "query_string": b"",
+        }
+        request = StarletteRequest(scope)
+        ctx = build_user_context(request)
+
+        assert ctx["principal"] == "owner"
+        assert ctx["source"] == "dashboard"
+        assert ctx["client_ip"] == "10.0.0.1"
+        assert ctx["forwarded_for"] == "203.0.113.7"
+        assert ctx["user_agent"] == "butlers-cli/0.1"
+        assert ctx["api_key_authenticated"] is True
+        # The raw API key value must never appear in user_context.
+        assert "super-secret" not in str(ctx)
+
+    def test_extra_overrides_and_augments_defaults(self):
+        ctx = build_user_context(extra={"actor": "dashboard:rest-api"})
+        assert ctx["principal"] == "owner"
+        assert ctx["actor"] == "dashboard:rest-api"
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +337,42 @@ class TestDashboardAuditMiddleware:
         assert isinstance(summary, dict)
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
+
+    async def test_middleware_populates_user_context(self):
+        """Middleware emits a user_context with owner principal + request metadata.
+
+        Regression for bu-sz7q3: prior to the fix the middleware always wrote
+        ``user_context={}``, leaving every audit row unattributable.
+        """
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+
+            @app.post("/api/test-user-context")
+            async def _user_context_endpoint():
+                return {"ok": True}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.post(
+                    "/api/test-user-context",
+                    json={"k": "v"},
+                    headers={"X-API-Key": "ignored", "User-Agent": "pytest-suite"},
+                )
+
+        audit_calls = [
+            c for c in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(c)
+        ]
+        assert audit_calls, "Expected audit INSERT but found none"
+        # Index 6 is user_context (sql, butler, op, summary, result, error, user_context).
+        user_context = audit_calls[-1][0][6]
+        assert isinstance(user_context, dict)
+        assert user_context, "user_context must not be empty"
+        assert user_context["principal"] == "owner"
+        assert user_context["source"] == "dashboard"
+        assert user_context["api_key_authenticated"] is True
+        assert user_context["user_agent"] == "pytest-suite"
 
     async def test_x_trace_id_header_present_and_matches_audit_row(self):
         """X-Trace-Id response header is present and matches the trace_id in the audit row."""

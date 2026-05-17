@@ -21,9 +21,19 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
+
+# Single-user deployment: every authenticated dashboard request is the owner.
+# We still record this explicitly (rather than leaving an empty dict) so the
+# audit log row carries an attributable principal — multi-principal support
+# would replace this constant with a real session/JWT lookup.
+_OWNER_PRINCIPAL = "owner"
+_DASHBOARD_SOURCE = "dashboard"
 
 # Field names whose values must NEVER be stored in audit logs.
 # Comparison is case-insensitive and applied to both request body keys and
@@ -71,6 +81,66 @@ def redact_body(body: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def build_user_context(
+    request: Request | None = None,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the ``user_context`` JSONB payload for an audit row.
+
+    Butlers is a single-user deployment, so the principal is always the
+    ``owner``.  Even so, this helper records *how* the request reached the
+    dashboard (source, client IP, whether an API key was presented) so the
+    audit log answers the operator's "who/where" question without forcing
+    callers to reconstruct request state from scratch.
+
+    Parameters
+    ----------
+    request:
+        The Starlette/FastAPI request, if one is in scope.  When ``None``
+        (e.g. emits from a background task), only the principal/source
+        defaults are recorded.
+    extra:
+        Optional additional fields merged on top of the defaults.  Useful for
+        explicit emits that already know a higher-level actor label
+        (``"dashboard:rest-api"``) or want to add semantic provenance.
+
+    Returns
+    -------
+    dict[str, Any]
+        A small JSON-safe dict with at least ``principal`` and ``source``.
+    """
+    context: dict[str, Any] = {
+        "principal": _OWNER_PRINCIPAL,
+        "source": _DASHBOARD_SOURCE,
+    }
+
+    if request is not None:
+        client = request.client
+        if client is not None and client.host:
+            context["client_ip"] = client.host
+
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            # X-Forwarded-For may be a comma-separated chain; first entry is
+            # the original client.
+            context["forwarded_for"] = forwarded_for.split(",")[0].strip()
+
+        user_agent = request.headers.get("user-agent")
+        if user_agent:
+            # Cap to keep audit rows compact; full UA is rarely useful.
+            context["user_agent"] = user_agent[:256]
+
+        # Whether the request presented an API key.  We do NOT record the key
+        # itself (it would be a credential leak) — only its presence.
+        context["api_key_authenticated"] = bool(request.headers.get("x-api-key"))
+
+    if extra:
+        context.update(extra)
+
+    return context
+
+
 async def emit_dashboard_audit(
     db_manager: Any,
     *,
@@ -84,6 +154,8 @@ async def emit_dashboard_audit(
     trace_id: str | None = None,
     result: str = "success",
     error: str | None = None,
+    request: Request | None = None,
+    user_context: dict[str, Any] | None = None,
 ) -> None:
     """Insert one row into ``switchboard.dashboard_audit_log``.
 
@@ -113,6 +185,17 @@ async def emit_dashboard_audit(
         ``"success"`` or ``"error"``.
     error:
         Error message when *result* is ``"error"``.
+    request:
+        The originating Starlette/FastAPI request.  When supplied, the request
+        is used to derive ``user_context`` (client IP, user agent, etc.) via
+        :func:`build_user_context`.  Ignored when ``user_context`` is provided
+        explicitly.
+    user_context:
+        Explicit ``user_context`` payload.  When ``None`` (default), the
+        helper derives one from *request* if provided, otherwise records the
+        owner-only defaults.  Callers should pass this when they already have
+        a richer actor identity (e.g. a background dispatcher with its own
+        principal label).
     """
     if db_manager is None:
         return
@@ -130,10 +213,14 @@ async def emit_dashboard_audit(
     if trace_id:
         request_summary["trace_id"] = trace_id
 
+    if user_context is None:
+        user_context = build_user_context(request)
+
     # Pre-coerce non-JSON-safe values (e.g. UUIDs in path_params) to strings,
     # then hand the codec a plain dict — wrapping with json.dumps() here would
     # double-encode and store a JSONB string scalar instead of an object.
     safe_summary = json.loads(json.dumps(request_summary, default=str))
+    safe_context = json.loads(json.dumps(user_context, default=str))
 
     try:
         pool = db_manager.pool("switchboard")
@@ -146,7 +233,7 @@ async def emit_dashboard_audit(
             safe_summary,
             result,
             error,
-            {},
+            safe_context,
         )
     except Exception:
         logger.warning(
