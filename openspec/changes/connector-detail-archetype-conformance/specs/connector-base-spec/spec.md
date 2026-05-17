@@ -45,7 +45,7 @@ The six archetype tiers map to ConnectorDetailPage as follows:
    instance below the H1.
 
 4. **Breadcrumbs.** The `breadcrumbs` prop MUST be:
-   `[{ label: "Ingestion", href: "/ingestion" }, { label: "Connectors", href: "/ingestion?tab=connectors" }, { label: connector_type }]`
+   `[{ label: "Ingestion", href: "/ingestion" }, { label: "Connectors", href: "/ingestion/connectors" }, { label: connector_type }]`
 
 5. **Loading state.** The `loading` prop MUST be set to `true` while the connector
    detail API call is in flight. The `<Page>` shell MUST show `DetailSkeleton`. No
