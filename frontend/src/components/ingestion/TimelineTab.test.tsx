@@ -1,4 +1,19 @@
 // @vitest-environment jsdom
+/**
+ * Tests for TimelineTab component.
+ *
+ * Covers:
+ * - StatusBadge rendering per event status
+ * - Replay button states (filtered/error/replay_failed/replay_pending/ingested/replay_complete)
+ * - Optimistic update on Replay click + override eviction
+ * - Error toast on replay failure
+ * - Status filter checkboxes
+ * - Non-expandable rows (filtered/error)
+ * - §2.5 Drawer: session anchor IDs, session index rail, copy-session-id button
+ * - §2.6 Sender identity resolution (resolved / unresolved)
+ * - §2.8 Saved Views: selector renders, view changes apply statuses, Priority is placeholder
+ * - §2.9 Connector Attention Strip: strip renders on unhealthy connectors, hidden when all healthy
+ */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
@@ -31,12 +46,17 @@ vi.mock("sonner", () => ({
   },
 }));
 
-// Mock the hooks so we don't need a real API
+// Mock the ingestion-events hooks so we don't need a real API
 vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEvents: vi.fn(),
   useIngestionEventLineage: vi.fn(),
   useIngestionEventRollup: vi.fn(),
   useIngestionEventSenderContact: vi.fn(),
+}));
+
+// Mock the connector summaries hook (§2.9 — ConnectorAttentionStrip)
+vi.mock("@/hooks/use-ingestion", () => ({
+  useConnectorSummaries: vi.fn(),
 }));
 
 import { replayIngestionEvent } from "@/api/index.ts";
@@ -47,6 +67,7 @@ import {
   useIngestionEventRollup,
   useIngestionEventSenderContact,
 } from "@/hooks/use-ingestion-events";
+import { useConnectorSummaries } from "@/hooks/use-ingestion";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,14 +105,52 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
   };
 }
 
+/** Build the mock return value for useIngestionEvents (InfiniteQuery shape). */
+function makeInfiniteEventsResult(events: IngestionEventSummary[]) {
+  return {
+    data: {
+      pages: [{ data: events, meta: { next_cursor: null, has_more: false } }],
+      pageParams: [null],
+    },
+    isLoading: false,
+    isError: false,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: vi.fn(),
+  };
+}
+
 // ---------------------------------------------------------------------------
-// ActionCell tests — isolated, testing Replay button states
+// Default mock setup helpers
 // ---------------------------------------------------------------------------
+
+function setupDefaultMocks() {
+  vi.mocked(useIngestionEventRollup).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as ReturnType<typeof useIngestionEventRollup>);
+
+  vi.mocked(useIngestionEventSenderContact).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as ReturnType<typeof useIngestionEventSenderContact>);
+
+  // Default: no connector issues (strip hidden)
+  vi.mocked(useConnectorSummaries).mockReturnValue({
+    data: { data: [] },
+    isLoading: false,
+    isError: false,
+  } as ReturnType<typeof useConnectorSummaries>);
+}
 
 // We test ActionCell indirectly through TimelineTab since it's not exported.
-// For direct ActionCell behavior, we'll import the TimelineTab and manipulate events.
-
 import { TimelineTab } from "./TimelineTab";
+
+// ---------------------------------------------------------------------------
+// TimelineTab — StatusBadge rendering
+// ---------------------------------------------------------------------------
 
 describe("TimelineTab — StatusBadge rendering", () => {
   let container: HTMLDivElement;
@@ -103,12 +162,7 @@ describe("TimelineTab — StatusBadge rendering", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = makeQueryClient();
-
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEventRollup>);
+    setupDefaultMocks();
   });
 
   afterEach(() => {
@@ -119,11 +173,9 @@ describe("TimelineTab — StatusBadge rendering", () => {
   });
 
   function render(events: IngestionEventSummary[]) {
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: { data: events, meta: { total: events.length, limit: 50, offset: 0 } },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -200,6 +252,10 @@ describe("TimelineTab — StatusBadge rendering", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// TimelineTab — Replay button interaction
+// ---------------------------------------------------------------------------
+
 describe("TimelineTab — Replay button interaction", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -210,12 +266,7 @@ describe("TimelineTab — Replay button interaction", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = makeQueryClient();
-
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEventRollup>);
+    setupDefaultMocks();
   });
 
   afterEach(() => {
@@ -226,11 +277,9 @@ describe("TimelineTab — Replay button interaction", () => {
   });
 
   function render(events: IngestionEventSummary[]) {
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: { data: events, meta: { total: events.length, limit: 50, offset: 0 } },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -272,11 +321,9 @@ describe("TimelineTab — Replay button interaction", () => {
     });
 
     // Initial render: filtered event
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: { data: [event], meta: { total: 1, limit: 50, offset: 0 } },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([event]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -296,14 +343,9 @@ describe("TimelineTab — Replay button interaction", () => {
     expect(container.textContent).toContain("replay pending");
 
     // Server refetch returns replay_complete — override should be evicted
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [{ ...event, status: "replay_complete" }],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([{ ...event, status: "replay_complete" }]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     // Re-render with updated server data
     await act(async () => {
@@ -343,6 +385,10 @@ describe("TimelineTab — Replay button interaction", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// TimelineTab — Status filter
+// ---------------------------------------------------------------------------
+
 describe("TimelineTab — Status filter", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -353,18 +399,11 @@ describe("TimelineTab — Status filter", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = makeQueryClient();
+    setupDefaultMocks();
 
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEventRollup>);
-
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: { data: [], meta: { total: 0, limit: 50, offset: 0 } },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as ReturnType<typeof useIngestionEvents>,
+    );
   });
 
   afterEach(() => {
@@ -394,6 +433,10 @@ describe("TimelineTab — Status filter", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// TimelineTab — filtered events non-expandable
+// ---------------------------------------------------------------------------
+
 describe("TimelineTab — filtered events non-expandable", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -404,12 +447,7 @@ describe("TimelineTab — filtered events non-expandable", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = makeQueryClient();
-
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEventRollup>);
+    setupDefaultMocks();
   });
 
   afterEach(() => {
@@ -420,14 +458,9 @@ describe("TimelineTab — filtered events non-expandable", () => {
   });
 
   it("filtered rows have no expand chevron", () => {
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ status: "filtered" })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ status: "filtered" })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -445,14 +478,9 @@ describe("TimelineTab — filtered events non-expandable", () => {
   });
 
   it("error rows have no expand chevron", () => {
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ status: "error" })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ status: "error" })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -464,20 +492,14 @@ describe("TimelineTab — filtered events non-expandable", () => {
       );
     });
 
-    // Error events never spawned a session, so flamegraph would be empty — no expand chevron
     expect(container.textContent).not.toContain("▼");
     expect(container.textContent).not.toContain("▲");
   });
 
   it("ingested rows have expand chevron", () => {
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ status: "ingested" })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ status: "ingested" })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -526,18 +548,7 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = makeQueryClient();
-
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEventRollup>);
-
-    vi.mocked(useIngestionEventSenderContact).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEventSenderContact>);
+    setupDefaultMocks();
   });
 
   afterEach(() => {
@@ -558,14 +569,9 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
       rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
     });
 
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -593,14 +599,9 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
       rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
     });
 
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -627,14 +628,9 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
       rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
     });
 
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -661,14 +657,9 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
       rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
     });
 
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -701,6 +692,7 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = makeQueryClient();
+    setupDefaultMocks();
 
     vi.mocked(useIngestionEventRollup).mockReturnValue({
       data: undefined,
@@ -728,14 +720,9 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
       isError: false,
     } as ReturnType<typeof useIngestionEventSenderContact>);
 
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "alice@example.com" })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "alice@example.com" })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -760,14 +747,9 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
       isError: false,
     } as ReturnType<typeof useIngestionEventSenderContact>);
 
-    vi.mocked(useIngestionEvents).mockReturnValue({
-      data: {
-        data: [makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "unknown@example.com" })],
-        meta: { total: 1, limit: 50, offset: 0 },
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useIngestionEvents>);
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "unknown@example.com" })]) as ReturnType<typeof useIngestionEvents>,
+    );
 
     act(() => {
       root.render(
@@ -783,5 +765,336 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
     expect(unresolvedEl).not.toBeNull();
     expect(unresolvedEl!.textContent).toContain("unknown@example.com");
     expect(unresolvedEl!.textContent).toContain("unresolved");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §2.8 Saved Views
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — §2.8 Saved Views", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as ReturnType<typeof useIngestionEvents>,
+    );
+
+    // Clear localStorage before each test
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("renders the saved view selector with built-in views", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const selector = container.querySelector("[data-testid='saved-view-selector']");
+    expect(selector).not.toBeNull();
+    expect(selector!.textContent).toContain("All");
+    expect(selector!.textContent).toContain("Errors");
+    expect(selector!.textContent).toContain("Priority");
+    expect(selector!.textContent).toContain("Spend");
+  });
+
+  it("All view is active by default", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultViewId="all" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const allBtn = container.querySelector("[data-view='all']");
+    expect(allBtn).not.toBeNull();
+    expect(allBtn!.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("Priority view is marked as a placeholder with '(soon)' hint", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const priorityBtn = container.querySelector("[data-view='priority']");
+    expect(priorityBtn).not.toBeNull();
+    // Placeholder hint visible to users
+    expect(priorityBtn!.textContent).toContain("soon");
+    // Title attribute explains the placeholder status
+    expect(priorityBtn!.getAttribute("title")).toContain("Wave 2");
+  });
+
+  it("selecting Errors view updates aria-pressed", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultViewId="all" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const errorsBtn = container.querySelector("[data-view='errors']") as HTMLButtonElement;
+    expect(errorsBtn).not.toBeNull();
+
+    act(() => {
+      errorsBtn.click();
+    });
+
+    expect(errorsBtn.getAttribute("aria-pressed")).toBe("true");
+    const allBtn = container.querySelector("[data-view='all']");
+    expect(allBtn!.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("persists active view to localStorage on selection", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const spendBtn = container.querySelector("[data-view='spend']") as HTMLButtonElement;
+    act(() => { spendBtn.click(); });
+
+    const stored = localStorage.getItem("ingestion-saved-views");
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored!).activeView).toBe("spend");
+  });
+
+  it("filters events by Errors view", () => {
+    const events = [
+      makeEvent({ id: "evt-1", status: "ingested" }),
+      makeEvent({ id: "evt-2", status: "error" }),
+      makeEvent({ id: "evt-3", status: "replay_failed" }),
+    ];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultViewId="errors" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // "Showing 2" — error + replay_failed
+    expect(container.textContent).toContain("Showing 2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §2.9 Connector Attention Strip
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — §2.9 Connector Attention Strip", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  function makeConnector(overrides: Partial<{ connector_type: string; endpoint_identity: string; state: string; liveness: string; error_message: string | null }> = {}) {
+    return {
+      connector_type: "gmail",
+      endpoint_identity: "inbox@example.com",
+      liveness: "online",
+      state: "healthy",
+      error_message: null,
+      version: null,
+      uptime_s: null,
+      last_heartbeat_at: null,
+      first_seen_at: "2026-01-01T00:00:00Z",
+      today: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+
+    vi.mocked(useIngestionEventRollup).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEventRollup>);
+
+    vi.mocked(useIngestionEventSenderContact).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEventSenderContact>);
+
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("strip is hidden when all connectors are healthy", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: { data: [makeConnector()] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='connector-attention-strip']")).toBeNull();
+  });
+
+  it("strip is hidden when connector list is empty", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='connector-attention-strip']")).toBeNull();
+  });
+
+  it("strip renders for connectors with state=error", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: [
+          makeConnector({ state: "healthy", liveness: "online" }),
+          makeConnector({ connector_type: "telegram", endpoint_identity: "bot@t.me", state: "error", liveness: "online", error_message: "auth expired" }),
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const strip = container.querySelector("[data-testid='connector-attention-strip']");
+    expect(strip).not.toBeNull();
+    expect(strip!.textContent).toContain("telegram");
+    expect(strip!.textContent).toContain("bot@t.me");
+  });
+
+  it("strip renders for connectors with liveness=offline", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: [
+          makeConnector({ liveness: "offline", state: "healthy" }),
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const strip = container.querySelector("[data-testid='connector-attention-strip']");
+    expect(strip).not.toBeNull();
+    const items = strip!.querySelectorAll("[data-testid='connector-attention-item']");
+    expect(items.length).toBe(1);
+  });
+
+  it("shows multiple attention items when multiple connectors are unhealthy", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: [
+          makeConnector({ connector_type: "gmail", endpoint_identity: "a@example.com", state: "error" }),
+          makeConnector({ connector_type: "gmail", endpoint_identity: "b@example.com", liveness: "offline" }),
+          makeConnector({ connector_type: "telegram", endpoint_identity: "bot", state: "healthy", liveness: "online" }),
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const items = container.querySelectorAll("[data-testid='connector-attention-item']");
+    expect(items.length).toBe(2);
   });
 });

@@ -394,3 +394,59 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
         uuid.uuid4(),
     )
     assert result3["decomposition_output"] == {"signals": []}
+
+
+async def test_ingestion_event_replay_history() -> None:
+    """replay_history returns chronological list from audit_log; handles empty/malformed rows;
+    safe when DB query fails; accepts both UUID and str event_id."""
+    from datetime import UTC, datetime
+
+    from butlers.core.ingestion_events import ingestion_event_replay_history
+
+    event_id = uuid.uuid4()
+    ts1 = datetime(2026, 5, 17, 10, 0, 0, tzinfo=UTC)
+    ts2 = datetime(2026, 5, 17, 10, 5, 0, tzinfo=UTC)
+
+    # Row with well-formed JSON note
+    row1 = _FakeRecord(
+        {"ts": ts1, "actor": "dashboard", "note": _json.dumps({"result": "pending", "cost": 0.01})}
+    )
+    # Row with no note
+    row2 = _FakeRecord({"ts": ts2, "actor": "scheduler", "note": None})
+
+    # Returns list of entries with extracted fields
+    result = await ingestion_event_replay_history(_FakePool(fetch_results=[row1, row2]), event_id)
+    assert len(result) == 2
+    assert result[0]["actor"] == "dashboard"
+    assert result[0]["result"] == "pending"
+    assert abs(result[0]["cost"] - 0.01) < 1e-9
+    assert result[1]["actor"] == "scheduler"
+    assert result[1]["result"] is None
+    assert result[1]["cost"] is None
+
+    # String UUID accepted
+    result2 = await ingestion_event_replay_history(_FakePool(fetch_results=[row1]), str(event_id))
+    assert len(result2) == 1
+
+    # Invalid string UUID returns empty list (no raise)
+    result3 = await ingestion_event_replay_history(_FakePool(), "not-a-uuid")
+    assert result3 == []
+
+    # Empty DB result → empty list
+    result4 = await ingestion_event_replay_history(_FakePool(fetch_results=[]), event_id)
+    assert result4 == []
+
+    # DB error → empty list (fail-open, no exception propagated)
+    class _ErrorPool(_FakePool):
+        async def fetch(self, sql, *args):  # type: ignore[override]
+            raise RuntimeError("DB unavailable")
+
+    result5 = await ingestion_event_replay_history(_ErrorPool(), event_id)
+    assert result5 == []
+
+    # Row with malformed (non-JSON) note — graceful: fields default to None
+    row_bad = _FakeRecord({"ts": ts1, "actor": "agent", "note": "not-json-{{"})
+    result6 = await ingestion_event_replay_history(_FakePool(fetch_results=[row_bad]), event_id)
+    assert len(result6) == 1
+    assert result6[0]["result"] is None
+    assert result6[0]["cost"] is None
