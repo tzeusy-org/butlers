@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -423,6 +423,7 @@ async def list_registry(
 
 @router.post("/heartbeat", response_model=HeartbeatResponse)
 async def receive_heartbeat(
+    request: Request,
     body: HeartbeatRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> HeartbeatResponse:
@@ -582,6 +583,7 @@ async def receive_heartbeat(
             "new_state": new_state,
         },
         response_status=200,
+        request=request,
     )
 
     return HeartbeatResponse(status="ok", eligibility_state=new_state)
@@ -598,6 +600,7 @@ async def receive_heartbeat(
 )
 async def set_butler_eligibility(
     name: str,
+    request: Request,
     body: SetEligibilityRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[SetEligibilityResponse]:
@@ -687,6 +690,7 @@ async def set_butler_eligibility(
         path_params={"name": name},
         body={"previous_state": previous_state, "new_state": body.eligibility_state},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[SetEligibilityResponse](
@@ -1018,6 +1022,7 @@ async def get_connector_detail(
 async def delete_connector(
     connector_type: str,
     endpoint_identity: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
     """Remove a connector from the registry.
@@ -1068,6 +1073,7 @@ async def delete_connector(
         path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}",
         path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[dict](data={"deleted": f"{connector_type}/{endpoint_identity}"})
@@ -1085,6 +1091,7 @@ async def delete_connector(
 async def update_connector_cursor(
     connector_type: str,
     endpoint_identity: str,
+    request: Request,
     body: CursorUpdateRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ConnectorEntry]:
@@ -1148,6 +1155,7 @@ async def update_connector_cursor(
         path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}/cursor",
         path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
@@ -1165,6 +1173,7 @@ async def update_connector_cursor(
 async def update_connector_settings(
     connector_type: str,
     endpoint_identity: str,
+    request: Request,
     body: ConnectorSettingsUpdateRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ConnectorEntry]:
@@ -1223,6 +1232,7 @@ async def update_connector_settings(
         path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
         body={"setting_keys": list(body.settings.keys())},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
@@ -1895,6 +1905,7 @@ async def list_backfill_jobs(
 
 @router.post("/backfill", response_model=ApiResponse[BackfillJobEntry], status_code=201)
 async def create_backfill_job(
+    request: Request,
     body: CreateBackfillJobRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[BackfillJobEntry]:
@@ -1952,6 +1963,7 @@ async def create_backfill_job(
             "job_id": job_id,
         },
         response_status=201,
+        request=request,
     )
 
     return ApiResponse[BackfillJobEntry](data=_row_to_backfill_entry(row))
@@ -2002,6 +2014,7 @@ async def get_backfill_job(
 @router.patch("/backfill/{job_id}/pause", response_model=ApiResponse[BackfillLifecycleResponse])
 async def pause_backfill_job(
     job_id: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[BackfillLifecycleResponse]:
     """Pause an active or pending backfill job.
@@ -2051,6 +2064,7 @@ async def pause_backfill_job(
         path=f"/api/switchboard/backfill/{job_id}/pause",
         path_params={"job_id": job_id},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[BackfillLifecycleResponse](
@@ -2066,6 +2080,7 @@ async def pause_backfill_job(
 @router.patch("/backfill/{job_id}/cancel", response_model=ApiResponse[BackfillLifecycleResponse])
 async def cancel_backfill_job(
     job_id: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[BackfillLifecycleResponse]:
     """Cancel a backfill job.
@@ -2119,6 +2134,7 @@ async def cancel_backfill_job(
         path=f"/api/switchboard/backfill/{job_id}/cancel",
         path_params={"job_id": job_id},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[BackfillLifecycleResponse](
@@ -2134,6 +2150,7 @@ async def cancel_backfill_job(
 @router.patch("/backfill/{job_id}/resume", response_model=ApiResponse[BackfillLifecycleResponse])
 async def resume_backfill_job(
     job_id: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[BackfillLifecycleResponse]:
     """Resume a paused backfill job.
@@ -2183,6 +2200,7 @@ async def resume_backfill_job(
         path=f"/api/switchboard/backfill/{job_id}/resume",
         path_params={"job_id": job_id},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[BackfillLifecycleResponse](
@@ -2259,6 +2277,7 @@ async def get_thread_affinity_settings(
 
 @router.patch("/thread-affinity/settings", response_model=ThreadAffinitySettings)
 async def update_thread_affinity_settings(
+    request: Request,
     body: ThreadAffinitySettingsUpdate,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ThreadAffinitySettings:
@@ -2312,6 +2331,7 @@ async def update_thread_affinity_settings(
             if v is not None
         },
         response_status=200,
+        request=request,
     )
 
     # Return updated row
@@ -2347,6 +2367,7 @@ async def list_thread_affinity_overrides(
 )
 async def upsert_thread_affinity_override(
     thread_id: str,
+    request: Request,
     body: ThreadOverrideUpsert,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ThreadOverrideEntry:
@@ -2392,6 +2413,7 @@ async def upsert_thread_affinity_override(
         path_params={"thread_id": clean_thread_id},
         body={"mode": body.mode},
         response_status=200,
+        request=request,
     )
 
     return ThreadOverrideEntry(thread_id=clean_thread_id, mode=body.mode)
@@ -2403,6 +2425,7 @@ async def upsert_thread_affinity_override(
 )
 async def delete_thread_affinity_override(
     thread_id: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Delete a per-thread affinity override.
@@ -2435,6 +2458,7 @@ async def delete_thread_affinity_override(
         path=f"/api/switchboard/thread-affinity/overrides/{thread_id}",
         path_params={"thread_id": clean_thread_id},
         response_status=204,
+        request=request,
     )
 
 
@@ -2511,6 +2535,7 @@ async def list_routing_instructions(
     status_code=201,
 )
 async def create_routing_instruction(
+    request: Request,
     body: RoutingInstructionCreate,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[RoutingInstruction]:
@@ -2537,6 +2562,7 @@ async def create_routing_instruction(
         path="/api/switchboard/routing-instructions",
         body={"priority": body.priority, "enabled": body.enabled},
         response_status=201,
+        request=request,
     )
 
     return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
@@ -2553,6 +2579,7 @@ async def create_routing_instruction(
 )
 async def update_routing_instruction(
     instruction_id: str,
+    request: Request,
     body: RoutingInstructionUpdate,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[RoutingInstruction]:
@@ -2634,6 +2661,7 @@ async def update_routing_instruction(
         path_params={"instruction_id": instruction_id},
         body={k: v for k, v in updates.items() if k != "instruction"},
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
@@ -2647,6 +2675,7 @@ async def update_routing_instruction(
 @router.delete("/routing-instructions/{instruction_id}", status_code=204)
 async def delete_routing_instruction(
     instruction_id: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Soft-delete a routing instruction.
@@ -2687,6 +2716,7 @@ async def delete_routing_instruction(
         path=f"/api/switchboard/routing-instructions/{instruction_id}",
         path_params={"instruction_id": instruction_id},
         response_status=204,
+        request=request,
     )
 
 
@@ -2817,6 +2847,7 @@ async def list_ingestion_rules(
 
 @router.post("/ingestion-rules", response_model=ApiResponse[IngestionRule], status_code=201)
 async def create_ingestion_rule(
+    request: Request,
     body: IngestionRuleCreate,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[IngestionRule]:
@@ -2877,6 +2908,7 @@ async def create_ingestion_rule(
             "enabled": body.enabled,
         },
         response_status=201,
+        request=request,
     )
 
     return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(row))
@@ -2924,6 +2956,7 @@ async def get_ingestion_rule(
 @router.patch("/ingestion-rules/{rule_id}", response_model=ApiResponse[IngestionRule])
 async def update_ingestion_rule(
     rule_id: str,
+    request: Request,
     body: IngestionRuleUpdate,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[IngestionRule]:
@@ -3044,6 +3077,7 @@ async def update_ingestion_rule(
         path_params={"rule_id": rule_id},
         body=audit_body or None,
         response_status=200,
+        request=request,
     )
 
     return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(row))
@@ -3057,6 +3091,7 @@ async def update_ingestion_rule(
 @router.delete("/ingestion-rules/{rule_id}", status_code=204)
 async def delete_ingestion_rule(
     rule_id: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Soft-delete an ingestion rule.
@@ -3096,6 +3131,7 @@ async def delete_ingestion_rule(
         path=f"/api/switchboard/ingestion-rules/{rule_id}",
         path_params={"rule_id": rule_id},
         response_status=204,
+        request=request,
     )
 
 

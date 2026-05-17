@@ -18,7 +18,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -1357,6 +1357,7 @@ async def get_contact(
 async def reveal_contact_secret(
     contact_id: UUID,
     info_id: UUID,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict[str, Any]:
     """Reveal the actual value of a secured contact_info entry.
@@ -1401,6 +1402,7 @@ async def reveal_contact_secret(
         path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
         body={"type": row["type"]},
         response_status=200,
+        request=request,
     )
 
     return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}
@@ -1896,6 +1898,7 @@ async def get_owner_entity_info(
 )
 async def create_contact_info(
     contact_id: UUID,
+    http_request: Request,
     request: CreateContactInfoRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CreateContactInfoResponse:
@@ -1953,6 +1956,7 @@ async def create_contact_info(
         path_params={"contact_id": str(contact_id)},
         body={"type": request.type, "is_primary": request.is_primary, "secured": request.secured},
         response_status=201,
+        request=http_request,
     )
 
     return result
@@ -1967,6 +1971,7 @@ async def create_contact_info(
 async def delete_contact_info(
     contact_id: UUID,
     info_id: UUID,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Delete a single contact_info entry."""
@@ -1991,6 +1996,7 @@ async def delete_contact_info(
         path=f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
         path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
         response_status=204,
+        request=request,
     )
 
 
@@ -2006,6 +2012,7 @@ async def delete_contact_info(
 async def patch_contact_info(
     contact_id: UUID,
     info_id: UUID,
+    http_request: Request,
     request: PatchContactInfoRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ContactInfoEntry:
@@ -2101,6 +2108,7 @@ async def patch_contact_info(
         path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
         body=audit_body or None,
         response_status=200,
+        request=http_request,
     )
 
     return entry_result
@@ -2539,6 +2547,7 @@ async def delete_entity_info(
 async def reveal_entity_secret(
     entity_id: UUID,
     info_id: UUID,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict[str, Any]:
     """Reveal the actual value of a secured entity_info entry.
@@ -2580,6 +2589,7 @@ async def reveal_entity_secret(
         path_params={"entity_id": str(entity_id), "info_id": str(info_id)},
         body={"type": row["type"]},
         response_status=200,
+        request=request,
     )
 
     return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}

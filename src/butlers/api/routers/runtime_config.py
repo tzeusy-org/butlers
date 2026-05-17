@@ -10,7 +10,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
@@ -146,6 +146,7 @@ class PatchResponse(BaseModel):
 @router.patch("/{name}/runtime-config")
 async def patch_runtime_config(
     name: str,
+    request: Request,
     patch: RuntimeConfigPatch,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PatchResponse:
@@ -209,6 +210,7 @@ async def patch_runtime_config(
         path_params={"butler_name": name},
         body=updates if updates else None,
         response_status=200,
+        request=request,
     )
 
     return response
