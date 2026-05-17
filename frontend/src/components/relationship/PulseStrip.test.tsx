@@ -12,7 +12,6 @@ vi.mock("@/hooks/use-entities", () => ({
 }));
 
 // Lazily-resolved references — must be fetched after vi.mock hoisting.
-// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import * as useEntities from "@/hooks/use-entities";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));

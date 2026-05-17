@@ -65,7 +65,7 @@ function useMindMapReviews(mindMapId: string | null) {
 
 export default function ReviewTimeline() {
   const { data: mindMapsResponse } = useMindMaps({ status: "active" });
-  const mindMaps = mindMapsResponse?.data ?? [];
+  const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse]);
 
   // Fetch pending reviews for each active mind map
   // We use the first 10 maps to avoid too many queries

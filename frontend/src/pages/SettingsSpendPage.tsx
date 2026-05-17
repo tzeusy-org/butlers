@@ -357,8 +357,10 @@ function BreakdownSection() {
     refetchInterval: 120_000,
   })
 
-  const breakdown = data?.data?.breakdown ?? {}
-  const entries = useMemo(() => Object.entries(breakdown).sort(([, a], [, b]) => b - a), [breakdown])
+  const entries = useMemo(() => {
+    const breakdown = data?.data?.breakdown ?? {}
+    return Object.entries(breakdown).sort(([, a], [, b]) => b - a)
+  }, [data])
   const maxValue = entries[0]?.[1] ?? 0
 
   return (

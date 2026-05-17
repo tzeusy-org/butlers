@@ -85,7 +85,7 @@ export default function CostsPage() {
   })
 
   const summary = summaryResponse?.data
-  const dailyData = dailyResponse?.data ?? []
+  const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse])
 
   // Scrubber position — stored in a ref to avoid re-renders on every tick.
   // Promote to state when a dependent chart highlight is wired in.
