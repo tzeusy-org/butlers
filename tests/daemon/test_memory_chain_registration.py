@@ -72,6 +72,7 @@ class TestMemoryChainRegistration:
             "001_memory_schema.py",
             "002_seed_predicates.py",
             "003_wellness_predicates.py",
+            "004_embedding_model_version.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -80,6 +81,7 @@ class TestMemoryChainRegistration:
             ("001_memory_schema.py", "mem_001", None),
             ("002_seed_predicates.py", "mem_002", "mem_001"),
             ("003_wellness_predicates.py", "mem_003", "mem_002"),
+            ("004_embedding_model_version.py", "mem_004", "mem_003"),
         ]
 
         def _load_migration(filename: str):
