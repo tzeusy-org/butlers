@@ -2,7 +2,7 @@ import type {
   ApprovalMetrics,
   ButlerHeartbeat,
   ButlerSummary,
-  CostSummary,
+  SpendSummary,
   HeartbeatFacts,
   Issue,
   NotificationStats,
@@ -31,7 +31,7 @@ export interface OverviewDerivationOptions {
 
 export interface OverviewDerivationInput {
   butlers?: ButlerSummary[];
-  costs?: CostSummary | null;
+  costs?: SpendSummary | null;
   issues?: Issue[];
   heartbeats?: HeartbeatFacts | null;
   approvalMetrics?: ApprovalMetrics | null;

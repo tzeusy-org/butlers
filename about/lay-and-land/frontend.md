@@ -459,7 +459,7 @@ not literals.
 
 ### Data fetching
 - TanStack Query, with hooks colocated in `frontend/src/hooks/`
-  (`use-butlers`, `use-costs`, `use-issues`, `use-notifications`,
+  (`use-butlers`, `use-spend`, `use-issues`, `use-notifications`,
   `use-sessions`, `use-qa`, etc.).
 - Most pages drive their own loading/error/empty states inline;
   there is no `<QueryBoundary>` wrapper.

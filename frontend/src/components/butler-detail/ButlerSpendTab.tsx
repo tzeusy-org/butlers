@@ -10,7 +10,7 @@
 //   Row 3: model breakdown KV list — model name, $X · Y% of total cost
 //
 // ?butler= filter status:
-//   /api/costs/daily is scoped per butler via useDailyCosts(butler=butlerName).
+//   /api/spend/daily is scoped per butler via useDailySpend(butler=butlerName).
 //   KPI cells derive per-butler cost from by_butler[butlerName].
 //   Tokens today and cost/session are still global (no per-butler breakdown).
 //   Model breakdown uses global by_model from the 30d summary.
@@ -23,7 +23,7 @@
 import { useState, useMemo } from "react";
 import { subDays } from "date-fns";
 
-import { useCostSummary, useDailyCosts } from "@/hooks/use-costs";
+import { useSpendSummary, useDailySpend } from "@/hooks/use-spend";
 import { startOfDayInTz, endOfDayInTz } from "@/components/chronicles/tz-format";
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { DayBars } from "@/components/butlers/DayBars";
@@ -174,14 +174,14 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     data: todaySummary,
     isLoading: todayLoading,
     isError: todayError,
-  } = useCostSummary("today", undefined, undefined, butlerName);
+  } = useSpendSummary("today", undefined, undefined, butlerName);
 
   // "30d" period for KPI cell 2 + model breakdown — scoped to this butler
   const {
     data: summary30d,
     isLoading: loading30d,
     isError: error30d,
-  } = useCostSummary("30d", undefined, undefined, butlerName);
+  } = useSpendSummary("30d", undefined, undefined, butlerName);
 
   // Date window for the bar trend — owner-TZ day boundaries
   const trendFrom = useMemo(() => {
@@ -194,7 +194,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     data: dailyCostsResp,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailyCosts(trendFrom, todayEnd, { butler: butlerName });
+  } = useDailySpend(trendFrom, todayEnd, { butler: butlerName });
 
   // ---------------------------------------------------------------------------
   // Derived KPI values — all per-butler (summary queries pass ?butler=)

@@ -54,7 +54,7 @@ from butlers.api.deps import (
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.models import ApiResponse, CostSummary, DailyCost, ScheduleCost, TopSession
+from butlers.api.models import ApiResponse, DailySpend, ScheduleCost, SpendSummary, TopSession
 from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.routers.audit import append as audit_append
 from butlers.core.sessions import sessions_daily, sessions_summary
@@ -483,8 +483,8 @@ async def _get_butler_session_stats_for_range(
     return (info.name, 0.0, 0, 0, 0, {})
 
 
-@router.get("", response_model=ApiResponse[CostSummary])
-@router.get("/summary", response_model=ApiResponse[CostSummary], include_in_schema=False)
+@router.get("", response_model=ApiResponse[SpendSummary])
+@router.get("/summary", response_model=ApiResponse[SpendSummary], include_in_schema=False)
 async def get_cost_summary(
     period: str = Query("today", pattern="^(today|7d|30d)$"),
     from_date: date | None = Query(None, alias="from"),
@@ -494,7 +494,7 @@ async def get_cost_summary(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
     db: DatabaseManager | None = Depends(_get_db_manager),
-) -> ApiResponse[CostSummary]:
+) -> ApiResponse[SpendSummary]:
     """Return aggregate cost summary across all butlers.
 
     When ``from`` and ``to`` query params are provided (ISO 8601 date strings,
@@ -573,7 +573,7 @@ async def get_cost_summary(
         for model_id, model_cost in models.items():
             by_model[model_id] = by_model.get(model_id, 0.0) + model_cost
 
-    summary = CostSummary(
+    summary = SpendSummary(
         period=period_label,
         total_cost_usd=round(total_cost, 6),
         total_sessions=total_sessions,
@@ -582,7 +582,7 @@ async def get_cost_summary(
         by_butler=by_butler,
         by_model=by_model,
     )
-    return ApiResponse[CostSummary](data=summary)
+    return ApiResponse[SpendSummary](data=summary)
 
 
 async def _get_butler_daily_stats(
@@ -638,7 +638,7 @@ async def _get_butler_daily_stats(
     return []
 
 
-@router.get("/daily", response_model=ApiResponse[list[DailyCost]])
+@router.get("/daily", response_model=ApiResponse[list[DailySpend]])
 async def get_daily_costs(
     from_date: date | None = Query(None, alias="from"),
     to_date: date | None = Query(None, alias="to"),
@@ -647,7 +647,7 @@ async def get_daily_costs(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
     db: DatabaseManager | None = Depends(_get_db_manager),
-) -> ApiResponse[list[DailyCost]]:
+) -> ApiResponse[list[DailySpend]]:
     """Return daily cost time series aggregated across all butlers.
 
     Query parameters ``from`` and ``to`` control the date range (ISO 8601
@@ -715,7 +715,7 @@ async def get_daily_costs(
 
     # Sort by date ascending and round costs.
     daily = [
-        DailyCost(
+        DailySpend(
             date=v["date"],
             cost_usd=round(v["cost_usd"], 6),
             sessions=v["sessions"],
@@ -725,7 +725,7 @@ async def get_daily_costs(
         for v in sorted(merged.values(), key=lambda x: x["date"])
     ]
 
-    return ApiResponse[list[DailyCost]](data=daily)
+    return ApiResponse[list[DailySpend]](data=daily)
 
 
 async def _get_butler_top_sessions(

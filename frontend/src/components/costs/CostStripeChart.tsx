@@ -21,7 +21,7 @@ import {
 } from "recharts"
 
 import { ChartSkeleton } from "@/components/skeletons"
-import type { DailyCost } from "@/api/types"
+import type { DailySpend } from "@/api/types"
 import { butlerHueVar } from "@/components/ui/ButlerMark"
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ interface CostBucketRow {
 }
 
 /**
- * Expand each DailyCost entry into per-butler slices using the aggregate
+ * Expand each DailySpend entry into per-butler slices using the aggregate
  * `by_butler` proportions from the summary. The proportions are applied
  * uniformly across days since we only have aggregate totals.
  *
@@ -57,7 +57,7 @@ interface CostBucketRow {
  * "_total" key so the chart still renders.
  */
 function buildRows(
-  dailyCosts: DailyCost[],
+  dailyCosts: DailySpend[],
   byButler: Record<string, number>,
 ): { rows: CostBucketRow[]; orderedNames: string[] } {
   const butlerNames = Object.keys(byButler).sort()
@@ -143,7 +143,7 @@ function CostStripeTooltip({ active, label, payload }: CostStripeTooltipProps) {
 
 export interface CostStripeChartProps {
   /** Daily cost time series. */
-  data: DailyCost[]
+  data: DailySpend[]
   /** Per-butler aggregate totals used for proportional stripe coloring. */
   byButler?: Record<string, number>
   isLoading?: boolean

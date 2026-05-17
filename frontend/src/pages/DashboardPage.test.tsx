@@ -26,7 +26,7 @@ import DashboardPage from "@/pages/DashboardPage";
 
 vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
-vi.mock("@/hooks/use-costs", () => ({ useCostSummary: vi.fn() }));
+vi.mock("@/hooks/use-spend", () => ({ useSpendSummary: vi.fn() }));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
 vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
 vi.mock("@/hooks/use-system", () => ({ useButlerHeartbeats: vi.fn() }));
@@ -40,7 +40,7 @@ vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
 
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
-import { useCostSummary } from "@/hooks/use-costs";
+import { useSpendSummary } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlerHeartbeats } from "@/hooks/use-system";
@@ -93,7 +93,7 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
     error: null,
     refetch: vi.fn(),
   } as AnyMock);
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: {
       data: {
         total_cost_usd: 0.42,

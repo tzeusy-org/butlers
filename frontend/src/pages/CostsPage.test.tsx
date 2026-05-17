@@ -23,12 +23,12 @@ import CostsPage from "@/pages/CostsPage";
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/use-costs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/hooks/use-costs")>();
+vi.mock("@/hooks/use-spend", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-spend")>();
   return {
     ...actual,
-    useCostSummary: vi.fn(),
-    useDailyCosts: vi.fn(),
+    useSpendSummary: vi.fn(),
+    useDailySpend: vi.fn(),
   };
 });
 
@@ -56,7 +56,7 @@ vi.mock("@/components/workspace/Scrubber", () => ({
 // Imports after mocks
 // ---------------------------------------------------------------------------
 
-import { useCostSummary, useDailyCosts } from "@/hooks/use-costs";
+import { useSpendSummary, useDailySpend } from "@/hooks/use-spend";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -80,13 +80,13 @@ const DAILY_DATA = [
 ];
 
 function setLoading() {
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
     error: null,
   } as AnyMock);
-  vi.mocked(useDailyCosts).mockReturnValue({
+  vi.mocked(useDailySpend).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
@@ -95,13 +95,13 @@ function setLoading() {
 }
 
 function setSuccess() {
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: { data: SUMMARY_DATA, meta: {} },
     isLoading: false,
     isError: false,
     error: null,
   } as AnyMock);
-  vi.mocked(useDailyCosts).mockReturnValue({
+  vi.mocked(useDailySpend).mockReturnValue({
     data: { data: DAILY_DATA, meta: {} },
     isLoading: false,
     isError: false,

@@ -19,7 +19,7 @@ import type { ButlerSummary } from "@/api/types"
 const mockUseButlers = vi.fn()
 const mockUseRegistry = vi.fn()
 const mockUseButlerHeartbeats = vi.fn()
-const mockUseCostSummary = vi.fn()
+const mockUseSpendSummary = vi.fn()
 // mockUseQuery handles the sessions-24h query (and any other direct useQuery calls).
 const mockUseQuery = vi.fn()
 // useQueries returns an array of query-result objects; one per butler.
@@ -51,7 +51,7 @@ function setDefaults() {
   mockUseButlers.mockReturnValue(butlersQueryResult([]))
   mockUseRegistry.mockReturnValue(registryQueryResult([]))
   mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([]))
-  mockUseCostSummary.mockReturnValue(costQueryResult({}))
+  mockUseSpendSummary.mockReturnValue(costQueryResult({}))
   // useQuery intercepts the sessions-24h query (PaginatedResponse, not ApiResponse)
   mockUseQuery.mockReturnValue({ data: { data: [], meta: { total: 0 } }, isLoading: false, isError: false, error: null })
   // useQueries returns an empty array when no butlers are present
@@ -70,8 +70,8 @@ vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: (...args: unknown[]) => mockUseButlerHeartbeats(...args),
 }))
 
-vi.mock("@/hooks/use-costs", () => ({
-  useCostSummary: (...args: unknown[]) => mockUseCostSummary(...args),
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: (...args: unknown[]) => mockUseSpendSummary(...args),
 }))
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
@@ -172,8 +172,8 @@ function heartbeatsQueryResult(
 }
 
 /**
- * Build a mock return value for useCostSummary.
- * Wraps the CostSummary in an ApiResponse envelope.
+ * Build a mock return value for useSpendSummary.
+ * Wraps the SpendSummary in an ApiResponse envelope.
  */
 function costQueryResult(byButler: Record<string, number>) {
   return {
@@ -343,7 +343,7 @@ describe("sort order", () => {
 describe("partial failure — secondary sources do not drop rows", () => {
   it("cost fetch failure: rows still render with costToday=0", () => {
     mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" }), makeButler({ name: "b" })]))
-    mockUseCostSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("cost failed") })
+    mockUseSpendSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("cost failed") })
     mockUseQueries.mockReturnValue(runtimeResults(2, 4))
 
     const { rows } = useButlerStatusBoard()
@@ -386,7 +386,7 @@ describe("partial failure — secondary sources do not drop rows", () => {
     mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" }), makeButler({ name: "b" })]))
     mockUseRegistry.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseButlerHeartbeats.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
-    mockUseCostSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
+    mockUseSpendSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseQuery.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseQueries.mockReturnValue(runtimeResults(2, null))
 
@@ -474,7 +474,7 @@ describe("aggregate correctness", () => {
       makeButler({ name: "a" }),
       makeButler({ name: "b" }),
     ]))
-    mockUseCostSummary.mockReturnValue(costQueryResult({ a: 1.5, b: 2.25 }))
+    mockUseSpendSummary.mockReturnValue(costQueryResult({ a: 1.5, b: 2.25 }))
     mockUseQueries.mockReturnValue(runtimeResults(2, 4))
 
     const { aggregates } = useButlerStatusBoard()
@@ -559,7 +559,7 @@ describe("loading and error propagation", () => {
 
   it("secondary source loading does not block row render (aggregates.isLoading=false)", () => {
     mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
-    mockUseCostSummary.mockReturnValue(loadingNoData)
+    mockUseSpendSummary.mockReturnValue(loadingNoData)
     mockUseButlerHeartbeats.mockReturnValue(loadingNoData)
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 

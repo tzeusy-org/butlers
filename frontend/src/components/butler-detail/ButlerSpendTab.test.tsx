@@ -8,7 +8,7 @@
  *  - Model breakdown rendering
  *  - Error state for each panel
  *  - Loading state (all panels)
- *  - useDailyCosts is called with butlerName for cache partitioning [bu-u1c02]
+ *  - useDailySpend is called with butlerName for cache partitioning [bu-u1c02]
  *
  * bead: bu-iuol4.19 / bu-u1c02
  */
@@ -22,9 +22,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // Mock hooks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/use-costs", () => ({
-  useCostSummary: vi.fn(),
-  useDailyCosts: vi.fn(),
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(),
+  useDailySpend: vi.fn(),
   formatCostDate: vi.fn((d: Date) => d.toISOString().slice(0, 10)),
 }));
 
@@ -84,7 +84,7 @@ vi.mock("@/components/ui/range-toggle", () => {
   };
 });
 
-import { useCostSummary, useDailyCosts } from "@/hooks/use-costs";
+import { useSpendSummary, useDailySpend } from "@/hooks/use-spend";
 import ButlerSpendTab from "./ButlerSpendTab";
 
 // ---------------------------------------------------------------------------
@@ -162,30 +162,30 @@ function renderTab(butlerName = BUTLER_NAME) {
 // ---------------------------------------------------------------------------
 
 function setupWithData() {
-  vi.mocked(useCostSummary).mockImplementation((period?: string) => {
+  vi.mocked(useSpendSummary).mockImplementation((period?: string) => {
     if (period === "today") {
       return {
         data: COST_SUMMARY_TODAY,
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useCostSummary>;
+      } as unknown as ReturnType<typeof useSpendSummary>;
     }
     return {
       data: COST_SUMMARY_30D,
       isLoading: false,
       isError: false,
-    } as unknown as ReturnType<typeof useCostSummary>;
+    } as unknown as ReturnType<typeof useSpendSummary>;
   });
 
-  vi.mocked(useDailyCosts).mockReturnValue({
+  vi.mocked(useDailySpend).mockReturnValue({
     data: DAILY_COSTS,
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useDailyCosts>);
+  } as unknown as ReturnType<typeof useDailySpend>);
 }
 
 function setupEmpty() {
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: {
       data: {
         period: "today",
@@ -199,41 +199,41 @@ function setupEmpty() {
     },
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useCostSummary>);
+  } as unknown as ReturnType<typeof useSpendSummary>);
 
-  vi.mocked(useDailyCosts).mockReturnValue({
+  vi.mocked(useDailySpend).mockReturnValue({
     data: { data: [] },
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useDailyCosts>);
+  } as unknown as ReturnType<typeof useDailySpend>);
 }
 
 function setupLoading() {
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
-  } as unknown as ReturnType<typeof useCostSummary>);
+  } as unknown as ReturnType<typeof useSpendSummary>);
 
-  vi.mocked(useDailyCosts).mockReturnValue({
+  vi.mocked(useDailySpend).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
-  } as unknown as ReturnType<typeof useDailyCosts>);
+  } as unknown as ReturnType<typeof useDailySpend>);
 }
 
 function setupError() {
-  vi.mocked(useCostSummary).mockReturnValue({
+  vi.mocked(useSpendSummary).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: true,
-  } as unknown as ReturnType<typeof useCostSummary>);
+  } as unknown as ReturnType<typeof useSpendSummary>);
 
-  vi.mocked(useDailyCosts).mockReturnValue({
+  vi.mocked(useDailySpend).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: true,
-  } as unknown as ReturnType<typeof useDailyCosts>);
+  } as unknown as ReturnType<typeof useDailySpend>);
 }
 
 // ---------------------------------------------------------------------------
@@ -512,16 +512,16 @@ describe("ButlerSpendTab — error state", () => {
 // Tests: butler-scoped daily costs and "all butlers" residual notes [bu-u1c02]
 // ---------------------------------------------------------------------------
 
-describe("ButlerSpendTab — butler-scoped useDailyCosts [bu-u1c02]", () => {
+describe("ButlerSpendTab — butler-scoped useDailySpend [bu-u1c02]", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("calls useDailyCosts with butlerName in the options object", () => {
+  it("calls useDailySpend with butlerName in the options object", () => {
     renderTab(BUTLER_NAME);
-    const calls = vi.mocked(useDailyCosts).mock.calls;
+    const calls = vi.mocked(useDailySpend).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     // Third argument is the options object; butler is inside it
     const lastCall = calls[calls.length - 1];
@@ -546,10 +546,10 @@ describe("ButlerSpendTab — butler-scoped useDailyCosts [bu-u1c02]", () => {
     expect(strip.textContent).not.toContain("all butlers");
   });
 
-  it("passes butlerName to useCostSummary as the butler param", () => {
+  it("passes butlerName to useSpendSummary as the butler param", () => {
     renderTab();
-    // useCostSummary should have been called with butlerName as 4th arg
-    const calls = vi.mocked(useCostSummary).mock.calls;
+    // useSpendSummary should have been called with butlerName as 4th arg
+    const calls = vi.mocked(useSpendSummary).mock.calls;
     expect(calls.length).toBeGreaterThanOrEqual(2);
     // All calls should include the butler name as the 4th argument
     calls.forEach((args) => {
