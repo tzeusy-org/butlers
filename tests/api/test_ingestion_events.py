@@ -254,3 +254,186 @@ async def test_decomposition_output_included_with_flag(app):
     # Audit reason must reflect the broader disclosure.
     call_kwargs = mock_audit.await_args.kwargs
     assert call_kwargs["body"]["reason"] == "decomposition_disclosed"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/{id}/replays — replay history from public.audit_log
+# ---------------------------------------------------------------------------
+
+
+async def test_replays_returns_empty_list_when_no_audit_entries(app):
+    """GET /replays returns an empty list when no audit_log entries exist."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+    _app_with_mock_db(app, shared_pool=pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/ingestion/events/{event_id}/replays")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+
+
+async def test_replays_returns_audit_log_entries(app):
+    """GET /replays returns entries sourced from public.audit_log."""
+    event_id = str(uuid4())
+    import json
+
+    ts = _NOW
+    audit_row = MagicMock()
+    audit_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "ts": ts,
+            "actor": "dashboard",
+            "note": json.dumps({"result": "pending", "source": "filtered_events"}),
+        }[key]
+    )
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[audit_row])
+    _app_with_mock_db(app, shared_pool=pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/ingestion/events/{event_id}/replays")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    entry = body["data"][0]
+    assert entry["actor"] == "dashboard"
+    assert entry["result"] == "pending"
+
+
+async def test_replays_503_on_missing_pool(app):
+    """GET /replays returns 503 when the shared pool is unavailable."""
+    event_id = str(uuid4())
+    _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/ingestion/events/{event_id}/replays")
+
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/{id}/sender-contact — contact resolution
+# ---------------------------------------------------------------------------
+
+
+async def test_sender_contact_resolved(app):
+    """GET /sender-contact resolves sender to contact name when found."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    # ingestion_event_get returns the event row with sender identity set
+    row = _make_event_row(event_id=event_id)
+    row["source_sender_identity"] = "alice@example.com"
+    pool.fetchrow = AsyncMock(return_value=row)
+
+    # resolve_contact_by_channel returns None (default) — we'll patch it
+    _app_with_mock_db(app, shared_pool=pool)
+
+    from uuid import uuid4 as _uuid4
+
+    from butlers.identity import ResolvedContact
+
+    resolved = ResolvedContact(
+        contact_id=_uuid4(),
+        name="Alice Smith",
+        roles=[],
+        entity_id=None,
+    )
+
+    with patch(
+        "butlers.api.routers.ingestion_events.resolve_contact_by_channel",
+        new_callable=AsyncMock,
+        return_value=resolved,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{event_id}/sender-contact")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["resolved"] is True
+    assert body["data"]["name"] == "Alice Smith"
+
+
+async def test_sender_contact_unresolved(app):
+    """GET /sender-contact returns resolved=False when no contact matches."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.resolve_contact_by_channel",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{event_id}/sender-contact")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["resolved"] is False
+    assert body["data"]["name"] is None
+
+
+async def test_sender_contact_404_on_missing_event(app):
+    """GET /sender-contact returns 404 when the event does not exist."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    _app_with_mock_db(app, shared_pool=pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/ingestion/events/{event_id}/sender-contact")
+
+    assert resp.status_code == 404
+
+
+async def test_replay_post_writes_audit_log(app):
+    """POST /{id}/replay appends an entry to public.audit_log on success."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    # ingestion_event_replay_request result — simulate filtered event replay
+    pool.fetchrow = AsyncMock(
+        return_value=MagicMock(**{"__getitem__": MagicMock(return_value=event_id)})
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+            return_value={"outcome": "ok", "id": event_id, "source": "filtered_events"},
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+            return_value=1,
+        ) as mock_audit_append,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{event_id}/replay")
+
+    assert resp.status_code == 200
+    mock_audit_append.assert_awaited_once()
+    call_kwargs = mock_audit_append.await_args.kwargs
+    assert call_kwargs["action"] == "ingestion.event.replay"
+    assert call_kwargs["target"] == event_id

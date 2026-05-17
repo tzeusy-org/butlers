@@ -13,6 +13,7 @@ ingestion_event_sessions        — fan-out across butler schemas for sessions l
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
 ingestion_event_mark_replay_complete — transition replay_pending → ingested on success
 ingestion_event_replay_request  — mark a filtered event as replay_pending
+ingestion_event_replay_history  — query public.audit_log for replay attempts on an event
 """
 
 from __future__ import annotations
@@ -618,3 +619,75 @@ def ingestion_event_rollup(
         "total_cost": total_cost,
         "by_butler": by_butler,
     }
+
+
+async def ingestion_event_replay_history(
+    pool: asyncpg.Pool,
+    event_id: str | UUID,
+) -> list[dict[str, Any]]:
+    """Return the replay attempt history for an ingestion event.
+
+    Queries ``public.audit_log`` for rows where ``action='ingestion.event.replay'``
+    and ``target`` equals the event UUID.  Results are returned in chronological
+    order (oldest first).
+
+    Each entry includes ``ts``, ``actor``, ``result``, and ``cost`` fields.
+    ``result`` and ``cost`` are extracted from the ``note`` JSON payload when
+    present; both default to ``None`` if the payload is absent or malformed.
+
+    This function is safe to call even if ``public.audit_log`` has not yet
+    been migrated — it returns an empty list gracefully.
+
+    Args:
+        pool: asyncpg connection pool for the shared credentials database.
+        event_id: UUID of the ingestion event.
+
+    Returns:
+        List of dicts with keys ``ts``, ``actor``, ``result``, ``cost``.
+        Empty list when no replay attempts are recorded.
+    """
+    if isinstance(event_id, str):
+        try:
+            event_id = UUID(event_id)
+        except ValueError:
+            return []
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT ts, actor, note
+            FROM public.audit_log
+            WHERE action = 'ingestion.event.replay'
+              AND target = $1
+            ORDER BY ts ASC
+            """,
+            str(event_id),
+        )
+    except Exception:
+        logger.debug(
+            "ingestion_event_replay_history: DB query failed (table may not exist); returning []",
+            exc_info=True,
+        )
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        result_val: str | None = None
+        cost_val: float | None = None
+        note = row["note"]
+        if note:
+            try:
+                note_data = note if isinstance(note, dict) else json.loads(note)
+                result_val = note_data.get("result")
+                cost_val = note_data.get("cost")
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+        entries.append(
+            {
+                "ts": row["ts"],
+                "actor": row["actor"],
+                "result": result_val,
+                "cost": cost_val,
+            }
+        )
+    return entries

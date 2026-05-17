@@ -2196,6 +2196,21 @@ export interface IngestionEventsParams {
   status?: IngestionEventStatus;
 }
 
+/** One replay attempt entry from public.audit_log. */
+export interface IngestionEventReplayHistoryEntry {
+  ts: string;
+  actor: string;
+  result: string | null;
+  cost: number | null;
+}
+
+/** Contact resolution result for an event's sender_identity. */
+export interface IngestionEventSenderContact {
+  resolved: boolean;
+  name: string | null;
+  raw: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Education
 // ---------------------------------------------------------------------------

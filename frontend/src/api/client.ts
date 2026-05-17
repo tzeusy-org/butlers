@@ -142,6 +142,8 @@ import type {
   IngestionEventSession,
   IngestionEventRollup,
   IngestionEventReplayResponse,
+  IngestionEventReplayHistoryEntry,
+  IngestionEventSenderContact,
   IngestionEventsParams,
   IngestionRule,
   IngestionRuleCreate,
@@ -3280,6 +3282,30 @@ export async function replayIngestionEvent(
   return apiFetch<IngestionEventReplayResponse>(
     `/ingestion/events/${encodeURIComponent(requestId)}/replay`,
     { method: "POST" },
+  );
+}
+
+/**
+ * Get replay attempt history for an ingestion event.
+ * GET /api/ingestion/events/{id}/replays
+ */
+export async function getIngestionEventReplays(
+  requestId: string,
+): Promise<ApiResponse<IngestionEventReplayHistoryEntry[]>> {
+  return apiFetch<ApiResponse<IngestionEventReplayHistoryEntry[]>>(
+    `/ingestion/events/${encodeURIComponent(requestId)}/replays`,
+  );
+}
+
+/**
+ * Resolve sender_identity to a contact name for an ingestion event.
+ * GET /api/ingestion/events/{id}/sender-contact
+ */
+export async function getIngestionEventSenderContact(
+  requestId: string,
+): Promise<ApiResponse<IngestionEventSenderContact>> {
+  return apiFetch<ApiResponse<IngestionEventSenderContact>>(
+    `/ingestion/events/${encodeURIComponent(requestId)}/sender-contact`,
   );
 }
 

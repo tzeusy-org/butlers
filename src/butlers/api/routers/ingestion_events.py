@@ -11,10 +11,13 @@ GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
 POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
+GET  /api/ingestion/events/{id}/replays  — replay attempt history from public.audit_log
+GET  /api/ingestion/events/{id}/sender-contact  — resolve sender_identity to contact name
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from asyncio import gather as _asyncio_gather
 from typing import Literal
@@ -30,17 +33,22 @@ from butlers.api.models.ingestion_event import (
     IngestionEventRollup,
     IngestionEventSession,
     IngestionEventSummary,
+    ReplayHistoryEntry,
+    SenderContactResolution,
 )
 from butlers.api.pricing import PricingConfig
+from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
     ingestion_event_get,
     ingestion_event_get_inbox_lifecycle,
+    ingestion_event_replay_history,
     ingestion_event_replay_request,
     ingestion_event_rollup,
     ingestion_event_sessions,
     ingestion_events_count,
     ingestion_events_list,
 )
+from butlers.identity import resolve_contact_by_channel
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +257,7 @@ async def get_ingestion_event_rollup(
 @router.post("/{event_id}/replay")
 async def replay_ingestion_event(
     event_id: str,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict:
     """Request replay of a failed or filtered event.
@@ -256,6 +265,9 @@ async def replay_ingestion_event(
     Checks ``public.ingestion_events`` first (for routing-failed events with
     status ``'failed'``), then falls back to ``connectors.filtered_events``
     (for events with status ``filtered``, ``error``, or ``replay_failed``).
+
+    Appends an entry to ``public.audit_log`` with ``action='ingestion.event.replay'``
+    and ``target=<event_id>`` on success.
 
     Returns:
         200 — ``{"status": "replay_pending", "id": "<uuid>"}``
@@ -293,4 +305,121 @@ async def replay_ingestion_event(
             },
         )
 
+    # Record the replay request in public.audit_log.
+    # Note field stores JSON payload for the replay-history endpoint to read back.
+    actor = "dashboard"
+    client_host = getattr(request.client, "host", None) if request.client else None
+    try:
+        await _audit_append(
+            pool,
+            actor=actor,
+            action="ingestion.event.replay",
+            target=str(result["id"]),
+            note=json.dumps({"result": "pending", "source": result.get("source")}),
+            ip=client_host,
+        )
+    except Exception:
+        # Audit failure is non-fatal — the replay has already been queued.
+        logger.warning(
+            "replay: failed to append audit_log entry for event %s",
+            event_id,
+            exc_info=True,
+        )
+
     return {"status": "replay_pending", "id": result["id"]}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/{id}/replays
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{event_id}/replays", response_model=ApiResponse[list[ReplayHistoryEntry]])
+async def get_ingestion_event_replays(
+    event_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ReplayHistoryEntry]]:
+    """Return the replay attempt history for an ingestion event.
+
+    Queries ``public.audit_log`` for entries with
+    ``action='ingestion.event.replay'`` and ``target=<event_id>``,
+    returned in chronological order (oldest first).
+
+    Only metadata is returned — no raw event payload or PII.
+
+    Returns:
+        200 — list of replay history entries (may be empty)
+        503 — shared database pool unavailable
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    entries = await ingestion_event_replay_history(pool, event_id)
+    return ApiResponse[list[ReplayHistoryEntry]](data=[ReplayHistoryEntry(**e) for e in entries])
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/{id}/sender-contact
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{event_id}/sender-contact", response_model=ApiResponse[SenderContactResolution])
+async def get_ingestion_event_sender_contact(
+    event_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SenderContactResolution]:
+    """Resolve the sender_identity for an ingestion event to a contact name.
+
+    Fetches the event to obtain ``source_channel`` and ``source_sender_identity``,
+    then calls ``resolve_contact_by_channel`` against ``public.contacts`` /
+    ``public.contact_info``.
+
+    Always returns 200; ``resolved=False`` when no contact is found or when
+    resolution fails (fail-open, no error toast on the frontend).
+
+    Returns:
+        200 — ``{resolved, name, raw}``
+        404 — event not found
+        503 — shared database pool unavailable
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    try:
+        event = await ingestion_event_get(pool, event_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid event_id: {exc}") from exc
+
+    if event is None:
+        raise HTTPException(status_code=404, detail=f"Ingestion event '{event_id}' not found")
+
+    raw_sender = event.get("source_sender_identity")
+    source_channel = event.get("source_channel")
+
+    if not raw_sender or not source_channel:
+        return ApiResponse[SenderContactResolution](
+            data=SenderContactResolution(resolved=False, name=None, raw=raw_sender)
+        )
+
+    try:
+        contact = await resolve_contact_by_channel(pool, source_channel, raw_sender)
+    except Exception:
+        logger.debug(
+            "sender-contact: resolution failed for event %s (fail-open)",
+            event_id,
+            exc_info=True,
+        )
+        contact = None
+
+    if contact is None:
+        return ApiResponse[SenderContactResolution](
+            data=SenderContactResolution(resolved=False, name=None, raw=raw_sender)
+        )
+
+    return ApiResponse[SenderContactResolution](
+        data=SenderContactResolution(resolved=True, name=contact.name, raw=raw_sender)
+    )

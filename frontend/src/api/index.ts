@@ -470,6 +470,8 @@ export {
   getIngestionEventSessions,
   getIngestionEventRollup,
   replayIngestionEvent,
+  getIngestionEventReplays,
+  getIngestionEventSenderContact,
 } from "./client.ts";
 
 export type {
@@ -478,6 +480,8 @@ export type {
   IngestionEventSession,
   IngestionEventRollup,
   IngestionEventReplayResponse,
+  IngestionEventReplayHistoryEntry,
+  IngestionEventSenderContact,
   IngestionEventsParams,
   ButlerRollupEntry,
 } from "./types.ts";

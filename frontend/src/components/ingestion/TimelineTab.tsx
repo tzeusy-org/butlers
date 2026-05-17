@@ -14,10 +14,10 @@
  * - POST /api/ingestion/events/{id}/replay   (Replay/Retry action)
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { Loader2, RotateCw } from "lucide-react";
+import { Check, Copy, Loader2, RotateCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
@@ -40,6 +40,7 @@ import {
   useIngestionEvents,
   useIngestionEventLineage,
   useIngestionEventRollup,
+  useIngestionEventSenderContact,
 } from "@/hooks/use-ingestion-events";
 import type {
   IngestionEventSummary,
@@ -100,6 +101,47 @@ function isReplayPending(status: IngestionEventStatus): boolean {
 /** Returns true if this row can be expanded (filtered and error events cannot). */
 function isExpandable(status: IngestionEventStatus): boolean {
   return status !== "filtered" && status !== "error";
+}
+
+// ---------------------------------------------------------------------------
+// CopyButton — transient "copied" label for ~900ms
+// ---------------------------------------------------------------------------
+
+function CopyButton({ value, label }: { value: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  function handleCopy(e: React.MouseEvent) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 900);
+    });
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs font-mono text-muted-foreground hover:bg-muted transition-colors"
+      title={copied ? "Copied!" : "Copy to clipboard"}
+      data-testid="copy-session-id"
+    >
+      <span className="truncate max-w-[120px]">{label ?? value}</span>
+      {copied ? (
+        <Check className="size-3 text-emerald-500 shrink-0" data-testid="copy-session-id-copied" />
+      ) : (
+        <Copy className="size-3 shrink-0" />
+      )}
+    </button>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -200,19 +242,76 @@ function triageExplanation(decision: string | null | undefined): string | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// SenderIdentityDisplay — shows resolved contact name or unresolved indicator
+// ---------------------------------------------------------------------------
+
+interface SenderIdentityDisplayProps {
+  requestId: string;
+  rawSenderIdentity: string | null | undefined;
+}
+
+function SenderIdentityDisplay({ requestId, rawSenderIdentity }: SenderIdentityDisplayProps) {
+  const { data, isLoading } = useIngestionEventSenderContact(requestId, {
+    enabled: !!rawSenderIdentity,
+  });
+
+  if (!rawSenderIdentity) return null;
+
+  if (isLoading) {
+    return (
+      <span className="text-xs text-muted-foreground font-mono">{rawSenderIdentity}</span>
+    );
+  }
+
+  const resolution = data?.data;
+
+  if (resolution?.resolved && resolution.name) {
+    return (
+      <span className="text-xs" title={rawSenderIdentity ?? undefined}>
+        <span className="font-medium">{resolution.name}</span>
+        <span className="ml-1 text-muted-foreground">({rawSenderIdentity})</span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="text-xs flex items-center gap-1" data-testid="sender-unresolved">
+      <span className="font-mono text-muted-foreground">{rawSenderIdentity}</span>
+      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 border-amber-400/60 text-amber-600 dark:text-amber-400">
+        unresolved
+      </Badge>
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// LineageView — shows sessions and rollup for one expanded event
+// ---------------------------------------------------------------------------
+
 interface LineageViewProps {
   requestId: string;
   triageDecision?: string | null;
+  senderIdentity?: string | null;
 }
 
-function LineageView({ requestId, triageDecision }: LineageViewProps) {
+function LineageView({ requestId, triageDecision, senderIdentity }: LineageViewProps) {
   const { sessions, rollup } = useIngestionEventLineage(requestId, {
     enabled: true,
   });
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const isLoading = sessions.isLoading || rollup.isLoading;
   const sessionList = sessions.data?.data ?? [];
   const rollupData = rollup.data?.data;
+
+  /** Smooth-scroll the content area to the session anchor. */
+  function scrollToSession(sessionId: string) {
+    const el = contentRef.current?.querySelector(`#session-${CSS.escape(sessionId)}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
 
   if (isLoading) {
     return (
@@ -235,117 +334,168 @@ function LineageView({ requestId, triageDecision }: LineageViewProps) {
   if (sessionList.length === 0) {
     const explanation = triageExplanation(triageDecision);
     return (
-      <p className="px-4 pb-4 text-sm text-muted-foreground">
-        {explanation
-          ? `Not processed: ${explanation}`
-          : "No downstream sessions found for this event."}
-      </p>
+      <div className="space-y-2 px-4 pt-3 pb-4">
+        {/* Sender identity resolution — shown even when no sessions */}
+        {senderIdentity && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-medium">Sender:</span>
+            <SenderIdentityDisplay requestId={requestId} rawSenderIdentity={senderIdentity} />
+          </div>
+        )}
+        <p className="text-sm text-muted-foreground">
+          {explanation
+            ? `Not processed: ${explanation}`
+            : "No downstream sessions found for this event."}
+        </p>
+      </div>
     );
   }
 
   return (
-    <div className="space-y-4 px-4 pt-3 pb-4">
-      {/* Flamegraph */}
-      <SessionFlamegraph sessions={sessionList} />
+    <div className="flex gap-4 px-4 pt-3 pb-4">
+      {/* Left content: flamegraph + session table + rollup */}
+      <div ref={contentRef} className="flex-1 min-w-0 space-y-4">
+        {/* Sender identity resolution */}
+        {senderIdentity && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-medium">Sender:</span>
+            <SenderIdentityDisplay requestId={requestId} rawSenderIdentity={senderIdentity} />
+          </div>
+        )}
 
-      {/* Session list */}
-      <div className="rounded-md border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Butler</TableHead>
-              <TableHead>Session</TableHead>
-              <TableHead>Model</TableHead>
-              <TableHead>Started At</TableHead>
-              <TableHead>Duration</TableHead>
-              <TableHead>In Tokens</TableHead>
-              <TableHead>Out Tokens</TableHead>
-              <TableHead>Status</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sessionList.map((s) => (
-              <TableRow key={s.id}>
-                <TableCell className="font-medium">{s.butler_name}</TableCell>
-                <TableCell className="text-sm">
-                  <Link
-                    to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
-                    className="font-mono text-xs text-primary underline-offset-4 hover:underline"
-                    title={s.id}
-                  >
-                    {truncateId(s.id)}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {s.model ?? "—"}
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {s.started_at ? <Time value={s.started_at} mode="absolute" precision="second" /> : "—"}
-                </TableCell>
-                <TableCell className="text-sm">
-                  {formatDuration(s.started_at, s.completed_at)}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums">
-                  {fmtNum(s.input_tokens)}
-                </TableCell>
-                <TableCell className="text-sm tabular-nums">
-                  {fmtNum(s.output_tokens)}
-                </TableCell>
-                <TableCell>
-                  {s.success === true ? (
-                    <Badge variant="default">ok</Badge>
-                  ) : s.success === false ? (
-                    <Badge variant="destructive">fail</Badge>
-                  ) : (
-                    <Badge variant="outline">unknown</Badge>
-                  )}
-                </TableCell>
+        {/* Flamegraph */}
+        <SessionFlamegraph sessions={sessionList} />
+
+        {/* Session list */}
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Butler</TableHead>
+                <TableHead>Session</TableHead>
+                <TableHead>Model</TableHead>
+                <TableHead>Started At</TableHead>
+                <TableHead>Duration</TableHead>
+                <TableHead>In Tokens</TableHead>
+                <TableHead>Out Tokens</TableHead>
+                <TableHead>Status</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {sessionList.map((s) => (
+                <TableRow key={s.id} id={`session-${s.id}`}>
+                  <TableCell className="font-medium">{s.butler_name}</TableCell>
+                  <TableCell className="text-sm">
+                    <div className="flex items-center gap-1">
+                      <Link
+                        to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
+                        className="font-mono text-xs text-primary underline-offset-4 hover:underline"
+                        title={s.id}
+                      >
+                        {truncateId(s.id)}
+                      </Link>
+                      <CopyButton value={s.id} label="" />
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {s.model ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {s.started_at ? <Time value={s.started_at} mode="absolute" precision="second" /> : "—"}
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {formatDuration(s.started_at, s.completed_at)}
+                  </TableCell>
+                  <TableCell className="text-sm tabular-nums">
+                    {fmtNum(s.input_tokens)}
+                  </TableCell>
+                  <TableCell className="text-sm tabular-nums">
+                    {fmtNum(s.output_tokens)}
+                  </TableCell>
+                  <TableCell>
+                    {s.success === true ? (
+                      <Badge variant="default">ok</Badge>
+                    ) : s.success === false ? (
+                      <Badge variant="destructive">fail</Badge>
+                    ) : (
+                      <Badge variant="outline">unknown</Badge>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+
+        {/* Rollup summary */}
+        {rollupData && (
+          <div className="rounded-md border bg-muted/30 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Rollup
+            </p>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <span>
+                <span className="text-muted-foreground">Sessions: </span>
+                <span className="font-medium">{rollupData.total_sessions}</span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">Input tokens: </span>
+                <span className="font-medium tabular-nums">
+                  {rollupData.total_input_tokens.toLocaleString()}
+                </span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">Output tokens: </span>
+                <span className="font-medium tabular-nums">
+                  {rollupData.total_output_tokens.toLocaleString()}
+                </span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">Total cost: </span>
+                <span className="font-medium">{formatCost(rollupData.total_cost)}</span>
+              </span>
+            </div>
+            {Object.keys(rollupData.by_butler).length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-3">
+                {Object.entries(rollupData.by_butler).map(([butler, entry]) => (
+                  <span key={butler} className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">{butler}</span>
+                    {": "}
+                    {entry.sessions} sess / {entry.input_tokens + entry.output_tokens} tok /{" "}
+                    {formatCost(entry.cost)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Rollup summary */}
-      {rollupData && (
-        <div className="rounded-md border bg-muted/30 p-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Rollup
+      {/* Right rail: session index for anchor-scroll navigation */}
+      {sessionList.length > 1 && (
+        <div className="w-40 shrink-0 pt-1" data-testid="session-index">
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Sessions
           </p>
-          <div className="flex flex-wrap gap-4 text-sm">
-            <span>
-              <span className="text-muted-foreground">Sessions: </span>
-              <span className="font-medium">{rollupData.total_sessions}</span>
-            </span>
-            <span>
-              <span className="text-muted-foreground">Input tokens: </span>
-              <span className="font-medium tabular-nums">
-                {rollupData.total_input_tokens.toLocaleString()}
-              </span>
-            </span>
-            <span>
-              <span className="text-muted-foreground">Output tokens: </span>
-              <span className="font-medium tabular-nums">
-                {rollupData.total_output_tokens.toLocaleString()}
-              </span>
-            </span>
-            <span>
-              <span className="text-muted-foreground">Total cost: </span>
-              <span className="font-medium">{formatCost(rollupData.total_cost)}</span>
-            </span>
-          </div>
-          {Object.keys(rollupData.by_butler).length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-3">
-              {Object.entries(rollupData.by_butler).map(([butler, entry]) => (
-                <span key={butler} className="text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">{butler}</span>
-                  {": "}
-                  {entry.sessions} sess / {entry.input_tokens + entry.output_tokens} tok /{" "}
-                  {formatCost(entry.cost)}
+          <nav className="space-y-1">
+            {sessionList.map((s, i) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => scrollToSession(s.id)}
+                className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                data-testid={`session-index-item-${s.id}`}
+              >
+                <span
+                  className="inline-block size-2 rounded-sm shrink-0"
+                  style={{ backgroundColor: butlerHueVar(s.butler_name) }}
+                />
+                <span className="truncate">
+                  #{i + 1} {s.butler_name}
                 </span>
-              ))}
-            </div>
-          )}
+              </button>
+            ))}
+          </nav>
         </div>
       )}
     </div>
@@ -491,7 +641,11 @@ function EventRow({ event, isExpanded, onToggle, onOptimisticUpdate }: EventRowP
       {isExpanded && expandable && (
         <TableRow>
           <TableCell colSpan={TOTAL_COLS} className="p-0">
-            <LineageView requestId={event.id} triageDecision={event.triage_decision} />
+            <LineageView
+              requestId={event.id}
+              triageDecision={event.triage_decision}
+              senderIdentity={event.source_sender_identity}
+            />
           </TableCell>
         </TableRow>
       )}

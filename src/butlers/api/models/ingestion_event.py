@@ -8,6 +8,28 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class ReplayHistoryEntry(BaseModel):
+    """One replay attempt entry from public.audit_log."""
+
+    ts: datetime
+    actor: str
+    result: str | None = None
+    cost: float | None = None
+
+
+class SenderContactResolution(BaseModel):
+    """Contact resolution result for an event's sender_identity.
+
+    ``resolved`` is True when a matching contact was found.
+    ``name`` is the canonical contact name (None if not resolved or name not set).
+    ``raw`` is the original sender_identity value.
+    """
+
+    resolved: bool
+    name: str | None = None
+    raw: str | None = None
+
+
 class IngestionEventSummary(BaseModel):
     """Lightweight ingestion event representation for list views.
 

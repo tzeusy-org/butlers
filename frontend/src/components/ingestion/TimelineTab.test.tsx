@@ -36,13 +36,16 @@ vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEvents: vi.fn(),
   useIngestionEventLineage: vi.fn(),
   useIngestionEventRollup: vi.fn(),
+  useIngestionEventSenderContact: vi.fn(),
 }));
 
 import { replayIngestionEvent } from "@/api/index.ts";
 import { toast } from "sonner";
 import {
   useIngestionEvents,
+  useIngestionEventLineage,
   useIngestionEventRollup,
+  useIngestionEventSenderContact,
 } from "@/hooks/use-ingestion-events";
 
 // ---------------------------------------------------------------------------
@@ -487,5 +490,298 @@ describe("TimelineTab — filtered events non-expandable", () => {
     });
 
     expect(container.textContent).toContain("▼");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §2.5 Drawer additions — session index + copy button
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  const SESSION_ID = "bbbbbbbb-0000-0000-0000-000000000001";
+  const SESSION_ID_2 = "cccccccc-0000-0000-0000-000000000002";
+
+  function makeSessions(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: i === 0 ? SESSION_ID : SESSION_ID_2,
+      butler_name: `butler-${i + 1}`,
+      trigger_source: null,
+      started_at: "2026-01-01T10:00:00Z",
+      completed_at: "2026-01-01T10:00:30Z",
+      success: true,
+      input_tokens: 100,
+      output_tokens: 50,
+      cost: null,
+      trace_id: null,
+      model: "claude-sonnet",
+    }));
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+
+    vi.mocked(useIngestionEventRollup).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEventRollup>);
+
+    vi.mocked(useIngestionEventSenderContact).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEventSenderContact>);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("session table rows have id='session-<uuid>' anchors", () => {
+    const sessions = makeSessions(1);
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: {
+        data: { data: sessions },
+        isLoading: false,
+        isError: false,
+      } as ReturnType<typeof useIngestionEventRollup>,
+      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+    });
+
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // The expanded row's session table should contain the anchor id
+    const anchor = container.querySelector(`#session-${SESSION_ID}`);
+    expect(anchor).not.toBeNull();
+  });
+
+  it("session index right rail renders when more than one session exists", () => {
+    const sessions = makeSessions(2);
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: {
+        data: { data: sessions },
+        isLoading: false,
+        isError: false,
+      } as ReturnType<typeof useIngestionEventRollup>,
+      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+    });
+
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const sessionIndex = container.querySelector("[data-testid='session-index']");
+    expect(sessionIndex).not.toBeNull();
+  });
+
+  it("session index does not render when only one session exists", () => {
+    const sessions = makeSessions(1);
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: {
+        data: { data: sessions },
+        isLoading: false,
+        isError: false,
+      } as ReturnType<typeof useIngestionEventRollup>,
+      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+    });
+
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const sessionIndex = container.querySelector("[data-testid='session-index']");
+    expect(sessionIndex).toBeNull();
+  });
+
+  it("copy-session-id button is present for each session row", () => {
+    const sessions = makeSessions(1);
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: {
+        data: { data: sessions },
+        isLoading: false,
+        isError: false,
+      } as ReturnType<typeof useIngestionEventRollup>,
+      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+    });
+
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const copyBtn = container.querySelector("[data-testid='copy-session-id']");
+    expect(copyBtn).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §2.6 Drawer: sender identity resolution
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  const EVENT_ID = "dddddddd-0000-0000-0000-000000000001";
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+
+    vi.mocked(useIngestionEventRollup).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEventRollup>);
+
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: { data: { data: [] }, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("shows resolved contact name when contact is resolved", () => {
+    vi.mocked(useIngestionEventSenderContact).mockReturnValue({
+      data: { data: { resolved: true, name: "Alice Smith", raw: "alice@example.com" } },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEventSenderContact>);
+
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "alice@example.com" })],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?expanded=${EVENT_ID}`]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Alice Smith");
+    // Unresolved indicator should NOT appear
+    const unresolvedEl = container.querySelector("[data-testid='sender-unresolved']");
+    expect(unresolvedEl).toBeNull();
+  });
+
+  it("shows unresolved indicator when contact is not found", () => {
+    vi.mocked(useIngestionEventSenderContact).mockReturnValue({
+      data: { data: { resolved: false, name: null, raw: "unknown@example.com" } },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEventSenderContact>);
+
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        data: [makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "unknown@example.com" })],
+        meta: { total: 1, limit: 50, offset: 0 },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?expanded=${EVENT_ID}`]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const unresolvedEl = container.querySelector("[data-testid='sender-unresolved']");
+    expect(unresolvedEl).not.toBeNull();
+    expect(unresolvedEl!.textContent).toContain("unknown@example.com");
+    expect(unresolvedEl!.textContent).toContain("unresolved");
   });
 });
