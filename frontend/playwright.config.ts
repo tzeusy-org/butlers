@@ -10,12 +10,21 @@ import { defineConfig, devices } from "@playwright/test";
  * Install browsers first:
  *   npm run test:e2e:install
  *
- * The dev server must be running before the tests execute. Start it with:
- *   npm run dev
- *
- * Or point at a deployed instance:
+ * By default, Playwright will start a `vite preview` server automatically
+ * (via the `webServer` config below). Set PLAYWRIGHT_BASE_URL to point at a
+ * running instance instead:
  *   PLAYWRIGHT_BASE_URL=https://your-instance.example.com npm run test:e2e
+ *
+ * Local dev workflow — reuse an already-running dev server:
+ *   npm run dev        (in a separate terminal, starts at :5173)
+ *   npm run test:e2e   (Playwright detects the server and reuses it)
+ *
+ * In CI, Playwright always starts a fresh `vite preview` server so each run
+ * is reproducible and independent of any external process.
  */
+
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:4173";
+
 export default defineConfig({
   testDir: "tests/e2e",
 
@@ -28,7 +37,7 @@ export default defineConfig({
   reporter: process.env.CI ? "github" : "list",
 
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || "http://localhost:5173",
+    baseURL: BASE_URL,
     screenshot: "only-on-failure",
     trace: "on-first-retry",
     video: "retain-on-failure",
@@ -40,4 +49,23 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
+
+  /**
+   * webServer: Playwright manages the preview server lifecycle.
+   *
+   * - Uses `vite preview` (port 4173) over a prior `vite build`, which is
+   *   closer to production than `vite dev` and avoids HMR overhead in CI.
+   * - `reuseExistingServer: !CI` lets local developers keep their own dev
+   *   server running without Playwright trying to start a second one.
+   *   In CI (where CI=true), Playwright always starts a fresh server.
+   * - The build step is a separate CI job step; here we only start preview.
+   */
+  webServer: {
+    command: "npm run preview",
+    url: BASE_URL,
+    reuseExistingServer: !process.env.CI,
+    timeout: 60_000,
+    stdout: "pipe",
+    stderr: "pipe",
+  },
 });
