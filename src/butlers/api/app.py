@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
     init_dependencies()
 
     # Check for DASHBOARD_EXPORT_SECRET env var
-    if not os.environ.get("DASHBOARD_EXPORT_SECRET"):
+    if os.environ.get("DASHBOARD_EXPORT_SECRET") in (None, ""):
         logger.warning(
             "DASHBOARD_EXPORT_SECRET env var is not set; using insecure 'dev-secret' fallback. "
             "Download tokens are forgeable. Set this in production."
