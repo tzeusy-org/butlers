@@ -35,11 +35,17 @@ import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/ind
 import { useApprovalsStream } from "@/hooks/use-approvals-stream.ts";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const PENDING_PAGE_SIZE = 100;
+
+// ---------------------------------------------------------------------------
 // Query keys
 // ---------------------------------------------------------------------------
 
 const Q = {
-  pending: () => ["approvals", "flat", "waiting"] as const,
+  pending: (limit: number) => ["approvals", "flat", "waiting", limit] as const,
   detail: (id: string) => ["approvals", "detail", id] as const,
   history: () => ["approvals", "history"] as const,
   policy: () => ["approvals", "policy"] as const,
@@ -143,7 +149,7 @@ function Dossier({
   });
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: Q.pending() });
+    qc.invalidateQueries({ queryKey: ["approvals", "flat", "waiting"] });
     qc.invalidateQueries({ queryKey: Q.history() });
     qc.invalidateQueries({ queryKey: Q.detail(actionId) });
     onDecision();
@@ -567,24 +573,34 @@ function HistorySection() {
 
 export default function ApprovalsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
 
   // Live updates via WebSocket stream (§8.3).
   // Cache invalidation is handled inside useApprovalsStream; the refetchInterval
   // below acts as a safety net when the WS is disconnected.
   useApprovalsStream();
 
-  const { data, isLoading } = useQuery({
-    queryKey: Q.pending(),
-    queryFn: () => getApprovalsFlat("waiting", 100),
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: Q.pending(pendingLimit),
+    queryFn: () => getApprovalsFlat("waiting", pendingLimit),
     refetchInterval: 15_000,
+    // Keep previous data visible while the expanded list is fetching to
+    // prevent layout shifts when the limit is bumped (v5: keepPreviousData).
+    placeholderData: (prev) => prev,
   });
 
   const pending = data?.data ?? [];
   const firstId = pending[0]?.id;
   const effectiveSelected = selectedId ?? firstId ?? null;
+  // Show "Load more" only when the last response was full (may be more results).
+  const hasMore = pending.length === pendingLimit;
 
   function handleDecision() {
     setSelectedId(null);
+  }
+
+  function handleLoadMore() {
+    setPendingLimit((prev) => prev + PENDING_PAGE_SIZE);
   }
 
   return (
@@ -615,6 +631,24 @@ export default function ApprovalsPage() {
               onSelect={() => setSelectedId(summary.id)}
             />
           ))}
+          {/* Load more — shown only when the previous response was full */}
+          {!isLoading && hasMore && (
+            <div className="p-3 border-t border-border">
+              <button
+                onClick={handleLoadMore}
+                disabled={isFetching}
+                className={[
+                  "w-full py-1.5 px-3 rounded text-xs font-mono border border-border",
+                  "text-muted-foreground transition-colors",
+                  isFetching
+                    ? "opacity-50 cursor-not-allowed"
+                    : "hover:border-foreground/40 hover:text-foreground",
+                ].join(" ")}
+              >
+                {isFetching ? "loading…" : "Load more"}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right dossier pane */}
