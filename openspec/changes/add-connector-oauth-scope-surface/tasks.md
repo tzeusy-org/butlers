@@ -41,15 +41,16 @@ by the operator AFTER this change ratifies).
 
 ## 3. Spec authoring — delta against `connector-lifecycle-ceremony`
 
-- [x] 3.1 Add `## MODIFIED Requirements` block in this change's spec deltas
-      directory that supersedes the "Reauth is blocked" scenario in
-      `connector-lifecycle-ceremony` once both changes are archived. The
-      delta updates the gate matrix entry for `reauth` to point at
-      `connector-oauth-scope-surface` instead of returning HTTP 503.
+- [x] 3.1 Place a `## MODIFIED Requirements` block in
+      `specs/connector-lifecycle-ceremony/spec.md` that supersedes the
+      "Reauth is blocked" scenario and the gate matrix entry for `reauth`
+      from
+      `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:11-17,36-40`.
 
-- [x] 3.2 Note in `proposal.md ## Impact > Cross-change coordination` that
-      the delta applies cleanly regardless of archive order (see §Cross-change
-      coordination in proposal.md).
+- [x] 3.2 Note in `proposal.md ## Impact > Cross-change coordination` and
+      in the lifecycle-ceremony delta's preamble that the delta applies
+      cleanly regardless of archive order, with the no-op fallback for the
+      case where this change archives BEFORE `redesign-ingestion-dispatch-console`.
 
 ## 4. Spec authoring — verification
 
