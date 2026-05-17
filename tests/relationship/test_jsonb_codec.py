@@ -286,8 +286,9 @@ CREATE TABLE IF NOT EXISTS facts (
     idempotency_key     TEXT,
     observed_at         TIMESTAMPTZ DEFAULT now(),
     invalid_at          TIMESTAMPTZ,
-    retention_class     TEXT NOT NULL DEFAULT 'operational',
-    sensitivity         TEXT NOT NULL DEFAULT 'normal'
+    retention_class          TEXT NOT NULL DEFAULT 'operational',
+    sensitivity              TEXT NOT NULL DEFAULT 'normal',
+    embedding_model_version  TEXT DEFAULT 'unknown'
 )
 """
 
@@ -325,8 +326,9 @@ CREATE TABLE IF NOT EXISTS episodes (
     tenant_id        TEXT NOT NULL DEFAULT 'shared',
     request_id       TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    retention_class  TEXT NOT NULL DEFAULT 'operational',
-    sensitivity      TEXT NOT NULL DEFAULT 'normal'
+    retention_class          TEXT NOT NULL DEFAULT 'operational',
+    sensitivity              TEXT NOT NULL DEFAULT 'normal',
+    embedding_model_version  TEXT DEFAULT 'unknown'
 )
 """
 
@@ -349,6 +351,7 @@ def _mock_embedding_engine():
 
     engine = MagicMock()
     engine.embed.return_value = [0.0] * 8
+    engine.model_name = "test-model"
     return engine
 
 

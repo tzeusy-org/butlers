@@ -454,6 +454,7 @@ async def store_episode(
                 request_id=request_id,
                 retention_class=retention_class,
                 sensitivity=sensitivity,
+                embedding_model_version=embedding_engine.model_name,
             )
             return existing_episode_id
 
@@ -473,6 +474,7 @@ async def store_episode(
             request_id=request_id,
             retention_class=retention_class,
             sensitivity=sensitivity,
+            embedding_model_version=embedding_engine.model_name,
         )
         return episode_id
 
@@ -514,12 +516,13 @@ async def _insert_episode_record(
     request_id: str | None,
     retention_class: str,
     sensitivity: str,
+    embedding_model_version: str = "unknown",
 ) -> None:
     sql = f"""
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
                               importance, expires_at, metadata, tenant_id, request_id,
-                              retention_class, sensitivity)
-        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13)
+                              retention_class, sensitivity, embedding_model_version)
+        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13, $14)
     """
     await conn.execute(
         sql,
@@ -536,6 +539,7 @@ async def _insert_episode_record(
         request_id,
         retention_class,
         sensitivity,
+        embedding_model_version,
     )
 
 
@@ -552,6 +556,7 @@ async def _update_episode_record(
     request_id: str | None,
     retention_class: str,
     sensitivity: str,
+    embedding_model_version: str = "unknown",
 ) -> None:
     sql = f"""
         UPDATE episodes
@@ -563,7 +568,8 @@ async def _update_episode_record(
             metadata = $7,
             request_id = COALESCE($8, request_id),
             retention_class = $9,
-            sensitivity = $10
+            sensitivity = $10,
+            embedding_model_version = $11
         WHERE id = $1
     """
     await conn.execute(
@@ -578,6 +584,7 @@ async def _update_episode_record(
         request_id,
         retention_class,
         sensitivity,
+        embedding_model_version,
     )
 
 
@@ -637,6 +644,7 @@ async def _resolve_write_provenance_with_conn(
         request_id=request_id,
         retention_class="transient",
         sensitivity="normal",
+        embedding_model_version=embedding_engine.model_name,
     )
     return effective_source_butler, episode_id
 
@@ -689,6 +697,7 @@ async def _insert_fact_record(
     idempotency_key: str | None,
     retention_class: str,
     sensitivity: str,
+    embedding_model_version: str = "unknown",
 ) -> None:
     """Insert a single fact row into the ``facts`` table.
 
@@ -724,6 +733,7 @@ async def _insert_fact_record(
         idempotency_key: Deduplication key for temporal facts, or ``None``.
         retention_class: Retention policy class string.
         sensitivity: Data sensitivity classification string.
+        embedding_model_version: Model name used to produce the embedding vector.
     """
     sql = f"""
         INSERT INTO facts (
@@ -732,7 +742,8 @@ async def _insert_fact_record(
             source_episode_id, supersedes_id, validity, scope,
             created_at, last_confirmed_at, tags, metadata, entity_id,
             object_entity_id, valid_at, tenant_id, request_id,
-            idempotency_key, observed_at, retention_class, sensitivity
+            idempotency_key, observed_at, retention_class, sensitivity,
+            embedding_model_version
         )
         VALUES (
             $1, $2, $3, $4, $5, {tsvector_sql("$6")},
@@ -740,7 +751,8 @@ async def _insert_fact_record(
             $12, $13, 'active', $14,
             $15, $15, $16, $17, $18,
             $19, $20, $21, $22,
-            $23, $24, $25, $26
+            $23, $24, $25, $26,
+            $27
         )
     """
     await conn.execute(
@@ -771,6 +783,7 @@ async def _insert_fact_record(
         now,  # observed_at = insertion time
         retention_class,
         sensitivity,
+        embedding_model_version,
     )
 
 
@@ -1191,6 +1204,7 @@ async def store_fact(
                 idempotency_key=effective_idempotency_key,
                 retention_class=retention_class,
                 sensitivity=sensitivity,
+                embedding_model_version=embedding_engine.model_name,
             )
 
             # Create supersedes link if applicable
@@ -1301,6 +1315,7 @@ async def store_fact(
                             idempotency_key=_inv_idem_key,
                             retention_class=retention_class,
                             sensitivity=sensitivity,
+                            embedding_model_version=embedding_engine.model_name,
                         )
 
                         if _inv_supersedes_id:
@@ -1479,11 +1494,13 @@ async def store_rule(
                            confidence, decay_rate, effectiveness_score,
                            applied_count, success_count, harmful_count,
                            source_episode_id, source_butler, created_at, tags, metadata,
-                           tenant_id, request_id, retention_class, sensitivity)
+                           tenant_id, request_id, retention_class, sensitivity,
+                           embedding_model_version)
         VALUES ($1, $2, $3, {tsvector_sql("$4")}, $5, 'candidate',
                 0.5, 0.01, 0.0,
                 0, 0, 0,
-                $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                $15)
     """
 
     await pool.execute(
@@ -1502,6 +1519,7 @@ async def store_rule(
         request_id,
         retention_class,
         sensitivity,
+        embedding_engine.model_name,
     )
 
     # -------------------------------------------------------------------------

@@ -262,6 +262,7 @@ class MemoryModule(Module):
         # between the MCP closure names and the imported symbols.
         # Deferred to avoid import-time side effects (sentence_transformers).
         from butlers.modules.memory import consolidation as _consolidation
+        from butlers.modules.memory import reembedding as _reembedding
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools import entities as _entities
         from butlers.modules.memory.tools import feedback as _feedback
@@ -1324,3 +1325,145 @@ class MemoryModule(Module):
                 scope=scope,
                 predicate_pattern=predicate_pattern,
             )
+
+        # --- Re-embedding migration tool ---
+
+        @_tool("admin")
+        async def memory_reembed(
+            dry_run: Annotated[
+                bool,
+                Field(
+                    description=(
+                        "If True (default), count stale rows and return a preview without "
+                        "making any DB changes.  Set to False to perform the actual re-embedding."
+                    )
+                ),
+            ] = True,
+            tiers: Annotated[
+                list[str] | None,
+                BeforeValidator(_coerce_json_list),
+                Field(
+                    description=(
+                        "Optional list of memory tiers to process. "
+                        "Allowed values: 'episodes', 'facts', 'rules'. "
+                        "When omitted, all three tiers are processed."
+                    )
+                ),
+            ] = None,
+            batch_size: Annotated[
+                int,
+                Field(
+                    description=(
+                        "Number of rows to embed per DB round-trip (default 50). "
+                        "Larger values improve throughput; smaller values reduce "
+                        "memory usage and allow finer progress reporting."
+                    ),
+                    gt=0,
+                    le=500,
+                ),
+            ] = 50,
+        ) -> dict[str, Any]:
+            """Re-embed stored memories after an embedding_model change.
+
+            When ``MemoryModuleConfig.embedding_model`` is changed, embeddings
+            already in the database were produced by the old model and are
+            incomparable to embeddings produced by the new model.  This tool
+            detects those stale rows (``embedding_model_version != current_model``)
+            and re-embeds them using the current engine.
+
+            Workflow
+            --------
+            1. Run with ``dry_run=True`` (the default) to preview how many rows
+               need re-embedding per tier.
+            2. Review the counts; if acceptable, call with ``dry_run=False``.
+            3. A single invocation processes **all** stale rows across all
+               requested tiers, paging through them internally in ``batch_size``
+               chunks.  The call returns when all stale rows are processed (or an
+               error stops a batch).
+
+            Args:
+                dry_run: Preview-only when True (default).  No DB writes are made.
+                tiers: Subset of tiers to process (default: all tiers).
+                batch_size: Rows per DB round-trip (1–500, default 50).
+
+            Returns:
+                Dict with keys:
+                - ``dry_run`` (bool)
+                - ``current_model`` (str): the model name used for re-embedding
+                - ``tiers_processed`` (list[str])
+                - ``counts`` (dict): rows re-embedded (or found stale) per tier
+                - ``total`` (int): sum across all tiers
+                - ``errors`` (list[str]): non-fatal batch errors
+
+            In dry-run mode, ``counts`` reflects the first batch found per tier,
+            not the full table count.  Use ``memory_reembed_pending_count`` for
+            exact totals without re-embedding.
+            """
+            try:
+                result = await _reembedding.run(
+                    module._get_pool(),
+                    module._get_embedding_engine(),
+                    dry_run=dry_run,
+                    tiers=tiers,
+                    batch_size=batch_size,
+                )
+                return result.to_dict()
+            except ValueError as exc:
+                return {"error": str(exc), "message": str(exc)}
+
+        @_tool("admin")
+        async def memory_reembed_pending_count(
+            tiers: Annotated[
+                list[str] | None,
+                BeforeValidator(_coerce_json_list),
+                Field(
+                    description=(
+                        "Optional list of tiers to count. "
+                        "Allowed values: 'episodes', 'facts', 'rules'. "
+                        "When omitted, all tiers are counted."
+                    )
+                ),
+            ] = None,
+        ) -> dict[str, Any]:
+            """Count rows that need re-embedding due to an embedding_model change.
+
+            Returns the number of rows per tier whose stored embedding was produced
+            by a model other than the currently configured model.
+
+            Args:
+                tiers: Subset of tiers to check (default: all tiers).
+
+            Returns:
+                Dict with keys:
+                - ``current_model`` (str): currently configured model name
+                - ``counts`` (dict): stale row count per tier
+                - ``total`` (int): sum across all tiers
+            """
+            current_model = module._get_embedding_engine().model_name
+            try:
+                tier_arg: str | None = None
+                if tiers is not None and len(tiers) == 1:
+                    tier_arg = tiers[0]
+                elif tiers is not None:
+                    # count_pending only accepts a single tier or None; iterate.
+                    counts: dict[str, int] = {}
+                    for t in tiers:
+                        partial = await _reembedding.count_pending(
+                            module._get_pool(), current_model, tier=t
+                        )
+                        counts.update(partial)
+                    return {
+                        "current_model": current_model,
+                        "counts": counts,
+                        "total": sum(counts.values()),
+                    }
+                counts = await _reembedding.count_pending(
+                    module._get_pool(), current_model, tier=tier_arg
+                )
+                return {
+                    "current_model": current_model,
+                    "counts": counts,
+                    "total": sum(counts.values()),
+                }
+            except ValueError as exc:
+                return {"error": str(exc), "message": str(exc)}
