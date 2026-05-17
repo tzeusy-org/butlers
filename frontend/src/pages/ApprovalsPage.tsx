@@ -584,6 +584,9 @@ export default function ApprovalsPage() {
     queryKey: Q.pending(pendingLimit),
     queryFn: () => getApprovalsFlat("waiting", pendingLimit),
     refetchInterval: 15_000,
+    // Keep previous data visible while the expanded list is fetching to
+    // prevent layout shifts when the limit is bumped (v5: keepPreviousData).
+    placeholderData: (prev) => prev,
   });
 
   const pending = data?.data ?? [];

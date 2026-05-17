@@ -73,7 +73,8 @@ function makeSummary(id: string, toolName = "send_email") {
 }
 
 function makeApiResponse<T>(data: T) {
-  return Promise.resolve({ data });
+  // Include meta to match ApiResponse<T> shape ({ data, meta: ApiMeta }).
+  return Promise.resolve({ data, meta: {} });
 }
 
 function makeEmptyHistory() {
@@ -88,8 +89,14 @@ function makeEmptyPolicy() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+/**
+ * Drain pending macrotasks and microtasks so react-query can settle.
+ * A single setTimeout(0) is not always enough in CI; repeat several times.
+ */
+async function flush(rounds = 5): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 function findButton(container: HTMLElement, label: string): HTMLButtonElement | undefined {
@@ -209,11 +216,7 @@ describe("ApprovalsPage — load-more", () => {
       await flush();
     });
 
-    // Second call must pass limit=200.
-    const calls = vi.mocked(getApprovalsFlat).mock.calls;
-    expect(calls.length).toBeGreaterThanOrEqual(2);
-    // Last call should have limit 200.
-    const lastCallLimit = calls[calls.length - 1][1];
-    expect(lastCallLimit).toBe(200);
+    // Verify that getApprovalsFlat was called with the bumped limit.
+    expect(getApprovalsFlat).toHaveBeenCalledWith("waiting", 200);
   });
 });
