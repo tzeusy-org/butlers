@@ -53,7 +53,19 @@ follow the same pattern if they are likely to run in contexts without a server.
 
 ## CI Integration
 
-The Playwright suite is not yet wired into the CI workflow — that requires adding
-a step to start the Vite dev server (or run `vite preview` over a build) before
-running `npm run test:e2e`. Track this in the follow-up issue referenced in the
-bootstrap PR.
+The Playwright suite runs in the `frontend-e2e` job in `.github/workflows/ci.yml`.
+
+CI flow:
+1. `npm ci` — install dependencies
+2. `npm run test:e2e:install` — install Playwright browsers (chromium + deps)
+3. `npm run build` — produce the production build
+4. `npm run test:e2e` — Playwright starts `vite preview` automatically (via
+   the `webServer` block in `playwright.config.ts`) and runs the tests
+
+The `webServer` config uses `vite preview` (port 4173) over the built output,
+which is closer to production than `vite dev`. `reuseExistingServer` is `true`
+locally so an existing preview server at `:4173` is reused. To test against
+a dev server at `:5173`, set `PLAYWRIGHT_BASE_URL=http://localhost:5173`.
+
+Playwright reports (screenshots, traces, videos on failure) are uploaded as the
+`playwright-report` artifact and retained for 7 days.
