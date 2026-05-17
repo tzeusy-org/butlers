@@ -449,7 +449,8 @@ async def test_purge_superseded_uses_policy_ttl_days():
         "butlers.modules.memory.storage.purge_superseded_facts",
         new=AsyncMock(return_value={"superseded_deleted": 5, "ha_state_deleted": 0}),
     ) as mock_purge:
-        await _run_memory_purge_superseded_job(pool, None)
+        with patch("butlers.scheduled_jobs._table_size_bytes", new=AsyncMock(return_value=None)):
+            await _run_memory_purge_superseded_job(pool, None)
 
     mock_purge.assert_awaited_once()
     _, kwargs = mock_purge.call_args
@@ -484,16 +485,102 @@ async def test_cleanup_logs_compaction_when_rows_removed():
         "butlers.modules.memory.consolidation.run_episode_cleanup",
         new=AsyncMock(return_value={"expired_deleted": 3, "capacity_deleted": 7, "remaining": 90}),
     ):
-        with patch(
-            "butlers.scheduled_jobs._log_compaction",
-            new=AsyncMock(),
-        ) as mock_log:
-            await _run_memory_episode_cleanup_job(pool, None)
+        with patch("butlers.scheduled_jobs._table_size_bytes", new=AsyncMock(return_value=None)):
+            with patch(
+                "butlers.scheduled_jobs._log_compaction",
+                new=AsyncMock(),
+            ) as mock_log:
+                await _run_memory_episode_cleanup_job(pool, None)
 
     mock_log.assert_awaited_once()
     call_args = mock_log.call_args
     assert call_args.args[1] == "event"  # kind
     assert call_args.args[2] == 10  # rows_removed = 3 + 7
+
+
+async def test_cleanup_passes_bytes_freed_to_log_compaction():
+    """_run_memory_episode_cleanup_job computes bytes_freed from table-size delta."""
+    from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    # Simulate table shrinking from 8192 → 4096 bytes after cleanup.
+    size_sequence = [8192, 4096]
+
+    with patch(
+        "butlers.modules.memory.consolidation.run_episode_cleanup",
+        new=AsyncMock(return_value={"expired_deleted": 5, "capacity_deleted": 0, "remaining": 95}),
+    ):
+        with patch(
+            "butlers.scheduled_jobs._table_size_bytes",
+            new=AsyncMock(side_effect=size_sequence),
+        ):
+            with patch(
+                "butlers.scheduled_jobs._log_compaction",
+                new=AsyncMock(),
+            ) as mock_log:
+                await _run_memory_episode_cleanup_job(pool, None)
+
+    mock_log.assert_awaited_once()
+    call_args = mock_log.call_args
+    assert call_args.kwargs.get("bytes_freed") == 4096  # 8192 - 4096
+
+
+async def test_cleanup_bytes_freed_is_none_when_size_unavailable():
+    """bytes_freed is None when pg_total_relation_size returns None."""
+    from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    with patch(
+        "butlers.modules.memory.consolidation.run_episode_cleanup",
+        new=AsyncMock(return_value={"expired_deleted": 2, "capacity_deleted": 0, "remaining": 98}),
+    ):
+        with patch(
+            "butlers.scheduled_jobs._table_size_bytes",
+            new=AsyncMock(return_value=None),
+        ):
+            with patch(
+                "butlers.scheduled_jobs._log_compaction",
+                new=AsyncMock(),
+            ) as mock_log:
+                await _run_memory_episode_cleanup_job(pool, None)
+
+    mock_log.assert_awaited_once()
+    call_args = mock_log.call_args
+    assert call_args.kwargs.get("bytes_freed") is None
+
+
+async def test_purge_superseded_passes_bytes_freed_to_log_compaction():
+    """_run_memory_purge_superseded_job computes bytes_freed from facts table-size delta."""
+    from butlers.scheduled_jobs import _run_memory_purge_superseded_job
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    size_sequence = [16384, 8192]
+
+    with patch(
+        "butlers.modules.memory.storage.purge_superseded_facts",
+        new=AsyncMock(return_value={"superseded_deleted": 10, "ha_state_deleted": 2}),
+    ):
+        with patch(
+            "butlers.scheduled_jobs._table_size_bytes",
+            new=AsyncMock(side_effect=size_sequence),
+        ):
+            with patch(
+                "butlers.scheduled_jobs._log_compaction",
+                new=AsyncMock(),
+            ) as mock_log:
+                await _run_memory_purge_superseded_job(pool, None)
+
+    mock_log.assert_awaited_once()
+    call_args = mock_log.call_args
+    assert call_args.args[1] == "fact"
+    assert call_args.args[2] == 12  # 10 + 2
+    assert call_args.kwargs.get("bytes_freed") == 8192  # 16384 - 8192
 
 
 async def test_cleanup_does_not_log_when_nothing_removed():
@@ -514,3 +601,36 @@ async def test_cleanup_does_not_log_when_nothing_removed():
             await _run_memory_episode_cleanup_job(pool, None)
 
     mock_log.assert_not_awaited()
+
+
+async def test_table_size_bytes_returns_none_on_error():
+    """_table_size_bytes returns None when pg_total_relation_size raises."""
+    from butlers.scheduled_jobs import _table_size_bytes
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(side_effect=Exception("permission denied"))
+
+    result = await _table_size_bytes(pool, "episodes")
+    assert result is None
+
+
+async def test_table_size_bytes_returns_none_for_missing_table():
+    """_table_size_bytes returns None when to_regclass resolves to NULL."""
+    from butlers.scheduled_jobs import _table_size_bytes
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=None)  # NULL from pg when table absent
+
+    result = await _table_size_bytes(pool, "no_such_table")
+    assert result is None
+
+
+async def test_table_size_bytes_returns_size():
+    """_table_size_bytes propagates the integer size from pg_total_relation_size."""
+    from butlers.scheduled_jobs import _table_size_bytes
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=8192)
+
+    result = await _table_size_bytes(pool, "episodes")
+    assert result == 8192

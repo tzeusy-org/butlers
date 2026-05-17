@@ -153,13 +153,33 @@ async def _fetch_retention_policy(pool: asyncpg.Pool, kind: str) -> dict[str, An
     return {}
 
 
-async def _log_compaction(pool: asyncpg.Pool, kind: str, rows_removed: int) -> None:
+async def _table_size_bytes(pool: asyncpg.Pool, table_name: str) -> int | None:
+    """Return pg_total_relation_size for *table_name* resolved via the current search_path.
+
+    Uses ``to_regclass`` so an absent table returns NULL rather than raising.
+    Any unexpected error is caught and returns None so callers remain best-effort.
+    """
+    try:
+        return await pool.fetchval(
+            "SELECT pg_total_relation_size(to_regclass($1))",
+            table_name,
+        )
+    except Exception:
+        logger.debug("Could not measure size for table %r", table_name, exc_info=True)
+        return None
+
+
+async def _log_compaction(
+    pool: asyncpg.Pool, kind: str, rows_removed: int, *, bytes_freed: int | None = None
+) -> None:
     """Insert one row into public.memory_compaction_log; best-effort (no raise)."""
     try:
         await pool.execute(
-            "INSERT INTO public.memory_compaction_log (kind, rows_removed) VALUES ($1, $2)",
+            "INSERT INTO public.memory_compaction_log (kind, rows_removed, bytes_freed)"
+            " VALUES ($1, $2, $3)",
             kind,
             rows_removed,
+            bytes_freed,
         )
     except Exception:
         logger.debug(
@@ -216,10 +236,15 @@ async def _run_memory_episode_cleanup_job(
                 )
             max_entries = raw_max_entries
 
+    size_before = await _table_size_bytes(pool, "episodes")
     result = await run_episode_cleanup(pool=pool, max_entries=max_entries)
     total_removed = result.get("expired_deleted", 0) + result.get("capacity_deleted", 0)
     if total_removed > 0:
-        await _log_compaction(pool, "event", total_removed)
+        size_after = await _table_size_bytes(pool, "episodes")
+        bytes_freed: int | None = None
+        if size_before is not None and size_after is not None:
+            bytes_freed = max(0, size_before - size_after)
+        await _log_compaction(pool, "event", total_removed, bytes_freed=bytes_freed)
     return result
 
 
@@ -256,10 +281,15 @@ async def _run_memory_purge_superseded_job(
         # Policy explicitly says no TTL → skip fact purge.
         return {"superseded_deleted": 0, "ha_state_deleted": 0, "skipped": "no_ttl_policy"}
 
+    size_before = await _table_size_bytes(pool, "facts")
     result = await purge_superseded_facts(pool, older_than_days=older_than_days)
     total_removed = result.get("superseded_deleted", 0) + result.get("ha_state_deleted", 0)
     if total_removed > 0:
-        await _log_compaction(pool, "fact", total_removed)
+        size_after = await _table_size_bytes(pool, "facts")
+        bytes_freed: int | None = None
+        if size_before is not None and size_after is not None:
+            bytes_freed = max(0, size_before - size_after)
+        await _log_compaction(pool, "fact", total_removed, bytes_freed=bytes_freed)
     return result
 
 
