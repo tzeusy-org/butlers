@@ -463,6 +463,106 @@ async def test_resolve_tier_fallthrough_order(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
+async def test_counter_only_increments_for_resolved_tier(pool: asyncpg.Pool) -> None:
+    """Counter increments only for the tier that was actually selected.
+
+    With fallthrough enabled and only a cheap entry present, requesting
+    reasoning must increment the cheap counter (the resolved tier), NOT the
+    reasoning or workhorse counters for the skipped empty tiers.
+    """
+    await _insert_catalog_entry(
+        pool,
+        alias="cheap-only",
+        model_id="cheap-model",
+        complexity_tier="cheap",
+        priority=10,
+    )
+
+    # Resolve from reasoning → falls through to cheap.
+    result = await resolve_model(pool, "general", Complexity.REASONING, allow_tier_fallthrough=True)
+    assert result is not None and result[1] == "cheap-model"
+
+    # Only the cheap counter should exist and be 0 (first use).
+    rows = await pool.fetch(
+        "SELECT complexity_tier, counter FROM public.model_round_robin_counters "
+        "WHERE butler_name = $1 ORDER BY complexity_tier",
+        "general",
+    )
+    tiers_with_counters = {r["complexity_tier"]: r["counter"] for r in rows}
+    assert set(tiers_with_counters.keys()) == {"cheap"}, (
+        "Expected only 'cheap' counter; found counters for empty tiers: "
+        f"{set(tiers_with_counters.keys()) - {'cheap'}}"
+    )
+    assert tiers_with_counters["cheap"] == 0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_empty_tier_fallthrough_does_not_increment_skipped_counters(
+    pool: asyncpg.Pool,
+) -> None:
+    """Skipped empty tiers never appear in model_round_robin_counters.
+
+    Multiple resolve calls falling through reasoning → workhorse → cheap must
+    only accumulate a counter for cheap; reasoning and workhorse stay absent.
+    """
+    await _insert_catalog_entry(
+        pool,
+        alias="cheap-only-2",
+        model_id="cheap-model-2",
+        complexity_tier="cheap",
+        priority=5,
+    )
+
+    # Three calls from reasoning tier; all fall through to cheap.
+    for _ in range(3):
+        r = await resolve_model(
+            pool, "fallcheck", Complexity.REASONING, allow_tier_fallthrough=True
+        )
+        assert r is not None and r[1] == "cheap-model-2"
+
+    rows = await pool.fetch(
+        "SELECT complexity_tier, counter FROM public.model_round_robin_counters "
+        "WHERE butler_name = $1",
+        "fallcheck",
+    )
+    assert len(rows) == 1, f"Expected 1 counter row; got {[r['complexity_tier'] for r in rows]}"
+    assert rows[0]["complexity_tier"] == "cheap"
+    assert rows[0]["counter"] == 2  # 0, 1, 2 after three calls
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_no_fallthrough_does_not_increment_counter_on_miss(pool: asyncpg.Pool) -> None:
+    """allow_tier_fallthrough=False with no matching entry returns None and increments nothing."""
+    await _insert_catalog_entry(
+        pool,
+        alias="workhorse-only",
+        model_id="workhorse-model",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+
+    # Request reasoning tier with fallthrough disabled; no reasoning entry.
+    result = await resolve_model(
+        pool, "nofallcheck", Complexity.REASONING, allow_tier_fallthrough=False
+    )
+    assert result is None
+
+    rows = await pool.fetch(
+        "SELECT complexity_tier FROM public.model_round_robin_counters WHERE butler_name = $1",
+        "nofallcheck",
+    )
+    assert rows == [], (
+        f"Expected no counter rows on miss; got {[r['complexity_tier'] for r in rows]}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_deprecated_string_tier_warns(
     pool: asyncpg.Pool, caplog: pytest.LogCaptureFixture
 ) -> None:
