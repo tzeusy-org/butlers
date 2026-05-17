@@ -15,9 +15,12 @@ import { defineConfig, devices } from "@playwright/test";
  * running instance instead:
  *   PLAYWRIGHT_BASE_URL=https://your-instance.example.com npm run test:e2e
  *
- * Local dev workflow — reuse an already-running dev server:
- *   npm run dev        (in a separate terminal, starts at :5173)
+ * Local dev workflow — reuse an already-running preview server:
+ *   npm run preview    (in a separate terminal, starts at :4173)
  *   npm run test:e2e   (Playwright detects the server and reuses it)
+ *
+ * To test against the Vite dev server instead, set PLAYWRIGHT_BASE_URL:
+ *   PLAYWRIGHT_BASE_URL=http://localhost:5173 npm run test:e2e
  *
  * In CI, Playwright always starts a fresh `vite preview` server so each run
  * is reproducible and independent of any external process.

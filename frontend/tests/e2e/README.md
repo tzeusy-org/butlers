@@ -64,7 +64,8 @@ CI flow:
 
 The `webServer` config uses `vite preview` (port 4173) over the built output,
 which is closer to production than `vite dev`. `reuseExistingServer` is `true`
-locally so your dev server at `:5173` or `:4173` is reused without conflict.
+locally so an existing preview server at `:4173` is reused. To test against
+a dev server at `:5173`, set `PLAYWRIGHT_BASE_URL=http://localhost:5173`.
 
 Playwright reports (screenshots, traces, videos on failure) are uploaded as the
 `playwright-report` artifact and retained for 7 days.
