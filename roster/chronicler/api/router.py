@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any, Protocol
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
@@ -428,6 +428,7 @@ async def list_episode_corrections(
 )
 async def submit_episode_correction(
     episode_id: UUID,
+    request: Request,
     body: SubmitCorrectionRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ChroniclerOverride:
@@ -495,6 +496,7 @@ async def submit_episode_correction(
         path_params={"episode_id": str(episode_id)},
         body={"corrected_privacy": body.corrected_privacy, "submitted_by": body.submitted_by},
         response_status=201,
+        request=request,
     )
 
     return _row_to_override(row)
@@ -606,6 +608,7 @@ def _build_episode_bundle(
 )
 async def explain_episode(
     episode_id: UUID,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
     dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
 ) -> EpisodeExplainResponse:
@@ -625,7 +628,7 @@ async def explain_episode(
     _tracer = trace.get_tracer("butlers.chronicler")
     with _tracer.start_as_current_span("chronicler.episodes.explain") as span:
         span.set_attribute("chronicler.episodes.explain.episode_id", str(episode_id))
-        return await _explain_episode_inner(episode_id, db, dispatch_fn, span=span)
+        return await _explain_episode_inner(episode_id, db, dispatch_fn, request=request, span=span)
 
 
 async def _explain_episode_inner(
@@ -633,6 +636,7 @@ async def _explain_episode_inner(
     db: DatabaseManager,
     dispatch_fn: DayCloseDispatchCallable | None,
     *,
+    request: Request | None = None,
     span: Any,
 ) -> EpisodeExplainResponse:
     pool = _pool(db)
@@ -812,6 +816,7 @@ async def _explain_episode_inner(
         path=f"/api/chronicler/episodes/{episode_id}/explain",
         path_params={"episode_id": str(episode_id)},
         response_status=200,
+        request=request,
     )
 
     return EpisodeExplainResponse(
@@ -1871,6 +1876,7 @@ _REFRESH_RATE_LIMIT_HOURS = 24
     status_code=200,
 )
 async def refresh_day_close(
+    request: Request,
     body: DayCloseRefreshRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
     dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
@@ -2012,6 +2018,7 @@ async def refresh_day_close(
         path="/api/chronicler/aggregate/day-close/refresh",
         body={"date": body.date.isoformat(), "tz": body.tz},
         response_status=200,
+        request=request,
     )
 
     return DayCloseRefreshResponse(

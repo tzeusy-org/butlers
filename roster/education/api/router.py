@@ -13,7 +13,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -586,6 +586,7 @@ _VALID_STATUSES = {"active", "completed", "abandoned"}
 @router.put("/mind-maps/{mind_map_id}/status", response_model=MindMapResponse)
 async def update_mind_map_status(
     mind_map_id: str,
+    request: Request,
     body: StatusUpdateRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> MindMapResponse:
@@ -615,6 +616,7 @@ async def update_mind_map_status(
         path_params={"mind_map_id": mind_map_id},
         body={"status": body.status},
         response_status=200,
+        request=request,
     )
 
     return _map_dict_to_response(m, include_dag=False)
@@ -633,6 +635,7 @@ _CURRICULUM_REQUEST_KEY = "pending_curriculum_request"
     status_code=202,
 )
 async def submit_curriculum_request(
+    request: Request,
     body: CurriculumRequestBody = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CurriculumRequestResponse:
@@ -674,6 +677,7 @@ async def submit_curriculum_request(
         path="/api/education/curriculum-requests",
         body={"topic": topic},
         response_status=202,
+        request=request,
     )
 
     return CurriculumRequestResponse(status="pending", topic=topic)

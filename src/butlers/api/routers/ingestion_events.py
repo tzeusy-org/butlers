@@ -19,7 +19,7 @@ import logging
 from asyncio import gather as _asyncio_gather
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -116,6 +116,7 @@ async def list_ingestion_events(
 @router.get("/{request_id}", response_model=ApiResponse[IngestionEventDetail])
 async def get_ingestion_event(
     request_id: str,
+    request: Request,
     include: list[str] = Query(
         default=[],
         description=(
@@ -169,6 +170,7 @@ async def get_ingestion_event(
         path_params={"request_id": request_id},
         body={"reason": audit_reason},
         response_status=200,
+        request=request,
     )
 
     # Augment with lifecycle fields from message_inbox (switchboard schema).

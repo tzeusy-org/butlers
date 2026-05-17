@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from httpx import AsyncClient as HttpxAsyncClient
 from httpx import ConnectError as HttpxConnectError
 from httpx import TimeoutException as HttpxTimeoutException
@@ -865,6 +865,7 @@ async def list_maintenance(
 
 @router.post("/maintenance", status_code=201)
 async def create_maintenance_item(
+    request: Request,
     body: MaintenanceItemCreateRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict[str, Any]:
@@ -911,6 +912,7 @@ async def create_maintenance_item(
         path="/api/home/maintenance",
         body={"name": body.name, "category": body.category},
         response_status=201,
+        request=request,
     )
 
     return _row_to_maintenance_item(row).model_dump(mode="json")
@@ -924,6 +926,7 @@ async def create_maintenance_item(
 @router.post("/maintenance/{item_id}/complete")
 async def complete_maintenance_item(
     item_id: UUID,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict[str, Any]:
     """Mark a maintenance item as completed.
@@ -965,6 +968,7 @@ async def complete_maintenance_item(
         path=f"/api/home/maintenance/{item_id}/complete",
         path_params={"item_id": str(item_id)},
         response_status=200,
+        request=request,
     )
 
     return _row_to_maintenance_item(row).model_dump(mode="json")
@@ -978,6 +982,7 @@ async def complete_maintenance_item(
 @router.delete("/maintenance/{item_id}", status_code=204)
 async def delete_maintenance_item(
     item_id: UUID,
+    request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Delete a maintenance item.
@@ -1012,6 +1017,7 @@ async def delete_maintenance_item(
         path=f"/api/home/maintenance/{item_id}",
         path_params={"item_id": str(item_id)},
         response_status=204,
+        request=request,
     )
 
 
@@ -1107,6 +1113,7 @@ async def get_thresholds(
 
 @router.patch("/settings/thresholds")
 async def update_thresholds(
+    request: Request,
     body: ThresholdUpdateRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict[str, Any]:
@@ -1178,6 +1185,7 @@ async def update_thresholds(
         path="/api/home/settings/thresholds",
         body={"updated_keys": list(update_map.keys())},
         response_status=200,
+        request=request,
     )
 
     return current

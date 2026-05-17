@@ -13,7 +13,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -570,6 +570,7 @@ async def get_upcoming_bills(
 
 @router.post("/transactions/bulk", response_model=BulkTransactionResponse)
 async def bulk_ingest_transactions(
+    http_request: Request,
     request: BulkTransactionRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> BulkTransactionResponse:
@@ -617,6 +618,7 @@ async def bulk_ingest_transactions(
         operation="transaction_bulk_ingest",
         method="POST",
         path="/api/finance/transactions/bulk",
+        request=http_request,
         body={
             "account_id": str(request.account_id) if request.account_id else None,
             "source": request.source,
@@ -705,6 +707,7 @@ async def list_distinct_merchants(
 
 @router.patch("/transactions/bulk-metadata", response_model=BulkUpdateResponseModel)
 async def bulk_update_transactions(
+    http_request: Request,
     request: BulkUpdateRequestModel = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> BulkUpdateResponseModel:
@@ -756,6 +759,7 @@ async def bulk_update_transactions(
         path="/api/finance/transactions/bulk-metadata",
         body={"op_count": len(ops_raw)},
         response_status=200,
+        request=http_request,
     )
 
     return BulkUpdateResponseModel(
