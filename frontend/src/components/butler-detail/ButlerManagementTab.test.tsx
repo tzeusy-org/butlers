@@ -117,14 +117,11 @@ describe("PromptEditModal — mutation wiring", () => {
   afterEach(() => cleanup());
 
   it("calls useUpdateButlerPrompt at component top level (hook always called)", () => {
-    // The hook must be called even before the modal is open.
-    // We verify by counting calls after a plain render (no modal open).
+    // PromptEditModal is only rendered when showEdit=true, so we must open
+    // the modal to mount it. Once mounted, the hook must be called unconditionally
+    // at the top of PromptEditModal (not inside any conditional) — React rules of hooks.
     setupDefaultHooks();
     renderTab();
-    // useUpdateButlerPrompt is called inside PromptEditModal, which only renders
-    // when showEdit=true. React rules of hooks require it to be called unconditionally
-    // at the top of PromptEditModal, not inside any conditional.
-    // Open the modal so PromptEditModal mounts, which will call the hook.
     openEditModal();
     expect(vi.mocked(useUpdateButlerPrompt)).toHaveBeenCalledWith("general");
   });
@@ -209,8 +206,10 @@ describe("PromptEditModal — mutation wiring", () => {
     fireEvent.change(textarea, { target: { value: "New prompt" } });
     fireEvent.click(screen.getByText("save version →"));
 
-    // Simulate error response
-    capturedCallbacks.onError?.(new Error("API error"));
+    // Simulate error response wrapped in act to flush React state updates
+    act(() => {
+      capturedCallbacks.onError?.(new Error("API error"));
+    });
 
     expect(toast.error).toHaveBeenCalledWith("API error");
     // Modal should remain open — textarea still in DOM
@@ -230,8 +229,10 @@ describe("PromptEditModal — mutation wiring", () => {
     fireEvent.change(textarea, { target: { value: "New prompt" } });
     fireEvent.click(screen.getByText("save version →"));
 
-    // Simulate non-Error failure
-    capturedCallbacks.onError?.("some string error");
+    // Simulate non-Error failure wrapped in act to flush React state updates
+    act(() => {
+      capturedCallbacks.onError?.("some string error");
+    });
 
     expect(toast.error).toHaveBeenCalledWith("Failed to save system prompt");
     expect(screen.getByPlaceholderText("Enter system prompt…")).toBeTruthy();
