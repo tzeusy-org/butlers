@@ -231,3 +231,55 @@ class MemoryInspectResult(BaseModel):
     butler: str | None = None
     created_at: str
     metadata: dict = {}
+
+
+# ---------------------------------------------------------------------------
+# Re-embedding models
+# ---------------------------------------------------------------------------
+
+_DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+
+class ReembedPendingCounts(BaseModel):
+    """Per-tier counts of rows whose stored embedding is stale."""
+
+    counts: dict[str, int]
+    """Stale row count per tier: episodes, facts, rules."""
+    total: int
+    """Sum of all tier counts."""
+    current_model: str
+    """The model name used as the reference point for staleness."""
+
+
+class ReembedRunRequest(BaseModel):
+    """Request body for POST /api/memory/reembed."""
+
+    butler: str | None = None
+    """Butler schema to operate on.  When None, the first available pool is used."""
+    dry_run: bool = True
+    """When True (default), count and log only — no DB writes are performed."""
+    tiers: list[str] | None = None
+    """Subset of tiers to process (episodes, facts, rules).  None → all tiers."""
+    batch_size: int = 50
+    """Rows per DB round-trip (1–500, default 50)."""
+    current_model: str = _DEFAULT_EMBEDDING_MODEL
+    """Embedding model currently configured.  Defaults to all-MiniLM-L6-v2."""
+
+
+class ReembedRunResult(BaseModel):
+    """Response from POST /api/memory/reembed.
+
+    Note: this is a synchronous (blocking) endpoint. Re-embedding thousands of
+    rows can take minutes.  Callers should use a long-poll timeout or run
+    dry_run=True first to estimate the scope before committing.
+    """
+
+    dry_run: bool
+    current_model: str
+    tiers_processed: list[str]
+    counts: dict[str, int]
+    """Rows re-embedded (or found stale in dry_run) per tier."""
+    total: int
+    """Sum across all tiers."""
+    errors: list[str]
+    """Non-fatal per-batch errors encountered during the run."""

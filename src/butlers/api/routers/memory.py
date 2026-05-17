@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.memory import (
+    _DEFAULT_EMBEDDING_MODEL,
     ButlerMemoryStats,
     CompactionLogEntry,
     EntityDetail,
@@ -34,6 +35,9 @@ from butlers.api.models.memory import (
     MemoryInspectResult,
     MemoryRetentionPolicy,
     MemoryStats,
+    ReembedPendingCounts,
+    ReembedRunRequest,
+    ReembedRunResult,
     Rule,
     UpdateEntityRequest,
     UpdateRetentionPoliciesRequest,
@@ -2021,4 +2025,125 @@ async def inspect_memory(
     return PaginatedResponse[MemoryInspectResult](
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/reembed/pending
+# ---------------------------------------------------------------------------
+
+
+@router.get("/reembed/pending", response_model=ApiResponse[ReembedPendingCounts])
+async def get_reembed_pending(
+    butler: str | None = Query(
+        None, description="Butler schema to probe.  Defaults to first available."
+    ),
+    current_model: str = Query(
+        _DEFAULT_EMBEDDING_MODEL,
+        description=(
+            "Embedding model currently configured for this butler. "
+            "Rows whose stored embedding_model_version differs from this are counted as stale."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ReembedPendingCounts]:
+    """Count stale embeddings per tier without performing any DB writes.
+
+    Returns the number of rows in each memory tier (episodes, facts, rules)
+    whose ``embedding_model_version`` differs from ``current_model``.  Only
+    rows with a non-NULL embedding are considered stale (rows with no embedding
+    have never been embedded and are not counted).
+
+    Use this before triggering a re-embed run to estimate scope.
+    """
+    from butlers.modules.memory import reembedding as _reembedding
+
+    if butler is not None:
+        try:
+            pool = db.pool(butler)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No pool available for butler '{butler}'")
+    else:
+        pool = _any_pool(db)
+
+    try:
+        counts = await _reembedding.count_pending(pool, current_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ApiResponse[ReembedPendingCounts](
+        data=ReembedPendingCounts(
+            counts=counts,
+            total=sum(counts.values()),
+            current_model=current_model,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/reembed
+# ---------------------------------------------------------------------------
+
+
+@router.post("/reembed", response_model=ApiResponse[ReembedRunResult])
+async def run_reembed(
+    body: ReembedRunRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ReembedRunResult]:
+    """Trigger a synchronous re-embedding run for stale memory rows.
+
+    Re-embeds rows whose ``embedding_model_version`` differs from
+    ``body.current_model`` using the embedding engine for that model.
+
+    **WARNING — this is a synchronous, long-running endpoint.**  Re-embedding
+    thousands of rows can take several minutes.  Use ``dry_run=True`` (the
+    default) with GET /api/memory/reembed/pending first to estimate scope, then
+    call with ``dry_run=False`` to commit changes.
+
+    The embedding engine is loaded lazily on first call and cached per model
+    name (shared with the butler's MCP layer).  A non-standard
+    ``current_model`` that is not installed in the container will raise a 500
+    error during engine initialisation.
+    """
+    from butlers.modules.memory import reembedding as _reembedding
+    from butlers.modules.memory.tools import get_embedding_engine
+
+    if body.butler is not None:
+        try:
+            pool = db.pool(body.butler)
+        except KeyError:
+            raise HTTPException(
+                status_code=404, detail=f"No pool available for butler '{body.butler}'"
+            )
+    else:
+        pool = _any_pool(db)
+
+    try:
+        engine = get_embedding_engine(body.current_model)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load embedding engine for model '{body.current_model}': {exc}",
+        ) from exc
+
+    try:
+        result = await _reembedding.run(
+            pool,
+            engine,
+            dry_run=body.dry_run,
+            tiers=body.tiers,
+            batch_size=body.batch_size,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ApiResponse[ReembedRunResult](
+        data=ReembedRunResult(
+            dry_run=result.dry_run,
+            current_model=result.current_model,
+            tiers_processed=result.tiers_processed,
+            counts=result.counts,
+            total=result.total,
+            errors=result.errors,
+        )
     )
