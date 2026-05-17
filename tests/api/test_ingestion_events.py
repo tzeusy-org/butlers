@@ -2,12 +2,14 @@
 
 Condensed from 47 tests to ~8 tests (bu-egmz6) → 3 tests (bu-2yw2d).
 Keeps: paginated list 200 + 503, event detail 200 + 404 (combined), status/uuid validation 422 (parametrized).
+
+bu-ty7gh: adds audit-log assertions and decomposition_output gate tests.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -62,7 +64,7 @@ def _app_with_mock_db(app: FastAPI, *, shared_pool=None, shared_pool_error=None)
     mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
-    return app
+    return mock_db
 
 
 # ---------------------------------------------------------------------------
@@ -99,19 +101,21 @@ async def test_event_detail_200_and_404(app):
     pool_found.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
     pool_found.fetch = AsyncMock(return_value=[])
     _app_with_mock_db(app, shared_pool=pool_found)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp_ok = await client.get(f"/api/ingestion/events/{event_id}")
+    with patch("butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp_ok = await client.get(f"/api/ingestion/events/{event_id}")
     assert resp_ok.status_code == 200
 
     pool_missing = AsyncMock()
     pool_missing.fetchrow = AsyncMock(return_value=None)
     _app_with_mock_db(app, shared_pool=pool_missing)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp_404 = await client.get(f"/api/ingestion/events/{uuid4()}")
+    with patch("butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp_404 = await client.get(f"/api/ingestion/events/{uuid4()}")
     assert resp_404.status_code == 404
 
 
@@ -135,3 +139,118 @@ async def test_ingestion_validation_errors(app, path, expected):
     ) as client:
         resp = await client.get(path)
     assert resp.status_code == expected
+
+
+# ---------------------------------------------------------------------------
+# Audit log fires on GET /api/ingestion/events/{request_id}
+# ---------------------------------------------------------------------------
+
+
+async def test_event_detail_emits_audit_log(app):
+    """GET detail must emit an audit log entry before returning the payload."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
+    pool.fetch = AsyncMock(return_value=[])
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock
+    ) as mock_audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{event_id}")
+
+    assert resp.status_code == 200
+    mock_audit.assert_awaited_once()
+    call_kwargs = mock_audit.await_args.kwargs
+    assert call_kwargs["operation"] == "ingestion.event.payload_fetch"
+    assert call_kwargs["method"] == "GET"
+    assert call_kwargs["path_params"] == {"request_id": event_id}
+    assert call_kwargs["body"]["reason"] == "detail_view"
+
+
+# ---------------------------------------------------------------------------
+# decomposition_output is omitted by default and included only with ?include=decomposition
+# ---------------------------------------------------------------------------
+
+
+async def _detail_response(app, event_id: str, url: str) -> dict:
+    """Helper: perform GET and return parsed JSON body."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(url)
+    assert resp.status_code == 200
+    return resp.json()
+
+
+async def test_decomposition_output_omitted_by_default(app):
+    """decomposition_output must be null in the default response (no ?include=decomposition)."""
+    event_id = str(uuid4())
+    # Provide an inbox lifecycle row that contains decomposition_output.
+    inbox_row = MagicMock()
+    inbox_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "lifecycle_state": "classified",
+            "decomposition_output": '{"intent": "question"}',
+        }[key]
+    )
+
+    main_pool = AsyncMock()
+    main_pool.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
+    main_pool.fetch = AsyncMock(return_value=[])
+
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchrow = AsyncMock(return_value=inbox_row)
+
+    mock_db = _app_with_mock_db(app, shared_pool=main_pool)
+    # Override pool() so switchboard lookup succeeds.
+    mock_db.pool.side_effect = lambda name: (
+        switchboard_pool if name == "switchboard" else (_ for _ in ()).throw(KeyError(name))
+    )
+
+    with patch("butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock):
+        body = await _detail_response(app, event_id, f"/api/ingestion/events/{event_id}")
+
+    assert body["data"]["decomposition_output"] is None
+    assert body["data"]["lifecycle_state"] == "classified"
+
+
+async def test_decomposition_output_included_with_flag(app):
+    """decomposition_output is returned when ?include=decomposition is passed; audit reason changes."""
+    event_id = str(uuid4())
+    inbox_row = MagicMock()
+    inbox_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "lifecycle_state": "classified",
+            "decomposition_output": '{"intent": "question"}',
+        }[key]
+    )
+
+    main_pool = AsyncMock()
+    main_pool.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
+    main_pool.fetch = AsyncMock(return_value=[])
+
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchrow = AsyncMock(return_value=inbox_row)
+
+    mock_db = _app_with_mock_db(app, shared_pool=main_pool)
+    mock_db.pool.side_effect = lambda name: (
+        switchboard_pool if name == "switchboard" else (_ for _ in ()).throw(KeyError(name))
+    )
+
+    with patch(
+        "butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock
+    ) as mock_audit:
+        body = await _detail_response(
+            app, event_id, f"/api/ingestion/events/{event_id}?include=decomposition"
+        )
+
+    # decomposition_output must be present (and non-null from the inbox row).
+    assert body["data"]["decomposition_output"] is not None
+
+    # Audit reason must reflect the broader disclosure.
+    call_kwargs = mock_audit.await_args.kwargs
+    assert call_kwargs["body"]["reason"] == "decomposition_disclosed"
