@@ -421,7 +421,7 @@ Runtime-configurable connector settings are stored in `connector_registry.settin
 ### Requirement: Shared Discretion Layer
 An LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE). Used by connectors that need noise filtering before Switchboard ingestion.
 
-The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `discretion` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
+The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
 
 #### Scenario: Discretion module location
 - **WHEN** a connector integrates the discretion layer
@@ -431,7 +431,7 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 
 #### Scenario: Discretion model resolution via catalog
 - **WHEN** a discretion evaluation requires an LLM call
-- **THEN** the `DiscretionDispatcher` resolves the model from `public.model_catalog` using `complexity_tier='discretion'`
+- **THEN** the `DiscretionDispatcher` resolves the model from `public.model_catalog` using `complexity_tier='specialty'`
 - **AND** the resolved `(runtime_type, model_id, extra_args)` tuple is passed to the appropriate `RuntimeAdapter` via the standard adapter registry
 - **AND** the default seed entry is `discretion-qwen3.5-9b` (runtime_type=`opencode`, model_id=`ollama/qwen3.5:9b`) — a local Ollama model accessed via the OpenCode adapter
 - **AND** operators can change the discretion model at any time via the Settings UI at `/butlers/settings` without code changes or restarts
