@@ -196,7 +196,8 @@ async def pool(postgres_container):
             sensitivity TEXT NOT NULL DEFAULT 'normal',
             idempotency_key TEXT,
             observed_at TIMESTAMPTZ DEFAULT now(),
-            invalid_at TIMESTAMPTZ
+            invalid_at TIMESTAMPTZ,
+            embedding_model_version TEXT DEFAULT 'unknown'
         )
     """)
     await p.execute("""
@@ -229,6 +230,7 @@ def patch_embedding_engine():
     """Patch get_embedding_engine so store_fact does not require a real ML model."""
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
     with patch("butlers.modules.memory.tools.get_embedding_engine", return_value=engine):
         for mod_name in (
             "butlers.tools.relationship.feed",
