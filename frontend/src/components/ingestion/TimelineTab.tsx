@@ -16,12 +16,15 @@
  *
  * BREAKING (bu-1f91v.3): offset+total pagination removed; replaced with
  * cursor-based infinite scroll. The `total` field is no longer available.
+ *
+ * §2.8 Saved Views: client-side localStorage key `ingestion-saved-views`.
+ * §2.9 Connector Attention Strip: highlights connectors with degraded health.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { Check, Copy, Loader2, RotateCw } from "lucide-react";
+import { AlertTriangle, Check, Copy, Loader2, RotateCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
@@ -46,6 +49,7 @@ import {
   useIngestionEventRollup,
   useIngestionEventSenderContact,
 } from "@/hooks/use-ingestion-events";
+import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import type {
   IngestionEventSummary,
   IngestionEventSession,
@@ -733,6 +737,178 @@ function EventRowSkeleton() {
 }
 
 // ---------------------------------------------------------------------------
+// §2.9 ConnectorAttentionStrip
+//
+// Renders a compact strip of connectors whose health is degraded.
+// Currently uses `state != 'healthy'` as the attention signal — the spec
+// calls for `auth.status != 'ok'` but ConnectorSummary does not yet carry
+// an `auth` field (it will be added in Wave 2 when the auth surface lands).
+// Until then, unhealthy/offline connectors serve as a practical stand-in.
+//
+// Decision: extracted as a local component (not reusing the Settings Console
+// AttentionStrip) because the Settings Console strip is driven by server-side
+// AttentionItem objects with pre-built text and action_route fields, while the
+// ingestion strip needs to derive items from ConnectorSummary data client-side.
+// ---------------------------------------------------------------------------
+
+function ConnectorAttentionStrip() {
+  const { data: connectorsResp } = useConnectorSummaries();
+  const connectors = connectorsResp?.data ?? [];
+
+  // Filter to connectors that need attention:
+  // - state != 'healthy'  (degraded/error states)
+  // - liveness == 'offline' (no heartbeat for 15+ min)
+  //
+  // TODO(Wave 2): Replace with `connector.auth?.status !== 'ok'` once the
+  // auth surface is added to ConnectorSummary in §3.x.
+  const attentionConnectors = connectors.filter(
+    (c) => c.state !== "healthy" || c.liveness === "offline",
+  );
+
+  if (attentionConnectors.length === 0) return null;
+
+  return (
+    <div
+      className="flex flex-wrap gap-2 rounded-md border border-amber-400/40 bg-amber-50/60 dark:bg-amber-950/20 px-3 py-2"
+      data-testid="connector-attention-strip"
+      role="alert"
+      aria-label="Connectors requiring attention"
+    >
+      <div className="flex items-center gap-1.5 shrink-0 text-amber-700 dark:text-amber-400">
+        <AlertTriangle className="size-3.5" aria-hidden />
+        <span className="text-xs font-semibold">Connector issues:</span>
+      </div>
+      {attentionConnectors.map((c) => (
+        <span
+          key={`${c.connector_type}/${c.endpoint_identity}`}
+          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs bg-amber-100/80 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300"
+          title={c.error_message ?? `${c.liveness} / ${c.state}`}
+          data-testid="connector-attention-item"
+        >
+          <span className="font-medium">{c.connector_type}</span>
+          <span className="text-amber-600/70 dark:text-amber-500/70">
+            {c.endpoint_identity}
+          </span>
+          <span className="ml-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+            {c.state !== "healthy" ? c.state : c.liveness}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// §2.8 Saved Views
+//
+// Client-side view presets stored in localStorage under key
+// `ingestion-saved-views`. Each view is a named set of enabled statuses.
+//
+// Built-in views:
+//   All      — all statuses
+//   Errors   — error + replay_pending + replay_failed
+//   Priority — PLACEHOLDER: no-op until Wave 2 wires priority_contacts (§3.3)
+//   Spend    — ingested + replay_complete (events that consumed LLM sessions)
+// ---------------------------------------------------------------------------
+
+const SAVED_VIEWS_STORAGE_KEY = "ingestion-saved-views";
+
+type ViewId = "all" | "errors" | "priority" | "spend";
+
+interface SavedView {
+  id: ViewId;
+  label: string;
+  statuses: IngestionEventStatus[] | null; // null = placeholder (no filter applied)
+}
+
+const BUILT_IN_VIEWS: SavedView[] = [
+  {
+    id: "all",
+    label: "All",
+    statuses: ["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"],
+  },
+  {
+    id: "errors",
+    label: "Errors",
+    statuses: ["error", "replay_pending", "replay_failed"],
+  },
+  {
+    // PLACEHOLDER: Priority view will filter by priority_contacts once Wave 2
+    // wires the priority_contacts table (Phase 3a §3.3). Until then, this view
+    // is a no-op and renders the same as "All".
+    id: "priority",
+    label: "Priority",
+    statuses: null,
+  },
+  {
+    id: "spend",
+    label: "Spend",
+    statuses: ["ingested", "replay_complete"],
+  },
+];
+
+/** Read the persisted active view ID from localStorage. */
+function readPersistedView(): ViewId {
+  try {
+    const raw = localStorage.getItem(SAVED_VIEWS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.activeView === "string") {
+        return parsed.activeView as ViewId;
+      }
+    }
+  } catch {
+    // Malformed storage — fall through to default
+  }
+  return "all";
+}
+
+/** Persist the active view ID to localStorage. */
+function persistView(viewId: ViewId): void {
+  try {
+    localStorage.setItem(SAVED_VIEWS_STORAGE_KEY, JSON.stringify({ activeView: viewId }));
+  } catch {
+    // localStorage unavailable (private browsing / quota exceeded) — ignore
+  }
+}
+
+interface SavedViewSelectorProps {
+  activeViewId: ViewId;
+  onSelect: (viewId: ViewId) => void;
+}
+
+function SavedViewSelector({ activeViewId, onSelect }: SavedViewSelectorProps) {
+  return (
+    <div className="flex items-center gap-1" data-testid="saved-view-selector">
+      {BUILT_IN_VIEWS.map((view) => (
+        <button
+          key={view.id}
+          type="button"
+          onClick={() => onSelect(view.id)}
+          className={[
+            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+            activeViewId === view.id
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            view.statuses === null
+              ? "opacity-60 cursor-default"  // placeholder view
+              : "cursor-pointer",
+          ].join(" ")}
+          title={view.statuses === null ? "Priority view available in Wave 2 (§3.3)" : undefined}
+          data-view={view.id}
+          aria-pressed={activeViewId === view.id}
+        >
+          {view.label}
+          {view.statuses === null && (
+            <span className="ml-1 text-[10px] text-muted-foreground">(soon)</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Status filter options
 // ---------------------------------------------------------------------------
 
@@ -767,16 +943,46 @@ interface TimelineTabProps {
   isActive: boolean;
   /** Override the default enabled statuses (for testing). */
   defaultStatuses?: IngestionEventStatus[];
+  /** Override the initial active view ID (for testing). */
+  defaultViewId?: ViewId;
 }
 
-export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
+export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: TimelineTabProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const expandedId = searchParams.get("expanded");
 
-  // Multi-select status filter — default: all except "filtered"
-  const [enabledStatuses, setEnabledStatuses] = useState<Set<IngestionEventStatus>>(
-    () => new Set(defaultStatuses ?? DEFAULT_STATUSES),
+  // §2.8 Saved Views — persisted in localStorage; no server call
+  const [activeViewId, setActiveViewId] = useState<ViewId>(
+    () => defaultViewId ?? readPersistedView(),
   );
+
+  // Derive the status set from the active view.
+  // When defaultStatuses is provided (test override), it takes precedence.
+  const viewStatuses = useMemo((): Set<IngestionEventStatus> => {
+    if (defaultStatuses) return new Set(defaultStatuses);
+    const view = BUILT_IN_VIEWS.find((v) => v.id === activeViewId);
+    if (!view || view.statuses === null) {
+      // Placeholder view (Priority) — treat as "All" until Wave 2
+      return new Set(DEFAULT_STATUSES);
+    }
+    return new Set(view.statuses);
+  }, [activeViewId, defaultStatuses]);
+
+  // Multi-select status filter — driven by Saved View; individual checkbox
+  // overrides are still available for fine-grained filtering on top of the view.
+  const [enabledStatuses, setEnabledStatuses] = useState<Set<IngestionEventStatus>>(
+    () => viewStatuses,
+  );
+
+  // Keep enabledStatuses in sync when the active view changes
+  useEffect(() => {
+    setEnabledStatuses(viewStatuses);
+  }, [viewStatuses]);
+
+  const handleViewSelect = useCallback((viewId: ViewId) => {
+    setActiveViewId(viewId);
+    persistView(viewId);
+  }, []);
 
   // Optimistic overrides: map of event id → overridden status
   const [optimisticOverrides, setOptimisticOverrides] = useState<
@@ -802,7 +1008,6 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
   // Evict stale optimistic overrides: once the server returns a status other
   // than replay_pending for an event we overrode, the server has caught up and
   // the override is no longer needed.
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setOptimisticOverrides((prev) => {
       if (prev.size === 0) return prev;
@@ -815,7 +1020,6 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
       return next.size === prev.size ? prev : next; // stable ref if no change
     });
   }, [rawEvents]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Apply optimistic overrides so replayed events immediately show replay_pending
   const allEvents: IngestionEventSummary[] = rawEvents.map((e) => {
@@ -894,11 +1098,17 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
 
   return (
     <div className="space-y-4">
+      {/* §2.9 Connector Attention Strip — unhealthy connectors above the table */}
+      <ConnectorAttentionStrip />
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Ingestion Events</CardTitle>
-            {/* Status filter checkboxes */}
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-4">
+              <CardTitle>Ingestion Events</CardTitle>
+              {/* §2.8 Saved Views selector */}
+              <SavedViewSelector activeViewId={activeViewId} onSelect={handleViewSelect} />
+            </div>
+            {/* Status filter checkboxes — fine-grained override on top of Saved View */}
             <div className="flex items-center gap-3" data-testid="status-filter">
               <span className="text-sm text-muted-foreground">Status:</span>
               {ALL_STATUSES.map((status) => (
