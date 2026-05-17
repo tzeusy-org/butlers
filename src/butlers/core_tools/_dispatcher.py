@@ -15,6 +15,7 @@ from butlers.core_tools._notifications import register_notification_tools
 from butlers.core_tools._routing import register_routing_tools
 from butlers.core_tools._scheduling import register_scheduling_tools
 from butlers.core_tools._sessions import register_session_tools
+from butlers.core_tools._shutdown import register_shutdown_tool
 from butlers.core_tools._state import register_state_tools
 from butlers.core_tools._switchboard import register_switchboard_tools
 from butlers.core_tools._temporal import register_temporal_tools
@@ -36,6 +37,7 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
       10. Switchboard tools (ingest, route_to_butler, connector.heartbeat, backfill.*)
       11. Messenger tools (delivery prefs, deferred notifications, delivery ops)
       12. Memory-access tool (memory_access) — always registered, degrades gracefully
+      13. Shutdown tool (shutdown)
     """
     register_state_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
@@ -49,3 +51,4 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_switchboard_tools(ctx, mcp, _core_tool)
     register_messenger_tools(ctx, mcp, _core_tool)
     register_memory_access_tool(ctx, mcp, _core_tool)
+    register_shutdown_tool(ctx, mcp, _core_tool)
