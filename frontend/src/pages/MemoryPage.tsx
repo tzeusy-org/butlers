@@ -2,6 +2,7 @@ import { useState } from "react";
 import MemoryTierCards from "@/components/memory/MemoryTierCards";
 import MemoryBrowser from "@/components/memory/MemoryBrowser";
 import MemoryActivityTimeline from "@/components/memory/MemoryActivityTimeline";
+import ReembedPanel from "@/components/memory/ReembedPanel";
 import {
   useMemoryRetentionPolicies,
   useUpdateMemoryRetentionPolicies,
@@ -305,6 +306,9 @@ export default function MemoryPage() {
 
       {/* §10.4 §3: Compaction log feed */}
       <CompactionLogSection />
+
+      {/* Embedding migration panel (bu-9bqsy) */}
+      <ReembedPanel />
     </div>
   );
 }
