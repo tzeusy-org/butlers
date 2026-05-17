@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>Ingestion · redesign proposals</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --category-1: oklch(0.680 0.195 259.0);
+    --category-2: oklch(0.640 0.220 292.5);
+    --category-3: oklch(0.810 0.185 84.0);
+    --category-4: oklch(0.758 0.135 183.5);
+    --category-5: oklch(0.695 0.255 11.2);
+    --category-6: oklch(0.640 0.218 278.0);
+    --category-7: oklch(0.770 0.168 208.5);
+    --category-8: oklch(0.790 0.200 58.0);
+    --font-sans:  'Inter Tight', system-ui, sans-serif;
+    --font-mono:  'JetBrains Mono', ui-monospace, monospace;
+    --font-serif: 'Source Serif 4', Georgia, serif;
+  }
+  html, body { margin: 0; font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: oklch(0 0 0 / 0.12); border-radius: 4px; }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <script type="text/babel" src="primitives.jsx"></script>
+  <script type="text/babel" src="ingestion-data.jsx"></script>
+  <script type="text/babel" src="ingestion-connectors-data.jsx"></script>
+  <script type="text/babel" src="ingestion-shared.jsx"></script>
+  <script type="text/babel" src="ingestion-v1.jsx"></script>
+  <script type="text/babel" src="ingestion-v2.jsx"></script>
+  <script type="text/babel" src="ingestion-v3.jsx"></script>
+  <script type="text/babel" src="ingestion-v4.jsx"></script>
+  <script type="text/babel" src="ingestion-connectors-a.jsx"></script>
+  <script type="text/babel" src="ingestion-connectors-b.jsx"></script>
+  <script type="text/babel" src="ingestion-connector-detail.jsx"></script>
+  <script type="text/babel" src="ingestion-filters.jsx"></script>
+
+  <script type="text/babel">
+    function App() {
+      React.useEffect(() => { window.applyTheme('dark'); }, []);
+      const Roster   = window.ConnectorsRoster;
+      const Board    = window.ConnectorsBoard;
+      const Detail   = window.ConnectorDetailSpotify;
+      const Filters  = window.IngestionFilters;
+      const V1 = window.V1_Ledger;
+      const V2 = window.V2_Trace;
+      const V3 = window.V3_Editorial;
+      const V4 = window.V4_Tape;
+
+      return (
+        <DesignCanvas>
+          <DCSection
+            id="map"
+            title="Ingestion · the shape of the page"
+            subtitle="The route is /ingestion. Four tabs — Timeline (events), Connectors (sources), Filters (rules), History (replay). The Timeline tab has its own four directions in Ingestion.html; the rest is below."
+          >
+            <DCArtboard id="legend" label="Page map" width={1500} height={620}>
+              <PageMap />
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="connectors"
+            title="Connectors · two directions"
+            subtitle="The list of sources the house listens on. Same data, two attitudes: a single dense register vs. groups by where attention belongs."
+          >
+            <DCArtboard id="roster" label="A · The Roster — single register, scan by row" width={1500} height={1300}><Roster /></DCArtboard>
+            <DCArtboard id="board"  label="B · The Board — grouped by attention (needs / steady / quiet / available)" width={1500} height={1300}><Board /></DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="detail"
+            title="Connector detail · /ingestion/connectors/spotify/me"
+            subtitle="What a row opens into. The reauth scenario is live here — QA's investigation #218 currently blocks chronicler ingestion, and the right column is where the human action unblocks it."
+          >
+            <DCArtboard id="spotify" label="Spotify · with active scope-drift reauth" width={1500} height={1640}><Detail /></DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="filters"
+            title="Filters · routing rules"
+            subtitle="The DSL behind drops, priorities, and channel→butler bindings — rendered as readable English rather than a JSON editor. Each rule shows its plain note, the condition, the verdict, and three real examples."
+          >
+            <DCArtboard id="rules" label="Filters & routing — grouped by verb" width={1500} height={2540}><Filters /></DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="timeline-ref"
+            title="Timeline · four directions (ref)"
+            subtitle="Already prototyped in Ingestion.html — included here so all four ingestion tabs can be reviewed side by side. Switch between them in the live prototype."
+          >
+            <DCArtboard id="v1-ref" label="V1 · Ledger Stream — dense table + expand drawer" width={1500} height={1300}><V1 /></DCArtboard>
+            <DCArtboard id="v2-ref" label="V2 · Trace Console — channel lanes across the day" width={1500} height={1300}><V2 /></DCArtboard>
+            <DCArtboard id="v3-ref" label="V3 · Editorial Chronology — two-column ↑↓ navigable" width={1500} height={1400}><V3 /></DCArtboard>
+            <DCArtboard id="v4-ref" label="V4 · Tape Log — nothing collapsed, scroll the day" width={1500} height={1400}><V4 /></DCArtboard>
+          </DCSection>
+        </DesignCanvas>
+      );
+    }
+
+    function PageMap() {
+      const C = window.C;
+      const tabs = [
+        { id: 'timeline',  label: 'Timeline',  note: 'every external event today, with its butler flame, status and cost.', state: 'four directions in Ingestion.html', count: '37 today' },
+        { id: 'connectors',label: 'Connectors',note: 'the sources the house listens on. Auth state, cadence, throughput, scopes.', state: 'two directions below — Roster & Board', count: '7 live · 1 needs reauth' },
+        { id: 'filters',   label: 'Filters',   note: 'rules that decide what gets routed, dropped, fast-tracked.', state: 'one direction below — grouped by verb', count: '9 rules · 8 active' },
+        { id: 'history',   label: 'History',   note: 'archived ingestion runs, replay log, audit trail.', state: 'not yet — folds into Timeline w/ a date picker', count: '— · later' },
+      ];
+      return (
+        <div style={{ background: C.bg, color: C.fg, minHeight: '100%', padding: '40px 56px' }}>
+          <div style={{ maxWidth: 1380, margin: '0 auto' }}>
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.14em',
+              textTransform: 'uppercase', color: C.mfg, marginBottom: 10,
+            }}>map · /ingestion</div>
+            <h1 style={{ margin: 0, fontSize: 40, fontWeight: 500, letterSpacing: '-0.025em', color: C.fg, lineHeight: 1.08 }}>
+              Four tabs, one route.
+            </h1>
+            <div style={{
+              marginTop: 12, fontFamily: 'var(--font-serif)', fontSize: 16,
+              color: C.mfg, maxWidth: '60ch', lineHeight: 1.55,
+            }}>
+              Each tab is a different question. Timeline asks <em>what happened today?</em>
+              Connectors asks <em>where are signals coming from?</em> Filters asks
+              <em> what earns the system's attention?</em> History asks <em>what about yesterday?</em>
+              The first three are designed; the fourth folds into Timeline with a date scope.
+            </div>
+
+            <div style={{ marginTop: 36 }}>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '180px 1fr 280px 220px',
+                gap: 24,
+                padding: '14px 0 10px',
+                borderBottom: `1px solid ${C.border}`,
+                fontFamily: 'var(--font-mono)', fontSize: 9.5, color: C.mfg,
+                letterSpacing: '0.14em', textTransform: 'uppercase',
+              }}>
+                <span>tab</span>
+                <span>the question</span>
+                <span>design</span>
+                <span style={{ textAlign: 'right' }}>state · today</span>
+              </div>
+              {tabs.map((t) => (
+                <div key={t.id} style={{
+                  display: 'grid',
+                  gridTemplateColumns: '180px 1fr 280px 220px',
+                  gap: 24, padding: '20px 0',
+                  borderBottom: `1px solid ${C.borderSoft}`,
+                  alignItems: 'baseline',
+                }}>
+                  <div style={{ fontSize: 24, fontWeight: 500, letterSpacing: '-0.02em' }}>{t.label}</div>
+                  <div style={{ fontFamily: 'var(--font-serif)', fontSize: 15, color: C.fg, lineHeight: 1.45, maxWidth: '46ch' }}>
+                    {t.note}
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: C.mfg, letterSpacing: '0.01em' }}>
+                    {t.state}
+                  </div>
+                  <div style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 11.5, color: C.fg,
+                    fontVariantNumeric: 'tabular-nums' }}>
+                    {t.count}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
