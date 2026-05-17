@@ -116,12 +116,21 @@ def _verify_token(
     - 401 Unauthorized  — token signature does not match
     - 403 Forbidden     — token scope does not match (caller error, wrong URL)
     - 410 Gone          — token TTL exceeded
+
+    Rejects negative ``issued_at`` (pre-epoch nonsense) and far-future
+    ``issued_at`` (clocked-forward bypass attempt) before checking TTL.
     """
     expected = _sign_token(export_id, scope, issued_at)
     if not hmac.compare_digest(expected, token):
         raise HTTPException(status_code=401, detail="Invalid export token")
 
-    age_s = datetime.now(UTC).timestamp() - issued_at
+    now_ts = datetime.now(UTC).timestamp()
+    # Reject clearly invalid timestamps: must be positive and not in the future
+    # (allow up to 60 s of clock skew for forward-dated tokens).
+    if issued_at < 0 or issued_at > now_ts + 60:
+        raise HTTPException(status_code=401, detail="Invalid export token")
+
+    age_s = now_ts - issued_at
     if age_s > _EXPORT_TTL_SECONDS:
         raise HTTPException(status_code=410, detail="Export token has expired")
 

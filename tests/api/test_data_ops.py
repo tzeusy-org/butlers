@@ -238,6 +238,45 @@ async def test_download_content_disposition_header(app):
     assert "ndjson" in cd
 
 
+async def test_download_future_issued_at_returns_401(app):
+    """Token with far-future issued_at is rejected (clock-forward bypass attempt).
+
+    A valid HMAC signed with issued_at far in the future would have a
+    negative age_s, bypassing the TTL check.  The handler must reject it.
+    """
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    export_id = "test-export-id-future"
+    # issued_at 1 year in the future
+    future_ts = int(time.time()) + 365 * 24 * 3600
+    token = _sign_token(export_id, "all", future_ts)
+    url = f"/api/data/export/download/{export_id}?scope=all&issued_at={future_ts}&token={token}"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(url)
+
+    assert resp.status_code == 401
+
+
+async def test_download_negative_issued_at_returns_401(app):
+    """Token with negative issued_at is rejected."""
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    export_id = "test-export-id-negative"
+    negative_ts = -1
+    token = _sign_token(export_id, "all", negative_ts)
+    url = f"/api/data/export/download/{export_id}?scope=all&issued_at={negative_ts}&token={token}"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(url)
+
+    assert resp.status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # DELETE /api/data/wipe — phrase validation (§6.7)
 # ---------------------------------------------------------------------------
