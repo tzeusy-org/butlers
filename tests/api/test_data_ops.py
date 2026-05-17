@@ -10,10 +10,12 @@ Covers:
 - DELETE /api/data/wipe: trailing whitespace fails.
 - DELETE /api/data/wipe: lowercase phrase fails.
 - DELETE /api/data/wipe: missing phrase field returns 422.
+- Startup warning for unset DASHBOARD_EXPORT_SECRET env var.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -362,3 +364,50 @@ async def test_wipe_leading_whitespace_fails(app):
         )
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Startup warnings (§6.5.1)
+# ---------------------------------------------------------------------------
+
+
+async def test_startup_warns_when_dashboard_export_secret_unset(caplog):
+    """Startup logs WARNING when DASHBOARD_EXPORT_SECRET env var is unset."""
+    import os
+
+    from butlers.api.app import lifespan
+
+    with patch.dict("os.environ", {}, clear=False):
+        # Explicitly remove the env var if it exists
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+
+        with caplog.at_level(logging.WARNING):
+            app = create_app()
+            # Trigger the lifespan startup by using the lifespan context manager
+            async with lifespan(app):
+                pass
+
+    # Check that the warning was emitted
+    assert any(
+        "DASHBOARD_EXPORT_SECRET env var is not set" in record.message
+        and record.levelname == "WARNING"
+        for record in caplog.records
+    ), f"Expected warning not found in logs: {[r.message for r in caplog.records]}"
+    assert any("insecure 'dev-secret' fallback" in record.message for record in caplog.records)
+
+
+async def test_startup_no_warning_when_dashboard_export_secret_is_set(caplog):
+    """Startup does NOT log warning when DASHBOARD_EXPORT_SECRET is set."""
+    from butlers.api.app import lifespan
+
+    with patch.dict("os.environ", {"DASHBOARD_EXPORT_SECRET": "prod-secret-key"}):
+        with caplog.at_level(logging.WARNING):
+            app = create_app()
+            # Trigger the lifespan startup by using the lifespan context manager
+            async with lifespan(app):
+                pass
+
+    # Check that the warning was NOT emitted for the env var
+    assert not any(
+        "DASHBOARD_EXPORT_SECRET env var is not set" in record.message for record in caplog.records
+    )
