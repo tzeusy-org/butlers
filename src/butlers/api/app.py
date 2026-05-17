@@ -113,6 +113,21 @@ async def lifespan(app: FastAPI):
             "Download tokens are forgeable. Set this in production."
         )
 
+    # INGESTION_DISPATCH_CONSOLE feature flag.
+    # Controls the ingestion sub-route hierarchy (/ingestion/connectors,
+    # /ingestion/filters, /ingestion/history) and 301 redirects from ?tab=
+    # URLs. Default: on in dev, off in prod for staged rollout.
+    # Set INGESTION_DISPATCH_CONSOLE=true in production to enable.
+    # The frontend reads VITE_INGESTION_DISPATCH_CONSOLE at build/serve time;
+    # this env var governs docker-compose and server-side awareness.
+    _ingestion_flag_raw = os.environ.get("INGESTION_DISPATCH_CONSOLE", "")
+    _ingestion_flag_enabled = _ingestion_flag_raw.lower() in ("1", "true", "yes", "on")
+    logger.info(
+        "Feature flag INGESTION_DISPATCH_CONSOLE=%s (raw=%r)",
+        "enabled" if _ingestion_flag_enabled else "disabled",
+        _ingestion_flag_raw or "<unset>",
+    )
+
     try:
         init_pricing()
     except Exception:

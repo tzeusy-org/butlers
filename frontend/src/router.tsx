@@ -36,6 +36,10 @@ import EntitiesPage from './pages/EntitiesPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import SocialMapPage from './pages/SocialMapPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
+import IngestionTimelinePage from './pages/IngestionTimelinePage.tsx'
+import IngestionConnectorsPage from './pages/IngestionConnectorsPage.tsx'
+import IngestionFiltersPage from './pages/IngestionFiltersPage.tsx'
+import IngestionHistoryPage from './pages/IngestionHistoryPage.tsx'
 import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 import QaOverviewPage from './pages/QaOverviewPage.tsx'
 import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
@@ -43,6 +47,7 @@ import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
 import QaInvestigationsPage from './pages/QaInvestigationsPage.tsx'
 import ChroniclesPage from './pages/ChroniclesPage.tsx'
 import SystemPage from './pages/SystemPage.tsx'
+import { INGESTION_DISPATCH_CONSOLE } from './lib/feature-flags.ts'
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
 // Redirect /connectors/:connectorType/:endpointIdentity
@@ -55,6 +60,46 @@ function ConnectorDetailRedirect() {
   const qs = searchParams.toString()
   const target = `/ingestion/connectors/${connectorType}/${endpointIdentity}${qs ? `?${qs}` : ''}`
   return <Navigate to={target} replace />
+}
+
+// Redirect /ingestion?tab=connectors|filters|history → matching sub-route.
+// Preserves filter query-string params (period, channel, status) so deep links
+// and bookmarks continue to resolve after the tab-param → sub-route migration.
+// Unrecognized or absent ?tab= values redirect to /ingestion (Timeline root),
+// stripping the unknown tab param from the URL.
+//
+// React Router does not issue a real HTTP 301; this is the SPA equivalent:
+// a permanent client-side replace() navigation, which is functionally identical
+// for bookmark resolution and browser history.
+//
+// Spec: ingestion-ui-information-architecture §"301 redirects from legacy tab parameters"
+// Exported so tests can import the component directly without duplicating its logic.
+export function IngestionTabRedirect() {
+  const [searchParams] = useSearchParams()
+  const tab = searchParams.get('tab')
+
+  // Strip the 'tab' key; preserve all other filter params
+  const filtered = new URLSearchParams(searchParams)
+  filtered.delete('tab')
+  const qs = filtered.toString()
+
+  if (tab === 'connectors') {
+    return <Navigate to={`/ingestion/connectors${qs ? `?${qs}` : ''}`} replace />
+  }
+  if (tab === 'filters') {
+    return <Navigate to={`/ingestion/filters${qs ? `?${qs}` : ''}`} replace />
+  }
+  if (tab === 'history') {
+    return <Navigate to={`/ingestion/history${qs ? `?${qs}` : ''}`} replace />
+  }
+
+  // Unrecognized ?tab= value: redirect to Timeline root, stripping the unknown
+  // tab param so stale bookmarks do not keep an invalid ?tab= in the URL.
+  // No ?tab= at all: render Timeline directly (no redirect needed, avoids loop).
+  if (tab !== null) {
+    return <Navigate to={`/ingestion${qs ? `?${qs}` : ''}`} replace />
+  }
+  return <IngestionTimelinePage />
 }
 
 // Redirect /butlers/relationship/entities/:entityId → /entities/:entityId
@@ -131,8 +176,27 @@ export const router = createBrowserRouter(
         { path: '/qa/patrols/:patrolId', element: <QaPatrolDetailPage /> },
         { path: '/qa/investigations', element: <QaInvestigationsPage /> },
         { path: '/qa/investigations/:attemptId', element: <QaInvestigationDetailPage /> },
-        // Ingestion routes (spec section 3.1, 3.2)
-        { path: '/ingestion', element: <IngestionPage /> },
+        // Ingestion routes — behaviour depends on INGESTION_DISPATCH_CONSOLE flag.
+        //
+        // Flag ON (default in dev): first-class sub-routes + 301-equivalent redirects
+        //   from legacy ?tab= URLs per ingestion-ui-information-architecture spec.
+        // Flag OFF (default in prod): legacy single-route IngestionPage with ?tab= param.
+        //
+        // Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
+        //       ingestion-ui-information-architecture/spec.md
+        ...(INGESTION_DISPATCH_CONSOLE
+          ? [
+              // Root /ingestion: redirect ?tab= params → sub-routes; else Timeline.
+              { path: '/ingestion', element: <IngestionTabRedirect /> },
+              // First-class sub-routes (§2.1)
+              { path: '/ingestion/connectors', element: <IngestionConnectorsPage /> },
+              { path: '/ingestion/filters', element: <IngestionFiltersPage /> },
+              { path: '/ingestion/history', element: <IngestionHistoryPage /> },
+            ]
+          : [
+              // Legacy single-route with ?tab= param (prod-safe fallback)
+              { path: '/ingestion', element: <IngestionPage /> },
+            ]),
         {
           path: '/ingestion/connectors/:connectorType/:endpointIdentity',
           element: <ConnectorDetailPage />,
