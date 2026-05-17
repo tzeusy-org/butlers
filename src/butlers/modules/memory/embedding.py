@@ -25,6 +25,11 @@ class EmbeddingEngine:
         self._dim = _EMBEDDING_DIM
 
     @property
+    def model_name(self) -> str:
+        """Return the sentence-transformers model name in use."""
+        return self._model_name
+
+    @property
     def dimension(self) -> int:
         """Return the embedding dimensionality (384)."""
         return self._dim
