@@ -12,19 +12,13 @@
 
 import { test, expect } from "@playwright/test";
 
-test("smoke: app loads and has a page title", async ({ page }) => {
-  const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:5173";
-
-  // Attempt to reach the dev server; skip cleanly if unreachable.
+test("smoke: app loads and has a page title", async ({ page, baseURL }) => {
+  // Attempt to reach the dev server; skip cleanly only when truly unreachable
+  // (network-level failure). HTTP error responses (4xx/5xx) must NOT be
+  // skipped — they indicate the server is up but the app is broken, and
+  // masking that would let regressions land.
   try {
-    const response = await page.goto("/", { timeout: 10_000 });
-    if (!response || response.status() >= 500) {
-      test.skip(
-        true,
-        `Dev server at ${baseURL} returned ${response?.status() ?? "no response"} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await page.goto("/", { timeout: 10_000 });
   } catch {
     test.skip(
       true,
