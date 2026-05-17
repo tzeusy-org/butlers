@@ -119,6 +119,24 @@ async def test_shutdown_returns_scheduled_with_zero_grace():
     mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
 
 
+async def test_shutdown_double_call_cancels_previous_task():
+    """Calling shutdown twice cancels the first pending task (idempotency)."""
+    shutdown = _register_and_grab_shutdown()
+
+    with patch("butlers.core_tools._shutdown.os.kill") as mock_kill:
+        # First call with a long grace period.
+        await shutdown(grace_seconds=300)
+        # Second call overrides the first; grace_seconds=0 fires immediately.
+        result = await shutdown(grace_seconds=0)
+        # Yield so the second task can run.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    # Only one SIGTERM should be sent (from the second call).
+    assert result["status"] == "scheduled"
+    mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+
+
 async def test_shutdown_returns_error_for_negative_grace():
     """shutdown(-1) returns status=error."""
     shutdown = _register_and_grab_shutdown()

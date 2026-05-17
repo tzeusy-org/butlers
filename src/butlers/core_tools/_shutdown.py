@@ -32,6 +32,7 @@ def register_shutdown_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
     in-flight requests until the grace window closes.
     """
     butler_name = ctx.butler_name
+    _shutdown_task: asyncio.Task | None = None
 
     @_core_tool("infra")
     async def shutdown(grace_seconds: int = 5) -> dict:
@@ -43,6 +44,8 @@ def register_shutdown_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             Seconds to wait before sending SIGTERM.  Must be between 0 and
             300 (inclusive).  Defaults to 5.
         """
+        nonlocal _shutdown_task
+
         if not (_GRACE_MIN <= grace_seconds <= _GRACE_MAX):
             return {
                 "status": "error",
@@ -52,6 +55,12 @@ def register_shutdown_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 ),
             }
 
+        # Cancel any previously scheduled shutdown so double-calls don't queue
+        # multiple SIGTERMs.
+        if _shutdown_task is not None and not _shutdown_task.done():
+            logger.info("Cancelling previously scheduled shutdown for butler %s", butler_name)
+            _shutdown_task.cancel()
+
         logger.info(
             "Shutdown scheduled for butler %s in %d second(s)",
             butler_name,
@@ -59,14 +68,17 @@ def register_shutdown_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         )
 
         async def _delayed_sigterm() -> None:
-            if grace_seconds > 0:
-                await asyncio.sleep(grace_seconds)
-            logger.info(
-                "Grace period elapsed for butler %s — sending SIGTERM",
-                butler_name,
-            )
-            os.kill(os.getpid(), signal.SIGTERM)
+            try:
+                if grace_seconds > 0:
+                    await asyncio.sleep(grace_seconds)
+                logger.info(
+                    "Grace period elapsed for butler %s — sending SIGTERM",
+                    butler_name,
+                )
+                os.kill(os.getpid(), signal.SIGTERM)
+            except asyncio.CancelledError:
+                logger.info("Shutdown cancelled for butler %s", butler_name)
 
-        asyncio.create_task(_delayed_sigterm(), name=f"shutdown-{butler_name}")
+        _shutdown_task = asyncio.create_task(_delayed_sigterm(), name=f"shutdown-{butler_name}")
 
         return {"status": "scheduled", "grace_seconds": grace_seconds}
