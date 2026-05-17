@@ -124,7 +124,7 @@ def upgrade() -> None:
             )
 
     # Drop the old one-way hash column.
-    op.execute("ALTER TABLE public.webhooks DROP COLUMN IF EXISTS secret_hash")
+    op.execute("ALTER TABLE IF EXISTS public.webhooks DROP COLUMN IF EXISTS secret_hash")
 
     # Add the new reversible encrypted column (BYTEA stores nonce||ciphertext||tag).
     op.execute("ALTER TABLE public.webhooks ADD COLUMN IF NOT EXISTS secret_encrypted BYTEA")
@@ -137,5 +137,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Restore the old column.  Encrypted values cannot be round-tripped back to
     # hashes so existing data is dropped on rollback (same loss as upgrade).
-    op.execute("ALTER TABLE public.webhooks DROP COLUMN IF EXISTS secret_encrypted")
-    op.execute("ALTER TABLE public.webhooks ADD COLUMN IF NOT EXISTS secret_hash TEXT")
+    op.execute("ALTER TABLE IF EXISTS public.webhooks DROP COLUMN IF EXISTS secret_encrypted")
+    op.execute("ALTER TABLE IF EXISTS public.webhooks ADD COLUMN IF NOT EXISTS secret_hash TEXT")
