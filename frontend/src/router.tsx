@@ -13,7 +13,7 @@ import MemoryPage from './pages/MemoryPage.tsx'
 import FactDetailPage from './pages/FactDetailPage.tsx'
 import RuleDetailPage from './pages/RuleDetailPage.tsx'
 import EpisodeDetailPage from './pages/EpisodeDetailPage.tsx'
-import SettingsPage from './pages/SettingsPage.tsx'
+import SettingsConsolePage from './pages/SettingsConsolePage.tsx'
 import SettingsSpendPage from './pages/SettingsSpendPage.tsx'
 import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import SettingsModelsPage from './pages/SettingsModelsPage.tsx'
@@ -109,7 +109,7 @@ export const router = createBrowserRouter(
         { path: '/entities', element: <EntitiesPage /> },
         { path: '/entities/social-map', element: <SocialMapPage /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
-        { path: '/settings', element: <SettingsPage /> },
+        { path: '/settings', element: <SettingsConsolePage /> },
         { path: '/settings/spend', element: <SettingsSpendPage /> },
         { path: '/settings/permissions', element: <SettingsPermissionsPage /> },
         { path: '/settings/models', element: <SettingsModelsPage /> },

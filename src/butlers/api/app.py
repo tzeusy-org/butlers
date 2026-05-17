@@ -81,6 +81,7 @@ from butlers.api.routers.sessions import (
 from butlers.api.routers.sessions import (
     router as sessions_router,
 )
+from butlers.api.routers.settings_console import router as settings_console_router
 from butlers.api.routers.spend import router as spend_router
 from butlers.api.routers.spotify import router as spotify_router
 from butlers.api.routers.sse import router as sse_router
@@ -286,6 +287,7 @@ def create_app(
     app.include_router(system_router)
     app.include_router(dashboard_briefing_router)
     app.include_router(permissions_router)
+    app.include_router(settings_console_router)
     app.include_router(data_ops_router)
     app.include_router(webhooks_router)
 
