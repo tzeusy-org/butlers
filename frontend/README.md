@@ -157,7 +157,7 @@ frontend/
 │   ├── hooks/            # Custom React hooks
 │   │   ├── use-butlers.ts
 │   │   ├── use-contacts.ts
-│   │   ├── use-costs.ts
+│   │   ├── use-spend.ts
 │   │   ├── use-general.ts
 │   │   ├── use-health.ts
 │   │   ├── use-issues.ts
