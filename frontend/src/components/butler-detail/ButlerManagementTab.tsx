@@ -12,6 +12,7 @@
 
 import { useState } from "react";
 import { Link } from "react-router";
+import { toast } from "sonner";
 
 import { useButlerMemoryAccess, useButlerPrompt, useButlerTools, useKillButler, useUpdateButlerPrompt } from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
@@ -219,7 +220,19 @@ function PromptEditModal({
   const { mutate: updatePrompt, isPending } = useUpdateButlerPrompt(butlerName);
 
   function handleSave() {
-    updatePrompt({ prompt: draft }, { onSuccess: () => { onClose(); setDraft(""); } });
+    updatePrompt(
+      { prompt: draft },
+      {
+        onSuccess: () => {
+          toast.success("System prompt updated");
+          onClose();
+        },
+        onError: (err) => {
+          const msg = err instanceof Error ? err.message : "Failed to save system prompt";
+          toast.error(msg);
+        },
+      },
+    );
   }
 
   return (
