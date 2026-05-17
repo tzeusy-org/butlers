@@ -35,8 +35,8 @@ Implementation source constraints:
      `frontend/src/api/types.ts:1055-1063`
   3. `useButlerHeartbeats` -- last-seen / heartbeat age / active session count
      via `frontend/src/hooks/use-system.ts:71-78`
-  4. `useCostSummary('today').by_butler` -- per-butler spend today via
-     `frontend/src/hooks/use-costs.ts:31-47`
+  4. `useSpendSummary('today').by_butler` -- per-butler spend today via
+     `frontend/src/hooks/use-spend.ts:31-47`
   5. Sessions for the last 24h -- fetched via `useQuery(getSessions({ since: <ISO> }))`
      (no new endpoint; the existing sessions endpoint filtered by a rolling ISO
      timestamp, bucketed client-side for the activity stripe)
@@ -96,7 +96,7 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   - An activity chip showing the derived activity verb (see Activity Verb
     Derivation scenario)
   - A KPI quartet: sessions in the last 24h (`sessions_24h`), spend today
-    (from `useCostSummary('today').by_butler`), load% (derived client-side),
+    (from `useSpendSummary('today').by_butler`), load% (derived client-side),
     and last active (last heartbeat timestamp from `useButlerHeartbeats`,
     rendered via `<Time>`)
   - A 24h activity stripe pinned to the bottom of the cell, derived from
@@ -152,7 +152,7 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   - Paused butler count (with amber status-tone dot, shown only when count > 0)
   - Awaiting butler count (with red status-tone dot, shown only when count > 0)
   - Fleet sessions in the last 24h
-  - Fleet spend today (from `useCostSummary('today')`)
+  - Fleet spend today (from `useSpendSummary('today')`)
   - Fleet average load% (mean of all per-butler load% values where
     `max_concurrent` is known)
   - A composition addendum showing "Nb butlers, Ns staffers" where Nb and Ns
@@ -188,7 +188,7 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   - Butler list (`useButlers`): every 30 seconds
   - Registry and heartbeats (`useRegistry`, `useButlerHeartbeats`): every 30
     seconds
-  - Cost summary (`useCostSummary`): every 60 seconds
+  - Cost summary (`useSpendSummary`): every 60 seconds
   - Header strip clock: updates every minute via `<Time mode="clock-24h-mono">`,
     which aligns to the next minute boundary then fires a 60-second interval
 
@@ -424,8 +424,8 @@ sources with a logical OR.
 - **THEN** a Cost Today card SHALL show the butler's USD cost, its percentage
   share of the global total, and the global total
 - **AND** costs below $0.01 SHALL display as "$0.00"
-- **AND** the card SHALL use the existing `useCostSummary("today")` data path
-  (`frontend/src/hooks/use-costs.ts:31-47`)
+- **AND** the card SHALL use the existing `useSpendSummary("today")` data path
+  (`frontend/src/hooks/use-spend.ts:31-47`)
 
 #### Scenario: Recent sessions card
 

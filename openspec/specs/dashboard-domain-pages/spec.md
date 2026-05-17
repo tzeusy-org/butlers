@@ -794,8 +794,8 @@ The costs domain MUST use the following TanStack Query hooks:
 
 | Hook | Query Key | Auto-Refresh |
 |---|---|---|
-| `useCostSummary(period)` | `cost-summary` | 60s |
-| `useDailyCosts()` | `daily-costs` | 60s |
+| `useSpendSummary(period)` | `cost-summary` | 60s |
+| `useDailySpend()` | `daily-costs` | 60s |
 | `useTopSessions(limit)` | `top-sessions` | 60s |
 
 ---
