@@ -6,7 +6,7 @@ Provides:
 
 Endpoints
 ---------
-GET  /api/ingestion/events               — paginated unified timeline (channel, status filters)
+GET  /api/ingestion/events               — cursor-paginated unified timeline
 GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-from asyncio import gather as _asyncio_gather
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -27,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
-from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models import ApiResponse, CursorPaginatedResponse, CursorPaginationMeta
 from butlers.api.models.ingestion_event import (
     IngestionEventDetail,
     IngestionEventRollup,
@@ -45,7 +44,6 @@ from butlers.core.ingestion_events import (
     ingestion_event_replay_request,
     ingestion_event_rollup,
     ingestion_event_sessions,
-    ingestion_events_count,
     ingestion_events_list,
 )
 from butlers.identity import resolve_contact_by_channel
@@ -65,10 +63,16 @@ def _get_db_manager() -> DatabaseManager:
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=PaginatedResponse[IngestionEventSummary])
+@router.get("", response_model=CursorPaginatedResponse[IngestionEventSummary])
 async def list_ingestion_events(
     limit: int = Query(20, ge=1, le=200, description="Max records to return"),
-    offset: int = Query(0, ge=0, description="Number of records to skip"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Opaque cursor from the previous page's ``next_cursor`` field. "
+            "Omit to fetch the first page."
+        ),
+    ),
     source_channel: str | None = Query(None, description="Filter by source channel"),
     status: Literal[
         "ingested",
@@ -89,8 +93,12 @@ async def list_ingestion_events(
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> PaginatedResponse[IngestionEventSummary]:
-    """Return a paginated unified timeline of ingestion events, newest first.
+) -> CursorPaginatedResponse[IngestionEventSummary]:
+    """Return a cursor-paginated unified timeline of ingestion events, newest first.
+
+    Uses keyset (cursor) pagination via ``(received_at DESC, id DESC)`` — no ``total``
+    count is computed per request.  Pass the ``next_cursor`` from a previous response
+    as the ``cursor`` query param to fetch the next page.
 
     Merges ``public.ingestion_events`` (status=ingested, filter_reason=null) with
     ``connectors.filtered_events`` (status/filter_reason from their own columns).
@@ -101,18 +109,26 @@ async def list_ingestion_events(
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
-    rows, total = await _asyncio_gather(
-        ingestion_events_list(
-            pool, limit=limit, offset=offset, source_channel=source_channel, status=status
-        ),
-        ingestion_events_count(pool, source_channel=source_channel, status=status),
+    if cursor is not None:
+        try:
+            from butlers.core.ingestion_events import decode_cursor
+
+            decode_cursor(cursor)  # Validate the cursor early; raises ValueError if malformed.
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
+
+    result = await ingestion_events_list(
+        pool, limit=limit, cursor=cursor, source_channel=source_channel, status=status
     )
 
-    summaries = [IngestionEventSummary(**row) for row in rows]
+    summaries = [IngestionEventSummary(**row) for row in result["items"]]
 
-    return PaginatedResponse[IngestionEventSummary](
+    return CursorPaginatedResponse[IngestionEventSummary](
         data=summaries,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+        meta=CursorPaginationMeta(
+            next_cursor=result["next_cursor"],
+            has_more=result["has_more"],
+        ),
     )
 
 

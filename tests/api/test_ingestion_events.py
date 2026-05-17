@@ -1,9 +1,11 @@
 """Tests for ingestion events API endpoints.
 
 Condensed from 47 tests to ~8 tests (bu-egmz6) → 3 tests (bu-2yw2d).
-Keeps: paginated list 200 + 503, event detail 200 + 404 (combined), status/uuid validation 422 (parametrized).
+Keeps: cursor-paginated list 200 + 503, event detail 200 + 404 (combined),
+       status/uuid validation 422 (parametrized).
 
 bu-ty7gh: adds audit-log assertions and decomposition_output gate tests.
+bu-1f91v.3: list response now uses cursor pagination (next_cursor, has_more) — no total field.
 """
 
 from __future__ import annotations
@@ -72,7 +74,8 @@ def _app_with_mock_db(app: FastAPI, *, shared_pool=None, shared_pool_error=None)
 # ---------------------------------------------------------------------------
 
 
-async def test_list_returns_paginated_and_503_fallback(app):
+async def test_list_returns_cursor_paginated_and_503_fallback(app):
+    """GET /api/ingestion/events returns cursor-paginated envelope (no total field)."""
     _app_with_mock_db(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -81,6 +84,11 @@ async def test_list_returns_paginated_and_503_fallback(app):
     assert resp.status_code == 200
     body = resp.json()
     assert "data" in body and "meta" in body
+    meta = body["meta"]
+    # Cursor pagination: next_cursor + has_more; no total field.
+    assert "next_cursor" in meta
+    assert "has_more" in meta
+    assert "total" not in meta
 
     _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
     async with httpx.AsyncClient(

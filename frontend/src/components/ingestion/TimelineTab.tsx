@@ -1,17 +1,21 @@
 /**
  * Timeline tab content for the /ingestion page.
  *
- * Shows a table of recent ingestion events (request_id lineage).
- * Expanding an event row reveals the full session lineage:
+ * Shows a table of recent ingestion events (request_id lineage) using
+ * cursor-based infinite scroll. Events are grouped by hour with mono-eyebrow
+ * headers. Expanding an event row reveals the full session lineage:
  * - Ordered list of butler sessions (started_at ASC)
  * - Per-butler breakdown (cost, tokens, success)
  * - Rollup totals (total cost, total tokens, by_butler)
  *
  * Data is fetched from:
- * - GET /api/ingestion/events          (event list, supports status filter)
+ * - GET /api/ingestion/events          (cursor-paginated unified stream)
  * - GET /api/ingestion/events/{id}/sessions  (on expand)
  * - GET /api/ingestion/events/{id}/rollup    (on expand)
  * - POST /api/ingestion/events/{id}/replay   (Replay/Retry action)
+ *
+ * BREAKING (bu-1f91v.3): offset+total pagination removed; replaced with
+ * cursor-based infinite scroll. The `total` field is no longer available.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -103,6 +107,44 @@ function isExpandable(status: IngestionEventStatus): boolean {
   return status !== "filtered" && status !== "error";
 }
 
+/**
+ * Derive the hour-group label for an event's received_at timestamp.
+ *
+ * Returns a string like "Sat, May 17 · 14:00" that uniquely identifies
+ * the one-hour bucket containing the timestamp.  Used for hour-group headers.
+ */
+function hourGroupLabel(receivedAt: string | null): string {
+  if (!receivedAt) return "Unknown time";
+  try {
+    const d = new Date(receivedAt);
+    // Zero out minutes/seconds/ms so we can compare timestamps for deduplication.
+    const hourStart = new Date(d);
+    hourStart.setMinutes(0, 0, 0);
+    return hourStart.toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "Unknown time";
+  }
+}
+
+/**
+ * Return the ISO hour string (YYYY-MM-DDTHH) used as the group key.
+ * Events in the same hour share a key and a single group header.
+ */
+function hourGroupKey(receivedAt: string | null): string {
+  if (!receivedAt) return "unknown";
+  try {
+    return receivedAt.slice(0, 13); // "2026-05-17T14"
+  } catch {
+    return "unknown";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CopyButton — transient "copied" label for ~900ms
 // ---------------------------------------------------------------------------
@@ -166,8 +208,8 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
 
   return (
     <div className="space-y-1.5">
-      {/* Legend */}
-      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+      {/* Legend + approximation notice */}
+      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         {butlers.map((b) => (
           <span key={b} className="flex items-center gap-1">
             <span
@@ -202,7 +244,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
                   <Link
                     key={s.id}
                     to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
-                    title={`${s.butler_name}: ${dur}${s.model ? ` (${s.model})` : ""}`}
+                    title={`${s.butler_name}: ${dur}${s.model ? ` (${s.model})` : ""}\nApproximation: bars are proportional to step duration, not actual token cost.`}
                     className="absolute top-0.5 bottom-0.5 rounded-sm opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
                     style={{
                       left: `${left}%`,
@@ -220,6 +262,10 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
           );
         })}
       </div>
+      {/* Flame strip approximation note */}
+      <p className="text-[10px] text-muted-foreground">
+        Approximation: bars are proportional to step duration, not actual token cost.
+      </p>
     </div>
   );
 }
@@ -654,6 +700,23 @@ function EventRow({ event, isExpanded, onToggle, onOptimisticUpdate }: EventRowP
 }
 
 // ---------------------------------------------------------------------------
+// HourGroupHeader — mono eyebrow row separating events by hour
+// ---------------------------------------------------------------------------
+
+function HourGroupHeader({ label, colSpan }: { label: string; colSpan: number }) {
+  return (
+    <TableRow className="bg-muted/10 hover:bg-muted/10">
+      <TableCell
+        colSpan={colSpan}
+        className="py-1 px-4 font-mono text-[10px] uppercase tracking-widest text-muted-foreground border-b"
+      >
+        {label}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Skeleton rows for loading state
 // ---------------------------------------------------------------------------
 
@@ -700,9 +763,6 @@ const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered");
 
 const PAGE_SIZE = 50;
 
-/** Keep auto-loading pages until at least this many rows survive client-side filtering. */
-const MIN_VISIBLE_ROWS = 30;
-
 interface TimelineTabProps {
   isActive: boolean;
   /** Override the default enabled statuses (for testing). */
@@ -723,36 +783,21 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
     Map<string, IngestionEventStatus>
   >(new Map());
 
-  // Pagination state — accumulate events from multiple pages
-  const [loadedEvents, setLoadedEvents] = useState<IngestionEventSummary[]>([]);
-  const [offset, setOffset] = useState(0);
+  // Infinite scroll query — cursor-based, no offset/total
+  const {
+    data: infiniteData,
+    isLoading,
+    isError,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = useIngestionEvents({ limit: PAGE_SIZE }, { enabled: isActive });
 
-  // Fetch all events from backend (no status filter — filter client-side)
-  const filters = { limit: PAGE_SIZE, offset };
-  const { data: eventsResp, isLoading, isError } = useIngestionEvents(
-    filters,
-    { enabled: isActive },
+  // Flatten all pages into a single event list
+  const rawEvents = useMemo(
+    () => infiniteData?.pages.flatMap((page) => page.data) ?? [],
+    [infiniteData?.pages],
   );
-
-  const rawPageEvents = useMemo(() => eventsResp?.data ?? [], [eventsResp?.data]);
-  const totalCount = eventsResp?.meta?.total ?? 0;
-  const hasMore = eventsResp?.meta?.has_more ?? false;
-
-  // Accumulate loaded pages into a single list
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (rawPageEvents.length === 0) return;
-    if (offset === 0) {
-      // First page (or filter changed) — replace
-      setLoadedEvents(rawPageEvents);
-    } else {
-      // Subsequent page — append
-      setLoadedEvents((prev) => [...prev, ...rawPageEvents]);
-    }
-  }, [rawPageEvents, offset]);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  const rawEvents = offset === 0 ? rawPageEvents : loadedEvents;
 
   // Evict stale optimistic overrides: once the server returns a status other
   // than replay_pending for an event we overrode, the server has caught up and
@@ -780,20 +825,6 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
 
   // Client-side status filtering
   const events = allEvents.filter((e) => enabledStatuses.has(e.status));
-
-  // Auto-load more pages when too few rows survive the client-side filter
-  /* eslint-disable react-hooks/set-state-in-effect -- auto-pagination intentionally advances offset based on fetched/filter state. */
-  useEffect(() => {
-    if (
-      !isLoading &&
-      !isError &&
-      hasMore &&
-      events.length < MIN_VISIBLE_ROWS
-    ) {
-      setOffset((prev) => prev + PAGE_SIZE);
-    }
-  }, [isLoading, isError, hasMore, events.length]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleToggle = useCallback(
     (id: string) => {
@@ -825,10 +856,6 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
     [],
   );
 
-  const handleLoadMore = useCallback(() => {
-    setOffset((prev) => prev + PAGE_SIZE);
-  }, []);
-
   const handleOptimisticUpdate = useCallback(
     (id: string, newStatus: IngestionEventStatus) => {
       setOptimisticOverrides((prev) => {
@@ -839,6 +866,31 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
     },
     [],
   );
+
+  // Build table body: interleave hour-group headers between rows
+  const TOTAL_COLS = 11;
+  const tableBodyRows: React.ReactNode[] = [];
+  let lastHourKey: string | null = null;
+
+  for (const event of events) {
+    const hKey = hourGroupKey(event.received_at);
+    if (hKey !== lastHourKey) {
+      const hLabel = hourGroupLabel(event.received_at);
+      tableBodyRows.push(
+        <HourGroupHeader key={`h-${hKey}`} label={hLabel} colSpan={TOTAL_COLS} />,
+      );
+      lastHourKey = hKey;
+    }
+    tableBodyRows.push(
+      <EventRow
+        key={event.id}
+        event={event}
+        isExpanded={expandedId === event.id}
+        onToggle={() => handleToggle(event.id)}
+        onOptimisticUpdate={handleOptimisticUpdate}
+      />,
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -890,13 +942,13 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading && offset === 0 ? (
+                {isLoading ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <EventRowSkeleton key={i} />
                   ))
                 ) : events.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={11}>
+                    <TableCell colSpan={TOTAL_COLS}>
                       <EmptyState
                         title="No ingestion events."
                         description="Events appear once the system receives incoming messages."
@@ -904,33 +956,25 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  events.map((event) => (
-                    <EventRow
-                      key={event.id}
-                      event={event}
-                      isExpanded={expandedId === event.id}
-                      onToggle={() => handleToggle(event.id)}
-                      onOptimisticUpdate={handleOptimisticUpdate}
-                    />
-                  ))
+                  tableBodyRows
                 )}
               </TableBody>
             </Table>
           )}
-          {/* Pagination footer */}
-          {(events.length > 0 || hasMore) && (
+          {/* Infinite scroll footer */}
+          {events.length > 0 && (
             <div className="flex items-center justify-between border-t pt-3 mt-2 px-2">
               <span className="text-xs text-muted-foreground">
-                Showing {events.length}{enabledStatuses.size < ALL_STATUSES.length ? ` (filtered from ${allEvents.length})` : ""} of {totalCount} events
+                Showing {events.length}{enabledStatuses.size < ALL_STATUSES.length ? ` (filtered from ${allEvents.length})` : ""}
               </span>
-              {hasMore && (
+              {hasNextPage && (
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={handleLoadMore}
-                  disabled={isLoading}
+                  onClick={() => fetchNextPage()}
+                  disabled={isFetchingNextPage}
                 >
-                  {isLoading ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
+                  {isFetchingNextPage ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
                   Load more
                 </Button>
               )}

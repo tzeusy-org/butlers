@@ -77,6 +77,26 @@ class PaginatedResponse[T](BaseModel):
     meta: PaginationMeta
 
 
+class CursorPaginationMeta(BaseModel):
+    """Pagination metadata for cursor-based (keyset) list endpoints.
+
+    Replaces offset+total with an opaque cursor token.
+    """
+
+    next_cursor: str | None = None
+    has_more: bool
+
+
+class CursorPaginatedResponse[T](BaseModel):
+    """API response wrapper for cursor-paginated list endpoints.
+
+    ``{"data": [T, ...], "meta": CursorPaginationMeta}``
+    """
+
+    data: list[T]
+    meta: CursorPaginationMeta
+
+
 # ---------------------------------------------------------------------------
 # Common domain summaries
 # ---------------------------------------------------------------------------
@@ -421,6 +441,8 @@ __all__ = [
     "ConnectorStatsBucket",
     "ConnectorStatsSummary",
     "ConnectorSummary",
+    "CursorPaginatedResponse",
+    "CursorPaginationMeta",
     "DailyActivity",
     "DailyActivityBucket",
     "DailySpend",

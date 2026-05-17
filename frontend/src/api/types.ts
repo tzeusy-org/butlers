@@ -2187,10 +2187,23 @@ export interface IngestionEventRollup {
   by_butler: Record<string, ButlerRollupEntry>;
 }
 
-/** Query parameters for GET /api/switchboard/ingestion/events. */
+/** Cursor pagination metadata returned by keyset-paginated endpoints. */
+export interface CursorPaginationMeta {
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+/** API response wrapper for cursor-paginated list endpoints. */
+export interface CursorPaginatedResponse<T> {
+  data: T[];
+  meta: CursorPaginationMeta;
+}
+
+/** Query parameters for GET /api/ingestion/events (cursor-paginated). */
 export interface IngestionEventsParams {
   limit?: number;
-  offset?: number;
+  /** Opaque cursor from the previous page's next_cursor. Omit for first page. */
+  cursor?: string;
   source_channel?: string;
   /** Filter by event status. Omit to return all events. */
   status?: IngestionEventStatus;

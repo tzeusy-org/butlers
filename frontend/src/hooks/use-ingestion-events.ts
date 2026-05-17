@@ -2,16 +2,20 @@
  * TanStack Query hooks for the ingestion event lineage Timeline tab.
  *
  * Query key strategy:
- * - ingestionEventKeys.list(filters)          → paginated IngestionEventSummary list
+ * - ingestionEventKeys.list(filters)          → cursor-paginated IngestionEventSummary list
  * - ingestionEventKeys.sessions(requestId)     → sessions for a given request_id
  * - ingestionEventKeys.rollup(requestId)       → cost/token rollup for a request_id
  * - ingestionEventKeys.replays(requestId)      → replay history from public.audit_log
  * - ingestionEventKeys.senderContact(requestId) → resolved contact name for sender_identity
  *
  * Stale time of 30s matches the spec for Timeline tab data freshness.
+ *
+ * BREAKING (bu-1f91v.3): useIngestionEvents now uses useInfiniteQuery.
+ * Contract: { pages, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, isError }
+ * The old { data: { data, meta: { total, offset, limit } } } shape is removed.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import {
   listIngestionEvents,
@@ -20,15 +24,18 @@ import {
   getIngestionEventReplays,
   getIngestionEventSenderContact,
 } from "@/api/index.ts";
-import type { IngestionEventsParams } from "@/api/index.ts";
+import type { CursorPaginatedResponse, IngestionEventsParams, IngestionEventSummary } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory
 // ---------------------------------------------------------------------------
 
+/** Filters used as the infinite-scroll query key (cursor is NOT part of the key). */
+export type IngestionEventsFilters = Omit<IngestionEventsParams, "cursor">;
+
 export const ingestionEventKeys = {
   all: ["ingestion", "events"] as const,
-  list: (filters: IngestionEventsParams) =>
+  list: (filters: IngestionEventsFilters) =>
     [...ingestionEventKeys.all, "list", filters] as const,
   sessions: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "sessions"] as const,
@@ -45,18 +52,37 @@ export const ingestionEventKeys = {
 // ---------------------------------------------------------------------------
 
 /**
- * Paginated list of ingestion events, newest first.
+ * Cursor-paginated list of ingestion events, newest first.
  *
- * Fetches from GET /api/ingestion/events.
- * Supports optional source_channel filter, limit, and offset.
+ * Fetches from GET /api/ingestion/events using keyset cursor pagination.
+ * Exposes infinite scroll semantics: call fetchNextPage() to load more.
+ *
+ * Contract (BREAKING from offset+total shape):
+ * - pages: CursorPaginatedResponse<IngestionEventSummary>[]
+ * - fetchNextPage: () => void
+ * - hasNextPage: boolean
+ * - isFetchingNextPage: boolean
+ * - isLoading / isError / error
+ *
+ * total is NOT available — the API no longer returns a count.
  */
 export function useIngestionEvents(
-  filters: IngestionEventsParams = {},
+  filters: IngestionEventsFilters = {},
   options?: { enabled?: boolean },
 ) {
-  return useQuery({
+  return useInfiniteQuery<
+    CursorPaginatedResponse<IngestionEventSummary>,
+    Error,
+    { pages: CursorPaginatedResponse<IngestionEventSummary>[]; pageParams: (string | null)[] },
+    ReturnType<typeof ingestionEventKeys.list>,
+    string | null
+  >({
     queryKey: ingestionEventKeys.list(filters),
-    queryFn: () => listIngestionEvents(filters),
+    queryFn: ({ pageParam }) =>
+      listIngestionEvents({ ...filters, cursor: pageParam ?? undefined }),
+    initialPageParam: null,
+    getNextPageParam: (lastPage) =>
+      lastPage.meta.has_more ? (lastPage.meta.next_cursor ?? null) : null,
     staleTime: 30_000,
     enabled: options?.enabled !== false,
   });

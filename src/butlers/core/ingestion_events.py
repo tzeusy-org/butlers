@@ -7,8 +7,9 @@ and propagated to all downstream butler sessions.
 Functions
 ---------
 ingestion_event_get             — fetch a single event by id
-ingestion_events_list           — paginated list, newest first, optional channel/status filter
-ingestion_events_count          — total row count matching the same filters as ingestion_events_list
+ingestion_events_list           — keyset-paginated list, newest first, optional filters
+encode_cursor                   — encode (received_at, id) tuple to opaque cursor string
+decode_cursor                   — decode opaque cursor string to (received_at, id) tuple
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
 ingestion_event_mark_replay_complete — transition replay_pending → ingested on success
@@ -18,8 +19,10 @@ ingestion_event_replay_history  — query public.audit_log for replay attempts o
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -183,18 +186,78 @@ async def ingestion_event_get(
     return _decode_event_row(row)
 
 
+def encode_cursor(received_at: datetime, row_id: UUID | str) -> str:
+    """Encode a keyset position into an opaque cursor string.
+
+    The cursor encodes the ``(received_at, id)`` tuple of the last row returned.
+    It is base64url-encoded JSON so it is safe to use as a query parameter.
+
+    Args:
+        received_at: Timestamp of the last row (``received_at`` column).
+        row_id: Primary key of the last row.
+
+    Returns:
+        An opaque string suitable for the ``cursor`` query parameter.
+    """
+    payload = {
+        "ra": received_at.isoformat(),
+        "id": str(row_id),
+    }
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def decode_cursor(cursor: str) -> tuple[datetime, str]:
+    """Decode an opaque cursor string back to ``(received_at, id)``.
+
+    Args:
+        cursor: Opaque cursor string as returned by :func:`encode_cursor`.
+
+    Returns:
+        A ``(received_at, row_id)`` tuple.
+
+    Raises:
+        ValueError: If the cursor is malformed or cannot be decoded.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        received_at = datetime.fromisoformat(payload["ra"])
+        row_id: str = payload["id"]
+        return received_at, row_id
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Invalid cursor: {exc}") from exc
+
+
 async def ingestion_events_list(
     pool: asyncpg.Pool,
     limit: int = 20,
-    offset: int = 0,
+    cursor: str | None = None,
     source_channel: str | None = None,
     status: str | None = None,
-) -> list[dict[str, Any]]:
-    """Return a paginated list of ingestion events (unified stream), newest first.
+) -> dict[str, Any]:
+    """Return a keyset-paginated list of ingestion events (unified stream), newest first.
+
+    Replaces the old offset/total approach with cursor pagination using an indexed
+    ``(received_at DESC, id DESC)`` keyset.  The cursor encodes the ``(received_at, id)``
+    position of the last row returned on the previous page.
 
     Always UNION ALLs ``public.ingestion_events`` and
     ``connectors.filtered_events``, applying optional ``status`` and
     ``source_channel`` filters in the outer query.
+
+    Args:
+        pool: asyncpg connection pool.
+        limit: Maximum number of rows to return (default 20).
+        cursor: Opaque cursor from the previous page's ``next_cursor`` field.
+            When ``None``, returns the first page.
+        source_channel: Optional filter by ``source_channel``.
+        status: Optional filter by ``status``.
+
+    Returns:
+        A dict with:
+        - ``items``: list of event dicts
+        - ``next_cursor``: opaque cursor string for the next page, or ``None`` if last page
+        - ``has_more``: ``True`` when there are more rows after this page
     """
     args: list[Any] = []
     where_parts: list[str] = []
@@ -206,11 +269,20 @@ async def ingestion_events_list(
         args.append(source_channel)
         where_parts.append(f"source_channel = ${len(args)}")
 
+    if cursor is not None:
+        cursor_received_at, cursor_id = decode_cursor(cursor)
+        args.append(cursor_received_at)
+        args.append(UUID(cursor_id))
+        n_ra = len(args) - 1
+        n_id = len(args)
+        # Descending keyset: strictly older than cursor position
+        where_parts.append(f"(received_at, id) < (${n_ra}, ${n_id})")
+
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
-    args.extend([limit, offset])
-    n_limit = len(args) - 1
-    n_offset = len(args)
+    # Fetch limit+1 rows to determine whether a next page exists.
+    args.append(limit + 1)
+    n_limit = len(args)
 
     sql = (
         f"SELECT * FROM ("
@@ -219,45 +291,32 @@ async def ingestion_events_list(
         f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
         f") AS combined"
         f"{where_clause} "
-        f"ORDER BY received_at DESC "
-        f"LIMIT ${n_limit} OFFSET ${n_offset}"
+        f"ORDER BY received_at DESC, id DESC "
+        f"LIMIT ${n_limit}"
     )
 
     rows = await pool.fetch(sql, *args)
-    return [_decode_event_row(row) for row in rows]
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
 
+    items = [_decode_event_row(row) for row in page_rows]
 
-async def ingestion_events_count(
-    pool: asyncpg.Pool,
-    source_channel: str | None = None,
-    status: str | None = None,
-) -> int:
-    """Return the total number of ingestion events matching the given filters.
+    next_cursor: str | None = None
+    if has_more and page_rows:
+        last = page_rows[-1]
+        last_id = last["id"]
+        last_ra = last["received_at"]
+        if isinstance(last_id, str):
+            last_id_uuid = UUID(last_id)
+        else:
+            last_id_uuid = last_id
+        if isinstance(last_ra, str):
+            last_ra_dt = datetime.fromisoformat(last_ra)
+        else:
+            last_ra_dt = last_ra
+        next_cursor = encode_cursor(last_ra_dt, last_id_uuid)
 
-    Uses the same UNION ALL approach as :func:`ingestion_events_list`.
-    """
-    args: list[Any] = []
-    where_parts: list[str] = []
-
-    if status is not None:
-        args.append(status)
-        where_parts.append(f"status = ${len(args)}")
-    if source_channel is not None:
-        args.append(source_channel)
-        where_parts.append(f"source_channel = ${len(args)}")
-
-    where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
-
-    sql = (
-        f"SELECT count(*) FROM ("
-        f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
-        f"UNION ALL "
-        f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
-        f") AS combined"
-        f"{where_clause}"
-    )
-
-    return await pool.fetchval(sql, *args) or 0
+    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
 
 
 async def ingestion_event_get_inbox_lifecycle(

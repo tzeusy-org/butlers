@@ -55,6 +55,7 @@ import type {
   HealthResponse,
   Issue,
   Label,
+  CursorPaginatedResponse,
   NotificationParams,
   NotificationStats,
   NotificationSummary,
@@ -3227,17 +3228,17 @@ export function testIngestionRule(
 // Ingestion event lineage (GET /api/ingestion/events/*)
 // ---------------------------------------------------------------------------
 
-/** List ingestion events with optional filtering (GET /api/ingestion/events). */
+/** List ingestion events with cursor pagination (GET /api/ingestion/events). */
 export async function listIngestionEvents(
   params?: IngestionEventsParams,
-): Promise<PaginatedResponse<IngestionEventSummary>> {
+): Promise<CursorPaginatedResponse<IngestionEventSummary>> {
   const sp = new URLSearchParams();
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
-  if (params?.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params?.cursor) sp.set("cursor", params.cursor);
   if (params?.source_channel) sp.set("source_channel", params.source_channel);
   if (params?.status) sp.set("status", params.status);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<PaginatedResponse<IngestionEventSummary>>(
+  return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
   );
 }

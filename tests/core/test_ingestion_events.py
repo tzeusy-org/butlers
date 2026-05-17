@@ -3,8 +3,8 @@
 Covers:
 - Column spec integrity (_UNION_COLUMN_SPEC architectural invariants)
 - ingestion_event_get: get / unified lookup (ingested + filtered fallback)
-- ingestion_events_list: list with filters
-- ingestion_events_count: count with status/channel filters
+- ingestion_events_list: cursor-paginated list with filters and has_more detection
+- encode_cursor / decode_cursor: round-trip and error cases
 - ingestion_event_sessions: fan-out, merge, field mapping
 - ingestion_event_rollup: pure-function aggregation
 - ingestion_event_replay_request: atomic update + conflict/not-found outcomes
@@ -228,38 +228,60 @@ async def test_ingestion_event_get() -> None:
     assert len([c for c in pool_hit.calls if c[0] == "fetchrow"]) == 1
 
 
-async def test_ingestion_events_list_count_and_sessions() -> None:
-    """list returns rows/empty/channel-filtered; count 0/int/filters;
-    sessions fan-out/merge/cost-decode/rollup."""
+async def test_ingestion_events_list_and_sessions() -> None:
+    """list returns cursor-paginated result; has_more / next_cursor set correctly;
+    channel filter passed to SQL; sessions fan-out/merge/cost-decode/rollup."""
     from butlers.core.ingestion_events import (
+        decode_cursor,
+        encode_cursor,
         ingestion_event_rollup,
         ingestion_event_sessions,
-        ingestion_events_count,
         ingestion_events_list,
     )
 
-    # List: empty
-    assert await ingestion_events_list(_FakePool(fetch_results=[])) == []
+    # List: empty → items=[], has_more=False, next_cursor=None
+    result = await ingestion_events_list(_FakePool(fetch_results=[]))
+    assert result["items"] == [] and not result["has_more"] and result["next_cursor"] is None
 
-    # List: rows with correct channels; id is str
+    # List: limit=2, 2 rows returned → has_more=False (fetched limit+1=3, got 2)
     rows = [_make_event_record(source_channel="email"), _make_event_record(source_channel="tg")]
-    result = await ingestion_events_list(_FakePool(fetch_results=rows))
-    assert len(result) == 2 and {r["source_channel"] for r in result} == {"email", "tg"}
-    assert isinstance(result[0]["id"], str)
+    result2 = await ingestion_events_list(_FakePool(fetch_results=rows), limit=2)
+    assert len(result2["items"]) == 2
+    assert not result2["has_more"] and result2["next_cursor"] is None
+    assert isinstance(result2["items"][0]["id"], str)
+
+    # List: limit=2, 3 rows returned (limit+1) → has_more=True, next_cursor set
+    extra_row = _make_event_record(source_channel="extra")
+    three_rows = rows + [extra_row]
+    result3 = await ingestion_events_list(_FakePool(fetch_results=three_rows), limit=2)
+    assert len(result3["items"]) == 2  # only limit rows exposed
+    assert result3["has_more"] and result3["next_cursor"] is not None
+
+    # The next_cursor must round-trip through decode_cursor
+    decoded_ra, decoded_id = decode_cursor(result3["next_cursor"])
+    assert decoded_id == result3["items"][-1]["id"]
+
+    # encode_cursor / decode_cursor round-trip
+    from datetime import UTC, datetime
+
+    ra = datetime(2026, 5, 17, 14, 30, 0, tzinfo=UTC)
+    import uuid
+
+    uid = uuid.uuid4()
+    token = encode_cursor(ra, uid)
+    d_ra, d_id = decode_cursor(token)
+    assert d_id == str(uid)
+    assert d_ra.isoformat() == ra.isoformat()
+
+    # decode_cursor raises ValueError on garbage input
+    with pytest.raises(ValueError):
+        decode_cursor("not-a-valid-cursor")
 
     # List: channel filter in SQL
     pool = _FakePool(fetch_results=[])
-    await ingestion_events_list(pool, source_channel="telegram_bot", limit=5, offset=3)
+    await ingestion_events_list(pool, source_channel="telegram_bot", limit=5)
     _, sql, args = pool.calls[0]
     assert "source_channel" in sql and "telegram_bot" in args
-
-    # Count: None/int/filters
-    assert await ingestion_events_count(_FakePool(fetchval_result=None)) == 0
-    assert await ingestion_events_count(_FakePool(fetchval_result=42)) == 42
-    pool2 = _FakePool(fetchval_result=5)
-    await ingestion_events_count(pool2, status="ingested", source_channel="email")
-    _, sql2, args2 = pool2.calls[0]
-    assert "ingested" in args2 and "email" in args2
 
     # Sessions: empty; single butler; multiple butlers merged; cost JSONB decoded
     assert await ingestion_event_sessions(_FakeDatabaseManager(), "req-001") == []
@@ -297,14 +319,14 @@ async def test_ingestion_events_list_count_and_sessions() -> None:
         {"butler_name": "herald", "input_tokens": None, "output_tokens": None, "cost": None},
         {"butler_name": "herald"},
     ]
-    result = ingestion_event_rollup("req-001", sessions)
-    assert result["total_sessions"] == 4 and result["total_input_tokens"] == 300
-    assert abs(result["total_cost"] - 0.015) < 1e-9
+    rollup_result = ingestion_event_rollup("req-001", sessions)
+    assert rollup_result["total_sessions"] == 4 and rollup_result["total_input_tokens"] == 300
+    assert abs(rollup_result["total_cost"] - 0.015) < 1e-9
     assert (
-        result["by_butler"]["atlas"]["sessions"] == 2
-        and abs(result["by_butler"]["atlas"]["cost"] - 0.015) < 1e-9
+        rollup_result["by_butler"]["atlas"]["sessions"] == 2
+        and abs(rollup_result["by_butler"]["atlas"]["cost"] - 0.015) < 1e-9
     )
-    assert result["by_butler"]["herald"]["cost"] == 0.0
+    assert rollup_result["by_butler"]["herald"]["cost"] == 0.0
 
 
 async def test_replay_request_and_inbox_lifecycle() -> None:

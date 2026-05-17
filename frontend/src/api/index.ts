@@ -268,6 +268,8 @@ export type {
   NotificationParams,
   NotificationStats,
   NotificationSummary,
+  CursorPaginatedResponse,
+  CursorPaginationMeta,
   PaginatedResponse,
   PaginationMeta,
   ResearchParams,
