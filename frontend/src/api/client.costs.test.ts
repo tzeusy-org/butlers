@@ -12,7 +12,7 @@
  *
  * Note: getCostSummary and getDailyCosts both accept YYYY-MM-DD strings.
  * Timezone-aware formatting is the caller's responsibility (use formatCostDate
- * from @/hooks/use-costs for Date → string conversion).
+ * from @/hooks/use-spend for Date → string conversion).
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";

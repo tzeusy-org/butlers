@@ -10,7 +10,7 @@
 //   Row 3: model breakdown KV list — model name, $X · Y% of total cost
 //
 // ?butler= filter status:
-//   /api/costs/daily is scoped per butler via useDailySpend(butler=butlerName).
+//   /api/spend/daily is scoped per butler via useDailySpend(butler=butlerName).
 //   KPI cells derive per-butler cost from by_butler[butlerName].
 //   Tokens today and cost/session are still global (no per-butler breakdown).
 //   Model breakdown uses global by_model from the 30d summary.
