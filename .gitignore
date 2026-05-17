@@ -99,3 +99,4 @@ bu-b9xg/
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
+package-lock.json
