@@ -150,7 +150,7 @@ async def check_email_recipient(
     EmailGuardDecision
         ``.allowed=True`` if delivery may proceed, ``False`` if parked.
     """
-    def _emit_created(action_id: uuid.UUID, tool: str, status: str) -> None:
+    def _emit_created(action_id: uuid.UUID, status: str) -> None:
         """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
         try:
             from butlers.api.routers.approvals import emit_approvals_event
@@ -159,7 +159,7 @@ async def check_email_recipient(
                 "created",
                 str(action_id),
                 butler=butler_name,
-                tool_name=tool,
+                tool_name=park_tool_name,
                 status=status,
             )
         except Exception:  # noqa: BLE001
@@ -210,7 +210,7 @@ async def check_email_recipient(
                     now,
                     expires_at,
                 )
-                _emit_created(action_id, park_tool_name, ActionStatus.PENDING.value)
+                _emit_created(action_id, ActionStatus.PENDING.value)
                 logger.warning(
                     "email guard: context mismatch — blocked delivery to %s %r "
                     "(msg_context=%r, address_context=%r) — parked as pending_action %s",
@@ -290,7 +290,7 @@ async def check_email_recipient(
             now,
             expires_at,
         )
-        _emit_created(action_id, park_tool_name, ActionStatus.PENDING.value)
+        _emit_created(action_id, ActionStatus.PENDING.value)
         logger.warning(
             "email guard: blocked delivery to %s %r — parked as pending_action %s",
             contact_desc,
