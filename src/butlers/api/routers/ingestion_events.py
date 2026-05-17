@@ -21,6 +21,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
@@ -115,17 +116,34 @@ async def list_ingestion_events(
 @router.get("/{request_id}", response_model=ApiResponse[IngestionEventDetail])
 async def get_ingestion_event(
     request_id: str,
+    include: list[str] = Query(
+        default=[],
+        description=(
+            "Optional fields to include in the response. "
+            "Pass ``include=decomposition`` to include ``decomposition_output`` "
+            "(LLM classification output derived from inbound message content). "
+            "Omitting this flag returns only metadata fields."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[IngestionEventDetail]:
     """Return a single ingestion event by its UUID.
 
     Returns 404 when no event with that ``request_id`` exists.
 
-    The response includes ``lifecycle_state`` and ``decomposition_output``
-    fields sourced from ``message_inbox`` (switchboard schema) when the
-    switchboard pool is registered.  If the switchboard pool is unavailable
-    or the ``message_inbox`` row has been pruned, both fields are ``null``.
+    By default, ``decomposition_output`` is **omitted** from the response to
+    avoid inadvertently disclosing inbound message content (PII / user data).
+    Pass ``?include=decomposition`` to opt in; doing so emits an additional
+    audit log entry with ``reason='decomposition_disclosed'``.
+
+    The ``lifecycle_state`` field is sourced from ``message_inbox``
+    (switchboard schema) when the switchboard pool is registered.  If the
+    switchboard pool is unavailable or the ``message_inbox`` row has been
+    pruned, both lifecycle fields are ``null``.
     """
+    request_path = f"/api/ingestion/events/{request_id}"
+    include_decomposition = "decomposition" in include
+
     try:
         pool = db.credential_shared_pool()
     except KeyError as exc:
@@ -138,6 +156,20 @@ async def get_ingestion_event(
 
     if event is None:
         raise HTTPException(status_code=404, detail=f"Ingestion event '{request_id}' not found")
+
+    # Emit audit log BEFORE returning the payload (fail-closed: auditing is
+    # recorded before any PII-bearing data leaves the server).
+    audit_reason = "decomposition_disclosed" if include_decomposition else "detail_view"
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="ingestion.event.payload_fetch",
+        method="GET",
+        path=request_path,
+        path_params={"request_id": request_id},
+        body={"reason": audit_reason},
+        response_status=200,
+    )
 
     # Augment with lifecycle fields from message_inbox (switchboard schema).
     # Best-effort: if the switchboard pool is not registered or the inbox row
@@ -156,7 +188,12 @@ async def get_ingestion_event(
             request_id,
         )
 
-    return ApiResponse[IngestionEventDetail](data=IngestionEventDetail(**event))
+    detail = IngestionEventDetail(**event)
+    # Gate decomposition_output: strip it unless the caller explicitly opted in.
+    if not include_decomposition:
+        detail.decomposition_output = None
+
+    return ApiResponse[IngestionEventDetail](data=detail)
 
 
 # ---------------------------------------------------------------------------
