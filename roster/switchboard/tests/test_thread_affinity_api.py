@@ -9,6 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import Request
 
 pytestmark = pytest.mark.unit
 
@@ -19,6 +20,16 @@ _BUTLER_DB = "switchboard"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_mock_request() -> MagicMock:
+    """Build a minimal Request mock satisfying audit_emit's usage of request.client and request.headers."""
+    mock_request = MagicMock(spec=Request)
+    mock_request.client = MagicMock()
+    mock_request.client.host = "127.0.0.1"
+    mock_request.headers = MagicMock()
+    mock_request.headers.get = MagicMock(return_value=None)
+    return mock_request
 
 
 def _fake_settings_row(
@@ -120,7 +131,9 @@ class TestUpdateThreadAffinitySettings:
         from switchboard_api_router import update_thread_affinity_settings
 
         body = ThreadAffinitySettingsUpdate(enabled=False)
-        result = await update_thread_affinity_settings(body=body, db=db)
+        result = await update_thread_affinity_settings(
+            request=_make_mock_request(), body=body, db=db
+        )
         assert result.enabled is False
         # Verify the settings UPDATE was executed (independent of audit middleware calls)
         calls = [str(c.args[0]) for c in pool.execute.call_args_list]
@@ -136,7 +149,9 @@ class TestUpdateThreadAffinitySettings:
         from switchboard_api_router import update_thread_affinity_settings
 
         body = ThreadAffinitySettingsUpdate(ttl_days=14)
-        result = await update_thread_affinity_settings(body=body, db=db)
+        result = await update_thread_affinity_settings(
+            request=_make_mock_request(), body=body, db=db
+        )
         assert result.ttl_days == 14
 
     async def test_no_fields_raises_422(self) -> None:
@@ -149,7 +164,7 @@ class TestUpdateThreadAffinitySettings:
 
         body = ThreadAffinitySettingsUpdate()  # No fields
         with pytest.raises(HTTPException) as exc_info:
-            await update_thread_affinity_settings(body=body, db=db)
+            await update_thread_affinity_settings(request=_make_mock_request(), body=body, db=db)
 
         assert exc_info.value.status_code == 422
 
@@ -163,7 +178,7 @@ class TestUpdateThreadAffinitySettings:
 
         body = ThreadAffinitySettingsUpdate(ttl_days=0)
         with pytest.raises(HTTPException) as exc_info:
-            await update_thread_affinity_settings(body=body, db=db)
+            await update_thread_affinity_settings(request=_make_mock_request(), body=body, db=db)
 
         assert exc_info.value.status_code == 422
 
@@ -223,7 +238,9 @@ class TestUpsertThreadAffinityOverride:
         from switchboard_api_router import upsert_thread_affinity_override
 
         body = ThreadOverrideUpsert(mode="disabled")
-        result = await upsert_thread_affinity_override(thread_id="thread-001", body=body, db=db)
+        result = await upsert_thread_affinity_override(
+            thread_id="thread-001", request=_make_mock_request(), body=body, db=db
+        )
 
         assert result.thread_id == "thread-001"
         assert result.mode == "disabled"
@@ -246,7 +263,7 @@ class TestUpsertThreadAffinityOverride:
 
         body = ThreadOverrideUpsert(mode="force:finance")
         result = await upsert_thread_affinity_override(
-            thread_id="<thread-abc@example.com>", body=body, db=db
+            thread_id="<thread-abc@example.com>", request=_make_mock_request(), body=body, db=db
         )
 
         assert result.thread_id == "<thread-abc@example.com>"
@@ -260,7 +277,9 @@ class TestUpsertThreadAffinityOverride:
         from switchboard_api_router import upsert_thread_affinity_override
 
         body = ThreadOverrideUpsert(mode="disabled")
-        result = await upsert_thread_affinity_override(thread_id="  thread-001  ", body=body, db=db)
+        result = await upsert_thread_affinity_override(
+            thread_id="  thread-001  ", request=_make_mock_request(), body=body, db=db
+        )
 
         assert result.thread_id == "thread-001"
 
@@ -274,7 +293,9 @@ class TestUpsertThreadAffinityOverride:
 
         body = ThreadOverrideUpsert(mode="disabled")
         with pytest.raises(HTTPException) as exc_info:
-            await upsert_thread_affinity_override(thread_id="", body=body, db=db)
+            await upsert_thread_affinity_override(
+                thread_id="", request=_make_mock_request(), body=body, db=db
+            )
 
         assert exc_info.value.status_code == 422
 
@@ -292,7 +313,9 @@ class TestDeleteThreadAffinityOverride:
         from switchboard_api_router import delete_thread_affinity_override
 
         # Should not raise
-        await delete_thread_affinity_override(thread_id="thread-001", db=db)
+        await delete_thread_affinity_override(
+            thread_id="thread-001", request=_make_mock_request(), db=db
+        )
         # Verify the override DELETE (UPDATE ... SET thread_overrides = thread_overrides - $1) was executed
         # (independent of audit middleware calls)
         calls = [str(c.args[0]) for c in pool.execute.call_args_list]
@@ -308,7 +331,7 @@ class TestDeleteThreadAffinityOverride:
         db = _make_db(pool)
 
         with pytest.raises(HTTPException) as exc_info:
-            await delete_thread_affinity_override(thread_id="", db=db)
+            await delete_thread_affinity_override(thread_id="", request=_make_mock_request(), db=db)
 
         assert exc_info.value.status_code == 422
 
@@ -320,7 +343,9 @@ class TestDeleteThreadAffinityOverride:
         db = _make_db(pool)
 
         with pytest.raises(HTTPException) as exc_info:
-            await delete_thread_affinity_override(thread_id="   ", db=db)
+            await delete_thread_affinity_override(
+                thread_id="   ", request=_make_mock_request(), db=db
+            )
 
         assert exc_info.value.status_code == 422
 
