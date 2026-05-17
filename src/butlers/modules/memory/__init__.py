@@ -140,7 +140,7 @@ class MemoryModuleConfig(ToolGroupMixin, BaseModel):
              entity_resolve, entity_merge, catalog_search
     preferences : set_preference, get_preferences
     admin : stats, predicate_list, predicate_search, run_consolidation,
-            run_episode_cleanup
+            run_episode_cleanup, reembed, reembed_pending_count
     """
 
     class RetrievalConfig(BaseModel):

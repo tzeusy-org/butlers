@@ -115,6 +115,9 @@ EXPECTED_TOOL_NAMES = {
     "memory_catalog_search",
     "memory_set_preference",
     "memory_get_preferences",
+    # admin: re-embedding migration tools (added in bu-jt6ey / bu-a6zpb)
+    "memory_reembed",
+    "memory_reembed_pending_count",
 }
 
 
@@ -159,7 +162,8 @@ class TestRegisterTools:
 
     async def test_registers_expected_tool_count(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 25
+        # Count is derived from EXPECTED_TOOL_NAMES so it stays in sync automatically.
+        assert len(registered) == len(EXPECTED_TOOL_NAMES)
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -194,7 +198,8 @@ class TestRegisterTools:
                 mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler"
             )
 
-        assert mcp.tool.call_count == 25
+        # Count is derived from EXPECTED_TOOL_NAMES so it stays in sync automatically.
+        assert mcp.tool.call_count == len(EXPECTED_TOOL_NAMES)
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
@@ -715,13 +720,13 @@ class TestToolGroups:
     """Tool group filtering registers only requested groups."""
 
     async def test_all_groups_when_none(self):
-        """No groups config registers all 25 tools."""
+        """No groups config registers all expected tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig()  # groups=None (default)
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
-        assert len(tools) == 25
+        assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
     async def test_core_only(self):
         """groups=['core'] registers only the 8 core tools."""
@@ -753,13 +758,13 @@ class TestToolGroups:
         assert "memory_stats" not in tool_names  # admin
 
     async def test_empty_groups_registers_all(self):
-        """groups=[] is treated as 'no filter' — registers all."""
+        """groups=[] is treated as 'no filter' — registers all expected tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=[])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
-        assert len(tools) == 25
+        assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
 
 class TestEmbeddingModelConfig:
