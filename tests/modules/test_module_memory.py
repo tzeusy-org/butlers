@@ -720,7 +720,7 @@ class TestToolGroups:
     """Tool group filtering registers only requested groups."""
 
     async def test_all_groups_when_none(self):
-        """No groups config registers all tools (len(EXPECTED_TOOL_NAMES))."""
+        """No groups config registers all expected tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig()  # groups=None (default)
@@ -758,7 +758,7 @@ class TestToolGroups:
         assert "memory_stats" not in tool_names  # admin
 
     async def test_empty_groups_registers_all(self):
-        """groups=[] is treated as 'no filter' — registers all tools (len(EXPECTED_TOOL_NAMES))."""
+        """groups=[] is treated as 'no filter' — registers all expected tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=[])
