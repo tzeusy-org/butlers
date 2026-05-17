@@ -87,22 +87,41 @@ def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
 def upgrade() -> None:
     # Count rows that will lose their (irrecoverable) hash so we can warn.
     # We use op.get_bind() for a lightweight inline query without SQLAlchemy ORM.
+    #
+    # Guard: the column may already be absent when this migration runs a second
+    # time in a schema-scoped context (e.g. running core migrations once
+    # unscoped and again with schema="general" on the same database).  Both the
+    # DROP and ADD below use IF EXISTS / IF NOT EXISTS so they are idempotent;
+    # the count query must also tolerate the column being already removed.
+    import sqlalchemy as _sa
+
     conn = op.get_bind()
-    row = conn.execute(
-        # noqa: S608 — not user-supplied SQL
-        __import__("sqlalchemy").text(
-            "SELECT COUNT(*) AS n FROM public.webhooks WHERE secret_hash IS NOT NULL"
+    secret_hash_exists = conn.execute(
+        _sa.text(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM information_schema.columns"
+            "  WHERE table_schema = 'public' AND table_name = 'webhooks'"
+            "  AND column_name = 'secret_hash'"
+            ")"
         )
-    ).fetchone()
-    affected = row[0] if row else 0
-    if affected:
-        logger.warning(
-            "core_100 upgrade: %d webhook row(s) had a non-NULL secret_hash. "
-            "The original plaintext secret cannot be recovered from a SHA-256 hash. "
-            "secret_encrypted will be NULL for these rows. "
-            "Re-supply the secret via PUT /api/webhooks/{id} to re-enable signing.",
-            affected,
-        )
+    ).scalar()
+
+    if secret_hash_exists:
+        row = conn.execute(
+            # noqa: S608 — not user-supplied SQL
+            _sa.text(
+                "SELECT COUNT(*) AS n FROM public.webhooks WHERE secret_hash IS NOT NULL"
+            )
+        ).fetchone()
+        affected = row[0] if row else 0
+        if affected:
+            logger.warning(
+                "core_100 upgrade: %d webhook row(s) had a non-NULL secret_hash. "
+                "The original plaintext secret cannot be recovered from a SHA-256 hash. "
+                "secret_encrypted will be NULL for these rows. "
+                "Re-supply the secret via PUT /api/webhooks/{id} to re-enable signing.",
+                affected,
+            )
 
     # Drop the old one-way hash column.
     op.execute("ALTER TABLE public.webhooks DROP COLUMN IF EXISTS secret_hash")
