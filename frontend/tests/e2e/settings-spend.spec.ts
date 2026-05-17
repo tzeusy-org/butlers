@@ -137,10 +137,10 @@ async function installBaseMocks(page: Page) {
 
   // WebSocket spend stream - return an empty snapshot immediately so the
   // useSpendStream hook settles without blocking page interaction.
+  // Note: Playwright's WebSocketRoute handler fires on connection; there is no
+  // onopen event. Call ws.send() directly to deliver the initial snapshot.
   await page.routeWebSocket("**/api/spend/stream", (ws) => {
-    ws.onopen(() => {
-      ws.send(JSON.stringify({ kind: "snapshot", events: [] }));
-    });
+    ws.send(JSON.stringify({ kind: "snapshot", events: [] }));
   });
 }
 
@@ -171,28 +171,36 @@ test("spend: page renders and KPI strip shows spend totals", async ({ page, base
   const reachable = await gotoSpendPage(page, baseURL);
   if (!reachable) return;
 
-  // MTD Spend cell header label
-  const mtdCell = page.getByText("MTD Spend");
-  await expect(mtdCell).toBeVisible();
+  // KPI strip cells — scope assertions to the individual testid cells so that
+  // strict-mode locator violations are avoided when the same text appears
+  // elsewhere (e.g. "31" also appears as an SVG x-axis label).
+  const mtdCell = page.getByTestId("kpi-mtd");
+  await expect(mtdCell.getByText("MTD Spend")).toBeVisible();
 
   // The formatted MTD value from MOCK_FORECAST.data.mtd_usd (2.20 -> "$2.20")
-  await expect(page.getByText("$2.20")).toBeVisible();
+  await expect(mtdCell.getByText("$2.20")).toBeVisible();
 
   // Projected EOM cell header label
-  await expect(page.getByText("Projected EOM")).toBeVisible();
+  const projCell = page.getByTestId("kpi-projected-eom");
+  await expect(projCell.getByText("Projected EOM")).toBeVisible();
 
   // Projected value from MOCK_FORECAST.data.projected_eom_usd (5.42 -> "$5.42")
-  await expect(page.getByText("$5.42")).toBeVisible();
+  await expect(projCell.getByText("$5.42")).toBeVisible();
 
-  // Monthly Ceiling cell is present (value is "-" since ceiling_usd is null)
-  await expect(page.getByText("Monthly Ceiling")).toBeVisible();
+  // Monthly Ceiling cell is present (value is "—" since ceiling_usd is null)
+  const ceilingCell = page.getByTestId("kpi-ceiling");
+  await expect(ceilingCell.getByText("Monthly Ceiling")).toBeVisible();
+  await expect(ceilingCell.getByText("—")).toBeVisible();
 
-  // Days in Month cell shows the correct count
-  await expect(page.getByText("Days in Month")).toBeVisible();
-  await expect(page.getByText(String(DAYS_IN_MONTH))).toBeVisible();
+  // Days in Month cell shows the correct count — scoped to avoid matching the
+  // SVG x-axis label that also renders "31".
+  const daysCell = page.getByTestId("kpi-days-in-month");
+  await expect(daysCell.getByText("Days in Month")).toBeVisible();
+  await expect(daysCell.getByText(String(DAYS_IN_MONTH))).toBeVisible();
 
-  // Days elapsed sub-label
-  await expect(page.getByText(`${DAYS_ELAPSED} days elapsed`)).toBeVisible();
+  // Days elapsed sub-label — scoped to mtdCell to avoid potential strict-mode
+  // collisions if the same text appears elsewhere on the page.
+  await expect(mtdCell.getByText(`${DAYS_ELAPSED} days elapsed`)).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
@@ -237,8 +245,11 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
   // returns updated data with the new ceiling value.
   let ceilingSet = false;
 
-  // Install the ceiling PUT interceptor before base mocks so it takes
-  // precedence over the wildcard **/api/spend/** route in installBaseMocks.
+  // Install base mocks first. Test-specific overrides are registered AFTER so
+  // Playwright (which matches routes last-registered-first) gives them priority.
+  await installBaseMocks(page);
+
+  // Override /spend/ceiling to capture PUT calls and toggle the ceiling flag.
   await page.route("**/api/spend/ceiling", (route) => {
     if (route.request().method() === "PUT") {
       putCalled = true;
@@ -255,8 +266,9 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
     }
   });
 
-  // After the PUT the page invalidates and re-fetches /spend/forecast.
-  // Register forecast route before installBaseMocks to intercept it.
+  // Override /spend/forecast so that after the PUT the re-fetch returns the
+  // updated payload with ceiling_usd set. Registered after installBaseMocks so
+  // this handler takes precedence (Playwright matches last-registered first).
   await page.route("**/api/spend/forecast", (route) => {
     if (route.request().method() === "GET") {
       const body = ceilingSet ? MOCK_FORECAST_WITH_CEILING : MOCK_FORECAST;
@@ -269,8 +281,6 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
       route.continue();
     }
   });
-
-  await installBaseMocks(page);
 
   const reachable = await gotoSpendPage(page, baseURL);
   if (!reachable) return;
@@ -297,13 +307,18 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
   expect(putBody).toMatchObject({ monthly_usd: 10 });
 
   // After success the edit form collapses and the ceiling appears in the KPI strip.
-  // MOCK_FORECAST_WITH_CEILING has ceiling_usd = 10.0 -> "$10.00"
-  await expect(page.getByText("$10.00")).toBeVisible();
+  // MOCK_FORECAST_WITH_CEILING has ceiling_usd = 10.0 -> "$10.00".
+  // Scope to the ceiling KPI cell to avoid strict-mode matches on the y-axis
+  // label and the "Edit ceiling ($10.00)" button which also contain "$10.00".
+  await expect(page.getByTestId("kpi-ceiling").getByText("$10.00")).toBeVisible();
 
-  // The chart must now render the ceiling hairline (red dashed line stroke-dasharray="4 2")
+  // The chart must now render the ceiling hairline (red dashed line stroke-dasharray="4 2").
+  // SVG <line> elements have zero bounding-box height, so Playwright's toBeVisible()
+  // considers them hidden. Use toBeAttached() + toHaveCount to confirm presence in the DOM.
   const chart = page.getByRole("img", { name: /spend forecast chart/i });
   const ceilingHairline = chart.locator('line[stroke-dasharray="4 2"]');
-  await expect(ceilingHairline).toBeVisible();
+  await expect(ceilingHairline).toHaveCount(1);
+  await expect(ceilingHairline).toBeAttached();
 
   // The "Set ceiling" button is replaced by "Edit ceiling ($10.00)"
   await expect(page.getByRole("button", { name: /edit ceiling/i })).toBeVisible();

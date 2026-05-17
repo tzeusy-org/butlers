@@ -121,11 +121,12 @@ interface KpiCellProps {
   label: string
   value: string
   sub?: string
+  testId?: string
 }
 
-function KpiCell({ label, value, sub }: KpiCellProps) {
+function KpiCell({ label, value, sub, testId }: KpiCellProps) {
   return (
-    <div className="flex flex-col gap-1 p-4">
+    <div className="flex flex-col gap-1 p-4" data-testid={testId}>
       <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{label}</span>
       <span className="text-2xl tabular-nums font-semibold">{value}</span>
       {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
@@ -143,23 +144,27 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="grid grid-cols-4 divide-x">
+        <div className="grid grid-cols-4 divide-x" data-testid="kpi-strip">
           <KpiCell
+            testId="kpi-mtd"
             label="MTD Spend"
             value={fmtUsd(forecast.mtd_usd)}
             sub={`${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`}
           />
           <KpiCell
+            testId="kpi-projected-eom"
             label="Projected EOM"
             value={fmtUsd(forecast.projected_eom_usd)}
             sub={`${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining`}
           />
           <KpiCell
+            testId="kpi-ceiling"
             label="Monthly Ceiling"
             value={forecast.ceiling_usd != null ? fmtUsd(forecast.ceiling_usd) : "—"}
             sub={pct != null ? `${pct}% used` : undefined}
           />
           <KpiCell
+            testId="kpi-days-in-month"
             label="Days in Month"
             value={String(forecast.days_in_month)}
             sub={`${forecast.days_elapsed} elapsed / ${daysRemaining} left`}
