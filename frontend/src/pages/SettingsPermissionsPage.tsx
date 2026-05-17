@@ -323,6 +323,7 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
                             : "bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-900 dark:text-red-200",
                       ].join(" ")}
                       title={cell?.reason ?? undefined}
+                      data-testid={`perm-cell-${butler}-${perm}`}
                     >
                       {granted ? "on" : "off"}
                     </button>
@@ -704,20 +705,20 @@ function WebhooksSection() {
           </TableHeader>
           <TableBody>
             {webhooks.map((wh) => (
-              <TableRow key={wh.id}>
+              <TableRow key={wh.id} data-testid={`webhook-row-${wh.id}`}>
                 <TableCell className="font-mono text-xs max-w-xs truncate">
                   {wh.endpoint}
                 </TableCell>
                 <TableCell className="text-xs">
                   {wh.events.length > 0 ? wh.events.join(", ") : "—"}
                 </TableCell>
-                <TableCell className="text-xs">
+                <TableCell className="text-xs" data-testid={`webhook-last-test-${wh.id}`}>
                   {wh.last_test_at ? (
                     <span className="flex items-center gap-1">
                       {wh.last_test_ok ? (
-                        <CheckCircle className="h-3 w-3 text-green-600" />
+                        <CheckCircle className="h-3 w-3 text-green-600" data-testid="webhook-test-ok" />
                       ) : (
-                        <XCircle className="h-3 w-3 text-red-600" />
+                        <XCircle className="h-3 w-3 text-red-600" data-testid="webhook-test-fail" />
                       )}
                       {new Date(wh.last_test_at).toLocaleString()}
                     </span>
@@ -733,6 +734,7 @@ function WebhooksSection() {
                       onClick={() => handleTest(wh.id)}
                       disabled={testingId === wh.id}
                       title="Test webhook"
+                      data-testid={`webhook-test-${wh.id}`}
                     >
                       {testingId === wh.id ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
@@ -747,6 +749,7 @@ function WebhooksSection() {
                       disabled={deletingId === wh.id}
                       title="Delete webhook"
                       className="text-destructive hover:text-destructive"
+                      data-testid={`webhook-delete-${wh.id}`}
                     >
                       {deletingId === wh.id ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
