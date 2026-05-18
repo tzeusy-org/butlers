@@ -109,6 +109,9 @@ if _models_path.exists():
         DeleteContactResponse = _models_module.DeleteContactResponse
         MergeEntitiesRequest = _models_module.MergeEntitiesRequest
         MergeEntitiesResponse = _models_module.MergeEntitiesResponse
+        PromoteTierRequest = _models_module.PromoteTierRequest
+        PromoteTierResponse = _models_module.PromoteTierResponse
+        _VALID_PROMOTE_TIERS = _models_module._VALID_PROMOTE_TIERS
 
 logger = logging.getLogger(__name__)
 
@@ -4922,6 +4925,101 @@ async def forget_entity(
                 entity_id,
             )
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/{entity_id}/promote-tier — write dunbar_tier_override fact
+# (entity-redesign Phase 2, bu-wmigz)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/entities/{entity_id}/promote-tier",
+    response_model=PromoteTierResponse,
+    status_code=201,
+)
+async def promote_entity_tier(
+    entity_id: UUID,
+    body: PromoteTierRequest,
+    fastapi_response: Response,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PromoteTierResponse:
+    """Pin an entity to a Dunbar tier by writing a ``dunbar_tier_override`` fact.
+
+    Calls the central writer ``relationship_assert_fact()`` with
+    ``predicate='dunbar_tier_override'`` and ``object=str(tier)`` so that
+    tier promotion is stored as a triple in ``relationship.facts``, NOT as a
+    column write to ``public.entities.tier`` (Amendment 6).
+
+    The writer is idempotent on ``(subject, predicate, object)``: promoting to
+    the same tier a second time returns ``outcome='unchanged'`` with the
+    existing fact_id and HTTP 201.  Promoting to a different tier produces
+    ``outcome='superseded'``: the old override is marked superseded and a new
+    active row is inserted.
+
+    **Authorization**: owner-only write gate (Amendment 12a) — returns HTTP 403
+    with ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    Returns 404 if the entity does not exist in ``public.entities``.
+
+    Returns 422 when ``tier`` is not one of the six valid Dunbar layer values
+    (5, 15, 50, 150, 500, 1500).
+
+    **Owner entity carve-out (RFC 0017 §2.3):** when the entity subject has role
+    ``'owner'``, the central writer parks the write as a ``pending_actions`` row.
+    The endpoint returns HTTP 202 with ``outcome='pending_approval'`` and
+    ``action_id`` set; ``fact_id`` is ``null``.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import (
+        AssertOutcome,
+        relationship_assert_fact,
+    )
+
+    pool = _pool(db)
+
+    # Amendment 12a: owner-only write gate (roles-aware, see _get_owner_roles).
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
+
+    # Validate tier value before any DB access.
+    if body.tier not in _VALID_PROMOTE_TIERS:
+        valid_str = ", ".join(str(t) for t in sorted(_VALID_PROMOTE_TIERS))
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_tier",
+                "message": (
+                    f"Invalid tier value {body.tier!r}. Valid Dunbar tier values are: {valid_str}."
+                ),
+            },
+        )
+
+    # Entity existence check.
+    await _assert_entity_exists(pool, entity_id)
+
+    result = await relationship_assert_fact(
+        pool,
+        subject=entity_id,
+        predicate="dunbar_tier_override",
+        object=str(body.tier),
+        src="dashboard.promote-tier",
+        object_kind="literal",
+        conf=1.0,
+        verified=True,
+    )
+
+    if result.outcome == AssertOutcome.pending_approval:
+        # Owner carve-out: write parked for human approval → HTTP 202.
+        fastapi_response.status_code = 202
+
+    return PromoteTierResponse(
+        entity_id=entity_id,
+        tier=body.tier,
+        outcome=result.outcome.value,
+        fact_id=result.fact_id,
+        action_id=result.action_id,
+    )
 
 
 # ---------------------------------------------------------------------------
