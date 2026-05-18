@@ -3817,7 +3817,13 @@ async def list_entity_notes(
 
     rows = await pool.fetch(
         """
-        SELECT id, content, metadata, valid_at
+        SELECT id, content, metadata, valid_at,
+               'memory_module_legacy'::text AS src,
+               NULL::float AS conf,
+               NULL::timestamptz AS last_seen,
+               NULL::float AS weight,
+               false AS verified,
+               false AS "primary"
         FROM facts
         WHERE entity_id = $1
           AND predicate = 'contact_note'
@@ -3836,6 +3842,12 @@ async def list_entity_notes(
             content=r["content"],
             emotion=(r["metadata"] or {}).get("emotion"),
             created_at=r["valid_at"],
+            src=r["src"],
+            conf=r["conf"],
+            last_seen=r["last_seen"],
+            weight=r["weight"],
+            verified=r["verified"],
+            primary=r["primary"],
         )
         for r in rows
     ]
@@ -3863,7 +3875,13 @@ async def list_entity_interactions(
 
     rows = await pool.fetch(
         """
-        SELECT id, predicate, content, metadata, valid_at
+        SELECT id, predicate, content, metadata, valid_at,
+               'memory_module_legacy'::text AS src,
+               NULL::float AS conf,
+               NULL::timestamptz AS last_seen,
+               NULL::float AS weight,
+               false AS verified,
+               false AS "primary"
         FROM facts
         WHERE entity_id = $1
           AND predicate LIKE 'interaction_%'
@@ -3884,6 +3902,12 @@ async def list_entity_interactions(
             occurred_at=r["valid_at"],
             direction=(r["metadata"] or {}).get("direction"),
             group_size=(r["metadata"] or {}).get("group_size"),
+            src=r["src"],
+            conf=r["conf"],
+            last_seen=r["last_seen"],
+            weight=r["weight"],
+            verified=r["verified"],
+            primary=r["primary"],
         )
         for r in rows
     ]
@@ -3911,7 +3935,13 @@ async def list_entity_gifts(
 
     rows = await pool.fetch(
         """
-        SELECT id, content, metadata, created_at
+        SELECT id, content, metadata, created_at,
+               'memory_module_legacy'::text AS src,
+               NULL::float AS conf,
+               NULL::timestamptz AS last_seen,
+               NULL::float AS weight,
+               false AS verified,
+               false AS "primary"
         FROM facts
         WHERE entity_id = $1
           AND predicate = 'gift'
@@ -3931,6 +3961,12 @@ async def list_entity_gifts(
             occasion=(r["metadata"] or {}).get("occasion"),
             status=(r["metadata"] or {}).get("status"),
             created_at=r["created_at"],
+            src=r["src"],
+            conf=r["conf"],
+            last_seen=r["last_seen"],
+            weight=r["weight"],
+            verified=r["verified"],
+            primary=r["primary"],
         )
         for r in rows
     ]
@@ -3958,7 +3994,13 @@ async def list_entity_loans(
 
     rows = await pool.fetch(
         """
-        SELECT id, content, metadata, created_at
+        SELECT id, content, metadata, created_at,
+               'memory_module_legacy'::text AS src,
+               NULL::float AS conf,
+               NULL::timestamptz AS last_seen,
+               NULL::float AS weight,
+               false AS verified,
+               false AS "primary"
         FROM facts
         WHERE entity_id = $1
           AND predicate = 'loan'
@@ -3981,6 +4023,12 @@ async def list_entity_loans(
             settled=(r["metadata"] or {}).get("settled"),
             settled_at=(r["metadata"] or {}).get("settled_at"),
             created_at=r["created_at"],
+            src=r["src"],
+            conf=r["conf"],
+            last_seen=r["last_seen"],
+            weight=r["weight"],
+            verified=r["verified"],
+            primary=r["primary"],
         )
         for r in rows
     ]
@@ -4014,7 +4062,13 @@ async def list_entity_timeline(
 
     rows = await pool.fetch(
         """
-        SELECT id, predicate, content, metadata, valid_at, created_at
+        SELECT id, predicate, content, metadata, valid_at, created_at,
+               'memory_module_legacy'::text AS src,
+               NULL::float AS conf,
+               NULL::timestamptz AS last_seen,
+               NULL::float AS weight,
+               false AS verified,
+               false AS "primary"
         FROM facts
         WHERE entity_id = $1
           AND (
@@ -4040,6 +4094,12 @@ async def list_entity_timeline(
             predicate=r["predicate"],
             # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
             metadata=dict(r["metadata"]) if isinstance(r["metadata"], dict) else None,
+            src=r["src"],
+            conf=r["conf"],
+            last_seen=r["last_seen"],
+            weight=r["weight"],
+            verified=r["verified"],
+            primary=r["primary"],
         )
         for r in rows
     ]

@@ -37,7 +37,13 @@ _EARLIEST = datetime(2026, 4, 28, 6, 0, 0, tzinfo=UTC)
 
 
 def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
+    """Build a MagicMock that behaves like an asyncpg Record.
+
+    Includes all six provenance fields returned by the updated SQL SELECT
+    statements (src, conf, last_seen, weight, verified, primary).  These map
+    to explicit NULL / default literals in the legacy facts table queries and
+    MUST be present so the endpoint constructors can access them.
+    """
     data = {
         "id": uuid4(),
         "predicate": "contact_note",
@@ -45,6 +51,13 @@ def _make_row(**kwargs) -> MagicMock:
         "metadata": {},
         "valid_at": _NOW,
         "created_at": _NOW,
+        # Provenance contract fields — mirrors the NULL literals in SQL.
+        "src": "memory_module_legacy",
+        "conf": None,
+        "last_seen": None,
+        "weight": None,
+        "verified": False,
+        "primary": False,
         **kwargs,
     }
     row = MagicMock()
@@ -590,6 +603,114 @@ class TestSparseMetadataNull:
 
         item = resp.json()[0]
         assert item["metadata"] is None
+
+
+# ---------------------------------------------------------------------------
+# Scenario 13: Provenance contract — all 6 fields present on every tab
+# ---------------------------------------------------------------------------
+
+_PROVENANCE_FIELDS = ("src", "conf", "last_seen", "weight", "verified", "primary")
+
+
+class TestProvenanceContractOnTabEndpoints:
+    """Scenario 13 — Every tab endpoint MUST include all 6 provenance fields.
+
+    The legacy ``facts`` table does not carry these columns, so the SQL SELECT
+    returns explicit NULL / default literals.  The API contract requires the
+    fields are present (even if null) — the UI MAY hide them, but the API MUST
+    NOT omit them.
+    """
+
+    @pytest.mark.parametrize(
+        "path,predicate",
+        [
+            ("notes", "contact_note"),
+            ("interactions", "interaction_meeting"),
+            ("gifts", "gift"),
+            ("loans", "loan"),
+            ("timeline", "contact_note"),
+        ],
+    )
+    async def test_provenance_fields_present_in_response(self, path: str, predicate: str):
+        """All six provenance fields must appear in every item, even if null."""
+        rows = [_make_row(predicate=predicate, content="test fact")]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) >= 1, f"Expected at least one item from /{path}"
+        item = body[0]
+        for field in _PROVENANCE_FIELDS:
+            assert field in item, f"Provenance field '{field}' missing from /{path} response item"
+
+    @pytest.mark.parametrize(
+        "path,predicate",
+        [
+            ("notes", "contact_note"),
+            ("interactions", "interaction_call"),
+            ("gifts", "gift"),
+            ("loans", "loan"),
+            ("timeline", "gift"),
+        ],
+    )
+    async def test_src_is_memory_module_legacy(self, path: str, predicate: str):
+        """``src`` must be ``'memory_module_legacy'`` (the legacy facts table sentinel)."""
+        rows = [_make_row(predicate=predicate, content="test fact")]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
+
+        item = resp.json()[0]
+        assert item["src"] == "memory_module_legacy", (
+            f"Expected src='memory_module_legacy' from /{path}, got {item['src']!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "path,predicate",
+        [
+            ("notes", "contact_note"),
+            ("interactions", "interaction_meeting"),
+            ("gifts", "gift"),
+            ("loans", "loan"),
+            ("timeline", "contact_note"),
+        ],
+    )
+    async def test_nullable_provenance_fields_are_null(self, path: str, predicate: str):
+        """``conf``, ``last_seen``, and ``weight`` must be null for legacy table rows."""
+        rows = [_make_row(predicate=predicate, content="test fact")]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
+
+        item = resp.json()[0]
+        assert item["conf"] is None, f"Expected conf=null from /{path}, got {item['conf']!r}"
+        assert item["last_seen"] is None, (
+            f"Expected last_seen=null from /{path}, got {item['last_seen']!r}"
+        )
+        assert item["weight"] is None, f"Expected weight=null from /{path}, got {item['weight']!r}"
+
+    @pytest.mark.parametrize(
+        "path,predicate",
+        [
+            ("notes", "contact_note"),
+            ("interactions", "interaction_meeting"),
+            ("gifts", "gift"),
+            ("loans", "loan"),
+            ("timeline", "contact_note"),
+        ],
+    )
+    async def test_boolean_provenance_fields_have_defaults(self, path: str, predicate: str):
+        """``verified`` must be false and ``primary`` must be false for legacy table rows."""
+        rows = [_make_row(predicate=predicate, content="test fact")]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/{path}")
+
+        item = resp.json()[0]
+        assert item["verified"] is False, (
+            f"Expected verified=false from /{path}, got {item['verified']!r}"
+        )
+        assert item["primary"] is False, (
+            f"Expected primary=false from /{path}, got {item['primary']!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
