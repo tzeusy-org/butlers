@@ -11,14 +11,17 @@
 
 | Stat | Value |
 |---|---|
-| Total writer entries | 32 |
-| Writers of `public.contacts` | 16 |
-| Writers of `public.contact_info` | 16 |
-| Owning butler: `relationship` | 15 |
-| Owning butler: `core/identity` | 4 |
-| Owning butler: `core/oauth` | 4 |
-| Owning butler: `contacts-module` | 6 |
-| Owning butler: `core/memory-api` | 3 |
+| Total inventory rows | 46 |
+| Direct SQL writer entries | 42 |
+| Delegation-only rows (no direct SQL) | 4 (Group B: inject.py; Group L: vcard.py × 3) |
+| Writers of `public.contacts` | 23 |
+| Writers of `public.contact_info` | 19 |
+| Owning butler: `relationship` | 24 |
+| Owning butler: `contacts-module` | 8 |
+| Owning butler: `core/memory-api` | 4 |
+| Owning butler: `core/identity` | 2 |
+| Owning butler: `core/oauth` | 2 |
+| Owning butler: `core/connectors` | 2 |
 
 ---
 
