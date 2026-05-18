@@ -88,6 +88,8 @@ if _models_path.exists():
         OverdueContactsResponse = _models_module.OverdueContactsResponse
         EntitySummary = _models_module.EntitySummary
         EntityListResponse = _models_module.EntityListResponse
+        NeighbourEntry = _models_module.NeighbourEntry
+        NeighboursResponse = _models_module.NeighboursResponse
 
 logger = logging.getLogger(__name__)
 
@@ -3433,6 +3435,178 @@ async def patch_entity_dunbar_tier(
         action=result["action"],
         message=result["message"],
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/neighbours — relational neighbours (bu-4wn79)
+# ---------------------------------------------------------------------------
+
+
+async def _assert_owner_entity_exists(pool) -> None:
+    """Raise HTTP 403 (owner_required) unless an owner entity is registered.
+
+    Checks that at least one entity with ``'owner' = ANY(roles)`` exists in
+    ``public.entities``.  This is the Clause 12b owner-only gate for
+    PII-bearing read surfaces (Amendment 12b, entity-redesign Phase 2).
+
+    In v1, the dashboard is single-tenant and there is no per-request caller
+    identity attached to API calls.  The gate therefore checks system-level
+    bootstrapping: if the owner entity is present, access is granted; if not,
+    the system is considered misconfigured and access is denied to prevent
+    data leakage.
+
+    Returns HTTP 403 with ``{"code": "owner_required"}`` on failure, matching
+    the envelope contract in ``rfcs/0007:75-87``.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT id FROM public.entities
+            WHERE 'owner' = ANY(COALESCE(roles, '{}'))
+            LIMIT 1
+            """
+        )
+    except Exception as exc:
+        logger.warning("Owner entity assertion query failed: %s", exc)
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "owner_required", "message": "Owner entity assertion failed"},
+        )
+
+    if row is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "owner_required", "message": "Owner entity not found"},
+        )
+
+
+@router.get(
+    "/entities/{entity_id}/neighbours",
+    response_model=NeighboursResponse,
+)
+async def list_entity_neighbours(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> NeighboursResponse:
+    """Return relational triples grouped by predicate for both directions.
+
+    Returns all active relational triples where the given entity is either the
+    subject (forward direction) or the object (reverse direction).  Contact
+    predicates (``has-*`` family, kind='contact') are excluded; only
+    ``kind='relational'`` predicates from ``relationship.predicate_registry``
+    are returned.
+
+    Owner-only authz gate (Clause 12b, Amendment 12b): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist in ``public.entities``.
+    Returns ``{"neighbours": {}}`` if the entity has no relational triples.
+
+    Response shape::
+
+        {
+          "neighbours": {
+            "knows": [
+              {
+                "entity_id": "<uuid>",
+                "direction": "forward" | "reverse",
+                "src": "relationship",
+                "conf": 1.0,
+                "last_seen": null | "<iso-datetime>",
+                "weight": null | <int>,
+                "verified": false,
+                "primary": null | <bool>
+              },
+              ...
+            ],
+            "family-of": [...]
+          }
+        }
+
+    Each entry's ``entity_id`` is the OTHER entity (the neighbour), not the
+    queried entity.  ``direction='forward'`` means the queried entity is the
+    subject of the triple; ``direction='reverse'`` means it is the object.
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12b).
+    await _assert_owner_entity_exists(pool)
+
+    # Entity existence check.
+    await _assert_entity_exists(pool, entity_id)
+
+    # Query relationship.facts for both directions, joining predicate_registry
+    # to filter only kind='relational' predicates (excludes has-* contact facts).
+    rows = await pool.fetch(
+        """
+        SELECT
+            f.id,
+            f.subject,
+            f.predicate,
+            f.object,
+            f.object_kind,
+            f.src,
+            f.conf,
+            f.last_seen,
+            f.weight,
+            f.verified,
+            f."primary",
+            CASE
+                WHEN f.subject = $1 THEN 'forward'
+                ELSE 'reverse'
+            END AS direction
+        FROM relationship.facts f
+        JOIN relationship.predicate_registry pr ON pr.predicate = f.predicate
+        WHERE pr.kind = 'relational'
+          AND f.validity = 'active'
+          AND f.object_kind = 'entity'
+          AND (
+              f.subject = $1
+              OR (f.object_kind = 'entity' AND f.object = $1::text)
+          )
+        ORDER BY f.predicate, f.last_seen DESC NULLS LAST, f.created_at DESC
+        """,
+        entity_id,
+    )
+
+    # Group by predicate.
+    grouped: dict[str, list] = {}
+    for r in rows:
+        predicate = r["predicate"]
+        direction = r["direction"]
+        # Derive the neighbour entity_id from the direction.
+        if direction == "forward":
+            neighbour_id_str = r["object"]
+        else:
+            neighbour_id_str = str(r["subject"])
+
+        try:
+            neighbour_uuid = UUID(neighbour_id_str)
+        except (ValueError, AttributeError):
+            # Skip malformed object values — should not occur with proper writes.
+            logger.warning(
+                "Skipping neighbour triple with non-UUID object: predicate=%s object=%s",
+                predicate,
+                neighbour_id_str,
+            )
+            continue
+
+        entry = NeighbourEntry(
+            entity_id=neighbour_uuid,
+            direction=direction,
+            src=r["src"],
+            conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+            last_seen=r["last_seen"],
+            weight=r["weight"],
+            verified=bool(r["verified"]) if r["verified"] is not None else False,
+            primary=r["primary"],
+        )
+
+        if predicate not in grouped:
+            grouped[predicate] = []
+        grouped[predicate].append(entry)
+
+    return NeighboursResponse(neighbours=grouped)
 
 
 # ---------------------------------------------------------------------------
