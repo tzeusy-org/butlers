@@ -703,3 +703,45 @@ class NeighboursResponse(BaseModel):
     """
 
     neighbours: dict[str, list[NeighbourEntry]]
+
+
+# ---------------------------------------------------------------------------
+# Entity search models (entity-redesign Phase 2, bu-q9uiw)
+# ---------------------------------------------------------------------------
+
+
+class SearchResultEntry(BaseModel):
+    """A single entity search result with its match score and match kind.
+
+    ``entity_id`` is the UUID of the matching entity.
+    ``canonical_name`` is the entity's canonical name.
+    ``score`` is the ranking score:
+      - 100  prefix match on name or alias
+      - 70   substring match on a contact-fact value
+      - 50   substring match on name or alias
+      - 30   substring match on a predicate label
+    ``match_kind`` indicates which rule produced the highest score:
+      - ``prefix``       — query is a prefix of the name or an alias
+      - ``contact_fact`` — query matches a contact-fact object value
+      - ``substring``    — query is a substring of the name or an alias
+      - ``predicate``    — query matches a predicate label
+    """
+
+    entity_id: UUID
+    canonical_name: str
+    score: int
+    match_kind: Literal["prefix", "contact_fact", "substring", "predicate"]
+
+
+class SearchResponse(BaseModel):
+    """Response for GET /entities/search.
+
+    ``results`` is ordered by score descending (highest first).  Ties are
+    broken deterministically by entity UUID (stable sort).  The response
+    contains at most ``limit`` items (default 20, max 50).
+    """
+
+    results: list[SearchResultEntry]
+    total: int
+    q: str
+    limit: int
