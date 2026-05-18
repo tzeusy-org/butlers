@@ -3,10 +3,11 @@
 **Status:** Accepted
 **Date:** 2026-03-24
 **Amended:** 2026-04-29 — added contact_info context tagging and context-aware notify() routing (bu-uv4b4)
+**Amended:** 2026-05-19 — contacts collapsed to RDF triples per Amendment 2 (bu-u8xq2)
 
 ## Summary
 
-Butlers maintains a shared identity registry spanning three tables in the `public` PostgreSQL schema: `entities`, `contacts`, and `contact_info`. The `resolve_contact_by_channel()` function performs a 3-table JOIN to map external channel identifiers to canonical contact records with role information. Unknown senders receive temporary identity records with disambiguation metadata. An identity preamble is prepended to every routed message, providing downstream butlers with structured sender context for personalized responses, access control, and entity-linked memory.
+Butlers maintains a shared identity registry spanning two tables in the `public` PostgreSQL schema: `entities` and `relationship.entity_facts` (RDF triple store). The `resolve_contact_by_channel()` function queries the triple store to map external channel identifiers to canonical entities with role information. Unknown senders receive temporary identity records with disambiguation metadata. An identity preamble is prepended to every routed message, providing downstream butlers with structured sender context for personalized responses, access control, and entity-linked memory.
 
 ## Motivation
 
@@ -31,34 +32,22 @@ The anchor table for identity. Each row represents a known person or actor.
 | `aliases` | TEXT[] | Alternative names |
 | `metadata` | JSONB | Extensible; temporary entities carry `{"unidentified": true}` |
 
-#### public.contacts
+#### public.contacts (Superseded)
 
-Links a named contact record to an entity.
+**Status:** Superseded by RFC 0004 Amendment 2
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | UUID | Primary key |
-| `name` | TEXT | Display name |
-| `entity_id` | UUID (FK) | Links to `public.entities` |
-| `roles` | TEXT[] | Legacy roles array (roles are now primarily sourced from the entity) |
-| `metadata` | JSONB | Extensible; temporary contacts carry `{"needs_disambiguation": true}` |
+The two-table model (`public.contacts` + `public.contact_info`) is deprecated and replaced by RDF triples stored in `relationship.entity_facts`. See `openspec/specs/relationship-facts/spec.md` for the replacement triple-based contact model and the migration timeline in `relationship-facts/spec.md` Requirement: Migration safety.
 
-#### public.contact_info
+Contact channel identifiers are now stored as facts: `(entity_id, "has-email", "alice@example.com")`, `(entity_id, "has-telegram", "12345")`, etc. This eliminates the two-table indirection and provides native multi-valuedness, provenance, and verification status.
 
-Per-channel identifiers linked to contacts.
+**Legacy schema (for reference during migration):**
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `contact_id` | UUID (FK) | Links to `public.contacts` |
-| `type` | TEXT | Channel type: `"telegram"`, `"email"`, `"discord"`, etc. |
-| `value` | TEXT | Channel-specific identifier (chat ID, email address, etc.) |
-| `is_primary` | BOOLEAN | Whether this is the primary contact method for the channel |
-| `secured` | BOOLEAN | Marks credential entries (e.g., API keys stored as contact info) |
-| `context` | VARCHAR (nullable) | Sphere tag: `"personal"`, `"work"`, `"other"`, or `NULL` (unclassified) |
+The deprecated tables were:
 
-A `UNIQUE` constraint on `(type, value)` guarantees at most one contact per channel identifier.
+- `public.contacts`: Links a named contact record to an entity. Columns: `id` (UUID PK), `name` (TEXT), `entity_id` (UUID FK), `roles` (TEXT[]), `metadata` (JSONB).
+- `public.contact_info`: Per-channel identifiers linked to contacts. Columns: `contact_id` (UUID FK), `type` (TEXT), `value` (TEXT), `is_primary` (BOOLEAN), `secured` (BOOLEAN), `context` (VARCHAR, nullable).
 
-The `context` column tags each channel address as belonging to a sphere. `NULL` (unclassified) is treated as compatible with any message context. Operators set context via the dashboard. Work-domain auto-detection heuristics are deferred (not implemented automatically).
+For implementation details of the new triple-based model, consult `openspec/specs/relationship-facts/spec.md`.
 
 #### public.entity_info
 
@@ -82,14 +71,22 @@ Extended identity-bound data linked to entities. Used for credentials that belon
 
 ### resolve_contact_by_channel()
 
-The core identity operation in `src/butlers/identity.py`. Given a channel type and value, it performs:
+The core identity operation in `src/butlers/identity.py`. Given a channel type and value, it performs a triple-store lookup to resolve the entity. The operation queries `relationship.entity_facts` for a fact matching the channel type and value, then returns the associated entity with its role information.
 
+For email addresses:
 ```sql
-SELECT c.id, c.name, COALESCE(e.roles, '{}'), c.entity_id
-FROM public.contact_info ci
-JOIN public.contacts c ON c.id = ci.contact_id
-LEFT JOIN public.entities e ON e.id = c.entity_id
-WHERE ci.type = $1 AND ci.value = $2
+SELECT DISTINCT e.id, e.canonical_name, COALESCE(e.roles, '{}')
+FROM relationship.entity_facts f
+JOIN public.entities e ON e.id = f.subject
+WHERE f.predicate = 'has-email' AND f.object = $1
+```
+
+For other channel types (Telegram, Discord, etc.):
+```sql
+SELECT DISTINCT e.id, e.canonical_name, COALESCE(e.roles, '{}')
+FROM relationship.entity_facts f
+JOIN public.entities e ON e.id = f.subject
+WHERE f.predicate = CONCAT('has-', $1) AND f.object = $2
 ```
 
 Returns a `ResolvedContact` dataclass:
@@ -97,37 +94,36 @@ Returns a `ResolvedContact` dataclass:
 ```python
 @dataclass
 class ResolvedContact:
-    contact_id: UUID
     name: str
-    roles: list[str]  # Sourced from entity, not contact
-    entity_id: UUID | None
+    roles: list[str]  # Sourced from entity
+    entity_id: UUID
 ```
 
 **Resilience contract:** The function catches all database exceptions and returns `None` gracefully. It is safe to call before migrations have run, during partial startup, or when the database is temporarily unavailable.
 
 ### Unknown Sender Handling
 
-When `resolve_contact_by_channel()` returns no match, the system creates a temporary identity via `create_temp_contact()`:
+When `resolve_contact_by_channel()` returns no match, the system creates a temporary identity via `create_temp_entity()`:
 
 1. Creates a `public.entities` row with `metadata = {"unidentified": true}`, `entity_type = "person"`.
-2. Creates a `public.contacts` row linked to the entity with `metadata = {"needs_disambiguation": true}`.
-3. Creates a `public.contact_info` row for the channel identifier, using `ON CONFLICT DO NOTHING` for race safety when concurrent requests arrive from the same unknown sender.
+2. Asserts a fact via `relationship_assert_fact()` linking the entity to the channel identifier. For example: `relationship_assert_fact(entity_id, "has-email", "unknown@example.com")` or `relationship_assert_fact(entity_id, "has-telegram", "unknown-chat-id")`.
+3. Uses `ON CONFLICT DO NOTHING` semantics for race safety when concurrent requests arrive from the same unknown sender.
 4. Returns a `ResolvedContact` with empty roles.
 
-Temporary entities and contacts are distinguishable from permanent ones by their metadata flags. They are intended to be merged or promoted by operator action via the dashboard.
+Temporary entities are distinguishable from permanent ones by the `metadata = {"unidentified": true}` flag. They are intended to be merged or promoted by operator action via the dashboard.
 
 ### Identity Preamble
 
 The `build_identity_preamble()` function constructs a structured text prefix prepended to every routed message. The format varies by sender classification:
 
-- **Owner:** `[Source: Owner (contact_id: <uuid>, entity_id: <uuid>), via telegram]`
-- **Known contact:** `[Source: Chloe (contact_id: <uuid>, entity_id: <uuid>), via telegram]`
-- **Unknown sender:** `[Source: Unknown sender (contact_id: <uuid>, entity_id: <uuid>), via telegram -- pending disambiguation]`
+- **Owner:** `[Source: Owner (entity_id: <uuid>), via telegram]`
+- **Known contact:** `[Source: Chloe (entity_id: <uuid>), via telegram]`
+- **Unknown sender:** `[Source: Unknown sender (entity_id: <uuid>), via telegram -- pending disambiguation]`
 
 This preamble provides downstream butlers with:
 
 - Sender name for personalized responses
-- `contact_id` and `entity_id` for entity-linked memory retrieval and fact anchoring
+- `entity_id` for entity-linked memory retrieval and fact anchoring
 - Channel source for reply targeting
 - Disambiguation status for trust-level decisions
 
@@ -195,6 +191,22 @@ Identity resolution is invoked at:
 - **RFC 0005:** Identity resolution failures are logged but do not create OTel error spans; the system degrades gracefully to unknown-sender handling.
 - **RFC 0006:** Identity tables live in the `public` schema, readable by all butlers. Writes are primarily controlled by the contacts module in the relationship butler.
 - **RFC 0007:** The dashboard exposes contact management, entity detail views, and unknown-sender disambiguation workflows.
+
+## Amendments Applied
+
+### Amendment 2 (2026-05-19) — Contacts as RDF Triples
+
+Applied per `openspec/changes/relationship-tabs-to-entities/rfc-amendments/0004-amendment-2-contacts-as-triples.md`.
+
+**Summary:** The 3-table identity model (`public.entities`, `public.contacts`, `public.contact_info`) collapsed to a 2-table model (`public.entities` + `relationship.entity_facts` triple store). Contact channel identifiers are now stored as RDF facts (e.g., `(entity_id, "has-email", "alice@example.com")`), eliminating two-table indirection and providing native multi-valuedness, provenance, and verification status.
+
+**Changes made:**
+- §"public.contacts" and §"public.contact_info" marked as superseded with forward pointer to `openspec/specs/relationship-facts/spec.md`
+- §"resolve_contact_by_channel()" updated to query the triple store instead of joining contacts and contact_info tables
+- §"ResolvedContact dataclass" simplified to remove `contact_id` field; now carries `entity_id` only
+- §"build_identity_preamble" updated to emit `entity_id` only (removed `contact_id`)
+- §"Unknown Sender Handling" updated to reference `create_temp_entity()` and `relationship_assert_fact()` instead of the deprecated contact creation path
+- `public.entity_info` remains unchanged and out of scope for this amendment
 
 ## Alternatives Considered
 
