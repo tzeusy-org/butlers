@@ -141,6 +141,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         start_to: str | None = None,
         source_name: str | None = None,
         episode_type: str | None = None,
+        entity_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -151,6 +152,9 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             start_to: ISO-8601 datetime upper bound on episode start (exclusive).
             source_name: Filter to a specific source adapter.
             episode_type: Filter to a specific episode type.
+            entity_id: Filter to episodes associated with this entity UUID.
+                Only episodes explicitly linked to the entity at projection time
+                are returned (episodes with ``entity_id = NULL`` are excluded).
             limit: Maximum rows to return (max 500).
             offset: Row offset for pagination.
 
@@ -158,6 +162,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             ``{"data": [...], "count": int}`` — corrected episodes.
         """
         from datetime import datetime
+        from uuid import UUID
 
         from butlers.chronicler.storage import list_episodes
 
@@ -175,6 +180,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             start_to=_parse_dt(start_to),
             source_name=source_name,
             episode_type=episode_type,
+            entity_id=UUID(entity_id) if entity_id is not None else None,
             limit=limit,
             offset=offset,
         )
