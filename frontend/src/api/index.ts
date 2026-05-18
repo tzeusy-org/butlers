@@ -437,13 +437,17 @@ export type {
 } from "./types.ts";
 
 export {
+  bulkReplayEvents,
   deleteConnector,
   getCrossConnectorSummary,
+  getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
   getConnectorFanout,
   getConnectorStats,
+  getConnectorSummariesWithAggregates,
   getIngestionOverview,
   getIngestionVolume,
+  getPipelineStats,
   listConnectorSummaries,
   updateConnectorCursor,
   updateConnectorSettings,
@@ -451,6 +455,7 @@ export {
 
 export type {
   ConnectorCheckpoint,
+  ConnectorCrossSummaryResponse,
   ConnectorCounters,
   ConnectorDaySummary,
   ConnectorDetail,
@@ -459,11 +464,13 @@ export type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
+  ConnectorSummariesResponse,
   ConnectorSummary,
   ConnectorSummaryEntry,
   CrossConnectorSummary,
   IngestionOverviewStats,
   IngestionPeriod,
+  PipelineStats,
 } from "./types.ts";
 
 export {

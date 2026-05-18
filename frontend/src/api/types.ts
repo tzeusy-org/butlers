@@ -2088,6 +2088,55 @@ export interface CrossConnectorSummary {
   total_messages_failed: number;
   overall_error_rate_pct: number;
   by_connector: ConnectorSummaryEntry[];
+  /** Whether Prometheus-backed aggregate metrics are available. */
+  aggregates_available?: boolean;
+}
+
+/**
+ * Pipeline funnel statistics (GET /api/ingestion/pipeline?window=24h).
+ * Sourced from Prometheus via PromQL with 60s TTL cache.
+ * aggregates_available=false means Prometheus is unreachable — all numeric
+ * fields are zero in that case.
+ */
+export interface PipelineStats {
+  window: string;
+  aggregates_available: boolean;
+  ingested: number;
+  filtered: number;
+  errored: number;
+  routed_by_butler: Record<string, number>;
+  /** 24-bucket hourly sparkline of accepted events (oldest first). */
+  spark24h: number[];
+  /** Events per minute over the trailing 60 minutes. */
+  rate1h: number;
+  /** Percentage of events routed vs. total [0, 100]. */
+  routed_pct: number;
+  /** Count of filtered events in the last 24 hours. */
+  filtered24h: number;
+}
+
+/**
+ * Connector list with aggregates_available flag
+ * (GET /api/ingestion/connectors/summaries).
+ */
+export interface ConnectorSummariesResponse {
+  connectors: ConnectorSummary[];
+  aggregates_available: boolean;
+}
+
+/**
+ * Cross-connector summary with aggregates_available flag
+ * (GET /api/ingestion/connectors/cross-summary).
+ */
+export interface ConnectorCrossSummaryResponse {
+  total_connectors: number;
+  connectors_online: number;
+  connectors_stale: number;
+  connectors_offline: number;
+  total_messages_ingested: number;
+  total_messages_failed: number;
+  overall_error_rate_pct: number;
+  aggregates_available: boolean;
 }
 
 /** One row in the fanout matrix. */

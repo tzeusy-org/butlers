@@ -26,6 +26,7 @@ import {
   useCrossConnectorSummary,
   useConnectorFanout,
   useIngestionVolume,
+  usePipelineStats,
 } from "@/hooks/use-ingestion";
 import { useBackfillJobs } from "@/hooks/use-backfill";
 import type { IngestionPeriod } from "@/api/index.ts";
@@ -92,6 +93,10 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
       }
     : undefined;
 
+  // Pipeline stats for aggregates_available flag
+  const { data: pipelineStats } = usePipelineStats("24h", { enabled: isActive });
+  const aggregatesAvailable = pipelineStats?.aggregates_available !== false;
+
   // Aggregate volume timeseries across all connectors (DB-backed)
   const { data: volumeResp, isLoading: volumeLoading } = useIngestionVolume(
     period,
@@ -102,6 +107,13 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
 
   return (
     <div className="space-y-6">
+      {/* Metrics unavailable eyebrow — shown when Prometheus is unreachable */}
+      {!aggregatesAvailable && (
+        <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+          metrics unavailable — aggregate statistics are temporarily unavailable
+        </div>
+      )}
+
       {/* Period selector + summary bar */}
       <div className="flex items-center justify-between">
         <ConnectorSummaryBar

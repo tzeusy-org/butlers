@@ -1,4 +1,4 @@
-"""Connector lifecycle endpoints — per-connector lifecycle actions for the ingestion console.
+"""Connector endpoints for the ingestion console.
 
 Provides:
 
@@ -6,19 +6,25 @@ Provides:
 
 Endpoints
 ---------
+GET  /api/ingestion/connectors/summaries        — connector list with aggregates_available flag
+GET  /api/ingestion/connectors/cross-summary    — cross-connector aggregate + aggregates_available
 POST /api/ingestion/connectors/{type}/{identity}/pause    — pause a connector (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/run-now  — resume a paused connector (audit-only)
 
+The ``summaries`` and ``cross-summary`` endpoints proxy the existing
+``/api/switchboard/connectors`` and ``/api/switchboard/connectors/summary``
+endpoints and add the ``aggregates_available`` flag derived from whether the
+Prometheus backend is reachable (via the pipeline stats cache).
+
 Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
       connector-lifecycle-ceremony/spec.md
-§Requirement: Per-action lifecycle gate matrix
-§Requirement: Run-now semantics
-§Requirement: Audit emission for all lifecycle actions
+      connector-state-aggregates/spec.md (aggregates_available threading)
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -52,6 +58,214 @@ def _pool(db: DatabaseManager):
             status_code=503,
             detail="Connector registry database is not available",
         )
+
+
+def _get_prometheus_url() -> str | None:
+    """Return Prometheus base URL from env, or None if not configured or empty."""
+    return os.environ.get("PROMETHEUS_URL") or None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/connectors/summaries
+# ---------------------------------------------------------------------------
+
+
+@router.get("/summaries", response_model=ApiResponse[dict])
+async def list_connector_summaries_with_aggregates(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Return the connector list with an ``aggregates_available`` flag.
+
+    Fetches connector registry rows from the switchboard database and
+    augments the response with ``aggregates_available`` indicating whether
+    Prometheus-backed metrics (spark24h, rate1h, etc.) are expected to be
+    valid.
+
+    ``aggregates_available`` is ``true`` when ``PROMETHEUS_URL`` is configured
+    and the last pipeline cache entry was successful; ``false`` otherwise.
+
+    Always returns HTTP 200 — database errors fall back to an empty list.
+    """
+    pool = _pool(db)
+    aggregates_available = _get_prometheus_url() is not None
+
+    # Check the pipeline cache for a recent successful fetch
+    try:
+        import time
+
+        from butlers.api.routers.ingestion_pipeline import _CACHE_TTL_SECONDS, _pipeline_cache
+
+        cached = _pipeline_cache.get("24h")
+        if cached is not None:
+            ts, data = cached
+            if time.monotonic() - ts < _CACHE_TTL_SECONDS:
+                aggregates_available = data.get("aggregates_available", False)
+    except Exception:
+        # Cache read failure is non-fatal
+        pass
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT
+                connector_type,
+                endpoint_identity,
+                state,
+                error_message,
+                version,
+                uptime_s,
+                last_heartbeat_at,
+                first_seen_at,
+                counter_messages_ingested,
+                counter_messages_failed
+            FROM connector_registry
+            WHERE deleted_at IS NULL
+            ORDER BY first_seen_at DESC
+            """,
+        )
+    except Exception:
+        logger.warning("connector summaries: failed to fetch from registry", exc_info=True)
+        return ApiResponse[dict](
+            data={"connectors": [], "aggregates_available": aggregates_available}
+        )
+
+    import datetime as dt
+
+    def _liveness(last_heartbeat_at: dt.datetime | None) -> str:
+        if last_heartbeat_at is None:
+            return "offline"
+        now = dt.datetime.now(dt.UTC)
+        age = (now - last_heartbeat_at).total_seconds()
+        if age < -300:
+            return "offline"
+        elif age <= 300:
+            return "online"
+        elif age <= 900:
+            return "stale"
+        return "offline"
+
+    connectors = []
+    for r in rows:
+        liveness = _liveness(r["last_heartbeat_at"])
+        connectors.append(
+            {
+                "connector_type": r["connector_type"],
+                "endpoint_identity": r["endpoint_identity"],
+                "liveness": liveness,
+                "state": r["state"],
+                "error_message": r["error_message"],
+                "version": r["version"],
+                "uptime_s": r["uptime_s"],
+                "last_heartbeat_at": (
+                    r["last_heartbeat_at"].isoformat() if r["last_heartbeat_at"] else None
+                ),
+                "first_seen_at": r["first_seen_at"].isoformat(),
+                "today": {
+                    "messages_ingested": r["counter_messages_ingested"] or 0,
+                    "messages_failed": r["counter_messages_failed"] or 0,
+                },
+            }
+        )
+
+    return ApiResponse[dict](
+        data={"connectors": connectors, "aggregates_available": aggregates_available}
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/connectors/cross-summary
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cross-summary", response_model=ApiResponse[dict])
+async def get_cross_connector_summary_with_aggregates(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Return cross-connector aggregate summary with ``aggregates_available`` flag.
+
+    Aggregates health and volume counts across all active connectors and
+    includes ``aggregates_available`` indicating whether Prometheus-backed
+    per-connector time-series metrics are expected to be valid.
+
+    Always returns HTTP 200 — database errors fall back to zero-value summary.
+    """
+    pool = _pool(db)
+    aggregates_available = _get_prometheus_url() is not None
+
+    # Check the pipeline cache for a recent successful fetch
+    try:
+        import time
+
+        from butlers.api.routers.ingestion_pipeline import _CACHE_TTL_SECONDS, _pipeline_cache
+
+        cached = _pipeline_cache.get("24h")
+        if cached is not None:
+            ts, data = cached
+            if time.monotonic() - ts < _CACHE_TTL_SECONDS:
+                aggregates_available = data.get("aggregates_available", False)
+    except Exception:
+        pass
+
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT
+                count(*) AS total_connectors,
+                count(*) FILTER (WHERE state = 'healthy') AS online_count,
+                count(*) FILTER (WHERE state = 'degraded') AS stale_count,
+                count(*) FILTER (WHERE state = 'error') AS offline_count,
+                coalesce(sum(counter_messages_ingested), 0) AS total_messages_ingested,
+                coalesce(sum(counter_messages_failed), 0) AS total_messages_failed
+            FROM connector_registry
+            WHERE deleted_at IS NULL
+            """,
+        )
+    except Exception:
+        logger.warning("cross-summary: failed to query connector_registry", exc_info=True)
+        return ApiResponse[dict](
+            data={
+                "total_connectors": 0,
+                "connectors_online": 0,
+                "connectors_stale": 0,
+                "connectors_offline": 0,
+                "total_messages_ingested": 0,
+                "total_messages_failed": 0,
+                "overall_error_rate_pct": 0.0,
+                "aggregates_available": aggregates_available,
+            }
+        )
+
+    if row is None:
+        return ApiResponse[dict](
+            data={
+                "total_connectors": 0,
+                "connectors_online": 0,
+                "connectors_stale": 0,
+                "connectors_offline": 0,
+                "total_messages_ingested": 0,
+                "total_messages_failed": 0,
+                "overall_error_rate_pct": 0.0,
+                "aggregates_available": aggregates_available,
+            }
+        )
+
+    total_ingested = int(row["total_messages_ingested"] or 0)
+    total_failed = int(row["total_messages_failed"] or 0)
+    total_attempts = total_ingested + total_failed
+    error_rate_pct = (total_failed / total_attempts * 100.0) if total_attempts > 0 else 0.0
+
+    return ApiResponse[dict](
+        data={
+            "total_connectors": int(row["total_connectors"] or 0),
+            "connectors_online": int(row["online_count"] or 0),
+            "connectors_stale": int(row["stale_count"] or 0),
+            "connectors_offline": int(row["offline_count"] or 0),
+            "total_messages_ingested": total_ingested,
+            "total_messages_failed": total_failed,
+            "overall_error_rate_pct": round(error_rate_pct, 2),
+            "aggregates_available": aggregates_available,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
