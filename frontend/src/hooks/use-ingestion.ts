@@ -8,6 +8,9 @@
  * - ingestionKeys.fanout(period)              → ConnectorFanout matrix
  * - ingestionKeys.connectorDetail(type, id)           → ConnectorDetail
  * - ingestionKeys.connectorStats(type, id, period)  → ConnectorStats timeseries
+ * - ingestionKeys.connectorSummariesWithAggregates()  → ConnectorSummariesResponse
+ * - ingestionKeys.crossSummaryWithAggregates()        → ConnectorCrossSummaryResponse
+ * - ingestionKeys.pipelineStats(window)               → PipelineStats
  *
  * Overview and Connectors tabs share the connectors list / summary / fanout
  * keys so switching tabs reuses warm cache.
@@ -16,13 +19,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  bulkReplayEvents,
   deleteConnector,
   getCrossConnectorSummary,
+  getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
   getConnectorFanout,
   getConnectorStats,
+  getConnectorSummariesWithAggregates,
   getIngestionOverview,
   getIngestionVolume,
+  getPipelineStats,
   listConnectorSummaries,
   updateConnectorCursor,
   updateConnectorSettings,
@@ -58,6 +65,12 @@ export const ingestionKeys = {
     ] as const,
   ingestionVolume: (period: IngestionPeriod) =>
     [...ingestionKeys.all, "ingestion-volume", period] as const,
+  connectorSummariesWithAggregates: () =>
+    [...ingestionKeys.all, "connectors-summaries-with-aggregates"] as const,
+  crossSummaryWithAggregates: () =>
+    [...ingestionKeys.all, "cross-summary-with-aggregates"] as const,
+  pipelineStats: (window: string) =>
+    [...ingestionKeys.all, "pipeline-stats", window] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -237,6 +250,70 @@ export function useDeleteConnector() {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorsList(),
       });
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.all,
+      });
+    },
+  });
+}
+
+/**
+ * Connector list with aggregates_available flag.
+ * Uses the new /api/ingestion/connectors/summaries endpoint.
+ */
+export function useConnectorSummariesWithAggregates(options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorSummariesWithAggregates(),
+    queryFn: () => getConnectorSummariesWithAggregates(),
+    refetchInterval: 60_000,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Cross-connector aggregate summary with aggregates_available flag.
+ * Uses the new /api/ingestion/connectors/cross-summary endpoint.
+ */
+export function useCrossConnectorSummaryWithAggregates(options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ingestionKeys.crossSummaryWithAggregates(),
+    queryFn: () => getCrossConnectorSummaryWithAggregates(),
+    refetchInterval: 60_000,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Pipeline funnel statistics from Prometheus (60s TTL cache on the backend).
+ * aggregates_available=false means Prometheus is unreachable — show "metrics unavailable" eyebrow.
+ */
+export function usePipelineStats(
+  window: "1h" | "24h" | "7d" = "24h",
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.pipelineStats(window),
+    queryFn: () => getPipelineStats(window),
+    refetchInterval: 60_000,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Mutation to bulk-replay up to 50 filtered ingestion events.
+ * Email events are rejected at the server with HTTP 409.
+ */
+export function useBulkReplayEvents() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      eventIds,
+      reason,
+    }: {
+      eventIds: string[];
+      reason?: string;
+    }) => bulkReplayEvents(eventIds, reason),
+    onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.all,
       });

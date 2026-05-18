@@ -2777,6 +2777,7 @@ export function getEducationMindMapStrugglingNodes(
 import type {
   ConnectorCheckpoint,
   ConnectorCounters,
+  ConnectorCrossSummaryResponse,
   ConnectorDaySummary,
   ConnectorDetail,
   ConnectorFanout,
@@ -2784,16 +2785,19 @@ import type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
+  ConnectorSummariesResponse,
   ConnectorSummary,
   ConnectorSummaryEntry,
   CrossConnectorSummary,
   IngestionOverviewStats,
   IngestionPeriod,
+  PipelineStats,
 } from "./types.ts";
 
 // Re-export the types so they are accessible from this module too.
 export type {
   ConnectorCheckpoint,
+  ConnectorCrossSummaryResponse,
   ConnectorCounters,
   ConnectorDaySummary,
   ConnectorDetail,
@@ -2802,11 +2806,13 @@ export type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
+  ConnectorSummariesResponse,
   ConnectorSummary,
   ConnectorSummaryEntry,
   CrossConnectorSummary,
   IngestionOverviewStats,
   IngestionPeriod,
+  PipelineStats,
 };
 
 // ---------------------------------------------------------------------------
@@ -3072,6 +3078,60 @@ export async function getCrossConnectorSummary(
     ...resp,
     data: _toCrossConnectorSummary(resp.data, period),
   };
+}
+
+/**
+ * GET /api/ingestion/connectors/summaries
+ * Returns connector list with aggregates_available flag.
+ */
+export async function getConnectorSummariesWithAggregates(): Promise<
+  ApiResponse<ConnectorSummariesResponse>
+> {
+  const resp = await apiFetch<ApiResponse<ConnectorSummariesResponse>>(
+    `/ingestion/connectors/summaries`,
+  );
+  return resp;
+}
+
+/**
+ * GET /api/ingestion/connectors/cross-summary
+ * Returns cross-connector aggregate summary with aggregates_available flag.
+ */
+export async function getCrossConnectorSummaryWithAggregates(): Promise<
+  ApiResponse<ConnectorCrossSummaryResponse>
+> {
+  return apiFetch<ApiResponse<ConnectorCrossSummaryResponse>>(
+    `/ingestion/connectors/cross-summary`,
+  );
+}
+
+/**
+ * GET /api/ingestion/pipeline?window=24h
+ * Returns pipeline funnel stats from Prometheus (60s TTL cache).
+ * Always returns 200; aggregates_available=false when Prometheus is unreachable.
+ */
+export async function getPipelineStats(
+  window: "1h" | "24h" | "7d" = "24h",
+): Promise<PipelineStats> {
+  return apiFetch<PipelineStats>(`/ingestion/pipeline?window=${window}`);
+}
+
+/**
+ * POST /api/ingestion/events/replay/bulk
+ * Bulk-replay up to 50 filtered events.
+ */
+export async function bulkReplayEvents(
+  eventIds: string[],
+  reason?: string,
+): Promise<{ accepted: string[]; capped: string[]; skipped_locked: string[] }> {
+  return apiFetch<{ accepted: string[]; capped: string[]; skipped_locked: string[] }>(
+    `/ingestion/events/replay/bulk`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event_ids: eventIds, reason: reason ?? "bulk replay" }),
+    },
+  );
 }
 
 /** Get period-scoped ingestion overview statistics (message_inbox-based). */

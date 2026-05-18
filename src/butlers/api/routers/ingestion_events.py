@@ -10,6 +10,7 @@ GET  /api/ingestion/events               — cursor-paginated unified timeline
 GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
+POST /api/ingestion/events/replay/bulk   — bulk replay handler (max 50 events, email blocked)
 POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 GET  /api/ingestion/events/{id}/replays  — replay attempt history from public.audit_log
 GET  /api/ingestion/events/{id}/sender-contact  — resolve sender_identity to contact name
@@ -19,9 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -263,6 +264,184 @@ async def get_ingestion_event_rollup(
     sessions_data = await ingestion_event_sessions(db, request_id)
     rollup_data = ingestion_event_rollup(request_id, sessions_data, pricing=pricing)
     return ApiResponse[IngestionEventRollup](data=IngestionEventRollup(**rollup_data))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/events/replay/bulk
+# ---------------------------------------------------------------------------
+
+_MAX_BULK_REPLAY_BATCH = 50
+
+# Channels that are classified as replay-unsafe per the
+# connector-replay-idempotency-policy spec.
+_UNSAFE_CHANNELS: frozenset[str] = frozenset({"email"})
+
+
+@router.post("/replay/bulk")
+async def bulk_replay_ingestion_events(
+    request: Request,
+    body: Annotated[dict, Body(...)],
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict:
+    """Bulk-replay up to 50 filtered events.
+
+    Accepts ``{"event_ids": [...], "reason": "..."}`` where ``event_ids`` is a
+    list of UUID strings (max 50).  Events with ``source_channel = 'email'`` (or
+    whose ``connector_registry.replay_safe = false``) are rejected with HTTP 409.
+
+    Uses ``SELECT ... FOR UPDATE SKIP LOCKED`` to avoid racing against the
+    connector drain loop.
+
+    Returns:
+        200 — ``{"accepted": [...], "capped": [...]}``
+        400 — missing or malformed ``event_ids``
+        409 — batch contains replay-unsafe events (email or replay_safe=false)
+        503 — shared database pool unavailable
+    """
+    event_ids_raw: list = body.get("event_ids", [])
+    reason: str = str(body.get("reason", "")).strip() or "bulk replay"
+
+    if not isinstance(event_ids_raw, list) or not event_ids_raw:
+        raise HTTPException(status_code=400, detail="event_ids must be a non-empty list")
+
+    # Cap at max batch size; track overflow
+    capped: list[str] = []
+    if len(event_ids_raw) > _MAX_BULK_REPLAY_BATCH:
+        capped = [str(e) for e in event_ids_raw[_MAX_BULK_REPLAY_BATCH:]]
+        event_ids_raw = event_ids_raw[:_MAX_BULK_REPLAY_BATCH]
+
+    # Validate UUID format
+    from uuid import UUID
+
+    try:
+        event_ids: list[UUID] = [UUID(str(e)) for e in event_ids_raw]
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid UUID in event_ids: {exc}") from exc
+
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    client_host = getattr(request.client, "host", None) if request.client else None
+
+    # Phase 1: Lock candidate rows in connectors.filtered_events using
+    # SELECT ... FOR UPDATE SKIP LOCKED to avoid racing the drain loop.
+    # Also join connector_registry to check the replay_safe flag.
+    try:
+        locked_rows = await pool.fetch(
+            """
+            SELECT fe.id, fe.source_channel,
+                   COALESCE(cr.replay_safe, TRUE) AS replay_safe
+            FROM connectors.filtered_events fe
+            LEFT JOIN connector_registry cr
+              ON cr.connector_type = fe.connector_type
+             AND cr.endpoint_identity = fe.endpoint_identity
+            WHERE fe.id = ANY($1::uuid[])
+              AND fe.status IN ('filtered', 'error', 'replay_failed', 'replay_complete')
+            FOR UPDATE SKIP LOCKED
+            """,
+            event_ids,
+        )
+    except Exception:
+        logger.warning("bulk_replay: failed to lock filtered_events rows", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database error while locking events")
+
+    locked_ids = {row["id"] for row in locked_rows}
+
+    # Phase 2: Channel safety gate — reject the ENTIRE batch if any event is unsafe.
+    # Per spec: "The handler SHALL NOT partially process the batch when at least one
+    # event is unsafe — the entire batch is rejected to preserve atomic semantics."
+    unsafe_events: list[dict] = []
+    for row in locked_rows:
+        channel = row["source_channel"]
+        replay_safe = row["replay_safe"]
+        if channel in _UNSAFE_CHANNELS or not replay_safe:
+            unsafe_events.append(
+                {
+                    "id": str(row["id"]),
+                    "source_channel": channel,
+                    "reason": (
+                        f"source_channel='{channel}' is not replay-safe"
+                        if channel in _UNSAFE_CHANNELS
+                        else "connector_registry.replay_safe=false"
+                    ),
+                }
+            )
+
+    if unsafe_events:
+        # Emit rejection audit entry
+        try:
+            await _audit_append(
+                pool,
+                actor="dashboard",
+                action="ingestion.replay.bulk_reject",
+                target=json.dumps([str(e) for e in event_ids]),
+                note=json.dumps(
+                    {
+                        "reason": "unsafe_channel",
+                        "unsafe_events": unsafe_events,
+                        "submitted_reason": reason,
+                    }
+                ),
+                ip=client_host,
+            )
+        except Exception:
+            logger.warning("bulk_replay: failed to write bulk_reject audit entry", exc_info=True)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "Batch contains replay-unsafe events",
+                "unsafe_events": unsafe_events,
+            },
+        )
+
+    # Phase 3: Mark locked events as replay_pending
+    accepted_ids: list[str] = []
+    if locked_rows:
+        try:
+            updated = await pool.fetch(
+                """
+                UPDATE connectors.filtered_events
+                SET status = 'replay_pending',
+                    replay_requested_at = now(),
+                    error_detail = NULL
+                WHERE id = ANY($1::uuid[])
+                  AND status IN ('filtered', 'error', 'replay_failed', 'replay_complete')
+                RETURNING id
+                """,
+                list(locked_ids),
+            )
+            accepted_ids = [str(row["id"]) for row in updated]
+        except Exception:
+            logger.warning("bulk_replay: failed to update filtered_events", exc_info=True)
+            raise HTTPException(status_code=503, detail="Database error during replay marking")
+
+    # Phase 4: Audit successful batch
+    try:
+        await _audit_append(
+            pool,
+            actor="dashboard",
+            action="ingestion.replay.bulk_submit",
+            target=json.dumps(accepted_ids),
+            note=json.dumps(
+                {
+                    "reason": reason,
+                    "accepted_count": len(accepted_ids),
+                    "capped_count": len(capped),
+                    "skipped_locked": len(event_ids) - len(locked_ids),
+                }
+            ),
+            ip=client_host,
+        )
+    except Exception:
+        logger.warning("bulk_replay: failed to write bulk_submit audit entry", exc_info=True)
+
+    return {
+        "accepted": accepted_ids,
+        "capped": capped,
+        "skipped_locked": [str(e) for e in event_ids if e not in locked_ids],
+    }
 
 
 # ---------------------------------------------------------------------------

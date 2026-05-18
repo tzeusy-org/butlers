@@ -51,6 +51,7 @@ from butlers.api.routers.healing import router as healing_router
 from butlers.api.routers.home_assistant import router as home_assistant_router
 from butlers.api.routers.ingestion_connectors import router as ingestion_connectors_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
+from butlers.api.routers.ingestion_pipeline import router as ingestion_pipeline_router
 from butlers.api.routers.issues import router as issues_router
 from butlers.api.routers.memory import butler_memory_router
 from butlers.api.routers.memory import router as memory_router
@@ -275,6 +276,7 @@ def create_app(
     app.include_router(state_router)
     app.include_router(ingestion_events_router)
     app.include_router(ingestion_connectors_router)
+    app.include_router(ingestion_pipeline_router)
     app.include_router(priority_contacts_router)
     app.include_router(timeline_router)
     app.include_router(calendar_workspace_router)
