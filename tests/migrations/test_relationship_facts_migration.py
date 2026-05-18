@@ -285,6 +285,63 @@ class TestUpgradeSQLShape:
         assert "validity" in stmt.lower(), "Unique index must be partial on validity"
         assert "active" in stmt, "Unique index WHERE clause must reference 'active'"
 
+    def test_table_has_no_scope_column(self) -> None:
+        """relationship.facts MUST NOT have a scope column.
+
+        Schema isolation is enforced via the ``relationship.`` schema prefix
+        (RFC 0006), not a scope column.  Adding scope would break all Phase 2
+        endpoints which query this table without a scope filter.
+
+        Older migrations (rel_007, rel_010, rel_011, rel_012) reference
+        ``AND scope = 'relationship'`` against the *memory module's* bare
+        ``facts`` table — NOT relationship.facts.  This test guards against
+        confusing the two tables.
+        """
+        sqls = _collect_upgrade_sqls()
+        table_stmt = next(
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+        )
+        # The CREATE TABLE DDL must not define a 'scope' column
+        import re
+
+        # Extract only the column definition block (between the first ( and last ))
+        # and check that 'scope' does not appear as a column name
+        col_block_match = re.search(r"\(\s*(.*)\s*\)", table_stmt, re.DOTALL)
+        if col_block_match:
+            col_block = col_block_match.group(1)
+            # Split on commas (rough parse) and check no line starts with 'scope'
+            col_lines = [ln.strip() for ln in col_block.split("\n") if ln.strip()]
+            scope_cols = [ln for ln in col_lines if ln.lower().startswith("scope")]
+            assert not scope_cols, (
+                "relationship.facts must NOT define a 'scope' column.  "
+                "Schema isolation is enforced via the relationship. prefix.  "
+                f"Found: {scope_cols}"
+            )
+
+    def test_table_has_subject_not_entity_id(self) -> None:
+        """relationship.facts uses 'subject' for the entity FK, not 'entity_id'.
+
+        This prevents API code from accidentally using the memory module column
+        name 'entity_id' in queries against relationship.facts.
+        """
+        sqls = _collect_upgrade_sqls()
+        table_stmt = next(
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+        )
+        assert "subject" in table_stmt.lower(), (
+            "relationship.facts must have a 'subject' column (entity FK)"
+        )
+        # 'entity_id' must NOT appear as a column name in the CREATE TABLE body
+        # (it may appear in FK constraints referencing public.entities, but not as a column name)
+        # We check that there's no 'entity_id' column definition
+        lines = [ln.strip().lower() for ln in table_stmt.split("\n")]
+        entity_id_col_lines = [ln for ln in lines if ln.startswith("entity_id") and "uuid" in ln]
+        assert not entity_id_col_lines, (
+            "relationship.facts must NOT define 'entity_id' as a column name.  "
+            "Use 'subject' instead.  "
+            f"Found lines: {entity_id_col_lines}"
+        )
+
 
 class TestDowngradeSQLShape:
     """Verify downgrade() emits correct DROP statements."""

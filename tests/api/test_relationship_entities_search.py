@@ -370,20 +370,25 @@ async def test_search_returns_200_for_owner():
 
 
 # ---------------------------------------------------------------------------
-# Scenario: scope filter (cross-scope rows excluded)
+# Scenario: schema isolation (cross-scope rows excluded via schema prefix, not a column)
 #
-# The search SQL includes `AND f.scope = 'relationship'` on both facts branches.
-# We verify the SQL fragment is present in the router source rather than
-# spinning up a real DB.
+# relationship.facts has NO scope column — schema isolation is enforced via the
+# relationship. schema prefix per RFC 0006. Queries against relationship.facts
+# must NOT include AND scope='relationship' (that column does not exist).
+# We verify the SQL uses schema-qualified table names and does NOT include a
+# spurious scope filter.
 # ---------------------------------------------------------------------------
 
 
-def test_scope_filter_present_in_search_sql():
-    """search_entities SQL must include scope='relationship' on all facts queries.
+def test_scope_filter_absent_from_relationship_facts_queries():
+    """search_entities SQL must NOT include scope='relationship' on relationship.facts queries.
 
-    This is a static correctness guard — the issue is a correctness requirement
-    identified in PR reviews #1772 and #1773: all relationship.facts queries
-    MUST filter AND scope='relationship' to exclude cross-scope rows.
+    relationship.facts has no scope column.  Schema isolation is enforced via the
+    relationship. schema prefix (RFC 0006).  Adding AND scope='relationship' to
+    queries against relationship.facts would cause a column-not-found error at runtime.
+
+    Older references to scope='relationship' in this codebase are against the memory
+    module's bare facts table (unqualified), NOT relationship.facts.
     """
     import importlib.util
     import inspect
@@ -396,11 +401,20 @@ def test_scope_filter_present_in_search_sql():
 
     src = inspect.getsource(mod.search_entities)
 
-    # The search function must apply scope filter on relationship.facts queries.
-    assert "scope = 'relationship'" in src, (
-        "search_entities SQL is missing the required "
-        "AND scope='relationship' filter on relationship.facts queries. "
-        "This was a correctness requirement from PR #1772/#1773."
+    # The search function must NOT apply a scope column filter on relationship.facts queries.
+    # Schema isolation is enforced by the relationship. prefix.
+    assert "scope = 'relationship'" not in src, (
+        "search_entities SQL has a spurious AND scope='relationship' filter on "
+        "relationship.facts queries.  relationship.facts has no scope column.  "
+        "Schema isolation is enforced via the relationship. schema prefix."
+    )
+    # Sanity: the function must still use schema-qualified table name
+    assert "relationship.facts" in src, (
+        "search_entities SQL must use the schema-qualified name relationship.facts"
+    )
+    # And must still filter validity='active'
+    assert "validity = 'active'" in src, (
+        "search_entities SQL must filter validity='active' on relationship.facts queries"
     )
 
 
