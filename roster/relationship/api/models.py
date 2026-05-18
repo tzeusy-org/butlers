@@ -1086,3 +1086,50 @@ class MergeEntitiesResponse(BaseModel):
     tombstoned_entity_id: UUID
     subject_facts_rewired: int
     object_facts_rewired: int
+
+
+# ---------------------------------------------------------------------------
+# Entity promote-tier models (entity-redesign Phase 2, bu-wmigz)
+# ---------------------------------------------------------------------------
+
+#: Valid Dunbar tier values (must stay in sync with dunbar.py::VALID_TIERS).
+_VALID_PROMOTE_TIERS: frozenset[int] = frozenset({5, 15, 50, 150, 500, 1500})
+
+
+class PromoteTierRequest(BaseModel):
+    """Request body for ``POST /entities/{id}/promote-tier``.
+
+    Writes a ``dunbar_tier_override`` triple to ``relationship.facts`` via
+    the central writer (``relationship_assert_fact()``).
+
+    Per Amendment 6, tier promotion is a FACT not a column — this endpoint
+    MUST NOT write to ``public.entities.tier``.
+
+    ``tier`` must be one of the six canonical Dunbar layer sizes:
+    5, 15, 50, 150, 500, or 1500.
+    """
+
+    tier: int = Field(
+        ...,
+        description=("Dunbar tier to assign.  Must be one of: 5, 15, 50, 150, 500, 1500."),
+    )
+
+
+class PromoteTierResponse(BaseModel):
+    """Response for ``POST /entities/{id}/promote-tier``.
+
+    ``outcome`` is one of ``'inserted'``, ``'superseded'``, ``'unchanged'``,
+    or ``'pending_approval'``.
+
+    ``fact_id`` is the UUID of the active ``dunbar_tier_override`` row in
+    ``relationship.facts`` (None for ``pending_approval`` outcomes).
+
+    ``action_id`` is set only when ``outcome='pending_approval'`` (owner-entity
+    carve-out per RFC 0017 §2.3).
+    """
+
+    entity_id: UUID
+    tier: int
+    outcome: str
+    fact_id: UUID | None = None
+    action_id: UUID | None = None
