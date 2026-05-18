@@ -893,3 +893,65 @@ class ConcentrationResponse(BaseModel):
     rollup: ConcentrationRollup
     predicate_tabs: list[PredicateTab]
     total: int
+
+
+# ---------------------------------------------------------------------------
+# POST /entities (promote unidentified) models (entity-redesign Phase 2, bu-pzp9m)
+# ---------------------------------------------------------------------------
+
+
+class InitialFact(BaseModel):
+    """A single triple to be asserted via the central writer as part of a promote request.
+
+    ``predicate`` must be registered in ``relationship.predicate_registry``.
+    ``object`` is the literal value (e.g. an email address) or entity UUID string.
+    ``object_kind`` defaults to ``'literal'``; use ``'entity'`` for relational triples.
+    ``conf`` defaults to ``1.0`` (owner-authored).
+    ``primary`` marks whether this is the primary value for the predicate kind.
+    """
+
+    predicate: str
+    object: str
+    object_kind: str = "literal"
+    conf: float = Field(default=1.0, ge=0.0, le=1.0)
+    primary: bool | None = None
+
+
+class PromoteEntityRequest(BaseModel):
+    """Request body for POST /entities (promote unidentified → canonical entity).
+
+    ``entity_id`` identifies an existing ``public.entities`` row to promote.
+    When provided the row is updated in-place: ``canonical_name`` is set,
+    ``metadata->>'unidentified'`` is cleared, and optional ``entity_type`` /
+    ``roles`` fields are applied.
+
+    When ``entity_id`` is ``None`` a brand-new canonical entity is created
+    (the "create" path).  Either way the caller must be an owner-role entity
+    (Amendment 12a owner-only gate).
+
+    ``initial_facts`` is an optional list of contact-fact triples to emit via
+    the central writer (``relationship_assert_fact``) as part of the same
+    transaction.  Each entry must carry ``predicate``, ``object``, and
+    optionally ``object_kind`` (default ``'literal'``), ``conf`` (default
+    ``1.0``), ``primary`` (default ``None``).  Predicates must exist in
+    ``relationship.predicate_registry``; an unregistered predicate causes the
+    whole request to fail with HTTP 422.
+    """
+
+    entity_id: UUID | None = Field(
+        default=None,
+        description=(
+            "UUID of an existing unidentified entity to promote.  "
+            "When None a fresh canonical entity is created."
+        ),
+    )
+    canonical_name: str = Field(..., min_length=1, description="Human-readable canonical name.")
+    entity_type: str = Field(default="person", description="Entity type (person, organization, …).")
+    roles: list[str] | None = Field(
+        default=None,
+        description="Role tags to assign (e.g. ['owner']).  None leaves roles unchanged.",
+    )
+    initial_facts: list[InitialFact] = Field(
+        default_factory=list,
+        description="Contact-fact triples to emit via relationship_assert_fact in the same tx.",
+    )

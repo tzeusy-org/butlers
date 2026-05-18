@@ -98,6 +98,8 @@ if _models_path.exists():
         ConcentrationEntry = _models_module.ConcentrationEntry
         ConcentrationRollup = _models_module.ConcentrationRollup
         ConcentrationResponse = _models_module.ConcentrationResponse
+        InitialFact = _models_module.InitialFact
+        PromoteEntityRequest = _models_module.PromoteEntityRequest
 
 logger = logging.getLogger(__name__)
 
@@ -2710,6 +2712,177 @@ async def list_entities(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /entities — promote unidentified → canonical entity (bu-pzp9m)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities", response_model=EntitySummary, status_code=201)
+async def promote_entity(
+    body: PromoteEntityRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntitySummary:
+    """Promote an unidentified entity placeholder to a canonical entity, or create a new one.
+
+    **Two modes:**
+
+    1. **Promote** (``entity_id`` provided): finds the existing ``public.entities`` row,
+       clears ``metadata->>'unidentified'``, and sets ``canonical_name`` (and optionally
+       ``entity_type`` / ``roles``).
+    2. **Create** (``entity_id`` omitted): inserts a brand-new canonical entity row.
+
+    In both modes, ``initial_facts`` (optional) are asserted via
+    ``relationship_assert_fact()`` inside the same database transaction.
+    An unregistered predicate causes the whole request to fail with HTTP 422.
+
+    **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    **Response**: the promoted or created ``EntitySummary`` (HTTP 201 Created).
+
+    **Error codes:**
+    - ``404`` — ``entity_id`` provided but entity does not exist.
+    - ``403`` — owner entity not registered (Amendment 12a).
+    - ``422`` — unregistered predicate in ``initial_facts``, or validation failure.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
+
+    pool = _pool(db)
+
+    # Amendment 12a: owner-only write gate.
+    await _assert_owner_entity_exists(pool)
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if body.entity_id is not None:
+                # --- Promote path: update the existing unidentified entity ---
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, canonical_name, entity_type, aliases, roles, metadata,
+                           created_at, updated_at
+                    FROM public.entities
+                    WHERE id = $1
+                    """,
+                    body.entity_id,
+                )
+                if row is None:
+                    raise HTTPException(status_code=404, detail="Entity not found")
+
+                # Merge metadata: remove the 'unidentified' key and 'duplicate_candidate' key.
+                existing_meta: dict = dict(row["metadata"]) if row["metadata"] else {}
+                existing_meta.pop("unidentified", None)
+                existing_meta.pop("duplicate_candidate", None)
+
+                if body.roles is not None:
+                    new_roles = body.roles
+                else:
+                    new_roles = list(row["roles"]) if row["roles"] else []
+
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE public.entities
+                    SET canonical_name = $2,
+                        entity_type    = $3,
+                        roles          = $4,
+                        metadata       = $5,
+                        updated_at     = now()
+                    WHERE id = $1
+                    RETURNING id, canonical_name, entity_type, aliases, roles, metadata,
+                              created_at, updated_at
+                    """,
+                    body.entity_id,
+                    body.canonical_name,
+                    body.entity_type,
+                    new_roles,
+                    existing_meta,
+                )
+                entity_id = updated["id"]
+                result_row = updated
+
+            else:
+                # --- Create path: insert a new canonical entity ---
+                new_roles = body.roles if body.roles is not None else []
+                result_row = await conn.fetchrow(
+                    """
+                    INSERT INTO public.entities
+                        (canonical_name, entity_type, roles, metadata, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, now(), now())
+                    RETURNING id, canonical_name, entity_type, aliases, roles, metadata,
+                              created_at, updated_at
+                    """,
+                    body.canonical_name,
+                    body.entity_type,
+                    new_roles,
+                    {},
+                )
+                entity_id = result_row["id"]
+
+            # Assert any initial_facts via the central writer (inside the same transaction).
+            for fact in body.initial_facts:
+                try:
+                    await relationship_assert_fact(
+                        pool,
+                        subject=entity_id,
+                        predicate=fact.predicate,
+                        object=fact.object,
+                        src="relationship",
+                        object_kind=fact.object_kind,
+                        conf=fact.conf,
+                        primary=fact.primary,
+                        conn=conn,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"code": "invalid_predicate", "message": str(exc)},
+                    )
+
+    # Fetch aggregated facts stats for the EntitySummary response.
+    stats_row = await pool.fetchrow(
+        """
+        SELECT
+            MAX(last_seen) AS last_seen,
+            COUNT(*) FILTER (
+                WHERE predicate LIKE 'has-%%'
+                  AND validity = 'active'
+                  AND scope = 'relationship'
+            ) AS contact_fact_count,
+            (
+                SELECT f2.object::int
+                FROM relationship.facts f2
+                WHERE f2.subject = $1
+                  AND f2.predicate = 'dunbar_tier_override'
+                  AND f2.validity = 'active'
+                  AND f2.scope = 'relationship'
+                LIMIT 1
+            ) AS tier
+        FROM relationship.facts
+        WHERE subject = $1
+          AND validity = 'active'
+          AND scope = 'relationship'
+        """,
+        entity_id,
+    )
+
+    tier = stats_row["tier"] if stats_row and stats_row["tier"] is not None else None
+    last_seen = stats_row["last_seen"] if stats_row else None
+    contact_fact_count = int(stats_row["contact_fact_count"] or 0) if stats_row else 0
+
+    return EntitySummary(
+        id=result_row["id"],
+        canonical_name=result_row["canonical_name"],
+        entity_type=result_row["entity_type"],
+        aliases=list(result_row["aliases"]) if result_row["aliases"] else [],
+        roles=list(result_row["roles"]) if result_row["roles"] else [],
+        metadata=dict(result_row["metadata"]) if result_row["metadata"] else {},
+        tier=tier,
+        last_seen=last_seen,
+        contact_fact_count=contact_fact_count,
+        created_at=result_row["created_at"],
+        updated_at=result_row["updated_at"],
     )
 
 
