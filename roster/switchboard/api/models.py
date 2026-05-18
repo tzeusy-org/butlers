@@ -581,6 +581,57 @@ class IngestionRuleTestResponse(BaseModel):
     data: IngestionRuleTestResult
 
 
+# ---------------------------------------------------------------------------
+# Bulk ingestion rule operation models (design.md D8, §3.10)
+# ---------------------------------------------------------------------------
+
+_BULK_OPS = frozenset({"enable", "disable", "delete"})
+_BULK_MAX_IDS = 100
+
+
+class BulkIngestionRuleRequest(BaseModel):
+    """Request body for POST /api/switchboard/ingestion-rules/bulk.
+
+    ``op`` must be one of: enable, disable, delete.
+    ``ids`` is a list of rule UUIDs (max 100).
+    """
+
+    op: str
+    ids: list[str]
+
+    @field_validator("op")
+    @classmethod
+    def op_valid(cls, v: str) -> str:
+        if v not in _BULK_OPS:
+            raise ValueError(f"op must be one of {sorted(_BULK_OPS)!r}, got {v!r}")
+        return v
+
+    @field_validator("ids")
+    @classmethod
+    def ids_non_empty_and_capped(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("ids must not be empty")
+        if len(v) > _BULK_MAX_IDS:
+            raise ValueError(f"ids must not exceed {_BULK_MAX_IDS} entries; got {len(v)}")
+        return v
+
+
+class BulkIngestionRuleOutcome(BaseModel):
+    """Per-id outcome in a bulk operation response."""
+
+    id: str
+    outcome: str  # 'ok' | 'not_found' | 'error_reason'
+    error_reason: str | None = None
+
+
+class BulkIngestionRuleResponse(BaseModel):
+    """Response body for POST /api/switchboard/ingestion-rules/bulk."""
+
+    op: str
+    results: list[BulkIngestionRuleOutcome]
+    affected: int  # count of successfully mutated rules
+
+
 # Backfill job models
 # ---------------------------------------------------------------------------
 

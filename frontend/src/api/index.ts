@@ -405,6 +405,7 @@ export {
   createBackfillJob,
   getBackfillJob,
   getBackfillJobProgress,
+  listAvailableConnectors,
   listBackfillJobs,
   listConnectors,
   pauseBackfillJob,
@@ -418,6 +419,7 @@ export type {
   BackfillJobSummary,
   BackfillLifecycleResponse,
   ConnectorEntry,
+  ConnectorProfile,
   CreateBackfillJobRequest,
 } from "./types.ts";
 

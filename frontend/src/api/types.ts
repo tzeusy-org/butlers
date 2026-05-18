@@ -2139,6 +2139,20 @@ export interface ConnectorCrossSummaryResponse {
   aggregates_available: boolean;
 }
 
+/** A connector profile from the available-discovery catalog.
+ *
+ * Returned by GET /api/ingestion/connectors/available.
+ * Represents connectors the framework can deploy, regardless of whether
+ * any instance is currently registered in connector_registry.
+ */
+export interface ConnectorProfile {
+  connector_type: string;
+  channel: string;
+  provider: string;
+  display_name: string;
+  supports_backfill: boolean;
+}
+
 /** One row in the fanout matrix. */
 export interface ConnectorFanoutEntry {
   connector_type: string;

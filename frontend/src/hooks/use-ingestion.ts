@@ -30,6 +30,7 @@ import {
   getIngestionOverview,
   getIngestionVolume,
   getPipelineStats,
+  listAvailableConnectors,
   listConnectorSummaries,
   updateConnectorCursor,
   updateConnectorSettings,
@@ -43,6 +44,7 @@ import type { IngestionPeriod } from "@/api/index.ts";
 export const ingestionKeys = {
   all: ["ingestion"] as const,
   connectorsList: () => [...ingestionKeys.all, "connectors-list"] as const,
+  connectorsAvailable: () => [...ingestionKeys.all, "connectors-available"] as const,
   connectorsSummary: (period: IngestionPeriod) =>
     [...ingestionKeys.all, "connectors-summary", period] as const,
   ingestionOverview: (period: IngestionPeriod) =>
@@ -229,6 +231,23 @@ export function useUpdateConnectorSettings(
         queryKey: ingestionKeys.connectorDetail(connectorType, endpointIdentity),
       });
     },
+  });
+}
+
+/**
+ * Fetch the catalog of available connector profiles (§3.5 discovery endpoint).
+ *
+ * Returns connector types the framework can deploy, regardless of whether
+ * any instance is currently registered in connector_registry.
+ * Response is safe to cache for 60s.
+ */
+export function useAvailableConnectors(options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorsAvailable(),
+    queryFn: () => listAvailableConnectors(),
+    staleTime: 60_000,
+    gcTime: 120_000,
+    enabled: options?.enabled !== false,
   });
 }
 
