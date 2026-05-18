@@ -19,7 +19,6 @@ Acceptance criteria verified:
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -56,16 +55,19 @@ def _make_queue_row(
     entity_type: str = "person",
     last_seen: datetime | None = None,
     bucket: str = "stale",
-    evidence_json: str = "{}",
+    evidence_json: dict | None = None,
 ) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record for queue rows."""
+    """Build a MagicMock that behaves like an asyncpg Record for queue rows.
+
+    ``evidence_json`` is a dict (simulating the asyncpg JSONB codec output).
+    """
     data = {
         "entity_id": entity_id or uuid4(),
         "canonical_name": canonical_name,
         "entity_type": entity_type,
         "last_seen": last_seen,
         "bucket": bucket,
-        "evidence_json": evidence_json,
+        "evidence_json": evidence_json if evidence_json is not None else {},
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
@@ -161,7 +163,7 @@ class TestResponseShape:
             entity_type="person",
             last_seen=_NOW,
             bucket="stale",
-            evidence_json=json.dumps({"last_seen": _NOW.isoformat()}),
+            evidence_json={"last_seen": _NOW.isoformat()},
         )
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
@@ -181,7 +183,6 @@ class TestResponseShape:
             entity_type="person",
             last_seen=None,
             bucket="unidentified",
-            evidence_json="{}",
         )
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
@@ -195,11 +196,11 @@ class TestResponseShape:
         assert "evidence" in item
         assert "last_seen" in item
 
-    async def test_evidence_is_parsed_as_dict(self):
+    async def test_evidence_is_dict_from_jsonb_codec(self):
         evidence = {"predicate": "has-email", "shared_value": "a@b.com", "peer_entity_ids": []}
         row = _make_queue_row(
             bucket="duplicate-candidate",
-            evidence_json=json.dumps(evidence),
+            evidence_json=evidence,
         )
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
@@ -218,7 +219,7 @@ class TestUnidentifiedBucket:
     """Entities with metadata->>'unidentified'='true' surface in 'unidentified' bucket."""
 
     async def test_unidentified_entry_has_correct_bucket(self):
-        row = _make_queue_row(bucket="unidentified", evidence_json="{}")
+        row = _make_queue_row(bucket="unidentified")
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
 
@@ -249,7 +250,7 @@ class TestDuplicateCandidateBucket:
     """Entities sharing email/phone or with dup metadata surface in 'duplicate-candidate'."""
 
     async def test_dup_entry_has_correct_bucket(self):
-        row = _make_queue_row(bucket="duplicate-candidate", evidence_json="{}")
+        row = _make_queue_row(bucket="duplicate-candidate")
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
 
@@ -265,7 +266,7 @@ class TestDuplicateCandidateBucket:
         }
         row = _make_queue_row(
             bucket="duplicate-candidate",
-            evidence_json=json.dumps(evidence),
+            evidence_json=evidence,
         )
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
@@ -285,7 +286,7 @@ class TestDuplicateCandidateBucket:
         }
         row = _make_queue_row(
             bucket="duplicate-candidate",
-            evidence_json=json.dumps(evidence),
+            evidence_json=evidence,
         )
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
@@ -319,7 +320,7 @@ class TestStaleBucket:
         row = _make_queue_row(
             bucket="stale",
             last_seen=_OLD_DATE,
-            evidence_json=json.dumps(evidence),
+            evidence_json=evidence,
         )
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)
@@ -335,7 +336,7 @@ class TestStaleBucket:
         row = _make_queue_row(
             bucket="stale",
             last_seen=None,
-            evidence_json=json.dumps(evidence),
+            evidence_json=evidence,
         )
         app, _ = _app_with_pool(total=1, fetch_rows=[row])
         resp = await _get(app)

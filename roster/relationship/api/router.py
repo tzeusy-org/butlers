@@ -2787,7 +2787,7 @@ async def get_entities_queue(
                   AND rf.scope = 'relationship'
             ) AS last_seen,
             'unidentified'::text AS bucket,
-            '{}'::text AS evidence_json
+            '{}'::jsonb AS evidence_json
         FROM public.entities e
         WHERE (e.metadata->>'unidentified')::text = 'true'
           AND (e.metadata->>'merged_into') IS NULL
@@ -2812,7 +2812,7 @@ async def get_entities_queue(
                   AND rf.scope = 'relationship'
             ) AS last_seen,
             'duplicate-candidate'::text AS bucket,
-            '{}'::text AS evidence_json
+            '{}'::jsonb AS evidence_json
         FROM public.entities e
         WHERE (e.metadata->>'duplicate_candidate')::text = 'true'
           AND (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
@@ -2847,7 +2847,7 @@ async def get_entities_queue(
                       AND f2.scope = 'relationship'
                       AND f2.entity_id <> e.id
                 )
-            )::text AS evidence_json
+            )::jsonb AS evidence_json
         FROM public.entities e
         JOIN (
             SELECT predicate, object
@@ -2871,7 +2871,8 @@ async def get_entities_queue(
 
     # -------------------------------------------------------------------
     # Bucket 3 — stale
-    # Entities excluded from unidentified and (detected) dup-candidate.
+    # The ranked CTE deduplicates across all buckets; no per-bucket
+    # exclusion of higher-priority entities is needed here.
     # -------------------------------------------------------------------
     stale_sql = f"""
         SELECT
@@ -2895,7 +2896,7 @@ async def get_entities_queue(
                       AND rf.validity = 'active'
                       AND rf.scope = 'relationship'
                 )
-            )::text AS evidence_json
+            )::jsonb AS evidence_json
         FROM public.entities e
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND (e.metadata->>'merged_into') IS NULL
@@ -2905,28 +2906,6 @@ async def get_entities_queue(
                 AND rf.validity = 'active'
                 AND rf.scope = 'relationship'
                 AND rf.last_seen > (now() - INTERVAL '{_STALE_DAYS} days')
-          )
-          AND NOT (
-              -- Exclude entities already caught by dup-detection self-join.
-              EXISTS (
-                  SELECT 1
-                  FROM relationship.facts f_dup
-                  JOIN (
-                      SELECT predicate, object
-                      FROM relationship.facts
-                      WHERE predicate IN ({dup_predicates_literal})
-                        AND validity = 'active'
-                        AND scope = 'relationship'
-                      GROUP BY predicate, object
-                      HAVING count(DISTINCT entity_id) > 1
-                  ) grp2
-                    ON grp2.predicate = f_dup.predicate
-                   AND grp2.object = f_dup.object
-                  WHERE f_dup.entity_id = e.id
-                    AND f_dup.validity = 'active'
-                    AND f_dup.scope = 'relationship'
-              )
-              OR (e.metadata->>'duplicate_candidate')::text = 'true'
           )
     """
 
@@ -2987,15 +2966,13 @@ async def get_entities_queue(
     )
     total = total_raw or 0
 
-    import json as _json
-
     items = [
         QueueEntry(
             entity_id=r["entity_id"],
             canonical_name=r["canonical_name"],
             entity_type=r["entity_type"],
             bucket=r["bucket"],
-            evidence=_json.loads(r["evidence_json"]) if r["evidence_json"] else {},
+            evidence=r["evidence_json"] if isinstance(r["evidence_json"], dict) else {},
             last_seen=r["last_seen"],
         )
         for r in rows
