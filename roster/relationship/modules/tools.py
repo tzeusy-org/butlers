@@ -982,3 +982,66 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             predicate_filter=predicate_filter,
             direction=direction,
         )
+
+    # =================================================================
+    # Facts triple-store tools (group: entity — central writer)
+    # =================================================================
+
+    from butlers.tools.relationship import relationship_assert_fact as _raf
+
+    @_tool("entity")
+    async def relationship_assert_fact(
+        subject: uuid.UUID,
+        predicate: str,
+        object: str,
+        src: str,
+        object_kind: str = "literal",
+        conf: float = 1.0,
+        last_seen: datetime | None = None,
+        weight: int | None = None,
+        verified: bool = False,
+        primary: bool | None = None,
+    ) -> dict[str, Any]:
+        """Assert a fact triple in relationship.facts (central writer).
+
+        This is the SINGLE authoritative ingress point for all writes to
+        ``relationship.facts``.  Endpoints for contacts CRUD, entity merge,
+        archive, promote-tier, queue/dismiss, the dual-write shim, and the
+        backfill job all go through this tool.
+
+        Args:
+            subject: UUID of the subject entity (FK to public.entities.id).
+            predicate: Predicate identifier (must exist in
+                relationship.predicate_registry, e.g. 'has-email', 'knows').
+            object: Object value — a literal string for contact predicates or
+                an entity UUID as text for relational predicates.
+            src: Authoring butler slug (e.g. 'relationship', 'migration').
+            object_kind: 'literal' (default) or 'entity'.
+            conf: Confidence in [0.0, 1.0] (default 1.0).
+            last_seen: Timestamp of the most recent observation (nullable).
+            weight: Relational aggregation weight (nullable).
+            verified: Owner-confirmed flag (default False).
+            primary: Primary-of-kind flag for multi-valued contact predicates.
+
+        Returns:
+            Dict with keys: outcome ('inserted' | 'unchanged' | 'superseded' |
+            'pending_approval'), fact_id (UUID or null), action_id (UUID or null).
+
+        Owner carve-out (RFC 0017 §2.3): when subject resolves to the owner
+        entity, a pending_actions row is created for approval instead of
+        writing the triple directly.
+        """
+        result = await _raf.relationship_assert_fact(
+            module._get_pool(),
+            subject,
+            predicate,
+            object,
+            src=src,
+            object_kind=object_kind,
+            conf=conf,
+            last_seen=last_seen,
+            weight=weight,
+            verified=verified,
+            primary=primary,
+        )
+        return result.as_dict()

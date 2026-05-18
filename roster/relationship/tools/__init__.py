@@ -88,6 +88,11 @@ from butlers.tools.relationship.notes import (
     note_list,
     note_search,
 )
+from butlers.tools.relationship.relationship_assert_fact import (
+    AssertOutcome,
+    AssertResult,
+    relationship_assert_fact,
+)
 from butlers.tools.relationship.relationships import (
     relationship_add,
     relationship_list,
@@ -156,8 +161,11 @@ __all__ = [
     "date_add",
     "date_list",
     "dunbar_tier_set",
+    "AssertOutcome",
+    "AssertResult",
     "fact_list",
     "fact_set",
+    "relationship_assert_fact",
     "get_contact_dunbar",
     "get_tier_ranking",
     "gift_add",
