@@ -2840,47 +2840,46 @@ async def promote_entity(
                         detail={"code": "invalid_predicate", "message": str(exc)},
                     )
 
-    # Fetch aggregated facts stats for the EntitySummary response.
-    stats_row = await pool.fetchrow(
-        """
-        SELECT
-            MAX(last_seen) AS last_seen,
-            COUNT(*) FILTER (
-                WHERE predicate LIKE 'has-%%'
+            # Fetch aggregated facts stats inside the same transaction for read-after-write
+            # consistency (avoids an extra pool round-trip and ensures the just-written facts
+            # are visible).
+            stats_row = await conn.fetchrow(
+                """
+                SELECT
+                    MAX(last_seen) AS last_seen,
+                    COUNT(*) FILTER (
+                        WHERE predicate = ANY($2::text[])
+                          AND validity = 'active'
+                          AND scope = 'relationship'
+                    ) AS contact_fact_count,
+                    (
+                        SELECT f2.object::int
+                        FROM relationship.facts f2
+                        WHERE f2.subject = $1
+                          AND f2.predicate = 'dunbar_tier_override'
+                          AND f2.validity = 'active'
+                          AND f2.scope = 'relationship'
+                        LIMIT 1
+                    ) AS tier
+                FROM relationship.facts
+                WHERE subject = $1
                   AND validity = 'active'
                   AND scope = 'relationship'
-            ) AS contact_fact_count,
-            (
-                SELECT f2.object::int
-                FROM relationship.facts f2
-                WHERE f2.subject = $1
-                  AND f2.predicate = 'dunbar_tier_override'
-                  AND f2.validity = 'active'
-                  AND f2.scope = 'relationship'
-                LIMIT 1
-            ) AS tier
-        FROM relationship.facts
-        WHERE subject = $1
-          AND validity = 'active'
-          AND scope = 'relationship'
-        """,
-        entity_id,
-    )
-
-    tier = stats_row["tier"] if stats_row and stats_row["tier"] is not None else None
-    last_seen = stats_row["last_seen"] if stats_row else None
-    contact_fact_count = int(stats_row["contact_fact_count"] or 0) if stats_row else 0
+                """,
+                entity_id,
+                list(_HAS_CONTACT_PREDICATES),
+            )
 
     return EntitySummary(
         id=result_row["id"],
         canonical_name=result_row["canonical_name"],
         entity_type=result_row["entity_type"],
-        aliases=list(result_row["aliases"]) if result_row["aliases"] else [],
-        roles=list(result_row["roles"]) if result_row["roles"] else [],
-        metadata=dict(result_row["metadata"]) if result_row["metadata"] else {},
-        tier=tier,
-        last_seen=last_seen,
-        contact_fact_count=contact_fact_count,
+        aliases=result_row["aliases"] or [],
+        roles=result_row["roles"] or [],
+        metadata=result_row["metadata"] or {},
+        tier=stats_row["tier"],
+        last_seen=stats_row["last_seen"],
+        contact_fact_count=stats_row["contact_fact_count"] or 0,
         created_at=result_row["created_at"],
         updated_at=result_row["updated_at"],
     )

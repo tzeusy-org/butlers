@@ -117,6 +117,7 @@ def _make_conn_mock(
     *,
     entity_row: MagicMock | None = None,
     updated_row: MagicMock | None = None,
+    stats_row: MagicMock | None = None,
     predicate_exists: bool = True,
     is_owner_entity: bool = False,
     has_initial_facts: bool = False,
@@ -138,6 +139,9 @@ def _make_conn_mock(
       4. conn.fetchrow(owner check in _assert_fact) → owner/non-owner row
       5. conn.fetchval(existing active fact SELECT/INSERT) → UUID | None
 
+    After facts (or immediately after entity UPDATE/INSERT when no facts):
+      N. conn.fetchrow(stats query) → stats_row
+
     Parameters
     ----------
     entity_row_is_missing:
@@ -156,10 +160,11 @@ def _make_conn_mock(
             fetchrow_responses.append(updated_row)
         if has_initial_facts:
             fetchrow_responses.append(_make_owner_check_row(is_owner_entity))
-
-    if has_initial_facts and not entity_row_is_missing:
-        # Add one more fetchrow for the existing-fact SELECT in _upsert_fact
-        fetchrow_responses.append(None)  # no existing active fact → insert new one
+        if has_initial_facts:
+            # fetchrow for the existing-fact SELECT in _upsert_fact
+            fetchrow_responses.append(None)  # no existing active fact → insert new one
+        # Stats query is now inside the transaction (conn.fetchrow, not pool.fetchrow)
+        fetchrow_responses.append(stats_row if stats_row is not None else _make_stats_row())
 
     mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_responses if fetchrow_responses else [None])
 
@@ -202,19 +207,22 @@ def _app_with_pool(
     Call sequence:
       1. pool.fetchrow     → owner entity check (None → 403)
       2. pool.acquire()    → mock conn (used for the transaction)
-         conn.fetchrow(s)  → entity lookup + UPDATE/INSERT RETURNING + owner check
+         conn.fetchrow(s)  → entity lookup + UPDATE/INSERT RETURNING + owner check + stats query
          conn.fetchval(s)  → predicate validation + fact insert
-      3. pool.fetchrow     → stats query after transaction
+
+    The stats query now runs inside the transaction via ``conn.fetchrow`` for
+    read-after-write consistency (moved from ``pool.fetchrow`` in bu-3vnsq).
 
     ``owner_exists`` controls whether the owner check returns a row.
     ``entity_row`` is the SELECT row returned for promote path.
     ``entity_row_is_missing`` simulates 404 (entity not found).
     ``updated_row`` is the UPDATE/INSERT RETURNING row (the promoted entity).
-    ``stats_row`` is the post-tx stats query result.
+    ``stats_row`` is the stats query result (goes to conn, not pool).
     """
     mock_conn = _make_conn_mock(
         entity_row=entity_row,
         updated_row=updated_row,
+        stats_row=stats_row,
         predicate_exists=predicate_exists,
         is_owner_entity=is_owner_entity,
         has_initial_facts=has_initial_facts,
@@ -228,10 +236,8 @@ def _app_with_pool(
 
     mock_pool = AsyncMock()
     owner_row = _make_owner_row() if owner_exists else None
-    # pool.fetchrow calls: [owner check, stats query]
-    if stats_row is None:
-        stats_row = _make_stats_row()
-    mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, stats_row])
+    # pool.fetchrow only for the owner-entity gate (stats moved into conn transaction)
+    mock_pool.fetchrow = AsyncMock(side_effect=[owner_row])
     mock_pool.acquire = MagicMock(return_value=_acquire())
 
     mock_db = MagicMock(spec=DatabaseManager)
