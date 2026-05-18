@@ -84,48 +84,50 @@ async def pause_connector(
     """
     pool = _pool(db)
 
-    try:
-        row = await pool.fetchrow(
-            "UPDATE connector_registry"
-            " SET state = 'paused'"
-            " WHERE connector_type = $1 AND endpoint_identity = $2"
-            " RETURNING connector_type, endpoint_identity, state",
-            connector_type,
-            endpoint_identity,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to pause connector %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            try:
+                row = await conn.fetchrow(
+                    "UPDATE connector_registry"
+                    " SET state = 'paused'"
+                    " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL"
+                    " RETURNING connector_type, endpoint_identity, state",
+                    connector_type,
+                    endpoint_identity,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to pause connector %s/%s",
+                    connector_type,
+                    endpoint_identity,
+                    exc_info=True,
+                )
+                raise HTTPException(status_code=503, detail="Connector registry is not available")
 
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
-        )
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+                )
 
-    # Emit audit entry — required by spec "Audit emission for all lifecycle actions"
-    client_host = getattr(request.client, "host", None) if request.client else None
-    try:
-        await _audit_append(
-            pool,
-            actor="dashboard",
-            action="connector.pause",
-            target=f"{connector_type}/{endpoint_identity}",
-            note=f"Connector '{connector_type}/{endpoint_identity}' paused via dashboard",
-            ip=client_host,
-        )
-    except Exception:
-        logger.warning(
-            "ingestion_connectors: failed to append audit_log entry for pause %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
+            # Emit audit entry within the same transaction — atomicity with the state change
+            try:
+                client_host = getattr(request.client, "host", None) if request.client else None
+                await _audit_append(
+                    conn,
+                    actor="dashboard",
+                    action="connector.pause",
+                    target=f"{connector_type}/{endpoint_identity}",
+                    note=f"Connector '{connector_type}/{endpoint_identity}' paused via dashboard",
+                    ip=client_host,
+                )
+            except Exception:
+                logger.warning(
+                    "ingestion_connectors: failed to append audit_log entry for pause %s/%s",
+                    connector_type,
+                    endpoint_identity,
+                    exc_info=True,
+                )
 
     logger.info("Paused connector %s/%s", connector_type, endpoint_identity)
 
@@ -173,80 +175,83 @@ async def run_now_connector(
     """
     pool = _pool(db)
 
-    # Fetch current state first to validate the paused precondition
-    try:
-        current_row = await pool.fetchrow(
-            "SELECT connector_type, endpoint_identity, state"
-            " FROM connector_registry"
-            " WHERE connector_type = $1 AND endpoint_identity = $2",
-            connector_type,
-            endpoint_identity,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to fetch connector state for run-now %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # SELECT FOR UPDATE: lock the row to prevent a concurrent pause/run-now race
+            try:
+                current_row = await conn.fetchrow(
+                    "SELECT connector_type, endpoint_identity, state"
+                    " FROM connector_registry"
+                    " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL"
+                    " FOR UPDATE",
+                    connector_type,
+                    endpoint_identity,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to fetch connector state for run-now %s/%s",
+                    connector_type,
+                    endpoint_identity,
+                    exc_info=True,
+                )
+                raise HTTPException(status_code=503, detail="Connector registry is not available")
 
-    if current_row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
-        )
+            if current_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+                )
 
-    current_state = str(current_row["state"])
-    if current_state != "paused":
-        # Spec: "Run-now on non-paused connector rejected"
-        # The response body identifies the connector's actual state.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Connector '{connector_type}/{endpoint_identity}' is not paused "
-                f"(current state: '{current_state}'). "
-                "run-now is only valid on a paused connector."
-            ),
-        )
+            current_state = str(current_row["state"])
+            if current_state != "paused":
+                # Spec: "Run-now on non-paused connector rejected"
+                # The response body identifies the connector's actual state.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Connector '{connector_type}/{endpoint_identity}' is not paused "
+                        f"(current state: '{current_state}'). "
+                        "run-now is only valid on a paused connector."
+                    ),
+                )
 
-    # Clear the pause — set state to 'unknown' so the connector self-reports on next heartbeat
-    try:
-        row = await pool.fetchrow(
-            "UPDATE connector_registry"
-            " SET state = 'unknown'"
-            " WHERE connector_type = $1 AND endpoint_identity = $2"
-            " RETURNING connector_type, endpoint_identity, state",
-            connector_type,
-            endpoint_identity,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to clear pause for connector %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+            # Clear the pause — set state to 'unknown'; connector self-reports on next heartbeat
+            try:
+                row = await conn.fetchrow(
+                    "UPDATE connector_registry"
+                    " SET state = 'unknown'"
+                    " WHERE connector_type = $1 AND endpoint_identity = $2"
+                    " RETURNING connector_type, endpoint_identity, state",
+                    connector_type,
+                    endpoint_identity,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to clear pause for connector %s/%s",
+                    connector_type,
+                    endpoint_identity,
+                    exc_info=True,
+                )
+                raise HTTPException(status_code=503, detail="Connector registry is not available")
 
-    # Emit audit entry — required by spec "Audit emission for all lifecycle actions"
-    client_host = getattr(request.client, "host", None) if request.client else None
-    try:
-        await _audit_append(
-            pool,
-            actor="dashboard",
-            action="connector.run_now",
-            target=f"{connector_type}/{endpoint_identity}",
-            note=f"Connector '{connector_type}/{endpoint_identity}' resumed via run-now",
-            ip=client_host,
-        )
-    except Exception:
-        logger.warning(
-            "ingestion_connectors: failed to append audit_log entry for run-now %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
+            # Emit audit entry within the same transaction — atomicity with the state change
+            try:
+                client_host = getattr(request.client, "host", None) if request.client else None
+                await _audit_append(
+                    conn,
+                    actor="dashboard",
+                    action="connector.run_now",
+                    target=f"{connector_type}/{endpoint_identity}",
+                    note=f"Connector '{connector_type}/{endpoint_identity}' resumed via run-now",
+                    ip=client_host,
+                )
+            except Exception:
+                logger.warning(
+                    "ingestion_connectors: failed to append audit_log entry for run-now %s/%s",
+                    connector_type,
+                    endpoint_identity,
+                    exc_info=True,
+                )
 
     logger.info("run-now: cleared pause for connector %s/%s", connector_type, endpoint_identity)
 
