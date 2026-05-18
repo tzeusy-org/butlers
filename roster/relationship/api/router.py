@@ -3559,6 +3559,7 @@ async def list_entity_neighbours(
         JOIN relationship.predicate_registry pr ON pr.predicate = f.predicate
         WHERE pr.kind = 'relational'
           AND f.validity = 'active'
+          AND f.scope = 'relationship'
           AND f.object_kind = 'entity'
           AND (
               f.subject = $1
