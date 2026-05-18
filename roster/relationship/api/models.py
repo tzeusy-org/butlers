@@ -676,7 +676,7 @@ class NeighbourEntry(BaseModel):
     """
 
     entity_id: UUID
-    direction: str  # 'forward' | 'reverse'
+    direction: Literal["forward", "reverse"]
     src: str
     conf: float
     last_seen: datetime | None = None
