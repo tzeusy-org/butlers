@@ -86,6 +86,8 @@ if _models_path.exists():
         ContactInteractionThreadResponse = _models_module.ContactInteractionThreadResponse
         OverdueContactItem = _models_module.OverdueContactItem
         OverdueContactsResponse = _models_module.OverdueContactsResponse
+        EntitySummary = _models_module.EntitySummary
+        EntityListResponse = _models_module.EntityListResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2299,6 +2301,222 @@ async def list_upcoming_dates(
 
     upcoming.sort(key=lambda u: u.days_until)
     return upcoming
+
+
+# ---------------------------------------------------------------------------
+# GET /entities — list + filter + pagination
+# ---------------------------------------------------------------------------
+
+#: Contact-type predicates for the ``has=contact`` filter chip.
+_HAS_CONTACT_PREDICATES = (
+    "has-email",
+    "has-phone",
+    "has-handle",
+    "has-address",
+    "has-birthday",
+    "has-website",
+)
+
+#: Valid values for the ``state`` filter query parameter.
+_VALID_ENTITY_STATES = frozenset({"unidentified", "duplicate-candidate", "stale"})
+
+#: Valid values for the ``has`` filter query parameter.
+_VALID_HAS_VALUES = frozenset({"contact"})
+
+#: Default and maximum page sizes for the entity list endpoint.
+_ENTITY_LIST_DEFAULT_LIMIT = 50
+_ENTITY_LIST_MAX_LIMIT = 200
+
+
+@router.get("/entities", response_model=EntityListResponse)
+async def list_entities(
+    entity_type: str | None = Query(
+        None, description="Filter by entity_type (e.g. person, organization)"
+    ),
+    state: str | None = Query(
+        None,
+        description=(
+            "State filter chip.  "
+            "Accepted values: unidentified | duplicate-candidate | stale.  "
+            "Unknown values are rejected with HTTP 400."
+        ),
+    ),
+    has: str | None = Query(
+        None,
+        description=(
+            "has=contact surfaces entities with at least one contact-type triple "
+            "(has-email | has-phone | has-handle | has-address | has-birthday | has-website) "
+            "in relationship.facts.  Unknown values are rejected with HTTP 400."
+        ),
+    ),
+    limit: int = Query(_ENTITY_LIST_DEFAULT_LIMIT, ge=1, le=_ENTITY_LIST_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityListResponse:
+    """List entities from ``public.entities`` with optional filter chips and pagination.
+
+    **Filters**
+
+    - ``entity_type`` — filters ``public.entities.entity_type`` (e.g. ``person``,
+      ``organization``, ``location``).
+    - ``state`` — state chip filter:
+        - ``unidentified``: entities where ``metadata->>'unidentified' = 'true'``.
+        - ``duplicate-candidate``: entities where ``metadata->>'duplicate_candidate' = 'true'``.
+        - ``stale``: entities whose most-recent ``last_seen`` across all facts in
+          ``relationship.facts`` is older than 365 days (or have no facts at all).
+    - ``has=contact`` — entities with at least one contact-type triple
+      (``has-email | has-phone | has-handle | has-address | has-birthday | has-website``)
+      in ``relationship.facts``.
+
+    **Authorization**: session-bounded only (no owner gate per Brief §6b Amendment 12b).
+
+    **Pagination**: ``limit`` (default 50, max 200) + ``offset`` (default 0).
+    Responses include ``total`` (count before pagination) for page-size math.
+    """
+    if state is not None and state not in _VALID_ENTITY_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown state filter '{state}'. Accepted: {sorted(_VALID_ENTITY_STATES)}",
+        )
+    if has is not None and has not in _VALID_HAS_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown has filter '{has}'. Accepted: {sorted(_VALID_HAS_VALUES)}",
+        )
+    if limit > _ENTITY_LIST_MAX_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limit exceeds maximum of {_ENTITY_LIST_MAX_LIMIT}",
+        )
+
+    pool = _pool(db)
+
+    # Build the WHERE clause incrementally.
+    conditions: list[str] = [
+        "(e.metadata->>'merged_into') IS NULL",
+    ]
+    args: list[object] = []
+    arg_idx = 1
+
+    # entity_type filter
+    if entity_type is not None:
+        conditions.append(f"e.entity_type = ${arg_idx}")
+        args.append(entity_type)
+        arg_idx += 1
+
+    # state filter
+    if state == "unidentified":
+        conditions.append("(e.metadata->>'unidentified')::text = 'true'")
+    elif state == "duplicate-candidate":
+        conditions.append("(e.metadata->>'duplicate_candidate')::text = 'true'")
+    elif state == "stale":
+        # Stale: no recent fact OR latest fact last_seen older than 365 days.
+        # We check against relationship.facts for last_seen.
+        conditions.append(
+            """
+            NOT EXISTS (
+                SELECT 1 FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.validity = 'active'
+                  AND rf.last_seen > (now() - INTERVAL '365 days')
+            )
+            """
+        )
+
+    # has=contact filter — require at least one has-* triple in relationship.facts
+    if has == "contact":
+        predicates_literal = ", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)
+        conditions.append(
+            f"""
+            EXISTS (
+                SELECT 1 FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.predicate IN ({predicates_literal})
+                  AND rf.validity = 'active'
+            )
+            """
+        )
+
+    where_clause = "WHERE " + " AND ".join(conditions)
+
+    # Count query (no pagination)
+    count_sql = f"SELECT count(*) FROM public.entities e {where_clause}"
+
+    # Data query: annotate with pinned tier (from facts) and last_seen
+    data_sql = f"""
+        SELECT
+            e.id,
+            e.canonical_name,
+            e.entity_type,
+            e.aliases,
+            e.roles,
+            e.metadata,
+            e.created_at,
+            e.updated_at,
+            -- Pinned Dunbar tier override from relationship.facts
+            (
+                SELECT (rf.content)::int
+                FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.predicate = 'dunbar_tier_override'
+                  AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
+                ORDER BY rf.created_at DESC
+                LIMIT 1
+            ) AS tier,
+            -- Most-recent last_seen across all active relationship facts
+            (
+                SELECT max(rf.last_seen)
+                FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
+            ) AS last_seen,
+            -- Count of contact-type facts
+            (
+                SELECT count(*)
+                FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.predicate IN ({", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)})
+                  AND rf.validity = 'active'
+            ) AS contact_fact_count
+        FROM public.entities e
+        {where_clause}
+        ORDER BY e.canonical_name ASC
+        OFFSET ${arg_idx} LIMIT ${arg_idx + 1}
+    """
+    count_args = list(args)
+    data_args = [*args, offset, limit]
+
+    total_raw, rows = await asyncio.gather(
+        pool.fetchval(count_sql, *count_args),
+        pool.fetch(data_sql, *data_args),
+    )
+    total = total_raw or 0
+
+    items = [
+        EntitySummary(
+            id=r["id"],
+            canonical_name=r["canonical_name"],
+            entity_type=r["entity_type"],
+            aliases=list(r["aliases"]) if r["aliases"] else [],
+            roles=list(r["roles"]) if r["roles"] else [],
+            metadata=dict(r["metadata"]) if isinstance(r["metadata"], dict) else {},
+            tier=r["tier"],
+            last_seen=r["last_seen"],
+            contact_fact_count=int(r["contact_fact_count"] or 0),
+            created_at=r["created_at"],
+            updated_at=r["updated_at"],
+        )
+        for r in rows
+    ]
+
+    return EntityListResponse(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # ---------------------------------------------------------------------------
