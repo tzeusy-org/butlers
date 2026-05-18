@@ -4488,10 +4488,10 @@ def _row_to_contact_fact(r: Any) -> Any:
         object=obj_val,
         value_hash=_contact_value_hash(obj_val),
         src=r["src"],
-        conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+        conf=r["conf"],
         last_seen=r["last_seen"],
         weight=r["weight"],
-        verified=bool(r["verified"]) if r["verified"] is not None else False,
+        verified=r["verified"],
         primary=r["primary"],
     )
 
@@ -4710,6 +4710,19 @@ async def delete_entity_contact(
     On success, returns HTTP 200 with ``{"deleted": true, "fact_id": "<uuid>"}``.
     """
     pool = _pool(db)
+
+    # Validate that the predicate is a contact predicate (consistent with POST).
+    if not predicate.startswith(_CONTACT_PREDICATE_PREFIX):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_predicate",
+                "message": (
+                    f"Predicate {predicate!r} is not a contact predicate. "
+                    "Contact predicates must start with 'has-'."
+                ),
+            },
+        )
 
     # Owner-only authz gate (Clause 12a — write surface).
     await _assert_owner_entity_exists(pool)

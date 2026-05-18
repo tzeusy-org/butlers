@@ -610,6 +610,36 @@ class TestDeleteEntityContactNotFound:
         assert resp.status_code == 404
 
 
+class TestDeleteEntityContactInvalidPredicate:
+    """DELETE with a non-has-* predicate returns 400."""
+
+    async def test_returns_400_for_non_contact_predicate(self):
+        app, _ = _make_app(owner_exists=True)
+
+        resp = await _delete(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/contacts/knows/{_EMAIL_HASH}",
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        detail = body.get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("code") == "invalid_predicate"
+        else:
+            assert "contact predicate" in str(detail).lower()
+
+    async def test_returns_400_for_predicate_without_has_prefix(self):
+        app, _ = _make_app(owner_exists=True)
+
+        resp = await _delete(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/contacts/contact_note/{_EMAIL_HASH}",
+        )
+
+        assert resp.status_code == 400
+
+
 class TestDeleteEntityContactOwnerGate:
     """Clause 12a: DELETE returns 403 + owner_required when no owner entity."""
 
