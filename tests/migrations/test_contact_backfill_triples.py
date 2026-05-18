@@ -154,13 +154,14 @@ def _make_pool(
       2 — to_regclass(relationship.entity_facts)
       3 — COUNT(*) FROM contacts_snap
       4 — COUNT(*) FROM contact_info_snap
-      5 — COUNT(*) FROM public.entities WHERE listed = false  (post-loop)
+      5 — COUNT(*) FROM public.entities WHERE listed=false AND merged_into IS NULL  (post-loop)
 
     fetchval call order (apply=False / dry-run):
       0-4 as above
-      5 — HAVING bool_or(...) = false  (dry-run listed parity estimate)
+      5 — COUNT(*) subquery with JOIN entities + HAVING bool_or(...) = false
 
-    pool.execute is called once (apply=True) with the UPDATE entities.listed SQL.
+    pool.execute is called once (apply=True) with the UPDATE entities.listed SQL
+    (which now excludes tombstoned entities via merged_into IS NULL).
     """
     pool = AsyncMock()
 
@@ -912,3 +913,91 @@ class TestEntitiesListedUpdate:
         assert str(entities_listed_updated) in content
         if expect_false_in_report:
             assert str(entities_listed_false_count) in content
+
+
+# ---------------------------------------------------------------------------
+# 16. SQL shape verification — dry-run subquery and merged_into exclusion
+# ---------------------------------------------------------------------------
+
+
+class TestSQLShapeVerification:
+    """Verify the corrected SQL shapes for dry-run and apply-mode listed queries."""
+
+    @pytest.mark.asyncio
+    async def test_dry_run_fetchval_uses_count_star_subquery(self, tmp_path: Path) -> None:
+        """Dry-run must use COUNT(*) with a subquery and HAVING bool_or, not COUNT(DISTINCT ...)
+        with a top-level GROUP BY (which would return multiple rows, breaking fetchval)."""
+        mod = _load_module()
+        pool = _make_listed_pool(
+            entities_listed_updated=0,
+            entities_listed_false_count=1,
+            apply=False,
+        )
+        await mod.run_backfill(
+            date_label="20260601",
+            report_path=tmp_path / "r.md",
+            apply=False,
+            _pool=pool,
+        )
+        # Find the dry-run fetchval call (index 5 in the ordered sequence)
+        fetchval_calls = pool.fetchval.call_args_list
+        # The dry-run listed query is the last fetchval call (index 5)
+        assert len(fetchval_calls) >= 6, (
+            f"Expected at least 6 fetchval calls, got {len(fetchval_calls)}"
+        )
+        dry_run_sql = fetchval_calls[5][0][0]
+        assert "COUNT(*)" in dry_run_sql, (
+            f"Dry-run must use COUNT(*) subquery, got: {dry_run_sql[:300]}"
+        )
+        assert "HAVING bool_or" in dry_run_sql, (
+            f"Dry-run must use HAVING bool_or, got: {dry_run_sql[:300]}"
+        )
+        assert "merged_into" in dry_run_sql, (
+            f"Dry-run must exclude merged entities, got: {dry_run_sql[:300]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_apply_update_excludes_merged_entities(self, tmp_path: Path) -> None:
+        """Apply-mode UPDATE must exclude tombstoned entities via merged_into IS NULL."""
+        mod = _load_module()
+        pool = _make_listed_pool(
+            entities_listed_updated=1,
+            entities_listed_false_count=0,
+            apply=True,
+        )
+        await mod.run_backfill(
+            date_label="20260601",
+            report_path=tmp_path / "r.md",
+            apply=True,
+            _pool=pool,
+        )
+        assert pool.execute.called
+        update_sql = pool.execute.call_args[0][0]
+        assert "merged_into" in update_sql, (
+            f"UPDATE SQL must exclude tombstoned entities via merged_into, got: {update_sql[:300]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_apply_false_count_excludes_merged_entities(self, tmp_path: Path) -> None:
+        """Apply-mode post-loop false_count query must exclude tombstoned entities."""
+        mod = _load_module()
+        pool = _make_listed_pool(
+            entities_listed_updated=1,
+            entities_listed_false_count=2,
+            apply=True,
+        )
+        await mod.run_backfill(
+            date_label="20260601",
+            report_path=tmp_path / "r.md",
+            apply=True,
+            _pool=pool,
+        )
+        fetchval_calls = pool.fetchval.call_args_list
+        # Post-loop count is fetchval call index 5
+        assert len(fetchval_calls) >= 6, (
+            f"Expected at least 6 fetchval calls, got {len(fetchval_calls)}"
+        )
+        false_count_sql = fetchval_calls[5][0][0]
+        assert "merged_into" in false_count_sql, (
+            f"Post-loop false_count query must exclude merged entities, got: {false_count_sql[:300]}"
+        )

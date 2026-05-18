@@ -317,17 +317,20 @@ async def _update_entities_listed(
     """
     if not apply:
         # Dry-run: report what *would* change without writing.
-        false_count: int = (
-            await pool.fetchval(
-                f"""
-            SELECT COUNT(DISTINCT c.entity_id)
-            FROM public."{contacts_snap}" c
-            WHERE c.entity_id IS NOT NULL
-            GROUP BY c.entity_id
-            HAVING bool_or(c.listed) = false
+        # JOIN to entities to exclude tombstoned (merged_into) entities, matching apply-mode
+        # behaviour. Note: dry-run may slightly overcount if merged entities exist without
+        # contact rows, but the JOIN keeps it accurate for the common case.
+        false_count: int = await pool.fetchval(
+            f"""
+            SELECT COUNT(*) FROM (
+                SELECT c.entity_id
+                FROM public."{contacts_snap}" c
+                JOIN public.entities e ON e.id = c.entity_id
+                WHERE c.entity_id IS NOT NULL AND e.metadata->>'merged_into' IS NULL
+                GROUP BY c.entity_id
+                HAVING bool_or(c.listed) = false
+            ) subq
             """
-            )
-            or 0
         )
         logger.info(
             "[DRY-RUN] Would set entities.listed via OR-merge. "
@@ -337,9 +340,11 @@ async def _update_entities_listed(
         return 0, false_count
 
     # Apply path: single UPDATE using bool_or aggregate across all contacts per entity.
+    # Excludes tombstoned entities (metadata->>'merged_into' IS NOT NULL) per codebase
+    # pattern (see roster/relationship/api/router.py and contact-listed-flag-decision.md).
     result = await pool.execute(
         f"""
-        UPDATE public.entities e
+        UPDATE public.entities
         SET listed = subq.any_listed
         FROM (
             SELECT entity_id, bool_or(listed) AS any_listed
@@ -347,16 +352,17 @@ async def _update_entities_listed(
             WHERE entity_id IS NOT NULL
             GROUP BY entity_id
         ) subq
-        WHERE e.id = subq.entity_id
+        WHERE entities.id = subq.entity_id
+          AND entities.metadata->>'merged_into' IS NULL
         """
     )
     # asyncpg returns "UPDATE N" for DML statements.
     updated = int(result.split()[-1]) if result and result.startswith("UPDATE") else 0
 
-    false_count = (
-        await pool.fetchval("SELECT COUNT(*) FROM public.entities WHERE listed = false") or 0
+    false_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM public.entities"
+        " WHERE listed = false AND metadata->>'merged_into' IS NULL"
     )
-    false_count = int(false_count)
 
     logger.info(
         "entities.listed UPDATE complete: rows_updated=%d entities_now_listed_false=%d",
