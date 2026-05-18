@@ -3216,9 +3216,9 @@ async def dismiss_queue_entity(
     if owner_roles is None or "owner" not in owner_roles:
         return _make_owner_required_response()
 
-    # Entity existence check.
+    # Entity existence check (exclude tombstoned entities).
     entity_row = await pool.fetchrow(
-        "SELECT id FROM public.entities WHERE id = $1",
+        "SELECT id FROM public.entities WHERE id = $1 AND (metadata->>'merged_into') IS NULL",
         body.entity_id,
     )
     if entity_row is None:

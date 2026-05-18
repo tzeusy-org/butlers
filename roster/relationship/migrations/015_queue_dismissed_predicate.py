@@ -68,15 +68,12 @@ def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
 
 
 def upgrade() -> None:
-    # Add the kind='state' value to the CHECK constraint if it doesn't already allow it.
-    # The existing constraint only allows ('contact', 'relational', 'override').
-    # We alter the column to add 'state' as a permitted value before inserting.
+    # Extend the kind CHECK constraint to include 'state' atomically.
+    # DROP + ADD in a single ALTER TABLE ensures there is no window where the
+    # constraint is absent and an invalid kind could sneak in.
     op.execute("""
-        ALTER TABLE relationship.predicate_registry
-        DROP CONSTRAINT IF EXISTS predicate_registry_kind_check
-    """)
-    op.execute("""
-        ALTER TABLE relationship.predicate_registry
+        ALTER TABLE IF EXISTS relationship.predicate_registry
+        DROP CONSTRAINT IF EXISTS predicate_registry_kind_check,
         ADD CONSTRAINT predicate_registry_kind_check
         CHECK (kind IN ('contact', 'relational', 'override', 'state'))
     """)
@@ -94,13 +91,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(f"DELETE FROM relationship.predicate_registry WHERE predicate = '{_PREDICATE}'")
-    # Restore original constraint (without 'state').
+    # Restore original constraint (without 'state') atomically.
     op.execute("""
-        ALTER TABLE relationship.predicate_registry
-        DROP CONSTRAINT IF EXISTS predicate_registry_kind_check
-    """)
-    op.execute("""
-        ALTER TABLE relationship.predicate_registry
+        ALTER TABLE IF EXISTS relationship.predicate_registry
+        DROP CONSTRAINT IF EXISTS predicate_registry_kind_check,
         ADD CONSTRAINT predicate_registry_kind_check
         CHECK (kind IN ('contact', 'relational', 'override'))
     """)
