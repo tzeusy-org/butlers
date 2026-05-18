@@ -30,7 +30,7 @@ None. Gift/loan tool contracts are already specified by `butler-relationship` an
 
 **Backend (`roster/relationship/`)**
 - Modified: `tools/gifts.py` and `tools/loans.py` to call `resolve_contact_entity_id()` and pass resolved `entity_id` to `store_fact()` (bug fix, not new code).
-- Modified: `api/router.py` (add 5 entity endpoints, delete 5 contact-keyed endpoints at lines 1846-2009 — function names: `list_contact_notes`, `list_contact_interactions`, `list_contact_gifts`, `list_contact_loans`, `list_contact_feed`).
+- Modified: `api/router.py` (add 5 entity endpoints, delete 5 contact-keyed endpoints — function names: `list_contact_notes`, `list_contact_interactions`, `list_contact_gifts`, `list_contact_loans`, `list_contact_feed`). The earlier "lines 1846-2009" range from the brief is stale (per R2 fitness pass 2026-05-18 — that range currently holds live owner-info handler code); the function names are the stable identifier.
 - Modified: `api/models.py` (new entity-shape Pydantic models; delete `Note`/`Interaction`/`Gift`/`Loan`/`ActivityFeedItem`).
 - Deleted: `tools/feed.py` entirely; all 20+ `_log_activity()` call sites across `tools/{notes,interactions,gifts,loans,dates,contacts,contact_info}.py` and tests.
 - New Alembic migration in `roster/relationship/migrations/`: backfill orphan gift/loan fact `entity_id` values, then drop the five legacy tables; verify-then-drop pattern.
@@ -105,3 +105,35 @@ Amendment 1.1.A.6). The tactical bug fix is not blocked by the larger migration 
 **Cross-reference:** Brief §6b Amendments 11-16 (added 2026-05-18 by Phase 1 R-pass)
 extend the binding amendment set. Phase 2 of `/project-direction` must reflect all
 sixteen amendments in the spec extension.
+
+### Phase 1 R-pass amendments (2026-05-18)
+
+Added by Phase 1 R-pass (commit `4f9af6c7`) and binding for this Phase 2 extension.
+Each amendment is cited at its location in `docs/redesigns/2026-05-17-entity-brief.md`
+§6b. The spec extension below reflects all six.
+
+- **Amendment 11 — `v1.md` doctrine update post-RFC 0004 Amendment 2** (Brief §6b
+  lines 532-538). Drives tasks.md §12.7: edit `about/heart-and-soul/v1.md:64` and
+  `:127-132` at change-archive time to fold the Contacts module bullet into the
+  relationship butler entry and replace "canonical contact table" with "canonical
+  entity registry with contact predicates."
+- **Amendment 12 — Owner-only authorization for entity endpoints** (Brief §6b lines
+  540-550). Drives `dashboard-relationship/spec.md` Requirement: Owner-only
+  authorization for entity endpoints (12a writes, 12b reads, 12c deploy gate) and
+  tasks.md §12.8 (guardrail test).
+- **Amendment 13 — Reader inventory companion to Amendment 1.1.B** (Brief §6b lines
+  552-566). Drives tasks.md §10.10 (reader-inventory bead becoming Migration bead 4.5,
+  blocking Migration bead 7 read-path cut-over).
+- **Amendment 14 — Dual-write reconciliation contract** (Brief §6b lines 568-578).
+  Drives `relationship-facts/spec.md` Requirement: Migration safety dual-write
+  reconciliation contract (SQL-authoritative, periodic reconciler, eventual parity,
+  transaction-safe central writer, idempotent on `(subject, predicate, object)`) and
+  tasks.md §10.9 (reconciler job implementation).
+- **Amendment 15 — Deterministic-Finder enforcement is transitive** (Brief §6b lines
+  580-588). Drives tasks.md §10.8 expansion: transitive import-graph scan, enumerated
+  banned set (`anthropic`/`openai`/`cohere`/`voyageai`/`mistralai`/`sentence_transformers`/
+  pgvector distance ops/non-localhost `requests.post`/`httpx.post`), enumerated allowed
+  set (`rapidfuzz`, `python-Levenshtein`, `ILIKE`, `pg_trgm`).
+- **Amendment 16 — `chronicler_list_episodes` entity filter is a prereq** (Brief §6b
+  lines 590-596). Drives tasks.md §12.5 rewrite (prereq, not follow-up) and §9.12
+  blocked-by re-declaration (`Blocked by: 12.5, 10.1, 10.5`).

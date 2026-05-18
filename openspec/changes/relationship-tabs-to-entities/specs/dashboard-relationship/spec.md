@@ -2,7 +2,7 @@
 
 ### Requirement: Contact detail page
 
-The frontend SHALL render a contact detail page at `/butlers/relationship/contacts/:id` displaying the contact's channel and identity record. The page is intentionally scoped to contact-bound concerns (the channels by which the contact is reached, their CRM-style attributes, and their typed relationships to other contacts). Activity history (notes, interactions, gifts, loans, timeline) lives on the entity detail page (`/butlers/relationship/entities/:id`) and is reachable via a prominent link from the header.
+The frontend SHALL render a contact detail page at the canonical route `/contacts/:contactId` (per the shipped `dashboard-relationship` spec Requirement: Contact detail page canonical route) displaying the contact's channel and identity record. The legacy path `/butlers/relationship/contacts/:id` continues to redirect to the canonical route per that spec; all narrative in this change refers to the canonical path. The page is intentionally scoped to contact-bound concerns (the channels by which the contact is reached, their CRM-style attributes, and their typed relationships to other contacts). Activity history (notes, interactions, gifts, loans, timeline) lives on the entity detail page (`/butlers/relationship/entities/:id`) and is reachable via a prominent link from the header.
 
 The page MUST contain the following sections:
 
@@ -20,7 +20,7 @@ The page MUST NOT contain a tabbed content area for notes, interactions, gifts, 
 
 #### Scenario: Contact detail page loads with roles, entity link, and secured info
 
-- **WHEN** a user navigates to `/butlers/relationship/contacts/abc-123-uuid` for the owner contact and the contact has `entity_id = ent-456-uuid`
+- **WHEN** a user navigates to `/contacts/abc-123-uuid` for the owner contact and the contact has `entity_id = ent-456-uuid`
 - **THEN** the header card MUST display the contact's name with an "owner" role badge
 - **AND** the header MUST display a "View entity activity →" link pointing to `/butlers/relationship/entities/ent-456-uuid`
 - **AND** contact info entries with `secured = true` MUST display masked values with reveal buttons
@@ -48,7 +48,7 @@ The page MUST NOT contain a tabbed content area for notes, interactions, gifts, 
 
 #### Scenario: Contact not found
 
-- **WHEN** a user navigates to `/butlers/relationship/contacts/nonexistent-uuid` and the contact does not exist
+- **WHEN** a user navigates to `/contacts/nonexistent-uuid` and the contact does not exist
 - **THEN** the page MUST display a 404 message (e.g., "Contact not found")
 
 #### Scenario: Contact missing entity link (degenerate state)
@@ -212,6 +212,79 @@ When a metadata field referenced above is absent from a fact's JSONB, the respon
 > Drives the brief at `docs/redesigns/2026-05-17-entity-brief.md` (binding §0 design intent,
 > binding §6b Phase 1 amendments). Layered on top of the contact-tabs scope above.
 
+> **Phase 1 / Phase 2 table reconciliation:** Phase 1's tab endpoints (§Notes/§Interactions/§Gifts/§Loans/§Timeline above) currently read the legacy shared `facts` table where the relationship butler stores relational and contact facts under `scope='relationship'`. Phase 2 introduces `relationship.facts` as the canonical RDF triple store (per `specs/relationship-facts/spec.md`). During the 10-step migration (Brief §6b Amendment 1.1.C), Phase 1 endpoints MUST be re-pointed to `relationship.facts` no later than Migration bead 7 (read-path cut-over). Until cut-over, Phase 1 endpoints read the legacy table; from cut-over, they read `relationship.facts`. Both reads return identical data during the dual-write window. Phase 2 endpoints (§§added below) read `relationship.facts` from day one — they ship after Migration bead 5 (backfill) completes.
+
+### Requirement: Owner-only authorization for entity endpoints
+
+> Added 2026-05-18 per Brief §6b Amendment 12 (Phase 1 R-pass). Closes the R2 critical C2
+> data-leak gap. Three sub-clauses: writes (12a), reads (12b), deploy gate (12c).
+
+The new entity endpoints introduced by this change extension expose both mutation
+surfaces that mint, merge, archive, or forget entities AND read surfaces that return
+raw contact-fact `object` values (emails, phone numbers, social handles, addresses) —
+which are PII. The owner-only authorization gate from `about/heart-and-soul/security.md:18-22`
+and `rfcs/0007:309` (`'owner' = ANY(e.roles)`) MUST apply to both write and PII-bearing
+read surfaces; one without the other leaves a leak hole.
+
+**Clause 12a — Writes (mutations).** Every `POST/PATCH/DELETE` under
+`/api/butlers/relationship/entities/*` MUST resolve the caller to an owner-role entity
+per the `'owner' = ANY(e.roles)` pattern and return HTTP 403 with the envelope
+`{ code: 'owner_required' }` otherwise. The gate applies to the exact endpoint set:
+
+- `POST /api/butlers/relationship/entities`
+- `POST /api/butlers/relationship/entities/{id}/merge`
+- `POST /api/butlers/relationship/entities/{id}/archive`
+- `POST /api/butlers/relationship/entities/{id}/promote-tier`
+- `DELETE /api/butlers/relationship/entities/{id}`
+- `POST /api/butlers/relationship/entities/queue/dismiss`
+- `POST /api/butlers/relationship/entities/{id}/contacts`
+- `DELETE /api/butlers/relationship/entities/{id}/contacts/{pred}/{valueHash}`
+
+**Clause 12b — Reads (PII-bearing).** The same owner-only gate MUST apply to the following
+GET endpoints because they return raw contact-fact `object` values (emails / phones /
+handles / addresses) or aliased identity links whose exposure through the shared
+`DASHBOARD_API_KEY` would leak PII to any caller reaching the API surface:
+
+- `GET /api/butlers/relationship/entities/queue`
+- `GET /api/butlers/relationship/entities/search`
+- `GET /api/butlers/relationship/entities/{id}/contacts`
+- `GET /api/butlers/relationship/entities/{id}/neighbours`
+- `GET /api/butlers/relationship/entities/{id}/activity`
+
+The list-only `GET /api/butlers/relationship/entities` and per-entity timeline / notes /
+interactions / gifts / loans endpoints (which do NOT surface raw contact-fact `object`
+values) inherit the existing dashboard session boundary and are not within scope of this
+gate. Any future change that adds raw contact-fact values to those responses MUST extend
+the gate to the affected endpoint.
+
+**Clause 12c — Deploy gate.** In any non-`dev` environment, daemon startup MUST fail with
+a fatal error if `DASHBOARD_API_KEY` is unset. The dev-time "no API key → auth disabled"
+shortcut at `src/butlers/api/app.py:246` is incompatible with shipping the entity endpoints.
+A guardrail test (tasks.md §12.8) MUST exercise this invariant.
+
+#### Scenario: Owner request to mutate entity succeeds
+- **WHEN** an authenticated request resolves to an entity with `'owner' = ANY(e.roles)` and
+  calls `POST /api/butlers/relationship/entities/{id}/promote-tier`
+- **THEN** the response status MUST be 2xx (per the endpoint's own contract)
+- **AND** the gate MUST NOT reject the request
+
+#### Scenario: Non-owner request is rejected with `owner_required`
+- **WHEN** an authenticated request resolves to an entity whose `roles` does NOT contain
+  `'owner'` and calls any endpoint in clause 12a or 12b
+- **THEN** the response status MUST be 403
+- **AND** the response body MUST contain `{ code: 'owner_required' }` (envelope form per
+  `rfcs/0007:75-87` or unwrapped per relationship-domain convention; the `code` string is
+  binding)
+- **AND** no mutation MUST be applied
+- **AND** no PII MUST be returned
+
+#### Scenario: Missing `DASHBOARD_API_KEY` in production refuses startup
+- **WHEN** the daemon starts with `BUTLERS_ENV != 'dev'` and `DASHBOARD_API_KEY` unset
+- **THEN** startup MUST fail with a fatal error referencing the missing key
+- **AND** no entity endpoint MUST become reachable
+
+---
+
 ### Requirement: Entity index page (`/entities`)
 
 The frontend SHALL render an entity index at `/entities` (NOT `/butlers/relationship/entities`)
@@ -249,10 +322,13 @@ The Index page MUST render inside `<Page archetype="overview">` (per the in-flig
   `relationship.facts` whose predicate matches `has-email | has-phone | has-handle |
   has-address | has-birthday | has-website`
 
-#### Scenario: `/contacts` redirects to `/entities?has=contact`
-- **WHEN** a request reaches `/contacts` (any sub-path)
+#### Scenario: `/contacts` index redirects to `/entities?has=contact`
+- **WHEN** a request reaches the contacts INDEX path `/contacts` (no `:contactId` param)
 - **THEN** the response MUST be a 301 redirect to `/entities?has=contact`
-- **AND** no functional regression MUST occur for any prior `/contacts` workflow
+- **AND** no functional regression MUST occur for any prior `/contacts` index workflow
+- **AND** the contact-detail path `/contacts/:contactId` MUST NOT be redirected; it
+  continues to serve the canonical contact detail page per Requirement: Contact detail
+  page canonical route in the shipped `dashboard-relationship` spec.
 
 ### Requirement: Entity Hop view (`/entities/hop`)
 
@@ -288,6 +364,20 @@ MUST be reachable via either (a) chained client-side calls to
 
 Render inside `<Page archetype="overview">` with SubpageTabs Columns active.
 
+#### Scenario: Clicking a neighbour pushes a new column
+- **WHEN** the user is on `/entities/columns` viewing column 0 (owner) and clicks a neighbour
+  of the owner in column 0
+- **THEN** a new column MUST be appended to the right showing that neighbour's
+  predicate-grouped neighbours
+- **AND** the URL MUST reflect the new path (e.g. `?path=ent-1,ent-2`)
+- **AND** no new server endpoint MUST be called (per option (a)); only chained calls to
+  `/api/butlers/relationship/entities/{id}/neighbours`
+
+#### Scenario: Column 0 defaults to owner
+- **WHEN** the user navigates to `/entities/columns` without a `?path=` query
+- **THEN** column 0 MUST render the owner entity's predicate-grouped neighbours
+- **AND** the SubpageTabs strip MUST mark Columns active
+
 ### Requirement: Entity Concentration view (`/entities/concentration`)
 
 The frontend SHALL render a balance-sheet view of weight aggregation per predicate at
@@ -303,6 +393,19 @@ The frontend SHALL render a balance-sheet view of weight aggregation per predica
 
 Data source: `GET /api/butlers/relationship/entities/concentration?pred=<predicate>`.
 
+#### Scenario: Predicate tabs are enumerated from registry
+- **WHEN** the page loads with `relationship.predicate_registry` containing five relational
+  predicates (`knows`, `family-of`, `partner-of`, `colleague-of`, `co-attended`)
+- **THEN** the Concentration page MUST render five tabs (NOT a hardcoded four)
+- **AND** the active tab MUST be `knows` if no `?pred=` is supplied
+
+#### Scenario: top3Share and total render in tabular nums
+- **WHEN** the page renders with at least three entities holding non-zero `weight` for
+  `predicate='knows'`
+- **THEN** the header rollup MUST show `total` (sum of all weights) and `top3Share`
+  (top-3-sum / total) using `font-variant-numeric: tabular-nums`
+- **AND** no count-up animation MUST be applied to the values
+
 ### Requirement: Social Map preservation
 
 The existing `/entities/social-map` route MUST remain unchanged in this redesign pass.
@@ -310,6 +413,20 @@ SocialMapPage is refactored into a `SocialMapView` component so the SubpageTabs 
 can wrap it without duplicating layout, but its visual behaviour and data sources are
 preserved. Any refresh to the Dunbar circles UI is explicitly out of scope (resolves
 Phase 1 Open Question 1).
+
+#### Scenario: SocialMapView renders inside SubpageTabs chrome unchanged
+- **WHEN** the user navigates to `/entities/social-map` after the refactor
+- **THEN** the Dunbar-circles visualisation MUST render with identical visual behaviour
+  to the pre-refactor `SocialMapPage`
+- **AND** the SubpageTabs strip MUST wrap the view with Social-map marked active
+- **AND** the data sources powering the circles MUST be unchanged from the prior spec
+
+#### Scenario: Dunbar circles UI is not modified
+- **WHEN** code review compares the post-refactor `SocialMapView` rendering against the
+  pre-refactor `SocialMapPage` rendering
+- **THEN** the visual output (circle layout, sizing, labels, colours) MUST be identical
+- **AND** any change to the circles UI MUST be explicitly out of scope and rejected at
+  review
 
 ### Requirement: Entity detail Editorial / Workbench mode toggle
 
@@ -323,6 +440,10 @@ how each tab and the header are rendered.
 - Use `<Page archetype="detail">` (per the in-flight `detail-page-archetype` change) with
   Display 44px headline for the entity canonical_name (editorial archetype, per
   `about/heart-and-soul/design-language.md:218-246` Non-Negotiable 2 + Gate A A2).
+  The 44px Display tier is permitted per the editorial-archetype carve-out at
+  `about/heart-and-soul/design-language.md:225-232`; the 1.2 type-ratio doctrine at
+  `:243-246` is a floor (values ≥1.2 satisfy it), not a target — Display-tier headlines
+  are exempt by archetype.
 - Hide provenance metadata (`conf`, `src`, `weight`, `verified`, `primary`) from row chrome.
   Provenance is still loaded into the response; only the visual rendering hides it.
 - Render contacts grouped by predicate (`has-email`, `has-phone`, ...). A person with three
@@ -332,8 +453,15 @@ how each tab and the header are rendered.
   `frontend/src/lib/entity-glosses.ts` — see Requirement: Detail-page voice gloss source.
 
 **Workbench mode** MUST:
-- Use `<Page archetype="workspace">` with `text-2xl` H1 (per `about/heart-and-soul/design-language.md`
-  Non-Negotiable 2 + Gate A A2). 44px Display is forbidden in this mode.
+- Use `<Page archetype="overview">` with `text-2xl` H1 (per `about/heart-and-soul/design-language.md`
+  Non-Negotiable 2 + Gate A A2). 44px Display is forbidden in this mode. Editorial mode
+  uses `<Page archetype="detail">` (per the in-flight `detail-page-archetype` change);
+  Workbench reuses the already-defined `archetype="overview"` for its dense workspace
+  layout. **Workspace-archetype gap note (R3):** the brief originally proposed
+  `<Page archetype="workspace">` but no `workspace` archetype is normatively defined in
+  any shipped or in-flight Page spec. Rather than block on authoring a sister spec,
+  Workbench reuses `archetype="overview"` (which IS defined) for v1; a dedicated
+  `workspace` archetype MAY be introduced in a separate change later if needed.
 - Surface every provenance column (`conf`, `src`, `lastSeen`, `weight`, `verified`, `primary`)
   on every row. The same data record drives both modes.
 - Render contacts as a dense predicate+value+provenance grid; sortable by any column.
@@ -455,6 +583,16 @@ design language with the following token rules (per Phase 1 Amendment 9 + Brief 
    `--bg-deep`, `--fg`, `--mfg`, `--dim`, `--border`, `--border-soft`, `--border-strong`,
    `--red`, `--amber`, `--green`, `--category-1..8` (butler hues, EntityMark glyph only),
    `--tier-1..5` (Dunbar ramp), and `--severity-*` (per in-flight `token-system-spec-sync`).
+
+   **Token namespace bridging (R3 gap note):** the Dispatch tokens (`--bg`, `--fg`, `--mfg`,
+   `--dim`, `--border-soft`, `--border-strong`) are NOT present in shipped
+   `frontend/src/index.css` (which today defines the shadcn ramp: `--foreground`,
+   `--background`, `--border`, `--muted-foreground`, …) and they are NOT part of any
+   in-flight token change. Phase 3 task 8.x (frontend foundation) MUST resolve this by
+   EITHER (a) adding the Dispatch tokens to `frontend/src/index.css` mapped 1:1 to the
+   shadcn tokens they replace, OR (b) rewriting component classes to use the existing
+   shadcn token names. The choice is deferred to implementation; this spec is shape-only.
+   `--tier-1..5` already ships in `frontend/src/index.css` and is not part of this gap.
 2. **No hex literals** anywhere in `frontend/src/components/relationship/*`, `frontend/src/pages/entities/*`,
    or `frontend/src/pages/butlers/relationship/*` EXCEPT in `frontend/src/lib/entity-model.ts`
    and the predicate-catalog UI.
@@ -464,8 +602,11 @@ design language with the following token rules (per Phase 1 Amendment 9 + Brief 
 4. **Numerals** MUST use `font-variant-numeric: tabular-nums` everywhere. No count-up animations.
 5. **Page primitive conformance:** all six routes MUST render inside `<Page>` (per in-flight
    `page-primitive-spec-sync`). Index/Hop/Columns/Concentration/Social-map use
-   `<Page archetype="overview">`. EntityDetailPage Editorial uses `<Page archetype="detail">`;
-   Workbench uses `<Page archetype="workspace">`.
+   `<Page archetype="overview">`. EntityDetailPage Editorial uses `<Page archetype="detail">`
+   (per the in-flight `detail-page-archetype` change); Workbench reuses
+   `<Page archetype="overview">` for its dense workspace layout (no `workspace` archetype
+   exists in any shipped or in-flight spec; see the Editorial / Workbench mode toggle
+   requirement above for the rationale).
 6. **Hard "do not" list** (mirrors Brief §1): no cards, no gradients, no glassmorphism, no
    drop shadows, no emoji, no italic-serif as branding, no 24px row padding, no decorative
    SVGs, no hue from entity type (only on letter-mark glyph), no hardcoded predicate IDs
@@ -496,8 +637,26 @@ defined in the `relationship-facts` capability spec:
 UI rendering MAY hide these fields (Editorial mode); the API MUST NOT silently drop
 or omit them. Omission is a contract violation (per Brief §0 binding intent).
 
-All new entity endpoints follow the existing relationship-domain unwrapped-payload
-convention per `rfcs/0007:88-91`.
+**Envelope reconciliation (R1 D2):** success responses from all new entity endpoints are
+unwrapped per the relationship-domain convention (`rfcs/0007:88-91` exemption from the
+default envelope). Error responses MUST be wrapped per `rfcs/0007:75-87` so the `code`
+discriminator (`owner_required`, `entity_not_found`, etc.) is uniformly available to
+clients regardless of which endpoint raised the error.
+
+#### Scenario: Provenance fields are present on every triple response
+- **WHEN** any of the listed entity-scoped endpoints returns at least one triple-derived
+  row to the client
+- **THEN** every row MUST include the keys `src`, `conf`, `last_seen`, `weight`,
+  `verified`, and `primary` (nullable values are explicit, never omitted)
+- **AND** the API response MUST NOT silently drop any provenance field
+- **AND** UI code MAY choose not to render the fields in Editorial mode, but the API
+  contract is unaffected by render choice
+
+#### Scenario: Error envelope carries `code` discriminator
+- **WHEN** an entity-scoped endpoint returns a non-2xx response (for example 403
+  `owner_required` or 404 `entity_not_found`)
+- **THEN** the error payload MUST be wrapped per `rfcs/0007:75-87` with a `code` field
+- **AND** clients MUST be able to dispatch on `code` uniformly across all entity endpoints
 
 ### Requirement: Entity activity aggregator (cross-butler read surface)
 
