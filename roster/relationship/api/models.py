@@ -403,12 +403,26 @@ class EntityNote(BaseModel):
 
     ``created_at`` is mapped from ``fact.valid_at``.
     ``emotion`` is sparse — rendered as null when the metadata key is absent.
+
+    Provenance fields (``src``, ``conf``, ``last_seen``, ``weight``,
+    ``verified``, ``primary``) are always present per the Provenance contract
+    (spec §"Provenance contract — every fact carries its origin").  The legacy
+    ``facts`` table does not carry these columns, so they are returned as
+    explicit nulls (or False/default for boolean fields).  ``src`` is set to
+    the static literal ``'memory_module_legacy'`` to indicate the origin.
     """
 
     id: UUID
     content: str
     emotion: str | None = None
     created_at: datetime | None = None
+    # Provenance contract fields (spec §"Provenance contract").
+    src: str = "memory_module_legacy"
+    conf: float | None = None
+    last_seen: datetime | None = None
+    weight: float | None = None
+    verified: bool = False
+    primary: bool = False
 
 
 class EntityInteraction(BaseModel):
@@ -416,6 +430,10 @@ class EntityInteraction(BaseModel):
 
     ``type`` is the predicate suffix (e.g. 'meeting' from 'interaction_meeting').
     ``direction`` and ``group_size`` are sparse and rendered as null when absent.
+
+    Provenance fields are always present per the Provenance contract.
+    The legacy ``facts`` table does not carry these columns; they are explicit
+    nulls / defaults.  ``src`` is ``'memory_module_legacy'``.
     """
 
     id: UUID
@@ -424,6 +442,13 @@ class EntityInteraction(BaseModel):
     occurred_at: datetime | None = None
     direction: str | None = None
     group_size: str | None = None
+    # Provenance contract fields (spec §"Provenance contract").
+    src: str = "memory_module_legacy"
+    conf: float | None = None
+    last_seen: datetime | None = None
+    weight: float | None = None
+    verified: bool = False
+    primary: bool = False
 
 
 class EntityGift(BaseModel):
@@ -432,6 +457,10 @@ class EntityGift(BaseModel):
     ``description`` maps to ``fact.content``.
     ``occasion`` and ``status`` are sparse metadata fields.
     ``created_at`` maps to ``fact.created_at``.
+
+    Provenance fields are always present per the Provenance contract.
+    The legacy ``facts`` table does not carry these columns; they are explicit
+    nulls / defaults.  ``src`` is ``'memory_module_legacy'``.
     """
 
     id: UUID
@@ -439,6 +468,13 @@ class EntityGift(BaseModel):
     occasion: str | None = None
     status: str | None = None
     created_at: datetime | None = None
+    # Provenance contract fields (spec §"Provenance contract").
+    src: str = "memory_module_legacy"
+    conf: float | None = None
+    last_seen: datetime | None = None
+    weight: float | None = None
+    verified: bool = False
+    primary: bool = False
 
 
 class EntityLoan(BaseModel):
@@ -447,6 +483,10 @@ class EntityLoan(BaseModel):
     ``description`` maps to ``fact.content``.
     All other fields are sparse metadata rendered as null when absent.
     ``amount_cents`` and ``currency`` are kept as strings (raw metadata).
+
+    Provenance fields are always present per the Provenance contract.
+    The legacy ``facts`` table does not carry these columns; they are explicit
+    nulls / defaults.  ``src`` is ``'memory_module_legacy'``.
     """
 
     id: UUID
@@ -457,6 +497,13 @@ class EntityLoan(BaseModel):
     settled: str | None = None
     settled_at: str | None = None
     created_at: datetime | None = None
+    # Provenance contract fields (spec §"Provenance contract").
+    src: str = "memory_module_legacy"
+    conf: float | None = None
+    last_seen: datetime | None = None
+    weight: float | None = None
+    verified: bool = False
+    primary: bool = False
 
 
 class EntityTimelineItem(BaseModel):
@@ -468,6 +515,10 @@ class EntityTimelineItem(BaseModel):
 
     ``metadata`` is the raw JSONB dict from the facts table.
     Sparse fields are rendered as null — never omitted.
+
+    Provenance fields are always present per the Provenance contract.
+    The legacy ``facts`` table does not carry these columns; they are explicit
+    nulls / defaults.  ``src`` is ``'memory_module_legacy'``.
     """
 
     kind: str
@@ -476,6 +527,13 @@ class EntityTimelineItem(BaseModel):
     valid_at: datetime | None = None
     predicate: str
     metadata: dict | None = None
+    # Provenance contract fields (spec §"Provenance contract").
+    src: str = "memory_module_legacy"
+    conf: float | None = None
+    last_seen: datetime | None = None
+    weight: float | None = None
+    verified: bool = False
+    primary: bool = False
 
 
 class LinkedContactSummary(BaseModel):
