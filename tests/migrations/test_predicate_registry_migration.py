@@ -339,6 +339,10 @@ async def _provision_prerequisites(pool) -> None:
     """)
     # Ensure the relationship schema exists before creating facts.
     await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+    # WARNING: This schema is a lightweight prerequisite fixture for predicate_registry tests.
+    # It intentionally omits some CHECK constraints present in the canonical migration to keep
+    # the fixture simple. Keep column names and NOT NULL constraints in sync with:
+    # roster/relationship/migrations/013_facts_table.py
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS relationship.facts (
             id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
