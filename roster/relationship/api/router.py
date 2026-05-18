@@ -2356,13 +2356,13 @@ async def search_entities(
     """
     pool = _pool(db)
 
-    # Owner-only gate (Clause 12b, Amendment 12b).
-    await _assert_owner_entity_exists(pool)
-
-    # Normalise query — strip surrounding whitespace.
-    q_clean = q.strip()
+    # Normalise query — strip surrounding whitespace and handle None.
+    q_clean = (q or "").strip()
     if not q_clean:
         return SearchResponse(results=[], total=0, q=q, limit=limit)
+
+    # Owner-only gate (Clause 12b, Amendment 12b).
+    await _assert_owner_entity_exists(pool)
 
     # ---------------------------------------------------------------------------
     # Ranking SQL
