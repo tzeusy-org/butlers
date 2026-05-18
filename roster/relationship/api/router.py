@@ -4805,7 +4805,7 @@ async def _get_owner_roles(pool) -> list[str] | None:
 
     if row is None:
         return None
-    return list(row["roles"]) if row["roles"] else []
+    return row["roles"] if row["roles"] else []
 
 
 @router.post("/entities/{entity_id}/archive", status_code=204)
@@ -4895,26 +4895,17 @@ async def forget_entity(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Retract all active facts where this entity is subject.
+            # Retract all active facts where this entity is subject or object.
             await conn.execute(
                 """
                 UPDATE relationship.facts
                 SET validity   = 'retracted',
                     updated_at = now()
-                WHERE subject  = $1
-                  AND validity = 'active'
-                """,
-                entity_id,
-            )
-            # Retract all active relational facts where this entity is object.
-            await conn.execute(
-                """
-                UPDATE relationship.facts
-                SET validity     = 'retracted',
-                    updated_at   = now()
-                WHERE object     = $1::text
-                  AND object_kind = 'entity'
-                  AND validity   = 'active'
+                WHERE validity = 'active'
+                  AND (
+                    subject = $1
+                    OR (object_kind = 'entity' AND object = $1::text)
+                  )
                 """,
                 entity_id,
             )
