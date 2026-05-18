@@ -143,8 +143,25 @@ def _make_pool(
     contact_info_rows: list[dict] | None = None,
     orphan_rows: list[dict] | None = None,
     assert_triple_returns_inserted: bool = True,
+    entities_listed_false_count: int = 0,
+    entities_listed_updated: int = 0,
 ) -> AsyncMock:
-    """Build a mock asyncpg pool that returns predictable results."""
+    """Build a mock asyncpg pool that returns predictable results.
+
+    fetchval call order (apply=True):
+      0 — to_regclass(contacts_snap)
+      1 — to_regclass(contact_info_snap)
+      2 — to_regclass(relationship.entity_facts)
+      3 — COUNT(*) FROM contacts_snap
+      4 — COUNT(*) FROM contact_info_snap
+      5 — COUNT(*) FROM public.entities WHERE listed = false  (post-loop)
+
+    fetchval call order (apply=False / dry-run):
+      0-4 as above
+      5 — HAVING bool_or(...) = false  (dry-run listed parity estimate)
+
+    pool.execute is called once (apply=True) with the UPDATE entities.listed SQL.
+    """
     pool = AsyncMock()
 
     ent_id_a = uuid.uuid4()
@@ -190,13 +207,15 @@ def _make_pool(
 
     # Map fetchval calls to results.
     # Call order: to_regclass(contacts_snap), to_regclass(contact_info_snap),
-    #             to_regclass(relationship.entity_facts), COUNT contacts, COUNT contact_info
+    #             to_regclass(relationship.entity_facts), COUNT contacts, COUNT contact_info,
+    #             COUNT entities WHERE listed=false (post-loop, apply=True only)
     _fetchval_results: list[Any] = [
         "public.contacts_pre_migration_20260601" if contacts_snap_exists else None,
         "public.contact_info_pre_migration_20260601" if contact_info_snap_exists else None,
         "relationship.entity_facts" if facts_table_exists else None,
         contacts_total,
         contact_info_total,
+        entities_listed_false_count,  # post-loop: entities WHERE listed=false
     ]
     _fetchval_index = [0]
 
@@ -229,6 +248,9 @@ def _make_pool(
     _inserted_record = MagicMock()
     _inserted_record.__getitem__ = lambda self, key: assert_triple_returns_inserted
     pool.fetchrow.return_value = _inserted_record
+
+    # execute() for the UPDATE public.entities SET listed = ... statement
+    pool.execute.return_value = f"UPDATE {entities_listed_updated}"
 
     return pool
 
@@ -744,3 +766,149 @@ class TestCLIParseArgs:
         args = mod._parse_args(["--date", "20260601", "--report-path", "/tmp/test.md"])
         assert isinstance(args.report_path, Path)
         assert str(args.report_path) == "/tmp/test.md"
+
+
+# ---------------------------------------------------------------------------
+# 15. entities.listed UPDATE (Option A — contact-listed-flag-decision.md)
+# ---------------------------------------------------------------------------
+#
+# Parametrize cases for the post-loop UPDATE that propagates contacts.listed
+# into entities.listed via bool_or aggregation:
+#
+#   Case A — 1-to-1: one entity, one contact, listed=True  → entity.listed=True
+#   Case B — 1-to-1: one entity, one contact, listed=False → entity.listed=False
+#   Case C — 1-to-many: two contacts for one entity; one listed=True, one listed=False
+#             → entity.listed=True  (OR rule — any true wins)
+#   Case D — 1-to-many: two contacts, both listed=False    → entity.listed=False
+#
+# Because the UPDATE executes SQL against the pool, the tests verify:
+#  - pool.execute is called (apply=True) with SQL that mentions "entities" and "listed"
+#  - pool.execute is NOT called (apply=False / dry-run)
+#  - The parity report section appears in the report (apply=True)
+#  - entities_listed_false_count appears in the report when >0
+# ---------------------------------------------------------------------------
+
+
+def _make_listed_pool(
+    *,
+    entities_listed_updated: int,
+    entities_listed_false_count: int,
+    apply: bool = True,
+) -> AsyncMock:
+    """Build a minimal pool fixture for entities.listed update tests.
+
+    Uses a single eligible contact_info row so the triple emission loop
+    completes cleanly; the real payload being tested is the UPDATE step.
+    """
+    ent_id = uuid.uuid4()
+    contact_id = uuid.uuid4()
+    rows = [
+        {
+            "ci_id": uuid.uuid4(),
+            "contact_id": contact_id,
+            "type": "email",
+            "value": "user@example.com",
+            "is_primary": True,
+            "secured": False,
+            "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+            "entity_id": ent_id,
+        }
+    ]
+    return _make_pool(
+        contact_info_rows=rows,
+        contact_info_total=1,
+        contacts_total=1,
+        entities_listed_updated=entities_listed_updated,
+        entities_listed_false_count=entities_listed_false_count,
+    )
+
+
+@pytest.mark.parametrize(
+    "entities_listed_updated, entities_listed_false_count, expect_false_in_report",
+    [
+        pytest.param(1, 0, False, id="one-entity-listed-true"),
+        pytest.param(1, 1, True, id="one-entity-listed-false"),
+        pytest.param(2, 0, False, id="two-entities-one-mixed-OR-true"),
+        pytest.param(2, 1, True, id="two-entities-both-listed-false"),
+    ],
+)
+class TestEntitiesListedUpdate:
+    """Verify the post-loop entities.listed UPDATE is called and reported."""
+
+    @pytest.mark.asyncio
+    async def test_execute_called_on_apply(
+        self,
+        tmp_path: Path,
+        entities_listed_updated: int,
+        entities_listed_false_count: int,
+        expect_false_in_report: bool,
+    ) -> None:
+        """pool.execute must be called with UPDATE entities.listed SQL (apply=True)."""
+        mod = _load_module()
+        pool = _make_listed_pool(
+            entities_listed_updated=entities_listed_updated,
+            entities_listed_false_count=entities_listed_false_count,
+        )
+        rc = await mod.run_backfill(
+            date_label="20260601",
+            report_path=tmp_path / "r.md",
+            apply=True,
+            _pool=pool,
+        )
+        assert rc == 0
+        assert pool.execute.called, "pool.execute must be called for the entities.listed UPDATE"
+        # Verify the SQL involves entities and listed
+        call_args = pool.execute.call_args[0]
+        sql = call_args[0]
+        assert "entities" in sql.lower(), f"Expected 'entities' in UPDATE SQL, got: {sql[:200]}"
+        assert "listed" in sql.lower(), f"Expected 'listed' in UPDATE SQL, got: {sql[:200]}"
+
+    @pytest.mark.asyncio
+    async def test_execute_not_called_on_dry_run(
+        self,
+        tmp_path: Path,
+        entities_listed_updated: int,
+        entities_listed_false_count: int,
+        expect_false_in_report: bool,
+    ) -> None:
+        """pool.execute must NOT be called in dry-run mode."""
+        mod = _load_module()
+        pool = _make_listed_pool(
+            entities_listed_updated=entities_listed_updated,
+            entities_listed_false_count=entities_listed_false_count,
+        )
+        rc = await mod.run_backfill(
+            date_label="20260601",
+            report_path=tmp_path / "r.md",
+            apply=False,
+            _pool=pool,
+        )
+        assert rc == 0
+        pool.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_report_contains_listed_parity_section(
+        self,
+        tmp_path: Path,
+        entities_listed_updated: int,
+        entities_listed_false_count: int,
+        expect_false_in_report: bool,
+    ) -> None:
+        """Report must include the entities.listed parity section."""
+        mod = _load_module()
+        pool = _make_listed_pool(
+            entities_listed_updated=entities_listed_updated,
+            entities_listed_false_count=entities_listed_false_count,
+        )
+        report_path = tmp_path / "r.md"
+        await mod.run_backfill(
+            date_label="20260601",
+            report_path=report_path,
+            apply=True,
+            _pool=pool,
+        )
+        content = report_path.read_text()
+        assert "entities.listed" in content, "Report must contain entities.listed parity section"
+        assert str(entities_listed_updated) in content
+        if expect_false_in_report:
+            assert str(entities_listed_false_count) in content

@@ -198,6 +198,10 @@ class BackfillStats:
     # Orphan contact rows (for report section)
     orphan_contacts: list[dict[str, Any]] = field(default_factory=list)
 
+    # entities.listed update outcomes (post-loop, Option A — contact-listed-flag-decision.md)
+    entities_listed_updated: int = 0  # total entity rows touched by the UPDATE
+    entities_listed_false_count: int = 0  # entities whose listed=false after UPDATE
+
 
 # ---------------------------------------------------------------------------
 # Core backfill logic
@@ -282,6 +286,84 @@ async def _assert_triple(
     )
 
     return bool(result["inserted"]) if result else False
+
+
+async def _update_entities_listed(
+    pool: asyncpg.Pool,
+    *,
+    contacts_snap: str,
+    apply: bool,
+) -> tuple[int, int]:
+    """Apply the Option-A entities.listed UPDATE and return (updated, false_count).
+
+    Executes a single SQL UPDATE that propagates ``public.contacts.listed``
+    (OR-merged across all contacts sharing the same entity) into
+    ``public.entities.listed``.
+
+    The OR-merge rule means that if *any* contact linked to an entity has
+    ``listed = true``, the entity remains listed.  Only when *all* contacts
+    for an entity are ``listed = false`` does the entity become unlisted.
+
+    Entities that have no matching contact row in the snapshot are left
+    untouched; they retain the column default (``true``), which is correct —
+    they were never explicitly archived.
+
+    Returns:
+        (entities_listed_updated, entities_listed_false_count)
+        entities_listed_updated: number of entity rows updated by the statement
+        entities_listed_false_count: number of entities where listed=false after the UPDATE
+
+    See: docs/reports/contact-listed-flag-decision.md (Option A).
+    """
+    if not apply:
+        # Dry-run: report what *would* change without writing.
+        false_count: int = (
+            await pool.fetchval(
+                f"""
+            SELECT COUNT(DISTINCT c.entity_id)
+            FROM public."{contacts_snap}" c
+            WHERE c.entity_id IS NOT NULL
+            GROUP BY c.entity_id
+            HAVING bool_or(c.listed) = false
+            """
+            )
+            or 0
+        )
+        logger.info(
+            "[DRY-RUN] Would set entities.listed via OR-merge. "
+            "Entities that would become listed=false: %d",
+            false_count,
+        )
+        return 0, false_count
+
+    # Apply path: single UPDATE using bool_or aggregate across all contacts per entity.
+    result = await pool.execute(
+        f"""
+        UPDATE public.entities e
+        SET listed = subq.any_listed
+        FROM (
+            SELECT entity_id, bool_or(listed) AS any_listed
+            FROM public."{contacts_snap}"
+            WHERE entity_id IS NOT NULL
+            GROUP BY entity_id
+        ) subq
+        WHERE e.id = subq.entity_id
+        """
+    )
+    # asyncpg returns "UPDATE N" for DML statements.
+    updated = int(result.split()[-1]) if result and result.startswith("UPDATE") else 0
+
+    false_count = (
+        await pool.fetchval("SELECT COUNT(*) FROM public.entities WHERE listed = false") or 0
+    )
+    false_count = int(false_count)
+
+    logger.info(
+        "entities.listed UPDATE complete: rows_updated=%d entities_now_listed_false=%d",
+        updated,
+        false_count,
+    )
+    return updated, false_count
 
 
 async def _run_backfill_with_pool(
@@ -416,15 +498,25 @@ async def _run_backfill_with_pool(
             )
             stats.errors += 1
 
+    # --- Post-loop: propagate contacts.listed → entities.listed (Option A) ---
+    # See docs/reports/contact-listed-flag-decision.md for the decision rationale.
+    (
+        stats.entities_listed_updated,
+        stats.entities_listed_false_count,
+    ) = await _update_entities_listed(pool, contacts_snap=contacts_snap, apply=apply)
+
     # --- Summary ---
     logger.info(
         "Backfill complete: asserted=%d already_present=%d "
-        "skipped_credential=%d skipped_orphan=%d errors=%d",
+        "skipped_credential=%d skipped_orphan=%d errors=%d "
+        "entities_listed_updated=%d entities_listed_false=%d",
         stats.asserted,
         stats.already_present,
         stats.skipped_credential,
         stats.skipped_orphan,
         stats.errors,
+        stats.entities_listed_updated,
+        stats.entities_listed_false_count,
     )
 
     if apply:
@@ -523,6 +615,20 @@ first.  This section is the worklist for `contact_orphan_resolver.py`
 
 ---
 
+## entities.listed parity (Option A — contact-listed-flag-decision.md)
+
+| Metric | Value |
+|--------|-------|
+| Entities whose `listed` was updated | {entities_listed_updated} |
+| Entities with `listed = false` after UPDATE | {entities_listed_false_count} |
+
+The UPDATE applied `bool_or(contacts.listed)` per `entity_id` — if any contact
+linked to an entity is `listed = true`, the entity remains listed.  Entities
+with no contact rows in the snapshot were not touched and retain the default
+`listed = true`.
+
+---
+
 ## Design decisions recorded
 
 - **`verified` rule:** rows with `secured=true` are skipped (credential carve-out).
@@ -540,6 +646,10 @@ first.  This section is the worklist for `contact_orphan_resolver.py`
 - **Idempotency:** relies on `UNIQUE (subject, predicate, object) WHERE
   validity='active'` in `relationship.entity_facts`.  Conflicts trigger
   `DO UPDATE SET updated_at=now()` so re-runs are safe.
+- **`entities.listed` merge rule:** OR across all contacts per entity.  A single
+  `listed=true` contact keeps the entity visible.  Set `listed=false` only when
+  every linked contact is archived.  Matches the semantics of `contact_archive()`
+  per `contact-listed-flag-decision.md` § Option A.
 """
 
 
@@ -610,6 +720,8 @@ def _render_report(
         per_type_table=per_type_table,
         orphan_count=len(stats.orphan_contacts),
         orphan_table=orphan_table,
+        entities_listed_updated=stats.entities_listed_updated,
+        entities_listed_false_count=stats.entities_listed_false_count,
     )
 
 
