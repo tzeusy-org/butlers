@@ -90,6 +90,8 @@ if _models_path.exists():
         EntityListResponse = _models_module.EntityListResponse
         NeighbourEntry = _models_module.NeighbourEntry
         NeighboursResponse = _models_module.NeighboursResponse
+        SearchResultEntry = _models_module.SearchResultEntry
+        SearchResponse = _models_module.SearchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2303,6 +2305,187 @@ async def list_upcoming_dates(
 
     upcoming.sort(key=lambda u: u.days_until)
     return upcoming
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/search — deterministic Finder (bu-q9uiw)
+# ---------------------------------------------------------------------------
+
+#: Default and maximum page sizes for the entity search endpoint.
+_ENTITY_SEARCH_DEFAULT_LIMIT = 20
+_ENTITY_SEARCH_MAX_LIMIT = 50
+
+#: Score constants — match §7.5 of 07-finder.md + Brief §1 index search rules.
+_SCORE_PREFIX = 100
+_SCORE_CONTACT_FACT = 70
+_SCORE_SUBSTRING = 50
+_SCORE_PREDICATE = 30
+
+
+@router.get("/entities/search", response_model=SearchResponse)
+async def search_entities(
+    q: str = Query(..., description="Search string (required)"),
+    limit: int = Query(_ENTITY_SEARCH_DEFAULT_LIMIT, ge=1, le=_ENTITY_SEARCH_MAX_LIMIT),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> SearchResponse:
+    """Search entities using deterministic rule-based ranking.
+
+    Scores each entity against the query string using four rules:
+
+    - **Prefix match** on ``canonical_name`` or any alias: score 100
+    - **Contact-fact value match** — ``object ILIKE '%q%'`` on active
+      contact-type facts (``has-*`` predicates) in ``relationship.facts``:
+      score 70
+    - **Substring match** on ``canonical_name`` or any alias: score 50
+    - **Predicate label match** — ``predicate ILIKE '%q%'`` on active facts
+      in ``relationship.facts``: score 30
+
+    Results are deduplicated by ``entity_id`` (each entity appears at most
+    once, at its highest score), ordered by score descending, ties broken
+    deterministically by entity UUID.
+
+    **Authorization**: owner-only gate (Amendment 12b) — returns HTTP 403
+    with ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    **No LLM, no embedding service.** All ranking is pure SQL (``ILIKE``).
+    Per Brief §6b Amendment 15 (Deterministic-Finder transitive enforcement).
+
+    All ``relationship.facts`` queries include ``AND validity = 'active'``
+    and ``AND scope = 'relationship'`` (correctness filter per PR #1772/#1773
+    review requirement).
+    """
+    pool = _pool(db)
+
+    # Normalise query — strip surrounding whitespace and handle None.
+    q_clean = (q or "").strip()
+    if not q_clean:
+        return SearchResponse(results=[], total=0, q=q, limit=limit)
+
+    # Owner-only gate (Clause 12b, Amendment 12b).
+    await _assert_owner_entity_exists(pool)
+
+    # ---------------------------------------------------------------------------
+    # Ranking SQL
+    #
+    # Four UNION branches, each emitting (entity_id, score, match_kind):
+    #
+    #   1. Prefix (100)      — canonical_name or alias starts with q
+    #   2. Contact-fact (70) — has-* fact object contains q (literal substring)
+    #   3. Substring (50)    — canonical_name or alias contains q
+    #   4. Predicate (30)    — predicate label contains q (edge exists for entity)
+    #
+    # We wrap in an outer SELECT that deduplicates by entity_id (MAX score),
+    # joins back to public.entities for canonical_name, then sorts and limits.
+    # ---------------------------------------------------------------------------
+
+    sql = """
+    WITH ranked AS (
+        SELECT
+            entity_id,
+            MAX(score) AS score,
+            (ARRAY_AGG(match_kind ORDER BY score DESC))[1] AS match_kind
+        FROM (
+            -- Branch 1: prefix match on canonical_name or any alias (score=100)
+            SELECT
+                e.id AS entity_id,
+                $2::int AS score,
+                'prefix'::text AS match_kind
+            FROM public.entities e
+            WHERE (e.metadata->>'merged_into') IS NULL
+              AND (
+                  e.canonical_name ILIKE ($1 || '%')
+                  OR EXISTS (
+                      SELECT 1 FROM unnest(COALESCE(e.aliases, '{}')) AS alias_val
+                      WHERE alias_val ILIKE ($1 || '%')
+                  )
+              )
+
+            UNION ALL
+
+            -- Branch 2: contact-fact value match (score=70)
+            -- Matches entities with a has-* fact whose object value contains q
+            SELECT
+                f.subject AS entity_id,
+                $3::int AS score,
+                'contact_fact'::text AS match_kind
+            FROM relationship.facts f
+            WHERE f.predicate LIKE 'has-%'
+              AND f.object_kind = 'literal'
+              AND f.object ILIKE ('%' || $1 || '%')
+              AND f.validity = 'active'
+              AND f.scope = 'relationship'
+
+            UNION ALL
+
+            -- Branch 3: substring match on canonical_name or any alias (score=50)
+            SELECT
+                e.id AS entity_id,
+                $4::int AS score,
+                'substring'::text AS match_kind
+            FROM public.entities e
+            WHERE (e.metadata->>'merged_into') IS NULL
+              AND (
+                  e.canonical_name ILIKE ('%' || $1 || '%')
+                  OR EXISTS (
+                      SELECT 1 FROM unnest(COALESCE(e.aliases, '{}')) AS alias_val
+                      WHERE alias_val ILIKE ('%' || $1 || '%')
+                  )
+              )
+
+            UNION ALL
+
+            -- Branch 4: predicate label match (score=30)
+            -- Matches entities that have at least one fact whose predicate
+            -- label contains q (e.g. searching "vendor" matches "purchased-from")
+            SELECT
+                f.subject AS entity_id,
+                $5::int AS score,
+                'predicate'::text AS match_kind
+            FROM relationship.facts f
+            WHERE f.predicate ILIKE ('%' || $1 || '%')
+              AND f.validity = 'active'
+              AND f.scope = 'relationship'
+        ) AS candidates
+        GROUP BY entity_id
+    )
+    SELECT
+        r.entity_id,
+        e.canonical_name,
+        r.score,
+        r.match_kind
+    FROM ranked r
+    JOIN public.entities e ON e.id = r.entity_id
+    WHERE (e.metadata->>'merged_into') IS NULL
+    ORDER BY r.score DESC, r.entity_id ASC
+    LIMIT $6
+    """
+
+    rows = await pool.fetch(
+        sql,
+        q_clean,
+        _SCORE_PREFIX,
+        _SCORE_CONTACT_FACT,
+        _SCORE_SUBSTRING,
+        _SCORE_PREDICATE,
+        limit,
+    )
+
+    results = [
+        SearchResultEntry(
+            entity_id=row["entity_id"],
+            canonical_name=row["canonical_name"],
+            score=int(row["score"]),
+            match_kind=row["match_kind"],
+        )
+        for row in rows
+    ]
+
+    return SearchResponse(
+        results=results,
+        total=len(results),
+        q=q,
+        limit=limit,
+    )
 
 
 # ---------------------------------------------------------------------------

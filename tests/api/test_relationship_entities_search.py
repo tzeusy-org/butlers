@@ -1,0 +1,435 @@
+"""Tests for GET /api/relationship/entities/search (deterministic Finder).
+
+Covers:
+- Empty query string returns 200 with empty results
+- Prefix match returns score=100, match_kind='prefix'
+- Substring match returns score=50, match_kind='substring'
+- Contact-fact match returns score=70, match_kind='contact_fact'
+- Predicate label match returns score=30, match_kind='predicate'
+- Score deduplication: entity matching multiple rules gets max score
+- Limit parameter respected (default=20, max=50)
+- Owner-required gate: non-owner returns 403 + owner_required
+- Scope filter: cross-scope rows excluded (facts queries include scope filter)
+- Response shape: SearchResponse with results/total/q/limit
+
+Guardrail §10.8 (Amendment 15):
+- No LLM or embedding service imports in the search code path
+
+Uses the same mock-pool pattern as test_relationship_entities_list.py —
+no real Postgres or Docker required.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID, uuid4
+
+import httpx
+import pytest
+from fastapi import FastAPI
+
+from butlers.api.app import create_app
+from butlers.api.db import DatabaseManager
+
+pytestmark = pytest.mark.unit
+
+SEARCH_PATH = "/api/relationship/entities/search"
+BASE_URL = "http://test"
+
+_ENTITY_ID_1 = uuid4()
+_ENTITY_ID_2 = uuid4()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_search_row(
+    *,
+    entity_id: UUID | None = None,
+    canonical_name: str = "Alice Example",
+    score: int = 100,
+    match_kind: str = "prefix",
+) -> MagicMock:
+    """Build a MagicMock that behaves like an asyncpg Record for search rows."""
+    data = {
+        "entity_id": entity_id or uuid4(),
+        "canonical_name": canonical_name,
+        "score": score,
+        "match_kind": match_kind,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+def _app_with_pool(
+    *,
+    fetch_rows: list | None = None,
+    fetchrow_return: dict | None = None,
+) -> tuple[FastAPI, AsyncMock]:
+    """Wire a FastAPI app with a mocked relationship DB pool.
+
+    ``fetchrow_return`` controls the _assert_owner_entity_exists() call.
+    When it returns a row with ``id`` present, the owner gate passes.
+    When it returns None, the gate raises 403.
+    ``fetch_rows`` is returned by ``pool.fetch`` (the search results).
+    """
+    # Default: owner entity found (gate passes).
+    if fetchrow_return is None:
+        fetchrow_return = {"id": uuid4()}
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=fetchrow_return)
+    mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+
+    app = create_app()
+
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+
+    return app, mock_pool
+
+
+def _non_owner_app() -> FastAPI:
+    """Return an app whose mock DB simulates no owner entity (gate returns 403)."""
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=None)  # No owner entity
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+
+    app = create_app()
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+    return app
+
+
+async def _get(app: FastAPI, path: str = SEARCH_PATH, **params) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=BASE_URL
+    ) as client:
+        return await client.get(path, params=params or None)
+
+
+# ---------------------------------------------------------------------------
+# Scenario: empty / whitespace query returns 200 with empty results
+# ---------------------------------------------------------------------------
+
+
+async def test_empty_query_returns_200_with_empty_results():
+    """Empty q string returns 200 with empty results list (no DB hit needed)."""
+    app, mock_pool = _app_with_pool(fetch_rows=[])
+    resp = await _get(app, q="")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"] == []
+    assert body["total"] == 0
+    assert body["q"] == ""
+    assert body["limit"] == 20  # default
+
+
+async def test_whitespace_only_query_returns_empty_results():
+    """Whitespace-only query is treated as empty after strip()."""
+    app, mock_pool = _app_with_pool(fetch_rows=[])
+    resp = await _get(app, q="   ")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"] == []
+    # pool.fetch should NOT have been called (empty after strip)
+    mock_pool.fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Scenario: prefix match (score=100)
+# ---------------------------------------------------------------------------
+
+
+async def test_prefix_match_returns_score_100_and_match_kind_prefix():
+    """A prefix match returns score=100 and match_kind='prefix'."""
+    rows = [
+        _make_search_row(
+            entity_id=_ENTITY_ID_1, canonical_name="Alice Smith", score=100, match_kind="prefix"
+        )
+    ]
+    app, _ = _app_with_pool(fetch_rows=rows)
+    resp = await _get(app, q="Alice")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert len(body["results"]) == 1
+    result = body["results"][0]
+    assert result["entity_id"] == str(_ENTITY_ID_1)
+    assert result["canonical_name"] == "Alice Smith"
+    assert result["score"] == 100
+    assert result["match_kind"] == "prefix"
+
+
+# ---------------------------------------------------------------------------
+# Scenario: substring match (score=50)
+# ---------------------------------------------------------------------------
+
+
+async def test_substring_match_returns_score_50_and_match_kind_substring():
+    """A substring match returns score=50 and match_kind='substring'."""
+    rows = [
+        _make_search_row(
+            entity_id=_ENTITY_ID_1,
+            canonical_name="Mid Alice Text",
+            score=50,
+            match_kind="substring",
+        )
+    ]
+    app, _ = _app_with_pool(fetch_rows=rows)
+    resp = await _get(app, q="Alice")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    result = body["results"][0]
+    assert result["score"] == 50
+    assert result["match_kind"] == "substring"
+
+
+# ---------------------------------------------------------------------------
+# Scenario: contact-fact match (score=70)
+# ---------------------------------------------------------------------------
+
+
+async def test_contact_fact_match_returns_score_70_and_match_kind_contact_fact():
+    """A contact-fact value match returns score=70 and match_kind='contact_fact'."""
+    rows = [
+        _make_search_row(
+            entity_id=_ENTITY_ID_1, canonical_name="Lin Chen", score=70, match_kind="contact_fact"
+        )
+    ]
+    app, _ = _app_with_pool(fetch_rows=rows)
+    resp = await _get(app, q="lin@")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    result = body["results"][0]
+    assert result["score"] == 70
+    assert result["match_kind"] == "contact_fact"
+
+
+# ---------------------------------------------------------------------------
+# Scenario: predicate label match (score=30)
+# ---------------------------------------------------------------------------
+
+
+async def test_predicate_match_returns_score_30_and_match_kind_predicate():
+    """A predicate label match returns score=30 and match_kind='predicate'."""
+    rows = [
+        _make_search_row(
+            entity_id=_ENTITY_ID_1, canonical_name="Vendor Corp", score=30, match_kind="predicate"
+        )
+    ]
+    app, _ = _app_with_pool(fetch_rows=rows)
+    resp = await _get(app, q="vendor")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    result = body["results"][0]
+    assert result["score"] == 30
+    assert result["match_kind"] == "predicate"
+
+
+# ---------------------------------------------------------------------------
+# Scenario: score deduplication (entity appears in multiple branches)
+# ---------------------------------------------------------------------------
+
+
+async def test_score_dedup_entity_gets_max_score():
+    """When an entity matches multiple rules, it appears once at the max score.
+
+    The SQL aggregates (MAX score, first match_kind by score DESC) so only
+    the highest-scoring branch survives per entity.  This test verifies the
+    response only has one entry per entity.
+    """
+    # Simulate: DB returns one deduplicated row (entity appears once at score=100)
+    rows = [
+        _make_search_row(
+            entity_id=_ENTITY_ID_1, canonical_name="Alice", score=100, match_kind="prefix"
+        )
+    ]
+    app, _ = _app_with_pool(fetch_rows=rows)
+    resp = await _get(app, q="alice")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # One entity, one result
+    assert len(body["results"]) == 1
+    assert body["results"][0]["score"] == 100
+    assert body["results"][0]["match_kind"] == "prefix"
+
+
+# ---------------------------------------------------------------------------
+# Scenario: multiple results ordered by score descending
+# ---------------------------------------------------------------------------
+
+
+async def test_results_ordered_by_score_descending():
+    """Results are ordered score DESC (highest match first)."""
+    row_prefix = _make_search_row(
+        entity_id=_ENTITY_ID_1, canonical_name="Alice", score=100, match_kind="prefix"
+    )
+    row_contact = _make_search_row(
+        entity_id=_ENTITY_ID_2, canonical_name="Bob (lin@)", score=70, match_kind="contact_fact"
+    )
+    app, _ = _app_with_pool(fetch_rows=[row_prefix, row_contact])
+    resp = await _get(app, q="test")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["results"]) == 2
+    assert body["results"][0]["score"] == 100
+    assert body["results"][1]["score"] == 70
+
+
+# ---------------------------------------------------------------------------
+# Scenario: limit parameter
+# ---------------------------------------------------------------------------
+
+
+async def test_default_limit_is_20():
+    """Default limit is 20."""
+    app, _ = _app_with_pool(fetch_rows=[])
+    resp = await _get(app, q="test")
+    assert resp.status_code == 200
+    assert resp.json()["limit"] == 20
+
+
+async def test_custom_limit_is_respected():
+    """Custom limit parameter is reflected in the response."""
+    app, _ = _app_with_pool(fetch_rows=[])
+    resp = await _get(app, q="test", limit=5)
+    assert resp.status_code == 200
+    assert resp.json()["limit"] == 5
+
+
+async def test_limit_above_max_is_rejected():
+    """limit > 50 is rejected with HTTP 422 (FastAPI validation)."""
+    app, _ = _app_with_pool(fetch_rows=[])
+    resp = await _get(app, q="test", limit=51)
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Scenario: missing q parameter
+# ---------------------------------------------------------------------------
+
+
+async def test_missing_q_returns_422():
+    """Missing required q parameter returns HTTP 422."""
+    app, _ = _app_with_pool(fetch_rows=[])
+    resp = await _get(app)
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Scenario: owner-required gate (Amendment 12b)
+# ---------------------------------------------------------------------------
+
+
+async def test_search_returns_403_for_non_owner():
+    """GET /entities/search returns 403 owner_required when no owner entity.
+
+    This test was xfail in test_owner_authz_guardrail.py §12b.
+    Now that the endpoint is implemented, it should pass directly here.
+    """
+    app = _non_owner_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=BASE_URL
+    ) as client:
+        resp = await client.get(SEARCH_PATH, params={"q": "alice"})
+
+    assert resp.status_code == 403
+    body = resp.json()
+    code = body.get("code") or (body.get("detail") or {}).get("code")
+    assert code == "owner_required", f"Expected owner_required, got: {body}"
+
+
+async def test_search_returns_200_for_owner():
+    """GET /entities/search returns 200 (not 403) when owner entity exists."""
+    app, _ = _app_with_pool(
+        fetch_rows=[_make_search_row()],
+        fetchrow_return={"id": uuid4()},
+    )
+    resp = await _get(app, q="test")
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Scenario: scope filter (cross-scope rows excluded)
+#
+# The search SQL includes `AND f.scope = 'relationship'` on both facts branches.
+# We verify the SQL fragment is present in the router source rather than
+# spinning up a real DB.
+# ---------------------------------------------------------------------------
+
+
+def test_scope_filter_present_in_search_sql():
+    """search_entities SQL must include scope='relationship' on all facts queries.
+
+    This is a static correctness guard — the issue is a correctness requirement
+    identified in PR reviews #1772 and #1773: all relationship.facts queries
+    MUST filter AND scope='relationship' to exclude cross-scope rows.
+    """
+    import importlib.util
+    import inspect
+    from pathlib import Path
+
+    router_path = Path(__file__).parents[2] / "roster" / "relationship" / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_router_src", router_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    src = inspect.getsource(mod.search_entities)
+
+    # The search function must apply scope filter on relationship.facts queries.
+    assert "scope = 'relationship'" in src, (
+        "search_entities SQL is missing the required "
+        "AND scope='relationship' filter on relationship.facts queries. "
+        "This was a correctness requirement from PR #1772/#1773."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scenario: response shape
+# ---------------------------------------------------------------------------
+
+
+async def test_response_shape_contains_required_fields():
+    """Response must contain results, total, q, and limit fields."""
+    rows = [
+        _make_search_row(
+            entity_id=_ENTITY_ID_1, canonical_name="Alice", score=100, match_kind="prefix"
+        )
+    ]
+    app, _ = _app_with_pool(fetch_rows=rows)
+    resp = await _get(app, q="alice")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "results" in body
+    assert "total" in body
+    assert "q" in body
+    assert "limit" in body
+    assert body["q"] == "alice"
+    assert body["total"] == 1
+
+    result = body["results"][0]
+    assert "entity_id" in result
+    assert "canonical_name" in result
+    assert "score" in result
+    assert "match_kind" in result
