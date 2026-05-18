@@ -1178,6 +1178,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - Frontend links under the `/butlers-dev` mount must respect the routing surface: React Router `Link to` values should stay app-internal (for example `/butlers/lifestyle`) because `createBrowserRouter(..., { basename })` prefixes them; raw `<a href>` targets still need an explicit `import.meta.env.BASE_URL` prefix if they must leave React Router navigation.
 - Core Alembic migration revisions must stay globally unique and linear; `tests/config/test_migration_contract.py` now asserts duplicate `revision` IDs fail before compose migrations do.
 - Alembic migrations that rewrite enum-like `TEXT` values guarded by `CHECK` constraints must drop/replace the old constraint before writing new values; otherwise live upgrades fail even if fresh-schema tests pass.
+- The relationship butler has `[modules.memory]`, so `relationship.facts` and `relationship.predicate_registry` are memory-module bare tables in that schema. New relationship-domain triple-store work must use `relationship.entity_facts` plus `relationship.entity_predicate_registry`, and keep tests proving migrations tolerate existing memory-shaped tables.
 
 ### Backup strategy (bu-t102m)
 - Strategy chosen: filesystem pg_dump cron. Simplest defensible approach for an owner-sovereign, single-instance system. No new external dependencies (no Minio/S3, no WAL archiving).

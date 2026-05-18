@@ -103,7 +103,7 @@ ship first. This is transitive across 8.1-8.11 and is not repeated on each row.
 ## 9. Backend — entity API endpoints
 
 - [ ] 9.1 `GET /api/butlers/relationship/entities` (list + filter + pagination over
-  `public.entities`, joining `relationship.facts` for `has=contact` filter). Effort: **M**.
+  `public.entities`, joining `relationship.entity_facts` for `has=contact` filter). Effort: **M**.
   Blocked by: 10.1 (facts table) for `has=contact`, Migration bead 5 (backfill triples
   from `public.contact_info`) so `has=contact` returns non-empty.
 - [ ] 9.2 `GET /api/butlers/relationship/entities/{id}/neighbours` (relational triples grouped
@@ -142,11 +142,11 @@ ship first. This is transitive across 8.1-8.11 and is not repeated on each row.
   entity, 400 for malformed params, etc.). Effort: **M**.
   Blocked by: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11, 9.12, 12.8.
 
-## 10. Backend — data model `relationship.facts`
+## 10. Backend — data model `relationship.entity_facts`
 
-- [ ] 10.1 Create Alembic migration for `relationship.facts` table per
+- [ ] 10.1 Create Alembic migration for `relationship.entity_facts` table per
   `specs/relationship-facts/spec.md` (columns, indexes, uniqueness). Effort: **M**.
-- [ ] 10.2 Create `relationship.predicate_registry` table; seed contact + relational +
+- [ ] 10.2 Create `relationship.entity_predicate_registry` table; seed contact + relational +
   override predicate sets. Effort: **S**. Blocked by: 10.1.
 - [ ] 10.3 Implement `relationship_assert_fact()` MCP tool (predicate validation, dedup,
   supersession, provenance enforcement). Effort: **M**. Blocked by: 10.1, 10.2.
@@ -163,7 +163,7 @@ ship first. This is transitive across 8.1-8.11 and is not repeated on each row.
   `about/legends-and-lore/rfcs/0004-identity-and-contact-resolution.md` during archive.
   Effort: **S**.
 - [ ] 10.7 Re-point `src/butlers/identity.py:resolve_contact_by_channel()` to query
-  `relationship.facts`; update `build_identity_preamble()` to drop `contact_id`. Effort: **M**.
+  `relationship.entity_facts`; update `build_identity_preamble()` to drop `contact_id`. Effort: **M**.
   Blocked by: 10.1, dual-write shim live (see migration beads).
 - [ ] 10.8 Add Finder no-LLM guardrail test that walks the FULL transitive import graph
   of the `/entities/search` handler (use `importlib.util.find_spec` recursively or
@@ -176,7 +176,7 @@ ship first. This is transitive across 8.1-8.11 and is not repeated on each row.
 - [ ] 10.9 Implement the dual-write reconciler job per Brief §6b Amendment 14
   (`specs/relationship-facts/spec.md` Requirement: Migration safety — dual-write
   reconciliation contract): a periodic worker (interval ≤ 1h) sweeping
-  `public.contact_info` for rows missing a matching active triple in `relationship.facts`,
+  `public.contact_info` for rows missing a matching active triple in `relationship.entity_facts`,
   emitting them via the central writer (`relationship_assert_fact()`), idempotent on
   `(subject, predicate, object)`. Worker lifecycle, retry, and metrics included.
   Effort: **M**. Blocked by: 10.3.

@@ -624,10 +624,10 @@ class EntitySummary(BaseModel):
     ``tier`` is the pinned Dunbar tier override (from a ``dunbar_tier_override``
     fact), or ``None`` when the entity has no pinned tier (rank-based assignment).
     ``last_seen`` is the most-recent ``last_seen`` timestamp across all of the
-    entity's facts in ``relationship.facts``, or ``None`` when no facts exist.
+    entity's facts in ``relationship.entity_facts``, or ``None`` when no facts exist.
     ``contact_fact_count`` is the count of active contact-type facts
     (``has-email | has-phone | has-handle | has-address | has-birthday |
-    has-website``) in ``relationship.facts`` for this entity.
+    has-website``) in ``relationship.entity_facts`` for this entity.
     """
 
     id: UUID
@@ -690,7 +690,7 @@ class NeighboursResponse(BaseModel):
 
     ``neighbours`` maps each relational predicate to the list of neighbour
     entries reachable via that predicate.  Only ``kind='relational'``
-    predicates from ``relationship.predicate_registry`` are included.
+    predicates from ``relationship.entity_predicate_registry`` are included.
 
     Example::
 
@@ -763,7 +763,7 @@ class QueueEntry(BaseModel):
     - ``'unidentified'`` — entity has ``metadata->>'unidentified' = 'true'``.
     - ``'duplicate-candidate'`` — entity shares a contact-fact value (email or
       phone) with at least one other entity (deterministic SQL; no LLM).
-    - ``'stale'`` — entity has no active facts in ``relationship.facts`` with
+    - ``'stale'`` — entity has no active facts in ``relationship.entity_facts`` with
       ``last_seen`` within the past 365 days.
 
     ``evidence`` carries bucket-specific detail:
@@ -775,7 +775,7 @@ class QueueEntry(BaseModel):
       or ``null`` if no facts exist at all).
 
     ``last_seen`` is the most-recent ``last_seen`` across all active
-    ``relationship.facts`` rows for the entity, or ``null`` when none exist.
+    ``relationship.entity_facts`` rows for the entity, or ``null`` when none exist.
     """
 
     entity_id: UUID
@@ -810,7 +810,7 @@ class QueueResponse(BaseModel):
 
 
 class PredicateTab(BaseModel):
-    """A predicate tab enumerated from ``relationship.predicate_registry``.
+    """A predicate tab enumerated from ``relationship.entity_predicate_registry``.
 
     Only predicates with ``kind='relational'`` are surfaced as concentration
     tabs (contact predicates like ``has-email`` do not produce meaningful
@@ -903,7 +903,7 @@ class ConcentrationResponse(BaseModel):
 class InitialFact(BaseModel):
     """A single triple to be asserted via the central writer as part of a promote request.
 
-    ``predicate`` must be registered in ``relationship.predicate_registry``.
+    ``predicate`` must be registered in ``relationship.entity_predicate_registry``.
     ``object`` is the literal value (e.g. an email address) or entity UUID string.
     ``object_kind`` defaults to ``'literal'``; use ``'entity'`` for relational triples.
     ``conf`` defaults to ``1.0`` (owner-authored).
@@ -934,7 +934,7 @@ class PromoteEntityRequest(BaseModel):
     transaction.  Each entry must carry ``predicate``, ``object``, and
     optionally ``object_kind`` (default ``'literal'``), ``conf`` (default
     ``1.0``), ``primary`` (default ``None``).  Predicates must exist in
-    ``relationship.predicate_registry``; an unregistered predicate causes the
+    ``relationship.entity_predicate_registry``; an unregistered predicate causes the
     whole request to fail with HTTP 422.
     """
 
@@ -965,7 +965,7 @@ class PromoteEntityRequest(BaseModel):
 class ContactFact(BaseModel):
     """One contact-fact triple returned by ``GET /entities/{id}/contacts``.
 
-    ``id`` is the fact UUID in ``relationship.facts``.
+    ``id`` is the fact UUID in ``relationship.entity_facts``.
     ``predicate`` is the contact predicate (e.g. ``has-email``, ``has-phone``).
     ``object`` is the contact-fact value (e.g. an email address or phone number).
     ``value_hash`` is SHA-256[:16] of the object value, used as the stable
@@ -1052,7 +1052,7 @@ class DeleteContactResponse(BaseModel):
 class MergeEntitiesRequest(BaseModel):
     """Request body for ``POST /entities/{id}/merge``.
 
-    Merges two entities by rewiring all ``relationship.facts`` triples from the
+    Merges two entities by rewiring all ``relationship.entity_facts`` triples from the
     source entity to the target entity, then tombstoning the source.
 
     ``entityA`` and ``entityB`` are the two entity UUIDs to merge.
@@ -1076,9 +1076,9 @@ class MergeEntitiesResponse(BaseModel):
 
     ``kept_entity_id`` is the UUID of the surviving entity.
     ``tombstoned_entity_id`` is the UUID of the entity that was merged away.
-    ``subject_facts_rewired`` is the count of ``relationship.facts`` rows whose
+    ``subject_facts_rewired`` is the count of ``relationship.entity_facts`` rows whose
     ``subject`` column was updated from source to target.
-    ``object_facts_rewired`` is the count of ``relationship.facts`` rows whose
+    ``object_facts_rewired`` is the count of ``relationship.entity_facts`` rows whose
     ``object`` column was updated (where ``object_kind='entity'``).
     """
 
@@ -1099,7 +1099,7 @@ _VALID_PROMOTE_TIERS: frozenset[int] = frozenset({5, 15, 50, 150, 500, 1500})
 class PromoteTierRequest(BaseModel):
     """Request body for ``POST /entities/{id}/promote-tier``.
 
-    Writes a ``dunbar_tier_override`` triple to ``relationship.facts`` via
+    Writes a ``dunbar_tier_override`` triple to ``relationship.entity_facts`` via
     the central writer (``relationship_assert_fact()``).
 
     Per Amendment 6, tier promotion is a FACT not a column — this endpoint
@@ -1122,7 +1122,7 @@ class PromoteTierResponse(BaseModel):
     or ``'pending_approval'``.
 
     ``fact_id`` is the UUID of the active ``dunbar_tier_override`` row in
-    ``relationship.facts`` (None for ``pending_approval`` outcomes).
+    ``relationship.entity_facts`` (None for ``pending_approval`` outcomes).
 
     ``action_id`` is set only when ``outcome='pending_approval'`` (owner-entity
     carve-out per RFC 0017 §2.3).

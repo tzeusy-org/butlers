@@ -2357,11 +2357,11 @@ async def search_entities(
 
     - **Prefix match** on ``canonical_name`` or any alias: score 100
     - **Contact-fact value match** — ``object ILIKE '%q%'`` on active
-      contact-type facts (``has-*`` predicates) in ``relationship.facts``:
+      contact-type facts (``has-*`` predicates) in ``relationship.entity_facts``:
       score 70
     - **Substring match** on ``canonical_name`` or any alias: score 50
     - **Predicate label match** — ``predicate ILIKE '%q%'`` on active facts
-      in ``relationship.facts``: score 30
+      in ``relationship.entity_facts``: score 30
 
     Results are deduplicated by ``entity_id`` (each entity appears at most
     once, at its highest score), ordered by score descending, ties broken
@@ -2373,8 +2373,8 @@ async def search_entities(
     **No LLM, no embedding service.** All ranking is pure SQL (``ILIKE``).
     Per Brief §6b Amendment 15 (Deterministic-Finder transitive enforcement).
 
-    All ``relationship.facts`` queries include ``AND validity = 'active'``.
-    ``relationship.facts`` has no ``scope`` column — scope is implicit via schema
+    All ``relationship.entity_facts`` queries include ``AND validity = 'active'``.
+    ``relationship.entity_facts`` has no ``scope`` column — scope is implicit via schema
     qualification (``relationship.`` prefix enforces schema isolation per RFC 0006).
     """
     pool = _pool(db)
@@ -2431,7 +2431,7 @@ async def search_entities(
                 f.subject AS entity_id,
                 $3::int AS score,
                 'contact_fact'::text AS match_kind
-            FROM relationship.facts f
+            FROM relationship.entity_facts f
             WHERE f.predicate LIKE 'has-%'
               AND f.object_kind = 'literal'
               AND f.object ILIKE ('%' || $1 || '%')
@@ -2463,7 +2463,7 @@ async def search_entities(
                 f.subject AS entity_id,
                 $5::int AS score,
                 'predicate'::text AS match_kind
-            FROM relationship.facts f
+            FROM relationship.entity_facts f
             WHERE f.predicate ILIKE ('%' || $1 || '%')
               AND f.validity = 'active'
         ) AS candidates
@@ -2552,7 +2552,7 @@ async def list_entities(
         description=(
             "has=contact surfaces entities with at least one contact-type triple "
             "(has-email | has-phone | has-handle | has-address | has-birthday | has-website) "
-            "in relationship.facts.  Unknown values are rejected with HTTP 400."
+            "in relationship.entity_facts.  Unknown values are rejected with HTTP 400."
         ),
     ),
     limit: int = Query(_ENTITY_LIST_DEFAULT_LIMIT, ge=1, le=_ENTITY_LIST_MAX_LIMIT),
@@ -2569,10 +2569,10 @@ async def list_entities(
         - ``unidentified``: entities where ``metadata->>'unidentified' = 'true'``.
         - ``duplicate-candidate``: entities where ``metadata->>'duplicate_candidate' = 'true'``.
         - ``stale``: entities whose most-recent ``last_seen`` across all facts in
-          ``relationship.facts`` is older than 365 days (or have no facts at all).
+          ``relationship.entity_facts`` is older than 365 days (or have no facts at all).
     - ``has=contact`` — entities with at least one contact-type triple
       (``has-email | has-phone | has-handle | has-address | has-birthday | has-website``)
-      in ``relationship.facts``.
+      in ``relationship.entity_facts``.
 
     **Authorization**: session-bounded only (no owner gate per Brief §6b Amendment 12b).
 
@@ -2617,11 +2617,11 @@ async def list_entities(
         conditions.append("(e.metadata->>'duplicate_candidate')::text = 'true'")
     elif state == "stale":
         # Stale: no recent fact OR latest fact last_seen older than 365 days.
-        # We check against relationship.facts for last_seen.
+        # We check against relationship.entity_facts for last_seen.
         conditions.append(
             """
             NOT EXISTS (
-                SELECT 1 FROM relationship.facts rf
+                SELECT 1 FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.validity = 'active'
                   AND rf.last_seen > (now() - INTERVAL '365 days')
@@ -2629,13 +2629,13 @@ async def list_entities(
             """
         )
 
-    # has=contact filter — require at least one has-* triple in relationship.facts
+    # has=contact filter — require at least one has-* triple in relationship.entity_facts
     if has == "contact":
         predicates_literal = ", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)
         conditions.append(
             f"""
             EXISTS (
-                SELECT 1 FROM relationship.facts rf
+                SELECT 1 FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.predicate IN ({predicates_literal})
                   AND rf.validity = 'active'
@@ -2659,10 +2659,10 @@ async def list_entities(
             e.metadata,
             e.created_at,
             e.updated_at,
-            -- Pinned Dunbar tier override from relationship.facts
+            -- Pinned Dunbar tier override from relationship.entity_facts
             (
                 SELECT (rf.object)::int
-                FROM relationship.facts rf
+                FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.predicate = 'dunbar_tier_override'
                   AND rf.validity = 'active'
@@ -2672,14 +2672,14 @@ async def list_entities(
             -- Most-recent last_seen across all active relationship facts
             (
                 SELECT max(rf.last_seen)
-                FROM relationship.facts rf
+                FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.validity = 'active'
             ) AS last_seen,
             -- Count of contact-type facts
             (
                 SELECT count(*)
-                FROM relationship.facts rf
+                FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.predicate IN ({", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)})
                   AND rf.validity = 'active'
@@ -2861,13 +2861,13 @@ async def promote_entity(
                     ) AS contact_fact_count,
                     (
                         SELECT f2.object::int
-                        FROM relationship.facts f2
+                        FROM relationship.entity_facts f2
                         WHERE f2.subject = $1
                           AND f2.predicate = 'dunbar_tier_override'
                           AND f2.validity = 'active'
                         LIMIT 1
                     ) AS tier
-                FROM relationship.facts
+                FROM relationship.entity_facts
                 WHERE subject = $1
                   AND validity = 'active'
                 """,
@@ -2919,7 +2919,7 @@ async def get_entities_queue(
     2. **duplicate-candidate** — entities where ``metadata->>'duplicate_candidate' = 'true'``
        OR that share a ``has-email`` / ``has-phone`` fact value with at least one other
        entity (deterministic SQL; no LLM, no embedding).
-    3. **stale** — entities with no active ``relationship.facts`` fact whose
+    3. **stale** — entities with no active ``relationship.entity_facts`` fact whose
        ``last_seen`` is within the past 365 days.
 
     **Deduplication:** an entity can appear in at most one bucket per call.
@@ -2962,7 +2962,7 @@ async def get_entities_queue(
             e.entity_type,
             (
                 SELECT max(rf.last_seen)
-                FROM relationship.facts rf
+                FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.validity = 'active'
             ) AS last_seen,
@@ -2986,7 +2986,7 @@ async def get_entities_queue(
             e.entity_type,
             (
                 SELECT max(rf.last_seen)
-                FROM relationship.facts rf
+                FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.validity = 'active'
             ) AS last_seen,
@@ -3008,7 +3008,7 @@ async def get_entities_queue(
             e.entity_type,
             (
                 SELECT max(rf.last_seen)
-                FROM relationship.facts rf
+                FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.validity = 'active'
             ) AS last_seen,
@@ -3018,7 +3018,7 @@ async def get_entities_queue(
                 'shared_value', grp.object,
                 'peer_entity_ids', (
                     SELECT json_agg(DISTINCT f2.subject::text)
-                    FROM relationship.facts f2
+                    FROM relationship.entity_facts f2
                     WHERE f2.predicate = grp.predicate
                       AND f2.object = grp.object
                       AND f2.validity = 'active'
@@ -3028,14 +3028,14 @@ async def get_entities_queue(
         FROM public.entities e
         JOIN (
             SELECT predicate, object
-            FROM relationship.facts
+            FROM relationship.entity_facts
             WHERE predicate IN ({dup_predicates_literal})
               AND validity = 'active'
             GROUP BY predicate, object
             HAVING count(DISTINCT subject) > 1
         ) AS grp
             ON grp.predicate IN ({dup_predicates_literal})
-        JOIN relationship.facts f_link
+        JOIN relationship.entity_facts f_link
             ON f_link.subject = e.id
            AND f_link.predicate = grp.predicate
            AND f_link.object = grp.object
@@ -3056,7 +3056,7 @@ async def get_entities_queue(
             e.entity_type,
             (
                 SELECT max(rf.last_seen)
-                FROM relationship.facts rf
+                FROM relationship.entity_facts rf
                 WHERE rf.subject = e.id
                   AND rf.validity = 'active'
             ) AS last_seen,
@@ -3065,7 +3065,7 @@ async def get_entities_queue(
                 'last_seen',
                 (
                     SELECT max(rf.last_seen)::text
-                    FROM relationship.facts rf
+                    FROM relationship.entity_facts rf
                     WHERE rf.subject = e.id
                       AND rf.validity = 'active'
                 )
@@ -3074,7 +3074,7 @@ async def get_entities_queue(
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND (e.metadata->>'merged_into') IS NULL
           AND NOT EXISTS (
-              SELECT 1 FROM relationship.facts rf
+              SELECT 1 FROM relationship.entity_facts rf
               WHERE rf.subject = e.id
                 AND rf.validity = 'active'
                 AND rf.last_seen > (now() - INTERVAL '{_STALE_DAYS} days')
@@ -3270,7 +3270,7 @@ async def get_entities_concentration(
         _CONCENTRATION_DEFAULT_PREDICATE,
         description=(
             "Relational predicate to aggregate.  Must be a predicate registered in "
-            "``relationship.predicate_registry`` with ``kind='relational'``.  "
+            "``relationship.entity_predicate_registry`` with ``kind='relational'``.  "
             "Defaults to ``'knows'``."
         ),
     ),
@@ -3278,7 +3278,7 @@ async def get_entities_concentration(
 ) -> ConcentrationResponse:
     """Return a balance-sheet of weight aggregation for a relational predicate.
 
-    Aggregates all active ``relationship.facts`` triples for the given
+    Aggregates all active ``relationship.entity_facts`` triples for the given
     ``pred`` (predicate), grouping by subject entity.  Each row shows the
     entity's total edge weight for that predicate, its share of the overall
     weight sum, and provenance from the most-recent contributing triple.
@@ -3287,7 +3287,7 @@ async def get_entities_concentration(
     with ``{"code": "owner_required"}`` if no owner entity is registered.
 
     **Predicate tabs:** the response always includes ``predicate_tabs`` — the
-    full list of relational predicates from ``relationship.predicate_registry``
+    full list of relational predicates from ``relationship.entity_predicate_registry``
     — so the frontend can render the tab strip without a separate request.
 
     **Aggregation logic:** ``weight_sum`` is the SUM of fact ``weight`` values,
@@ -3299,7 +3299,7 @@ async def get_entities_concentration(
     should expect O(entity_count) rows.
 
     **Filter:** only facts with ``validity='active'`` are included.
-    ``relationship.facts`` has no ``scope`` column; schema isolation is enforced
+    ``relationship.entity_facts`` has no ``scope`` column; schema isolation is enforced
     via the ``relationship.`` schema prefix (RFC 0006).
 
     Response shape::
@@ -3340,7 +3340,7 @@ async def get_entities_concentration(
     tab_rows = await pool.fetch(
         """
         SELECT predicate, label, description
-        FROM relationship.predicate_registry
+        FROM relationship.entity_predicate_registry
         WHERE kind = 'relational'
         ORDER BY label ASC
         """
@@ -3380,7 +3380,7 @@ async def get_entities_concentration(
                 SUM(COALESCE(f.weight, 1))::bigint      AS weight_sum,
                 COUNT(*)::int                           AS fact_count,
                 MAX(f.last_seen)                        AS last_seen
-            FROM relationship.facts f
+            FROM relationship.entity_facts f
             WHERE f.predicate = $1
               AND f.validity = 'active'
             GROUP BY f.subject
@@ -3393,7 +3393,7 @@ async def get_entities_concentration(
                 f.conf,
                 f.verified,
                 f."primary"
-            FROM relationship.facts f
+            FROM relationship.entity_facts f
             WHERE f.predicate = $1
               AND f.validity = 'active'
             ORDER BY f.subject, f.last_seen DESC NULLS LAST, f.created_at DESC
@@ -4426,7 +4426,7 @@ async def list_entity_neighbours(
     Returns all active relational triples where the given entity is either the
     subject (forward direction) or the object (reverse direction).  Contact
     predicates (``has-*`` family, kind='contact') are excluded; only
-    ``kind='relational'`` predicates from ``relationship.predicate_registry``
+    ``kind='relational'`` predicates from ``relationship.entity_predicate_registry``
     are returned.
 
     Owner-only authz gate (Clause 12b, Amendment 12b): returns HTTP 403 with
@@ -4468,7 +4468,7 @@ async def list_entity_neighbours(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    # Query relationship.facts for both directions, joining predicate_registry
+    # Query relationship.entity_facts for both directions, joining predicate_registry
     # to filter only kind='relational' predicates (excludes has-* contact facts).
     rows = await pool.fetch(
         """
@@ -4488,8 +4488,8 @@ async def list_entity_neighbours(
                 WHEN f.subject = $1 THEN 'forward'
                 ELSE 'reverse'
             END AS direction
-        FROM relationship.facts f
-        JOIN relationship.predicate_registry pr ON pr.predicate = f.predicate
+        FROM relationship.entity_facts f
+        JOIN relationship.entity_predicate_registry pr ON pr.predicate = f.predicate
         WHERE pr.kind = 'relational'
           AND f.validity = 'active'
           AND f.object_kind = 'entity'
@@ -4562,7 +4562,7 @@ def _contact_value_hash(object_value: str) -> str:
 
 
 def _row_to_contact_fact(r: Any) -> Any:
-    """Convert an asyncpg row from ``relationship.facts`` to a ContactFact.
+    """Convert an asyncpg row from ``relationship.entity_facts`` to a ContactFact.
 
     Raises TypeError if required keys are missing (should not happen with the
     canonical SELECT shape used in the contacts endpoints).
@@ -4592,7 +4592,7 @@ async def list_entity_contacts(
 ) -> ContactsResponse:
     """List active contact-fact triples for an entity.
 
-    Returns all ``relationship.facts`` rows where:
+    Returns all ``relationship.entity_facts`` rows where:
     - ``subject = entity_id``
     - ``predicate LIKE 'has-%'`` (contact family)
     - ``validity = 'active'``
@@ -4645,7 +4645,7 @@ async def list_entity_contacts(
             f.weight,
             f.verified,
             f."primary"
-        FROM relationship.facts f
+        FROM relationship.entity_facts f
         WHERE f.subject   = $1
           AND f.predicate LIKE 'has-%'
           AND f.validity  = 'active'
@@ -4752,7 +4752,7 @@ async def add_entity_contact(
             f.weight,
             f.verified,
             f."primary"
-        FROM relationship.facts f
+        FROM relationship.entity_facts f
         WHERE f.id = $1
         """,
         result.fact_id,
@@ -4782,7 +4782,7 @@ async def delete_entity_contact(
     Locates the active fact whose ``subject = entity_id``,
     ``predicate = predicate``, and whose ``object`` hashes to ``value_hash``
     (SHA-256[:16]).  Marks the row ``validity = 'retracted'`` directly on the
-    ``relationship.facts`` table (the central writer handles upserts; for
+    ``relationship.entity_facts`` table (the central writer handles upserts; for
     retraction we perform a targeted UPDATE inside the relationship schema role).
 
     Owner-only authz gate (Clause 12a, Amendment 12a): returns HTTP 403 with
@@ -4820,7 +4820,7 @@ async def delete_entity_contact(
     candidate_rows = await pool.fetch(
         """
         SELECT f.id, f.object
-        FROM relationship.facts f
+        FROM relationship.entity_facts f
         WHERE f.subject   = $1
           AND f.predicate = $2
           AND f.validity  = 'active'
@@ -4851,7 +4851,7 @@ async def delete_entity_contact(
 
     await pool.execute(
         """
-        UPDATE relationship.facts
+        UPDATE relationship.entity_facts
         SET validity   = 'retracted',
             updated_at = now()
         WHERE id = $1
@@ -4968,7 +4968,7 @@ async def forget_entity(
 
     This is a **destructive and irreversible** operation that:
 
-    1. Retracts all active ``relationship.facts`` rows where the entity is the
+    1. Retracts all active ``relationship.entity_facts`` rows where the entity is the
        subject OR where it appears as an object in a relational triple
        (``object_kind = 'entity'`` and ``object = entity_id::text``).
     2. Tombstones the ``public.entities`` row by setting
@@ -5004,7 +5004,7 @@ async def forget_entity(
             # Retract all active facts where this entity is subject or object.
             await conn.execute(
                 """
-                UPDATE relationship.facts
+                UPDATE relationship.entity_facts
                 SET validity   = 'retracted',
                     updated_at = now()
                 WHERE validity = 'active'
@@ -5049,7 +5049,7 @@ async def promote_entity_tier(
 
     Calls the central writer ``relationship_assert_fact()`` with
     ``predicate='dunbar_tier_override'`` and ``object=str(tier)`` so that
-    tier promotion is stored as a triple in ``relationship.facts``, NOT as a
+    tier promotion is stored as a triple in ``relationship.entity_facts``, NOT as a
     column write to ``public.entities.tier`` (Amendment 6).
 
     The writer is idempotent on ``(subject, predicate, object)``: promoting to
@@ -5255,21 +5255,21 @@ async def merge_entities(
     body: MergeEntitiesRequest,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> MergeEntitiesResponse:
-    """Merge two entities into one, rewiring all relationship.facts triples atomically.
+    """Merge two entities into one, rewiring all relationship.entity_facts triples atomically.
 
     **What this does:**
 
     1. Validates both entities exist and are not already tombstoned.
     2. Computes source (the entity NOT kept) and target (the ``keepAs`` side).
-    3. Rewires ``relationship.facts`` rows where ``subject = source`` → ``subject = target``.
-    4. Rewires ``relationship.facts`` rows where ``object_kind='entity'`` and
+    3. Rewires ``relationship.entity_facts`` rows where ``subject = source`` → ``subject = target``.
+    4. Rewires ``relationship.entity_facts`` rows where ``object_kind='entity'`` and
        ``object = source::text`` → ``object = target::text``.
     5. Tombstones source entity: sets ``metadata->>'merged_into'`` to the target UUID string.
 
     Steps 3–5 execute inside a **single transaction** (atomicity guarantee).
 
     **Conflict handling:** rewiring a subject row may collide with an existing active triple
-    at (target, predicate, object) due to the ``uq_rf_spo_active`` partial unique index.
+    at (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index.
     Such conflicting source rows are retracted (``validity='superseded'``) instead of
     being moved, to preserve the target's existing fact.
 
@@ -5345,18 +5345,18 @@ async def merge_entities(
 
             # 2. Rewire subject-side facts: source → target.
             # For rows that would collide at (target, predicate, object) on the
-            # uq_rf_spo_active partial unique index, retract the source row instead.
+            # uq_ef_spo_active partial unique index, retract the source row instead.
 
             # First, retract source subject-rows that conflict with existing target rows.
             await conn.execute(
                 """
-                UPDATE relationship.facts AS src
+                UPDATE relationship.entity_facts AS src
                 SET validity = 'superseded',
                     updated_at = now()
                 WHERE src.subject = $1
                   AND src.validity = 'active'
                   AND EXISTS (
-                      SELECT 1 FROM relationship.facts tgt
+                      SELECT 1 FROM relationship.entity_facts tgt
                       WHERE tgt.subject = $2
                         AND tgt.predicate = src.predicate
                         AND tgt.object = src.object
@@ -5371,7 +5371,7 @@ async def merge_entities(
             subject_result = await conn.fetchval(
                 """
                 WITH updated AS (
-                    UPDATE relationship.facts
+                    UPDATE relationship.entity_facts
                     SET subject = $2,
                         updated_at = now()
                     WHERE subject = $1
@@ -5392,14 +5392,14 @@ async def merge_entities(
             # Retract object-side source rows that conflict with existing target rows.
             await conn.execute(
                 """
-                UPDATE relationship.facts AS src
+                UPDATE relationship.entity_facts AS src
                 SET validity = 'superseded',
                     updated_at = now()
                 WHERE src.object_kind = 'entity'
                   AND src.object = $1
                   AND src.validity = 'active'
                   AND EXISTS (
-                      SELECT 1 FROM relationship.facts tgt
+                      SELECT 1 FROM relationship.entity_facts tgt
                       WHERE tgt.subject = src.subject
                         AND tgt.predicate = src.predicate
                         AND tgt.object = $2
@@ -5415,7 +5415,7 @@ async def merge_entities(
             object_result = await conn.fetchval(
                 """
                 WITH updated AS (
-                    UPDATE relationship.facts
+                    UPDATE relationship.entity_facts
                     SET object = $2,
                         updated_at = now()
                     WHERE object_kind = 'entity'

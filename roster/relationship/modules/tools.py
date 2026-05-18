@@ -1002,17 +1002,17 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         verified: bool = False,
         primary: bool | None = None,
     ) -> dict[str, Any]:
-        """Assert a fact triple in relationship.facts (central writer).
+        """Assert a fact triple in relationship.entity_facts (central writer).
 
         This is the SINGLE authoritative ingress point for all writes to
-        ``relationship.facts``.  Endpoints for contacts CRUD, entity merge,
+        ``relationship.entity_facts``.  Endpoints for contacts CRUD, entity merge,
         archive, promote-tier, queue/dismiss, the dual-write shim, and the
         backfill job all go through this tool.
 
         Args:
             subject: UUID of the subject entity (FK to public.entities.id).
             predicate: Predicate identifier (must exist in
-                relationship.predicate_registry, e.g. 'has-email', 'knows').
+                relationship.entity_predicate_registry, e.g. 'has-email', 'knows').
             object: Object value — a literal string for contact predicates or
                 an entity UUID as text for relational predicates.
             src: Authoring butler slug (e.g. 'relationship', 'migration').

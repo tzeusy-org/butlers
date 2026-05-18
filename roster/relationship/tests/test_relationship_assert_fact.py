@@ -1,4 +1,4 @@
-"""Tests for relationship_assert_fact() — central writer for relationship.facts.
+"""Tests for relationship_assert_fact() — central writer for relationship.entity_facts.
 
 Covers:
   - Insert new fact (inserted outcome)
@@ -57,9 +57,9 @@ _UNKNOWN_PRED = "has-feet"  # not in predicate_registry
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
-    """Fresh DB with relationship.facts and relationship.predicate_registry."""
+    """Fresh DB with relationship.entity_facts and relationship.entity_predicate_registry."""
     async with provisioned_postgres_pool() as p:
-        # 1. public.entities (FK target for relationship.facts.subject)
+        # 1. public.entities (FK target for relationship.entity_facts.subject)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -77,9 +77,9 @@ async def pool(provisioned_postgres_pool):
         # 2. relationship schema
         await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
 
-        # 3. relationship.predicate_registry
+        # 3. relationship.entity_predicate_registry
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.predicate_registry (
+            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
                 predicate   TEXT        NOT NULL PRIMARY KEY,
                 kind        TEXT        NOT NULL,
                 object_kind TEXT        NOT NULL,
@@ -89,7 +89,7 @@ async def pool(provisioned_postgres_pool):
         """)
         # Seed the predicates used in tests
         await p.execute("""
-            INSERT INTO relationship.predicate_registry (predicate, kind, object_kind, description)
+            INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
             VALUES
                 ('has-email',  'contact',   'literal', 'Email address for the entity.'),
                 ('has-phone',  'contact',   'literal', 'Phone number for the entity.'),
@@ -99,9 +99,9 @@ async def pool(provisioned_postgres_pool):
             ON CONFLICT (predicate) DO NOTHING
         """)
 
-        # 4. relationship.facts
+        # 4. relationship.entity_facts
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.facts (
+            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
                 id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
                 subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
                 predicate   TEXT        NOT NULL,
@@ -121,8 +121,8 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_rf_spo_active
-                ON relationship.facts (subject, predicate, object)
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
+                ON relationship.entity_facts (subject, predicate, object)
                 WHERE validity = 'active'
         """)
 
@@ -196,7 +196,7 @@ class TestInsertNewFact:
         assert result.fact_id is not None
         assert result.action_id is None
 
-    async def test_insert_stores_row_in_relationship_facts(self, pool, entity):
+    async def test_insert_stores_row_in_entity_facts(self, pool, entity):
         result = await relationship_assert_fact(
             pool,
             entity,
@@ -205,7 +205,7 @@ class TestInsertNewFact:
             src="test",
         )
         row = await pool.fetchrow(
-            "SELECT * FROM relationship.facts WHERE id = $1",
+            "SELECT * FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
         assert row is not None
@@ -234,7 +234,7 @@ class TestInsertNewFact:
         )
         assert result.outcome == AssertOutcome.inserted
         row = await pool.fetchrow(
-            "SELECT * FROM relationship.facts WHERE id = $1",
+            "SELECT * FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
         assert row["src"] == "ingestion"
@@ -262,7 +262,7 @@ class TestInsertNewFact:
         )
         assert result.outcome == AssertOutcome.inserted
         row = await pool.fetchrow(
-            "SELECT object_kind FROM relationship.facts WHERE id = $1",
+            "SELECT object_kind FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
         assert row["object_kind"] == "entity"
@@ -298,7 +298,7 @@ class TestIdempotency:
             )
         count = await pool.fetchval(
             """
-            SELECT COUNT(*) FROM relationship.facts
+            SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = $2 AND object = $3
               AND validity = 'active'
             """,
@@ -332,7 +332,7 @@ class TestSupersession:
         )
         await relationship_assert_fact(pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="b")
         old_row = await pool.fetchrow(
-            "SELECT validity FROM relationship.facts WHERE id = $1", r1.fact_id
+            "SELECT validity FROM relationship.entity_facts WHERE id = $1", r1.fact_id
         )
         assert old_row["validity"] == "superseded"
 
@@ -341,7 +341,7 @@ class TestSupersession:
         await relationship_assert_fact(pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="b")
         count = await pool.fetchval(
             """
-            SELECT COUNT(*) FROM relationship.facts
+            SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = $2 AND object = $3
               AND validity = 'active'
             """,
@@ -397,7 +397,7 @@ class TestPredicateValidation:
         except ValueError:
             pass
         count = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.facts WHERE predicate = $1",
+            "SELECT COUNT(*) FROM relationship.entity_facts WHERE predicate = $1",
             _UNKNOWN_PRED,
         )
         assert count == 0
@@ -440,7 +440,7 @@ class TestOwnerCarveOut:
         )
         count = await pool.fetchval(
             """
-            SELECT COUNT(*) FROM relationship.facts
+            SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND validity = 'active'
             """,
             owner_entity,
@@ -517,7 +517,7 @@ class TestTransactionSafety:
                     conn=conn,
                 )
         assert result.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow("SELECT id FROM relationship.facts WHERE id = $1", result.fact_id)
+        row = await pool.fetchrow("SELECT id FROM relationship.entity_facts WHERE id = $1", result.fact_id)
         assert row is not None
 
     async def test_caller_conn_idempotent(self, pool, entity):
@@ -534,14 +534,14 @@ class TestTransactionSafety:
         assert r1.fact_id == r2.fact_id
 
     async def test_pool_and_conn_paths_write_same_schema(self, pool, entity):
-        """Both pool-path and conn-path write to relationship.facts."""
+        """Both pool-path and conn-path write to relationship.entity_facts."""
         # Pool path
         r1 = await relationship_assert_fact(
             pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="pool-path"
         )
         # Mark old row as superseded so the conn path creates a new row.
         await pool.execute(
-            "UPDATE relationship.facts SET validity='superseded' WHERE id=$1", r1.fact_id
+            "UPDATE relationship.entity_facts SET validity='superseded' WHERE id=$1", r1.fact_id
         )
         # Conn path
         async with pool.acquire() as conn:
@@ -549,7 +549,7 @@ class TestTransactionSafety:
                 pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="conn-path", conn=conn
             )
         assert r2.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow("SELECT src FROM relationship.facts WHERE id = $1", r2.fact_id)
+        row = await pool.fetchrow("SELECT src FROM relationship.entity_facts WHERE id = $1", r2.fact_id)
         assert row["src"] == "conn-path"
 
 

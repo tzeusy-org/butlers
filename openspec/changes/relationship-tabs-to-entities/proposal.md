@@ -66,7 +66,7 @@ Added by `/project-direction` Phase 2 for the entity-redesign feature. The brief
 `docs/redesigns/2026-05-17-entity-brief.md` (binding §0 design intent, binding §6b Phase 1
 amendments) drives this extension.
 
-- **NEW**: Introduce `relationship.facts` triple store as the canonical RDF registry for
+- **NEW**: Introduce `relationship.entity_facts` triple store as the canonical RDF registry for
   contact and relational predicates, superseding RFC 0004 §3. Migration follows the
   10-step dual-write / cut-over protocol in `specs/relationship-facts/spec.md`
   Requirement: Migration safety. Zero data loss is mandatory.
@@ -89,7 +89,7 @@ The Phase 2 extension scope is significantly larger than the original tactical b
 
 **Change-split decision (2026-05-18, Phase 1 R-pass):** **this change folds the Phase 2
 extension; do not split.** Reasons: (a) §§8-12 endpoint surface depends on
-`relationship.facts` which is the same backend that §§1-7 gift/loan `entity_id` writes
+`relationship.entity_facts` which is the same backend that §§1-7 gift/loan `entity_id` writes
 target, (b) one focused change with two clearly-marked sections is more reviewable than
 two cross-referencing changes, (c) parallelism is preserved by per-task `Blocked by:`
 declarations and beads-coordinator dispatch, not by change-id separation, (d) the
@@ -98,7 +98,7 @@ in coordinated order, (e) single-archive atomicity makes spec drift impossible.
 
 **Deployability gate (binding):** the change archives atomically, but §§1-7 deliverables
 (gift/loan entity_id backfill, contact-detail tab strip removal) MUST ship to production
-independently of §§8-12 (`relationship.facts` migration + new sub-routes). Concretely:
+independently of §§8-12 (`relationship.entity_facts` migration + new sub-routes). Concretely:
 §6 legacy-table DROP defers until after Migration bead 10 sign-off (per Brief §6b
 Amendment 1.1.A.6). The tactical bug fix is not blocked by the larger migration window.
 

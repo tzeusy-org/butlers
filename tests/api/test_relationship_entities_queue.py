@@ -228,10 +228,10 @@ class TestUnidentifiedBucket:
         assert item["bucket"] == "unidentified"
         assert item["evidence"] == {}
 
-    async def test_sql_queries_relationship_facts_with_schema_prefix(self):
-        """relationship.facts queries MUST use the schema-qualified name, NOT a scope column.
+    async def test_sql_queries_entity_facts_with_schema_prefix(self):
+        """relationship.entity_facts queries MUST use the schema-qualified name, NOT a scope column.
 
-        relationship.facts has no scope column.  Schema isolation is enforced
+        relationship.entity_facts has no scope column.  Schema isolation is enforced
         via the relationship. prefix (RFC 0006).
         """
         app, pool = _app_with_pool(total=0, fetch_rows=[])
@@ -240,12 +240,12 @@ class TestUnidentifiedBucket:
         assert resp.status_code == 200
         # The data query fetches via pool.fetch; check schema-qualified name is used.
         fetch_call_sql = pool.fetch.call_args[0][0]
-        assert "relationship.facts" in fetch_call_sql, (
-            "Queue SQL must use the schema-qualified name relationship.facts"
+        assert "relationship.entity_facts" in fetch_call_sql, (
+            "Queue SQL must use the schema-qualified name relationship.entity_facts"
         )
         # And must NOT have a spurious scope column filter
         assert "scope = 'relationship'" not in fetch_call_sql, (
-            "Queue SQL must NOT filter AND scope='relationship' on relationship.facts; "
+            "Queue SQL must NOT filter AND scope='relationship' on relationship.entity_facts; "
             "that column does not exist"
         )
 
@@ -479,17 +479,17 @@ class TestSectionOrdering:
 
 
 # ---------------------------------------------------------------------------
-# Scenario: Scope filter on relationship.facts
+# Scenario: Scope filter on relationship.entity_facts
 # ---------------------------------------------------------------------------
 
 
 class TestScopeFilter:
-    """relationship.facts queries must use schema prefix for isolation, NOT a scope column."""
+    """relationship.entity_facts queries must use schema prefix for isolation, NOT a scope column."""
 
     async def test_scope_column_absent_from_data_sql(self):
-        """Queue SQL must NOT filter AND scope='relationship' on relationship.facts.
+        """Queue SQL must NOT filter AND scope='relationship' on relationship.entity_facts.
 
-        relationship.facts has no scope column.  Schema isolation is enforced
+        relationship.entity_facts has no scope column.  Schema isolation is enforced
         via the relationship. prefix (RFC 0006).
         """
         app, pool = _app_with_pool(total=0, fetch_rows=[])
@@ -498,17 +498,17 @@ class TestScopeFilter:
         assert resp.status_code == 200
         fetch_sql = pool.fetch.call_args[0][0]
         # Must use schema-qualified name for isolation
-        assert "relationship.facts" in fetch_sql, (
-            "Queue SQL must use the schema-qualified name relationship.facts"
+        assert "relationship.entity_facts" in fetch_sql, (
+            "Queue SQL must use the schema-qualified name relationship.entity_facts"
         )
         # Must NOT filter on the non-existent scope column
         assert "scope = 'relationship'" not in fetch_sql, (
             "Queue SQL must NOT filter AND scope='relationship'; that column does not exist "
-            "on relationship.facts"
+            "on relationship.entity_facts"
         )
 
     async def test_validity_active_filter_present_in_data_sql(self):
-        """All relationship.facts queries MUST include validity='active'."""
+        """All relationship.entity_facts queries MUST include validity='active'."""
         app, pool = _app_with_pool(total=0, fetch_rows=[])
         resp = await _get(app)
 

@@ -6,8 +6,8 @@ Create Date: 2026-05-18 00:00:00.000000
 
 Phase: entity-redesign (bu-hlovw).
 
-Creates ``relationship.predicate_registry`` — the canonical catalog of valid
-predicate identifiers used by ``relationship.facts``.  Seed rows cover three
+Creates ``relationship.entity_predicate_registry`` — the canonical catalog of valid
+predicate identifiers used by ``relationship.entity_facts``.  Seed rows cover three
 families:
 
 * **Contact** predicates (``object_kind='literal'``):
@@ -29,19 +29,19 @@ Schema
 ------
 predicate   TEXT PK       kebab-case identifier, unique
 kind        TEXT NOT NULL 'contact' | 'relational' | 'override'
-object_kind TEXT NOT NULL 'literal' | 'entity' — mirrors relationship.facts
+object_kind TEXT NOT NULL 'literal' | 'entity' — mirrors relationship.entity_facts
 description TEXT          Human-readable summary
 created_at  TIMESTAMPTZ   NOT NULL DEFAULT now()
 
 Grants
 ------
-SELECT, INSERT, UPDATE, DELETE on relationship.predicate_registry granted to
+SELECT, INSERT, UPDATE, DELETE on relationship.entity_predicate_registry granted to
 butler_relationship_rw only.  Other butlers resolve predicates exclusively
 through the relationship butler's MCP tool surface (RFC 0006 schema isolation).
 
 Downgrade
 ---------
-DROP TABLE relationship.predicate_registry.
+DROP TABLE relationship.entity_predicate_registry.
 Does NOT drop the relationship schema (schema teardown owned by rel_001).
 """
 
@@ -56,7 +56,7 @@ depends_on = None
 
 _RELATIONSHIP_ROLE = "butler_relationship_rw"
 _TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE"
-_TABLE_FQN = "relationship.predicate_registry"
+_TABLE_FQN = "relationship.entity_predicate_registry"
 
 # ---------------------------------------------------------------------------
 # Seed data: (predicate, kind, object_kind, description)
@@ -145,7 +145,7 @@ def upgrade() -> None:
 
     # 2. Create the predicate_registry table.
     op.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.predicate_registry (
+        CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
             predicate   TEXT        NOT NULL PRIMARY KEY,
             kind        TEXT        NOT NULL CHECK (kind IN ('contact', 'relational', 'override')),
             object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
@@ -160,7 +160,7 @@ def upgrade() -> None:
         # defensive quoting is required for safe string interpolation).
         safe_desc = description.replace("'", "''")
         op.execute(f"""
-            INSERT INTO relationship.predicate_registry
+            INSERT INTO relationship.entity_predicate_registry
                 (predicate, kind, object_kind, description)
             VALUES ('{predicate}', '{kind}', '{object_kind}', '{safe_desc}')
             ON CONFLICT (predicate) DO NOTHING
@@ -171,7 +171,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS relationship.predicate_registry")
+    op.execute("DROP TABLE IF EXISTS relationship.entity_predicate_registry")
     # NOTE: we intentionally do NOT drop the relationship schema here.
     # Other relationship-butler tables (facts, credentials) may coexist in the
     # schema, and this migration does not own them.

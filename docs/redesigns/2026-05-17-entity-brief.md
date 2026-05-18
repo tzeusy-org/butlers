@@ -413,14 +413,14 @@ Consolidated from Phases A–D. Numbered for `/project-direction` Phase 2 to res
 The new model:
 
 - **Single triple store** keyed on entity. Subject = `entity_id`. Predicate = one of the contact-predicate catalog (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`) or relational catalog (`knows`, `family-of`, `partner-of`, etc.). Object = literal string (for contact predicates) or another `entity_id` (for relational predicates).
-- **`public.contacts` and `public.contact_info` are deprecated** as the canonical channel-identity registry. Their replacement is the new triple store, scoped under the relationship butler (`relationship.facts` or similarly named) with the provenance contract (`src`, `conf`, `lastSeen`, `weight`, `verified`, `primary`) from brief Section 0.
+- **`public.contacts` and `public.contact_info` are deprecated** as the canonical channel-identity registry. Their replacement is the new triple store, scoped under the relationship butler (`relationship.entity_facts` or similarly named) with the provenance contract (`src`, `conf`, `lastSeen`, `weight`, `verified`, `primary`) from brief Section 0.
 - **Switchboard identity preamble + `resolve_contact_by_channel()` (currently RFC 0004:83-132) must be re-pointed** to query the new triple store. The Switchboard's reverse-lookup for ingestion routing (e.g., "incoming Telegram chat 12345 → which owner contact") becomes "SELECT subject FROM facts WHERE predicate='has-handle' AND object='telegram:12345'".
 - **`public.entities` remains** as the canonical entity registry (id, type, name, tier, state, lastSeen, aliases). Only the contact registry collapses into the triple model.
 - **`public.entity_info`** (per RFC 0004:64-82) holds credentials — out of scope for this redesign; leave untouched.
 
 **Phase 2 deliverables driven by this amendment:**
 
-1. **RFC 0004 amendment proposal** as part of the OpenSpec changeset — supersede §3 ("Contacts and Contact Info") with the triple model. The amendment must specify the migration path (`public.contacts` + `public.contact_info` → `relationship.facts`).
+1. **RFC 0004 amendment proposal** as part of the OpenSpec changeset — supersede §3 ("Contacts and Contact Info") with the triple model. The amendment must specify the migration path (`public.contacts` + `public.contact_info` → `relationship.entity_facts`).
 2. **Switchboard contract amendment** — the identity preamble and `resolve_contact_by_channel()` interfaces must accept triple-store queries. Backward-compat shim period: maintain dual-write during migration window, then cut over.
 3. **All consuming butlers** (relationship, household, calendar, chronicler, qa, messenger) must be inventoried for `public.contact_info` reads. Each call site re-points to the triple store via MCP/Switchboard.
 4. **Migration plan** — translate existing `public.contact_info` rows into triples. Schema-level: `{ subject: entity_id (via public.contacts.entity_id), predicate: f"has-{type}", object: value, src: contact_info.source, last_seen: contact_info.last_seen, verified: contact_info.secured XOR something }`. Decisions needed: handle `contact_info.secured=true` rows (credentials? still contact facts?); handle `contact_info` rows whose contact lacks an entity_id (orphans).
@@ -430,7 +430,7 @@ The new model:
 - Does the triple store live in `relationship` schema (consistent with relationship butler ownership) or `public` (cross-butler reads avoid the MCP hop)?
 - Is `verified` a literal column on the triple, or is verification itself a separate triple (`(triple_id, verified-by, owner)`)? Pure RDF would say the latter.
 - Reverse-lookup performance: a triple store with millions of rows needs `(predicate, object)` indexes. Quantify expected row count from current `public.contact_info` size.
-- Does the brief's `relationship.relations` table (relational predicates) merge with the contact-predicate triples into one table, or stay separate? RDF purity says merge; query simplicity says merge; storage cost is identical. **Recommend merge into single `relationship.facts` table.**
+- Does the brief's `relationship.relations` table (relational predicates) merge with the contact-predicate triples into one table, or stay separate? RDF purity says merge; query simplicity says merge; storage cost is identical. **Recommend merge into single `relationship.entity_facts` table.**
 
 The UI fold-in (one `/entities` home, no `/contacts` page) is preserved. The storage fold-in is also preserved — and now requires the data-model rewrite.
 
@@ -443,10 +443,10 @@ The contacts → triple-store migration is a high-blast-radius schema change. It
 **A. Zero-loss guarantees**
 
 1. **Pre-migration snapshot.** Before the cut-over, snapshot the entire `public.contacts` + `public.contact_info` tables to a timestamped backup table (`public.contacts_pre_migration_YYYYMMDD`, `public.contact_info_pre_migration_YYYYMMDD`). Snapshot must include all columns and all rows.
-2. **Row-count parity check.** After migration, every `public.contact_info` row must correspond to exactly one triple in `relationship.facts` (or be explicitly accounted for as "skipped: <reason>"). A reconciliation report at `docs/reports/entity-redesign-contact-migration-YYYY-MM-DD.md` must list: rows migrated, rows skipped (with reason), checksum of input vs. output.
+2. **Row-count parity check.** After migration, every `public.contact_info` row must correspond to exactly one triple in `relationship.entity_facts` (or be explicitly accounted for as "skipped: <reason>"). A reconciliation report at `docs/reports/entity-redesign-contact-migration-YYYY-MM-DD.md` must list: rows migrated, rows skipped (with reason), checksum of input vs. output.
 3. **Orphan handling.** `public.contact_info` rows whose `public.contacts.entity_id` is NULL (orphan contacts) must be (a) escalated to the owner via notify(), (b) migrated as triples with a placeholder entity, or (c) explicitly dropped with an audit trail row. Decision required in Phase 2.
-4. **Credentials carve-out.** `public.contact_info.secured=true` rows are credentials, not user-visible contact facts (per RFC 0004:64-82 distinction with `entity_info`). They either (a) remain in `public.contact_info` (a "credentials" sub-table), or (b) move to `relationship.credentials` (a separate non-triple table). They do NOT become triples in `relationship.facts`.
-5. **Dual-write period (mandatory).** After triples backend is live, every existing write path to `public.contact_info` must dual-write to `relationship.facts` for a minimum of 7 days. Read paths cut over after dual-write verification (no diff drift in 24h). Then write paths cut over. Then `public.contact_info` becomes read-only (writes blocked, reads still allowed for one more period). Then `public.contact_info` is dropped.
+4. **Credentials carve-out.** `public.contact_info.secured=true` rows are credentials, not user-visible contact facts (per RFC 0004:64-82 distinction with `entity_info`). They either (a) remain in `public.contact_info` (a "credentials" sub-table), or (b) move to `relationship.credentials` (a separate non-triple table). They do NOT become triples in `relationship.entity_facts`.
+5. **Dual-write period (mandatory).** After triples backend is live, every existing write path to `public.contact_info` must dual-write to `relationship.entity_facts` for a minimum of 7 days. Read paths cut over after dual-write verification (no diff drift in 24h). Then write paths cut over. Then `public.contact_info` becomes read-only (writes blocked, reads still allowed for one more period). Then `public.contact_info` is dropped.
 6. **Rollback plan.** Every migration step is reversible until `public.contact_info` is dropped. Drop is a separate, dated decision after 30 days of triple-store-only operation.
 
 **B. Write-path inventory + re-pointing**
@@ -456,7 +456,7 @@ Every place in the codebase that currently writes to `public.contact_info` or `p
 1. **Enumerated** before migration begins (Phase 3 verification bead). Search vectors: `grep -rn "INSERT INTO contact_info\|UPDATE contact_info\|INSERT INTO contacts\|UPDATE contacts" src/ roster/`; `grep -rn "contact_info_table\|contacts_table\|ContactInfo\b\|Contact\b" src/ roster/`; SQLAlchemy/Pydantic models referencing those tables.
 2. **Categorized** by butler ownership (relationship butler's own writes vs. cross-butler writes via Switchboard).
 3. **Re-pointed** to write triples through a single, authoritative API surface (likely an MCP tool on the relationship butler, e.g. `relationship_assert_fact(subject, predicate, object, src, conf, …)`). No butler may write triples by direct SQL — schema isolation per RFC 0006 plus RDF integrity (predicate validation, dedup) require a central writer.
-4. **Verified** post-cut-over with parity tests: for each write path, assert that issuing a write produces both (a) a triple in `relationship.facts` and (b) — during dual-write — a row in `public.contact_info`. After cut-over, only (a).
+4. **Verified** post-cut-over with parity tests: for each write path, assert that issuing a write produces both (a) a triple in `relationship.entity_facts` and (b) — during dual-write — a row in `public.contact_info`. After cut-over, only (a).
 
 Known write-path entry points to inventory (non-exhaustive — Phase 3 bead must complete the list):
 
@@ -475,16 +475,16 @@ The following beads MUST exist in the Phase 3 graph as `blocked-by` upstreams of
 |------------|---------|--------|
 | `entity-migration: pre-migration snapshot + row-count baseline` | Capture `public.contacts` + `public.contact_info` snapshots with row counts and per-source-butler breakdown. Output: `docs/reports/contact-migration-baseline.md`. | S |
 | `entity-migration: write-path inventory` | Grep + dependency-walk the codebase for every writer to `public.contact_info` / `public.contacts`. Output: a table of (file:line, butler, current write shape) for each writer. Sign-off required before any cut-over. | M |
-| `entity-migration: central writer MCP tool` | Implement `relationship_assert_fact()` (or equivalent) as the single ingress to `relationship.facts`. Includes predicate validation, dedup, provenance enforcement. | M |
+| `entity-migration: central writer MCP tool` | Implement `relationship_assert_fact()` (or equivalent) as the single ingress to `relationship.entity_facts`. Includes predicate validation, dedup, provenance enforcement. | M |
 | `entity-migration: dual-write shim per writer` | For each writer enumerated in the inventory bead, add dual-write (existing path + triple). Wraps existing call sites. Toggleable by feature flag. | L (parallelizable per writer) |
 | `entity-migration: backfill triples from public.contact_info` | One-shot job: read every existing `public.contact_info` row, emit corresponding triple. Idempotent (re-runnable). Reconciliation report: rows in vs. triples out, with per-source breakdown. | L |
 | `entity-migration: parity tests` | For each writer, write a test that asserts triple + row coexist after dual-write. Test the orphan-handling decision branch. Test the credentials carve-out branch. | M |
 | `entity-migration: read-path cut-over` | After 24h of zero parity drift, switch read paths (relationship butler MCP read tools, Switchboard `resolve_contact_by_channel`) to query triples. `public.contact_info` reads stop being authoritative. | M |
-| `entity-migration: write-path cut-over` | After read-path cut-over is stable for 7 days, remove dual-write shims; new writes hit `relationship.facts` only. `public.contact_info` becomes read-only. | M |
+| `entity-migration: write-path cut-over` | After read-path cut-over is stable for 7 days, remove dual-write shims; new writes hit `relationship.entity_facts` only. `public.contact_info` becomes read-only. | M |
 | `entity-migration: post-cut-over verification report` | 30 days after write-path cut-over, produce final report at `docs/reports/contact-migration-postmortem-YYYY-MM-DD.md`: cumulative triple count, dropped/skipped row count, any incidents, sign-off to drop `public.contact_info`. | S |
 | `entity-migration: drop public.contact_info (gated)` | Final drop, gated on the verification report's sign-off. Backups retained for 90 days. | S |
 
-These beads block the redesign's UI-level features that depend on the triple store (Editorial detail contacts section, Workbench, curation queue, Finder ranking on contact-fact values) **only at write-path cut-over**, not at dual-write start. The frontend can read from `relationship.facts` as soon as the backfill bead completes.
+These beads block the redesign's UI-level features that depend on the triple store (Editorial detail contacts section, Workbench, curation queue, Finder ranking on contact-fact values) **only at write-path cut-over**, not at dual-write start. The frontend can read from `relationship.entity_facts` as soon as the backfill bead completes.
 
 ### Amendment 2 — RFC 0007 namespace fix
 
@@ -619,7 +619,7 @@ The script is itself a migration bead — number 4.6 — sequenced between backf
 
 - **R1 — Citation re-verification:** 16/16 citations verified. `chronicler_list_events` confirmed absent from RFC 0014 — Amendment 16 routes to `chronicler_list_episodes` with `entity_id` filter as a prereq.
 - **R2 — Loophole sweep:** Closed by Amendments 12 (read-side data leak), 13 (reader inventory), 14 (dual-write reconciliation contract), 15 (transitive Finder enforcement), and the 1.1.A.3 update (orphan handling via Python script). Fold-vs-split deployability trap closed by proposal.md tightening (see proposal.md "Phase 2 extension (2026-05-17)" section).
-- **R3 — Cross-spec consistency:** Phase 1 `FROM facts` ⇄ Phase 2 `relationship.facts` contradiction MUST be resolved in Phase 2 (annotate Phase 1 endpoints as compatible during 10-step migration soak). Contact-detail route narrative drift fixed in Phase 2 (use canonical `/contacts/:contactId` per shipped spec). `workspace` archetype gap left to Phase 2 (either author sister spec or rewrite as `<Page archetype="overview">`).
+- **R3 — Cross-spec consistency:** Phase 1 `FROM facts` ⇄ Phase 2 `relationship.entity_facts` contradiction MUST be resolved in Phase 2 (annotate Phase 1 endpoints as compatible during 10-step migration soak). Contact-detail route narrative drift fixed in Phase 2 (use canonical `/contacts/:contactId` per shipped spec). `workspace` archetype gap left to Phase 2 (either author sister spec or rewrite as `<Page archetype="overview">`).
 - **R4 — Mandate coverage:** Closed by Amendments 11 (`v1.md` update task), 12 (owner-only authz writes+reads+deploy-gate), plus Amendment 7 update (type-ratio carve-out citation). Em-dash ban in canned glosses + RFC 0017 owner-gate carry-forward in `relationship_assert_fact()` flagged as Phase 2 spec deliverables (encoded as per-bead acceptance criteria in Phase 3).
 
 **Net Phase 1 verdict: proceed-with-amendments-1-through-16.** Phase 2 begins from this baseline.

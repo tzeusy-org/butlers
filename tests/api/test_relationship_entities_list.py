@@ -334,14 +334,14 @@ async def test_has_contact_filter_accepted():
     assert body["total"] == 1
 
 
-async def test_has_contact_filter_sql_contains_relationship_facts():
-    """SQL for has=contact must reference relationship.facts with has-* predicates."""
+async def test_has_contact_filter_sql_contains_entity_facts():
+    """SQL for has=contact must reference relationship.entity_facts with has-* predicates."""
     app, pool = _app_with_pool(total=0, fetch_rows=[])
     resp = await _get(app, has="contact")
     assert resp.status_code == 200
-    # Check fetch SQL contains relationship.facts and has-email
+    # Check fetch SQL contains relationship.entity_facts and has-email
     fetch_call_sql = pool.fetch.call_args[0][0]
-    assert "relationship.facts" in fetch_call_sql
+    assert "relationship.entity_facts" in fetch_call_sql
     assert "has-email" in fetch_call_sql
 
 

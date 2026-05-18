@@ -212,7 +212,7 @@ When a metadata field referenced above is absent from a fact's JSONB, the respon
 > Drives the brief at `docs/redesigns/2026-05-17-entity-brief.md` (binding §0 design intent,
 > binding §6b Phase 1 amendments). Layered on top of the contact-tabs scope above.
 
-> **Phase 1 / Phase 2 table reconciliation:** Phase 1's tab endpoints (§Notes/§Interactions/§Gifts/§Loans/§Timeline above) currently read the legacy shared `facts` table where the relationship butler stores relational and contact facts under `scope='relationship'`. Phase 2 introduces `relationship.facts` as the canonical RDF triple store (per `specs/relationship-facts/spec.md`). During the 10-step migration (Brief §6b Amendment 1.1.C), Phase 1 endpoints MUST be re-pointed to `relationship.facts` no later than Migration bead 7 (read-path cut-over). Until cut-over, Phase 1 endpoints read the legacy table; from cut-over, they read `relationship.facts`. Both reads return identical data during the dual-write window. Phase 2 endpoints (§§added below) read `relationship.facts` from day one — they ship after Migration bead 5 (backfill) completes.
+> **Phase 1 / Phase 2 table reconciliation:** Phase 1's tab endpoints (§Notes/§Interactions/§Gifts/§Loans/§Timeline above) currently read the legacy shared `facts` table where the relationship butler stores relational and contact facts under `scope='relationship'`. Phase 2 introduces `relationship.entity_facts` as the canonical RDF triple store (per `specs/relationship-facts/spec.md`). During the 10-step migration (Brief §6b Amendment 1.1.C), Phase 1 endpoints MUST be re-pointed to `relationship.entity_facts` no later than Migration bead 7 (read-path cut-over). Until cut-over, Phase 1 endpoints read the legacy table; from cut-over, they read `relationship.entity_facts`. Both reads return identical data during the dual-write window. Phase 2 endpoints (§§added below) read `relationship.entity_facts` from day one — they ship after Migration bead 5 (backfill) completes.
 
 ### Requirement: Owner-only authorization for entity endpoints
 
@@ -319,7 +319,7 @@ The Index page MUST render inside `<Page archetype="overview">` (per the in-flig
 #### Scenario: has=contact filter chip lists every entity with a contact triple
 - **WHEN** `?has=contact` query is applied
 - **THEN** the result set MUST be exactly the entities with at least one triple in
-  `relationship.facts` whose predicate matches `has-email | has-phone | has-handle |
+  `relationship.entity_facts` whose predicate matches `has-email | has-phone | has-handle |
   has-address | has-birthday | has-website`
 
 #### Scenario: `/contacts` index redirects to `/entities?has=contact`
@@ -394,7 +394,7 @@ The frontend SHALL render a balance-sheet view of weight aggregation per predica
 Data source: `GET /api/butlers/relationship/entities/concentration?pred=<predicate>`.
 
 #### Scenario: Predicate tabs are enumerated from registry
-- **WHEN** the page loads with `relationship.predicate_registry` containing five relational
+- **WHEN** the page loads with `relationship.entity_predicate_registry` containing five relational
   predicates (`knows`, `family-of`, `partner-of`, `colleague-of`, `co-attended`)
 - **THEN** the Concentration page MUST render five tabs (NOT a hardcoded four)
 - **AND** the active tab MUST be `knows` if no `?pred=` is supplied
@@ -663,7 +663,7 @@ clients regardless of which endpoint raised the error.
 The dashboard API SHALL expose `GET /api/butlers/relationship/entities/{id}/activity` as
 a relationship-owned aggregator that returns a unified activity stream merging:
 
-1. Relationship-domain rows from `relationship.facts` (notes, interactions, life events,
+1. Relationship-domain rows from `relationship.entity_facts` (notes, interactions, life events,
    gifts, loans, dunbar_tier_override) — tagged `src: 'relationship'`.
 2. Chronicler-domain rows tagged with `src: 'chronicler'` (kind: `episode`).
 

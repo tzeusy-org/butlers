@@ -6,7 +6,7 @@ Create Date: 2026-05-18 00:00:00.000000
 
 Phase: entity-redesign (bu-297lj — POST /entities/queue/dismiss).
 
-Adds ``queue.dismissed`` to ``relationship.predicate_registry``.  This
+Adds ``queue.dismissed`` to ``relationship.entity_predicate_registry``.  This
 predicate is written by ``POST /api/butlers/relationship/entities/queue/dismiss``
 via the central writer ``relationship_assert_fact()`` to mark that an operator
 has explicitly dismissed an entity from the curation queue.
@@ -33,7 +33,7 @@ depends_on = None
 
 _RELATIONSHIP_ROLE = "butler_relationship_rw"
 _TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE"
-_TABLE_FQN = "relationship.predicate_registry"
+_TABLE_FQN = "relationship.entity_predicate_registry"
 
 _PREDICATE = "queue.dismissed"
 _KIND = "state"
@@ -72,15 +72,15 @@ def upgrade() -> None:
     # DROP + ADD in a single ALTER TABLE ensures there is no window where the
     # constraint is absent and an invalid kind could sneak in.
     op.execute("""
-        ALTER TABLE IF EXISTS relationship.predicate_registry
-        DROP CONSTRAINT IF EXISTS predicate_registry_kind_check,
-        ADD CONSTRAINT predicate_registry_kind_check
+        ALTER TABLE IF EXISTS relationship.entity_predicate_registry
+        DROP CONSTRAINT IF EXISTS entity_predicate_registry_kind_check,
+        ADD CONSTRAINT entity_predicate_registry_kind_check
         CHECK (kind IN ('contact', 'relational', 'override', 'state'))
     """)
 
     safe_desc = _DESCRIPTION.replace("'", "''")
     op.execute(f"""
-        INSERT INTO relationship.predicate_registry
+        INSERT INTO relationship.entity_predicate_registry
             (predicate, kind, object_kind, description)
         VALUES ('{_PREDICATE}', '{_KIND}', '{_OBJECT_KIND}', '{safe_desc}')
         ON CONFLICT (predicate) DO NOTHING
@@ -90,11 +90,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(f"DELETE FROM relationship.predicate_registry WHERE predicate = '{_PREDICATE}'")
+    op.execute(f"DELETE FROM relationship.entity_predicate_registry WHERE predicate = '{_PREDICATE}'")
     # Restore original constraint (without 'state') atomically.
     op.execute("""
-        ALTER TABLE IF EXISTS relationship.predicate_registry
-        DROP CONSTRAINT IF EXISTS predicate_registry_kind_check,
-        ADD CONSTRAINT predicate_registry_kind_check
+        ALTER TABLE IF EXISTS relationship.entity_predicate_registry
+        DROP CONSTRAINT IF EXISTS entity_predicate_registry_kind_check,
+        ADD CONSTRAINT entity_predicate_registry_kind_check
         CHECK (kind IN ('contact', 'relational', 'override'))
     """)

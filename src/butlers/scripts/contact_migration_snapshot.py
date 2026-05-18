@@ -255,7 +255,7 @@ row.  Types map to source butlers / connectors as follows (non-exhaustive):
 {contact_info_breakdown_table}
 
 **Note:** rows where `secured = true` are credentials (RFC 0004 §4).  They
-are **not** migrated to `relationship.facts`; they will remain in a
+are **not** migrated to `relationship.entity_facts`; they will remain in a
 `contact_info_credentials` sub-table or move to `relationship.credentials`.
 See Brief §6b Amendment 1.1.A.4 for the credentials carve-out decision.
 

@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Relationship facts triple store
+### Requirement: Relationship entity facts triple store
 
-The relationship butler SHALL own a single triple-store table `relationship.facts` that
+The relationship butler SHALL own a single triple-store table `relationship.entity_facts` that
 serves as the canonical RDF (subject-predicate-object) registry for both relational
 (`knows`, `family-of`, `partner-of`, `co-attended`, `colleague-of`, ...) and contact
 (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`)
@@ -15,9 +15,9 @@ the dual-write trap of putting contact-triples in `public` and relational-triple
 `relationship`.
 
 **Single table for both predicate families.** Contact-facts and relational-facts live in
-ONE `relationship.facts` table (NOT two). Rationale: RDF purity (subject-predicate-object
+ONE `relationship.entity_facts` table (NOT two). Rationale: RDF purity (subject-predicate-object
 is the contract); identical column shape across predicate families; query simplicity
-(`SELECT * FROM relationship.facts WHERE subject = $1`); storage cost is identical;
+(`SELECT * FROM relationship.entity_facts WHERE subject = $1`); storage cost is identical;
 resolves the Phase 1 Amendment 1.1 open question.
 
 **Schema:**
@@ -26,7 +26,7 @@ resolves the Phase 1 Amendment 1.1 open question.
 |---|---|---|
 | `id` | UUID PK | |
 | `subject` | UUID NOT NULL | FK to `public.entities(id)` |
-| `predicate` | TEXT NOT NULL | From `relationship.predicate_registry` |
+| `predicate` | TEXT NOT NULL | From `relationship.entity_predicate_registry` |
 | `object` | TEXT NOT NULL | Literal value (for `has-*` predicates) or `entity_id::text` (for relational predicates) |
 | `object_kind` | TEXT NOT NULL | `'literal'` or `'entity'`; informs how to interpret `object` |
 | `src` | TEXT NOT NULL | Authoring butler |
@@ -49,30 +49,30 @@ resolves the Phase 1 Amendment 1.1 open question.
 
 **Uniqueness:** `UNIQUE (subject, predicate, object) WHERE validity = 'active'`.
 
-**Schema boundary with `memory.facts` (R2 #3):** the table is `relationship.facts`
+**Schema boundary with `memory.facts` (R2 #3):** the table is `relationship.entity_facts`
 (schema-qualified). A separate `memory.facts` table exists under the memory butler schema
 per RFC 0006 (`src/butlers/modules/memory/migrations/001_memory_schema.py:106`); the two
 tables are isolated by schema and MUST NOT be cross-joined. Migration beads and all SQL
-authored under this change MUST reference the schema-qualified name `relationship.facts`
+authored under this change MUST reference the schema-qualified name `relationship.entity_facts`
 throughout — never bare `facts`.
 
 #### Scenario: Triple store accepts contact and relational predicates in one table
 - **WHEN** `relationship_assert_fact()` is called with a contact predicate (`has-email`,
   `object_kind='literal'`) and separately with a relational predicate (`knows`,
   `object_kind='entity'`) for the same subject
-- **THEN** both rows MUST land in `relationship.facts` with `validity='active'`
-- **AND** `SELECT * FROM relationship.facts WHERE subject = $1` MUST return both rows
+- **THEN** both rows MUST land in `relationship.entity_facts` with `validity='active'`
+- **AND** `SELECT * FROM relationship.entity_facts WHERE subject = $1` MUST return both rows
 - **AND** no cross-join to `memory.facts` MUST be required to materialize the result
 
 #### Scenario: Schema-qualified name is enforced
 - **WHEN** any migration bead or production SQL references the table without the
   `relationship.` schema prefix
 - **THEN** code review MUST reject the change as a schema-boundary violation
-- **AND** the SQL MUST be rewritten to use `relationship.facts` explicitly
+- **AND** the SQL MUST be rewritten to use `relationship.entity_facts` explicitly
 
 ### Requirement: Predicate catalog
 
-The set of valid predicates SHALL live in `relationship.predicate_registry` (table seeded by
+The set of valid predicates SHALL live in `relationship.entity_predicate_registry` (table seeded by
 Alembic migration). Predicates MUST be grouped into families:
 
 - **Contact predicates** (`object_kind='literal'`): `has-email`, `has-phone`, `has-handle`,
@@ -84,31 +84,31 @@ Alembic migration). Predicates MUST be grouped into families:
   RFC 0013 weight-at-query decision and Phase 1 Amendment 6).
 
 No predicate ID MAY be hardcoded outside `entity-model.ts` (frontend) and
-`relationship.predicate_registry` (backend); resolves Brief §1 hard-don't.
+`relationship.entity_predicate_registry` (backend); resolves Brief §1 hard-don't.
 
 #### Scenario: Unknown predicate is rejected by the central writer
 - **WHEN** `relationship_assert_fact()` is called with `predicate='has-feet'` (not in
-  `relationship.predicate_registry`)
+  `relationship.entity_predicate_registry`)
 - **THEN** the writer MUST raise a validation error before any DB write
-- **AND** no row MUST land in `relationship.facts`
+- **AND** no row MUST land in `relationship.entity_facts`
 
 #### Scenario: Predicate IDs are not hardcoded in component tree
 - **WHEN** ripgrep is run for known predicate string literals (e.g. `'has-email'`,
   `'knows'`) across `frontend/src/components/relationship/`,
   `frontend/src/pages/entities/`, and `roster/relationship/api/`
 - **THEN** the only allowed matches MUST be inside `frontend/src/lib/entity-model.ts`
-  (frontend) or seed data for `relationship.predicate_registry` (backend)
+  (frontend) or seed data for `relationship.entity_predicate_registry` (backend)
 
 ### Requirement: Central writer — `relationship_assert_fact()`
 
-ALL writes into `relationship.facts` MUST go through a single MCP tool
+ALL writes into `relationship.entity_facts` MUST go through a single MCP tool
 `relationship_assert_fact(subject, predicate, object, *, src, conf, weight, primary,
 verified, object_kind)` exposed by the relationship butler. No butler MAY issue a direct
-`INSERT INTO relationship.facts` or `UPDATE relationship.facts` from outside the
+`INSERT INTO relationship.entity_facts` or `UPDATE relationship.entity_facts` from outside the
 relationship butler's schema role.
 
 The central writer is responsible for:
-- Predicate validation against `relationship.predicate_registry`.
+- Predicate validation against `relationship.entity_predicate_registry`.
 - Dedup (`ON CONFLICT (subject, predicate, object) WHERE validity='active' DO UPDATE`).
 - Provenance enforcement (every triple has `src`, `conf`, `verified`).
 - Supersession on update (mark prior row `validity='superseded'`, insert new row).
@@ -133,19 +133,19 @@ the approval hop.
 This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
 
 #### Scenario: Direct SQL writes are blocked
-- **WHEN** any butler other than relationship attempts `INSERT INTO relationship.facts`
+- **WHEN** any butler other than relationship attempts `INSERT INTO relationship.entity_facts`
 - **THEN** PostgreSQL MUST reject the statement on role permissions
 - **AND** the only successful write path MUST be `relationship_assert_fact()` via MCP
 
 ### Requirement: Switchboard `resolve_contact_by_channel()` re-points to triples
 
-The Switchboard's `resolve_contact_by_channel()` function (defined in RFC 0004 §"resolve_contact_by_channel()", `rfcs/0004:83-95`) SHALL be re-implemented to query `relationship.facts` and MUST stop reading `public.contact_info` after Migration bead 7 (read-path cut-over). The reimplementation MUST use the following SQL shape:
+The Switchboard's `resolve_contact_by_channel()` function (defined in RFC 0004 §"resolve_contact_by_channel()", `rfcs/0004:83-95`) SHALL be re-implemented to query `relationship.entity_facts` and MUST stop reading `public.contact_info` after Migration bead 7 (read-path cut-over). The reimplementation MUST use the following SQL shape:
 
 ```sql
 SELECT f.subject AS entity_id,
        e.canonical_name AS name,
        COALESCE(e.roles, '{}') AS roles
-FROM relationship.facts f
+FROM relationship.entity_facts f
 JOIN public.entities e ON e.id = f.subject
 WHERE f.predicate = $1                                  -- e.g. 'has-handle' or 'has-email'
   AND f.object   = $2                                   -- channel-specific identifier
@@ -167,7 +167,7 @@ preamble format (RFC 0004:119-132) is updated to drop `contact_id` and reference
 #### Scenario: Telegram chat resolves to entity via has-handle triple
 - **WHEN** an incoming Telegram message arrives with chat_id `12345` and a triple
   `(subject=ent-7, predicate='has-handle', object='telegram:12345',
-  object_kind='literal', validity='active')` exists in `relationship.facts`
+  object_kind='literal', validity='active')` exists in `relationship.entity_facts`
 - **THEN** `resolve_contact_by_channel('telegram', 'telegram:12345')` MUST return a
   `ResolvedContact` with `entity_id = ent-7`
 - **AND** the returned shape MUST NOT include a `contact_id` field
@@ -209,7 +209,7 @@ SQL commits, MCP duplicates → racing supersession). The migration spec encodes
 - **SQL is authoritative during the dual-write window.** Existing legacy writes commit
   unchanged; the MCP `relationship_assert_fact()` call is invoked **post-commit, best-effort**.
 - **Reconciler job (new).** A periodic worker (interval ≤ 1h during the dual-write window)
-  sweeps `public.contact_info` rows lacking a matching active triple in `relationship.facts`
+  sweeps `public.contact_info` rows lacking a matching active triple in `relationship.entity_facts`
   and emits them via the central writer. The reconciler is idempotent on
   `(subject, predicate, object)`.
 - **Parity tests are eventual, not synchronous.** Migration bead 6 ("parity tests") asserts
@@ -225,7 +225,7 @@ SQL commits, MCP duplicates → racing supersession). The migration spec encodes
 - **AND** parity tests MUST eventually report zero drift within the 24h window
 
 #### Scenario: Read-path cut-over only after 24h zero-drift
-- **WHEN** the Switchboard read path is flipped to `relationship.facts` (Migration bead 7)
+- **WHEN** the Switchboard read path is flipped to `relationship.entity_facts` (Migration bead 7)
 - **THEN** parity tests over the prior 24h window MUST report zero drift
 - **AND** the cut-over MUST be reversible by re-pointing reads back to `public.contact_info`
   for the duration of the 30-day soak
@@ -240,7 +240,7 @@ SQL commits, MCP duplicates → racing supersession). The migration spec encodes
 ### Requirement: Credentials carve-out
 
 `public.contact_info` rows where `secured = true` (RFC 0004:54) SHALL be treated as
-**credentials** and MUST NOT be migrated to `relationship.facts` as triples. They either
+**credentials** and MUST NOT be migrated to `relationship.entity_facts` as triples. They either
 (a) remain in a renamed `public.contact_info_credentials` sub-table or (b) move to
 `relationship.credentials` (separate non-triple table).
 
@@ -251,7 +251,7 @@ already, per `roster/relationship/butler.toml:106-114`.
 #### Scenario: Secured rows are skipped during triple backfill
 - **WHEN** the Migration bead 5 backfill job iterates `public.contact_info` and encounters
   a row with `secured = true`
-- **THEN** the backfill MUST skip the row (no triple emitted in `relationship.facts`)
+- **THEN** the backfill MUST skip the row (no triple emitted in `relationship.entity_facts`)
 - **AND** the row MUST be copied to `relationship.credentials` instead
 - **AND** the backfill report MUST tally skipped-credential count distinctly from
   triple-emitted count
@@ -298,7 +298,7 @@ orphan-resolver report MUST enumerate post-resolution count.
 #### Scenario: Dry-run is the default
 - **WHEN** `contact_orphan_resolver.py` is invoked without `--apply`
 - **THEN** the script MUST NOT write to `public.entities`, `public.contacts`, or
-  `relationship.facts`
+  `relationship.entity_facts`
 - **AND** the script MUST emit the proposed resolution plan to stdout / the report file
 - **AND** the operator MUST be required to pass `--apply` explicitly for any writes
 
@@ -319,7 +319,7 @@ orphan-resolver report MUST enumerate post-resolution count.
 
 ### Requirement: `verified` is a column, not a triple
 
-The `verified` field SHALL be a **column on `relationship.facts`** and MUST NOT be modeled
+The `verified` field SHALL be a **column on `relationship.entity_facts`** and MUST NOT be modeled
 as a separate verification-triple (`(triple_id, verified-by, owner)`). Rationale (resolves
 Amendment 1 open question): pure RDF would split it out, but every triple needs a verified
 flag, the verifying actor is always the owner (single-user v1), and the column form keeps
@@ -329,12 +329,12 @@ to a separate verification table at that point.
 #### Scenario: Verifying a fact updates the column, not a new row
 - **WHEN** the owner confirms an existing triple `(subject, predicate, object)` via the
   approval ceremony
-- **THEN** the existing row in `relationship.facts` MUST be updated to set `verified = true`
+- **THEN** the existing row in `relationship.entity_facts` MUST be updated to set `verified = true`
 - **AND** no new `(triple_id, verified-by, owner)` row MUST be inserted
 - **AND** the row's `validity` MUST remain `'active'`
 
 #### Scenario: No verification-triple predicate is registered
-- **WHEN** `relationship.predicate_registry` is queried for all seeded predicates
+- **WHEN** `relationship.entity_predicate_registry` is queried for all seeded predicates
 - **THEN** no predicate named `verified-by` (or analogue) MUST appear in the registry
 - **AND** any attempt to assert such a predicate MUST be rejected by the central writer
   per Requirement: Predicate catalog

@@ -1,4 +1,4 @@
-"""Backfill triples from public.contact_info snapshots into relationship.facts.
+"""Backfill triples from public.contact_info snapshots into relationship.entity_facts.
 
 Migration bead 5 — entity-redesign contacts → triples migration.
 
@@ -9,7 +9,7 @@ Reads every existing row from the pre-migration snapshot tables created by
   - ``public.contact_info_pre_migration_<YYYYMMDD>``
 
 For each non-credential, non-orphan row it emits a corresponding triple via a
-direct ``INSERT ... ON CONFLICT DO UPDATE`` into ``relationship.facts``,
+direct ``INSERT ... ON CONFLICT DO UPDATE`` into ``relationship.entity_facts``,
 relying on the ``UNIQUE (subject, predicate, object) WHERE validity='active'``
 constraint for idempotency.
 
@@ -50,7 +50,7 @@ Spec anchors
 
 Idempotency
 -----------
-The script is safe to run multiple times.  ``relationship.facts`` has a unique
+The script is safe to run multiple times.  ``relationship.entity_facts`` has a unique
 constraint ``UNIQUE (subject, predicate, object) WHERE validity='active'``.  On
 conflict the row is touched (``updated_at`` refreshed) but no duplicate is
 inserted.  A second run will report the same rows as "already present" with
@@ -166,9 +166,9 @@ async def _snapshot_exists(pool: asyncpg.Pool, table: str) -> bool:
 
 
 async def _facts_table_exists(pool: asyncpg.Pool) -> bool:
-    """Return True if relationship.facts exists."""
+    """Return True if relationship.entity_facts exists."""
     result = await pool.fetchval(
-        "SELECT to_regclass('relationship.facts'::text)",
+        "SELECT to_regclass('relationship.entity_facts'::text)",
     )
     return result is not None
 
@@ -214,7 +214,7 @@ async def _assert_triple(
     created_at: datetime | None,
     apply: bool,
 ) -> bool:
-    """Insert or touch a triple in relationship.facts.
+    """Insert or touch a triple in relationship.entity_facts.
 
     Returns True if a new row was inserted, False if it was already present.
     Idempotent: ON CONFLICT updates only ``updated_at`` and ``primary`` so the
@@ -237,7 +237,7 @@ async def _assert_triple(
 
     result = await pool.fetchrow(
         """
-        INSERT INTO relationship.facts (
+        INSERT INTO relationship.entity_facts (
             id,
             subject,
             predicate,
@@ -307,11 +307,11 @@ async def _run_backfill_with_pool(
             )
             return 1
 
-    # --- Preflight: verify relationship.facts exists ---
+    # --- Preflight: verify relationship.entity_facts exists ---
     if not await _facts_table_exists(pool):
         logger.error(
-            "Table relationship.facts does not exist.  "
-            "Run the relationship.facts Alembic migration (task 10.1) first."
+            "Table relationship.entity_facts does not exist.  "
+            "Run the relationship.entity_facts Alembic migration (task 10.1) first."
         )
         return 1
 
@@ -506,7 +506,7 @@ _REPORT_TEMPLATE = """\
 ## Skipped credentials
 
 {skipped_credential} rows where `secured = true` were NOT migrated to
-`relationship.facts`.  Per Brief §6b Amendment 1.1.A.4 (Credentials carve-out),
+`relationship.entity_facts`.  Per Brief §6b Amendment 1.1.A.4 (Credentials carve-out),
 these move to `relationship.credentials` (Migration bead 10.4) rather than to the
 triple store.
 
@@ -538,7 +538,7 @@ first.  This section is the worklist for `contact_orphan_resolver.py`
 - **`object_kind`:** `'literal'` — all contact predicates (`has-email`,
   `has-phone`, etc.) store literal values, not entity references.
 - **Idempotency:** relies on `UNIQUE (subject, predicate, object) WHERE
-  validity='active'` in `relationship.facts`.  Conflicts trigger
+  validity='active'` in `relationship.entity_facts`.  Conflicts trigger
   `DO UPDATE SET updated_at=now()` so re-runs are safe.
 """
 
@@ -663,7 +663,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Backfill triples from public.contact_info snapshots into relationship.facts "
+            "Backfill triples from public.contact_info snapshots into relationship.entity_facts "
             "(Migration bead 5)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -681,7 +681,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Execute writes.  Without this flag the script runs in dry-run mode and "
-        "reports what it would do without touching relationship.facts.",
+        "reports what it would do without touching relationship.entity_facts.",
     )
     parser.add_argument(
         "--report-path",

@@ -12,7 +12,7 @@ Covers:
 9. Parity check in report: asserted + already_present + skipped_cred + skipped_orphan + errors = total.
 10. Report file is written on apply=True, not written on dry-run.
 11. Preflight: missing snapshot table returns exit code 1.
-12. Preflight: missing relationship.facts table returns exit code 1.
+12. Preflight: missing relationship.entity_facts table returns exit code 1.
 13. Predicate construction: f"has-{type}".
 14. CLI _parse_args defaults: --apply=False, --date=today.
 """
@@ -190,11 +190,11 @@ def _make_pool(
 
     # Map fetchval calls to results.
     # Call order: to_regclass(contacts_snap), to_regclass(contact_info_snap),
-    #             to_regclass(relationship.facts), COUNT contacts, COUNT contact_info
+    #             to_regclass(relationship.entity_facts), COUNT contacts, COUNT contact_info
     _fetchval_results: list[Any] = [
         "public.contacts_pre_migration_20260601" if contacts_snap_exists else None,
         "public.contact_info_pre_migration_20260601" if contact_info_snap_exists else None,
-        "relationship.facts" if facts_table_exists else None,
+        "relationship.entity_facts" if facts_table_exists else None,
         contacts_total,
         contact_info_total,
     ]
@@ -670,14 +670,14 @@ class TestPreflightMissingSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# 12. Preflight: missing relationship.facts table
+# 12. Preflight: missing relationship.entity_facts table
 # ---------------------------------------------------------------------------
 
 
 class TestPreflightMissingFactsTable:
     @pytest.mark.asyncio
     async def test_missing_facts_table_returns_1(self, tmp_path: Path) -> None:
-        """Returns exit code 1 when relationship.facts does not exist."""
+        """Returns exit code 1 when relationship.entity_facts does not exist."""
         mod = _load_module()
         pool = _make_pool(facts_table_exists=False)
         rc = await mod.run_backfill(

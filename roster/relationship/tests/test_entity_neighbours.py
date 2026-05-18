@@ -101,7 +101,7 @@ def _app_with_pool(
     Call sequence inside the endpoint:
       1. pool.fetchrow → owner entity check (None → 403)
       2. pool.fetchval → entity-exists check (None → 404)
-      3. pool.fetch    → relational triples from relationship.facts
+      3. pool.fetch    → relational triples from relationship.entity_facts
 
     ``owner_exists`` controls whether fetchrow returns an owner row.
     ``entity_exists`` controls whether fetchval returns a non-None value.

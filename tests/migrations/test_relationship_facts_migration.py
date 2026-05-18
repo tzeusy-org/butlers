@@ -1,4 +1,4 @@
-"""Tests for rel_013 relationship_facts Alembic migration.
+"""Tests for rel_013 entity_facts Alembic migration.
 
 Covers:
 1. Migration file structure and revision chain (unit — no DB required).
@@ -123,12 +123,12 @@ class TestUpgradeSQLShape:
         table_stmts = [s for s in sqls if "CREATE TABLE" in s.upper() and "facts" in s.lower()]
         assert table_stmts, "upgrade() must emit CREATE TABLE … facts"
         stmt = table_stmts[0]
-        assert "relationship.facts" in stmt, "Table must be schema-qualified as relationship.facts"
+        assert "relationship.entity_facts" in stmt, "Table must be schema-qualified as relationship.entity_facts"
 
     def test_table_has_id_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "id" in table_stmt.lower()
         assert "uuid" in table_stmt.lower()
@@ -137,7 +137,7 @@ class TestUpgradeSQLShape:
     def test_table_has_subject_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "subject" in table_stmt.lower()
         assert "uuid" in table_stmt.lower()
@@ -146,21 +146,21 @@ class TestUpgradeSQLShape:
     def test_table_has_predicate_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "predicate" in table_stmt.lower()
 
     def test_table_has_object_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "object" in table_stmt.lower()
 
     def test_table_has_object_kind_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "object_kind" in table_stmt.lower()
         assert "literal" in table_stmt.lower()
@@ -169,14 +169,14 @@ class TestUpgradeSQLShape:
     def test_table_has_src_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "src" in table_stmt.lower()
 
     def test_table_has_conf_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "conf" in table_stmt.lower()
         assert "1.0" in table_stmt  # default
@@ -184,7 +184,7 @@ class TestUpgradeSQLShape:
     def test_table_has_validity_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "validity" in table_stmt.lower()
         assert "active" in table_stmt
@@ -194,14 +194,14 @@ class TestUpgradeSQLShape:
     def test_table_has_verified_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "verified" in table_stmt.lower()
 
     def test_table_has_created_at_and_updated_at(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "created_at" in table_stmt.lower()
         assert "updated_at" in table_stmt.lower()
@@ -209,28 +209,28 @@ class TestUpgradeSQLShape:
     def test_table_has_last_seen_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "last_seen" in table_stmt.lower()
 
     def test_table_has_weight_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "weight" in table_stmt.lower()
 
     def test_table_has_primary_column(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "primary" in table_stmt.lower()
 
     def test_subject_references_public_entities(self) -> None:
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "public.entities" in table_stmt
 
@@ -286,7 +286,7 @@ class TestUpgradeSQLShape:
         assert "active" in stmt, "Unique index WHERE clause must reference 'active'"
 
     def test_table_has_no_scope_column(self) -> None:
-        """relationship.facts MUST NOT have a scope column.
+        """relationship.entity_facts MUST NOT have a scope column.
 
         Schema isolation is enforced via the ``relationship.`` schema prefix
         (RFC 0006), not a scope column.  Adding scope would break all Phase 2
@@ -294,12 +294,12 @@ class TestUpgradeSQLShape:
 
         Older migrations (rel_007, rel_010, rel_011, rel_012) reference
         ``AND scope = 'relationship'`` against the *memory module's* bare
-        ``facts`` table — NOT relationship.facts.  This test guards against
+        ``facts`` table — NOT relationship.entity_facts.  This test guards against
         confusing the two tables.
         """
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         # The CREATE TABLE DDL must not define a 'scope' column
         import re
@@ -313,23 +313,23 @@ class TestUpgradeSQLShape:
             col_lines = [ln.strip() for ln in col_block.split("\n") if ln.strip()]
             scope_cols = [ln for ln in col_lines if ln.lower().startswith("scope")]
             assert not scope_cols, (
-                "relationship.facts must NOT define a 'scope' column.  "
+                "relationship.entity_facts must NOT define a 'scope' column.  "
                 "Schema isolation is enforced via the relationship. prefix.  "
                 f"Found: {scope_cols}"
             )
 
     def test_table_has_subject_not_entity_id(self) -> None:
-        """relationship.facts uses 'subject' for the entity FK, not 'entity_id'.
+        """relationship.entity_facts uses 'subject' for the entity FK, not 'entity_id'.
 
         This prevents API code from accidentally using the memory module column
-        name 'entity_id' in queries against relationship.facts.
+        name 'entity_id' in queries against relationship.entity_facts.
         """
         sqls = _collect_upgrade_sqls()
         table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.facts" in s
+            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
         )
         assert "subject" in table_stmt.lower(), (
-            "relationship.facts must have a 'subject' column (entity FK)"
+            "relationship.entity_facts must have a 'subject' column (entity FK)"
         )
         # 'entity_id' must NOT appear as a column name in the CREATE TABLE body
         # (it may appear in FK constraints referencing public.entities, but not as a column name)
@@ -337,7 +337,7 @@ class TestUpgradeSQLShape:
         lines = [ln.strip().lower() for ln in table_stmt.split("\n")]
         entity_id_col_lines = [ln for ln in lines if ln.startswith("entity_id") and "uuid" in ln]
         assert not entity_id_col_lines, (
-            "relationship.facts must NOT define 'entity_id' as a column name.  "
+            "relationship.entity_facts must NOT define 'entity_id' as a column name.  "
             "Use 'subject' instead.  "
             f"Found lines: {entity_id_col_lines}"
         )
@@ -349,7 +349,7 @@ class TestDowngradeSQLShape:
     def test_downgrade_drops_facts_table(self) -> None:
         sqls = _collect_downgrade_sqls()
         drop_stmts = [s for s in sqls if "DROP TABLE" in s.upper()]
-        assert drop_stmts, "downgrade() must emit DROP TABLE for relationship.facts"
+        assert drop_stmts, "downgrade() must emit DROP TABLE for relationship.entity_facts"
         assert any("facts" in s.lower() for s in drop_stmts)
 
     def test_downgrade_does_not_drop_schema(self) -> None:
@@ -424,14 +424,14 @@ async def _run_downgrade(pool) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_table_exists_after_upgrade(provisioned_postgres_pool) -> None:
-    """relationship.facts table exists and has the expected columns after upgrade."""
+    """relationship.entity_facts table exists and has the expected columns after upgrade."""
     async with provisioned_postgres_pool() as pool:
         await _provision_prerequisites(pool)
         await _run_upgrade(pool)
 
         # Table exists
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.facts')")
-        assert table_oid is not None, "relationship.facts must exist after upgrade"
+        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
+        assert table_oid is not None, "relationship.entity_facts must exist after upgrade"
 
         # Expected columns
         rows = await pool.fetch(
@@ -439,7 +439,7 @@ async def test_table_exists_after_upgrade(provisioned_postgres_pool) -> None:
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'relationship'
-              AND table_name   = 'facts'
+              AND table_name   = 'entity_facts'
             ORDER BY column_name
             """
         )
@@ -461,14 +461,66 @@ async def test_table_exists_after_upgrade(provisioned_postgres_pool) -> None:
             "updated_at",
         }
         missing = required_columns - columns
-        assert not missing, f"Missing columns in relationship.facts: {missing}"
+        assert not missing, f"Missing columns in relationship.entity_facts: {missing}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_upgrade_tolerates_existing_memory_facts_table(
+    provisioned_postgres_pool,
+) -> None:
+    """rel_013 must not collide with the relationship memory module's facts table."""
+    async with provisioned_postgres_pool() as pool:
+        await _provision_prerequisites(pool)
+        await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+        await pool.execute("""
+            CREATE TABLE relationship.facts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                content TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'relationship',
+                entity_id UUID,
+                validity TEXT NOT NULL DEFAULT 'active'
+            )
+        """)
+
+        await _run_upgrade(pool)
+
+        legacy_columns = {
+            row["column_name"]
+            for row in await pool.fetch(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'relationship'
+                  AND table_name = 'facts'
+                """
+            )
+        }
+        triple_columns = {
+            row["column_name"]
+            for row in await pool.fetch(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'relationship'
+                  AND table_name = 'entity_facts'
+                """
+            )
+        }
+
+        assert "content" in legacy_columns
+        assert "object_kind" not in legacy_columns
+        assert {"subject", "predicate", "object", "object_kind", "src"} <= triple_columns
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_indexes_exist_after_upgrade(provisioned_postgres_pool) -> None:
-    """All required indexes exist on relationship.facts after upgrade."""
+    """All required indexes exist on relationship.entity_facts after upgrade."""
     async with provisioned_postgres_pool() as pool:
         await _provision_prerequisites(pool)
         await _run_upgrade(pool)
@@ -478,21 +530,21 @@ async def test_indexes_exist_after_upgrade(provisioned_postgres_pool) -> None:
             SELECT indexname
             FROM pg_indexes
             WHERE schemaname = 'relationship'
-              AND tablename  = 'facts'
+              AND tablename  = 'entity_facts'
             """
         )
         index_names = {r["indexname"] for r in rows}
 
         required_indexes = {
-            "idx_rf_subject_predicate",
-            "idx_rf_predicate_object_literal",
-            "idx_rf_predicate_active",
-            "idx_rf_last_seen",
-            "idx_rf_subject_has_active",
-            "uq_rf_spo_active",
+            "idx_ef_subject_predicate",
+            "idx_ef_predicate_object_literal",
+            "idx_ef_predicate_active",
+            "idx_ef_last_seen",
+            "idx_ef_subject_has_active",
+            "uq_ef_spo_active",
         }
         missing = required_indexes - index_names
-        assert not missing, f"Missing indexes on relationship.facts: {missing}"
+        assert not missing, f"Missing indexes on relationship.entity_facts: {missing}"
 
 
 @pytest.mark.integration
@@ -520,7 +572,7 @@ async def test_unique_partial_index_enforces_spo_idempotency(
         )
 
         insert = """
-            INSERT INTO relationship.facts
+            INSERT INTO relationship.entity_facts
                 (subject, predicate, object, object_kind, src)
             VALUES ($1, $2, $3, $4, $5)
         """
@@ -537,7 +589,7 @@ async def test_unique_partial_index_enforces_spo_idempotency(
         # Retracted triple with same SPO — must succeed (not covered by partial index)
         await pool.execute(
             """
-            INSERT INTO relationship.facts
+            INSERT INTO relationship.entity_facts
                 (subject, predicate, object, object_kind, src, validity)
             VALUES ($1, $2, $3, $4, $5, 'retracted')
         """,
@@ -550,7 +602,7 @@ async def test_unique_partial_index_enforces_spo_idempotency(
 
         # Verify: 1 active + 1 retracted row exist
         count = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.facts WHERE subject = $1", entity_id
+            "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1", entity_id
         )
         assert count == 2, f"Expected 2 rows (1 active + 1 retracted), got {count}"
 
@@ -559,14 +611,14 @@ async def test_unique_partial_index_enforces_spo_idempotency(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_downgrade_drops_table(provisioned_postgres_pool) -> None:
-    """relationship.facts is absent after downgrade."""
+    """relationship.entity_facts is absent after downgrade."""
     async with provisioned_postgres_pool() as pool:
         await _provision_prerequisites(pool)
         await _run_upgrade(pool)
         await _run_downgrade(pool)
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.facts')")
-        assert table_oid is None, "relationship.facts must be absent after downgrade"
+        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
+        assert table_oid is None, "relationship.entity_facts must be absent after downgrade"
 
 
 @pytest.mark.integration
@@ -599,8 +651,8 @@ async def test_upgrade_is_reversible(provisioned_postgres_pool) -> None:
         await _run_downgrade(pool)
         await _run_upgrade(pool)  # must not raise
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.facts')")
-        assert table_oid is not None, "relationship.facts must exist after second upgrade"
+        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
+        assert table_oid is not None, "relationship.entity_facts must exist after second upgrade"
 
 
 @pytest.mark.integration
@@ -623,7 +675,7 @@ async def test_upsert_on_conflict_pattern(provisioned_postgres_pool) -> None:
         )
 
         upsert = """
-            INSERT INTO relationship.facts
+            INSERT INTO relationship.entity_facts
                 (subject, predicate, object, object_kind, src)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (subject, predicate, object)
@@ -634,7 +686,7 @@ async def test_upsert_on_conflict_pattern(provisioned_postgres_pool) -> None:
         await pool.execute(upsert, entity_id, "knows", str(entity_id), "entity", "butler-b")
 
         rows = await pool.fetch(
-            "SELECT src, validity FROM relationship.facts WHERE subject = $1", entity_id
+            "SELECT src, validity FROM relationship.entity_facts WHERE subject = $1", entity_id
         )
         assert len(rows) == 1, f"Expected exactly 1 row after upsert; got {len(rows)}"
         assert rows[0]["validity"] == "active"

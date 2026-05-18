@@ -1,13 +1,13 @@
-"""Central writer for relationship.facts — single authoritative ingress point.
+"""Central writer for relationship.entity_facts — single authoritative ingress point.
 
-ALL writes to ``relationship.facts`` MUST go through
+ALL writes to ``relationship.entity_facts`` MUST go through
 :func:`relationship_assert_fact`.  No other butler MAY issue a direct
 ``INSERT`` or ``UPDATE`` to that table.
 
 Contract (Amendment 14 + spec §"Requirement: Central writer"):
 
 1. **Predicate validation** — rejected immediately if the predicate is not
-   present in ``relationship.predicate_registry``.
+   present in ``relationship.entity_predicate_registry``.
 
 2. **Idempotency on (subject, predicate, object)** — repeated calls with the
    same identity tuple produce exactly ONE active row.
@@ -64,7 +64,7 @@ class AssertResult:
     """Result returned by :func:`relationship_assert_fact`."""
 
     outcome: AssertOutcome
-    # UUID of the now-active row in relationship.facts (None for pending_approval).
+    # UUID of the now-active row in relationship.entity_facts (None for pending_approval).
     fact_id: uuid.UUID | None
     # action_id of the pending_actions row (only for pending_approval outcome).
     action_id: uuid.UUID | None = None
@@ -113,15 +113,15 @@ async def _is_owner_entity(
 
 
 async def _validate_predicate(conn: asyncpg.Connection, predicate: str) -> None:
-    """Raise ValueError if *predicate* is not in relationship.predicate_registry."""
+    """Raise ValueError if *predicate* is not in relationship.entity_predicate_registry."""
     exists = await conn.fetchval(
-        "SELECT EXISTS (SELECT 1 FROM relationship.predicate_registry WHERE predicate = $1)",
+        "SELECT EXISTS (SELECT 1 FROM relationship.entity_predicate_registry WHERE predicate = $1)",
         predicate,
     )
     if not exists:
         raise ValueError(
             f"Unknown predicate {predicate!r}: not registered in "
-            "relationship.predicate_registry. "
+            "relationship.entity_predicate_registry. "
             "Add it via migration or use one of the seeded predicate names."
         )
 
@@ -177,7 +177,7 @@ async def _upsert_fact(
     existing = await conn.fetchrow(
         """
         SELECT id, src, conf, verified, last_seen
-        FROM relationship.facts
+        FROM relationship.entity_facts
         WHERE subject   = $1
           AND predicate = $2
           AND object    = $3
@@ -206,7 +206,7 @@ async def _upsert_fact(
         # 3. Supersession: mark old row as superseded, insert new active row.
         await conn.execute(
             """
-            UPDATE relationship.facts
+            UPDATE relationship.entity_facts
             SET validity   = 'superseded',
                 updated_at = now()
             WHERE id = $1
@@ -215,7 +215,7 @@ async def _upsert_fact(
         )
         new_id = await conn.fetchval(
             """
-            INSERT INTO relationship.facts (
+            INSERT INTO relationship.entity_facts (
                 id, subject, predicate, object, object_kind,
                 src, conf, last_seen, weight, verified, "primary",
                 validity, created_at, updated_at
@@ -245,7 +245,7 @@ async def _upsert_fact(
     # this insert (e.g. concurrent calls from the reconciler).
     new_id = await conn.fetchval(
         """
-        INSERT INTO relationship.facts (
+        INSERT INTO relationship.entity_facts (
             id, subject, predicate, object, object_kind,
             src, conf, last_seen, weight, verified, "primary",
             validity, created_at, updated_at
@@ -382,10 +382,10 @@ async def relationship_assert_fact(
     primary: bool | None = None,
     conn: asyncpg.Connection | None = None,
 ) -> AssertResult:
-    """Assert a fact triple in ``relationship.facts``.
+    """Assert a fact triple in ``relationship.entity_facts``.
 
     This is the SINGLE authoritative ingress point for all writes to
-    ``relationship.facts``.  All endpoints that need to write a triple
+    ``relationship.entity_facts``.  All endpoints that need to write a triple
     (contacts CRUD, entity API, merge, archive, promote-tier, queue/dismiss,
     dual-write shim, backfill) MUST call this function.
 
@@ -396,7 +396,7 @@ async def relationship_assert_fact(
     subject:
         UUID of the subject entity (FK to ``public.entities.id``).
     predicate:
-        Predicate identifier.  Must exist in ``relationship.predicate_registry``.
+        Predicate identifier.  Must exist in ``relationship.entity_predicate_registry``.
     object:
         Object value: a literal string for contact predicates, or an entity
         UUID coerced to text for relational predicates.

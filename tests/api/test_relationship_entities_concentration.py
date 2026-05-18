@@ -10,9 +10,9 @@ the Docker-availability guard applied to roster/ integration tests.
 
 Acceptance criteria verified:
 - Weight aggregation + rollup (total, top3_share).
-- Predicate tabs enumerated from relationship.predicate_registry (kind='relational').
+- Predicate tabs enumerated from relationship.entity_predicate_registry (kind='relational').
 - Owner-only authz gate (Amendment 12b): 403 when no owner entity.
-- scope='relationship' AND validity='active' filter on ALL relationship.facts queries.
+- scope='relationship' AND validity='active' filter on ALL relationship.entity_facts queries.
 - ``?pred=`` selects active predicate; default is ``'knows'``.
 - Without ``?pred=``, returns predicate_tabs + default rollup.
 - Empty result returns items=[], rollup.total=0.
@@ -498,12 +498,12 @@ class TestProvenanceFields:
 
 
 class TestScopeFilter:
-    """relationship.facts queries must use schema prefix for isolation, NOT a scope column."""
+    """relationship.entity_facts queries must use schema prefix for isolation, NOT a scope column."""
 
     async def test_scope_column_absent_from_agg_sql(self):
-        """Aggregation SQL must NOT include AND scope='relationship' on relationship.facts.
+        """Aggregation SQL must NOT include AND scope='relationship' on relationship.entity_facts.
 
-        relationship.facts has no scope column.  Schema isolation is enforced
+        relationship.entity_facts has no scope column.  Schema isolation is enforced
         via the relationship. prefix (RFC 0006).
         """
         app, pool = _app_with_pool(agg_rows=[])
@@ -512,12 +512,12 @@ class TestScopeFilter:
         assert resp.status_code == 200
         # Aggregation SQL is the second fetch call (index 1).
         agg_sql = pool.fetch.call_args_list[1][0][0]
-        assert "relationship.facts" in agg_sql, (
-            "Aggregation SQL must use the schema-qualified name relationship.facts"
+        assert "relationship.entity_facts" in agg_sql, (
+            "Aggregation SQL must use the schema-qualified name relationship.entity_facts"
         )
         assert "scope = 'relationship'" not in agg_sql, (
             "Aggregation SQL must NOT filter AND scope='relationship'; that column does not exist "
-            "on relationship.facts"
+            "on relationship.entity_facts"
         )
 
     async def test_validity_active_filter_present_in_agg_sql(self):
@@ -529,7 +529,7 @@ class TestScopeFilter:
         assert "validity = 'active'" in agg_sql or "validity='active'" in agg_sql
 
     async def test_scope_filter_also_in_tab_sql(self):
-        """Tab query reads predicate_registry, NOT relationship.facts — no scope filter needed."""
+        """Tab query reads predicate_registry, NOT relationship.entity_facts — no scope filter needed."""
         app, pool = _app_with_pool(agg_rows=[])
         resp = await _get(app)
 

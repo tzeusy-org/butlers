@@ -255,7 +255,7 @@ class TestArchiveEntity:
         assert resp2.status_code == 204, f"Expected 204 on second archive call: {resp2.text}"
 
     async def test_archive_does_not_modify_facts_table(self):
-        """Archive does NOT cascade to relationship.facts — only the entity row is updated."""
+        """Archive does NOT cascade to relationship.entity_facts — only the entity row is updated."""
         app, mock_pool = _make_archive_app()
         await _post(app, _ARCHIVE_PATH)
 

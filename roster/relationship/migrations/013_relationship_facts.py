@@ -1,4 +1,4 @@
-"""relationship_facts: triple-store for contact and relational predicates.
+"""entity_facts: triple-store for contact and relational predicates.
 
 Revision ID: rel_013
 Revises: rel_012
@@ -6,7 +6,7 @@ Create Date: 2026-05-18 00:00:00.000000
 
 Phase: entity-redesign (bu-892tf).
 
-Creates ``relationship.facts`` — the canonical RDF (subject-predicate-object)
+Creates ``relationship.entity_facts`` — the canonical RDF (subject-predicate-object)
 triple store owned by the relationship butler.  This table supersedes
 ``public.contact_info`` as the canonical channel-identity registry and
 introduces a single, unified store for both contact predicates (``has-email``,
@@ -17,7 +17,7 @@ Schema
 ------
 id          UUID PK       gen_random_uuid()
 subject     UUID NOT NULL FK → public.entities(id)
-predicate   TEXT NOT NULL From relationship.predicate_registry
+predicate   TEXT NOT NULL From relationship.entity_predicate_registry
 object      TEXT NOT NULL Literal value or entity_id::text
 object_kind TEXT NOT NULL 'literal' | 'entity'
 src         TEXT NOT NULL Authoring butler slug
@@ -32,15 +32,15 @@ updated_at  TIMESTAMPTZ   NOT NULL DEFAULT now()
 
 Indexes
 -------
-idx_rf_subject_predicate        (subject, predicate)
-idx_rf_predicate_object_literal (predicate, object) WHERE object_kind='literal'
-idx_rf_predicate_active         (predicate) WHERE validity='active'
-idx_rf_last_seen                (last_seen DESC)
-idx_rf_subject_has_active       (subject) WHERE validity='active' AND predicate LIKE 'has-%'
+idx_ef_subject_predicate        (subject, predicate)
+idx_ef_predicate_object_literal (predicate, object) WHERE object_kind='literal'
+idx_ef_predicate_active         (predicate) WHERE validity='active'
+idx_ef_last_seen                (last_seen DESC)
+idx_ef_subject_has_active       (subject) WHERE validity='active' AND predicate LIKE 'has-%'
 
 Uniqueness (partial index)
 --------------------------
-uq_rf_spo_active  UNIQUE (subject, predicate, object) WHERE validity='active'
+uq_ef_spo_active  UNIQUE (subject, predicate, object) WHERE validity='active'
 
 This partial index supports the central writer's idempotency contract
 (Amendment 14): ``INSERT … ON CONFLICT (subject, predicate, object)
@@ -56,7 +56,7 @@ that land in later migrations (e.g. predicate_registry, credentials).
 
 Grants
 ------
-SELECT, INSERT, UPDATE, DELETE on relationship.facts granted to
+SELECT, INSERT, UPDATE, DELETE on relationship.entity_facts granted to
 butler_relationship_rw only.  Other butlers access facts exclusively through
 the relationship butler's MCP tool surface (RFC 0006 schema isolation).
 """
@@ -72,7 +72,7 @@ depends_on = None
 
 _RELATIONSHIP_ROLE = "butler_relationship_rw"
 _TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE"
-_TABLE_FQN = "relationship.facts"
+_TABLE_FQN = "relationship.entity_facts"
 
 
 def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
@@ -104,7 +104,7 @@ def upgrade() -> None:
 
     # 2. Create the facts table.
     op.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.facts (
+        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
             id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
             subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
             predicate   TEXT        NOT NULL,
@@ -127,36 +127,36 @@ def upgrade() -> None:
 
     # Primary access pattern — outbound fact lookup for a subject.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_rf_subject_predicate
-            ON relationship.facts (subject, predicate)
+        CREATE INDEX IF NOT EXISTS idx_ef_subject_predicate
+            ON relationship.entity_facts (subject, predicate)
     """)
 
     # Reverse-lookup for ingestion routing:
     # "incoming Telegram chat 12345 → which entity"
     # Partial on object_kind='literal' keeps the index tight.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_rf_predicate_object_literal
-            ON relationship.facts (predicate, object)
+        CREATE INDEX IF NOT EXISTS idx_ef_predicate_object_literal
+            ON relationship.entity_facts (predicate, object)
             WHERE object_kind = 'literal'
     """)
 
     # Concentration aggregation — enumerate all active facts for a predicate.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_rf_predicate_active
-            ON relationship.facts (predicate)
+        CREATE INDEX IF NOT EXISTS idx_ef_predicate_active
+            ON relationship.entity_facts (predicate)
             WHERE validity = 'active'
     """)
 
     # Stale detection and Finder tie-break.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_rf_last_seen
-            ON relationship.facts (last_seen DESC)
+        CREATE INDEX IF NOT EXISTS idx_ef_last_seen
+            ON relationship.entity_facts (last_seen DESC)
     """)
 
     # Contacts endpoint — all active has-* facts for a subject.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_rf_subject_has_active
-            ON relationship.facts (subject)
+        CREATE INDEX IF NOT EXISTS idx_ef_subject_has_active
+            ON relationship.entity_facts (subject)
             WHERE validity = 'active'
               AND predicate LIKE 'has-%'
     """)
@@ -165,8 +165,8 @@ def upgrade() -> None:
     # Supports: INSERT … ON CONFLICT (subject, predicate, object)
     #           WHERE validity='active' DO UPDATE
     op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_rf_spo_active
-            ON relationship.facts (subject, predicate, object)
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
+            ON relationship.entity_facts (subject, predicate, object)
             WHERE validity = 'active'
     """)
 
@@ -177,13 +177,13 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Drop indexes explicitly (they cascade with DROP TABLE, but being
     # explicit is clearer and consistent with the upgrade path).
-    op.execute("DROP INDEX IF EXISTS relationship.uq_rf_spo_active")
-    op.execute("DROP INDEX IF EXISTS relationship.idx_rf_subject_has_active")
-    op.execute("DROP INDEX IF EXISTS relationship.idx_rf_last_seen")
-    op.execute("DROP INDEX IF EXISTS relationship.idx_rf_predicate_active")
-    op.execute("DROP INDEX IF EXISTS relationship.idx_rf_predicate_object_literal")
-    op.execute("DROP INDEX IF EXISTS relationship.idx_rf_subject_predicate")
-    op.execute("DROP TABLE IF EXISTS relationship.facts")
+    op.execute("DROP INDEX IF EXISTS relationship.uq_ef_spo_active")
+    op.execute("DROP INDEX IF EXISTS relationship.idx_ef_subject_has_active")
+    op.execute("DROP INDEX IF EXISTS relationship.idx_ef_last_seen")
+    op.execute("DROP INDEX IF EXISTS relationship.idx_ef_predicate_active")
+    op.execute("DROP INDEX IF EXISTS relationship.idx_ef_predicate_object_literal")
+    op.execute("DROP INDEX IF EXISTS relationship.idx_ef_subject_predicate")
+    op.execute("DROP TABLE IF EXISTS relationship.entity_facts")
     # NOTE: we intentionally do NOT drop the relationship schema here.
     # Other relationship-butler tables (predicate_registry, credentials) may
     # coexist in the schema, and this migration does not own them.

@@ -9,7 +9,7 @@ plan in `openspec/changes/relationship-tabs-to-entities/specs/relationship-facts
 ## Summary
 
 The 3-table identity registry (`public.entities` + `public.contacts` + `public.contact_info`)
-collapses to a 2-table model: `public.entities` (unchanged) + `relationship.facts`
+collapses to a 2-table model: `public.entities` (unchanged) + `relationship.entity_facts`
 (new triple store). `resolve_contact_by_channel()` is re-pointed per
 `relationship-facts/spec.md` Requirement: Switchboard `resolve_contact_by_channel()`
 re-points to triples.

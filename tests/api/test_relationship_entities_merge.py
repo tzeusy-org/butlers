@@ -9,8 +9,8 @@ Acceptance criteria verified:
 - Owner-only gate (Amendment 12a): HTTP 403 + {"code": "owner_required"} for non-owners.
 - keepAs='A' keeps entityA, tombstones entityB.
 - keepAs='B' keeps entityB, tombstones entityA.
-- Subject-side rewire: relationship.facts rows with subject=source → subject=target.
-- Object-side rewire: relationship.facts rows with object_kind='entity' AND object=source → target.
+- Subject-side rewire: relationship.entity_facts rows with subject=source → subject=target.
+- Object-side rewire: relationship.entity_facts rows with object_kind='entity' AND object=source → target.
 - Tombstone: source entity metadata gains merged_into = str(target_id).
 - 404 when either entity is missing.
 - 404 when source entity is already tombstoned.
