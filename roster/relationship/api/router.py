@@ -112,6 +112,9 @@ if _models_path.exists():
         PromoteTierRequest = _models_module.PromoteTierRequest
         PromoteTierResponse = _models_module.PromoteTierResponse
         _VALID_PROMOTE_TIERS = _models_module._VALID_PROMOTE_TIERS
+        DismissQueueRequest = _models_module.DismissQueueRequest
+        DismissQueueItemResult = _models_module.DismissQueueItemResult
+        DismissQueueResponse = _models_module.DismissQueueResponse
 
 logger = logging.getLogger(__name__)
 
@@ -3153,6 +3156,104 @@ async def get_entities_queue(
         limit=limit,
         offset=offset,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/queue/dismiss — dismiss entity from curation queue (bu-297lj)
+# ---------------------------------------------------------------------------
+
+#: Predicate written by the dismiss endpoint (state-marker triple).
+_QUEUE_DISMISSED_PREDICATE = "queue.dismissed"
+
+#: Literal object value for a queue-dismissed triple.
+_QUEUE_DISMISSED_OBJECT = "dismissed"
+
+
+@router.post(
+    "/entities/queue/dismiss",
+    response_model=DismissQueueResponse,
+)
+async def dismiss_queue_entity(
+    body: DismissQueueRequest,
+    fastapi_response: Response,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> DismissQueueResponse:
+    """Dismiss a single entity from the curation queue.
+
+    Writes a ``queue.dismissed`` state-marker triple via the central writer
+    ``relationship_assert_fact()``.  The triple has the form::
+
+        subject  = body.entity_id
+        predicate = 'queue.dismissed'
+        object   = 'dismissed'
+
+    The operation is idempotent: re-dismissing an already-dismissed entity
+    returns ``outcome='unchanged'`` without modifying any rows.
+
+    **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    **Owner entity carve-out (RFC 0017 §2.3):** when the target entity has the
+    ``'owner'`` role, the central writer parks the write as a ``pending_actions``
+    row.  In this case the endpoint returns HTTP 202 with
+    ``status='pending_approval'`` and the per-entity ``action_id`` set.
+
+    **Error codes:**
+    - ``403`` — owner entity not registered (Amendment 12a).
+    - ``404`` — entity does not exist in ``public.entities``.
+    - ``422`` — predicate not registered (should not happen in production;
+      indicates a missing migration).
+    """
+    from butlers.tools.relationship.relationship_assert_fact import (
+        AssertOutcome,
+        relationship_assert_fact,
+    )
+
+    pool = _pool(db)
+
+    # Amendment 12a: owner-only write gate (roles-aware, see _get_owner_roles).
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
+
+    # Entity existence check.
+    entity_row = await pool.fetchrow(
+        "SELECT id FROM public.entities WHERE id = $1",
+        body.entity_id,
+    )
+    if entity_row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    # Write the state-marker triple via the central writer.
+    try:
+        result = await relationship_assert_fact(
+            pool,
+            subject=body.entity_id,
+            predicate=_QUEUE_DISMISSED_PREDICATE,
+            object=_QUEUE_DISMISSED_OBJECT,
+            src="relationship",
+            object_kind="literal",
+            conf=1.0,
+            verified=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_predicate", "message": str(exc)},
+        )
+
+    item = DismissQueueItemResult(
+        entity_id=body.entity_id,
+        outcome=result.outcome.value,
+        fact_id=result.fact_id,
+        action_id=result.action_id,
+    )
+
+    if result.outcome == AssertOutcome.pending_approval:
+        fastapi_response.status_code = 202
+        return DismissQueueResponse(dismissed=[item], status="pending_approval")
+
+    return DismissQueueResponse(dismissed=[item], status="ok")
 
 
 # ---------------------------------------------------------------------------
