@@ -12,6 +12,7 @@ Phase 0 of `butlers-redesign-prompt` reads this table first. The skill resolves 
 | `qa` | `qa-redesign/` | Ready | `/qa` page (dossier + patrol journal). |
 | `settings` | `settings-refactor/` | Ready (non-canonical) | `/settings` + `/approvals`. Uses `PLAN.md` instead of `IMPLEMENTATION.md` + `*_HANDOFF.md`. Skill must tolerate. |
 | `butler-detail` | `specific-butler-page-redesign/` | Draft | `/butlers/{name}` detail page. Missing `DESIGN_LANGUAGE.md`; intent capture sparse. Skill should warn before proceeding. |
+| `entity` | `entity-redesign/` | Ready (non-canonical) | `/entities` surface: Index + queue rail, `/hop`, `/columns`, `/concentration`, Editorial+Workbench detail, app-wide Cmd-K Finder. Folds `/contacts` into `/entities?has=contact`. Uses `README.md` instead of `IMPLEMENTATION.md`; per-page recipes under `prompts/00-07.md`; `DESIGN_LANGUAGE.md` lives under `reference/`. Skill must tolerate. |
 | `overview` | `overview/` (top level) | Reference | Cross-cutting design assets shared across redesigns. **Not a redesign**; do not pass as slug. |
 | — | `dispatch-kit/` | **System (refuse)** | Design system / portable toolkit, not a redesign of a specific page. Skill refuses this slug. |
 | — | `design-canvas.jsx`, `data.jsx`, etc. (top level) | **System (refuse)** | Cross-cutting primitives and canvases. Not redesigns. |

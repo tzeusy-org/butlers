@@ -53,3 +53,146 @@
 - [ ] 7.2 Manually verify on the dev environment: navigate to `/butlers-dev/relationship/entities/<owner-entity-id>`; confirm all five tabs populate with real data (notes, interactions, gifts/loans if any, timeline); navigate to a contact detail page and confirm the tab block is gone and the "View entity activity →" link routes correctly. Check that pre-existing gift/loan facts with previously-NULL entity_ids now appear on the entity tabs after backfill.
 - [ ] 7.3 Author the migration outcome report under `docs/reports/relationship-tabs-to-entities.md` capturing: before/after fact counts visible on the dashboard for a representative contact, count of orphan gift/loan facts backfilled, lines of code deleted, tables dropped, spec deltas archived, and any unexpected findings from task 5.1-5.3 grep audits.
 - [ ] 7.4 Run `openspec apply` on this change once all tasks are complete and tests pass; archive the change once approved.
+
+---
+
+## Phase 2 extension (2026-05-17) — entity redesign
+
+Added by `/project-direction` Phase 2 for the entity-redesign feature. Tasks 8-12 below
+extend the change with the entity-redesign scope per Brief §6b Phase 1 amendments.
+
+## 8. Frontend — new sub-routes and detail-mode toggle
+
+- [ ] 8.1 Add `/entities` route in `frontend/src/router.tsx`; create `EntitiesIndexPage.tsx`
+  with tabular list, filter chips, SubpageTabs strip, and right rail. Effort: **L**.
+  Blocked by: 9.1, 9.5 (queue endpoint).
+- [ ] 8.2 Add `/entities/hop` route + `HopPage.tsx` with re-centre graph fan-out. Effort: **M**.
+  Blocked by: 9.2 (neighbours endpoint).
+- [ ] 8.3 Add `/entities/columns` route + `ColumnsPage.tsx` client-side cascade via chained
+  `/neighbours` calls (no new server endpoint). Effort: **M**. Blocked by: 9.2.
+- [ ] 8.4 Add `/entities/concentration` route + `ConcentrationPage.tsx` with predicate tabs
+  enumerated from `predicate_registry`. Effort: **M**. Blocked by: 9.3 (concentration endpoint).
+- [ ] 8.5 Refactor existing `SocialMapPage.tsx` into `SocialMapView` component so SubpageTabs
+  chrome wraps it without duplication. Effort: **S**.
+- [ ] 8.6 Add `SubpageTabs` component in `frontend/src/components/relationship/` wrapping
+  React Router links (Index/Hop/Columns/Concentration/Social-map). Effort: **S**.
+- [ ] 8.7 Extend `EntityDetailView.tsx` (task 4.2) to render Editorial vs Workbench modes,
+  with `<Page archetype="detail">` vs `<Page archetype="workspace">` and `localStorage`
+  persistence under `entities.detail.mode`. Effort: **L**. Blocked by: `page-primitive-spec-sync`
+  archived (cross-change dep).
+- [ ] 8.8 Add `frontend/src/lib/entity-glosses.ts` strict enum `(tier, state, category) →
+  string`. Build-time validation: missing combinations fail the build. Effort: **M**.
+- [ ] 8.9 Add `frontend/src/components/ui/EntityMark.tsx`, `TierBadge.tsx`, `StateDot.tsx`,
+  `KbMono.tsx`, `Pill.tsx` per Brief §2 classification table. Effort: **M**.
+- [ ] 8.10 Add `301` redirect rule `/contacts → /entities?has=contact` in
+  `frontend/src/router.tsx`; remove Contacts entry from `nav-config.ts`; add
+  has=contact filter chip on the Index page. Effort: **S**.
+- [ ] 8.11 Add Cmd-K finder component (cmdk 1.1.1 already in deps) wired to
+  `/api/butlers/relationship/entities/search`. Entity-first result ordering per
+  Phase 1 Open Question 14. Effort: **M**. Blocked by: 9.6.
+
+## 9. Backend — entity API endpoints
+
+- [ ] 9.1 `GET /api/butlers/relationship/entities` (list + filter + pagination over
+  `public.entities`, joining `relationship.facts` for `has=contact` filter). Effort: **M**.
+  Blocked by: 10.1 (facts table) for `has=contact`.
+- [ ] 9.2 `GET /api/butlers/relationship/entities/{id}/neighbours` (relational triples grouped
+  by predicate, both directions). Effort: **M**. Blocked by: 10.1.
+- [ ] 9.3 `GET /api/butlers/relationship/entities/concentration?pred=` (weight aggregation +
+  rollup). Effort: **M**. Blocked by: 10.1.
+- [ ] 9.4 `GET /api/butlers/relationship/entities/{id}/contacts` + `POST` + `DELETE`
+  (contact-fact CRUD via `relationship_assert_fact()`). Effort: **M**. Blocked by: 10.3.
+- [ ] 9.5 `GET /api/butlers/relationship/entities/queue` (union of unidentified +
+  duplicate-candidate + stale; deterministic dup-detection by shared `has-email`/`has-phone`
+  values). Effort: **L**. Blocked by: 10.1.
+- [ ] 9.6 `GET /api/butlers/relationship/entities/search` (rule-based ranking per
+  `pr/overview/entity-redesign/prompts/07-finder.md §7.5`; NO LLM, NO embedding service —
+  enforced by guardrail test). Effort: **M**. Blocked by: 10.1.
+- [ ] 9.7 `POST /api/butlers/relationship/entities` (promote unidentified → canonical entity).
+  Effort: **S**.
+- [ ] 9.8 `POST /api/butlers/relationship/entities/{id}/promote-tier` (writes a
+  `dunbar_tier_override` triple via `relationship_assert_fact()` per Phase 1 Amendment 6,
+  NOT a column write). Effort: **S**. Blocked by: 10.3.
+- [ ] 9.9 `POST /api/butlers/relationship/entities/{id}/archive` and `DELETE
+  /api/butlers/relationship/entities/{id}` (forget with tombstone). Effort: **S**.
+- [ ] 9.10 `POST /api/butlers/relationship/entities/{id}/merge` (entity-level merge;
+  rewires triples; tombstones source). Effort: **M**. Blocked by: 10.1.
+- [ ] 9.11 `POST /api/butlers/relationship/entities/queue/dismiss`. Effort: **S**.
+- [ ] 9.12 `GET /api/butlers/relationship/entities/{id}/activity` aggregator (relationship
+  facts + chronicler `chronicler_list_episodes` MCP call). Effort: **M**. Blocked by:
+  10.1, 10.5.
+
+## 10. Backend — data model `relationship.facts`
+
+- [ ] 10.1 Create Alembic migration for `relationship.facts` table per
+  `specs/relationship-facts/spec.md` (columns, indexes, uniqueness). Effort: **M**.
+- [ ] 10.2 Create `relationship.predicate_registry` table; seed contact + relational +
+  override predicate sets. Effort: **S**. Blocked by: 10.1.
+- [ ] 10.3 Implement `relationship_assert_fact()` MCP tool (predicate validation, dedup,
+  supersession, provenance enforcement). Effort: **M**. Blocked by: 10.1, 10.2.
+- [ ] 10.4 Create `relationship.credentials` table (carve-out for `secured=true` rows);
+  move credential read path off `public.contact_info`. Effort: **M**.
+- [ ] 10.5 Author chronicler-boundary guardrail test
+  `roster/relationship/tests/test_chronicler_boundary.py`: scan router source for
+  `FROM chronicler.` / `JOIN chronicler.` / `import chronicler.models` — fail if found
+  (mirrors `rfcs/0014:178` invariant style). Effort: **S**.
+- [ ] 10.6 Author RFC 0004 amendment text at
+  `rfc-amendments/0004-amendment-2-contacts-as-triples.md` (done). Apply amendment to
+  `about/legends-and-lore/rfcs/0004-identity-and-contact-resolution.md` during archive.
+  Effort: **S**.
+- [ ] 10.7 Re-point `src/butlers/identity.py:resolve_contact_by_channel()` to query
+  `relationship.facts`; update `build_identity_preamble()` to drop `contact_id`. Effort: **M**.
+  Blocked by: 10.1, dual-write shim live (see migration beads).
+- [ ] 10.8 Add Finder no-LLM guardrail test scanning the search handler for any
+  `anthropic`, `openai`, embedding-service import or call. Effort: **S**. Blocked by: 9.6.
+
+## 11. Migration — cross-references to verification beads
+
+The contacts → triples migration is governed by **the 10 verification beads enumerated in
+Phase 1 Amendment 1.1.C** (Brief §6b Amendment 1.1). These beads are created and tracked
+in the beads graph by `/project-direction` Phase 3; they are NOT tasks under this change.
+This section enumerates the cross-references so reviewers can trace coverage:
+
+- **Migration bead 1**: pre-migration snapshot + row-count baseline
+  → blocks: 10.3, 9.4, 9.5, 9.6, 10.7
+- **Migration bead 2**: write-path inventory
+  → blocks: 10.3, 10.7
+- **Migration bead 3**: central writer MCP tool (`relationship_assert_fact()`)
+  → satisfied by task 10.3
+- **Migration bead 4**: dual-write shim per writer
+  → blocks: 10.7 (read-path cut-over)
+- **Migration bead 5**: backfill triples from `public.contact_info`
+  → blocks: 9.4, 9.5, 9.6 (frontend can read after this)
+- **Migration bead 6**: parity tests
+  → blocks: 10.7
+- **Migration bead 7**: read-path cut-over (Switchboard, MCP read tools)
+  → satisfied by task 10.7
+- **Migration bead 8**: write-path cut-over (remove dual-write shims)
+  → unblocks `public.contact_info` deprecation
+- **Migration bead 9**: post-cut-over verification report
+  → 30 days after bead 8
+- **Migration bead 10**: drop `public.contact_info` (gated)
+  → after bead 9 sign-off
+
+Each migration bead carries `[depends on Amendment 1.1 bead: <bead-title>]` style
+upstream references in the beads graph; tasks 10.3, 10.7 above carry the corresponding
+`blocked-by` references at the task level.
+
+## 12. Documentation
+
+- [ ] 12.1 RFC 0004 amendment (per task 10.6). Effort: **S**.
+- [ ] 12.2 RFC 0007 namespace note: confirm all new endpoints live under
+  `/api/butlers/relationship/entities/*` per Phase 1 Amendment 2; no RFC 0007 amendment
+  needed (existing auto-discovery prefix per `rfcs/0007:31` already covers them). Effort: **XS**.
+- [ ] 12.3 Update `about/heart-and-soul/design-language.md` (if needed) to clarify the
+  editorial-archetype vs workspace-archetype distinction for EntityDetailPage Editorial
+  vs Workbench (per Phase 1 Amendment 7). Effort: **S**.
+- [ ] 12.4 Add to `about/lay-and-land/` a note clarifying the module-vs-butler distinction
+  (resolves Phase 1 Open Question 25 / Phase D documentation drift). Effort: **S**.
+- [ ] 12.5 Verify chronicler MCP tool surface: confirm `chronicler_list_episodes` accepts
+  an `entity_id` filter; if not, file a follow-up bead for chronicler to add the filter
+  parameter. Effort: **XS**. Blocked by: nothing.
+- [ ] 12.6 Author final report at `docs/reports/entity-redesign-phase-2.md` (extends the
+  existing report from task 7.3) covering: routes shipped, endpoints shipped, migration
+  bead status, anti-temptation guardrail test results, before/after entity-count metrics,
+  EntityMark inventory.

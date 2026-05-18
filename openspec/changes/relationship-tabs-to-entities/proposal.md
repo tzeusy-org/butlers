@@ -59,3 +59,32 @@ None. Gift/loan tool contracts are already specified by `butler-relationship` an
 - Typed contact-to-contact `relationships` re-anchoring to entity edge facts. Documented in design.md as a known future cleanup; the `relationships` array on the contact detail response is preserved as-is.
 - `contact_task` and `reminder` predicate writers — not surfaced by the Notes/Interactions/Gifts/Loans/Timeline tabs.
 - Updating the existing `feed_get` MCP tool to remove `activity` from its predicate list. The tool's contract still references `activity` for historical fact retrieval; the new Timeline endpoint is independent of `feed_get` and intentionally excludes the retired predicate.
+
+## Phase 2 extension (2026-05-17) — entity redesign
+
+Added by `/project-direction` Phase 2 for the entity-redesign feature. The brief at
+`docs/redesigns/2026-05-17-entity-brief.md` (binding §0 design intent, binding §6b Phase 1
+amendments) drives this extension.
+
+- **NEW**: Introduce `relationship.facts` triple store as the canonical RDF registry for
+  contact and relational predicates, superseding RFC 0004 §3. Migration follows the
+  10-step dual-write / cut-over protocol in `specs/relationship-facts/spec.md`
+  Requirement: Migration safety. Zero data loss is mandatory.
+- **NEW**: Add five new sub-routes (`/entities`, `/entities/hop`, `/entities/columns`,
+  `/entities/concentration`, plus `/entities/social-map` preserved) and the
+  Editorial/Workbench detail-mode toggle per `specs/dashboard-relationship/spec.md`
+  Phase 2 extension section.
+- **NEW**: App-wide Cmd-K Finder backed by `GET /api/butlers/relationship/entities/search`
+  (deterministic rule-based ranking only — no LLM, no embedding service).
+- **NEW**: Curation queue right rail at `/entities` backed by
+  `GET /api/butlers/relationship/entities/queue`.
+- **NEW**: Activity aggregator at `GET /api/butlers/relationship/entities/{id}/activity`
+  calling chronicler MCP tools (no direct SQL into `chronicler.*`).
+- **NEW**: RFC 0004 Amendment 2 (`rfc-amendments/0004-amendment-2-contacts-as-triples.md`)
+  applied during change archive.
+- **NEW**: Detail-page voice glosses are canned strings (`frontend/src/lib/entity-glosses.ts`
+  strict enum keyed on `(tier, state, category)`). No LLM call per page load.
+
+The Phase 2 extension scope is significantly larger than the original tactical bug fix.
+Reviewers may choose to split this change into a sibling change (`entity-redesign-dispatch`)
+during review; the deltas are written in a way that supports splitting.
