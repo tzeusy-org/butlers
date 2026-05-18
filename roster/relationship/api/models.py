@@ -802,3 +802,94 @@ class QueueResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ---------------------------------------------------------------------------
+# Entity concentration models (entity-redesign Phase 2, bu-0vosj)
+# ---------------------------------------------------------------------------
+
+
+class PredicateTab(BaseModel):
+    """A predicate tab enumerated from ``relationship.predicate_registry``.
+
+    Only predicates with ``kind='relational'`` are surfaced as concentration
+    tabs (contact predicates like ``has-email`` do not produce meaningful
+    weight aggregations for the balance-sheet view).
+
+    ``predicate`` is the stable identifier (e.g. ``'knows'``).
+    ``label`` is the human-readable display label (e.g. ``'Knows'``).
+    ``description`` is an optional long-form description from the registry.
+    """
+
+    predicate: str
+    label: str
+    description: str | None = None
+
+
+class ConcentrationEntry(BaseModel):
+    """One row in the concentration balance-sheet for a given predicate.
+
+    ``entity_id`` identifies the entity being aggregated.
+    ``canonical_name`` is the entity's display name.
+    ``weight_sum`` is the sum of ``weight`` values across all active triples
+    for this entity and predicate (NULLs are treated as 1 per triple so that
+    every edge contributes to the aggregate).
+    ``fact_count`` is the raw count of active triples (before weight).
+    ``share`` is ``weight_sum / total_weight_sum`` (0.0–1.0); ``null`` when
+    ``total_weight_sum = 0``.
+    ``last_seen`` is the most-recent ``last_seen`` across all contributing
+    triples, or ``null`` if none carry a timestamp.
+
+    Provenance fields are included per the Provenance contract in
+    ``specs/dashboard-relationship/spec.md`` — all six fields are always
+    present; nullable fields are explicit nulls when absent.  For aggregated
+    rows, provenance is taken from the most-recent contributing triple (the
+    same triple whose ``last_seen`` surfaces above).
+    """
+
+    entity_id: UUID
+    canonical_name: str
+    weight_sum: int
+    fact_count: int
+    share: float | None = None
+    last_seen: datetime | None = None
+    # Provenance from the most-recent contributing triple.
+    src: str
+    conf: float
+    verified: bool
+    primary: bool | None = None
+
+
+class ConcentrationRollup(BaseModel):
+    """Header rollup for the concentration page.
+
+    ``total`` is the sum of all ``weight_sum`` values across all entities for
+    the active predicate.
+    ``top3_share`` is the combined share of the top-3 entities by weight
+    (``top3_weight_sum / total``); ``null`` when ``total = 0`` or fewer than
+    one entity exists.
+    """
+
+    total: int
+    top3_share: float | None = None
+
+
+class ConcentrationResponse(BaseModel):
+    """Response for ``GET /entities/concentration?pred=<predicate>``.
+
+    ``predicate`` echoes the active predicate (the one whose data is in
+    ``items``).
+    ``items`` is the sorted list of concentration entries (descending by
+    ``weight_sum``, then ``canonical_name ASC`` for stability).
+    ``rollup`` carries the header summary (total weight and top-3 share).
+    ``predicate_tabs`` lists all relational predicates from the registry so
+    the frontend can render the tab strip without a separate API call.
+    ``total`` is the number of entities in ``items`` (no pagination — the
+    concentration view is not paginated; the full ranking is returned).
+    """
+
+    predicate: str
+    items: list[ConcentrationEntry]
+    rollup: ConcentrationRollup
+    predicate_tabs: list[PredicateTab]
+    total: int

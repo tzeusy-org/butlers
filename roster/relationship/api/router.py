@@ -94,6 +94,10 @@ if _models_path.exists():
         SearchResponse = _models_module.SearchResponse
         QueueEntry = _models_module.QueueEntry
         QueueResponse = _models_module.QueueResponse
+        PredicateTab = _models_module.PredicateTab
+        ConcentrationEntry = _models_module.ConcentrationEntry
+        ConcentrationRollup = _models_module.ConcentrationRollup
+        ConcentrationResponse = _models_module.ConcentrationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2983,6 +2987,208 @@ async def get_entities_queue(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/concentration — weight aggregation by predicate (bu-0vosj)
+# ---------------------------------------------------------------------------
+
+#: Default predicate for the concentration view when no ``?pred=`` is given.
+_CONCENTRATION_DEFAULT_PREDICATE = "knows"
+
+
+@router.get("/entities/concentration", response_model=ConcentrationResponse)
+async def get_entities_concentration(
+    pred: str = Query(
+        _CONCENTRATION_DEFAULT_PREDICATE,
+        description=(
+            "Relational predicate to aggregate.  Must be a predicate registered in "
+            "``relationship.predicate_registry`` with ``kind='relational'``.  "
+            "Defaults to ``'knows'``."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConcentrationResponse:
+    """Return a balance-sheet of weight aggregation for a relational predicate.
+
+    Aggregates all active ``relationship.facts`` triples for the given
+    ``pred`` (predicate), grouping by subject entity.  Each row shows the
+    entity's total edge weight for that predicate, its share of the overall
+    weight sum, and provenance from the most-recent contributing triple.
+
+    **Owner-only authz gate (Clause 12b, Amendment 12b):** returns HTTP 403
+    with ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    **Predicate tabs:** the response always includes ``predicate_tabs`` — the
+    full list of relational predicates from ``relationship.predicate_registry``
+    — so the frontend can render the tab strip without a separate request.
+
+    **Aggregation logic:** ``weight_sum`` is the SUM of fact ``weight`` values,
+    treating NULLs as 1 (so every edge contributes at least 1 to the aggregate
+    even when ``weight`` is not set).  ``fact_count`` is the raw row count.
+
+    **Sort order:** ``weight_sum DESC``, then ``canonical_name ASC`` for
+    stability.  The full ranked list is returned (no pagination); callers
+    should expect O(entity_count) rows.
+
+    **Scope filter:** only facts with ``validity='active' AND
+    scope='relationship'`` are included (confirmed pattern from PRs #1772-1775).
+
+    Response shape::
+
+        {
+          "predicate": "knows",
+          "items": [
+            {
+              "entity_id": "<uuid>",
+              "canonical_name": "Alice",
+              "weight_sum": 12,
+              "fact_count": 4,
+              "share": 0.48,
+              "last_seen": "<iso-datetime>",
+              "src": "relationship",
+              "conf": 1.0,
+              "verified": false,
+              "primary": null
+            },
+            ...
+          ],
+          "rollup": {"total": 25, "top3_share": 0.88},
+          "predicate_tabs": [
+            {"predicate": "knows", "label": "Knows", "description": null},
+            ...
+          ],
+          "total": 5
+        }
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12b).
+    await _assert_owner_entity_exists(pool)
+
+    # -------------------------------------------------------------------
+    # 1. Fetch predicate tabs from registry (kind='relational').
+    # -------------------------------------------------------------------
+    tab_rows = await pool.fetch(
+        """
+        SELECT predicate, label, description
+        FROM relationship.predicate_registry
+        WHERE kind = 'relational'
+        ORDER BY label ASC
+        """
+    )
+    predicate_tabs = [
+        PredicateTab(
+            predicate=r["predicate"],
+            label=r["label"],
+            description=r["description"],
+        )
+        for r in tab_rows
+    ]
+
+    # Validate that the requested predicate is relational; default silently
+    # to the first relational predicate if pred is unknown or not relational.
+    known_relational = {t.predicate for t in predicate_tabs}
+    active_predicate = pred if pred in known_relational else _CONCENTRATION_DEFAULT_PREDICATE
+    if active_predicate not in known_relational and predicate_tabs:
+        active_predicate = predicate_tabs[0].predicate
+
+    # -------------------------------------------------------------------
+    # 2. Aggregate weight for the active predicate.
+    #
+    # For each subject entity aggregate:
+    #   weight_sum  = SUM(COALESCE(weight, 1))
+    #   fact_count  = COUNT(*)
+    #   last_seen   = MAX(last_seen)
+    #
+    # Provenance is taken from the most-recent triple (DISTINCT ON ordering
+    # by last_seen DESC, created_at DESC within the per-entity window).
+    # -------------------------------------------------------------------
+    agg_rows = await pool.fetch(
+        """
+        WITH agg AS (
+            SELECT
+                f.entity_id                             AS entity_id,
+                SUM(COALESCE(f.weight, 1))::bigint      AS weight_sum,
+                COUNT(*)::int                           AS fact_count,
+                MAX(f.last_seen)                        AS last_seen
+            FROM relationship.facts f
+            WHERE f.predicate = $1
+              AND f.validity = 'active'
+              AND f.scope = 'relationship'
+            GROUP BY f.entity_id
+        ),
+        prov AS (
+            -- Provenance from the most-recent contributing triple per entity.
+            SELECT DISTINCT ON (f.entity_id)
+                f.entity_id,
+                f.src,
+                f.conf,
+                f.verified,
+                f."primary"
+            FROM relationship.facts f
+            WHERE f.predicate = $1
+              AND f.validity = 'active'
+              AND f.scope = 'relationship'
+            ORDER BY f.entity_id, f.last_seen DESC NULLS LAST, f.created_at DESC
+        )
+        SELECT
+            e.id                AS entity_id,
+            e.canonical_name,
+            a.weight_sum,
+            a.fact_count,
+            a.last_seen,
+            p.src,
+            p.conf,
+            p.verified,
+            p."primary"
+        FROM agg a
+        JOIN prov p ON p.entity_id = a.entity_id
+        JOIN public.entities e ON e.id = a.entity_id
+        ORDER BY a.weight_sum DESC, e.canonical_name ASC
+        """,
+        active_predicate,
+    )
+
+    # -------------------------------------------------------------------
+    # 3. Compute rollup (total weight_sum and top-3 share).
+    # -------------------------------------------------------------------
+    total_weight: int = sum(r["weight_sum"] for r in agg_rows)
+    top3_weight: int = sum(r["weight_sum"] for r in agg_rows[:3])
+    top3_share: float | None = (top3_weight / total_weight) if total_weight > 0 else None
+
+    # -------------------------------------------------------------------
+    # 4. Build response items.
+    # -------------------------------------------------------------------
+    items: list[ConcentrationEntry] = []
+    for r in agg_rows:
+        ws = r["weight_sum"]
+        share: float | None = (ws / total_weight) if total_weight > 0 else None
+        items.append(
+            ConcentrationEntry(
+                entity_id=r["entity_id"],
+                canonical_name=r["canonical_name"],
+                weight_sum=ws,
+                fact_count=r["fact_count"],
+                share=share,
+                last_seen=r["last_seen"],
+                src=r["src"],
+                conf=r["conf"] if r["conf"] is not None else 1.0,
+                verified=r["verified"] if r["verified"] is not None else False,
+                primary=r["primary"],
+            )
+        )
+
+    return ConcentrationResponse(
+        predicate=active_predicate,
+        items=items,
+        rollup=ConcentrationRollup(
+            total=total_weight,
+            top3_share=top3_share,
+        ),
+        predicate_tabs=predicate_tabs,
+        total=len(items),
     )
 
 
