@@ -46,6 +46,7 @@ from fastapi import FastAPI
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
 
 pytestmark = pytest.mark.unit
 
@@ -459,6 +460,7 @@ class TestEntityContacts:
         await _get(app, _CONTACTS_PATH)
         fetch_call_sql = pool.fetch.call_args[0][0]
         assert "relationship.entity_facts" in fetch_call_sql
+        assert "relationship.facts" not in fetch_call_sql
 
     def _make_fact_row_for_response(self, predicate: str = "has-email") -> MagicMock:
         """Build a row mock for the post-write fact fetch (pool.fetchrow)."""
@@ -477,29 +479,22 @@ class TestEntityContacts:
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
         return row
 
-    def _make_post_app_with_writer(
+    _WRITER_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
+
+    def _make_post_app(
         self,
         *,
         owner_exists: bool = True,
         entity_exists: bool = True,
-        outcome: str = "inserted",
     ) -> tuple[FastAPI, AsyncMock]:
-        """App wired for POST /entities/{id}/contacts using patched assert_fact writer.
+        """App wired for POST /entities/{id}/contacts (pool setup only).
 
         POST /entities/{id}/contacts call sequence:
           1. pool.fetchrow → owner-entity gate (None → 403)
           2. pool.fetchval → entity existence check (None → 404)
-          3. relationship_assert_fact(pool, ...) — patched
+          3. relationship_assert_fact(pool, ...) — patched by caller via with patch(...)
           4. pool.fetchrow → fetch the resulting fact row (for response body)
         """
-        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
-
-        fact_id = uuid4()
-        mock_result = MagicMock()
-        mock_result.outcome = AssertOutcome(outcome)
-        mock_result.fact_id = fact_id
-        mock_result.action_id = None
-
         owner_row = _make_owner_row() if owner_exists else None
         entity_val = 1 if entity_exists else None
         # After writer: endpoint calls pool.fetchrow again to fetch the new fact row.
@@ -513,58 +508,47 @@ class TestEntityContacts:
             # fetchrow: [None] → 403 immediately, no further calls
             mock_pool.fetchrow = AsyncMock(return_value=None)
         mock_pool.fetchval = AsyncMock(return_value=entity_val)
-        app = _wire_app(mock_pool)
+        return _wire_app(mock_pool), mock_pool
 
-        _WRITER_PATCH = (
-            "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
-        )
-        patcher = patch(_WRITER_PATCH, new=AsyncMock(return_value=mock_result))
-        patcher.start()
-        # Cleanup: store patcher so it can be stopped after the test
-        app.state._test_patcher = patcher  # type: ignore[attr-defined]
-        return app, mock_pool
+    def _make_writer_result(self, outcome: str = "inserted") -> MagicMock:
+        mock_result = MagicMock()
+        mock_result.outcome = AssertOutcome(outcome)
+        mock_result.fact_id = uuid4()
+        mock_result.action_id = None
+        return mock_result
 
     async def test_post_contact_fact_happy_path_returns_201(self):
         """POST /entities/{id}/contacts creates a contact fact and returns 201."""
-        app, _ = self._make_post_app_with_writer()
-        try:
+        app, _ = self._make_post_app()
+        with patch(self._WRITER_PATCH, new=AsyncMock(return_value=self._make_writer_result())):
             resp = await _post(
                 app,
                 _CONTACTS_PATH,
                 {"predicate": "has-email", "value": "alice@example.com"},
             )
-            assert resp.status_code == 201
-        finally:
-            if hasattr(app.state, "_test_patcher"):
-                app.state._test_patcher.stop()
+        assert resp.status_code == 201
 
     async def test_post_contact_owner_gate_returns_403(self):
         """POST /entities/{id}/contacts returns 403 + owner_required without owner entity."""
-        app, _ = self._make_post_app_with_writer(owner_exists=False)
-        try:
+        app, _ = self._make_post_app(owner_exists=False)
+        with patch(self._WRITER_PATCH, new=AsyncMock(return_value=self._make_writer_result())):
             resp = await _post(
                 app,
                 _CONTACTS_PATH,
                 {"predicate": "has-email", "value": "alice@example.com"},
             )
-            _assert_owner_required(resp)
-        finally:
-            if hasattr(app.state, "_test_patcher"):
-                app.state._test_patcher.stop()
+        _assert_owner_required(resp)
 
     async def test_post_contact_non_has_predicate_returns_400(self):
         """POST /entities/{id}/contacts rejects predicates that don't start with 'has-'."""
-        app, _ = self._make_post_app_with_writer()
-        try:
+        app, _ = self._make_post_app()
+        with patch(self._WRITER_PATCH, new=AsyncMock(return_value=self._make_writer_result())):
             resp = await _post(
                 app,
                 _CONTACTS_PATH,
                 {"predicate": "knows", "value": "some-value"},
             )
-            assert resp.status_code == 400
-        finally:
-            if hasattr(app.state, "_test_patcher"):
-                app.state._test_patcher.stop()
+        assert resp.status_code == 400
 
 
 # ===========================================================================
@@ -696,8 +680,6 @@ class TestPromoteTier:
         entity_exists: bool = True,
         outcome: str = "inserted",
     ) -> tuple[FastAPI, AsyncMock]:
-        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
-
         fact_id = uuid4()
         mock_result = MagicMock()
         mock_result.outcome = AssertOutcome(outcome)
@@ -722,8 +704,6 @@ class TestPromoteTier:
         assert body["outcome"] in ("inserted", "unchanged", "superseded")
 
     def _make_result(self, outcome: str) -> MagicMock:
-        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
-
         mock_result = MagicMock()
         mock_result.outcome = AssertOutcome(outcome)
         mock_result.fact_id = uuid4()
@@ -820,7 +800,6 @@ class TestForgetEntity:
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, entity_row])
         mock_pool.acquire = MagicMock(return_value=_acquire())
-        mock_pool.execute = AsyncMock(return_value="UPDATE 0")
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_204(self):
@@ -964,8 +943,6 @@ class TestQueueDismiss:
     _WRITER_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
 
     def _make_result(self, outcome: str = "inserted") -> MagicMock:
-        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
-
         mock_result = MagicMock()
         mock_result.outcome = AssertOutcome(outcome)
         mock_result.fact_id = uuid4()
