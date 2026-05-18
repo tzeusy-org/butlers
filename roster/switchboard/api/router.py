@@ -77,6 +77,9 @@ if _spec is not None and _spec.loader is not None:
     IngestionRuleTestRequest = _models.IngestionRuleTestRequest
     IngestionRuleTestResult = _models.IngestionRuleTestResult
     IngestionRuleTestResponse = _models.IngestionRuleTestResponse
+    BulkIngestionRuleRequest = _models.BulkIngestionRuleRequest
+    BulkIngestionRuleOutcome = _models.BulkIngestionRuleOutcome
+    BulkIngestionRuleResponse = _models.BulkIngestionRuleResponse
     validate_ingestion_action = _models.validate_ingestion_action
     validate_rule_type_for_scope = _models.validate_rule_type_for_scope
 else:
@@ -3185,3 +3188,132 @@ async def test_ingestion_rule(
     )
 
     return IngestionRuleTestResponse(data=result)
+
+
+# ---------------------------------------------------------------------------
+# POST /ingestion-rules/bulk — bulk enable/disable/delete
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ingestion-rules/bulk", response_model=BulkIngestionRuleResponse)
+async def bulk_ingestion_rules(
+    body: BulkIngestionRuleRequest,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> BulkIngestionRuleResponse:
+    """Apply a bulk operation (enable, disable, delete) to a list of rule ids.
+
+    Accepts a JSON body:
+      { "op": "enable" | "disable" | "delete", "ids": ["<uuid>", ...] }
+
+    Constraints:
+    - Max 100 ids per request (enforced in the Pydantic model).
+    - Connector-scoped rules may only have action='block'. For op='enable',
+      any connector-scoped rule that has action != 'block' (e.g. migrated
+      incorrectly) is skipped with error_reason='scope_action_invalid'.
+    - Unknown or already-deleted ids return per-id outcome 'not_found'.
+    - A single audit.append() entry is written for the batch on success.
+
+    Returns HTTP 400 on validation failure (bad op, too many ids).
+    Returns HTTP 200 with per-id outcomes (including partial success).
+    """
+    pool = _pool(db)
+    op = body.op
+    ids = body.ids
+    now = datetime.datetime.now(datetime.UTC)
+
+    results: list[BulkIngestionRuleOutcome] = []
+    affected = 0
+
+    for rule_id in ids:
+        # Validate UUID format
+        try:
+            UUID(rule_id)
+        except ValueError:
+            results.append(
+                BulkIngestionRuleOutcome(
+                    id=rule_id,
+                    outcome="error_reason",
+                    error_reason="invalid_uuid",
+                )
+            )
+            continue
+
+        # Fetch the rule to check existence and scope
+        row = await pool.fetchrow(
+            "SELECT id, scope, action, enabled, deleted_at FROM ingestion_rules WHERE id = $1",
+            rule_id,
+        )
+
+        if row is None or row["deleted_at"] is not None:
+            results.append(BulkIngestionRuleOutcome(id=rule_id, outcome="not_found"))
+            continue
+
+        rule_scope = row["scope"]
+        rule_action = row["action"]
+
+        # Connector-scope block-only enforcement at handler level (§3.10 spec mandate)
+        if op == "enable" and rule_scope.startswith("connector:"):
+            if rule_action != "block":
+                results.append(
+                    BulkIngestionRuleOutcome(
+                        id=rule_id,
+                        outcome="error_reason",
+                        error_reason="scope_action_invalid",
+                    )
+                )
+                continue
+
+        # Apply the operation
+        if op == "enable":
+            await pool.execute(
+                "UPDATE ingestion_rules SET enabled = TRUE, updated_at = $1 WHERE id = $2",
+                now,
+                rule_id,
+            )
+        elif op == "disable":
+            await pool.execute(
+                "UPDATE ingestion_rules SET enabled = FALSE, updated_at = $1 WHERE id = $2",
+                now,
+                rule_id,
+            )
+        elif op == "delete":
+            await pool.execute(
+                "UPDATE ingestion_rules"
+                " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
+                " WHERE id = $2",
+                now,
+                rule_id,
+            )
+
+        results.append(BulkIngestionRuleOutcome(id=rule_id, outcome="ok"))
+        affected += 1
+
+    # Invalidate the evaluator cache once for the entire batch
+    if affected > 0:
+        _invalidate_ingestion_cache()
+
+    # Emit a single audit entry for the batch
+    affected_ids = [r.id for r in results if r.outcome == "ok"]
+    if affected_ids:
+        try:
+            await emit_dashboard_audit(
+                db,
+                butler="switchboard",
+                operation=f"ingestion_rule_bulk_{op}",
+                method="POST",
+                path="/api/switchboard/ingestion-rules/bulk",
+                path_params={},
+                body={"op": op, "ids": affected_ids, "count": len(affected_ids)},
+                response_status=200,
+                request=request,
+            )
+        except Exception:
+            logger.warning(
+                "bulk_ingestion_rules: failed to emit audit for op=%s ids=%s",
+                op,
+                affected_ids,
+                exc_info=True,
+            )
+
+    return BulkIngestionRuleResponse(op=op, results=results, affected=affected)

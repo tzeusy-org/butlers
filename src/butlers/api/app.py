@@ -41,6 +41,7 @@ from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
 )
+from butlers.api.routers.channel_defaults import router as channel_defaults_router
 from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
@@ -278,6 +279,8 @@ def create_app(
     app.include_router(ingestion_connectors_router)
     app.include_router(ingestion_pipeline_router)
     app.include_router(priority_contacts_router)
+    app.include_router(channel_defaults_router)
+    app.include_router(ingestion_connectors_router)
     app.include_router(timeline_router)
     app.include_router(calendar_workspace_router)
     app.include_router(search_router)

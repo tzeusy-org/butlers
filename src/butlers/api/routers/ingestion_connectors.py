@@ -10,6 +10,8 @@ GET  /api/ingestion/connectors/summaries        — connector list with aggregat
 GET  /api/ingestion/connectors/cross-summary    — cross-connector aggregate + aggregates_available
 POST /api/ingestion/connectors/{type}/{identity}/pause    — pause a connector (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/run-now  — resume a paused connector (audit-only)
+GET  /api/ingestion/connectors/available                  — enumerable connector profiles
+     (independent of any connector_registry rows)
 
 The ``summaries`` and ``cross-summary`` endpoints proxy the existing
 ``/api/switchboard/connectors`` and ``/api/switchboard/connectors/summary``
@@ -25,8 +27,10 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
@@ -476,3 +480,137 @@ async def run_now_connector(
             "state": str(row["state"]),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Static connector profile catalog
+#
+# These are the connector types the framework can deploy, independent of
+# whether any instance is currently registered in connector_registry.
+# The response is safe to cache on the client for at least 60 seconds.
+#
+# Fields: connector_type, channel, provider, display_name, supports_backfill
+# ---------------------------------------------------------------------------
+
+_CONNECTOR_CATALOG: list[dict[str, Any]] = [
+    {
+        "connector_type": "gmail",
+        "channel": "email",
+        "provider": "google",
+        "display_name": "Gmail",
+        "supports_backfill": True,
+    },
+    {
+        "connector_type": "telegram_bot",
+        "channel": "telegram",
+        "provider": "telegram",
+        "display_name": "Telegram Bot",
+        "supports_backfill": False,
+    },
+    {
+        "connector_type": "telegram_user_client",
+        "channel": "telegram",
+        "provider": "telegram",
+        "display_name": "Telegram User Client",
+        "supports_backfill": True,
+    },
+    {
+        "connector_type": "home_assistant",
+        "channel": "home-assistant",
+        "provider": "home_assistant",
+        "display_name": "Home Assistant",
+        "supports_backfill": False,
+    },
+    {
+        "connector_type": "discord_user",
+        "channel": "discord",
+        "provider": "discord",
+        "display_name": "Discord User Client",
+        "supports_backfill": True,
+    },
+    {
+        "connector_type": "spotify",
+        "channel": "spotify",
+        "provider": "spotify",
+        "display_name": "Spotify",
+        "supports_backfill": False,
+    },
+    {
+        "connector_type": "owntracks",
+        "channel": "owntracks",
+        "provider": "owntracks",
+        "display_name": "OwnTracks",
+        "supports_backfill": False,
+    },
+    {
+        "connector_type": "whatsapp_user_client",
+        "channel": "whatsapp",
+        "provider": "whatsapp",
+        "display_name": "WhatsApp User Client",
+        "supports_backfill": False,
+    },
+    {
+        "connector_type": "steam",
+        "channel": "steam",
+        "provider": "steam",
+        "display_name": "Steam",
+        "supports_backfill": False,
+    },
+    {
+        "connector_type": "google_calendar",
+        "channel": "google_calendar",
+        "provider": "google",
+        "display_name": "Google Calendar",
+        "supports_backfill": True,
+    },
+    {
+        "connector_type": "google_drive",
+        "channel": "google_drive",
+        "provider": "google",
+        "display_name": "Google Drive",
+        "supports_backfill": True,
+    },
+    {
+        "connector_type": "google_health",
+        "channel": "google_health",
+        "provider": "google",
+        "display_name": "Google Health",
+        "supports_backfill": True,
+    },
+]
+
+
+class ConnectorProfile(BaseModel):
+    """A single connector profile entry from the discovery catalog."""
+
+    connector_type: str
+    channel: str
+    provider: str
+    display_name: str
+    supports_backfill: bool
+
+
+class ConnectorAvailableResponse(BaseModel):
+    """Response body for GET /api/ingestion/connectors/available."""
+
+    data: list[ConnectorProfile]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/connectors/available
+# ---------------------------------------------------------------------------
+
+
+@router.get("/available", response_model=ConnectorAvailableResponse)
+async def list_available_connectors() -> ConnectorAvailableResponse:
+    """Return the list of connector profiles the framework can deploy.
+
+    The response is independent of whether any instance is currently
+    registered in connector_registry.  Suitable for client-side caching
+    for at least 60 seconds.
+
+    Used by the dashboard "add connector" affordance and the
+    ConnectorsListPage dormant/available section (§3.5).
+    """
+    profiles = [ConnectorProfile(**p) for p in _CONNECTOR_CATALOG]
+    return ConnectorAvailableResponse(data=profiles)

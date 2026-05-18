@@ -22,6 +22,7 @@ import { ConnectorErrorLog } from "./ConnectorErrorLog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PeriodSelector } from "./PeriodSelector";
 import {
+  useAvailableConnectors,
   useConnectorSummaries,
   useCrossConnectorSummary,
   useConnectorFanout,
@@ -79,6 +80,13 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
   );
 
   const connectors = connectorsResp?.data ?? [];
+
+  // Available (dormant) connectors: catalog entries not yet registered
+  const { data: availableResp } = useAvailableConnectors({ enabled: isActive });
+  const registeredTypes = new Set(connectors.map((c) => c.connector_type));
+  const dormantConnectors = (availableResp?.data ?? []).filter(
+    (p) => !registeredTypes.has(p.connector_type),
+  );
 
   // Derive online/stale/offline counts from client-side liveness (same logic
   // as the LivenessBadge on each card) so the summary bar matches the cards.
@@ -146,6 +154,32 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
               />
             );
           })}
+        </div>
+      )}
+
+      {/* Dormant / available connectors section (§3.5) */}
+      {dormantConnectors.length > 0 && (
+        <div data-testid="dormant-available-section">
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3">
+            Available — not yet configured
+          </h3>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {dormantConnectors.map((profile) => (
+              <div
+                key={profile.connector_type}
+                data-testid={`dormant-connector-${profile.connector_type}`}
+                className="rounded-md border border-dashed p-4 flex flex-col gap-1 opacity-60"
+              >
+                <p className="text-sm font-medium">{profile.display_name}</p>
+                <p className="text-xs text-muted-foreground capitalize">
+                  {profile.channel}
+                </p>
+                {profile.supports_backfill && (
+                  <p className="text-xs text-muted-foreground">Supports backfill</p>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

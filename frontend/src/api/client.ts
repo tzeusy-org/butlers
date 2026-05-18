@@ -2474,6 +2474,7 @@ import type {
   BackfillJobSummary,
   BackfillLifecycleResponse,
   ConnectorEntry,
+  ConnectorProfile,
   CreateBackfillJobRequest,
 } from "./types.ts";
 
@@ -2551,6 +2552,15 @@ export function resumeBackfillJob(
 /** List registered connectors. */
 export function listConnectors(): Promise<ApiResponse<ConnectorEntry[]>> {
   return apiFetch<ApiResponse<ConnectorEntry[]>>("/switchboard/connectors");
+}
+
+/** Fetch available connector profiles (independent of connector_registry).
+ *
+ * Returns the catalog of connector types the framework can deploy.
+ * Safe to cache for at least 60s (per spec §3.5).
+ */
+export function listAvailableConnectors(): Promise<{ data: ConnectorProfile[] }> {
+  return apiFetch<{ data: ConnectorProfile[] }>("/ingestion/connectors/available");
 }
 
 // ---------------------------------------------------------------------------
