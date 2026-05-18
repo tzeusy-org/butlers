@@ -228,16 +228,25 @@ class TestUnidentifiedBucket:
         assert item["bucket"] == "unidentified"
         assert item["evidence"] == {}
 
-    async def test_sql_queries_relationship_facts_with_scope(self):
-        """All relationship.facts queries MUST include scope='relationship'."""
+    async def test_sql_queries_relationship_facts_with_schema_prefix(self):
+        """relationship.facts queries MUST use the schema-qualified name, NOT a scope column.
+
+        relationship.facts has no scope column.  Schema isolation is enforced
+        via the relationship. prefix (RFC 0006).
+        """
         app, pool = _app_with_pool(total=0, fetch_rows=[])
         resp = await _get(app)
 
         assert resp.status_code == 200
-        # The data query fetches via pool.fetch; check scope filter is present.
+        # The data query fetches via pool.fetch; check schema-qualified name is used.
         fetch_call_sql = pool.fetch.call_args[0][0]
-        assert (
-            "scope = 'relationship'" in fetch_call_sql or "scope='relationship'" in fetch_call_sql
+        assert "relationship.facts" in fetch_call_sql, (
+            "Queue SQL must use the schema-qualified name relationship.facts"
+        )
+        # And must NOT have a spurious scope column filter
+        assert "scope = 'relationship'" not in fetch_call_sql, (
+            "Queue SQL must NOT filter AND scope='relationship' on relationship.facts; "
+            "that column does not exist"
         )
 
 
@@ -475,17 +484,28 @@ class TestSectionOrdering:
 
 
 class TestScopeFilter:
-    """All relationship.facts queries MUST include scope='relationship'."""
+    """relationship.facts queries must use schema prefix for isolation, NOT a scope column."""
 
-    async def test_scope_relationship_filter_present_in_data_sql(self):
+    async def test_scope_column_absent_from_data_sql(self):
+        """Queue SQL must NOT filter AND scope='relationship' on relationship.facts.
+
+        relationship.facts has no scope column.  Schema isolation is enforced
+        via the relationship. prefix (RFC 0006).
+        """
         app, pool = _app_with_pool(total=0, fetch_rows=[])
         resp = await _get(app)
 
         assert resp.status_code == 200
         fetch_sql = pool.fetch.call_args[0][0]
-        # The SQL must reference the scope filter.
-        assert "scope" in fetch_sql
-        assert "relationship" in fetch_sql
+        # Must use schema-qualified name for isolation
+        assert "relationship.facts" in fetch_sql, (
+            "Queue SQL must use the schema-qualified name relationship.facts"
+        )
+        # Must NOT filter on the non-existent scope column
+        assert "scope = 'relationship'" not in fetch_sql, (
+            "Queue SQL must NOT filter AND scope='relationship'; that column does not exist "
+            "on relationship.facts"
+        )
 
     async def test_validity_active_filter_present_in_data_sql(self):
         """All relationship.facts queries MUST include validity='active'."""

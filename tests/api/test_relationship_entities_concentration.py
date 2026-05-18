@@ -493,21 +493,32 @@ class TestProvenanceFields:
 
 
 # ---------------------------------------------------------------------------
-# Scenario: scope='relationship' and validity='active' filters
+# Scenario: schema-based isolation and validity='active' filter
 # ---------------------------------------------------------------------------
 
 
 class TestScopeFilter:
-    """All relationship.facts queries MUST include scope='relationship' and validity='active'."""
+    """relationship.facts queries must use schema prefix for isolation, NOT a scope column."""
 
-    async def test_scope_relationship_filter_present_in_agg_sql(self):
+    async def test_scope_column_absent_from_agg_sql(self):
+        """Aggregation SQL must NOT include AND scope='relationship' on relationship.facts.
+
+        relationship.facts has no scope column.  Schema isolation is enforced
+        via the relationship. prefix (RFC 0006).
+        """
         app, pool = _app_with_pool(agg_rows=[])
         resp = await _get(app)
 
         assert resp.status_code == 200
         # Aggregation SQL is the second fetch call (index 1).
         agg_sql = pool.fetch.call_args_list[1][0][0]
-        assert "scope = 'relationship'" in agg_sql or "scope='relationship'" in agg_sql
+        assert "relationship.facts" in agg_sql, (
+            "Aggregation SQL must use the schema-qualified name relationship.facts"
+        )
+        assert "scope = 'relationship'" not in agg_sql, (
+            "Aggregation SQL must NOT filter AND scope='relationship'; that column does not exist "
+            "on relationship.facts"
+        )
 
     async def test_validity_active_filter_present_in_agg_sql(self):
         app, pool = _app_with_pool(agg_rows=[])
