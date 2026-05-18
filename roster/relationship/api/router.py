@@ -3110,7 +3110,7 @@ async def get_entities_concentration(
         WITH agg AS (
             SELECT
                 f.entity_id                             AS entity_id,
-                SUM(COALESCE(f.weight, 1))::int         AS weight_sum,
+                SUM(COALESCE(f.weight, 1))::bigint      AS weight_sum,
                 COUNT(*)::int                           AS fact_count,
                 MAX(f.last_seen)                        AS last_seen
             FROM relationship.facts f
@@ -3154,8 +3154,8 @@ async def get_entities_concentration(
     # -------------------------------------------------------------------
     # 3. Compute rollup (total weight_sum and top-3 share).
     # -------------------------------------------------------------------
-    total_weight: int = sum(int(r["weight_sum"]) for r in agg_rows)
-    top3_weight: int = sum(int(r["weight_sum"]) for r in agg_rows[:3])
+    total_weight: int = sum(r["weight_sum"] for r in agg_rows)
+    top3_weight: int = sum(r["weight_sum"] for r in agg_rows[:3])
     top3_share: float | None = (top3_weight / total_weight) if total_weight > 0 else None
 
     # -------------------------------------------------------------------
@@ -3163,19 +3163,19 @@ async def get_entities_concentration(
     # -------------------------------------------------------------------
     items: list[ConcentrationEntry] = []
     for r in agg_rows:
-        ws = int(r["weight_sum"])
+        ws = r["weight_sum"]
         share: float | None = (ws / total_weight) if total_weight > 0 else None
         items.append(
             ConcentrationEntry(
                 entity_id=r["entity_id"],
                 canonical_name=r["canonical_name"],
                 weight_sum=ws,
-                fact_count=int(r["fact_count"]),
+                fact_count=r["fact_count"],
                 share=share,
                 last_seen=r["last_seen"],
-                src=r["src"] or "relationship",
-                conf=float(r["conf"]) if r["conf"] is not None else 1.0,
-                verified=bool(r["verified"]) if r["verified"] is not None else False,
+                src=r["src"],
+                conf=r["conf"] if r["conf"] is not None else 1.0,
+                verified=r["verified"] if r["verified"] is not None else False,
                 primary=r["primary"],
             )
         )
