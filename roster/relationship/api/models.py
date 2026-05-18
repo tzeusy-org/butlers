@@ -655,3 +655,51 @@ class EntityListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ---------------------------------------------------------------------------
+# Entity neighbours models (entity-redesign Phase 2, bu-4wn79)
+# ---------------------------------------------------------------------------
+
+
+class NeighbourEntry(BaseModel):
+    """A single neighbour entity reached via a relational triple.
+
+    ``entity_id`` is the UUID of the OTHER entity (not the queried one).
+    ``direction`` is ``'forward'`` when the queried entity is the subject
+    (queried → neighbour) and ``'reverse'`` when it is the object
+    (neighbour → queried).
+
+    Provenance fields are included per the Provenance contract in
+    ``specs/dashboard-relationship/spec.md`` — all six fields are always
+    present; nullable fields are explicit nulls when absent from the triple.
+    """
+
+    entity_id: UUID
+    direction: Literal["forward", "reverse"]
+    src: str
+    conf: float
+    last_seen: datetime | None = None
+    weight: int | None = None
+    verified: bool
+    primary: bool | None = None
+
+
+class NeighboursResponse(BaseModel):
+    """Response for GET /entities/{id}/neighbours.
+
+    ``neighbours`` maps each relational predicate to the list of neighbour
+    entries reachable via that predicate.  Only ``kind='relational'``
+    predicates from ``relationship.predicate_registry`` are included.
+
+    Example::
+
+        {
+          "neighbours": {
+            "knows": [NeighbourEntry, ...],
+            "family-of": [NeighbourEntry, ...]
+          }
+        }
+    """
+
+    neighbours: dict[str, list[NeighbourEntry]]
