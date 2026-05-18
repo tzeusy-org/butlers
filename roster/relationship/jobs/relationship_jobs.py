@@ -1337,7 +1337,13 @@ _RECONCILER_DEFAULT_INTERVAL_MINUTES = 30
 _RECONCILER_STATE_KEY = "contact_info_reconciler.last_run_at"
 
 # Mapping from contact_info.type → relationship.entity_facts predicate.
-# Mirrors the predicate construction in contact_backfill_triples.py.
+# These map through the registered predicate catalog (migration rel_014). Types
+# without a 1-to-1 predicate (telegram, linkedin, twitter, other) all collapse
+# to the channel-scoped "has-handle" predicate.
+#
+# IMPORTANT: the NOT EXISTS sweep clause in run_contact_info_reconciler must
+# use this same mapping (via a SQL CASE expression) so the idempotency check
+# checks the predicate that the reconciler will actually write, not 'has-' || ci.type.
 _CI_TYPE_TO_PREDICATE: dict[str, str] = {
     "email": "has-email",
     "phone": "has-phone",
@@ -1428,14 +1434,19 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # Step 1: Sweep public.contact_info rows that DON'T have an active triple.
     #
-    # The LEFT JOIN on relationship.entity_facts filters down to rows where:
-    #   - The contact has a non-null entity_id (subject available).
-    #   - There is NO active triple matching (entity_id, predicate, ci.value).
+    # Filters applied in SQL:
     #   - secured = false (credentials carve-out).
+    #   - c.entity_id IS NOT NULL (orphan guard — no subject to assert on).
+    #   - INNER JOIN public.entities excludes tombstoned entities
+    #     (metadata->>'merged_into' IS NULL).
+    #   - NOT EXISTS checks the predicate the reconciler will actually write,
+    #     using the same CASE mapping as _CI_TYPE_TO_PREDICATE. Without this,
+    #     rows for ci.type IN ('telegram', 'linkedin', 'twitter', 'other') would
+    #     always appear "missing" because the reconciler writes 'has-handle' but
+    #     'has-' || ci.type resolves to 'has-telegram' etc.
     #
-    # The predicate is derived from ci.type via _CI_TYPE_TO_PREDICATE. We
-    # include all rows (even those with unmapped types) and filter after fetch
-    # so the metrics accurately reflect why rows were skipped.
+    # We include rows with unmapped ci.types (e.g. 'fax') and handle them in
+    # Python so the metrics accurately reflect why rows were skipped.
     # -----------------------------------------------------------------------
     try:
         rows = await db_pool.fetch(
@@ -1448,18 +1459,27 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 ci.is_primary,
                 ci.secured,
                 ci.created_at   AS ci_created_at,
-                c.entity_id,
-                COALESCE(e.roles, '{}') AS entity_roles
+                c.entity_id
             FROM public.contact_info ci
             JOIN public.contacts c ON c.id = ci.contact_id
-            LEFT JOIN public.entities e ON e.id = c.entity_id
+            JOIN public.entities e ON e.id = c.entity_id
             WHERE ci.secured = false
               AND c.entity_id IS NOT NULL
+              AND (e.metadata->>'merged_into') IS NULL
               AND NOT EXISTS (
                   SELECT 1
                   FROM relationship.entity_facts ef
                   WHERE ef.subject   = c.entity_id
-                    AND ef.predicate = 'has-' || ci.type
+                    AND ef.predicate = CASE ci.type
+                        WHEN 'email'    THEN 'has-email'
+                        WHEN 'phone'    THEN 'has-phone'
+                        WHEN 'website'  THEN 'has-website'
+                        WHEN 'telegram' THEN 'has-handle'
+                        WHEN 'linkedin' THEN 'has-handle'
+                        WHEN 'twitter'  THEN 'has-handle'
+                        WHEN 'other'    THEN 'has-handle'
+                        ELSE 'has-' || ci.type
+                    END
                     AND ef.object    = ci.value
                     AND ef.validity  = 'active'
               )
@@ -1475,13 +1495,13 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info("contact_info_reconciler: sweep found %d rows to reconcile", len(rows))
 
     for row in rows:
-        ci_type: str = row["ci_type"] or ""
-        ci_value: str = row["ci_value"] or ""
+        ci_type: str = row["ci_type"]
+        ci_value: str = row["ci_value"]
         entity_id: uuid.UUID | None = row["entity_id"]
         ci_id = row["ci_id"]
 
         # Double-check: secured rows are excluded in the query, but guard anyway.
-        if bool(row["secured"]):
+        if row["secured"]:
             stats["rows_skipped_credential"] += 1
             continue
 
@@ -1507,7 +1527,7 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
         # Provenance fields.
         last_seen: datetime | None = row.get("ci_created_at")
-        is_primary: bool = bool(row.get("is_primary") or False)
+        is_primary: bool = row["is_primary"]
 
         try:
             result = await relationship_assert_fact(

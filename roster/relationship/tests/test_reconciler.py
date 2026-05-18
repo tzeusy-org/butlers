@@ -64,7 +64,6 @@ def _ci_row(
     entity_id: UUID | None | object = _UNSET,
     secured: bool = False,
     is_primary: bool = False,
-    entity_roles: list[str] | None = None,
 ) -> dict:
     """Build a synthetic contact_info sweep row.
 
@@ -83,7 +82,6 @@ def _ci_row(
         "secured": secured,
         "ci_created_at": None,
         "entity_id": resolved_entity_id,
-        "entity_roles": entity_roles or [],
     }
 
 
@@ -265,7 +263,6 @@ class TestOwnerCarveOut:
             ci_type="email",
             ci_value="owner@example.com",
             entity_id=owner_entity_id,
-            entity_roles=["owner"],
         )
         pool = _make_pool(rows=[row])
 
@@ -289,7 +286,7 @@ class TestOwnerCarveOut:
         from butlers.tools.relationship.relationship_assert_fact import AssertOutcome, AssertResult
         from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
 
-        row = _ci_row(ci_type="email", ci_value="owner@example.com", entity_roles=["owner"])
+        row = _ci_row(ci_type="email", ci_value="owner@example.com")
         pool = _make_pool(rows=[row])
 
         carveout_result = AssertResult(
