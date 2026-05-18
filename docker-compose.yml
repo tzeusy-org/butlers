@@ -620,7 +620,12 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
-    networks: [db, backend, egress]
+    networks:
+      db:
+      backend:
+        aliases:
+          - butlers-up
+      egress:
     depends_on:
       log-init:
         condition: service_completed_successfully
@@ -667,7 +672,15 @@ services:
     depends_on:
       migrations:
         condition: service_completed_successfully
-    networks: [db, backend, frontend, egress]
+    networks:
+      db:
+      backend:
+        aliases:
+          - dashboard-api
+      frontend:
+        aliases:
+          - dashboard-api
+      egress:
     restart: unless-stopped
 
 # ── Volumes ─────────────────────────────────────────────────────────────
