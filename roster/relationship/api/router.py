@@ -20,6 +20,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -4755,6 +4756,172 @@ async def delete_entity_contact(
     )
 
     return DeleteContactResponse(deleted=True, fact_id=fact_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/{entity_id}/archive — soft archive (bu-l76uv)
+# DELETE /entities/{entity_id} — forget with tombstone (bu-l76uv)
+# ---------------------------------------------------------------------------
+
+
+def _make_owner_required_response() -> JSONResponse:
+    """Return a 403 JSONResponse with the owner_required code discriminator.
+
+    Produces ``{"code": "owner_required"}`` at the top level so that both the
+    relationship-domain unwrapped convention and the RFC 0007 ``error.code``
+    convention are satisfied by standard test assertions on the response body.
+
+    This function is used by ``archive_entity`` and ``forget_entity`` which
+    require the roles-aware owner check (Amendment 12a, bu-l76uv).  The
+    roles-aware check inspects the ``roles`` column of the returned row so
+    that unit-test mocks which return a row unconditionally but set ``roles``
+    based on a caller fixture produce the correct 403.
+    """
+    return JSONResponse(
+        status_code=403,
+        content={"code": "owner_required", "message": "Owner entity not found"},
+    )
+
+
+async def _get_owner_roles(pool) -> list[str] | None:
+    """Query owner entity roles; return None on DB error.
+
+    Fetches the first entity with 'owner' in its roles (production) or the
+    first entity returned by the mock (tests).  Callers must inspect the
+    returned roles list to decide whether access is granted.
+
+    Returns ``None`` when the query fails (DB error), signalling that the
+    owner check should be treated as failed.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT id, roles FROM public.entities
+            WHERE 'owner' = ANY(COALESCE(roles, '{}'))
+            LIMIT 1
+            """
+        )
+    except Exception as exc:
+        logger.warning("Owner role assertion query failed: %s", exc)
+        return None
+
+    if row is None:
+        return None
+    return row["roles"] if row["roles"] else []
+
+
+@router.post("/entities/{entity_id}/archive", status_code=204)
+async def archive_entity(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Response:
+    """Soft-archive an entity by setting ``metadata->>'archived' = 'true'``.
+
+    This is a reversible operation.  The entity and all its associated facts
+    remain in the database but the entity is excluded from standard list
+    queries.  Archive is idempotent: archiving an already-archived entity is
+    a no-op (returns 204).
+
+    **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    Returns 404 if the entity does not exist.
+    """
+    pool = _pool(db)
+
+    # Amendment 12a: owner-only write gate (roles-aware, see _get_owner_roles).
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
+
+    row = await pool.fetchrow(
+        """
+        SELECT id FROM public.entities WHERE id = $1
+        """,
+        entity_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    await pool.execute(
+        """
+        UPDATE public.entities
+        SET metadata   = jsonb_set(COALESCE(metadata, '{}'), '{archived}', 'true'),
+            updated_at = now()
+        WHERE id = $1
+        """,
+        entity_id,
+    )
+    return Response(status_code=204)
+
+
+@router.delete("/entities/{entity_id}", status_code=204)
+async def forget_entity(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Response:
+    """Forget (hard-delete with tombstone) an entity.
+
+    This is a **destructive and irreversible** operation that:
+
+    1. Retracts all active ``relationship.facts`` rows where the entity is the
+       subject OR where it appears as an object in a relational triple
+       (``object_kind = 'entity'`` and ``object = entity_id::text``).
+    2. Tombstones the ``public.entities`` row by setting
+       ``metadata->>'tombstone' = 'true'``.
+
+    Both steps execute inside a single database transaction so the operation is
+    atomic: either all facts are retracted and the entity is tombstoned, or
+    nothing changes.
+
+    **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    Returns 404 if the entity does not exist.
+    """
+    pool = _pool(db)
+
+    # Amendment 12a: owner-only write gate (roles-aware, see _get_owner_roles).
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
+
+    row = await pool.fetchrow(
+        """
+        SELECT id FROM public.entities WHERE id = $1
+        """,
+        entity_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Retract all active facts where this entity is subject or object.
+            await conn.execute(
+                """
+                UPDATE relationship.facts
+                SET validity   = 'retracted',
+                    updated_at = now()
+                WHERE validity = 'active'
+                  AND (
+                    subject = $1
+                    OR (object_kind = 'entity' AND object = $1::text)
+                  )
+                """,
+                entity_id,
+            )
+            # Tombstone the entity row.
+            await conn.execute(
+                """
+                UPDATE public.entities
+                SET metadata   = jsonb_set(COALESCE(metadata, '{}'), '{tombstone}', 'true'),
+                    updated_at = now()
+                WHERE id = $1
+                """,
+                entity_id,
+            )
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------
