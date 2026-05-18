@@ -96,29 +96,25 @@ def _make_conn_mock(
     """Build a mock asyncpg connection for the transaction context.
 
     Call sequence inside the transaction:
-      1. conn.fetchrow(SELECT source FOR UPDATE)  → source_row (None → 404)
-      2. conn.fetchrow(SELECT target FOR UPDATE)  → target_row (None → 404)
-      3. conn.execute(retract conflicting subject-side rows)
-      4. conn.fetchval(UPDATE subject rows, RETURNING count)  → subject_rewired
-      5. conn.execute(retract conflicting object-side rows)
-      6. conn.fetchval(UPDATE object rows, RETURNING count)   → object_rewired
-      7. conn.execute(UPDATE entities SET metadata=tombstone)
+      1. conn.fetch(SELECT ... WHERE id = ANY(...) ORDER BY id FOR UPDATE)
+            → list of present rows (missing rows omitted, triggering 404)
+      2. conn.execute(retract conflicting subject-side rows)
+      3. conn.fetchval(UPDATE subject rows, RETURNING count)  → subject_rewired
+      4. conn.execute(retract conflicting object-side rows)
+      5. conn.fetchval(UPDATE object rows, RETURNING count)   → object_rewired
+      6. conn.execute(UPDATE entities SET metadata=tombstone)
     """
     mock_conn = AsyncMock()
 
-    fetchrow_responses = []
+    # Build the list of rows returned by the single bulk FOR UPDATE fetch.
+    # Missing rows are omitted (lock_map.get() returns None → 404).
+    fetch_rows = []
     if source_row is not None:
-        fetchrow_responses.append(source_row)
-    else:
-        fetchrow_responses.append(None)
+        fetch_rows.append(source_row)
+    if target_row is not None:
+        fetch_rows.append(target_row)
 
-    if source_row is not None:
-        if target_row is not None:
-            fetchrow_responses.append(target_row)
-        else:
-            fetchrow_responses.append(None)
-
-    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_responses)
+    mock_conn.fetch = AsyncMock(return_value=fetch_rows)
 
     # fetchval returns subject count then object count
     mock_conn.fetchval = AsyncMock(side_effect=[subject_rewired, object_rewired])

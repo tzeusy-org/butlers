@@ -4937,43 +4937,40 @@ async def merge_entities(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # 1. Validate both entities exist and are not already tombstoned.
-            src_row = await conn.fetchrow(
+            # 1. Lock both entities in deterministic UUID order to prevent deadlocks when
+            #    concurrent merge requests target the same pair in opposite directions.
+            lock_rows = await conn.fetch(
                 """
                 SELECT id, metadata
                 FROM public.entities
-                WHERE id = $1
+                WHERE id = ANY($1::uuid[])
+                ORDER BY id
                 FOR UPDATE
                 """,
-                source_id,
+                [source_id, target_id],
             )
+            lock_map = {row["id"]: row for row in lock_rows}
+
+            src_row = lock_map.get(source_id)
             if src_row is None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Source entity '{source_id}' not found.",
                 )
-            src_meta: dict = dict(src_row["metadata"]) if src_row["metadata"] else {}
+            src_meta: dict = src_row["metadata"] or {}
             if "merged_into" in src_meta:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Source entity '{source_id}' is already tombstoned.",
                 )
 
-            tgt_row = await conn.fetchrow(
-                """
-                SELECT id, metadata
-                FROM public.entities
-                WHERE id = $1
-                FOR UPDATE
-                """,
-                target_id,
-            )
+            tgt_row = lock_map.get(target_id)
             if tgt_row is None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Target entity '{target_id}' not found.",
                 )
-            tgt_meta: dict = dict(tgt_row["metadata"]) if tgt_row["metadata"] else {}
+            tgt_meta: dict = tgt_row["metadata"] or {}
             if "merged_into" in tgt_meta:
                 raise HTTPException(
                     status_code=404,
@@ -5020,7 +5017,7 @@ async def merge_entities(
                 source_id,
                 target_id,
             )
-            subject_facts_rewired = int(subject_result or 0)
+            subject_facts_rewired = subject_result
 
             # 3. Rewire object-side facts: source appears as object with object_kind='entity'.
             source_text = str(source_id)
@@ -5065,7 +5062,7 @@ async def merge_entities(
                 source_text,
                 target_text,
             )
-            object_facts_rewired = int(object_result or 0)
+            object_facts_rewired = object_result
 
             # 4. Tombstone source entity via merged_into metadata key.
             tombstone_meta = {**src_meta, "merged_into": str(target_id)}
