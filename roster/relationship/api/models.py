@@ -1042,3 +1042,47 @@ class DeleteContactResponse(BaseModel):
 
     deleted: bool
     fact_id: UUID
+
+
+# ---------------------------------------------------------------------------
+# Entity merge models (entity-redesign Phase 2, bu-jp6r6)
+# ---------------------------------------------------------------------------
+
+
+class MergeEntitiesRequest(BaseModel):
+    """Request body for ``POST /entities/{id}/merge``.
+
+    Merges two entities by rewiring all ``relationship.facts`` triples from the
+    source entity to the target entity, then tombstoning the source.
+
+    ``entityA`` and ``entityB`` are the two entity UUIDs to merge.
+    ``keepAs`` selects which entity survives: ``'A'`` keeps ``entityA``,
+    ``'B'`` keeps ``entityB``.  The other entity is the source (tombstoned).
+
+    The `id` path parameter is ignored for routing purposes; the canonical
+    request body carries both entity IDs.
+    """
+
+    entityA: UUID = Field(..., description="UUID of entity A.")
+    entityB: UUID = Field(..., description="UUID of entity B.")
+    keepAs: Literal["A", "B"] = Field(
+        ...,
+        description="Which entity to keep: 'A' survives, 'B' is tombstoned — or vice versa.",
+    )
+
+
+class MergeEntitiesResponse(BaseModel):
+    """Response for ``POST /entities/{id}/merge``.
+
+    ``kept_entity_id`` is the UUID of the surviving entity.
+    ``tombstoned_entity_id`` is the UUID of the entity that was merged away.
+    ``subject_facts_rewired`` is the count of ``relationship.facts`` rows whose
+    ``subject`` column was updated from source to target.
+    ``object_facts_rewired`` is the count of ``relationship.facts`` rows whose
+    ``object`` column was updated (where ``object_kind='entity'``).
+    """
+
+    kept_entity_id: UUID
+    tombstoned_entity_id: UUID
+    subject_facts_rewired: int
+    object_facts_rewired: int
