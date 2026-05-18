@@ -8,6 +8,7 @@ directly from the relationship butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import logging
@@ -18,7 +19,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -100,6 +101,11 @@ if _models_path.exists():
         ConcentrationResponse = _models_module.ConcentrationResponse
         InitialFact = _models_module.InitialFact
         PromoteEntityRequest = _models_module.PromoteEntityRequest
+        ContactFact = _models_module.ContactFact
+        ContactsResponse = _models_module.ContactsResponse
+        AddContactRequest = _models_module.AddContactRequest
+        AddContactResponse = _models_module.AddContactResponse
+        DeleteContactResponse = _models_module.DeleteContactResponse
 
 logger = logging.getLogger(__name__)
 
@@ -4448,6 +4454,316 @@ async def list_entity_neighbours(
         grouped[predicate].append(entry)
 
     return NeighboursResponse(neighbours=grouped)
+
+
+# ---------------------------------------------------------------------------
+# Contact-fact CRUD  (bu-u1w78)
+# GET  /entities/{entity_id}/contacts
+# POST /entities/{entity_id}/contacts
+# DELETE /entities/{entity_id}/contacts/{predicate}/{value_hash}
+# ---------------------------------------------------------------------------
+
+_CONTACT_PREDICATE_PREFIX = "has-"
+
+
+def _contact_value_hash(object_value: str) -> str:
+    """Return a deterministic 16-char hex token for *object_value*.
+
+    Used as the stable URL-path segment in DELETE paths.  The token is the
+    first 16 hex characters of SHA-256(object_value.encode('utf-8')).
+    """
+    return hashlib.sha256(object_value.encode("utf-8")).hexdigest()[:16]
+
+
+def _row_to_contact_fact(r: Any) -> Any:
+    """Convert an asyncpg row from ``relationship.facts`` to a ContactFact.
+
+    Raises TypeError if required keys are missing (should not happen with the
+    canonical SELECT shape used in the contacts endpoints).
+    """
+    obj_val: str = r["object"]
+    return ContactFact(
+        id=r["id"],
+        predicate=r["predicate"],
+        object=obj_val,
+        value_hash=_contact_value_hash(obj_val),
+        src=r["src"],
+        conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+        last_seen=r["last_seen"],
+        weight=r["weight"],
+        verified=bool(r["verified"]) if r["verified"] is not None else False,
+        primary=r["primary"],
+    )
+
+
+@router.get(
+    "/entities/{entity_id}/contacts",
+    response_model=ContactsResponse,
+)
+async def list_entity_contacts(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactsResponse:
+    """List active contact-fact triples for an entity.
+
+    Returns all ``relationship.facts`` rows where:
+    - ``subject = entity_id``
+    - ``predicate LIKE 'has-%'`` (contact family)
+    - ``validity = 'active'``
+    - ``scope = 'relationship'``
+
+    Owner-only authz gate (Clause 12b, Amendment 12b): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist in ``public.entities``.
+    Returns ``{"facts": []}`` when the entity has no active contact facts.
+
+    Response shape::
+
+        {
+          "facts": [
+            {
+              "id": "<uuid>",
+              "predicate": "has-email",
+              "object": "alice@example.com",
+              "value_hash": "abcdef0123456789",
+              "src": "relationship",
+              "conf": 1.0,
+              "last_seen": null,
+              "weight": null,
+              "verified": false,
+              "primary": null
+            },
+            ...
+          ]
+        }
+
+    Ordered by ``predicate ASC, primary DESC NULLS LAST, created_at DESC``.
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12b).
+    await _assert_owner_entity_exists(pool)
+
+    # Entity existence check.
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            f.id,
+            f.predicate,
+            f.object,
+            f.src,
+            f.conf,
+            f.last_seen,
+            f.weight,
+            f.verified,
+            f."primary"
+        FROM relationship.facts f
+        WHERE f.subject   = $1
+          AND f.predicate LIKE 'has-%'
+          AND f.validity  = 'active'
+          AND f.scope     = 'relationship'
+        ORDER BY
+            f.predicate        ASC,
+            f."primary"        DESC NULLS LAST,
+            f.created_at       DESC
+        """,
+        entity_id,
+    )
+
+    facts = [_row_to_contact_fact(r) for r in rows]
+    return ContactsResponse(facts=facts)
+
+
+@router.post(
+    "/entities/{entity_id}/contacts",
+    response_model=AddContactResponse,
+    status_code=201,
+)
+async def add_entity_contact(
+    entity_id: UUID,
+    body: AddContactRequest,
+    fastapi_response: Response,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> AddContactResponse:
+    """Add (or update) a contact-fact triple for an entity.
+
+    Calls the central writer ``relationship_assert_fact()`` with
+    ``object_kind='literal'`` and the supplied provenance fields.
+
+    Owner-only authz gate (Clause 12a, Amendment 12a): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist in ``public.entities``.
+
+    Returns 400 when *predicate* does not begin with ``'has-'`` (rejected
+    before hitting the central writer so the error message is clear).
+
+    On success, returns HTTP 201 with the resulting fact row.
+
+    **Owner entity carve-out:** when the entity subject has role ``'owner'``,
+    the central writer parks the write as a ``pending_actions`` row.  In this
+    case the endpoint returns HTTP 202 with ``outcome='pending_approval'`` and
+    ``action_id`` set; ``fact`` is ``null``.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import (
+        AssertOutcome,
+        relationship_assert_fact,
+    )
+
+    pool = _pool(db)
+
+    # Owner-only authz gate (Clause 12a — write surface).
+    await _assert_owner_entity_exists(pool)
+
+    # Entity existence check.
+    await _assert_entity_exists(pool, entity_id)
+
+    # Validate that the predicate is a contact predicate.
+    if not body.predicate.startswith(_CONTACT_PREDICATE_PREFIX):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_predicate",
+                "message": (
+                    f"Predicate {body.predicate!r} is not a contact predicate. "
+                    "Contact predicates must start with 'has-'."
+                ),
+            },
+        )
+
+    result = await relationship_assert_fact(
+        pool,
+        subject=entity_id,
+        predicate=body.predicate,
+        object=body.value,
+        src=body.src,
+        object_kind="literal",
+        conf=body.conf,
+        verified=body.verified,
+        primary=body.primary,
+    )
+
+    if result.outcome == AssertOutcome.pending_approval:
+        # Owner carve-out: write parked for human approval → HTTP 202.
+        fastapi_response.status_code = 202
+        return AddContactResponse(
+            outcome=result.outcome.value,
+            fact=None,
+            action_id=result.action_id,
+        )
+
+    # Fetch the resulting active fact to populate the response.
+    fact_row = await pool.fetchrow(
+        """
+        SELECT
+            f.id,
+            f.predicate,
+            f.object,
+            f.src,
+            f.conf,
+            f.last_seen,
+            f.weight,
+            f.verified,
+            f."primary"
+        FROM relationship.facts f
+        WHERE f.id = $1
+        """,
+        result.fact_id,
+    )
+    if fact_row is None:
+        # Should not happen — fact_id is fresh from the writer.
+        raise HTTPException(status_code=500, detail="Fact row not found after write")
+
+    return AddContactResponse(
+        outcome=result.outcome.value,
+        fact=_row_to_contact_fact(fact_row),
+    )
+
+
+@router.delete(
+    "/entities/{entity_id}/contacts/{predicate}/{value_hash}",
+    response_model=DeleteContactResponse,
+)
+async def delete_entity_contact(
+    entity_id: UUID,
+    predicate: str,
+    value_hash: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> DeleteContactResponse:
+    """Retract (soft-delete) an active contact-fact triple.
+
+    Locates the active fact whose ``subject = entity_id``,
+    ``predicate = predicate``, and whose ``object`` hashes to ``value_hash``
+    (SHA-256[:16]).  Marks the row ``validity = 'retracted'`` directly on the
+    ``relationship.facts`` table (the central writer handles upserts; for
+    retraction we perform a targeted UPDATE inside the relationship schema role).
+
+    Owner-only authz gate (Clause 12a, Amendment 12a): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist, or if no active fact matching
+    ``(entity_id, predicate, value_hash)`` is found.
+
+    On success, returns HTTP 200 with ``{"deleted": true, "fact_id": "<uuid>"}``.
+    """
+    pool = _pool(db)
+
+    # Owner-only authz gate (Clause 12a — write surface).
+    await _assert_owner_entity_exists(pool)
+
+    # Entity existence check.
+    await _assert_entity_exists(pool, entity_id)
+
+    # Find the active fact matching (subject, predicate, value_hash).
+    # We fetch all active rows for (subject, predicate) and filter by hash
+    # in Python to avoid a full-table scan on the object column.
+    candidate_rows = await pool.fetch(
+        """
+        SELECT f.id, f.object
+        FROM relationship.facts f
+        WHERE f.subject   = $1
+          AND f.predicate = $2
+          AND f.validity  = 'active'
+          AND f.scope     = 'relationship'
+        """,
+        entity_id,
+        predicate,
+    )
+
+    target_row = None
+    for row in candidate_rows:
+        if _contact_value_hash(row["object"]) == value_hash:
+            target_row = row
+            break
+
+    if target_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "contact_fact_not_found",
+                "message": (
+                    f"No active contact fact found for entity {entity_id}, "
+                    f"predicate {predicate!r}, value_hash {value_hash!r}."
+                ),
+            },
+        )
+
+    fact_id: UUID = target_row["id"]
+
+    await pool.execute(
+        """
+        UPDATE relationship.facts
+        SET validity   = 'retracted',
+            updated_at = now()
+        WHERE id = $1
+        """,
+        fact_id,
+    )
+
+    return DeleteContactResponse(deleted=True, fact_id=fact_id)
 
 
 # ---------------------------------------------------------------------------
