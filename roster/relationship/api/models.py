@@ -745,3 +745,60 @@ class SearchResponse(BaseModel):
     total: int
     q: str
     limit: int
+
+
+# ---------------------------------------------------------------------------
+# Entity curation queue models (entity-redesign Phase 2, bu-t1zfd)
+# ---------------------------------------------------------------------------
+
+
+class QueueEntry(BaseModel):
+    """A single entry in the curation queue.
+
+    Each entry identifies one entity that needs operator attention and records
+    which bucket sourced it plus structured evidence explaining why.
+
+    ``bucket`` is one of:
+
+    - ``'unidentified'`` — entity has ``metadata->>'unidentified' = 'true'``.
+    - ``'duplicate-candidate'`` — entity shares a contact-fact value (email or
+      phone) with at least one other entity (deterministic SQL; no LLM).
+    - ``'stale'`` — entity has no active facts in ``relationship.facts`` with
+      ``last_seen`` within the past 365 days.
+
+    ``evidence`` carries bucket-specific detail:
+
+    - ``unidentified`` — ``{}`` (no additional evidence needed).
+    - ``duplicate-candidate`` — ``{"predicate": "<has-email|has-phone>",
+      "shared_value": "<value>", "peer_entity_ids": ["<uuid>", ...]}``.
+    - ``stale`` — ``{"last_seen": "<iso-datetime>|null"}`` (last fact timestamp
+      or ``null`` if no facts exist at all).
+
+    ``last_seen`` is the most-recent ``last_seen`` across all active
+    ``relationship.facts`` rows for the entity, or ``null`` when none exist.
+    """
+
+    entity_id: UUID
+    canonical_name: str
+    entity_type: str
+    bucket: Literal["unidentified", "duplicate-candidate", "stale"]
+    evidence: dict[str, Any]
+    last_seen: datetime | None = None
+
+
+class QueueResponse(BaseModel):
+    """Paginated response for GET /entities/queue.
+
+    Section ordering inside ``items`` (per spec §1): Unidentified first,
+    then Duplicate-candidate, then Stale.  Within each bucket entries are
+    ordered by ``canonical_name ASC`` so the queue is stable across calls.
+
+    ``total`` is the total number of queue entries before pagination (across
+    all three buckets, post-deduplication by entity_id within each bucket).
+    ``limit`` and ``offset`` echo the request parameters.
+    """
+
+    items: list[QueueEntry]
+    total: int
+    limit: int
+    offset: int

@@ -92,6 +92,8 @@ if _models_path.exists():
         NeighboursResponse = _models_module.NeighboursResponse
         SearchResultEntry = _models_module.SearchResultEntry
         SearchResponse = _models_module.SearchResponse
+        QueueEntry = _models_module.QueueEntry
+        QueueResponse = _models_module.QueueResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2700,6 +2702,306 @@ async def list_entities(
     ]
 
     return EntityListResponse(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/queue — curation queue (entity-redesign Phase 2, bu-t1zfd)
+# ---------------------------------------------------------------------------
+
+#: Number of days without a ``last_seen`` update before an entity is stale.
+_STALE_DAYS = 365
+
+#: Predicates used for deterministic duplicate-candidate detection.
+_DUP_DETECTION_PREDICATES = ("has-email", "has-phone")
+
+#: Default and maximum page sizes for the queue endpoint.
+_QUEUE_DEFAULT_LIMIT = 50
+_QUEUE_MAX_LIMIT = 200
+
+
+@router.get("/entities/queue", response_model=QueueResponse)
+async def get_entities_queue(
+    limit: int = Query(_QUEUE_DEFAULT_LIMIT, ge=1, le=_QUEUE_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> QueueResponse:
+    """Return the curation queue — entities needing operator attention.
+
+    Returns a UNION of three buckets, in section order per spec §1:
+
+    1. **unidentified** — entities with ``metadata->>'unidentified' = 'true'``.
+    2. **duplicate-candidate** — entities where ``metadata->>'duplicate_candidate' = 'true'``
+       OR that share a ``has-email`` / ``has-phone`` fact value with at least one other
+       entity (deterministic SQL; no LLM, no embedding).
+    3. **stale** — entities with no active ``relationship.facts`` fact whose
+       ``last_seen`` is within the past 365 days.
+
+    **Deduplication:** an entity can appear in at most one bucket per call.
+    Priority: unidentified > duplicate-candidate > stale.  Entities that match
+    multiple buckets appear only in their highest-priority bucket.
+
+    **Owner-only authz gate (Clause 12b, Amendment 12b):** returns HTTP 403
+    with ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    **Pagination:** ``limit`` (default 50, max 200) + ``offset`` (default 0).
+    ``total`` reflects the pre-pagination count across all three buckets.
+
+    ``evidence`` carries bucket-specific detail:
+
+    - ``unidentified`` — ``{}`` (no additional evidence).
+    - ``duplicate-candidate`` — ``{"predicate": "<has-email|has-phone>",
+      "shared_value": "<value>", "peer_entity_ids": ["<uuid>", ...]}``.
+      When the entity is flagged via ``metadata->>'duplicate_candidate' = 'true'``
+      but no shared fact is detected, ``evidence`` is ``{}``.
+    - ``stale`` — ``{"last_seen": "<iso-datetime>|null"}``.
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12b).
+    await _assert_owner_entity_exists(pool)
+
+    dup_predicates_literal = ", ".join(f"'{p}'" for p in _DUP_DETECTION_PREDICATES)
+
+    # -------------------------------------------------------------------
+    # SQL: three buckets, materialised in application order.
+    # Each bucket query returns: entity_id, canonical_name, entity_type,
+    #   last_seen, bucket, evidence (as JSON text).
+    #
+    # Bucket 1 — unidentified
+    # -------------------------------------------------------------------
+    unidentified_sql = """
+        SELECT
+            e.id            AS entity_id,
+            e.canonical_name,
+            e.entity_type,
+            (
+                SELECT max(rf.last_seen)
+                FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
+            ) AS last_seen,
+            'unidentified'::text AS bucket,
+            '{}'::text AS evidence_json
+        FROM public.entities e
+        WHERE (e.metadata->>'unidentified')::text = 'true'
+          AND (e.metadata->>'merged_into') IS NULL
+    """
+
+    # -------------------------------------------------------------------
+    # Bucket 2 — duplicate-candidate
+    # Sourced from two sub-buckets merged via UNION:
+    #   2a. metadata flag
+    #   2b. shared has-email / has-phone value detected via self-join
+    # -------------------------------------------------------------------
+    dup_metadata_sql = """
+        SELECT
+            e.id            AS entity_id,
+            e.canonical_name,
+            e.entity_type,
+            (
+                SELECT max(rf.last_seen)
+                FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
+            ) AS last_seen,
+            'duplicate-candidate'::text AS bucket,
+            '{}'::text AS evidence_json
+        FROM public.entities e
+        WHERE (e.metadata->>'duplicate_candidate')::text = 'true'
+          AND (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
+          AND (e.metadata->>'merged_into') IS NULL
+    """
+
+    # Deterministic dup-detection: find entities sharing a has-email / has-phone value.
+    # The self-join groups by (predicate, object) and emits any entity_id in a
+    # group with >1 distinct entity.  We exclude entities already in unidentified.
+    dup_detected_sql = f"""
+        SELECT
+            e.id            AS entity_id,
+            e.canonical_name,
+            e.entity_type,
+            (
+                SELECT max(rf.last_seen)
+                FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
+            ) AS last_seen,
+            'duplicate-candidate'::text AS bucket,
+            json_build_object(
+                'predicate', grp.predicate,
+                'shared_value', grp.object,
+                'peer_entity_ids', (
+                    SELECT json_agg(DISTINCT f2.entity_id::text)
+                    FROM relationship.facts f2
+                    WHERE f2.predicate = grp.predicate
+                      AND f2.object = grp.object
+                      AND f2.validity = 'active'
+                      AND f2.scope = 'relationship'
+                      AND f2.entity_id <> e.id
+                )
+            )::text AS evidence_json
+        FROM public.entities e
+        JOIN (
+            SELECT predicate, object
+            FROM relationship.facts
+            WHERE predicate IN ({dup_predicates_literal})
+              AND validity = 'active'
+              AND scope = 'relationship'
+            GROUP BY predicate, object
+            HAVING count(DISTINCT entity_id) > 1
+        ) AS grp
+            ON grp.predicate IN ({dup_predicates_literal})
+        JOIN relationship.facts f_link
+            ON f_link.entity_id = e.id
+           AND f_link.predicate = grp.predicate
+           AND f_link.object = grp.object
+           AND f_link.validity = 'active'
+           AND f_link.scope = 'relationship'
+        WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
+          AND (e.metadata->>'merged_into') IS NULL
+    """
+
+    # -------------------------------------------------------------------
+    # Bucket 3 — stale
+    # Entities excluded from unidentified and (detected) dup-candidate.
+    # -------------------------------------------------------------------
+    stale_sql = f"""
+        SELECT
+            e.id            AS entity_id,
+            e.canonical_name,
+            e.entity_type,
+            (
+                SELECT max(rf.last_seen)
+                FROM relationship.facts rf
+                WHERE rf.entity_id = e.id
+                  AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
+            ) AS last_seen,
+            'stale'::text AS bucket,
+            json_build_object(
+                'last_seen',
+                (
+                    SELECT max(rf.last_seen)::text
+                    FROM relationship.facts rf
+                    WHERE rf.entity_id = e.id
+                      AND rf.validity = 'active'
+                      AND rf.scope = 'relationship'
+                )
+            )::text AS evidence_json
+        FROM public.entities e
+        WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
+          AND (e.metadata->>'merged_into') IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM relationship.facts rf
+              WHERE rf.entity_id = e.id
+                AND rf.validity = 'active'
+                AND rf.scope = 'relationship'
+                AND rf.last_seen > (now() - INTERVAL '{_STALE_DAYS} days')
+          )
+          AND NOT (
+              -- Exclude entities already caught by dup-detection self-join.
+              EXISTS (
+                  SELECT 1
+                  FROM relationship.facts f_dup
+                  JOIN (
+                      SELECT predicate, object
+                      FROM relationship.facts
+                      WHERE predicate IN ({dup_predicates_literal})
+                        AND validity = 'active'
+                        AND scope = 'relationship'
+                      GROUP BY predicate, object
+                      HAVING count(DISTINCT entity_id) > 1
+                  ) grp2
+                    ON grp2.predicate = f_dup.predicate
+                   AND grp2.object = f_dup.object
+                  WHERE f_dup.entity_id = e.id
+                    AND f_dup.validity = 'active'
+                    AND f_dup.scope = 'relationship'
+              )
+              OR (e.metadata->>'duplicate_candidate')::text = 'true'
+          )
+    """
+
+    # -------------------------------------------------------------------
+    # Combine: deduplicate within same entity_id using ranked CTE.
+    # Priority: unidentified(1) > duplicate-candidate(2) > stale(3).
+    # -------------------------------------------------------------------
+    combined_sql = f"""
+        WITH raw AS (
+            {unidentified_sql}
+            UNION ALL
+            {dup_metadata_sql}
+            UNION ALL
+            {dup_detected_sql}
+            UNION ALL
+            {stale_sql}
+        ),
+        ranked AS (
+            SELECT *,
+                row_number() OVER (
+                    PARTITION BY entity_id
+                    ORDER BY
+                        CASE bucket
+                            WHEN 'unidentified'          THEN 1
+                            WHEN 'duplicate-candidate'   THEN 2
+                            WHEN 'stale'                 THEN 3
+                        END,
+                        canonical_name
+                ) AS rn
+            FROM raw
+        ),
+        deduped AS (
+            SELECT entity_id, canonical_name, entity_type, last_seen, bucket, evidence_json
+            FROM ranked
+            WHERE rn = 1
+        )
+    """
+
+    count_sql = f"{combined_sql} SELECT count(*) FROM deduped"
+
+    data_sql = f"""
+        {combined_sql}
+        SELECT entity_id, canonical_name, entity_type, last_seen, bucket, evidence_json
+        FROM deduped
+        ORDER BY
+            CASE bucket
+                WHEN 'unidentified'        THEN 1
+                WHEN 'duplicate-candidate' THEN 2
+                WHEN 'stale'               THEN 3
+            END,
+            canonical_name
+        OFFSET $1 LIMIT $2
+    """
+
+    total_raw, rows = await asyncio.gather(
+        pool.fetchval(count_sql),
+        pool.fetch(data_sql, offset, limit),
+    )
+    total = total_raw or 0
+
+    import json as _json
+
+    items = [
+        QueueEntry(
+            entity_id=r["entity_id"],
+            canonical_name=r["canonical_name"],
+            entity_type=r["entity_type"],
+            bucket=r["bucket"],
+            evidence=_json.loads(r["evidence_json"]) if r["evidence_json"] else {},
+            last_seen=r["last_seen"],
+        )
+        for r in rows
+    ]
+
+    return QueueResponse(
         items=items,
         total=total,
         limit=limit,
