@@ -1181,3 +1181,63 @@ class DismissQueueResponse(BaseModel):
 
     dismissed: list[DismissQueueItemResult]
     status: str
+
+
+# ---------------------------------------------------------------------------
+# Entity activity aggregator models (entity-redesign Phase 2, bu-ihiw4)
+# ---------------------------------------------------------------------------
+
+
+class ActivityEntry(BaseModel):
+    """A single entry in the entity activity stream.
+
+    The ``src`` field discriminates the origin:
+
+    - ``'relationship'`` — sourced from ``relationship.facts`` (notes,
+      interactions, gifts, loans, life events, dunbar_tier_override, etc.).
+    - ``'chronicler'`` — sourced via the chronicler MCP tool
+      ``chronicler_list_episodes``.
+
+    Fields present for ``src='relationship'`` rows:
+    - ``id`` — fact UUID from ``relationship.facts``
+    - ``ts`` — ``last_seen`` of the fact (falls back to ``created_at``)
+    - ``kind`` — predicate family (e.g. ``'note'``, ``'interaction'``, ``'gift'``)
+    - ``predicate`` — the raw predicate string
+
+    Fields present for ``src='chronicler'`` rows:
+    - ``id`` — episode UUID from the chronicler
+    - ``ts`` — ``canonical_start_at`` from the corrected episode
+    - ``kind`` — always ``'episode'``
+    - ``episode_id`` — same as ``id`` (kept for explicit episode-typed access)
+    - ``summary`` — ``canonical_title`` from the corrected episode
+
+    Fields absent in a given row are ``None``.
+    """
+
+    id: UUID
+    ts: datetime | None = None
+    kind: str
+    src: Literal["relationship", "chronicler"]
+    # relationship-only
+    predicate: str | None = None
+    # chronicler-only
+    episode_id: UUID | None = None
+    summary: str | None = None
+
+
+class ActivityResponse(BaseModel):
+    """Response for ``GET /entities/{id}/activity``.
+
+    ``items`` is a merged, timestamp-descending stream of relationship facts
+    and chronicler episodes for the given entity.  Each entry carries a
+    ``src`` field so clients can distinguish the origin.
+
+    ``total`` is the total number of items across both sources before
+    pagination (relationship_count + chronicler_count).
+    ``limit`` and ``offset`` echo the request parameters.
+    """
+
+    items: list[ActivityEntry]
+    total: int
+    limit: int
+    offset: int

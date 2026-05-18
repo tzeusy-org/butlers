@@ -115,6 +115,8 @@ if _models_path.exists():
         DismissQueueRequest = _models_module.DismissQueueRequest
         DismissQueueItemResult = _models_module.DismissQueueItemResult
         DismissQueueResponse = _models_module.DismissQueueResponse
+        ActivityEntry = _models_module.ActivityEntry
+        ActivityResponse = _models_module.ActivityResponse
 
 logger = logging.getLogger(__name__)
 
@@ -5449,3 +5451,224 @@ async def merge_entities(
         subject_facts_rewired=subject_facts_rewired,
         object_facts_rewired=object_facts_rewired,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/activity  — unified activity aggregator (bu-ihiw4)
+# ---------------------------------------------------------------------------
+
+#: Chronicler MCP timeout in seconds.  The call is fire-and-forget on failure;
+#: the aggregator degrades gracefully if the chronicler is unreachable.
+_CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
+
+#: Predicate → kind mapping for relationship.facts rows surfaced in activity.
+#: Predicates not listed here are surfaced with kind='fact'.
+_FACT_PREDICATE_KIND: dict[str, str] = {
+    "contact_note": "note",
+    "interaction_meeting": "interaction",
+    "interaction_call": "interaction",
+    "interaction_email": "interaction",
+    "interaction_message": "interaction",
+    "interaction_event": "interaction",
+    "interaction_social": "interaction",
+    "gift": "gift",
+    "loan": "loan",
+    "life_event": "life_event",
+    "dunbar_tier_override": "dunbar_tier_override",
+}
+
+
+async def _fetch_relationship_activity(
+    pool: object,
+    entity_id: UUID,
+) -> list[ActivityEntry]:
+    """Fetch active facts from relationship.facts for the given entity.
+
+    Returns all facts where subject=$entity_id OR (object_kind='entity'
+    AND object=$entity_id::text).  Ordered by timestamp DESC.
+
+    INVARIANT: No SQL references to chronicler.* schemas.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT
+            f.id,
+            f.predicate,
+            f.last_seen,
+            f.created_at
+        FROM relationship.facts f
+        WHERE f.validity = 'active'
+          AND (
+              f.subject = $1
+              OR (f.object_kind = 'entity' AND f.object = $1::text)
+          )
+        ORDER BY COALESCE(f.last_seen, f.created_at) DESC NULLS LAST, f.id
+        """,
+        entity_id,
+    )
+
+    entries: list[ActivityEntry] = []
+    for r in rows:
+        predicate: str = r["predicate"]
+        kind = _FACT_PREDICATE_KIND.get(predicate, "fact")
+        ts: datetime | None = r["last_seen"] or r["created_at"]
+        entries.append(
+            ActivityEntry(
+                id=r["id"],
+                ts=ts,
+                kind=kind,
+                src="relationship",
+                predicate=predicate,
+            )
+        )
+    return entries
+
+
+async def _fetch_chronicler_activity(
+    mcp_manager: MCPClientManager,
+    entity_id: UUID,
+) -> list[ActivityEntry]:
+    """Fetch episodes from the chronicler butler via MCP.
+
+    Calls ``chronicler_list_episodes(entity_id=<entity_id>, limit=500)``
+    and converts each corrected episode into an ``ActivityEntry`` with
+    ``src='chronicler'``.
+
+    Returns an empty list when the chronicler is unreachable or the MCP
+    call fails — graceful degrade, never raises.
+
+    INVARIANT: No direct SQL on chronicler.* tables.
+    """
+    try:
+        client = await asyncio.wait_for(
+            mcp_manager.get_client("chronicler"),
+            timeout=_CHRONICLER_ACTIVITY_TIMEOUT_S,
+        )
+        result = await asyncio.wait_for(
+            client.call_tool(
+                "chronicler_list_episodes",
+                {"entity_id": str(entity_id), "limit": 500},
+            ),
+            timeout=_CHRONICLER_ACTIVITY_TIMEOUT_S,
+        )
+    except (ButlerUnreachableError, TimeoutError, Exception) as exc:
+        logger.info(
+            "Chronicler activity fetch failed for entity %s (graceful degrade): %s",
+            entity_id,
+            exc,
+        )
+        return []
+
+    raw_text = _extract_mcp_result_text(result)
+    payload = _parse_mcp_result_payload(raw_text)
+
+    is_error = bool(getattr(result, "is_error", False))
+    if is_error or not isinstance(payload, dict):
+        logger.info(
+            "Chronicler activity: unexpected payload for entity %s; degrading gracefully",
+            entity_id,
+        )
+        return []
+
+    episodes: list[dict] = payload.get("data", [])
+    entries: list[ActivityEntry] = []
+    for ep in episodes:
+        if not isinstance(ep, dict):
+            continue
+        episode_id_raw = ep.get("id")
+        if not episode_id_raw:
+            continue
+        try:
+            episode_uuid = UUID(str(episode_id_raw))
+        except (ValueError, AttributeError):
+            continue
+
+        # Use canonical_start_at as the primary timestamp; fall back to start_at.
+        ts_raw = ep.get("canonical_start_at") or ep.get("start_at")
+        ts: datetime | None = None
+        if ts_raw:
+            try:
+                ts = datetime.fromisoformat(str(ts_raw))
+            except (ValueError, TypeError):
+                pass
+
+        summary = ep.get("canonical_title") or ep.get("title")
+
+        entries.append(
+            ActivityEntry(
+                id=episode_uuid,
+                ts=ts,
+                kind="episode",
+                src="chronicler",
+                episode_id=episode_uuid,
+                summary=str(summary) if summary is not None else None,
+            )
+        )
+    return entries
+
+
+def _sort_key_activity(entry: ActivityEntry) -> datetime:
+    """Sort key for activity entries: timestamp DESC (None → epoch for stable tail sort)."""
+    if entry.ts is None:
+        return datetime.min.replace(tzinfo=UTC)
+    # Normalise to UTC-aware so comparison works across tz-aware and tz-naive.
+    if entry.ts.tzinfo is None:
+        return entry.ts.replace(tzinfo=UTC)
+    return entry.ts
+
+
+@router.get("/entities/{entity_id}/activity", response_model=ActivityResponse)
+async def get_entity_activity(
+    entity_id: UUID,
+    limit: int = Query(50, ge=1, le=200, description="Maximum entries per page."),
+    offset: int = Query(0, ge=0, description="Pagination offset."),
+    db: DatabaseManager = Depends(_get_db_manager),
+    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
+) -> ActivityResponse:
+    """Return a merged activity stream for the given entity.
+
+    Combines:
+
+    1. **Relationship facts** — all active ``relationship.facts`` rows where
+       the entity is either subject or object (entity-side triple), regardless
+       of predicate.  Tagged ``src='relationship'``.
+    2. **Chronicler episodes** — episodes linked to this entity, fetched via
+       the ``chronicler_list_episodes`` MCP tool (not direct SQL).  Tagged
+       ``src='chronicler'``.
+
+    The merged stream is sorted by timestamp descending (``last_seen`` for
+    facts; ``canonical_start_at`` for episodes).  Pagination is applied after
+    the merge.  ``total`` reflects the merged count before slicing.
+
+    **Authorization**: owner-only gate (Amendment 12b) — returns HTTP 403
+    with ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    Returns 404 if the entity does not exist in ``public.entities``.
+
+    **Chronicler boundary**: the relationship butler MUST NOT query
+    ``chronicler.*`` tables directly; this endpoint calls
+    ``chronicler_list_episodes`` via MCP and degrades gracefully when the
+    chronicler is unreachable.
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12b, Amendment 12b).
+    await _assert_owner_entity_exists(pool)
+
+    # Entity existence gate.
+    await _assert_entity_exists(pool, entity_id)
+
+    # Fetch from both sources concurrently.
+    rel_entries, chr_entries = await asyncio.gather(
+        _fetch_relationship_activity(pool, entity_id),
+        _fetch_chronicler_activity(mcp_manager, entity_id),
+    )
+
+    # Merge and sort descending by timestamp.
+    all_entries: list[ActivityEntry] = rel_entries + chr_entries
+    all_entries.sort(key=_sort_key_activity, reverse=True)
+
+    total = len(all_entries)
+    page = all_entries[offset : offset + limit]
+
+    return ActivityResponse(items=page, total=total, limit=limit, offset=offset)
