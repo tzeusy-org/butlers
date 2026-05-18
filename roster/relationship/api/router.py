@@ -2364,9 +2364,9 @@ async def search_entities(
     **No LLM, no embedding service.** All ranking is pure SQL (``ILIKE``).
     Per Brief §6b Amendment 15 (Deterministic-Finder transitive enforcement).
 
-    All ``relationship.facts`` queries include ``AND validity = 'active'``
-    and ``AND scope = 'relationship'`` (correctness filter per PR #1772/#1773
-    review requirement).
+    All ``relationship.facts`` queries include ``AND validity = 'active'``.
+    ``relationship.facts`` has no ``scope`` column — scope is implicit via schema
+    qualification (``relationship.`` prefix enforces schema isolation per RFC 0006).
     """
     pool = _pool(db)
 
@@ -2427,7 +2427,6 @@ async def search_entities(
               AND f.object_kind = 'literal'
               AND f.object ILIKE ('%' || $1 || '%')
               AND f.validity = 'active'
-              AND f.scope = 'relationship'
 
             UNION ALL
 
@@ -2458,7 +2457,6 @@ async def search_entities(
             FROM relationship.facts f
             WHERE f.predicate ILIKE ('%' || $1 || '%')
               AND f.validity = 'active'
-              AND f.scope = 'relationship'
         ) AS candidates
         GROUP BY entity_id
     )
@@ -2615,9 +2613,8 @@ async def list_entities(
             """
             NOT EXISTS (
                 SELECT 1 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
                   AND rf.last_seen > (now() - INTERVAL '365 days')
             )
             """
@@ -2630,10 +2627,9 @@ async def list_entities(
             f"""
             EXISTS (
                 SELECT 1 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.predicate IN ({predicates_literal})
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
             )
             """
         )
@@ -2656,12 +2652,11 @@ async def list_entities(
             e.updated_at,
             -- Pinned Dunbar tier override from relationship.facts
             (
-                SELECT (rf.content)::int
+                SELECT (rf.object)::int
                 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.predicate = 'dunbar_tier_override'
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
                 ORDER BY rf.created_at DESC
                 LIMIT 1
             ) AS tier,
@@ -2669,18 +2664,16 @@ async def list_entities(
             (
                 SELECT max(rf.last_seen)
                 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
             ) AS last_seen,
             -- Count of contact-type facts
             (
                 SELECT count(*)
                 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.predicate IN ({", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)})
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
             ) AS contact_fact_count
         FROM public.entities e
         {where_clause}
@@ -2856,7 +2849,6 @@ async def promote_entity(
                     COUNT(*) FILTER (
                         WHERE predicate = ANY($2::text[])
                           AND validity = 'active'
-                          AND scope = 'relationship'
                     ) AS contact_fact_count,
                     (
                         SELECT f2.object::int
@@ -2864,13 +2856,11 @@ async def promote_entity(
                         WHERE f2.subject = $1
                           AND f2.predicate = 'dunbar_tier_override'
                           AND f2.validity = 'active'
-                          AND f2.scope = 'relationship'
                         LIMIT 1
                     ) AS tier
                 FROM relationship.facts
                 WHERE subject = $1
                   AND validity = 'active'
-                  AND scope = 'relationship'
                 """,
                 entity_id,
                 list(_HAS_CONTACT_PREDICATES),
@@ -2964,9 +2954,8 @@ async def get_entities_queue(
             (
                 SELECT max(rf.last_seen)
                 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
             ) AS last_seen,
             'unidentified'::text AS bucket,
             '{}'::jsonb AS evidence_json
@@ -2989,9 +2978,8 @@ async def get_entities_queue(
             (
                 SELECT max(rf.last_seen)
                 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
             ) AS last_seen,
             'duplicate-candidate'::text AS bucket,
             '{}'::jsonb AS evidence_json
@@ -3012,22 +3000,20 @@ async def get_entities_queue(
             (
                 SELECT max(rf.last_seen)
                 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
             ) AS last_seen,
             'duplicate-candidate'::text AS bucket,
             json_build_object(
                 'predicate', grp.predicate,
                 'shared_value', grp.object,
                 'peer_entity_ids', (
-                    SELECT json_agg(DISTINCT f2.entity_id::text)
+                    SELECT json_agg(DISTINCT f2.subject::text)
                     FROM relationship.facts f2
                     WHERE f2.predicate = grp.predicate
                       AND f2.object = grp.object
                       AND f2.validity = 'active'
-                      AND f2.scope = 'relationship'
-                      AND f2.entity_id <> e.id
+                      AND f2.subject <> e.id
                 )
             )::jsonb AS evidence_json
         FROM public.entities e
@@ -3036,17 +3022,15 @@ async def get_entities_queue(
             FROM relationship.facts
             WHERE predicate IN ({dup_predicates_literal})
               AND validity = 'active'
-              AND scope = 'relationship'
             GROUP BY predicate, object
-            HAVING count(DISTINCT entity_id) > 1
+            HAVING count(DISTINCT subject) > 1
         ) AS grp
             ON grp.predicate IN ({dup_predicates_literal})
         JOIN relationship.facts f_link
-            ON f_link.entity_id = e.id
+            ON f_link.subject = e.id
            AND f_link.predicate = grp.predicate
            AND f_link.object = grp.object
            AND f_link.validity = 'active'
-           AND f_link.scope = 'relationship'
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND (e.metadata->>'merged_into') IS NULL
     """
@@ -3064,9 +3048,8 @@ async def get_entities_queue(
             (
                 SELECT max(rf.last_seen)
                 FROM relationship.facts rf
-                WHERE rf.entity_id = e.id
+                WHERE rf.subject = e.id
                   AND rf.validity = 'active'
-                  AND rf.scope = 'relationship'
             ) AS last_seen,
             'stale'::text AS bucket,
             json_build_object(
@@ -3074,9 +3057,8 @@ async def get_entities_queue(
                 (
                     SELECT max(rf.last_seen)::text
                     FROM relationship.facts rf
-                    WHERE rf.entity_id = e.id
+                    WHERE rf.subject = e.id
                       AND rf.validity = 'active'
-                      AND rf.scope = 'relationship'
                 )
             )::jsonb AS evidence_json
         FROM public.entities e
@@ -3084,9 +3066,8 @@ async def get_entities_queue(
           AND (e.metadata->>'merged_into') IS NULL
           AND NOT EXISTS (
               SELECT 1 FROM relationship.facts rf
-              WHERE rf.entity_id = e.id
+              WHERE rf.subject = e.id
                 AND rf.validity = 'active'
-                AND rf.scope = 'relationship'
                 AND rf.last_seen > (now() - INTERVAL '{_STALE_DAYS} days')
           )
     """
@@ -3210,8 +3191,9 @@ async def get_entities_concentration(
     stability.  The full ranked list is returned (no pagination); callers
     should expect O(entity_count) rows.
 
-    **Scope filter:** only facts with ``validity='active' AND
-    scope='relationship'`` are included (confirmed pattern from PRs #1772-1775).
+    **Filter:** only facts with ``validity='active'`` are included.
+    ``relationship.facts`` has no ``scope`` column; schema isolation is enforced
+    via the ``relationship.`` schema prefix (RFC 0006).
 
     Response shape::
 
@@ -3287,20 +3269,19 @@ async def get_entities_concentration(
         """
         WITH agg AS (
             SELECT
-                f.entity_id                             AS entity_id,
+                f.subject                               AS entity_id,
                 SUM(COALESCE(f.weight, 1))::bigint      AS weight_sum,
                 COUNT(*)::int                           AS fact_count,
                 MAX(f.last_seen)                        AS last_seen
             FROM relationship.facts f
             WHERE f.predicate = $1
               AND f.validity = 'active'
-              AND f.scope = 'relationship'
-            GROUP BY f.entity_id
+            GROUP BY f.subject
         ),
         prov AS (
             -- Provenance from the most-recent contributing triple per entity.
-            SELECT DISTINCT ON (f.entity_id)
-                f.entity_id,
+            SELECT DISTINCT ON (f.subject)
+                f.subject                               AS entity_id,
                 f.src,
                 f.conf,
                 f.verified,
@@ -3308,8 +3289,7 @@ async def get_entities_concentration(
             FROM relationship.facts f
             WHERE f.predicate = $1
               AND f.validity = 'active'
-              AND f.scope = 'relationship'
-            ORDER BY f.entity_id, f.last_seen DESC NULLS LAST, f.created_at DESC
+            ORDER BY f.subject, f.last_seen DESC NULLS LAST, f.created_at DESC
         )
         SELECT
             e.id                AS entity_id,
@@ -4405,7 +4385,6 @@ async def list_entity_neighbours(
         JOIN relationship.predicate_registry pr ON pr.predicate = f.predicate
         WHERE pr.kind = 'relational'
           AND f.validity = 'active'
-          AND f.scope = 'relationship'
           AND f.object_kind = 'entity'
           AND (
               f.subject = $1
@@ -4510,7 +4489,6 @@ async def list_entity_contacts(
     - ``subject = entity_id``
     - ``predicate LIKE 'has-%'`` (contact family)
     - ``validity = 'active'``
-    - ``scope = 'relationship'``
 
     Owner-only authz gate (Clause 12b, Amendment 12b): returns HTTP 403 with
     ``{"code": "owner_required"}`` if no owner entity is registered.
@@ -4564,7 +4542,6 @@ async def list_entity_contacts(
         WHERE f.subject   = $1
           AND f.predicate LIKE 'has-%'
           AND f.validity  = 'active'
-          AND f.scope     = 'relationship'
         ORDER BY
             f.predicate        ASC,
             f."primary"        DESC NULLS LAST,
@@ -4740,7 +4717,6 @@ async def delete_entity_contact(
         WHERE f.subject   = $1
           AND f.predicate = $2
           AND f.validity  = 'active'
-          AND f.scope     = 'relationship'
         """,
         entity_id,
         predicate,
