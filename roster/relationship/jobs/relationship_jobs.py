@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -1318,5 +1319,288 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["skipped_group_too_large"],
         stats["calendar_events_scanned"],
         stats["errors"],
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Dual-write reconciler constants
+# ---------------------------------------------------------------------------
+
+# Env var name for configuring the reconciler interval (minutes).
+_RECONCILER_INTERVAL_ENV = "BUTLERS_CONTACT_INFO_RECONCILER_INTERVAL_MINUTES"
+
+# Default reconcile interval: 30 minutes (configurable via env var).
+_RECONCILER_DEFAULT_INTERVAL_MINUTES = 30
+
+# State key used to persist the last successful run timestamp.
+_RECONCILER_STATE_KEY = "contact_info_reconciler.last_run_at"
+
+# Mapping from contact_info.type → relationship.entity_facts predicate.
+# These map through the registered predicate catalog (migration rel_014). Types
+# without a 1-to-1 predicate (telegram, linkedin, twitter, other) all collapse
+# to the channel-scoped "has-handle" predicate.
+#
+# IMPORTANT: the NOT EXISTS sweep clause in run_contact_info_reconciler must
+# use this same mapping (via a SQL CASE expression) so the idempotency check
+# checks the predicate that the reconciler will actually write, not 'has-' || ci.type.
+_CI_TYPE_TO_PREDICATE: dict[str, str] = {
+    "email": "has-email",
+    "phone": "has-phone",
+    "telegram": "has-handle",
+    "linkedin": "has-handle",
+    "twitter": "has-handle",
+    "website": "has-website",
+    "other": "has-handle",
+}
+
+
+def _reconciler_interval_minutes() -> int:
+    """Return the reconciler interval in minutes (default 30, env-overridable)."""
+    raw = os.environ.get(_RECONCILER_INTERVAL_ENV)
+    if raw is not None:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _RECONCILER_DEFAULT_INTERVAL_MINUTES
+
+
+# ---------------------------------------------------------------------------
+# Dual-write reconciler job (Amendment 14)
+# ---------------------------------------------------------------------------
+
+
+async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Sweep public.contact_info for rows missing a matching active triple.
+
+    Implements the Amendment 14 safety net: EVENTUAL parity (within 24h) between
+    ``public.contact_info`` (the legacy contact store) and
+    ``relationship.entity_facts`` (the new triple store).
+
+    For each ``public.contact_info`` row that does NOT have a corresponding active
+    triple in ``relationship.entity_facts``, the reconciler calls
+    ``relationship_assert_fact()`` to emit the triple.
+
+    Skipped rows (per Brief §6b Amendment 1.1.A.4 and Amendment 14):
+    - ``secured = true``              — credentials, not facts.
+    - ``contact_id → entity_id IS NULL`` — orphaned contacts; no subject to assert on.
+    - No registered predicate for the ``contact_info.type``.
+
+    Owner carve-out (Amendment 12a / RFC 0017 §2.3):
+    - When the contact's entity carries the ``'owner'`` role, the triple write is
+      intercepted by ``relationship_assert_fact()`` itself, which emits a
+      ``pending_actions`` row instead. The reconciler counts these separately.
+
+    Metrics returned:
+        rows_scanned    : total public.contact_info rows examined.
+        rows_reconciled : triples successfully asserted (inserted or superseded).
+        rows_skipped    : rows that already had an active triple (no write needed).
+        rows_carveout   : owner-role contacts → pending_approval outcome.
+        rows_error      : rows where relationship_assert_fact raised an exception.
+        rows_skipped_credential : secured=true rows.
+        rows_skipped_orphan     : entity_id IS NULL rows.
+        rows_skipped_no_predicate: ci.type has no registered predicate mapping.
+
+    Args:
+        db_pool: Database connection pool (relationship butler pool).
+
+    Returns:
+        Dictionary with the metric keys listed above plus ``interval_minutes``.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import (
+        AssertOutcome,
+        relationship_assert_fact,
+    )
+
+    logger.info("Running contact_info_reconciler job")
+
+    interval_minutes = _reconciler_interval_minutes()
+
+    stats: dict[str, Any] = {
+        "interval_minutes": interval_minutes,
+        "rows_scanned": 0,
+        "rows_reconciled": 0,
+        "rows_skipped": 0,
+        "rows_carveout": 0,
+        "rows_error": 0,
+        "rows_skipped_credential": 0,
+        "rows_skipped_orphan": 0,
+        "rows_skipped_no_predicate": 0,
+    }
+
+    # -----------------------------------------------------------------------
+    # Step 1: Sweep public.contact_info rows that DON'T have an active triple.
+    #
+    # Filters applied in SQL:
+    #   - secured = false (credentials carve-out).
+    #   - c.entity_id IS NOT NULL (orphan guard — no subject to assert on).
+    #   - INNER JOIN public.entities excludes tombstoned entities
+    #     (metadata->>'merged_into' IS NULL).
+    #   - NOT EXISTS checks the predicate the reconciler will actually write,
+    #     using the same CASE mapping as _CI_TYPE_TO_PREDICATE. Without this,
+    #     rows for ci.type IN ('telegram', 'linkedin', 'twitter', 'other') would
+    #     always appear "missing" because the reconciler writes 'has-handle' but
+    #     'has-' || ci.type resolves to 'has-telegram' etc.
+    #
+    # We include rows with unmapped ci.types (e.g. 'fax') and handle them in
+    # Python so the metrics accurately reflect why rows were skipped.
+    # -----------------------------------------------------------------------
+    try:
+        rows = await db_pool.fetch(
+            """
+            SELECT
+                ci.id           AS ci_id,
+                ci.contact_id,
+                ci.type         AS ci_type,
+                ci.value        AS ci_value,
+                ci.is_primary,
+                ci.secured,
+                ci.created_at   AS ci_created_at,
+                c.entity_id
+            FROM public.contact_info ci
+            JOIN public.contacts c ON c.id = ci.contact_id
+            JOIN public.entities e ON e.id = c.entity_id
+            WHERE ci.secured = false
+              AND c.entity_id IS NOT NULL
+              AND (e.metadata->>'merged_into') IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM relationship.entity_facts ef
+                  WHERE ef.subject   = c.entity_id
+                    AND ef.predicate = CASE ci.type
+                        WHEN 'email'    THEN 'has-email'
+                        WHEN 'phone'    THEN 'has-phone'
+                        WHEN 'website'  THEN 'has-website'
+                        WHEN 'telegram' THEN 'has-handle'
+                        WHEN 'linkedin' THEN 'has-handle'
+                        WHEN 'twitter'  THEN 'has-handle'
+                        WHEN 'other'    THEN 'has-handle'
+                        ELSE 'has-' || ci.type
+                    END
+                    AND ef.object    = ci.value
+                    AND ef.validity  = 'active'
+              )
+            ORDER BY ci.created_at ASC NULLS LAST
+            """
+        )
+    except Exception:
+        logger.exception("contact_info_reconciler: failed to query sweep rows")
+        stats["rows_error"] += 1
+        return stats
+
+    stats["rows_scanned"] = len(rows)
+    logger.info("contact_info_reconciler: sweep found %d rows to reconcile", len(rows))
+
+    for row in rows:
+        ci_type: str = row["ci_type"]
+        ci_value: str = row["ci_value"]
+        entity_id: uuid.UUID | None = row["entity_id"]
+        ci_id = row["ci_id"]
+
+        # Double-check: secured rows are excluded in the query, but guard anyway.
+        if row["secured"]:
+            stats["rows_skipped_credential"] += 1
+            continue
+
+        # Orphan guard (also excluded in query, but defensive).
+        if entity_id is None:
+            stats["rows_skipped_orphan"] += 1
+            continue
+
+        # Predicate mapping — skip types with no registered predicate.
+        predicate = _CI_TYPE_TO_PREDICATE.get(ci_type)
+        if predicate is None:
+            # Fallback: attempt the canonical has-{type} form if the type is
+            # non-empty. Unknown types (e.g. 'other') still map through the
+            # dict above; truly unknown ones are skipped with a warning.
+            if ci_type:
+                logger.warning(
+                    "contact_info_reconciler: unrecognised ci_type=%r for ci_id=%s; skipping",
+                    ci_type,
+                    ci_id,
+                )
+            stats["rows_skipped_no_predicate"] += 1
+            continue
+
+        # Provenance fields.
+        last_seen: datetime | None = row.get("ci_created_at")
+        is_primary: bool = row["is_primary"]
+
+        try:
+            result = await relationship_assert_fact(
+                db_pool,
+                entity_id,
+                predicate,
+                ci_value,
+                src="reconciler",
+                object_kind="literal",
+                conf=1.0,
+                last_seen=last_seen,
+                verified=False,
+                primary=is_primary,
+            )
+
+            if result.outcome == AssertOutcome.pending_approval:
+                # Owner carve-out: pending_actions row was created by the writer.
+                stats["rows_carveout"] += 1
+                logger.debug(
+                    "contact_info_reconciler: owner carve-out for entity=%s predicate=%s",
+                    entity_id,
+                    predicate,
+                )
+            elif result.outcome in (AssertOutcome.inserted, AssertOutcome.superseded):
+                stats["rows_reconciled"] += 1
+                logger.debug(
+                    "contact_info_reconciler: reconciled entity=%s predicate=%s object=%s "
+                    "outcome=%s",
+                    entity_id,
+                    predicate,
+                    ci_value[:80],
+                    result.outcome.value,
+                )
+            else:
+                # AssertOutcome.unchanged — triple already exists (sweep query
+                # had a race with a concurrent write; no action needed).
+                stats["rows_skipped"] += 1
+                logger.debug(
+                    "contact_info_reconciler: already-active triple for entity=%s predicate=%s "
+                    "(race with concurrent write)",
+                    entity_id,
+                    predicate,
+                )
+        except Exception:
+            logger.exception(
+                "contact_info_reconciler: error asserting triple for ci_id=%s "
+                "entity=%s predicate=%s",
+                ci_id,
+                entity_id,
+                predicate,
+            )
+            stats["rows_error"] += 1
+
+    # Persist the last-run timestamp for observability.
+    try:
+        await state_set(db_pool, _RECONCILER_STATE_KEY, datetime.now(UTC).isoformat())
+    except Exception:
+        logger.warning(
+            "contact_info_reconciler: failed to write last-run checkpoint",
+            exc_info=True,
+        )
+
+    logger.info(
+        "contact_info_reconciler complete: scanned=%d reconciled=%d skipped=%d "
+        "carveout=%d errors=%d skipped_credential=%d skipped_orphan=%d "
+        "skipped_no_predicate=%d",
+        stats["rows_scanned"],
+        stats["rows_reconciled"],
+        stats["rows_skipped"],
+        stats["rows_carveout"],
+        stats["rows_error"],
+        stats["rows_skipped_credential"],
+        stats["rows_skipped_orphan"],
+        stats["rows_skipped_no_predicate"],
     )
     return stats
