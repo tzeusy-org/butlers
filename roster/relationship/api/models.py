@@ -1130,6 +1130,6 @@ class PromoteTierResponse(BaseModel):
 
     entity_id: UUID
     tier: int
-    outcome: str
+    outcome: Literal["inserted", "superseded", "unchanged", "pending_approval"]
     fact_id: UUID | None = None
     action_id: UUID | None = None

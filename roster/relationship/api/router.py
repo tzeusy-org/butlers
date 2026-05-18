@@ -5012,19 +5012,13 @@ async def promote_entity_tier(
     if result.outcome == AssertOutcome.pending_approval:
         # Owner carve-out: write parked for human approval → HTTP 202.
         fastapi_response.status_code = 202
-        return PromoteTierResponse(
-            entity_id=entity_id,
-            tier=body.tier,
-            outcome=result.outcome.value,
-            fact_id=None,
-            action_id=result.action_id,
-        )
 
     return PromoteTierResponse(
         entity_id=entity_id,
         tier=body.tier,
         outcome=result.outcome.value,
         fact_id=result.fact_id,
+        action_id=result.action_id,
     )
 
 
