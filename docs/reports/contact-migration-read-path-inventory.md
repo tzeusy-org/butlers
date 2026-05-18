@@ -11,19 +11,26 @@
 
 | Stat | Value |
 |---|---|
-| Total reader entries | 62 |
-| Readers of `public.contacts` | 40 |
-| Readers of `public.contact_info` | 28 |
-| Readers of both (JOIN) | 6 |
-| Owning butler: `relationship` | 31 |
-| Owning butler: `core/identity` | 6 |
-| Owning butler: `core/daemon` | 3 |
-| Owning butler: `core/memory-api` | 5 |
-| Owning butler: `core/briefing-api` | 4 |
+| Total reader entries | 128 |
+| Owning butler: `relationship` | 86 |
+| Owning butler: `contacts-module` | 7 |
 | Owning butler: `core/approvals` | 4 |
-| Owning butler: `contacts-module` | 5 |
-| Owning butler: `core/chronicler` | 1 |
+| Owning butler: `core/briefing-job` | 3 |
 | Owning butler: `core/connectors` | 3 |
+| Owning butler: `core/memory-api` | 4 |
+| Owning butler: `core/briefing-api` | 1 |
+| Owning butler: `core/briefing-cache` | 1 |
+| Owning butler: `core/chronicler` | 1 |
+| Owning butler: `core/daemon` | 2 |
+| Owning butler: `core/data-ops-api` | 2 |
+| Owning butler: `core/identity` | 4 |
+| Owning butler: `core/ingestion-api` | 3 |
+| Owning butler: `core/memory` | 1 |
+| Owning butler: `core/oauth` | 1 |
+| Owning butler: `core/preferences-api` | 1 |
+| Owning butler: `core/search-api` | 1 |
+| Owning butler: `core/system-api` | 1 |
+| Owning butler: `switchboard` | 1 |
 
 ---
 
@@ -237,6 +244,7 @@
 | `roster/relationship/tools/resolve.py:481` | relationship | `SELECT id, stay_in_touch_days FROM contacts WHERE id=ANY($1)` — batch fetch cadence data for salience scoring | `contacts` | `stay_in_touch_days` → triple `(entity_id, stay-in-touch-cadence, days)`; after cut-over query facts for this predicate |
 | `roster/relationship/tools/resolve.py:516` | relationship | `SELECT c.id AS contact_id, COUNT(*) FILTER (...) AS count_90d, MAX(f.valid_at) AS most_recent FROM contacts c LEFT JOIN facts f ON f.entity_id=c.entity_id WHERE c.id=ANY($1) AND c.entity_id IS NOT NULL GROUP BY c.id` — interaction count/recency for salience | `contacts LEFT JOIN facts` | Post-cut-over: query facts directly by entity_id (no contacts JOIN needed) |
 | `roster/relationship/tools/resolve.py:669` | relationship | `SELECT metadata, company, job_title, first_name, last_name, nickname FROM contacts WHERE id=$1` — context boost from profile fields | `contacts` | Post-cut-over: read from entity metadata/facts |
+| `roster/relationship/tools/resolve.py:550` | relationship | `SELECT c.id AS contact_id, COUNT(*) FILTER (WHERE f.predicate!='contact_note' AND f.predicate NOT LIKE 'interaction_%') AS fact_count, COUNT(*) FILTER (WHERE f.predicate='contact_note') AS note_count FROM contacts c LEFT JOIN facts f ON f.entity_id=c.entity_id WHERE c.id=ANY($1) AND c.entity_id IS NOT NULL GROUP BY c.id` — batch fact/note count for salience ranking | `contacts LEFT JOIN facts` | Post-cut-over: query facts by entity_id; remove contacts JOIN (entity_id is the primary key) |
 | `roster/relationship/tools/resolve.py:699` | relationship | `SELECT entity_id FROM contacts WHERE id=$1` — entity resolution for SPO fact lookup in context boost | `contacts` | Remove indirection after cut-over; entity_id is the primary key |
 
 ---
@@ -251,6 +259,8 @@
 | `roster/relationship/tools/dunbar.py:707` | relationship | `SELECT id, entity_id FROM contacts WHERE id=$1` — verify contact + get entity_id in `dunbar_tier_set()` | `contacts` | Post-cut-over: contact_id → entity_id is direct; remove contacts lookup |
 | `roster/relationship/tools/dunbar.py:803` | relationship | `SELECT id, entity_id FROM contacts WHERE id=$1` — in `get_contact_dunbar()` | `contacts` | Same as :707 |
 | `roster/relationship/tools/dunbar.py:839` | relationship | `SELECT id, entity_id, listed FROM contacts WHERE id=$1` — in `get_contact_dunbar_with_stale_flag()` | `contacts` | Same as :707 |
+| `roster/relationship/tools/dunbar.py:657` | relationship | `ARRAY(SELECT 'contact:' || id::text FROM contacts WHERE id=ANY($1::uuid[]))` — subquery to build subject patterns for contact_note/emotion lookup (note score boost) | `contacts` | Post-cut-over: build patterns from entity_ids directly (facts already indexed by entity_id); contacts subquery removed |
+| `roster/relationship/tools/dunbar.py:905` | relationship (`_get_all_listed_contacts`) | `SELECT c.*, MAX(f.valid_at) AS last_interaction_at, ... FROM contacts c LEFT JOIN facts f ON f.subject='contact:'||c.id::text AND f.predicate LIKE 'interaction_%' WHERE c.listed=true GROUP BY c.id` — load all listed contacts with last-interaction for scoring | `contacts LEFT JOIN facts` | Post-cut-over: anchor on entity; `listed` → entity flag; interaction join via entity_id; `facts.entity_id` already present |
 
 ---
 
@@ -301,7 +311,10 @@
 | `roster/relationship/api/router.py:2984` | relationship | `SELECT DISTINCT ci.value FROM public.contact_info ci JOIN public.contacts c ON c.id=ci.contact_id WHERE c.entity_id=$1 AND c.archived_at IS NULL AND ci.secured=false UNION SELECT DISTINCT ei.value FROM public.entity_info ei WHERE ei.entity_id=$1 AND ei.secured=false` — collect sender identifiers for message-thread matching | `public.contact_info JOIN public.contacts UNION public.entity_info` | Post-cut-over: only `entity_info` side of UNION remains; contact_info UNION arm is dropped |
 | `roster/relationship/api/router.py:3113` | relationship | `JOIN contacts c ON c.id=id.contact_id WHERE c.entity_id=$1 AND c.archived_at IS NULL` — important dates filtered by entity | `contacts` | Same as :2260 |
 | `roster/relationship/api/router.py:3184` | relationship | `SELECT id FROM contacts WHERE entity_id=$1 AND archived_at IS NULL ORDER BY id LIMIT 1` — find any linked contact for dunbar-tier endpoint | `contacts` | Post-cut-over: dunbar tier stored on entity; remove contacts lookup |
+| `roster/relationship/api/router.py:1022` | relationship (`list_overdue_contacts`) | `SELECT c.id, c.name AS full_name, c.entity_id, c.stay_in_touch_days FROM contacts c WHERE c.listed=true AND c.archived_at IS NULL` — load all listed contacts for overdue-contacts dashboard endpoint | `contacts` | Post-cut-over: `stay_in_touch_days` → triple; `listed` → entity flag; query entities directly |
+| `roster/relationship/api/router.py:1910` | relationship (`create_contact_info`) | `SELECT id FROM contacts WHERE id=$1 AND archived_at IS NULL` — verify contact exists before inserting contact_info row | `contacts` | Keep until bead 8; verify entity exists instead |
 | `roster/relationship/api/router.py:3260` | relationship | `SELECT id, avatar_url FROM public.contacts WHERE id=ANY($1::uuid[])` — batch fetch avatar_url for dunbar ranking map | `public.contacts` | Post-cut-over: avatar_url lives on entity or entity_info; re-point to entity-level attribute |
+| `roster/relationship/api/router.py:3277` | relationship (`get_dunbar_ranking`) | `SELECT c.id AS contact_id, COUNT(f.id) AS interaction_count_30d FROM contacts c JOIN facts f ON f.entity_id=c.entity_id WHERE c.id=ANY($1) AND f.predicate LIKE 'interaction_%' ... GROUP BY c.id` — batch 30-day interaction count for dunbar ranking response enrichment | `contacts JOIN facts` | Post-cut-over: query facts by entity_id directly; remove contacts JOIN |
 
 ---
 
@@ -316,6 +329,24 @@
 | `roster/relationship/jobs/relationship_jobs.py:521` | relationship | `SELECT c.id AS contact_id, ..., COUNT(f.id) AS interaction_count, MIN(f.valid_at) AS first_interaction FROM contacts c LEFT JOIN facts f ON f.subject='contact:' || c.id::text WHERE c.listed=true GROUP BY c.id HAVING COUNT(f.id)>0` — interaction milestones | `contacts LEFT JOIN facts` | Post-cut-over: anchor on entity_id; `facts.entity_id` already present |
 | `roster/relationship/jobs/relationship_jobs.py:873` | relationship | `SELECT ci.type, ci.value, ci.contact_id, COALESCE(e.roles,'{}') AS roles FROM public.contact_info ci JOIN public.contacts c ON c.id=ci.contact_id LEFT JOIN public.entities e ON e.id=c.entity_id JOIN (UNNEST(...)) ON ...` — bulk channel-to-contact resolution for interaction sync | `public.contact_info JOIN public.contacts LEFT JOIN public.entities` | Re-point: use `resolve_contact_by_channel()` batch variant (Group A replacement) |
 | `roster/relationship/jobs/relationship_jobs.py:1203` | relationship | `SELECT ci.contact_id, LOWER(ci.value) AS email, COALESCE(e.roles,'{}') AS roles FROM public.contact_info ci JOIN public.contacts c ON c.id=ci.contact_id LEFT JOIN public.entities e ON e.id=c.entity_id WHERE ci.type='email' AND LOWER(ci.value)=ANY($1)` — resolve calendar attendee emails to contacts | `public.contact_info JOIN public.contacts LEFT JOIN public.entities` | Re-point: email-to-entity resolution via `has-email` triple; roles from entity |
+
+---
+
+### Group Z — Relationship Butler — MCP Domain Tools (tasks, notes, life_events, dates, labels, groups, relationships)
+
+These tools JOIN `contacts` to resolve display names or filter by `listed` status. They do not select directly from `public.contacts` as a primary table but the JOIN causes a read dependency that must be re-pointed.
+
+| File:Line | Butler | Read Shape (what fields, what filter) | Target Table | Re-pointing Plan |
+|---|---|---|---|---|
+| `roster/relationship/tools/tasks.py:165` | relationship (`task_list`) | `SELECT f.id, f.subject, f.content, ..., c.contact_name FROM facts f JOIN contacts c ON c.id=$contact_id` — task list filtered to one contact (contact_id branch) | `contacts` | Post-cut-over: JOIN entities on entity_id; select `canonical_name`; contact_id lookup becomes entity_id lookup |
+| `roster/relationship/tools/tasks.py:186` | relationship (`task_list`) | Same shape — `JOIN contacts c ON f.subject LIKE 'contact:'||c.id::text||':task:%'` — all tasks cross-joined to contacts for display name (no contact_id filter branch) | `contacts` | Post-cut-over: derive entity_id from fact subject directly; remove contacts JOIN |
+| `roster/relationship/tools/notes.py:168` | relationship (`note_search`) | `SELECT f.id, f.content, ..., c.contact_name FROM facts f JOIN contacts c ON f.subject='contact:'||c.id::text WHERE f.subject=$1 AND f.content ILIKE $2` — note search within one contact | `contacts` | Post-cut-over: rewrite using entity_id; `c.contact_name` → entity `canonical_name` |
+| `roster/relationship/tools/notes.py:199` | relationship (`note_search`) | Same shape — cross-contact note search: `JOIN contacts c ON f.subject='contact:'||c.id::text WHERE f.predicate='contact_note' AND f.content ILIKE $1` | `contacts` | Same re-point as :168 |
+| `roster/relationship/tools/life_events.py:295` | relationship (`life_event_search`) | `SELECT f.id, f.content, ..., c.id AS _contact_id, c.contact_name FROM facts f JOIN contacts c ON f.subject='contact:'||c.id::text WHERE {where}` — cross-contact life-event search | `contacts` | Post-cut-over: derive entity_id from subject; display name from entity; remove contacts JOIN |
+| `roster/relationship/tools/dates.py:76` | relationship (`upcoming_important_dates`) | `SELECT d.*, c.contact_name FROM important_dates d JOIN contacts c ON d.contact_id=c.id WHERE c.listed=true ORDER BY d.month, d.day` — upcoming birthday/anniversary dates | `contacts` | Post-cut-over: JOIN entities on entity_id; `contacts.listed` → entity flag; `contact_name` → `canonical_name` |
+| `roster/relationship/tools/labels.py:40` | relationship (`contact_search_by_label`) | `SELECT c.* FROM contacts c JOIN contact_labels cl ON c.id=cl.contact_id JOIN labels l ON cl.label_id=l.id WHERE l.name=$1 AND c.listed=true` — search contacts by label | `contacts` | Post-cut-over: `contact_labels` pivots to entity_id; query entities; `listed` → entity flag |
+| `roster/relationship/tools/groups.py:68` | relationship (`group_members`) | `SELECT c.*, {name_sql} AS name FROM contacts c JOIN group_members gm ON c.id=gm.contact_id WHERE gm.group_id=$1` — list members of a group | `contacts` | Post-cut-over: `group_members` pivots to entity_id; JOIN entities; `name_sql` → `canonical_name` |
+| `roster/relationship/tools/relationships.py:171` | relationship (`relationship_list`) | `SELECT r.*, {name_sql} AS related_name FROM relationships r JOIN contacts c ON r.contact_b=c.id WHERE r.contact_a=$1` — list relationships with display name | `contacts` | Post-cut-over: `relationships` uses entity_ids; JOIN entities for `canonical_name`; remove contacts JOIN |
 
 ---
 
@@ -339,7 +370,7 @@
 
 9. **`src/butlers/connectors/gmail.py`, `telegram_user_client.py`** — reference `contact_info` in string literals/comments only (connector type naming). No SQL reads. Confirmed no-op.
 
-10. **`roster/relationship/tools/dunbar.py:621`** — the subquery `ARRAY(SELECT id::text FROM contacts WHERE id=ANY($1::uuid[]))` is used only to build a LIKE pattern for the facts `subject` column (e.g., `contact:{uuid}`). After cut-over, facts use `entity_id` directly and this subject-pattern lookup becomes unnecessary.
+10. **`roster/relationship/tools/dunbar.py:621` and `:657`** — both are subqueries that build `contact:{uuid}` subject patterns to query the facts table. After cut-over, facts use `entity_id` directly and both subject-pattern lookups become unnecessary.
 
 11. **Migration scripts excluded** — `roster/relationship/migrations/007_reminders_to_calendar_events.py:303` and `roster/relationship/migrations/010_drop_legacy_contact_tables.py:211` contain one-shot schema-migration SELECTs. Not production read paths; not in scope.
 
