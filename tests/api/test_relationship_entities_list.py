@@ -4,7 +4,7 @@ Covers:
 - Empty result set (200 with empty items)
 - Pagination defaults (limit=50, offset=0)
 - Custom limit
-- limit > 200 rejected with HTTP 400
+- limit > 200 rejected with HTTP 422
 - entity_type filter
 - state=unidentified filter
 - state=duplicate-candidate filter
@@ -224,7 +224,7 @@ async def test_custom_offset_is_respected():
 # ---------------------------------------------------------------------------
 
 
-async def test_limit_above_200_rejected_with_400():
+async def test_limit_above_200_rejected_with_422():
     app, _ = _app_with_pool()
     resp = await _get(app, limit=201)
     assert resp.status_code == 422  # FastAPI validates via Query(le=200)

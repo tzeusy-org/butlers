@@ -2418,6 +2418,7 @@ async def list_entities(
                 SELECT 1 FROM relationship.facts rf
                 WHERE rf.entity_id = e.id
                   AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
                   AND rf.last_seen > (now() - INTERVAL '365 days')
             )
             """
@@ -2433,6 +2434,7 @@ async def list_entities(
                 WHERE rf.entity_id = e.id
                   AND rf.predicate IN ({predicates_literal})
                   AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
             )
             """
         )
@@ -2479,6 +2481,7 @@ async def list_entities(
                 WHERE rf.entity_id = e.id
                   AND rf.predicate IN ({", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)})
                   AND rf.validity = 'active'
+                  AND rf.scope = 'relationship'
             ) AS contact_fact_count
         FROM public.entities e
         {where_clause}
