@@ -106,6 +106,8 @@ if _models_path.exists():
         AddContactRequest = _models_module.AddContactRequest
         AddContactResponse = _models_module.AddContactResponse
         DeleteContactResponse = _models_module.DeleteContactResponse
+        MergeEntitiesRequest = _models_module.MergeEntitiesRequest
+        MergeEntitiesResponse = _models_module.MergeEntitiesResponse
 
 logger = logging.getLogger(__name__)
 
@@ -4871,3 +4873,213 @@ async def get_dunbar_ranking(
     owner_entity_id = owner_row["id"] if owner_row else None
 
     return DunbarRankingResponse(entries=entries, owner_entity_id=owner_entity_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/{entity_id}/merge — entity-level merge (bu-jp6r6)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/entities/{entity_id}/merge",
+    response_model=MergeEntitiesResponse,
+)
+async def merge_entities(
+    entity_id: UUID,
+    body: MergeEntitiesRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> MergeEntitiesResponse:
+    """Merge two entities into one, rewiring all relationship.facts triples atomically.
+
+    **What this does:**
+
+    1. Validates both entities exist and are not already tombstoned.
+    2. Computes source (the entity NOT kept) and target (the ``keepAs`` side).
+    3. Rewires ``relationship.facts`` rows where ``subject = source`` → ``subject = target``.
+    4. Rewires ``relationship.facts`` rows where ``object_kind='entity'`` and
+       ``object = source::text`` → ``object = target::text``.
+    5. Tombstones source entity: sets ``metadata->>'merged_into'`` to the target UUID string.
+
+    Steps 3–5 execute inside a **single transaction** (atomicity guarantee).
+
+    **Conflict handling:** rewiring a subject row may collide with an existing active triple
+    at (target, predicate, object) due to the ``uq_rf_spo_active`` partial unique index.
+    Such conflicting source rows are retracted (``validity='superseded'``) instead of
+    being moved, to preserve the target's existing fact.
+
+    **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    **Error codes:**
+    - ``403`` — owner entity not registered (Amendment 12a).
+    - ``404`` — either entity does not exist or is already tombstoned.
+    - ``422`` — ``entityA == entityB`` (same entity) or validation failure.
+    """
+    pool = _pool(db)
+
+    # Amendment 12a: owner-only write gate.
+    await _assert_owner_entity_exists(pool)
+
+    # Validate request: entityA and entityB must be distinct.
+    if body.entityA == body.entityB:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "same_entity", "message": "entityA and entityB must be different."},
+        )
+
+    # Compute source and target from keepAs.
+    if body.keepAs == "A":
+        target_id = body.entityA
+        source_id = body.entityB
+    else:
+        target_id = body.entityB
+        source_id = body.entityA
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # 1. Lock both entities in deterministic UUID order to prevent deadlocks when
+            #    concurrent merge requests target the same pair in opposite directions.
+            lock_rows = await conn.fetch(
+                """
+                SELECT id, metadata
+                FROM public.entities
+                WHERE id = ANY($1::uuid[])
+                ORDER BY id
+                FOR UPDATE
+                """,
+                [source_id, target_id],
+            )
+            lock_map = {row["id"]: row for row in lock_rows}
+
+            src_row = lock_map.get(source_id)
+            if src_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Source entity '{source_id}' not found.",
+                )
+            src_meta: dict = src_row["metadata"] or {}
+            if "merged_into" in src_meta:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Source entity '{source_id}' is already tombstoned.",
+                )
+
+            tgt_row = lock_map.get(target_id)
+            if tgt_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Target entity '{target_id}' not found.",
+                )
+            tgt_meta: dict = tgt_row["metadata"] or {}
+            if "merged_into" in tgt_meta:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Target entity '{target_id}' is already tombstoned.",
+                )
+
+            # 2. Rewire subject-side facts: source → target.
+            # For rows that would collide at (target, predicate, object) on the
+            # uq_rf_spo_active partial unique index, retract the source row instead.
+
+            # First, retract source subject-rows that conflict with existing target rows.
+            await conn.execute(
+                """
+                UPDATE relationship.facts AS src
+                SET validity = 'superseded',
+                    updated_at = now()
+                WHERE src.subject = $1
+                  AND src.validity = 'active'
+                  AND EXISTS (
+                      SELECT 1 FROM relationship.facts tgt
+                      WHERE tgt.subject = $2
+                        AND tgt.predicate = src.predicate
+                        AND tgt.object = src.object
+                        AND tgt.validity = 'active'
+                  )
+                """,
+                source_id,
+                target_id,
+            )
+
+            # Then move the remaining (non-conflicting) active source subject-rows.
+            subject_result = await conn.fetchval(
+                """
+                WITH updated AS (
+                    UPDATE relationship.facts
+                    SET subject = $2,
+                        updated_at = now()
+                    WHERE subject = $1
+                      AND validity = 'active'
+                    RETURNING id
+                )
+                SELECT count(*) FROM updated
+                """,
+                source_id,
+                target_id,
+            )
+            subject_facts_rewired = subject_result
+
+            # 3. Rewire object-side facts: source appears as object with object_kind='entity'.
+            source_text = str(source_id)
+            target_text = str(target_id)
+
+            # Retract object-side source rows that conflict with existing target rows.
+            await conn.execute(
+                """
+                UPDATE relationship.facts AS src
+                SET validity = 'superseded',
+                    updated_at = now()
+                WHERE src.object_kind = 'entity'
+                  AND src.object = $1
+                  AND src.validity = 'active'
+                  AND EXISTS (
+                      SELECT 1 FROM relationship.facts tgt
+                      WHERE tgt.subject = src.subject
+                        AND tgt.predicate = src.predicate
+                        AND tgt.object = $2
+                        AND tgt.object_kind = 'entity'
+                        AND tgt.validity = 'active'
+                  )
+                """,
+                source_text,
+                target_text,
+            )
+
+            # Move the remaining active object-side rows.
+            object_result = await conn.fetchval(
+                """
+                WITH updated AS (
+                    UPDATE relationship.facts
+                    SET object = $2,
+                        updated_at = now()
+                    WHERE object_kind = 'entity'
+                      AND object = $1
+                      AND validity = 'active'
+                    RETURNING id
+                )
+                SELECT count(*) FROM updated
+                """,
+                source_text,
+                target_text,
+            )
+            object_facts_rewired = object_result
+
+            # 4. Tombstone source entity via merged_into metadata key.
+            tombstone_meta = {**src_meta, "merged_into": str(target_id)}
+            await conn.execute(
+                """
+                UPDATE public.entities
+                SET metadata = $1,
+                    updated_at = now()
+                WHERE id = $2
+                """,
+                tombstone_meta,
+                source_id,
+            )
+
+    return MergeEntitiesResponse(
+        kept_entity_id=target_id,
+        tombstoned_entity_id=source_id,
+        subject_facts_rewired=subject_facts_rewired,
+        object_facts_rewired=object_facts_rewired,
+    )
