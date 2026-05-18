@@ -340,13 +340,17 @@ class TestMergedStreamSort:
         ep_id = uuid4()
         fact_row = _make_fact_row(fact_id=fact_id, last_seen=_OLDER)
         episodes = [_make_episode_dict(episode_id=ep_id, canonical_start_at=_NOW)]
-        app, _, _ = _app_with_mocks(fact_rows=[fact_row], chronicler_episodes=episodes)
+        app, pool, _ = _app_with_mocks(fact_rows=[fact_row], chronicler_episodes=episodes)
         resp = await _get(app)
         body = resp.json()
         assert body["total"] == 2
         items = body["items"]
         assert items[0]["src"] == "chronicler"
         assert items[1]["src"] == "relationship"
+        # Guard: relationship SQL must use entity_facts, not the memory-module facts table.
+        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        assert "relationship.entity_facts" in fetch_call_sql
+        assert "relationship.facts" not in fetch_call_sql  # guard against regression
 
     async def test_relationship_before_chronicler_when_newer(self):
         # fact at _NOW, episode at _OLDER — fact should appear first.
@@ -354,13 +358,17 @@ class TestMergedStreamSort:
         ep_id = uuid4()
         fact_row = _make_fact_row(fact_id=fact_id, last_seen=_NOW)
         episodes = [_make_episode_dict(episode_id=ep_id, canonical_start_at=_OLDER)]
-        app, _, _ = _app_with_mocks(fact_rows=[fact_row], chronicler_episodes=episodes)
+        app, pool, _ = _app_with_mocks(fact_rows=[fact_row], chronicler_episodes=episodes)
         resp = await _get(app)
         body = resp.json()
         assert body["total"] == 2
         items = body["items"]
         assert items[0]["src"] == "relationship"
         assert items[1]["src"] == "chronicler"
+        # Guard: relationship SQL must use entity_facts, not the memory-module facts table.
+        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        assert "relationship.entity_facts" in fetch_call_sql
+        assert "relationship.facts" not in fetch_call_sql  # guard against regression
 
     async def test_multiple_items_sorted_desc(self):
         ep_old = uuid4()
@@ -441,12 +449,16 @@ class TestPagination:
 
     async def test_limit_respected(self):
         rows = [_make_fact_row(last_seen=_NOW - timedelta(seconds=i)) for i in range(5)]
-        app, _, _ = _app_with_mocks(fact_rows=rows, chronicler_episodes=[])
+        app, pool, _ = _app_with_mocks(fact_rows=rows, chronicler_episodes=[])
         resp = await _get(app, limit=3)
         body = resp.json()
         assert body["total"] == 5
         assert len(body["items"]) == 3
         assert body["limit"] == 3
+        # Guard: relationship SQL must use entity_facts, not the memory-module facts table.
+        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        assert "relationship.entity_facts" in fetch_call_sql
+        assert "relationship.facts" not in fetch_call_sql  # guard against regression
 
     async def test_offset_respected(self):
         rows = [_make_fact_row(last_seen=_NOW - timedelta(seconds=i)) for i in range(5)]

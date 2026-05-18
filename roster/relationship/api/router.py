@@ -5461,7 +5461,7 @@ async def merge_entities(
 #: the aggregator degrades gracefully if the chronicler is unreachable.
 _CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
 
-#: Predicate → kind mapping for relationship.facts rows surfaced in activity.
+#: Predicate → kind mapping for relationship.entity_facts rows surfaced in activity.
 #: Predicates not listed here are surfaced with kind='fact'.
 _FACT_PREDICATE_KIND: dict[str, str] = {
     "contact_note": "note",
@@ -5482,7 +5482,7 @@ async def _fetch_relationship_activity(
     pool: object,
     entity_id: UUID,
 ) -> list[ActivityEntry]:
-    """Fetch active facts from relationship.facts for the given entity.
+    """Fetch active facts from relationship.entity_facts for the given entity.
 
     Returns all facts where subject=$entity_id OR (object_kind='entity'
     AND object=$entity_id::text).  Ordered by timestamp DESC.
@@ -5496,7 +5496,7 @@ async def _fetch_relationship_activity(
             f.predicate,
             f.last_seen,
             f.created_at
-        FROM relationship.facts f
+        FROM relationship.entity_facts f
         WHERE f.validity = 'active'
           AND (
               f.subject = $1
@@ -5629,7 +5629,7 @@ async def get_entity_activity(
 
     Combines:
 
-    1. **Relationship facts** — all active ``relationship.facts`` rows where
+    1. **Relationship facts** — all active ``relationship.entity_facts`` rows where
        the entity is either subject or object (entity-side triple), regardless
        of predicate.  Tagged ``src='relationship'``.
     2. **Chronicler episodes** — episodes linked to this entity, fetched via
