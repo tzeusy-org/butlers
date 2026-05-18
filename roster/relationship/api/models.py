@@ -955,3 +955,90 @@ class PromoteEntityRequest(BaseModel):
         default_factory=list,
         description="Contact-fact triples to emit via relationship_assert_fact in the same tx.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Entity contacts models (entity-redesign Phase 2, bu-u1w78)
+# ---------------------------------------------------------------------------
+
+
+class ContactFact(BaseModel):
+    """One contact-fact triple returned by ``GET /entities/{id}/contacts``.
+
+    ``id`` is the fact UUID in ``relationship.facts``.
+    ``predicate`` is the contact predicate (e.g. ``has-email``, ``has-phone``).
+    ``object`` is the contact-fact value (e.g. an email address or phone number).
+    ``value_hash`` is SHA-256[:16] of the object value, used as the stable
+    URL-safe identifier in DELETE paths.
+
+    Provenance fields (``src``, ``conf``, ``last_seen``, ``weight``,
+    ``verified``, ``primary``) are always included per the Provenance contract
+    (spec §"Provenance contract — every fact carries its origin").
+    """
+
+    id: UUID
+    predicate: str
+    object: str
+    value_hash: str
+    src: str
+    conf: float
+    last_seen: datetime | None = None
+    weight: int | None = None
+    verified: bool
+    primary: bool | None = None
+
+
+class ContactsResponse(BaseModel):
+    """Response for ``GET /entities/{id}/contacts``.
+
+    ``facts`` is a flat list of contact-fact triples (all active
+    ``has-*`` predicates for the entity).  The list is ordered by
+    ``predicate ASC, primary DESC NULLS LAST, created_at DESC``.
+    """
+
+    facts: list[ContactFact]
+
+
+class AddContactRequest(BaseModel):
+    """Request body for ``POST /entities/{id}/contacts``.
+
+    ``predicate`` must be a registered ``has-*`` contact predicate.
+    ``value`` is the contact object value (e.g. ``"alice@example.com"``).
+    ``src`` defaults to ``"relationship"`` when omitted.
+    ``verified`` defaults to False.
+    ``primary`` is optional; used to mark one entry as the primary of its kind.
+    ``conf`` defaults to 1.0.
+    """
+
+    predicate: str
+    value: str
+    src: str = "relationship"
+    verified: bool = False
+    primary: bool | None = None
+    conf: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class AddContactResponse(BaseModel):
+    """Response for ``POST /entities/{id}/contacts``.
+
+    On success, returns the resulting fact (new or updated).
+    ``outcome`` is one of ``inserted``, ``unchanged``, ``superseded``, or
+    ``pending_approval``.  When ``outcome == 'pending_approval'``, ``fact``
+    is ``None`` and ``action_id`` carries the pending-actions row UUID;
+    the HTTP status is 202.
+    """
+
+    outcome: str
+    fact: ContactFact | None = None
+    action_id: UUID | None = None
+
+
+class DeleteContactResponse(BaseModel):
+    """Response for ``DELETE /entities/{id}/contacts/{pred}/{valueHash}``.
+
+    ``deleted`` is always True on success (the fact was retracted).
+    ``fact_id`` is the UUID of the retracted row.
+    """
+
+    deleted: bool
+    fact_id: UUID
