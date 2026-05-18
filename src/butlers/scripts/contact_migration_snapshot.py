@@ -52,6 +52,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,6 +79,23 @@ def _repo_root() -> Path:
     """Return the repository root (four levels above this file in src layout)."""
     # src/butlers/scripts/<this file> → src/butlers → src → repo root
     return Path(__file__).resolve().parents[3]
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+
+_DATE_LABEL_RE = re.compile(r"^\d{8}$")
+
+
+def _validate_date_label(date_label: str) -> None:
+    """Raise ValueError if date_label is not a safe YYYYMMDD string.
+
+    Validates before the value is interpolated into SQL identifiers.
+    """
+    if not _DATE_LABEL_RE.match(date_label):
+        raise ValueError(f"Invalid date_label {date_label!r}: must be exactly 8 digits (YYYYMMDD).")
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +136,8 @@ async def _snapshot_exists(pool: asyncpg.Pool, table: str) -> bool:
 
 async def _create_snapshot(pool: asyncpg.Pool, source: str, target: str) -> int:
     """CREATE TABLE public.target AS SELECT * FROM public.source; return row count."""
-    await pool.execute(f"CREATE TABLE public.{target} AS SELECT * FROM public.{source}")
-    count: int = await pool.fetchval(f"SELECT COUNT(*) FROM public.{target}")
+    await pool.execute(f'CREATE TABLE public."{target}" AS SELECT * FROM public."{source}"')
+    count: int = await pool.fetchval(f'SELECT COUNT(*) FROM public."{target}"')
     return count
 
 
@@ -319,15 +337,32 @@ async def _run_snapshot_with_pool(
     dry_run: bool,
 ) -> int:
     """Execute the snapshot using an already-open pool.  Does NOT close the pool."""
+    _validate_date_label(date_label)
+
     contacts_snap = f"contacts_pre_migration_{date_label}"
     contact_info_snap = f"contact_info_pre_migration_{date_label}"
 
     # Idempotency check
-    if await _snapshot_exists(pool, contacts_snap):
+    contacts_exists = await _snapshot_exists(pool, contacts_snap)
+    info_exists = await _snapshot_exists(pool, contact_info_snap)
+
+    if contacts_exists and info_exists:
         logger.info("Snapshot tables for %s already exist — nothing to do.", date_label)
         logger.info("  public.%s", contacts_snap)
         logger.info("  public.%s", contact_info_snap)
         return 0
+
+    if contacts_exists or info_exists:
+        existing = contacts_snap if contacts_exists else contact_info_snap
+        missing = contact_info_snap if contacts_exists else contacts_snap
+        logger.error(
+            "Partial snapshot detected for %s: public.%s exists but public.%s does not. "
+            "Manual cleanup required before re-running.",
+            date_label,
+            existing,
+            missing,
+        )
+        return 1
 
     if dry_run:
         logger.info("[DRY-RUN] Would create:")

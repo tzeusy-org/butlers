@@ -382,6 +382,47 @@ async def test_dry_run_does_not_create_tables(snapshot_pool: asyncpg.Pool, tmp_p
     assert not report_path.exists(), "dry_run should not write the report"
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_invalid_date_label_raises(seeded_pool: asyncpg.Pool, tmp_path: Path) -> None:
+    """run_snapshot with a non-YYYYMMDD date_label returns 1 (error)."""
+    mod = _load_script()
+
+    rc = await mod.run_snapshot(
+        date_label="not-a-date",
+        report_path=tmp_path / "baseline.md",
+        dry_run=False,
+        _pool=seeded_pool,
+    )
+    assert rc == 1
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_partial_snapshot_detected(seeded_pool: asyncpg.Pool, tmp_path: Path) -> None:
+    """If only one snapshot table exists, run_snapshot returns 1 with an error log."""
+    mod = _load_script()
+
+    # Manually create only the contacts snapshot to simulate a partial previous run
+    await seeded_pool.execute(
+        "CREATE TABLE public.contacts_pre_migration_20260108 AS SELECT * FROM public.contacts"
+    )
+
+    rc = await mod.run_snapshot(
+        date_label="20260108",
+        report_path=tmp_path / "baseline.md",
+        dry_run=False,
+        _pool=seeded_pool,
+    )
+    assert rc == 1
+
+    # The contact_info snapshot must still NOT exist (script aborted)
+    ci_exists = await seeded_pool.fetchval(
+        "SELECT to_regclass('public.contact_info_pre_migration_20260108')"
+    )
+    assert ci_exists is None, (
+        "contact_info snapshot must not be created after partial-snapshot error"
+    )
+
+
 async def pool_execute_seed(pool: asyncpg.Pool) -> None:
     """Insert one contact (no entity) to ensure source tables are non-empty."""
     await pool.execute(
