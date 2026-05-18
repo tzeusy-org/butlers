@@ -611,3 +611,47 @@ class OverdueContactsResponse(BaseModel):
     """Response for GET /contacts/overdue."""
 
     contacts: list[OverdueContactItem]
+
+
+# ---------------------------------------------------------------------------
+# Entity list models (GET /entities — index + filter + pagination)
+# ---------------------------------------------------------------------------
+
+
+class EntitySummary(BaseModel):
+    """Compact entity representation for the index list view.
+
+    ``tier`` is the pinned Dunbar tier override (from a ``dunbar_tier_override``
+    fact), or ``None`` when the entity has no pinned tier (rank-based assignment).
+    ``last_seen`` is the most-recent ``last_seen`` timestamp across all of the
+    entity's facts in ``relationship.facts``, or ``None`` when no facts exist.
+    ``contact_fact_count`` is the count of active contact-type facts
+    (``has-email | has-phone | has-handle | has-address | has-birthday |
+    has-website``) in ``relationship.facts`` for this entity.
+    """
+
+    id: UUID
+    canonical_name: str
+    entity_type: str
+    aliases: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+    tier: int | None = None
+    last_seen: datetime | None = None
+    contact_fact_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class EntityListResponse(BaseModel):
+    """Paginated response for GET /entities.
+
+    ``total`` is the total count of entities matching the active filters
+    (before pagination).  Clients use ``offset + len(items)`` to determine
+    whether a next page exists.
+    """
+
+    items: list[EntitySummary]
+    total: int
+    limit: int
+    offset: int
