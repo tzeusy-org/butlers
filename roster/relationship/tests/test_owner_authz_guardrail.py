@@ -336,10 +336,6 @@ class TestClause12bPiiReadsNonOwner:
         resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/neighbours")
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="GET /entities/{id}/activity not yet implemented; awaiting bead 9.13",
-    )
     async def test_get_entity_activity_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/activity")
