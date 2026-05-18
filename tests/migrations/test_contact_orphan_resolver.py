@@ -487,3 +487,53 @@ async def test_report_path_parent_created(
 
     assert rc == 0
     assert report_path.exists()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_is_idempotent_no_double_mint(
+    provisioned_postgres_pool, tmp_path: Path
+) -> None:
+    """Re-running --apply on an already-minted contact does not double-mint."""
+    mod = _load_script()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_schema(pool)
+
+        await _insert_contact(
+            pool,
+            name="Carol Re-run",
+            first_name="Carol",
+            last_name="Re-run",
+        )
+        await _create_snapshot_from_contacts(pool, _DATE_LABEL)
+
+        # First apply run
+        rc1 = await mod.run_resolver(
+            date_label=_DATE_LABEL,
+            report_path=tmp_path / "orphans-1.md",
+            apply=True,
+            _pool=pool,
+        )
+        assert rc1 == 0
+
+        entities_after_first: int = await pool.fetchval("SELECT COUNT(*) FROM public.entities")
+        assert entities_after_first == 1
+
+        # Second apply run (re-run on same snapshot — idempotent guard)
+        rc2 = await mod.run_resolver(
+            date_label=_DATE_LABEL,
+            report_path=tmp_path / "orphans-2.md",
+            apply=True,
+            _pool=pool,
+        )
+        assert rc2 == 0
+
+        # No additional entity should have been minted
+        entities_after_second: int = await pool.fetchval("SELECT COUNT(*) FROM public.entities")
+        assert entities_after_second == 1, "Re-run must not double-mint entities"
+
+        # contact must still have entity_id set (not overwritten)
+        carol_entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE first_name = 'Carol'"
+        )
+        assert carol_entity_id is not None

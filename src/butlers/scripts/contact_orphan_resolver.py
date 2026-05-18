@@ -238,9 +238,28 @@ async def _mint_entity_and_backfill(
 
     This is the documented carve-out for migration-time context (see module
     docstring).  Returns the new entity's UUID.
+
+    Idempotent: if ``public.contacts.entity_id`` is already set for this
+    contact (from a previous run), the existing entity_id is returned and no
+    new entity row is created.
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Guard against double-minting on re-runs.  The snapshot table has
+            # a static entity_id=NULL, but public.contacts may have already
+            # been backfilled by a prior --apply run.
+            existing_entity_id: uuid.UUID | None = await conn.fetchval(
+                "SELECT entity_id FROM public.contacts WHERE id = $1",
+                orphan.id,
+            )
+            if existing_entity_id is not None:
+                logger.info(
+                    "Contact %s already has entity_id=%s — skipping mint (idempotent re-run)",
+                    orphan.id,
+                    existing_entity_id,
+                )
+                return existing_entity_id
+
             entity_id: uuid.UUID = await conn.fetchval(
                 """
                 INSERT INTO public.entities (canonical_name, entity_type, roles)
