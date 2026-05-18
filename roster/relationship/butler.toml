@@ -96,6 +96,12 @@ cron = "30 6 * * *"
 dispatch_mode = "job"
 job_name = "interaction_sync"
 
+[[butler.schedule]]
+name = "contact-info-reconciler"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "contact_info_reconciler"
+
 [modules.calendar]
 provider = "google"
 groups = ["core"]
