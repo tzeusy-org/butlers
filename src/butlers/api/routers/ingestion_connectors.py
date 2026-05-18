@@ -614,4 +614,3 @@ async def list_available_connectors() -> ConnectorAvailableResponse:
     """
     profiles = [ConnectorProfile(**p) for p in _CONNECTOR_CATALOG]
     return ConnectorAvailableResponse(data=profiles)
-
