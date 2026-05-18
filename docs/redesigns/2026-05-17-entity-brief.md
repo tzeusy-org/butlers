@@ -529,12 +529,100 @@ The redesign adds **no new tokens outside `frontend/src/index.css`**. It reuses 
 
 The Editorial/Workbench toggle uses the same `localStorage` persistence pattern as `redesign-detail-page-tab-vocabulary`'s "Resident/Operator" toggle. Key: `entities.detail.mode`. Phase 2 spec must either (a) align vocabulary to Resident/Operator for consistency, or (b) document the distinct vocabulary choice explicitly.
 
-### Phase 1 R1-R4 summary
+### Amendment 11 — `v1.md` doctrine update post-RFC 0004 Amendment 2
 
-- **R1:** Caught two §1 verdicts that were the same drift surfaced from two angles (H1 size + Display tier). Reconciled in Amendment 7.
-- **R2:** Largest loophole — "contacts are predicates" is interpretable as UI-only (acceptable) or storage-level (RFC 0004 conflict). Amendment 1 closes it with a binding clause. Also locked the no-direct-SQL invariant with a required test (Amendment 5).
-- **R3:** Re-verified every file:line citation. All hold. `chronicler_list_events` flagged as not-currently-listed in chronicler MCP surface.
-- **R4:** Coverage check: heart-and-soul (vision/v1/design-language/architecture), lore (RFCs 0004/0006/0007/0013/0014), in-flight OpenSpec (7/7). Every drift carries a concrete amendment.
+> Added 2026-05-18 by Phase 1 R-pass. Closes R4 coverage gap on `about/heart-and-soul/v1.md`.
+
+`about/heart-and-soul/v1.md:64` lists "Contacts — shared identity registry with cross-channel resolution" as a v1 module. `:127-132` ("Identity System") describes "Shared contacts registry — canonical contact table with roles and entity linkage." After RFC 0004 Amendment 2 lands, the canonical noun is the **entity** and contacts are predicates on entities — the existing v1.md text becomes inaccurate.
+
+**Phase 2/3 deliverable:** A task in tasks.md §12 (numbered 12.7) that, **at change-archive time**, edits `v1.md:64` and `v1.md:127-132` to replace "canonical contact table" with "canonical entity registry with contact predicates" and to fold the Contacts module bullet into the relationship butler entry. Owner-bootstrap and cross-channel resolution capabilities remain — only the implementation language updates.
+
+### Amendment 12 — Owner-only authorization for entity endpoints
+
+> Added 2026-05-18 by Phase 1 R-pass. Closes R2 critical C2 + R4 owner-only mandate gap. Three-part amendment: writes (12a), reads (12b), deploy gate (12c).
+
+`about/heart-and-soul/security.md:18-22` + RFC 0007:309 require non-trivial identity operations to gate on owner role. The new entity endpoints introduce both mutation surfaces (which mint, merge, archive, forget entities) and read surfaces that return contact-fact `object` values (raw emails/phones/handles/addresses — PII). Both need owner-only authz; one without the other leaves a PII-leak hole.
+
+**12a — Writes (mutations):** every `POST/PATCH/DELETE` under `/api/butlers/relationship/entities/*` MUST resolve the caller to an owner-role entity (`'owner' = ANY(e.roles)` per RFC 0007:309 pattern) and return HTTP 403 with `code='owner_required'` otherwise. Scope: `POST /entities`, `POST /entities/{id}/merge`, `POST /entities/{id}/archive`, `POST /entities/{id}/promote-tier`, `DELETE /entities/{id}`, `POST /entities/queue/dismiss`, `POST /entities/{id}/contacts`, `DELETE /entities/{id}/contacts/{pred}/{valueHash}`.
+
+**12b — Reads (PII-bearing):** the same owner-only gate MUST apply to `GET /entities/queue`, `GET /entities/search`, `GET /entities/{id}/contacts`, `GET /entities/{id}/neighbours`, `GET /entities/{id}/activity`. These endpoints return raw contact-fact values (emails, phone numbers, handles, addresses) and aliased identity links; exposing them through the existing shared `DASHBOARD_API_KEY` would leak PII to any caller that reaches the API surface. The list-only `GET /entities` and per-entity timeline/notes/interactions endpoints (no raw contact-fact `object` values surfaced) inherit the existing dashboard session boundary.
+
+**12c — Deploy gate:** the dev-time "no API key → auth disabled" path at `src/butlers/api/app.py:246` is incompatible with shipping the entity endpoints. Phase 2 spec MUST require: in any non-`dev` environment, daemon startup fails with a fatal error if `DASHBOARD_API_KEY` is unset. Add a guardrail test (tasks.md §10 new entry).
+
+### Amendment 13 — Reader inventory companion to Amendment 1.1.B
+
+> Added 2026-05-18 by Phase 1 R-pass. Closes R2 H1.
+
+Amendment 1.1.B inventories writers of `public.contacts` / `public.contact_info`. It does NOT inventory readers. After read-path cut-over (migration bead 7), any unmigrated reader returns silently-stale data. Concrete starting readers found by grep:
+
+- `src/butlers/identity.py` (`resolve_contact_by_channel`, `build_identity_preamble`)
+- `src/butlers/modules/memory/tools/preferences.py`
+- `src/butlers/modules/approvals/{_shared,gate,email_guard}.py`
+- `roster/switchboard/tools/identity/inject.py`
+- `roster/switchboard/tools/routing/route.py`
+- `roster/home/modules/__init__.py`
+- `roster/relationship/jobs/relationship_jobs.py`
+
+**Phase 3 deliverable:** Add **Migration bead 4.5 — Reader inventory** to the §1.1.C bead list, blocking bead 7 (read-path cut-over). Each enumerated reader gets a re-pointing sub-bead.
+
+### Amendment 14 — Dual-write reconciliation contract
+
+> Added 2026-05-18 by Phase 1 R-pass. Closes R2 critical C3.
+
+Amendment 1.1.A.5's dual-write protocol cannot guarantee transactional consistency across SQL (legacy `public.contact_info` write) and MCP (new `relationship_assert_fact()` call). Without a reconciliation contract, the dual-write window has silent failure modes (SQL commits, MCP fails → triple missing; SQL commits, MCP duplicates → racing supersession). Phase 2 spec MUST encode:
+
+- **SQL is authoritative during dual-write.** Existing legacy writes commit unchanged; MCP call is best-effort post-commit.
+- **Reconciler job (new).** A periodic worker (interval ≤ 1h during dual-write) sweeps `public.contact_info` rows lacking a matching active triple and emits them via the central writer. Idempotent on `(subject, predicate, object)`.
+- **Parity test is eventual, not synchronous.** Migration bead 6 ("parity tests") asserts 24h-window reconciliation, not write-time synchrony.
+- **Central writer must be safe inside open transactions.** `relationship_assert_fact()` MUST NOT require its own transaction wrapper or panic if called from inside an asyncpg pool connection.
+- **Central writer is idempotent on `(subject, predicate, object)`.** Repeated calls with the same identity arguments produce one active row, not a duplicate; supersession semantics apply when `(src, conf, verified, lastSeen)` differ.
+
+### Amendment 15 — Deterministic-Finder enforcement is transitive
+
+> Added 2026-05-18 by Phase 1 R-pass. Closes R2 H3.
+
+Tasks.md §10.8's no-LLM guardrail test currently scans the search handler file for direct imports. An implementer routes around it by adding `from relationship.utils.smart_rank import rank` where `smart_rank` calls Anthropic. Phase 2 spec MUST tighten the contract:
+
+- **Transitive scan.** The guardrail test walks the full module-import graph reachable from the `/entities/search` handler at test time (use `importlib.util.find_spec` recursively or `modulegraph`). Any reachable module containing an import of the banned set fails the test.
+- **Banned set enumerated:** `anthropic`, `openai`, `cohere`, `voyageai`, `mistralai`, `sentence_transformers`, `pgvector` distance operators (`<->`, `<=>`, `<#>`), `requests.post`/`httpx.post` to any non-localhost URL.
+- **Allowed set enumerated** (so authors know what they can reach for): `rapidfuzz`, `python-Levenshtein`, plain SQL `ILIKE`, `pg_trgm` `similarity()` and `%` operator. Anything else requires a spec amendment.
+
+### Amendment 16 — `chronicler_list_episodes` entity filter is a prereq
+
+> Added 2026-05-18 by Phase 1 R-pass. Closes R2 M1.
+
+Brief §3 + tasks.md §9.12 (activity aggregator at `/entities/{id}/activity`) require `chronicler_list_episodes(entity_id=...)`. RFC 0014:255-258 does not currently list `entity_id` as a filter parameter on `chronicler_list_episodes`. Tasks.md §12.5 records this as a "follow-up bead" — wrong, it's a prereq: task 9.12 cannot ship without the filter.
+
+**Phase 2 deliverable:** Re-order tasks.md — §12.5 becomes a chronicler-side spec amendment that runs **before** §9.12. If the filter cannot be added in time, §9.12 is descoped to relationship-owned activity rows only (no chronicler join) for v1.
+
+### Amendment 1.1.A.3 update — Orphan handling via Python script, not MCP
+
+> Added 2026-05-18 by Phase 1 R-pass. Closes R2 H2.
+
+Amendment 1.1.A.3 left orphan handling (rows where `public.contacts.entity_id IS NULL`) to Phase 2 with `memory_entity_create()` as a hint. That hint is unreachable: Alembic migrations run in a pre-daemon role with no event loop, no MCP client, no switchboard — calling an MCP tool is impossible.
+
+**Binding update:** orphan resolution is a **post-migration Python script** under `src/butlers/scripts/contact_orphan_resolver.py`, gated by an explicit operator flag (`--apply` defaults to dry-run). The script:
+
+1. Reads orphan rows from `public.contacts_pre_migration_YYYYMMDD` snapshot.
+2. For each orphan, either (a) mints an entity row directly via SQL (carve-out from the "no direct SQL outside relationship butler" rule, justified by migration-time context), or (b) emits a `notify()` to the owner for manual resolution.
+3. Records resolution outcome in `docs/reports/contact-migration-orphans-YYYY-MM-DD.md`.
+
+The script is itself a migration bead — number 4.6 — sequenced between backfill (bead 5) and parity tests (bead 6).
+
+### Amendment 7 update — Type-ratio reconciliation
+
+> Added 2026-05-18 by Phase 1 R-pass. Closes R4 design-language type-ratio drift.
+
+`about/heart-and-soul/design-language.md:243-246` requires a 1.2 type ratio between scale steps. Brief §1's Dispatch scale (44/24/14) has 44→24 ratio 1.83 and 24→14 ratio 1.71 — both exceed 1.2. The 1.2 doctrine is a *floor*, not a target; values above 1.2 satisfy it. The Display tier (44px) is exempt per the existing carve-out at `design-language.md:225-232` for editorial-archetype Display headlines. **No further reconciliation required.** Phase 2 spec authors must state this carve-out inline where the 44px Display appears (EntityDetailPage Editorial header).
+
+### Phase 1 R1-R4 summary (updated 2026-05-18 post-R-pass)
+
+- **R1 — Citation re-verification:** 16/16 citations verified. `chronicler_list_events` confirmed absent from RFC 0014 — Amendment 16 routes to `chronicler_list_episodes` with `entity_id` filter as a prereq.
+- **R2 — Loophole sweep:** Closed by Amendments 12 (read-side data leak), 13 (reader inventory), 14 (dual-write reconciliation contract), 15 (transitive Finder enforcement), and the 1.1.A.3 update (orphan handling via Python script). Fold-vs-split deployability trap closed by proposal.md tightening (see proposal.md "Phase 2 extension (2026-05-17)" section).
+- **R3 — Cross-spec consistency:** Phase 1 `FROM facts` ⇄ Phase 2 `relationship.facts` contradiction MUST be resolved in Phase 2 (annotate Phase 1 endpoints as compatible during 10-step migration soak). Contact-detail route narrative drift fixed in Phase 2 (use canonical `/contacts/:contactId` per shipped spec). `workspace` archetype gap left to Phase 2 (either author sister spec or rewrite as `<Page archetype="overview">`).
+- **R4 — Mandate coverage:** Closed by Amendments 11 (`v1.md` update task), 12 (owner-only authz writes+reads+deploy-gate), plus Amendment 7 update (type-ratio carve-out citation). Em-dash ban in canned glosses + RFC 0017 owner-gate carry-forward in `relationship_assert_fact()` flagged as Phase 2 spec deliverables (encoded as per-bead acceptance criteria in Phase 3).
+
+**Net Phase 1 verdict: proceed-with-amendments-1-through-16.** Phase 2 begins from this baseline.
 
 ---
 
