@@ -215,10 +215,6 @@ class TestClause12aMutationNonOwner:
         resp = await _request(app, "delete", f"{_BASE}/{_ENT_ID}")
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="POST /entities/queue/dismiss not yet implemented; awaiting bead 9.11",
-    )
     async def test_post_queue_dismiss_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(

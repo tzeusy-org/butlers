@@ -1133,3 +1133,51 @@ class PromoteTierResponse(BaseModel):
     outcome: Literal["inserted", "superseded", "unchanged", "pending_approval"]
     fact_id: UUID | None = None
     action_id: UUID | None = None
+
+
+# ---------------------------------------------------------------------------
+# Entity queue-dismiss models (entity-redesign Phase 2, bu-297lj)
+# ---------------------------------------------------------------------------
+
+
+class DismissQueueRequest(BaseModel):
+    """Request body for ``POST /entities/queue/dismiss``.
+
+    Dismisses a single entity from the curation queue by writing a
+    ``queue.dismissed`` state-marker triple via the central writer
+    ``relationship_assert_fact()``.
+    """
+
+    entity_id: UUID
+
+
+class DismissQueueItemResult(BaseModel):
+    """Per-entity result within a ``DismissQueueResponse``.
+
+    ``entity_id`` is the dismissed entity's UUID.
+    ``outcome`` is the outcome returned by ``relationship_assert_fact()``:
+    ``'inserted'`` (first dismiss), ``'unchanged'`` (already dismissed),
+    ``'superseded'`` (provenance changed), or ``'pending_approval'`` (owner
+    entity carve-out — write parked for human approval).
+    ``action_id`` is populated only when ``outcome='pending_approval'``.
+    ``fact_id`` is the UUID of the now-active ``queue.dismissed`` triple, or
+    ``None`` for ``pending_approval``.
+    """
+
+    entity_id: UUID
+    outcome: str
+    fact_id: UUID | None = None
+    action_id: UUID | None = None
+
+
+class DismissQueueResponse(BaseModel):
+    """Response for ``POST /entities/queue/dismiss``.
+
+    ``dismissed`` lists per-entity outcomes (always a single entry for
+    single-entity requests).
+    ``status`` is ``'ok'`` on full success, or ``'pending_approval'`` when
+    the carve-out was triggered for the subject entity.
+    """
+
+    dismissed: list[DismissQueueItemResult]
+    status: str
