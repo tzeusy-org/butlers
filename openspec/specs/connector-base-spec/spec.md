@@ -6,7 +6,7 @@ Defines the shared interface contract that ALL connectors must implement. Connec
 ## Requirements
 
 ### Requirement: Connector as Ingestion Primitive
-A connector SHALL be a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It is transport-only: read, normalize, filter, submit, checkpoint.
+A connector SHALL be a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It SHALL be transport-only: read, normalize, filter, submit, checkpoint.
 
 #### Scenario: Connector responsibilities boundary
 - **WHEN** a connector processes external events
@@ -96,7 +96,7 @@ The evaluator is instantiated with `scope = 'connector:<connector_type>:<endpoin
 - **THEN** it passes `scope = 'connector:<connector_type>:<endpoint_identity>'` and a shared DB pool; the evaluator loads only connector-scoped rules for that scope
 
 ### Requirement: ingest.v1 Envelope Schema
-The `ingest.v1` envelope SHALL be the canonical format for all messages entering the butler ecosystem. It is a Pydantic model (`IngestEnvelopeV1`) with five required sub-models validated at parse time.
+The `ingest.v1` envelope SHALL be the canonical format for all messages entering the butler ecosystem. It SHALL conform to the IngestEnvelopeV1 schema with five required sub-sections validated at the point of entry.
 
 #### Scenario: Top-level envelope structure
 - **WHEN** a connector constructs an ingest envelope
@@ -143,7 +143,7 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 - **AND** the message proceeds directly to Switchboard classification/routing
 
 ### Requirement: Deduplication Strategy
-The Switchboard SHALL compute a stable deduplication key for each ingest submission using a priority-based strategy. Advisory locking prevents race conditions on concurrent submissions with the same key.
+The Switchboard SHALL compute a stable deduplication key for each ingest submission using a priority-based strategy. Concurrency control SHALL be enforced to prevent race conditions on concurrent submissions with the same key.
 
 #### Scenario: Priority 1 — Explicit idempotency key
 - **WHEN** `control.idempotency_key` is provided
@@ -167,7 +167,7 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
 ### Requirement: Request Context Assignment
-The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context travels with the message through classification, routing, and butler processing. The `request_id` is the UUID7 primary key of the corresponding `public.ingestion_events` row.
+The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context SHALL travel with the message through classification, routing, and butler processing. The `request_id` SHALL be a UUID7 identifier.
 
 #### Scenario: Request context fields
 - **WHEN** a message is accepted for processing
@@ -177,7 +177,7 @@ The Switchboard SHALL build an immutable request context from each accepted inge
 
 ### Requirement: Triage Integration
 
-Connector-side and server-side ingestion rules SHALL gate ingestion and early routing decisions before LLM classification. Connector-scoped rules (`block` action) are evaluated at the connector. Global rules (all other actions) are evaluated post-ingest by the Switchboard.
+Connector-side and server-side ingestion rules SHALL gate ingestion and early routing decisions before LLM classification. Connector-scoped rules (`block` action) SHALL be evaluated at the connector. Global rules (all other actions) SHALL be evaluated post-ingest by the Switchboard.
 
 #### Scenario: Thread affinity lookup (email only)
 - **WHEN** an email message is ingested with a thread_id
@@ -280,7 +280,7 @@ All connectors SHALL share a common set of environment variables defining identi
 ---
 
 ### Requirement: Heartbeat Protocol
-All connectors SHALL send periodic heartbeats to the Switchboard for liveness tracking, operational statistics collection, and capability advertisement. Heartbeats are the sole mechanism for connector self-registration — no manual pre-configuration is needed.
+All connectors SHALL send periodic heartbeats to the Switchboard for liveness tracking, operational statistics collection, and capability advertisement. Heartbeats SHALL be the sole mechanism for connector self-registration — no manual pre-configuration is needed.
 
 #### Scenario: Heartbeat envelope structure (connector.heartbeat.v1)
 - **WHEN** a connector sends a heartbeat
