@@ -1,15 +1,29 @@
 /**
- * Connectors tab content for the /ingestion page.
+ * ConnectorsListPage — extracted list component for /ingestion/connectors.
  *
- * Sections (spec §5.2):
+ * Sections (spec §3.4, §3.5):
  * - Cross-connector summary bar
  * - Connector card grid (with backfill-active indicators)
+ * - Dormant/available connectors section (§3.5) with "connect →" deep-link to /secrets
  * - Volume time-series chart (per-period)
  * - Fanout distribution table
  * - Error log panel
  *
- * Shared query-key strategy: reuses connector list/summary/fanout warm cache
- * from Overview tab without forcing fresh loads.
+ * NOTE: useConnectorDetail MUST NOT be mounted from this list view.
+ * Only summary-level data is shown here (per spec §6.2 "no useConnectorDetail on roster").
+ * Detail data loads only on the connector detail page.
+ *
+ * The "connect →" link deep-links to /secrets, where per-connector setup
+ * cards (GoogleOAuthSection, SpotifySection, HomeAssistantSection, etc.) live.
+ *
+ * Extracted from ConnectorsTab.tsx for use on the first-class /ingestion/connectors
+ * sub-route. ConnectorsTab.tsx retains its isActive-gated version for the legacy
+ * /ingestion?tab=connectors tab-param mount (backward-compatible until full migration).
+ *
+ * Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
+ *       connector-base-spec/spec.md §"Dashboard Connector Page"
+ *       ingestion-ui-information-architecture/spec.md §"Connector roster list summary-only polling"
+ *       tasks.md §3.4, §3.5
  */
 
 import { Link } from "react-router";
@@ -34,14 +48,10 @@ import { useBackfillJobs } from "@/hooks/use-backfill";
 import type { IngestionPeriod } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
-// ConnectorsTab
+// ConnectorsListPage
 // ---------------------------------------------------------------------------
 
-interface ConnectorsTabProps {
-  isActive: boolean;
-}
-
-export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
+export function ConnectorsListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const periodParam = searchParams.get("period") as IngestionPeriod | null;
@@ -60,30 +70,27 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
   }
 
   const { data: connectorsResp, isLoading: connectorsLoading } =
-    useConnectorSummaries({ enabled: isActive });
+    useConnectorSummaries();
 
   const { data: summaryResp, isLoading: summaryLoading } =
-    useCrossConnectorSummary(period, { enabled: isActive });
+    useCrossConnectorSummary(period);
 
   const fanoutPeriod: IngestionPeriod = period === "24h" ? "7d" : period;
-  const { data: fanoutResp, isLoading: fanoutLoading } = useConnectorFanout(
-    fanoutPeriod,
-    { enabled: isActive },
-  );
+  const { data: fanoutResp, isLoading: fanoutLoading } =
+    useConnectorFanout(fanoutPeriod);
 
   // Track which connectors have an active backfill
   const { data: backfillResp } = useBackfillJobs({ status: "active" });
   const activeBackfills = backfillResp?.data ?? [];
   const activeBackfillKeys = new Set(
-    activeBackfills.map(
-      (j) => `${j.connector_type}:${j.endpoint_identity}`,
-    ),
+    activeBackfills.map((j) => `${j.connector_type}:${j.endpoint_identity}`),
   );
 
   const connectors = connectorsResp?.data ?? [];
 
-  // Available (dormant) connectors: catalog entries not yet registered
-  const { data: availableResp } = useAvailableConnectors({ enabled: isActive });
+  // Available (dormant) connectors: catalog entries not yet registered.
+  // Filters out connector types that already have at least one registered instance.
+  const { data: availableResp } = useAvailableConnectors();
   const registeredTypes = new Set(connectors.map((c) => c.connector_type));
   const dormantConnectors = (availableResp?.data ?? []).filter(
     (p) => !registeredTypes.has(p.connector_type),
@@ -103,14 +110,12 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
     : undefined;
 
   // Pipeline stats for aggregates_available flag
-  const { data: pipelineStats } = usePipelineStats("24h", { enabled: isActive });
+  const { data: pipelineStats } = usePipelineStats("24h");
   const aggregatesAvailable = pipelineStats?.aggregates_available !== false;
 
   // Aggregate volume timeseries across all connectors (DB-backed)
-  const { data: volumeResp, isLoading: volumeLoading } = useIngestionVolume(
-    period,
-    { enabled: isActive },
-  );
+  const { data: volumeResp, isLoading: volumeLoading } =
+    useIngestionVolume(period);
 
   const timeseries = volumeResp?.data?.timeseries ?? [];
 
@@ -140,9 +145,7 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
           ))}
         </div>
       ) : connectors.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No connectors registered.
-        </p>
+        <p className="text-sm text-muted-foreground">No connectors registered.</p>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {connectors.map((c) => {
@@ -158,7 +161,11 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
         </div>
       )}
 
-      {/* Dormant / available connectors section (§3.5) */}
+      {/* Dormant / available connectors section (§3.5)
+          Shown when catalog profiles exist that are not yet registered.
+          Each card includes a "connect →" deep-link to /secrets where
+          per-connector setup cards (GoogleOAuthSection, SpotifySection,
+          HomeAssistantSection, OwnTracksSection, etc.) are located. */}
       {dormantConnectors.length > 0 && (
         <div data-testid="dormant-available-section">
           <h3 className="text-sm font-semibold text-muted-foreground mb-3">
@@ -196,7 +203,7 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
         data={timeseries}
         period={period}
         onPeriodChange={handlePeriodChange}
-        isLoading={volumeLoading && isActive}
+        isLoading={volumeLoading}
         title="Ingestion Volume"
       />
 
