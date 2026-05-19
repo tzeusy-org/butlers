@@ -76,7 +76,7 @@ import {
 type EntityDetailMode = "editorial" | "workbench";
 
 /** localStorage key for persisting the entity detail mode. */
-const ENTITY_MODE_STORAGE_KEY = "entities.detail.mode";
+export const ENTITY_MODE_STORAGE_KEY = "entities.detail.mode";
 
 /** URL search-param name for per-link mode override. */
 const ENTITY_MODE_PARAM = "mode";
