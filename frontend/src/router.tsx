@@ -32,7 +32,7 @@ import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
 import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 import EducationPage from './pages/EducationPage.tsx'
-import EntitiesPage from './pages/EntitiesPage.tsx'
+import { EntitiesIndexPage } from './components/relationship/EntitiesIndexPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import SocialMapPage from './pages/SocialMapPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
@@ -149,7 +149,7 @@ export const router = createBrowserRouter(
         { path: '/memory/facts/:factId', element: <FactDetailPage /> },
         { path: '/memory/rules/:ruleId', element: <RuleDetailPage /> },
         { path: '/memory/episodes/:episodeId', element: <EpisodeDetailPage /> },
-        { path: '/entities', element: <EntitiesPage /> },
+        { path: '/entities', element: <EntitiesIndexPage /> },
         { path: '/entities/social-map', element: <SocialMapPage /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsConsolePage /> },

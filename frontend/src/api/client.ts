@@ -265,6 +265,9 @@ import type {
   LinkedContactSummary,
   MessageThreadSummary,
   RelationshipEntityDetail,
+  RelationshipEntityListResponse,
+  RelationshipEntityListParams,
+  RelationshipQueueResponse,
   InstanceFacts,
   DatabaseFacts,
   BackupFacts,
@@ -1917,6 +1920,47 @@ export function searchRelationshipEntities(
   if (limit != null) sp.set("limit", String(limit));
   return apiFetch<EntityFinderSearchResponse>(
     `/relationship/entities/search?${sp.toString()}`,
+  );
+}
+
+/**
+ * List entities from the relationship butler with optional filter chips and pagination (§9.1).
+ *
+ * Hits GET /api/butlers/relationship/entities.  Distinct from the memory butler's
+ * entity list — this surface joins relationship.entity_facts for tier, last_seen,
+ * and contact_fact_count.
+ */
+export function listRelationshipEntities(
+  params?: RelationshipEntityListParams,
+): Promise<RelationshipEntityListResponse> {
+  const sp = new URLSearchParams();
+  if (params?.entity_type) sp.set("entity_type", params.entity_type);
+  if (params?.state) sp.set("state", params.state);
+  if (params?.has) sp.set("has", params.has);
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return apiFetch<RelationshipEntityListResponse>(
+    `/relationship/entities${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/**
+ * Fetch the entity curation queue from the relationship butler (§9.5).
+ *
+ * Hits GET /api/butlers/relationship/entities/queue.  Returns three buckets in order:
+ * unidentified → duplicate-candidate → stale.
+ */
+export function getRelationshipEntityQueue(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<RelationshipQueueResponse> {
+  const sp = new URLSearchParams();
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return apiFetch<RelationshipQueueResponse>(
+    `/relationship/entities/queue${qs ? `?${qs}` : ""}`,
   );
 }
 

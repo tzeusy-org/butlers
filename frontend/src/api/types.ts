@@ -4077,6 +4077,60 @@ export interface RelationshipEntityDetail {
   updated_at: string;
 }
 
+/**
+ * Compact entity row from GET /api/butlers/relationship/entities (list+filter API, §9.1).
+ * Distinct from the memory-butler EntitySummary: this surface includes relationship-scoped
+ * fields (tier, last_seen, contact_fact_count) instead of memory-butler fact_count.
+ */
+export interface RelationshipEntitySummary {
+  id: string;
+  canonical_name: string;
+  entity_type: string;
+  aliases: string[];
+  roles: string[];
+  metadata: Record<string, unknown>;
+  tier: number | null;
+  last_seen: string | null;
+  contact_fact_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Paginated response from GET /api/butlers/relationship/entities (§9.1). */
+export interface RelationshipEntityListResponse {
+  items: RelationshipEntitySummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Query parameters for the relationship entity list endpoint (§9.1). */
+export interface RelationshipEntityListParams {
+  entity_type?: string;
+  state?: "unidentified" | "duplicate-candidate" | "stale";
+  has?: "contact";
+  limit?: number;
+  offset?: number;
+}
+
+/** One entry in the entity curation queue (§9.5). */
+export interface RelationshipQueueEntry {
+  entity_id: string;
+  canonical_name: string;
+  entity_type: string;
+  bucket: "unidentified" | "duplicate-candidate" | "stale";
+  evidence: Record<string, unknown>;
+  last_seen: string | null;
+}
+
+/** Paginated curation queue response from GET /api/butlers/relationship/entities/queue (§9.5). */
+export interface RelationshipQueueResponse {
+  items: RelationshipQueueEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // ---------------------------------------------------------------------------
 // System endpoints — GET /api/system/*
 // ---------------------------------------------------------------------------

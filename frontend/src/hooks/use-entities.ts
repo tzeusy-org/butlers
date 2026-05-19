@@ -19,9 +19,12 @@ import {
   getEntityMessageThreads,
   getEntityNotes,
   getEntityTimeline,
+  getRelationshipEntityQueue,
+  listRelationshipEntities,
   searchRelationshipEntities,
   updateEntityDunbarTier,
 } from "@/api/index.ts";
+import type { RelationshipEntityListParams } from "@/api/index.ts";
 
 /** Fetch all contacts linked to a relationship entity. */
 export function useEntityLinkedContacts(entityId: string | undefined) {
@@ -142,6 +145,40 @@ export function useEntityFinderSearch(
     // Keep stale results visible while a new query is in-flight so the
     // Finder doesn't flash blank during fast typing.
     placeholderData: (prev) => prev,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Relationship entity index (§9.1 list+filter API, bu-s2bgc)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the paginated entity list from the relationship butler (§9.1).
+ *
+ * Distinct from `useEntities` (use-memory.ts) which targets the memory butler.
+ * This hook hits GET /api/butlers/relationship/entities and returns relationship-scoped
+ * fields: tier, last_seen, contact_fact_count.
+ */
+export function useRelationshipEntities(params?: RelationshipEntityListParams) {
+  return useQuery({
+    queryKey: ["relationship-entities", params],
+    queryFn: () => listRelationshipEntities(params),
+  });
+}
+
+/**
+ * Fetch the entity curation queue from the relationship butler (§9.5).
+ *
+ * Hits GET /api/butlers/relationship/entities/queue.
+ * Returns three buckets: unidentified → duplicate-candidate → stale.
+ */
+export function useRelationshipEntityQueue(params?: {
+  limit?: number;
+  offset?: number;
+}) {
+  return useQuery({
+    queryKey: ["relationship-entity-queue", params],
+    queryFn: () => getRelationshipEntityQueue(params),
   });
 }
 
