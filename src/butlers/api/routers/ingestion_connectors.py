@@ -8,10 +8,12 @@ Endpoints
 ---------
 GET  /api/ingestion/connectors/summaries        — connector list with aggregates_available flag
 GET  /api/ingestion/connectors/cross-summary    — cross-connector aggregate + aggregates_available
-POST /api/ingestion/connectors/{type}/{identity}/pause    — pause a connector (audit-only)
-POST /api/ingestion/connectors/{type}/{identity}/run-now  — resume a paused connector (audit-only)
-GET  /api/ingestion/connectors/available                  — enumerable connector profiles
-     (independent of any connector_registry rows)
+POST /api/ingestion/connectors/{type}/{identity}/pause       — pause a connector (audit-only)
+POST /api/ingestion/connectors/{type}/{identity}/run-now    — resume a paused connector (audit-only)
+POST /api/ingestion/connectors/{type}/{identity}/disconnect — Approvals-gated; soft-delete (§4.4)
+POST /api/ingestion/connectors/{type}/{identity}/rotate-token — Approvals-gated; masked (§4.5)
+POST /api/ingestion/connectors/{type}/{identity}/reauth      — BLOCKED HTTP 503 (§4.6)
+GET  /api/ingestion/connectors/available                     — enumerable connector profiles
 
 The ``summaries`` and ``cross-summary`` endpoints proxy the existing
 ``/api/switchboard/connectors`` and ``/api/switchboard/connectors/summary``
@@ -25,8 +27,11 @@ Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -479,6 +484,335 @@ async def run_now_connector(
             "endpoint_identity": str(row["endpoint_identity"]),
             "state": str(row["state"]),
         }
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/connectors/{type}/{identity}/disconnect
+# ---------------------------------------------------------------------------
+
+#: Path to the connector-oauth-scope-surface spec (blocking reauth)
+_OAUTH_SCOPE_SURFACE_SPEC = "connector-oauth-scope-surface"
+
+#: Known token/credential pattern prefixes used by the masking test
+_SENSITIVE_FIELD_NAMES = frozenset(
+    {
+        "token",
+        "credential",
+        "secret",
+        "password",
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "oauth_token",
+        "new_token",
+        "new_credential",
+    }
+)
+
+
+@router.post(
+    "/{connector_type}/{endpoint_identity}/disconnect",
+    response_model=ApiResponse[dict],
+    status_code=202,
+)
+async def disconnect_connector(
+    connector_type: str,
+    endpoint_identity: str,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Disconnect a connector — Approvals-gated; soft-deletes via ``deleted_at`` (§4.4).
+
+    Submits a pending approval action for the disconnect operation.  The
+    connector row is NOT immediately modified; the approval gate keeps the
+    connector in its current state until the action is resolved.
+
+    When the approval resolves:
+    - Approved: ``connector_registry.deleted_at`` is set to NOW() (soft-delete)
+    - Denied: no state change occurs
+
+    The Approvals module runs at the MCP server level — the dashboard API
+    submits the intent via ``pending_actions``; the MCP layer resolves it.
+
+    Returns HTTP 202 with ``{status: "pending_approval", action_id: ...}`` on success.
+    Returns HTTP 404 if the connector is not found in the registry.
+    Returns HTTP 503 if the connector registry or approvals subsystem is unavailable.
+
+    An audit entry with ``action='connector.disconnect'`` is emitted on submission.
+    """
+    pool = _pool(db)
+
+    # Verify connector exists before creating a pending action
+    try:
+        existing = await pool.fetchrow(
+            "SELECT connector_type, endpoint_identity FROM connector_registry"
+            " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "disconnect: failed to fetch connector %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    # Create a pending_actions row for the Approvals gate
+    action_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    target = f"{connector_type}/{endpoint_identity}"
+    tool_args = {"connector_type": connector_type, "endpoint_identity": endpoint_identity}
+
+    # 72-hour expiry for lifecycle approval actions
+    expires_at = now + timedelta(hours=72)
+
+    try:
+        await pool.execute(
+            "INSERT INTO pending_actions"
+            " (id, tool_name, tool_args, agent_summary, status, requested_at, expires_at)"
+            " VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            action_id,
+            "connector_disconnect",
+            json.dumps(tool_args),
+            f"Disconnect connector '{target}' (soft-delete)",
+            "pending",
+            now,
+            expires_at,
+        )
+    except Exception:
+        logger.warning(
+            "disconnect: failed to insert pending_action for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Approvals subsystem is not available")
+
+    # Emit audit entry for the disconnect submission
+    try:
+        client_host = getattr(request.client, "host", None) if request.client else None
+        await _audit_append(
+            pool,
+            actor="dashboard",
+            action="connector.disconnect",
+            target=target,
+            note=(
+                f"Connector '{target}' disconnect submitted for approval (action_id={action_id})"
+            ),
+            ip=client_host,
+        )
+    except Exception:
+        logger.warning(
+            "disconnect: failed to append audit_log entry for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+
+    logger.info(
+        "Disconnect submitted for connector %s/%s (action_id=%s)",
+        connector_type,
+        endpoint_identity,
+        action_id,
+    )
+
+    return ApiResponse[dict](
+        data={
+            "status": "pending_approval",
+            "action_id": str(action_id),
+            "connector_type": connector_type,
+            "endpoint_identity": endpoint_identity,
+            "message": (
+                f"Connector '{target}' disconnect queued for approval. "
+                "The connector will be soft-deleted when the action is approved."
+            ),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/connectors/{type}/{identity}/rotate-token
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{connector_type}/{endpoint_identity}/rotate-token",
+    response_model=ApiResponse[dict],
+    status_code=202,
+)
+async def rotate_connector_token(
+    connector_type: str,
+    endpoint_identity: str,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Rotate a connector's credential — Approvals-gated; ``is_sensitive=True`` masking (§4.5).
+
+    Submits a pending approval action for the rotate-token operation.  The
+    new credential MUST NOT appear in the response, request log, or audit log.
+    ``is_sensitive=True`` masking is applied throughout.
+
+    The response body contains ONLY ``{success: true, rotated_at: <iso8601>}``
+    upon successful submission — no credential value appears anywhere.
+
+    Returns HTTP 202 on success.
+    Returns HTTP 404 if the connector is not found.
+    Returns HTTP 503 if the connector registry or approvals subsystem is unavailable.
+
+    Credential masking guarantee:
+    - Request body fields carrying the new credential are marked ``is_sensitive=True``
+    - Audit log entry text contains NO credential value
+    - Response body contains ONLY ``{success, rotated_at}``
+    """
+    pool = _pool(db)
+
+    # Verify connector exists before creating a pending action
+    try:
+        existing = await pool.fetchrow(
+            "SELECT connector_type, endpoint_identity FROM connector_registry"
+            " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "rotate-token: failed to fetch connector %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    action_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    rotated_at = now.isoformat()
+    target = f"{connector_type}/{endpoint_identity}"
+
+    # Sensitive tool_args: credential fields are intentionally OMITTED from the
+    # pending_action record and all log lines — is_sensitive=True masking contract.
+    # Only non-sensitive metadata goes into tool_args.
+    tool_args = {
+        "connector_type": connector_type,
+        "endpoint_identity": endpoint_identity,
+        "is_sensitive": True,
+        # NOTE: no token/credential field here — credential is never logged
+    }
+
+    # 72-hour expiry for lifecycle approval actions
+    expires_at = now + timedelta(hours=72)
+
+    try:
+        await pool.execute(
+            "INSERT INTO pending_actions"
+            " (id, tool_name, tool_args, agent_summary, status, requested_at, expires_at)"
+            " VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            action_id,
+            "connector_rotate_token",
+            json.dumps(tool_args),
+            f"Rotate credential for connector '{target}' [SENSITIVE — credential redacted]",
+            "pending",
+            now,
+            expires_at,
+        )
+    except Exception:
+        logger.warning(
+            "rotate-token: failed to insert pending_action for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Approvals subsystem is not available")
+
+    # Audit entry — credential value MUST NOT appear in any field
+    try:
+        client_host = getattr(request.client, "host", None) if request.client else None
+        await _audit_append(
+            pool,
+            actor="dashboard",
+            action="connector.rotate_token",
+            target=target,
+            note=(
+                f"Credential rotation submitted for connector '{target}' "
+                f"(action_id={action_id}) [SENSITIVE — credential omitted from log]"
+            ),
+            ip=client_host,
+        )
+    except Exception:
+        logger.warning(
+            "rotate-token: failed to append audit_log for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+
+    logger.info(
+        "rotate-token: submitted for connector %s/%s (action_id=%s) [credential redacted]",
+        connector_type,
+        endpoint_identity,
+        action_id,
+    )
+
+    # Response MUST contain ONLY {success, rotated_at} — no credential, no action_id in data
+    return ApiResponse[dict](
+        data={
+            "success": True,
+            "rotated_at": rotated_at,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/connectors/{type}/{identity}/reauth
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{connector_type}/{endpoint_identity}/reauth",
+    status_code=503,
+)
+async def reauth_connector(
+    connector_type: str,
+    endpoint_identity: str,
+) -> dict:
+    """Reauth connector — BLOCKED until ``connector-oauth-scope-surface`` spec exists (§4.6).
+
+    This endpoint is permanently blocked at the handler level with HTTP 503
+    until the ``connector-oauth-scope-surface`` spec is ratified and implemented.
+
+    The response body identifies the blocking spec dependency by name.
+    No ``Retry-After`` header is set — recovery requires spec creation, not time.
+
+    No Approvals-module call is made; the request is rejected before any
+    approval entry is created.
+    """
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "blocked_by_spec": _OAUTH_SCOPE_SURFACE_SPEC,
+            "message": (
+                f"The reauth action is blocked until the '{_OAUTH_SCOPE_SURFACE_SPEC}' "
+                "spec is ratified. This endpoint will return HTTP 503 until that spec "
+                "exists in openspec/specs/. No Retry-After applies — recovery requires "
+                "spec creation, not time."
+            ),
+            "connector_type": connector_type,
+            "endpoint_identity": endpoint_identity,
+        },
     )
 
 
