@@ -6,7 +6,7 @@ Defines the shared interface contract that ALL connectors must implement. Connec
 ## Requirements
 
 ### Requirement: Connector as Ingestion Primitive
-A connector is a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It is transport-only: read, normalize, filter, submit, checkpoint.
+A connector SHALL be a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It SHALL be transport-only: read, normalize, filter, submit, checkpoint.
 
 #### Scenario: Connector responsibilities boundary
 - **WHEN** a connector processes external events
@@ -96,7 +96,7 @@ The evaluator is instantiated with `scope = 'connector:<connector_type>:<endpoin
 - **THEN** it passes `scope = 'connector:<connector_type>:<endpoint_identity>'` and a shared DB pool; the evaluator loads only connector-scoped rules for that scope
 
 ### Requirement: ingest.v1 Envelope Schema
-The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic model (`IngestEnvelopeV1`) with five required sub-models validated at parse time.
+The `ingest.v1` envelope SHALL be the canonical format for all messages entering the butler ecosystem. It SHALL conform to the IngestEnvelopeV1 schema with five required sub-sections validated at the point of entry.
 
 #### Scenario: Top-level envelope structure
 - **WHEN** a connector constructs an ingest envelope
@@ -143,7 +143,7 @@ The `ingest.v1` envelope is the canonical format for all messages entering the b
 - **AND** the message proceeds directly to Switchboard classification/routing
 
 ### Requirement: Deduplication Strategy
-The Switchboard computes a stable deduplication key for each ingest submission using a priority-based strategy. Advisory locking prevents race conditions on concurrent submissions with the same key.
+The Switchboard SHALL compute a stable deduplication key for each ingest submission using a priority-based strategy. Concurrency control SHALL be enforced to prevent race conditions on concurrent submissions with the same key.
 
 #### Scenario: Priority 1 — Explicit idempotency key
 - **WHEN** `control.idempotency_key` is provided
@@ -167,7 +167,7 @@ The Switchboard computes a stable deduplication key for each ingest submission u
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
 ### Requirement: Request Context Assignment
-The Switchboard builds an immutable request context from each accepted ingest envelope. This context travels with the message through classification, routing, and butler processing. The `request_id` is the UUID7 primary key of the corresponding `public.ingestion_events` row.
+The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context SHALL travel with the message through classification, routing, and butler processing. The `request_id` SHALL be a UUID7 identifier.
 
 #### Scenario: Request context fields
 - **WHEN** a message is accepted for processing
@@ -177,7 +177,7 @@ The Switchboard builds an immutable request context from each accepted ingest en
 
 ### Requirement: Triage Integration
 
-Connector-side and server-side ingestion rules gate ingestion and early routing decisions before LLM classification. Connector-scoped rules (`block` action) are evaluated at the connector. Global rules (all other actions) are evaluated post-ingest by the Switchboard.
+Connector-side and server-side ingestion rules SHALL gate ingestion and early routing decisions before LLM classification. Connector-scoped rules (`block` action) SHALL be evaluated at the connector. Global rules (all other actions) SHALL be evaluated post-ingest by the Switchboard.
 
 #### Scenario: Thread affinity lookup (email only)
 - **WHEN** an email message is ingested with a thread_id
@@ -192,7 +192,7 @@ Connector-side and server-side ingestion rules gate ingestion and early routing 
 - **THEN** the message proceeds to LLM classification
 
 ### Requirement: CachedMCPClient Transport
-All connector-to-Switchboard communication uses a lazy, reconnecting MCP client over SSE.
+All connector-to-Switchboard communication SHALL use a lazy, reconnecting MCP client over SSE.
 
 #### Scenario: Lazy connection management
 - **WHEN** a connector calls an MCP tool for the first time
@@ -215,7 +215,7 @@ All connector-to-Switchboard communication uses a lazy, reconnecting MCP client 
 - **THEN** it uses three MCP tools: `ingestion.ingest` (submit ingest.v1 envelope), `connector.heartbeat` (submit heartbeat.v1 envelope), and `backfill.poll` / `backfill.progress` (backfill orchestration)
 
 ### Requirement: Safe Resuming
-Connectors are crash-safe and restart-safe via checkpoint-after-acceptance semantics.
+Connectors SHALL be crash-safe and restart-safe via checkpoint-after-acceptance semantics.
 
 #### Scenario: Checkpoint persistence pattern
 - **WHEN** a connector processes a batch of events
@@ -228,7 +228,7 @@ Connectors are crash-safe and restart-safe via checkpoint-after-acceptance seman
 - **AND** on restart, it replays from the last safe checkpoint (replays are harmless due to ingest dedup)
 
 ### Requirement: Rate Limiting and Backpressure
-Connectors implement two independent rate-limiting controls: source API protection and Switchboard ingest protection.
+Connectors SHALL implement two independent rate-limiting controls: source API protection and Switchboard ingest protection.
 
 #### Scenario: Source API limit handling
 - **WHEN** a source provider returns rate-limit signals (HTTP 429)
@@ -240,7 +240,7 @@ Connectors implement two independent rate-limiting controls: source API protecti
 - **AND** overload outcomes are surfaced in logs and metrics — no silent drops
 
 ### Requirement: Connector Prometheus Metrics
-All connectors export standardized Prometheus metrics via a `ConnectorMetrics` class and expose them on a `/metrics` HTTP endpoint.
+All connectors SHALL export standardized Prometheus metrics via a `ConnectorMetrics` class and expose them on a `/metrics` HTTP endpoint.
 
 #### Scenario: Ingest submission metrics
 - **WHEN** a connector submits to Switchboard
@@ -265,7 +265,7 @@ All connectors export standardized Prometheus metrics via a `ConnectorMetrics` c
 - **THEN** it exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` with `/health` (JSON status) and `/metrics` (Prometheus text format) endpoints
 
 ### Requirement: Environment Variables (Base)
-All connectors share a common set of environment variables defining identity, transport, and operational parameters.
+All connectors SHALL share a common set of environment variables defining identity, transport, and operational parameters.
 
 #### Scenario: Required base environment variables
 - **WHEN** a connector starts
@@ -280,7 +280,7 @@ All connectors share a common set of environment variables defining identity, tr
 ---
 
 ### Requirement: Heartbeat Protocol
-All connectors send periodic heartbeats to the Switchboard for liveness tracking, operational statistics collection, and capability advertisement. Heartbeats are the sole mechanism for connector self-registration — no manual pre-configuration is needed.
+All connectors SHALL send periodic heartbeats to the Switchboard for liveness tracking, operational statistics collection, and capability advertisement. Heartbeats SHALL be the sole mechanism for connector self-registration — no manual pre-configuration is needed.
 
 #### Scenario: Heartbeat envelope structure (connector.heartbeat.v1)
 - **WHEN** a connector sends a heartbeat
@@ -327,7 +327,7 @@ All connectors send periodic heartbeats to the Switchboard for liveness tracking
 - **THEN** deltas = current - previous
 
 ### Requirement: Connector Liveness and Eligibility
-The Switchboard derives connector liveness from heartbeat recency and manages eligibility state transitions.
+The Switchboard SHALL derive connector liveness from heartbeat recency and manage eligibility state transitions.
 
 #### Scenario: Liveness thresholds
 - **WHEN** a connector's liveness is evaluated
@@ -347,7 +347,7 @@ The Switchboard derives connector liveness from heartbeat recency and manages el
 - **THEN** the record persists in `connector_registry` for historical visibility — cleanup is operator-only
 
 ### Requirement: Statistics Pipeline (OTel/Prometheus)
-Connector statistics are exported via the OTel/Prometheus metrics pipeline. The pre-aggregated SQL rollup tables (`connector_stats_hourly`, `connector_stats_daily`, `connector_fanout_daily`) were dropped by migration sw_025 (butlers-ufzc).
+Connector statistics SHALL be exported via the OTel/Prometheus metrics pipeline. The pre-aggregated SQL rollup tables (`connector_stats_hourly`, `connector_stats_daily`, `connector_fanout_daily`) were dropped by migration sw_025 (butlers-ufzc).
 
 #### Scenario: Volume metrics
 - **WHEN** connectors emit OTel metrics
@@ -360,7 +360,7 @@ Connector statistics are exported via the OTel/Prometheus metrics pipeline. The 
 ---
 
 ### Requirement: Dashboard Connector Page
-Dashboard frontend exposes connector fleet monitoring at `/connectors`.
+The dashboard frontend SHALL expose connector fleet monitoring at `/connectors`.
 
 #### Scenario: Connector overview cards
 - **WHEN** the `/connectors` page is loaded
@@ -379,7 +379,7 @@ Dashboard frontend exposes connector fleet monitoring at `/connectors`.
 - **THEN** recent connector errors are shown with timestamp, identity, state, and error message
 
 ### Requirement: Pydantic Response Models
-Core API response models for the connectors dashboard and API endpoints.
+The system SHALL define core Pydantic response models for the connectors dashboard and API endpoints.
 
 #### Scenario: ConnectorSummary model
 - **WHEN** a connector list response is serialized
@@ -399,7 +399,7 @@ Core API response models for the connectors dashboard and API endpoints.
 - **THEN** it includes: `connector_type`, `endpoint_identity`, `targets` (butler_name → message_count)
 
 ### Requirement: Connector Settings API
-Runtime-configurable connector settings are stored in `connector_registry.settings` (JSONB) and managed via a dashboard API endpoint.
+Runtime-configurable connector settings SHALL be stored in `connector_registry.settings` (JSONB) and managed via a dashboard API endpoint.
 
 #### Scenario: Settings storage
 - **WHEN** a connector has runtime-configurable settings
@@ -419,7 +419,7 @@ Runtime-configurable connector settings are stored in `connector_registry.settin
 - **AND** these thresholds are editable from the connector detail page in the dashboard
 
 ### Requirement: Shared Discretion Layer
-An LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE). Used by connectors that need noise filtering before Switchboard ingestion.
+Connectors that need noise filtering before Switchboard ingestion SHALL use the shared LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE).
 
 The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
 
@@ -451,7 +451,7 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 - **THEN** the default behaviour depends on the sender's weight: weight >= `weight_fail_open` threshold → FORWARD (fail-open), weight < threshold → IGNORE (fail-closed)
 
 ### Requirement: Identity-Based Discretion Weight
-The discretion layer supports sender-relationship weighting that controls bypass and fail behaviour.
+The discretion layer SHALL support sender-relationship weighting that controls bypass and fail behaviour.
 
 #### Scenario: Weight tiers
 - **WHEN** a sender's identity is resolved via `public.contact_info → public.contacts → public.entities`
@@ -479,7 +479,7 @@ The discretion layer supports sender-relationship weighting that controls bypass
 - **THEN** all messages use weight=1.0 (owner-equivalent, preserving fail-open behaviour)
 
 ### Requirement: Authentication and Token Management
-Connector authentication with the Switchboard uses bearer tokens with scope enforcement.
+Connector authentication with the Switchboard SHALL use bearer tokens with scope enforcement.
 
 #### Scenario: [TARGET-STATE] Token scope enforcement
 - **WHEN** a connector authenticates with `SWITCHBOARD_API_TOKEN`
@@ -490,7 +490,7 @@ Connector authentication with the Switchboard uses bearer tokens with scope enfo
 - **THEN** tokens are stored in secret managers, rotated every 90 days (production) or 7 days (development), and revoked immediately if compromised
 
 ### Requirement: [TARGET-STATE] Horizontal Scaling Patterns
-Architecture for scaling connectors beyond single-instance deployment.
+The architecture SHALL support scaling connectors beyond single-instance deployment.
 
 #### Scenario: Lease-based coordination (HA)
 - **WHEN** active-standby HA is needed

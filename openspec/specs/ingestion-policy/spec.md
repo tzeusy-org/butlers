@@ -133,7 +133,7 @@ The evaluator uses TTL-based cache refresh (default 60s). On DB error, it retain
 
 ### Requirement: IngestionEnvelope
 
-The evaluator accepts an `IngestionEnvelope` dataclass that carries all fields needed by any rule type:
+The evaluator SHALL accept an `IngestionEnvelope` dataclass that carries all fields needed by any rule type:
 
 - `sender_address: str` -- normalized email or empty string
 - `source_channel: str` -- `"email"`, `"telegram"`, `"discord"`
@@ -154,7 +154,7 @@ Connectors populate only the fields relevant to their channel. The evaluator ext
 
 ### Requirement: PolicyDecision
 
-The evaluator returns a `PolicyDecision` dataclass:
+The evaluator SHALL return a `PolicyDecision` dataclass:
 
 - `action: str` -- the matched rule's action, or `"pass_through"` if no match
 - `target_butler: str | None` -- extracted from `route_to:<butler>` if applicable
