@@ -45,6 +45,9 @@ vi.mock('@/components/ingestion/TimelineTab', () => ({
 vi.mock('@/components/ingestion/ConnectorsTab', () => ({
   ConnectorsTab: () => <div data-testid="connectors-tab-stub">Connectors tab</div>,
 }))
+vi.mock('@/components/ingestion/ConnectorsListPage', () => ({
+  ConnectorsListPage: () => <div data-testid="connectors-tab-stub">Connectors tab</div>,
+}))
 vi.mock('@/components/switchboard/FiltersTab', () => ({
   FiltersTab: () => <div data-testid="filters-tab-stub">Filters tab</div>,
 }))

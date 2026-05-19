@@ -1,18 +1,20 @@
 /**
  * IngestionConnectorsPage — route component for /ingestion/connectors.
  *
- * Thin wrapper around the existing ConnectorsTab, promoted to a first-class
- * sub-route under the INGESTION_DISPATCH_CONSOLE flag.
+ * Thin page wrapper around ConnectorsListPage, which is the extracted
+ * first-class component for the connector roster list sub-route.
  *
- * NOTE: useConnectorDetail MUST NOT be mounted from this list view.
+ * NOTE: useConnectorDetail MUST NOT be mounted from this list view (§6.2).
  * Only summary-level data is shown here (per spec "Connector roster list
  * summary-only polling"). Detail data loads only on the connector detail page.
  *
  * Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
  *       ingestion-ui-information-architecture/spec.md §"Sub-route hierarchy"
+ *       connector-base-spec/spec.md §"Dashboard Connector Page"
+ *       tasks.md §3.4
  */
 
-import { ConnectorsTab } from '@/components/ingestion/ConnectorsTab'
+import { ConnectorsListPage } from '@/components/ingestion/ConnectorsListPage'
 
 export default function IngestionConnectorsPage() {
   return (
@@ -23,7 +25,7 @@ export default function IngestionConnectorsPage() {
           Active ingestion connectors — status, health, and configuration.
         </p>
       </div>
-      <ConnectorsTab isActive={true} />
+      <ConnectorsListPage />
     </div>
   )
 }
