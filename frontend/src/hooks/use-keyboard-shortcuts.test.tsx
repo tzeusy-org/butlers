@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
-import { OPEN_COMMAND_PALETTE_EVENT } from "@/lib/command-palette";
+import { OPEN_ENTITY_FINDER_EVENT } from "@/lib/entity-finder";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -34,9 +34,10 @@ describe("useKeyboardShortcuts", () => {
     vi.restoreAllMocks();
   });
 
-  it("dispatches open-search on Ctrl+K outside editable fields", () => {
+  it("dispatches entity-finder event on Ctrl+K outside editable fields (bu-xfjwk)", () => {
     const listener = vi.fn();
-    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, listener);
+    // Ctrl+K now dispatches OPEN_ENTITY_FINDER_EVENT (entity-first finder).
+    window.addEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
 
     act(() => {
       root.render(
@@ -52,12 +53,12 @@ describe("useKeyboardShortcuts", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
 
-    window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, listener);
+    window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
   });
 
   it("ignores Ctrl+K inside editable fields", () => {
     const listener = vi.fn();
-    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, listener);
+    window.addEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
 
     act(() => {
       root.render(
@@ -77,7 +78,7 @@ describe("useKeyboardShortcuts", () => {
     expect(listener).toHaveBeenCalledTimes(0);
 
     input.remove();
-    window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, listener);
+    window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
   });
 
   it("navigates to /ingestion on g+e shortcut", () => {

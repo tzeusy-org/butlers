@@ -24,3 +24,15 @@ class ResizeObserverStub {
 if (typeof global.ResizeObserver === "undefined") {
   global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 }
+
+// ---------------------------------------------------------------------------
+// scrollIntoView — no-op stub for jsdom (required by cmdk 1.1.1)
+//
+// cmdk calls element.scrollIntoView() when managing keyboard selection state.
+// jsdom does not implement this method; without the stub cmdk throws
+// "TypeError: i.scrollIntoView is not a function".
+// ---------------------------------------------------------------------------
+
+if (typeof window !== "undefined") {
+  window.HTMLElement.prototype.scrollIntoView = function () {};
+}

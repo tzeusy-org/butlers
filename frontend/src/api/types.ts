@@ -4916,3 +4916,39 @@ export interface ReembedRunResult {
   /** Non-fatal per-batch errors encountered during the run. */
   errors: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Relationship entity search (GET /api/butlers/relationship/entities/search)
+// Used by the EntityFinder Cmd-K component (bu-xfjwk).
+// ---------------------------------------------------------------------------
+
+/** The rule that produced the highest score for this result.
+ *
+ * - ``prefix``       — query is a prefix of the name or an alias (score 100)
+ * - ``contact_fact`` — query matches a contact-fact object value (score 70)
+ * - ``substring``    — query is a substring of the name or an alias (score 50)
+ * - ``predicate``    — query matches a predicate label (score 30)
+ */
+export type EntityFinderMatchKind = "prefix" | "contact_fact" | "substring" | "predicate";
+
+/** A single result from GET /api/butlers/relationship/entities/search. */
+export interface EntityFinderSearchResult {
+  entity_id: string;
+  canonical_name: string;
+  score: number;
+  match_kind: EntityFinderMatchKind;
+}
+
+/** Response envelope for GET /api/butlers/relationship/entities/search. */
+export interface EntityFinderSearchResponse {
+  results: EntityFinderSearchResult[];
+  total: number;
+  q: string;
+  limit: number;
+}
+
+/** Query parameters for the relationship entity search endpoint. */
+export interface EntityFinderSearchParams {
+  q: string;
+  limit?: number;
+}
