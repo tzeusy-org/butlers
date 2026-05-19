@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  getEntityConcentration,
   getEntityDates,
   getEntityGifts,
   getEntityInteractions,
@@ -105,6 +106,20 @@ export function useEntityNeighbours(entityId: string | undefined) {
     queryKey: ["entity-neighbours", entityId],
     queryFn: () => getEntityNeighbours(entityId!),
     enabled: !!entityId,
+  });
+}
+
+/**
+ * Fetch concentration balance-sheet for a relational predicate (§8.4, §9.3).
+ *
+ * The response includes ``predicate_tabs`` so the component can render the
+ * full predicate tab strip without a separate request.
+ * When ``pred`` is undefined or empty, the backend defaults to ``'knows'``.
+ */
+export function useEntityConcentration(pred: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-concentration", pred ?? ""],
+    queryFn: () => getEntityConcentration(pred),
   });
 }
 

@@ -5035,3 +5035,55 @@ export interface EntityFinderSearchParams {
   q: string;
   limit?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Relationship entity concentration (GET /api/relationship/entities/concentration)
+// Used by ConcentrationPage §8.4 (bu-m4ya3).
+// ---------------------------------------------------------------------------
+
+/**
+ * A predicate tab enumerated from ``relationship.entity_predicate_registry``.
+ *
+ * Only predicates with ``kind='relational'`` are surfaced as concentration
+ * tabs (contact predicates like ``has-email`` do not produce meaningful
+ * weight aggregations for the balance-sheet view).
+ */
+export interface PredicateTab {
+  predicate: string;
+  label: string;
+  description: string | null;
+}
+
+/**
+ * One row in the concentration balance-sheet for a given predicate.
+ *
+ * ``weight_sum`` is the sum of edge weights (NULLs treated as 1 per triple).
+ * ``share`` is the entity's fraction of total weight (0.0–1.0); null when total = 0.
+ */
+export interface ConcentrationEntry {
+  entity_id: string;
+  canonical_name: string;
+  weight_sum: number;
+  fact_count: number;
+  share: number | null;
+  last_seen: string | null;
+  src: string;
+  conf: number;
+  verified: boolean;
+  primary: boolean | null;
+}
+
+/** Header rollup for the concentration page. */
+export interface ConcentrationRollup {
+  total: number;
+  top3_share: number | null;
+}
+
+/** Response envelope for GET /api/relationship/entities/concentration?pred=<predicate>. */
+export interface ConcentrationResponse {
+  predicate: string;
+  items: ConcentrationEntry[];
+  rollup: ConcentrationRollup;
+  predicate_tabs: PredicateTab[];
+  total: number;
+}
