@@ -236,7 +236,7 @@ export function SocialMapView() {
     for (const entry of rawEntries) {
       if (entry.entity_id === rawOwner) continue;
       const tier = entry.dunbar_tier as Tier;
-      if (groups[tier]) groups[tier].push(entry);
+      groups[tier].push(entry);
       if (entry.dunbar_tier_override) pinned = true;
     }
     return { tierGroups: groups, hasPinnedOverride: pinned };
@@ -273,18 +273,21 @@ export function SocialMapView() {
   // Search input ref for keyboard shortcut
   const searchRef = useRef<HTMLInputElement>(null);
 
-  function handleJumpToTier(tier: Tier) {
-    setFocusTier(tier);
-    setFocusTrigger((n) => n + 1);
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.set("focus", `tier-${tier}`);
-        return next;
-      },
-      { replace: true },
-    );
-  }
+  const handleJumpToTier = useCallback(
+    (tier: Tier) => {
+      setFocusTier(tier);
+      setFocusTrigger((n) => n + 1);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("focus", `tier-${tier}`);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   function handleNavigate(entityId: string) {
     navigate(`/entities/${entityId}`);
@@ -337,8 +340,7 @@ export function SocialMapView() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchInput, navigate]);
+  }, [searchInput, navigate, handleJumpToTier]);
 
   // The canvas key re-mounts when stage dimensions change to reset internal state.
   // focusTrigger is passed as a separate prop so repeated jumps to the same tier
