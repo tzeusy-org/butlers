@@ -159,7 +159,7 @@ Development follows milestones defined in `PROJECT_PLAN.md`. Use the `superpower
 
 ### Cursor Pagination (BREAKING — Phase 2b, PR #1755)
 
-`GET /api/ingestion/events` uses **keyset (cursor) pagination** — the `page`/`limit` params are gone.
+`GET /api/ingestion/events` uses **keyset (cursor) pagination** — the `page` param is gone (use `limit` and `cursor` instead).
 
 Response envelope:
 ```json
