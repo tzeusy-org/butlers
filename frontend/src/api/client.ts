@@ -262,6 +262,7 @@ import type {
   EntityTimelineItem,
   DunbarTierOverrideResponse,
   EntityFinderSearchResponse,
+  NeighboursResponse,
   LinkedContactSummary,
   MessageThreadSummary,
   RelationshipEntityDetail,
@@ -1961,6 +1962,16 @@ export function getRelationshipEntityQueue(params?: {
   const qs = sp.toString();
   return apiFetch<RelationshipQueueResponse>(
     `/relationship/entities/queue${qs ? `?${qs}` : ""}`,
+
+/** Fetch relational neighbours grouped by predicate for an entity (§9.2, bu-4wn79).
+ *
+ * Hits GET /api/butlers/relationship/entities/{id}/neighbours — returns only
+ * kind='relational' predicates (excludes has-* contact predicates).
+ * Returns owner-only gate 403 when no owner entity is registered.
+ */
+export function getEntityNeighbours(entityId: string): Promise<NeighboursResponse> {
+  return apiFetch<NeighboursResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/neighbours`,
   );
 }
 

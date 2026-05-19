@@ -4972,6 +4972,35 @@ export interface ReembedRunResult {
 }
 
 // ---------------------------------------------------------------------------
+// Relationship entity neighbours (GET /api/butlers/relationship/entities/{id}/neighbours)
+// Used by HopPage §8.2 (bu-h4s95).
+// ---------------------------------------------------------------------------
+
+/**
+ * A single neighbour reached via a relational triple.
+ *
+ * ``entity_id`` is the OTHER entity (not the queried anchor).
+ * ``direction`` is ``"forward"`` when anchor is the subject (anchor → neighbour)
+ * and ``"reverse"`` when anchor is the object (neighbour → anchor).
+ */
+export interface NeighbourEntry {
+  entity_id: string;
+  direction: "forward" | "reverse";
+  src: string;
+  conf: number;
+  last_seen: string | null;
+  weight: number | null;
+  verified: boolean;
+  primary: boolean | null;
+}
+
+/** Response envelope from GET /api/butlers/relationship/entities/{id}/neighbours. */
+export interface NeighboursResponse {
+  /** Maps relational predicate to its list of neighbours. */
+  neighbours: Record<string, NeighbourEntry[]>;
+}
+
+// ---------------------------------------------------------------------------
 // Relationship entity search (GET /api/butlers/relationship/entities/search)
 // Used by the EntityFinder Cmd-K component (bu-xfjwk).
 // ---------------------------------------------------------------------------
