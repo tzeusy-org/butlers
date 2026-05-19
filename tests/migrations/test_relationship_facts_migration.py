@@ -123,7 +123,9 @@ class TestUpgradeSQLShape:
         table_stmts = [s for s in sqls if "CREATE TABLE" in s.upper() and "facts" in s.lower()]
         assert table_stmts, "upgrade() must emit CREATE TABLE … facts"
         stmt = table_stmts[0]
-        assert "relationship.entity_facts" in stmt, "Table must be schema-qualified as relationship.entity_facts"
+        assert "relationship.entity_facts" in stmt, (
+            "Table must be schema-qualified as relationship.entity_facts"
+        )
 
     def test_table_has_id_column(self) -> None:
         sqls = _collect_upgrade_sqls()

@@ -63,6 +63,7 @@ from fastapi import FastAPI
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_mcp_manager
 
 pytestmark = pytest.mark.unit
 
@@ -108,6 +109,11 @@ def _make_app_with_caller(*, caller_is_owner: bool) -> FastAPI:
         if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
             app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
             break
+
+    # The activity endpoint uses Depends(get_mcp_manager). Provide a no-op mock
+    # so the dependency resolves without RuntimeError — the owner check runs first
+    # in the handler body, so MCP is never actually called on the 403 path.
+    app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
 
     return app
 

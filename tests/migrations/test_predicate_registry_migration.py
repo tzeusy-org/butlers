@@ -277,7 +277,9 @@ class TestDowngradeSQLShape:
     def test_downgrade_drops_predicate_registry_table(self) -> None:
         sqls = _collect_downgrade_sqls()
         drop_stmts = [s for s in sqls if "DROP TABLE" in s.upper()]
-        assert drop_stmts, "downgrade() must emit DROP TABLE for relationship.entity_predicate_registry"
+        assert drop_stmts, (
+            "downgrade() must emit DROP TABLE for relationship.entity_predicate_registry"
+        )
         assert any("predicate_registry" in s.lower() for s in drop_stmts)
 
     def test_downgrade_does_not_drop_schema(self) -> None:
@@ -383,8 +385,12 @@ async def test_table_exists_after_upgrade(provisioned_postgres_pool) -> None:
         await _provision_prerequisites(pool)
         await _run_upgrade(pool)
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_predicate_registry')")
-        assert table_oid is not None, "relationship.entity_predicate_registry must exist after upgrade"
+        table_oid = await pool.fetchval(
+            "SELECT to_regclass('relationship.entity_predicate_registry')"
+        )
+        assert table_oid is not None, (
+            "relationship.entity_predicate_registry must exist after upgrade"
+        )
 
         rows = await pool.fetch(
             """
@@ -530,8 +536,12 @@ async def test_downgrade_drops_table(provisioned_postgres_pool) -> None:
         await _run_upgrade(pool)
         await _run_downgrade(pool)
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_predicate_registry')")
-        assert table_oid is None, "relationship.entity_predicate_registry must be absent after downgrade"
+        table_oid = await pool.fetchval(
+            "SELECT to_regclass('relationship.entity_predicate_registry')"
+        )
+        assert table_oid is None, (
+            "relationship.entity_predicate_registry must be absent after downgrade"
+        )
 
 
 @pytest.mark.integration
@@ -580,7 +590,9 @@ async def test_upgrade_is_reversible(provisioned_postgres_pool) -> None:
         await _run_downgrade(pool)
         await _run_upgrade(pool)  # must not raise
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_predicate_registry')")
+        table_oid = await pool.fetchval(
+            "SELECT to_regclass('relationship.entity_predicate_registry')"
+        )
         assert table_oid is not None, (
             "relationship.entity_predicate_registry must exist after second upgrade"
         )

@@ -31,6 +31,8 @@ vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorFanout: vi.fn(),
   useIngestionVolume: vi.fn(),
   useAvailableConnectors: vi.fn(),
+  usePipelineStats: vi.fn(),
+  useDeleteConnector: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-backfill", () => ({
@@ -43,6 +45,8 @@ import {
   useCrossConnectorSummary,
   useConnectorFanout,
   useIngestionVolume,
+  usePipelineStats,
+  useDeleteConnector,
 } from "@/hooks/use-ingestion";
 import { useBackfillJobs } from "@/hooks/use-backfill";
 import type { ConnectorProfile, ConnectorSummary } from "@/api/index.ts";
@@ -116,6 +120,15 @@ function setupDefaultMocks(
   vi.mocked(useConnectorFanout).mockReturnValue(makeLoadingResult() as ReturnType<typeof useConnectorFanout>);
   vi.mocked(useIngestionVolume).mockReturnValue(makeLoadingResult() as ReturnType<typeof useIngestionVolume>);
   vi.mocked(useAvailableConnectors).mockReturnValue(makeResult({ data: profiles }) as ReturnType<typeof useAvailableConnectors>);
+  vi.mocked(usePipelineStats).mockReturnValue(makeLoadingResult() as ReturnType<typeof usePipelineStats>);
+  vi.mocked(useDeleteConnector).mockReturnValue({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+    isError: false,
+    isSuccess: false,
+    reset: vi.fn(),
+  } as unknown as ReturnType<typeof useDeleteConnector>);
   vi.mocked(useBackfillJobs).mockReturnValue(makeResult({ data: [] }) as unknown as ReturnType<typeof useBackfillJobs>);
 }
 

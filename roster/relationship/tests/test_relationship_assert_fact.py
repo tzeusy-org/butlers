@@ -517,7 +517,9 @@ class TestTransactionSafety:
                     conn=conn,
                 )
         assert result.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow("SELECT id FROM relationship.entity_facts WHERE id = $1", result.fact_id)
+        row = await pool.fetchrow(
+            "SELECT id FROM relationship.entity_facts WHERE id = $1", result.fact_id
+        )
         assert row is not None
 
     async def test_caller_conn_idempotent(self, pool, entity):
@@ -549,7 +551,9 @@ class TestTransactionSafety:
                 pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="conn-path", conn=conn
             )
         assert r2.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow("SELECT src FROM relationship.entity_facts WHERE id = $1", r2.fact_id)
+        row = await pool.fetchrow(
+            "SELECT src FROM relationship.entity_facts WHERE id = $1", r2.fact_id
+        )
         assert row["src"] == "conn-path"
 
 

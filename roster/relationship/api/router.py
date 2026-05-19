@@ -5517,6 +5517,7 @@ async def merge_entities(
 # GET /entities/{entity_id}/activity  — unified activity aggregator (bu-ihiw4)
 # ---------------------------------------------------------------------------
 
+
 #: Chronicler MCP timeout in seconds.  The call is fire-and-forget on failure;
 #: the aggregator degrades gracefully if the chronicler is unreachable.
 _CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
@@ -5585,7 +5586,7 @@ async def _fetch_relationship_activity(
 
 
 async def _fetch_chronicler_activity(
-    mcp_manager: MCPClientManager,
+    mcp_manager: MCPClientManager | None,
     entity_id: UUID,
 ) -> list[ActivityEntry]:
     """Fetch episodes from the chronicler butler via MCP.
@@ -5594,11 +5595,13 @@ async def _fetch_chronicler_activity(
     and converts each corrected episode into an ``ActivityEntry`` with
     ``src='chronicler'``.
 
-    Returns an empty list when the chronicler is unreachable or the MCP
-    call fails — graceful degrade, never raises.
+    Returns an empty list when the chronicler is unreachable, the MCP
+    call fails, or ``mcp_manager`` is None — graceful degrade, never raises.
 
     INVARIANT: No direct SQL on chronicler.* tables.
     """
+    if mcp_manager is None:
+        return []
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client("chronicler"),
@@ -5712,8 +5715,14 @@ async def get_entity_activity(
     """
     pool = _pool(db)
 
-    # Owner-only gate (Clause 12b, Amendment 12b).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only gate (Clause 12b, Amendment 12b) — roles-aware pattern.
+    # Mirrors _get_owner_roles used by 12a mutation endpoints: the mock in
+    # test_owner_authz_guardrail.py returns rows with roles=[], so checking
+    # the roles field here (rather than relying on a SQL WHERE clause) produces
+    # the correct 403 in both real and mock contexts.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # Entity existence gate.
     await _assert_entity_exists(pool, entity_id)

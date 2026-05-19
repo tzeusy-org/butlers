@@ -90,7 +90,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(f"DELETE FROM relationship.entity_predicate_registry WHERE predicate = '{_PREDICATE}'")
+    op.execute(
+        f"DELETE FROM relationship.entity_predicate_registry WHERE predicate = '{_PREDICATE}'"
+    )
     # Restore original constraint (without 'state') atomically.
     op.execute("""
         ALTER TABLE IF EXISTS relationship.entity_predicate_registry

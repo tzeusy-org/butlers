@@ -66,6 +66,7 @@ import {
   useIngestionEventLineage,
   useIngestionEventRollup,
   useIngestionEventSenderContact,
+  useIngestionEventSessions,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 
@@ -129,20 +130,20 @@ function setupDefaultMocks() {
     data: undefined,
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useIngestionEventRollup>);
+  } as unknown as ReturnType<typeof useIngestionEventRollup>);
 
   vi.mocked(useIngestionEventSenderContact).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useIngestionEventSenderContact>);
+  } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
 
   // Default: no connector issues (strip hidden)
   vi.mocked(useConnectorSummaries).mockReturnValue({
     data: { data: [] },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useConnectorSummaries>);
+  } as unknown as ReturnType<typeof useConnectorSummaries>);
 }
 
 // We test ActionCell indirectly through TimelineTab since it's not exported.
@@ -174,7 +175,7 @@ describe("TimelineTab — StatusBadge rendering", () => {
 
   function render(events: IngestionEventSummary[]) {
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult(events) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -278,7 +279,7 @@ describe("TimelineTab — Replay button interaction", () => {
 
   function render(events: IngestionEventSummary[]) {
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult(events) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -322,7 +323,7 @@ describe("TimelineTab — Replay button interaction", () => {
 
     // Initial render: filtered event
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([event]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([event]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -344,7 +345,7 @@ describe("TimelineTab — Replay button interaction", () => {
 
     // Server refetch returns replay_complete — override should be evicted
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([{ ...event, status: "replay_complete" }]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([{ ...event, status: "replay_complete" }]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     // Re-render with updated server data
@@ -402,7 +403,7 @@ describe("TimelineTab — Status filter", () => {
     setupDefaultMocks();
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
   });
 
@@ -459,7 +460,7 @@ describe("TimelineTab — filtered events non-expandable", () => {
 
   it("filtered rows have no expand chevron", () => {
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ status: "filtered" })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ status: "filtered" })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -479,7 +480,7 @@ describe("TimelineTab — filtered events non-expandable", () => {
 
   it("error rows have no expand chevron", () => {
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ status: "error" })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ status: "error" })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -498,7 +499,7 @@ describe("TimelineTab — filtered events non-expandable", () => {
 
   it("ingested rows have expand chevron", () => {
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ status: "ingested" })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ status: "ingested" })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -565,12 +566,12 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as ReturnType<typeof useIngestionEventRollup>,
-      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+      } as unknown as ReturnType<typeof useIngestionEventSessions>,
+      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
     });
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -595,12 +596,12 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as ReturnType<typeof useIngestionEventRollup>,
-      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+      } as unknown as ReturnType<typeof useIngestionEventSessions>,
+      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
     });
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -624,12 +625,12 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as ReturnType<typeof useIngestionEventRollup>,
-      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+      } as unknown as ReturnType<typeof useIngestionEventSessions>,
+      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
     });
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -653,12 +654,12 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as ReturnType<typeof useIngestionEventRollup>,
-      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+      } as unknown as ReturnType<typeof useIngestionEventSessions>,
+      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
     });
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -698,11 +699,11 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
       data: undefined,
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useIngestionEventRollup>);
+    } as unknown as ReturnType<typeof useIngestionEventRollup>);
 
     vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: { data: { data: [] }, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
-      rollup: { data: undefined, isLoading: false, isError: false } as ReturnType<typeof useIngestionEventRollup>,
+      sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>,
+      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
     });
   });
 
@@ -718,10 +719,10 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
       data: { data: { resolved: true, name: "Alice Smith", raw: "alice@example.com" } },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useIngestionEventSenderContact>);
+    } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "alice@example.com" })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "alice@example.com" })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -745,10 +746,10 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
       data: { data: { resolved: false, name: null, raw: "unknown@example.com" } },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useIngestionEventSenderContact>);
+    } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "unknown@example.com" })]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "unknown@example.com" })]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -785,7 +786,7 @@ describe("TimelineTab — §2.8 Saved Views", () => {
     setupDefaultMocks();
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     // Clear localStorage before each test
@@ -903,7 +904,7 @@ describe("TimelineTab — §2.8 Saved Views", () => {
       makeEvent({ id: "evt-3", status: "replay_failed" }),
     ];
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult(events) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -956,16 +957,16 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       data: undefined,
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useIngestionEventRollup>);
+    } as unknown as ReturnType<typeof useIngestionEventRollup>);
 
     vi.mocked(useIngestionEventSenderContact).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useIngestionEventSenderContact>);
+    } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([]) as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
   });
 
@@ -981,7 +982,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       data: { data: [makeConnector()] },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useConnectorSummaries>);
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
 
     act(() => {
       root.render(
@@ -1001,7 +1002,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       data: { data: [] },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useConnectorSummaries>);
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
 
     act(() => {
       root.render(
@@ -1026,7 +1027,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useConnectorSummaries>);
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
 
     act(() => {
       root.render(
@@ -1053,7 +1054,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useConnectorSummaries>);
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
 
     act(() => {
       root.render(
@@ -1082,7 +1083,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       },
       isLoading: false,
       isError: false,
-    } as ReturnType<typeof useConnectorSummaries>);
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
 
     act(() => {
       root.render(

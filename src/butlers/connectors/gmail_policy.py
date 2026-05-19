@@ -528,7 +528,12 @@ class GmailPolicyEvaluator:
         self._known_contacts_path = known_contacts_path
         self._ttl = ttl
         self._cache: frozenset[str] = frozenset()
-        self._cache_loaded_at: float = 0.0
+        # float('-inf') ensures the cache is always expired on the very first call,
+        # regardless of how long the process has been running. Using 0.0 caused a
+        # subtle bug: on freshly-booted CI runners (uptime < TTL seconds), the
+        # expression `time.monotonic() - 0.0 < ttl` evaluated to False, silently
+        # skipping the first DB refresh and returning an empty frozenset.
+        self._cache_loaded_at: float = float("-inf")
         self._db_ever_loaded: bool = False
 
     def _cache_expired(self) -> bool:

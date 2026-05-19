@@ -53,7 +53,6 @@ const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 // Redirect /connectors/:connectorType/:endpointIdentity
 // → /ingestion/connectors/:connectorType/:endpointIdentity
 // Preserves relevant query string params (period, date filters) per spec section 3.3.
-// eslint-disable-next-line react-refresh/only-export-components
 function ConnectorDetailRedirect() {
   const { connectorType, endpointIdentity } = useParams()
   const [searchParams] = useSearchParams()
@@ -105,7 +104,6 @@ export function IngestionTabRedirect() {
 // Redirect /butlers/relationship/entities/:entityId → /entities/:entityId
 // The relationship-scoped activity view has been folded into the unified
 // entity detail page.
-// eslint-disable-next-line react-refresh/only-export-components
 function RelationshipEntityRedirect() {
   const { entityId } = useParams()
   return <Navigate to={`/entities/${entityId ?? ''}`} replace />
@@ -114,12 +112,12 @@ function RelationshipEntityRedirect() {
 // Redirect /butlers/relationship/contacts/:id → /contacts/:contactId
 // The legacy relationship-scoped contact path has been superseded by the
 // canonical contact detail page per the detail-page-archetype spec.
-// eslint-disable-next-line react-refresh/only-export-components
 function RelationshipContactRedirect() {
   const { id } = useParams()
   return <Navigate to={`/contacts/${id ?? ''}`} replace />
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const router = createBrowserRouter(
   [
     {

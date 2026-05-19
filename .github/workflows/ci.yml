@@ -132,6 +132,8 @@ jobs:
 
       - name: Build (required for vite preview)
         run: npm run build
+        env:
+          VITE_INGESTION_DISPATCH_CONSOLE: "true"
 
       - name: Run Playwright e2e tests
         run: npm run test:e2e
