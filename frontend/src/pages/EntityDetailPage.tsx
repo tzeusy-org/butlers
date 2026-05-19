@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { useCallback, useMemo, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router";
 import {
   Check,
+  Layers,
   Loader2,
   Pencil,
   Plus,
@@ -66,6 +67,47 @@ import {
   useUnlinkContact,
   useUpdateEntity,
 } from "@/hooks/use-memory";
+
+// ---------------------------------------------------------------------------
+// Editorial / Workbench mode
+// ---------------------------------------------------------------------------
+
+/** The two display modes for the entity detail page. */
+type EntityDetailMode = "editorial" | "workbench";
+
+/** localStorage key for persisting the entity detail mode. */
+const ENTITY_MODE_STORAGE_KEY = "entities.detail.mode";
+
+/** URL search-param name for per-link mode override. */
+const ENTITY_MODE_PARAM = "mode";
+
+/**
+ * Reads the persisted mode from localStorage, defaulting to "editorial".
+ * Falls back gracefully when localStorage is unavailable.
+ */
+function readPersistedEntityMode(): EntityDetailMode {
+  try {
+    const stored = localStorage.getItem(ENTITY_MODE_STORAGE_KEY);
+    if (stored === "editorial" || stored === "workbench") return stored;
+  } catch {
+    // localStorage not available (e.g. SSR or private browsing restrictions)
+  }
+  return "editorial";
+}
+
+/**
+ * Writes the mode to localStorage.
+ * Ignores write failures (e.g. storage quota exceeded).
+ */
+function persistEntityMode(mode: EntityDetailMode): void {
+  try {
+    localStorage.setItem(ENTITY_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Ignore write failures
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 const FACTS_PAGE_SIZE = 20;
 // Profile snapshot pulls predicates from recent_facts; profile-relevant facts
@@ -1497,11 +1539,70 @@ function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// EntityDetailModeToggle — icon button in the Page actions slot
+// ---------------------------------------------------------------------------
+
+function EntityDetailModeToggle({
+  mode,
+  onModeChange,
+}: {
+  mode: EntityDetailMode;
+  onModeChange: (mode: EntityDetailMode) => void;
+}) {
+  const nextMode: EntityDetailMode = mode === "editorial" ? "workbench" : "editorial";
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={mode === "workbench"}
+      aria-label={`Switch to ${nextMode} mode`}
+      data-testid="entity-mode-toggle"
+      onClick={() => onModeChange(nextMode)}
+      title={`${mode === "editorial" ? "Editorial" : "Workbench"} mode — click to switch to ${nextMode}`}
+      className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <Layers className="h-3.5 w-3.5" aria-hidden />
+      {mode === "editorial" ? "Editorial" : "Workbench"}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // EntityDetailPage
 // ---------------------------------------------------------------------------
 
 export default function EntityDetailPage() {
   const { entityId } = useParams<{ entityId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // ---------------------------------------------------------------------------
+  // Mode — editorial vs workbench
+  // Initialised from ?mode= URL param (per-link override) or localStorage.
+  // Defaults to "editorial" when unset or invalid.
+  // ---------------------------------------------------------------------------
+  const [mode, setModeState] = useState<EntityDetailMode>(() => {
+    const urlMode = searchParams.get(ENTITY_MODE_PARAM);
+    if (urlMode === "editorial" || urlMode === "workbench") return urlMode;
+    return readPersistedEntityMode();
+  });
+
+  const setMode = useCallback(
+    (next: EntityDetailMode) => {
+      setModeState(next);
+      persistEntityMode(next);
+      // Update the URL param so the current view is deep-linkable.
+      setSearchParams(
+        (prev) => {
+          const updated = new URLSearchParams(prev);
+          updated.set(ENTITY_MODE_PARAM, next);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   const [factsLimit, setFactsLimit] = useState(FACTS_INITIAL_LIMIT);
   const { data, isLoading, isFetching, error } = useEntity(entityId, {
     facts_limit: factsLimit,
@@ -1619,13 +1720,19 @@ export default function EntityDetailPage() {
     [entity?.canonical_name, entityId],
   );
 
+  const pageArchetype = mode === "editorial" ? "detail" : "overview";
+  const modeToggle = (
+    <EntityDetailModeToggle mode={mode} onModeChange={setMode} />
+  );
+
   return (
     <Page
-      archetype="detail"
+      archetype={pageArchetype}
       title={entity?.canonical_name ?? entityId ?? "Entity"}
       loading={isLoading}
       error={error ?? null}
       breadcrumbs={breadcrumbs}
+      actions={modeToggle}
     >
       {entity && entityId && (
         <>
