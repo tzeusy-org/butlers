@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import { format, formatDistanceToNow } from "date-fns";
 import { Time } from "@/components/ui/time";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getEntityGloss } from "@/lib/entity-glosses";
+import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES } from "@/lib/entity-glosses";
 import type { DunbarTier, EntityState, EntityType } from "@/lib/entity-glosses";
 
 import type {
@@ -1557,17 +1557,8 @@ function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
 // silently skipped (returns null). No crash, no placeholder text.
 // ---------------------------------------------------------------------------
 
-const _VALID_DUNBAR_TIERS = new Set<number>([5, 15, 50, 150, 500, 1500]);
-const _VALID_ENTITY_TYPES = new Set<string>([
-  "person",
-  "organization",
-  "place",
-  "product",
-  "account",
-  "event",
-  "group",
-  "other",
-]);
+const _VALID_DUNBAR_TIERS = new Set<number>(DUNBAR_TIER_VALUES);
+const _VALID_ENTITY_TYPES = new Set<string>(ENTITY_TYPE_VALUES);
 
 interface GlossTuple {
   tier: DunbarTier;

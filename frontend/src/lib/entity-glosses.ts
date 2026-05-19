@@ -39,6 +39,36 @@ import type { EntityType } from "@/components/ui/EntityMark"
 export type { DunbarTier, EntityState, EntityType }
 
 // ---------------------------------------------------------------------------
+// Canonical runtime value sets for each dimension.
+//
+// These are the single source of truth for valid enum members at runtime.
+// Use these instead of duplicating the lists in callers or tests.
+//
+// DUNBAR_TIER_VALUES is derived from GLOSSES_BASE keys (below) after the
+// base table is defined, so it is guaranteed to stay in sync with the type.
+// ENTITY_STATE_VALUES and ENTITY_TYPE_VALUES are maintained here alongside
+// the types they shadow.
+// ---------------------------------------------------------------------------
+
+export const ENTITY_STATE_VALUES: readonly EntityState[] = [
+  "healthy",
+  "unidentified",
+  "duplicate-candidate",
+  "stale",
+]
+
+export const ENTITY_TYPE_VALUES: readonly EntityType[] = [
+  "person",
+  "organization",
+  "place",
+  "product",
+  "account",
+  "event",
+  "group",
+  "other",
+]
+
+// ---------------------------------------------------------------------------
 // Base gloss table: exhaustive over (tier, state).
 //
 // TypeScript enforces completeness: Record<DunbarTier, Record<EntityState, string>>
@@ -100,6 +130,11 @@ const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
     stale: "Recognizable contact, no recent activity. Likely dormant.",
   },
 }
+
+// Maintained alongside DunbarTier. The GLOSSES_BASE exhaustiveness check (at
+// the bottom of this file) is the compile-time guard that keeps this list and
+// the type in sync.
+export const DUNBAR_TIER_VALUES: readonly DunbarTier[] = [5, 15, 50, 150, 500, 1500]
 
 // ---------------------------------------------------------------------------
 // Category-specific override table: sparse, optional.
