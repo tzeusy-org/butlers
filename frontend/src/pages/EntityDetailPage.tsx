@@ -13,6 +13,8 @@ import { toast } from "sonner";
 import { format, formatDistanceToNow } from "date-fns";
 import { Time } from "@/components/ui/time";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES } from "@/lib/entity-glosses";
+import type { DunbarTier, EntityState, EntityType } from "@/lib/entity-glosses";
 
 import type {
   ContactSummary,
@@ -1539,6 +1541,78 @@ function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Entity gloss — canned voice gloss for the Editorial layout
+//
+// Derives (tier, state, category) from the entity data and renders the
+// appropriate gloss string as a prose paragraph.
+//
+// Mapping:
+//   tier     → entity.dunbar_tier (must be a valid DunbarTier literal)
+//   state    → "unidentified" when entity.unidentified is true, else "healthy"
+//              (EntityDetail does not expose stale/duplicate-candidate state —
+//              those come from the relationship butler's curation queue)
+//   category → entity.entity_type cast to EntityType when it matches a known value
+//
+// If any dimension cannot be resolved to a valid enum member, the gloss is
+// silently skipped (returns null). No crash, no placeholder text.
+// ---------------------------------------------------------------------------
+
+const _VALID_DUNBAR_TIERS = new Set<number>(DUNBAR_TIER_VALUES);
+const _VALID_ENTITY_TYPES = new Set<string>(ENTITY_TYPE_VALUES);
+
+interface GlossTuple {
+  tier: DunbarTier;
+  state: EntityState;
+  category: EntityType;
+}
+
+/**
+ * Derive the (tier, state, category) tuple from EntityDetail fields.
+ * Returns null if any dimension cannot be mapped to a valid enum value.
+ */
+function _deriveGlossTuple(
+  dunbarTier: number | null,
+  unidentified: boolean,
+  entityType: string,
+): GlossTuple | null {
+  if (dunbarTier == null || !_VALID_DUNBAR_TIERS.has(dunbarTier)) return null;
+  if (!_VALID_ENTITY_TYPES.has(entityType)) return null;
+  return {
+    tier: dunbarTier as DunbarTier,
+    state: unidentified ? "unidentified" : "healthy",
+    category: entityType as EntityType,
+  };
+}
+
+/**
+ * Renders the canned voice gloss for the Editorial layout.
+ * Returns null when the gloss cannot be derived (no tier, unknown type, etc.).
+ *
+ * Brief §4 anti-temptation: this is a CANNED STRING lookup, not an LLM call.
+ */
+function EntityGlossBlock({
+  dunbarTier,
+  unidentified,
+  entityType,
+}: {
+  dunbarTier: number | null;
+  unidentified: boolean;
+  entityType: string;
+}) {
+  const tuple = _deriveGlossTuple(dunbarTier, unidentified, entityType);
+  if (!tuple) return null;
+  const gloss = getEntityGloss(tuple);
+  return (
+    <p
+      data-testid="entity-gloss"
+      className="text-muted-foreground text-sm italic leading-relaxed"
+    >
+      {gloss}
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // EntityDetailModeToggle — icon button in the Page actions slot
 // ---------------------------------------------------------------------------
 
@@ -1980,6 +2054,15 @@ export default function EntityDetailPage() {
               isPinned={dunbarPinned}
             />
           </section>
+
+          {/* Entity gloss — Editorial only; canned voice string for this entity's (tier, state, category) */}
+          {mode === "editorial" && (
+            <EntityGlossBlock
+              dunbarTier={entity.dunbar_tier}
+              unidentified={entity.unidentified}
+              entityType={entity.entity_type}
+            />
+          )}
 
           {/* Profile snapshot — birthday, place, work, family, upcoming */}
           <ProfileSnapshot entityId={entityId} facts={entity.recent_facts} />

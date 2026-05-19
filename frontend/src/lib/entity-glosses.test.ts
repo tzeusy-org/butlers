@@ -17,30 +17,21 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { getEntityGloss } from "./entity-glosses"
+import {
+  getEntityGloss,
+  DUNBAR_TIER_VALUES,
+  ENTITY_STATE_VALUES,
+  ENTITY_TYPE_VALUES,
+} from "./entity-glosses"
 import type { DunbarTier, EntityState, EntityType } from "./entity-glosses"
 
 // ---------------------------------------------------------------------------
-// Dimension sets (must match the canonical types in entity-glosses.ts).
+// Dimension sets — imported from canonical source; no duplication.
 // ---------------------------------------------------------------------------
 
-const ALL_TIERS: DunbarTier[] = [5, 15, 50, 150, 500, 1500]
-const ALL_STATES: EntityState[] = [
-  "healthy",
-  "unidentified",
-  "duplicate-candidate",
-  "stale",
-]
-const ALL_CATEGORIES: EntityType[] = [
-  "person",
-  "organization",
-  "place",
-  "product",
-  "account",
-  "event",
-  "group",
-  "other",
-]
+const ALL_TIERS: DunbarTier[] = [...DUNBAR_TIER_VALUES]
+const ALL_STATES: EntityState[] = [...ENTITY_STATE_VALUES]
+const ALL_CATEGORIES: EntityType[] = [...ENTITY_TYPE_VALUES]
 
 // ---------------------------------------------------------------------------
 // Full Cartesian product: 192 combinations.

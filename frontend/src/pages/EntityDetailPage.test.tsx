@@ -330,3 +330,114 @@ describe("EntityDetailPage — Editorial/Workbench mode toggle", () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Entity gloss — Editorial mode renders gloss; Workbench does not
+// ---------------------------------------------------------------------------
+
+describe("EntityDetailPage — entity gloss", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+  });
+
+  function setMode(mode: "editorial" | "workbench") {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? mode : null,
+    );
+  }
+
+  it("renders the gloss in editorial mode for a healthy person at tier 5", () => {
+    setMode("editorial");
+    setEntityState({
+      ...BASE_ENTITY,
+      dunbar_tier: 5,
+      unidentified: false,
+      entity_type: "person",
+    });
+    const html = renderPage();
+    expect(html).toContain("data-testid=\"entity-gloss\"");
+    // Base gloss for tier 5 / healthy
+    expect(html).toContain("Support clique");
+  });
+
+  it("renders the category override gloss in editorial mode for a healthy organization at tier 5", () => {
+    setMode("editorial");
+    setEntityState({
+      ...BASE_ENTITY,
+      dunbar_tier: 5,
+      unidentified: false,
+      entity_type: "organization",
+    });
+    const html = renderPage();
+    expect(html).toContain("data-testid=\"entity-gloss\"");
+    // Override gloss for 5:healthy:organization
+    expect(html).toContain("Core institutional relationship");
+  });
+
+  it("renders the unidentified gloss in editorial mode when entity.unidentified is true", () => {
+    setMode("editorial");
+    setEntityState({
+      ...BASE_ENTITY,
+      dunbar_tier: 150,
+      unidentified: true,
+      entity_type: "person",
+    });
+    const html = renderPage();
+    expect(html).toContain("data-testid=\"entity-gloss\"");
+    // Base gloss for tier 150 / unidentified
+    expect(html).toContain("Meaningful-tier candidate");
+  });
+
+  it("does NOT render the gloss in workbench mode", () => {
+    setMode("workbench");
+    setEntityState({
+      ...BASE_ENTITY,
+      dunbar_tier: 5,
+      unidentified: false,
+      entity_type: "person",
+    });
+    const html = renderPage();
+    expect(html).not.toContain("data-testid=\"entity-gloss\"");
+    expect(html).not.toContain("Support clique");
+  });
+
+  it("skips the gloss when dunbar_tier is null (no tier assigned)", () => {
+    setMode("editorial");
+    setEntityState({
+      ...BASE_ENTITY,
+      dunbar_tier: null,
+      unidentified: false,
+      entity_type: "person",
+    });
+    const html = renderPage();
+    expect(html).not.toContain("data-testid=\"entity-gloss\"");
+  });
+
+  it("skips the gloss when entity_type is not a recognized EntityType", () => {
+    setMode("editorial");
+    setEntityState({
+      ...BASE_ENTITY,
+      dunbar_tier: 50,
+      unidentified: false,
+      entity_type: "unknown-type",
+    });
+    const html = renderPage();
+    expect(html).not.toContain("data-testid=\"entity-gloss\"");
+  });
+
+  it("renders the gloss in editorial mode for a healthy place at tier 15", () => {
+    setMode("editorial");
+    setEntityState({
+      ...BASE_ENTITY,
+      dunbar_tier: 15,
+      unidentified: false,
+      entity_type: "place",
+    });
+    const html = renderPage();
+    expect(html).toContain("data-testid=\"entity-gloss\"");
+    // Override gloss for 15:healthy:place
+    expect(html).toContain("Frequently visited");
+  });
+});
