@@ -3,7 +3,7 @@
 ## Purpose
 Defines the shared interface contract that ALL connectors must implement. Connectors are standalone, transport-only adapter processes that poll or subscribe to external messaging systems, normalize events into the canonical `ingest.v1` envelope, and submit them to the Switchboard's ingestion API via MCP. They are the sole ingestion pathway into the butler ecosystem — no message reaches a butler without first passing through a connector and the Switchboard. Individual connector profiles live in `connector-{name}/spec.md`.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Connector as Ingestion Primitive
 A connector is a long-running process (separate from any butler daemon) that bridges an external messaging system into the butler ecosystem. It is transport-only: read, normalize, filter, submit, checkpoint.
