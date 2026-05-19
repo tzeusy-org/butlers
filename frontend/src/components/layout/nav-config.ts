@@ -77,7 +77,6 @@ export const navSections: NavSection[] = [
         label: 'Relationships',
         butler: 'relationship',
         children: [
-          { path: '/contacts', label: 'Contacts' },
           { path: '/groups', label: 'Groups' },
         ],
       },
