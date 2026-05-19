@@ -69,7 +69,7 @@ export function Pill({ selected = false, count, children, className, ...props }:
       {children}
       {count !== undefined && (
         <span
-          aria-label={`${count} items`}
+          aria-label={`${count} ${count === 1 ? "item" : "items"}`}
           className="tabular-nums"
         >
           {count}

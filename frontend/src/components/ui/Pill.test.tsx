@@ -94,9 +94,20 @@ describe("Pill: count prop", () => {
     expect(html).toContain("42")
   })
 
-  it("count span has aria-label with count value", () => {
+  it("count span has aria-label with count value (plural)", () => {
     const html = renderToStaticMarkup(<Pill count={7}>label</Pill>)
     expect(html).toContain("7 items")
+  })
+
+  it("count=1 uses singular aria-label", () => {
+    const html = renderToStaticMarkup(<Pill count={1}>label</Pill>)
+    expect(html).toContain('aria-label="1 item"')
+    expect(html).not.toContain("1 items")
+  })
+
+  it("count=0 uses plural aria-label", () => {
+    const html = renderToStaticMarkup(<Pill count={0}>stale</Pill>)
+    expect(html).toContain("0 items")
   })
 })
 
