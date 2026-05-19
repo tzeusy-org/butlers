@@ -1,8 +1,14 @@
 """Tests for §4.1 bulk replay, §4.2 pipeline stats, and §4.3 aggregates_available threading.
 
-Wave-3 concurrency tests (§4.8) are in a separate bead (bu-1f91v.12).
+bu-iu5k0: Updated bulk_replay tests for transaction-wrapping fix.
+  The handler now runs SELECT FOR UPDATE + UPDATE + audit inside a single
+  async with pool.acquire() as conn: async with conn.transaction(): block.
+  Mocks must reflect this: pool.acquire() returns a context manager yielding
+  a conn object, and conn.fetch()/conn.fetchval() are used (not pool.fetch()).
+
 This file covers:
 - Bulk replay handler: max-batch-size 50, email block HTTP 409, FOR UPDATE SKIP LOCKED path
+- Bulk replay concurrency: SKIP LOCKED under concurrent callers, audit atomicity
 - PipelineStats: degraded mode (Prometheus unreachable → 200 + aggregates_available=false)
 - PipelineStats: TTL cache (second request within window served from cache)
 - aggregates_available threading: summaries, cross-summary, pipeline endpoints
@@ -10,6 +16,7 @@ This file covers:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -31,7 +38,47 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
+def _make_conn(fetch_side_effect=None, fetchval_return=None):
+    """Build a mock asyncpg connection with transaction() context-manager support."""
+    conn = AsyncMock()
+
+    # conn.transaction() must be a synchronous context-manager factory
+    # (asyncpg returns a transaction object via async with conn.transaction()).
+    tx = AsyncMock()
+    tx.__aenter__ = AsyncMock(return_value=None)
+    tx.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=tx)
+
+    if fetch_side_effect is not None:
+        conn.fetch = AsyncMock(side_effect=fetch_side_effect)
+    else:
+        conn.fetch = AsyncMock(return_value=[])
+
+    conn.fetchval = AsyncMock(return_value=fetchval_return)
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.execute = AsyncMock(return_value=None)
+    return conn
+
+
+def _make_pool_with_conn(conn):
+    """Build a mock asyncpg pool whose acquire() yields the given conn."""
+    pool = AsyncMock()
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool.acquire = MagicMock(side_effect=_acquire)
+    # Keep pool-level fetch/fetchval stubs so non-bulk_replay paths still work.
+    pool.fetch = AsyncMock(return_value=[])
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(return_value=None)
+    return pool
+
+
 def _make_shared_pool(rows=None, fetchrow_val=None):
+    """Build a mock pool wired for non-bulk_replay endpoints (no acquire needed)."""
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rows or [])
     pool.fetchrow = AsyncMock(return_value=fetchrow_val)
@@ -46,7 +93,9 @@ def _app_with_events_db(app: FastAPI, *, shared_pool=None, shared_pool_error=Non
         mock_db.credential_shared_pool.side_effect = shared_pool_error
     else:
         if shared_pool is None:
-            shared_pool = _make_shared_pool()
+            # Default: conn returns empty fetch results
+            conn = _make_conn(fetch_side_effect=None)
+            shared_pool = _make_pool_with_conn(conn)
         mock_db.credential_shared_pool.return_value = shared_pool
     mock_db.pool.side_effect = KeyError("not available")
     app.dependency_overrides[_events_get_db_manager] = lambda: mock_db
@@ -70,7 +119,9 @@ def _app_with_connectors_db(app: FastAPI, *, switchboard_pool=None):
 async def test_bulk_replay_capped_at_50(app):
     """Requests with >50 event ids are capped; extras reported in 'capped' list."""
     event_ids = [str(uuid4()) for _ in range(60)]
-    pool = _make_shared_pool(rows=[])  # No rows locked (empty filtered_events)
+    # conn.fetch returns [] — no rows locked (empty filtered_events table)
+    conn = _make_conn(fetch_side_effect=None)  # returns [] by default
+    pool = _make_pool_with_conn(conn)
     _app_with_events_db(app, shared_pool=pool)
 
     with patch(
@@ -105,7 +156,9 @@ async def test_bulk_replay_email_channel_blocked_http_409(app):
         }[key]
     )
 
-    pool = _make_shared_pool(rows=[locked_row])
+    # conn.fetch returns the locked row; audit is called on conn (inside tx)
+    conn = _make_conn(fetch_side_effect=[[locked_row]])
+    pool = _make_pool_with_conn(conn)
     _app_with_events_db(app, shared_pool=pool)
 
     with patch(
@@ -125,7 +178,7 @@ async def test_bulk_replay_email_channel_blocked_http_409(app):
     # Response must identify the unsafe event
     assert "unsafe_events" in body["detail"]
     assert any(e["id"] == str(event_id) for e in body["detail"]["unsafe_events"])
-    # Rejection audit must be emitted
+    # Rejection audit must be emitted (on conn, inside the transaction)
     mock_audit.assert_awaited_once()
     assert mock_audit.await_args.kwargs["action"] == "ingestion.replay.bulk_reject"
 
@@ -143,7 +196,8 @@ async def test_bulk_replay_replay_safe_false_blocked_http_409(app):
         }[key]
     )
 
-    pool = _make_shared_pool(rows=[locked_row])
+    conn = _make_conn(fetch_side_effect=[[locked_row]])
+    pool = _make_pool_with_conn(conn)
     _app_with_events_db(app, shared_pool=pool)
 
     with patch(
@@ -180,18 +234,15 @@ async def test_bulk_replay_safe_batch_accepted(app):
         )
         locked_rows.append(row)
 
-    # fetch() returns locked rows; second fetch() (UPDATE RETURNING) returns updated ids
+    # conn.fetch is called twice: first for SKIP LOCKED SELECT, then for UPDATE RETURNING
     updated_rows = []
     for eid in event_ids:
         r = MagicMock()
         r.__getitem__ = MagicMock(side_effect=lambda key, _eid=eid: {"id": _eid}[key])
         updated_rows.append(r)
 
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=[locked_rows, updated_rows])
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.execute = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=None)
+    conn = _make_conn(fetch_side_effect=[locked_rows, updated_rows])
+    pool = _make_pool_with_conn(conn)
     _app_with_events_db(app, shared_pool=pool)
 
     with patch(
@@ -210,7 +261,7 @@ async def test_bulk_replay_safe_batch_accepted(app):
     body = resp.json()
     assert set(body["accepted"]) == set(event_ids)
     assert body["capped"] == []
-    # Audit entry for bulk_submit must be emitted
+    # Audit entry for bulk_submit must be emitted (on conn, inside the transaction)
     mock_audit.assert_awaited_once()
     assert mock_audit.await_args.kwargs["action"] == "ingestion.replay.bulk_submit"
 
@@ -269,18 +320,18 @@ async def test_bulk_replay_skip_locked_prevents_double_replay(app):
     - Return HTTP 200 (not an error)
     - Report skipped rows in the 'skipped_locked' field
     - NOT include those rows in 'accepted'
+
+    With the transaction fix (bu-iu5k0) the entire SELECT + UPDATE + audit sequence
+    runs in a single connection.transaction() block, so the FOR UPDATE lock is held
+    until commit and cannot be stolen between the SELECT and the UPDATE.
     """
     event_id_1 = str(uuid4())
     event_id_2 = str(uuid4())
 
-    # Simulate "first caller" having acquired locks: pool.fetch returns an empty
-    # list (all requested rows were skipped due to lock contention).
-    # This mirrors what FOR UPDATE SKIP LOCKED returns when rows are held.
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=[])  # SKIP LOCKED → zero rows returned
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.execute = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=None)
+    # Simulate "second caller" scenario: SKIP LOCKED SELECT returns [] because
+    # the first caller still holds the row locks inside its open transaction.
+    conn = _make_conn(fetch_side_effect=None)  # returns [] by default
+    pool = _make_pool_with_conn(conn)
 
     _app_with_events_db(app, shared_pool=pool)
 
@@ -336,13 +387,9 @@ async def test_bulk_replay_skip_locked_partial_race(app):
     updated_row = MagicMock()
     updated_row.__getitem__ = MagicMock(side_effect=lambda key: {"id": event_id_free}[key])
 
-    pool = AsyncMock()
-    # First fetch = SKIP LOCKED SELECT (returns only free row)
-    # Second fetch = UPDATE ... RETURNING (returns accepted row)
-    pool.fetch = AsyncMock(side_effect=[[free_row], [updated_row]])
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.execute = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=None)
+    # conn.fetch is called twice: SKIP LOCKED SELECT then UPDATE ... RETURNING
+    conn = _make_conn(fetch_side_effect=[[free_row], [updated_row]])
+    pool = _make_pool_with_conn(conn)
 
     _app_with_events_db(app, shared_pool=pool)
 
@@ -368,6 +415,125 @@ async def test_bulk_replay_skip_locked_partial_race(app):
     assert body["accepted"] == [event_id_free]
     assert body["skipped_locked"] == [event_id_locked]
     assert body["capped"] == []
+
+
+# ---------------------------------------------------------------------------
+# §4.8.2 Transaction integrity: lock + update + audit run in a single connection.transaction()
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_replay_audit_called_with_conn_not_pool(app):
+    """Audit append receives the active connection (conn), not the pool.
+
+    When _audit_append is called with a conn inside a conn.transaction() block,
+    the audit insert participates in the same SQL transaction as the UPDATE — so
+    a rollback reverts both (§6.2 mandate-1 atomicity).  This test verifies that
+    the first positional argument to _audit_append is the conn object returned by
+    pool.acquire(), not the pool itself.
+    """
+    event_ids = [str(uuid4()) for _ in range(2)]
+    uuids = [uuid4() for _ in range(2)]
+
+    locked_rows = []
+    for u, eid in zip(uuids, event_ids):
+        row = MagicMock()
+        row.__getitem__ = MagicMock(
+            side_effect=lambda key, _u=u: {
+                "id": _u,
+                "source_channel": "telegram_bot",
+                "replay_safe": True,
+            }[key]
+        )
+        locked_rows.append(row)
+
+    updated_rows = []
+    for eid in event_ids:
+        r = MagicMock()
+        r.__getitem__ = MagicMock(side_effect=lambda key, _eid=eid: {"id": _eid}[key])
+        updated_rows.append(r)
+
+    conn = _make_conn(fetch_side_effect=[locked_rows, updated_rows])
+    pool = _make_pool_with_conn(conn)
+    _app_with_events_db(app, shared_pool=pool)
+
+    captured_args: list = []
+
+    async def _capture_audit(pool_or_conn, actor, action, **kwargs):
+        captured_args.append(pool_or_conn)
+        return 1
+
+    with patch(
+        "butlers.api.routers.ingestion_events._audit_append",
+        side_effect=_capture_audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/replay/bulk",
+                json={"event_ids": event_ids, "reason": "atomicity-test"},
+            )
+
+    assert resp.status_code == 200
+    # _audit_append must have been called exactly once (bulk_submit)
+    assert len(captured_args) == 1
+    # The first argument must be the conn, not the pool
+    assert captured_args[0] is conn, (
+        f"Expected conn object, got {type(captured_args[0]).__name__}. "
+        "Audit must run on the same connection as the UPDATE for atomicity."
+    )
+
+
+async def test_bulk_replay_transaction_context_entered(app):
+    """pool.acquire() and conn.transaction() are both entered for the bulk_replay path.
+
+    This verifies the structural fix: the handler must acquire a single connection
+    and wrap all DB operations in a single explicit transaction, holding the
+    FOR UPDATE locks until commit (Gemini PR #1803 line 136 finding).
+    """
+    event_ids = [str(uuid4())]
+    uuid_val = uuid4()
+
+    locked_row = MagicMock()
+    locked_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "id": uuid_val,
+            "source_channel": "telegram_bot",
+            "replay_safe": True,
+        }[key]
+    )
+    updated_row = MagicMock()
+    updated_row.__getitem__ = MagicMock(side_effect=lambda key: {"id": str(uuid_val)}[key])
+
+    conn = _make_conn(fetch_side_effect=[[locked_row], [updated_row]])
+    pool = _make_pool_with_conn(conn)
+    _app_with_events_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events._audit_append",
+        new_callable=AsyncMock,
+        return_value=1,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/replay/bulk",
+                json={"event_ids": event_ids, "reason": "tx-test"},
+            )
+
+    assert resp.status_code == 200
+
+    # Verify pool.acquire was called (context manager entered)
+    pool.acquire.assert_called_once()
+
+    # Verify conn.transaction() was called (explicit transaction opened)
+    conn.transaction.assert_called_once()
+
+    # Verify the transaction context manager was entered (__aenter__)
+    tx = conn.transaction.return_value
+    tx.__aenter__.assert_awaited_once()
+    tx.__aexit__.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
