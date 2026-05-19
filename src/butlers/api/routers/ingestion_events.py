@@ -390,10 +390,13 @@ async def bulk_replay_ingestion_events(
                         )
 
                 if unsafe_events:
-                    # Emit rejection audit entry on conn (inside the transaction).
+                    # Emit rejection audit entry on pool (outside the transaction) so the
+                    # audit record is committed even when HTTPException rolls back the tx.
+                    # Fail-closed auditing: the rejection must be persisted regardless of
+                    # whether the surrounding transaction succeeds or is aborted.
                     try:
                         await _audit_append(
-                            conn,
+                            pool,
                             actor="dashboard",
                             action="ingestion.replay.bulk_reject",
                             target=json.dumps([str(e) for e in event_ids]),

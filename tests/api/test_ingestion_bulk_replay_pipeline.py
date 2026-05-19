@@ -156,7 +156,7 @@ async def test_bulk_replay_email_channel_blocked_http_409(app):
         }[key]
     )
 
-    # conn.fetch returns the locked row; audit is called on conn (inside tx)
+    # conn.fetch returns the locked row; audit is called on pool (outside tx — fail-closed)
     conn = _make_conn(fetch_side_effect=[[locked_row]])
     pool = _make_pool_with_conn(conn)
     _app_with_events_db(app, shared_pool=pool)
@@ -178,7 +178,7 @@ async def test_bulk_replay_email_channel_blocked_http_409(app):
     # Response must identify the unsafe event
     assert "unsafe_events" in body["detail"]
     assert any(e["id"] == str(event_id) for e in body["detail"]["unsafe_events"])
-    # Rejection audit must be emitted (on conn, inside the transaction)
+    # Rejection audit must be emitted (on pool, outside the transaction — fail-closed)
     mock_audit.assert_awaited_once()
     assert mock_audit.await_args.kwargs["action"] == "ingestion.replay.bulk_reject"
 
@@ -481,6 +481,61 @@ async def test_bulk_replay_audit_called_with_conn_not_pool(app):
     assert captured_args[0] is conn, (
         f"Expected conn object, got {type(captured_args[0]).__name__}. "
         "Audit must run on the same connection as the UPDATE for atomicity."
+    )
+
+
+async def test_bulk_replay_reject_audit_called_with_pool_not_conn(app):
+    """bulk_reject audit append receives the pool, not the conn (fail-closed auditing).
+
+    When unsafe events are detected the handler raises HTTPException(409), which
+    rolls back the open conn.transaction().  The rejection audit entry must be
+    committed via pool (its own independent transaction) BEFORE the HTTPException
+    is raised — so the record persists even when the surrounding transaction aborts.
+
+    This verifies the first positional argument to _audit_append in the
+    bulk_reject branch is pool, not conn.
+    """
+    event_id = str(uuid4())
+
+    locked_row = MagicMock()
+    locked_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "id": event_id,
+            "source_channel": "email",
+            "replay_safe": True,
+        }[key]
+    )
+
+    conn = _make_conn(fetch_side_effect=[[locked_row]])
+    pool = _make_pool_with_conn(conn)
+    _app_with_events_db(app, shared_pool=pool)
+
+    captured_args: list = []
+
+    async def _capture_audit(pool_or_conn, actor, action, **kwargs):
+        captured_args.append(pool_or_conn)
+        return 1
+
+    with patch(
+        "butlers.api.routers.ingestion_events._audit_append",
+        side_effect=_capture_audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/replay/bulk",
+                json={"event_ids": [event_id], "reason": "fail-closed-test"},
+            )
+
+    assert resp.status_code == 409
+    # _audit_append must have been called once (bulk_reject)
+    assert len(captured_args) == 1
+    # The first argument must be the pool, NOT the conn — so the audit row is not
+    # rolled back when HTTPException aborts the transaction.
+    assert captured_args[0] is pool, (
+        f"Expected pool object, got {type(captured_args[0]).__name__}. "
+        "Rejection audit must run on pool (not conn) to survive transaction rollback."
     )
 
 
