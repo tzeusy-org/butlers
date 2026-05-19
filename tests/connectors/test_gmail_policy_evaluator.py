@@ -4,13 +4,12 @@ Covers:
 - DB-primary lookup: returns contacts from DB rows
 - 15-min TTL: refreshes when cache is expired, skips when fresh
 - Fail-open on DB error: retains previous cache
-- Flat-file fallback: consulted only when DB has never loaded
-- DB results take precedence once DB has been loaded
+- Empty set on first DB failure (no flat-file fallback)
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -110,59 +109,14 @@ async def test_evaluator_retains_cache_on_db_error():
     assert "alice@example.com" in second
 
 
-async def test_evaluator_empty_on_first_db_error_without_flatfile():
-    """If DB fails on the very first call and no flat-file is configured, return empty."""
+async def test_evaluator_empty_on_first_db_error():
+    """If DB fails on the very first call, return empty set (no flat-file fallback)."""
     pool = _make_pool(raises=RuntimeError("DB unavailable"))
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     contacts = await evaluator.get_known_contacts()
 
     assert len(contacts) == 0
-
-
-# ---------------------------------------------------------------------------
-# Flat-file fallback
-# ---------------------------------------------------------------------------
-
-
-async def test_evaluator_uses_flatfile_when_db_never_loaded():
-    """Flat-file is consulted only when DB has never successfully loaded."""
-    pool = _make_pool(raises=RuntimeError("DB unavailable"))
-    flat_contacts = frozenset(["charlie@example.com"])
-
-    evaluator = GmailPolicyEvaluator(db_pool=pool, known_contacts_path="/fake/path.json", ttl=900)
-
-    with patch(
-        "butlers.connectors.gmail_policy.load_known_contacts_from_file",
-        return_value=flat_contacts,
-    ):
-        contacts = await evaluator.get_known_contacts()
-
-    assert "charlie@example.com" in contacts
-
-
-async def test_evaluator_ignores_flatfile_after_successful_db_load():
-    """Once the DB has loaded successfully, the flat-file is NOT consulted."""
-    pool = AsyncMock()
-    # First call returns DB contacts; second call fails but DB was already loaded.
-    pool.fetch = AsyncMock(
-        side_effect=[
-            [_make_db_row("alice@example.com")],
-            RuntimeError("DB unavailable"),
-        ]
-    )
-    evaluator = GmailPolicyEvaluator(db_pool=pool, known_contacts_path="/fake/path.json", ttl=0.0)
-
-    with patch(
-        "butlers.connectors.gmail_policy.load_known_contacts_from_file",
-        return_value=frozenset(["charlie@example.com"]),
-    ) as mock_ff:
-        await evaluator.get_known_contacts()  # DB loads alice
-        contacts = await evaluator.get_known_contacts()  # DB fails; retain alice, ignore flat-file
-
-    mock_ff.assert_not_called()
-    assert "alice@example.com" in contacts
-    assert "charlie@example.com" not in contacts
 
 
 # ---------------------------------------------------------------------------

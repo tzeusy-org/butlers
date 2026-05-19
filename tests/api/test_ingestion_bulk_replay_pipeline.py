@@ -255,6 +255,122 @@ async def test_bulk_replay_503_on_db_unavailable(app):
 
 
 # ---------------------------------------------------------------------------
+# §4.8.1 Bulk replay concurrency: FOR UPDATE SKIP LOCKED prevents double-replay
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_replay_skip_locked_prevents_double_replay(app):
+    """FOR UPDATE SKIP LOCKED: rows locked by a concurrent caller are reported in skipped_locked.
+
+    Simulates the race where two concurrent bulk-replay requests target the same
+    event IDs.  The first caller's SELECT ... FOR UPDATE SKIP LOCKED acquires the
+    row locks; the second caller's SELECT returns an empty set for those rows
+    (SKIP LOCKED behaviour).  The endpoint must:
+    - Return HTTP 200 (not an error)
+    - Report skipped rows in the 'skipped_locked' field
+    - NOT include those rows in 'accepted'
+    """
+    event_id_1 = str(uuid4())
+    event_id_2 = str(uuid4())
+
+    # Simulate "first caller" having acquired locks: pool.fetch returns an empty
+    # list (all requested rows were skipped due to lock contention).
+    # This mirrors what FOR UPDATE SKIP LOCKED returns when rows are held.
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])  # SKIP LOCKED → zero rows returned
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=None)
+
+    _app_with_events_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events._audit_append",
+        new_callable=AsyncMock,
+    ) as mock_audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/replay/bulk",
+                json={"event_ids": [event_id_1, event_id_2], "reason": "concurrency-test"},
+            )
+
+    # Endpoint returns 200 — SKIP LOCKED is not an error condition
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # All requested events were skipped due to lock contention
+    assert body["accepted"] == []
+    assert set(body["skipped_locked"]) == {event_id_1, event_id_2}
+    assert body["capped"] == []
+
+    # Audit entry for the (empty) batch is still emitted
+    mock_audit.assert_awaited_once()
+    assert mock_audit.await_args.kwargs["action"] == "ingestion.replay.bulk_submit"
+
+
+async def test_bulk_replay_skip_locked_partial_race(app):
+    """FOR UPDATE SKIP LOCKED: partial lock contention — some rows locked, some free.
+
+    One event is held by a concurrent drain loop; the other is available.
+    The endpoint accepts the free one and reports the locked one in skipped_locked.
+    """
+    uuid_free = uuid4()
+    uuid_locked = uuid4()
+    event_id_free = str(uuid_free)
+    event_id_locked = str(uuid_locked)
+
+    # Only the free row is returned by the SKIP LOCKED SELECT.
+    # asyncpg returns UUID objects for uuid columns, so mock id as UUID.
+    free_row = MagicMock()
+    free_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "id": uuid_free,  # UUID object, matching the endpoint's locked_ids set
+            "source_channel": "telegram_bot",
+            "replay_safe": True,
+        }[key]
+    )
+
+    # UPDATE RETURNING returns the accepted row id as a string (endpoint calls str())
+    updated_row = MagicMock()
+    updated_row.__getitem__ = MagicMock(side_effect=lambda key: {"id": event_id_free}[key])
+
+    pool = AsyncMock()
+    # First fetch = SKIP LOCKED SELECT (returns only free row)
+    # Second fetch = UPDATE ... RETURNING (returns accepted row)
+    pool.fetch = AsyncMock(side_effect=[[free_row], [updated_row]])
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=None)
+
+    _app_with_events_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events._audit_append",
+        new_callable=AsyncMock,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/replay/bulk",
+                json={
+                    "event_ids": [event_id_free, event_id_locked],
+                    "reason": "partial-race-test",
+                },
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Free row was accepted; locked row was skipped due to SKIP LOCKED
+    assert body["accepted"] == [event_id_free]
+    assert body["skipped_locked"] == [event_id_locked]
+    assert body["capped"] == []
+
+
+# ---------------------------------------------------------------------------
 # §4.2 PipelineStats: degraded mode
 # ---------------------------------------------------------------------------
 

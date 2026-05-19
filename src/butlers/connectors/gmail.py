@@ -283,11 +283,6 @@ class GmailConnectorConfig(BaseModel):
     # Required for direct-correspondence tier rule evaluation
     gmail_user_email: str = ""
 
-    # Optional path to a known-contacts JSON cache file.
-    # Format: {"contacts": ["addr@example.com", ...], "generated_at": "..."}
-    # Per docs/switchboard/email_priority_queuing.md §4
-    gmail_known_contacts_path: str | None = None
-
     # Backfill polling protocol (docs/connectors/interface.md section 14)
     # CONNECTOR_BACKFILL_ENABLED controls whether backfill polling is active.
     connector_backfill_enabled: bool = True
@@ -361,7 +356,6 @@ class GmailConnectorConfig(BaseModel):
 
         # Policy tier assignment (per docs/switchboard/email_priority_queuing.md)
         gmail_user_email = os.environ.get("GMAIL_USER_EMAIL", "")
-        gmail_known_contacts_path = os.environ.get("GMAIL_KNOWN_CONTACTS_PATH")
 
         # Backfill polling protocol (docs/connectors/interface.md section 14)
         backfill_enabled_str = os.environ.get("CONNECTOR_BACKFILL_ENABLED", "true").lower()
@@ -406,7 +400,6 @@ class GmailConnectorConfig(BaseModel):
             "gmail_label_include": gmail_label_include,
             "gmail_label_exclude": gmail_label_exclude,
             "gmail_user_email": gmail_user_email,
-            "gmail_known_contacts_path": gmail_known_contacts_path,
             "connector_backfill_enabled": connector_backfill_enabled,
             "connector_backfill_poll_interval_s": connector_backfill_poll_interval_s,
             "connector_backfill_progress_interval": connector_backfill_progress_interval,
@@ -549,17 +542,14 @@ class GmailConnectorRuntime:
         )
 
         # DB-backed priority contact evaluator (15-min TTL cache).
-        # Falls back to the flat-file on DB failure or before the first successful
-        # DB load (one-cycle fallback per GMAIL_KNOWN_CONTACTS_PATH deprecation spec).
+        # Loaded from public.priority_contacts; retains previous cache on DB failure.
         self._gmail_policy_evaluator = GmailPolicyEvaluator(
             db_pool=db_pool,
-            known_contacts_path=config.gmail_known_contacts_path,
         )
 
         # Policy tier assigner (per docs/switchboard/email_priority_queuing.md §2).
         # Initialised with an empty known_contacts set; refreshed before each poll
-        # cycle via _refresh_policy_tier_assigner().  The flat-file path is retained
-        # as a one-cycle fallback handled by GmailPolicyEvaluator.
+        # cycle via _refresh_policy_tier_assigner().
         self._policy_tier_assigner = PolicyTierAssigner(
             user_email=config.gmail_user_email or "",
             known_contacts=frozenset(),
@@ -2995,9 +2985,6 @@ class GmailProcessConfig(BaseModel):
     gmail_label_include: tuple[str, ...] = ()
     gmail_label_exclude: tuple[str, ...] = ("SPAM", "TRASH")
 
-    # Known contacts path
-    gmail_known_contacts_path: str | None = None
-
     # Backfill
     connector_backfill_enabled: bool = True
     connector_backfill_poll_interval_s: int = 60
@@ -3044,7 +3031,6 @@ class GmailProcessConfig(BaseModel):
             gmail_pubsub_webhook_token=os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN"),
             gmail_label_include=tuple(parse_label_list(label_include_raw)),
             gmail_label_exclude=tuple(parse_label_list(label_exclude_raw)),
-            gmail_known_contacts_path=os.environ.get("GMAIL_KNOWN_CONTACTS_PATH"),
             connector_backfill_enabled=_bool_env("CONNECTOR_BACKFILL_ENABLED", True),
             connector_backfill_poll_interval_s=_int_env("CONNECTOR_BACKFILL_POLL_INTERVAL_S", 60),
             connector_backfill_progress_interval=_int_env(
@@ -3114,7 +3100,6 @@ class GmailProcessConfig(BaseModel):
             gmail_label_include=label_include,
             gmail_label_exclude=label_exclude,
             gmail_user_email=email,
-            gmail_known_contacts_path=self.gmail_known_contacts_path,
             connector_backfill_enabled=self.connector_backfill_enabled,
             connector_backfill_poll_interval_s=self.connector_backfill_poll_interval_s,
             connector_backfill_progress_interval=self.connector_backfill_progress_interval,
