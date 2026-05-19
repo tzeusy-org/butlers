@@ -144,9 +144,9 @@ export function ConnectorsListPage() {
             <Skeleton key={i} className="h-40 w-full" />
           ))}
         </div>
-      ) : connectors.length === 0 ? (
+      ) : connectors.length === 0 && dormantConnectors.length === 0 ? (
         <p className="text-sm text-muted-foreground">No connectors registered.</p>
-      ) : (
+      ) : connectors.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {connectors.map((c) => {
             const key = `${c.connector_type}:${c.endpoint_identity}`;
@@ -159,7 +159,7 @@ export function ConnectorsListPage() {
             );
           })}
         </div>
-      )}
+      ) : null}
 
       {/* Dormant / available connectors section (§3.5)
           Shown when catalog profiles exist that are not yet registered.
