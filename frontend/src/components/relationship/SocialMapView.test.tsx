@@ -142,7 +142,8 @@ describe("SocialMapView", () => {
     renderView();
     await act(async () => { await flush(); });
 
-    expect(container.textContent).toContain("Your Social Map");
+    // SocialMapView renders the controls bar (search, jump-to-tier).
+    expect(container.textContent).toContain("Jump to:");
   });
 
   it("shows loading state", async () => {

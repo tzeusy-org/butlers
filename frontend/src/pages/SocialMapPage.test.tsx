@@ -166,7 +166,9 @@ describe("SocialMapPage", () => {
     renderPage();
     await act(async () => { await flush(); });
 
-    expect(container.textContent).toContain("Your Social Map");
+    // Page shell renders <h1>Social map</h1>; SocialMapView renders the controls bar.
+    expect(container.textContent).toContain("Social map");
+    expect(container.textContent).toContain("Jump to:");
   });
 
   it("renders the canvas when data loads (or sizing placeholder in jsdom)", async () => {

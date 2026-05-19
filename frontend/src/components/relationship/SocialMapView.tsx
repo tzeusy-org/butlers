@@ -24,11 +24,10 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeftIcon, CrosshairIcon, PinIcon, SearchIcon, XIcon } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router";
+import { PinIcon, SearchIcon, XIcon } from "lucide-react";
 
 import type { DunbarEntry } from "@/api/types";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ConcentricCirclesCanvas } from "@/components/memory/ConcentricCirclesCanvas";
 import { HorizontalStrataCanvas } from "@/components/memory/HorizontalStrataCanvas";
@@ -348,36 +347,9 @@ export function SocialMapView() {
 
   return (
     <div className="flex flex-col h-full space-y-4">
-      {/* Page header */}
+      {/* Controls bar: search, jump-to-tier, legend, and pin note */}
       <div className="flex flex-col gap-3">
-        {/* Back link */}
-        <div>
-          <Button variant="ghost" size="sm" asChild className="-ml-2">
-            <Link to="/entities">
-              <ArrowLeftIcon className="h-4 w-4 mr-1" />
-              Entities
-            </Link>
-          </Button>
-        </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-          {/* Title + description */}
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-              <CrosshairIcon className="h-5 w-5 text-violet-600" />
-              Your Social Map
-            </h1>
-            <p className="text-muted-foreground text-sm mt-0.5">
-              Contacts arranged by Dunbar tier, from inner circle (5) to acquaintances (1500).
-              {hasPinnedOverride && (
-                <span className="ml-1.5 inline-flex items-center gap-0.5">
-                  <PinIcon className="inline h-3 w-3" />
-                  Dashed border means manually pinned tier.
-                </span>
-              )}
-            </p>
-          </div>
-
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           {/* Search input */}
           <div className="relative sm:w-64 shrink-0">
             <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
@@ -390,6 +362,13 @@ export function SocialMapView() {
               aria-label="Search contacts"
             />
           </div>
+          {/* Pinned-override note — only shown when at least one contact has a manual tier */}
+          {hasPinnedOverride && (
+            <p className="text-muted-foreground text-xs flex items-center gap-0.5">
+              <PinIcon className="inline h-3 w-3" />
+              Dashed border means manually pinned tier.
+            </p>
+          )}
         </div>
 
         {/* Jump-to-tier + legend row */}
