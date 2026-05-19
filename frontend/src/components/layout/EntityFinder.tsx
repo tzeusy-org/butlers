@@ -168,6 +168,12 @@ export default function EntityFinder() {
         label="Entity Finder"
         className="relative mx-auto w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setOpen(false);
+          }
+        }}
         shouldFilter={false}
       >
         {/* Input row */}

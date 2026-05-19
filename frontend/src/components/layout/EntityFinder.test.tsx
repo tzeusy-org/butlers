@@ -351,6 +351,46 @@ describe("EntityFinder", () => {
 
   // -------------------------------------------------------------------------
 
+  it("closes when Escape is pressed while the finder is open", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-input']"),
+    ).not.toBeNull();
+
+    // Dispatch Escape on the Command element (cmdk root)
+    const command = document.body.querySelector("[cmdk-root]") as HTMLElement;
+    await act(async () => {
+      command.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await flush();
+    });
+
+    // Should be dismissed
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-input']"),
+    ).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+
   it("calls useEntityFinderSearch with the typed query", async () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
