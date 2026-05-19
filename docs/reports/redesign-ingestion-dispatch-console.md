@@ -133,7 +133,7 @@ Every mutation endpoint emits `audit.append()`.
 | `GET /events/{id}` (decomposition opt-in) | `ingestion.event.payload_fetch` (with `reason='decomposition_disclosed'`) | `src/butlers/api/routers/ingestion_events.py:189` |
 | cascade-delete on `priority_contacts` | `ingestion.priority_contact.cascade_remove` (trigger-based) | `alembic/versions/core/core_101_priority_contacts.py` (DB trigger) |
 
-**Status: COVERED (100%). `reauth` is blocked before any mutation occurs — no audit entry needed.**
+**Status: COVERED with one atomicity caveat (see bu-iu5k0).** Every mutation endpoint emits `audit.append()`, but for `POST /events/replay/bulk` the audit append is called on the pool directly (non-transactional) and is therefore not atomic with the underlying state mutation. The audit row will land independently of whether the UPDATE wins the race. Follow-up: **bu-iu5k0** — wrap SELECT FOR UPDATE SKIP LOCKED + UPDATE + audit append in a single `async with conn.transaction()` block on a single pooled connection. `reauth` is blocked before any mutation occurs — no audit entry needed.
 
 ---
 
@@ -183,7 +183,7 @@ WHERE fe.id = ANY($1::uuid[]) AND fe.status IN ('filtered', 'error', ...)
 FOR UPDATE SKIP LOCKED
 ```
 
-**Status: COVERED.**
+**Status: PARTIALLY COVERED — concurrency guarantee weakened (see bu-iu5k0).** The SQL contains the correct lock clause, but `pool.fetch()` runs in an implicit per-statement transaction, so the row lock is released the moment the SELECT returns. The subsequent `UPDATE` runs in a fresh implicit transaction with no lock held, and the audit append likewise runs unlocked. Net effect: two concurrent callers can both lock-then-release the same rows and both proceed to UPDATE → partial double-replay. The frozenset-based test mock did not exercise true concurrency so the bug went undetected. Fix tracked in **bu-iu5k0**: hold a single pooled connection across SELECT FOR UPDATE SKIP LOCKED + UPDATE + audit via `async with pool.acquire() as conn: async with conn.transaction():`.
 
 ---
 
@@ -319,7 +319,7 @@ All mutation endpoints that can modify state must emit `audit.append()`.
 | cascade DELETE on `priority_contacts` | `ingestion.priority_contact.cascade_remove` (DB trigger) | COVERED |
 | `GET /events/{id}` (decomposition opt-in) | `ingestion.event.payload_fetch` (audit gate) | COVERED |
 
-**Coverage: 13/13 mutation paths covered (100%). `reauth` is not a mutation — it is blocked before any state change.**
+**Coverage: 13/13 mutation paths emit an audit entry (100%). One atomicity gap noted: the `bulk_replay` audit append is non-transactional with respect to the underlying UPDATE (see bu-iu5k0). `reauth` is not a mutation — it is blocked before any state change.**
 
 ---
 
@@ -378,7 +378,7 @@ All mutation endpoints that can modify state must emit `audit.append()`.
 | Requirement | Status | Bead / Code |
 |---|---|---|
 | `connector_registry.replay_safe` column | COVERED | bu-1f91v.8, `sw_012` migration |
-| FOR UPDATE SKIP LOCKED | COVERED | bu-1f91v.10, `ingestion_events.py:331` |
+| FOR UPDATE SKIP LOCKED | PARTIAL | bu-1f91v.10, `ingestion_events.py:331`; gap tracked in **bu-iu5k0** (lock released between pool.fetch() calls — needs single-conn transaction wrapper) |
 | max-batch-size 50 | COVERED | `_MAX_BULK_REPLAY_BATCH = 50` |
 | email channel block (HTTP 409) | COVERED | `_UNSAFE_CHANNELS = frozenset({"email"})` |
 | Entire batch rejected atomically when unsafe | COVERED | `ingestion_events.py:372–397` |
@@ -452,6 +452,7 @@ The following items were explicitly deferred or filed as gap beads during the im
 | Gmail non-idempotent replay | Gated on `connector-replay-idempotency-policy` ratification for email |
 | `connector_replay_history` dedicated table | Deferred | Promote from `audit_log` query if p99 >100ms in production |
 | bu-3iz4j — spec language repair in connector-base-spec | Discovered-from (bu-1f91v.13 close_reason) | Filed separately |
+| **bu-iu5k0** — wrap `bulk_replay` SELECT FOR UPDATE SKIP LOCKED + UPDATE + audit append in a single `conn.transaction()` | Discovered during bu-2z4kr review of this PR (Gemini bot flagged in PR #1803 comments); affects Mandate 1 atomicity and Mandate 5 lock-holding | P1 — filed separately |
 | PR #1802 — cursor-pagination doc-fix follow-up | Trivial doc fix (wording); separate PR | Noted in bu-1f91v.13 close_reason |
 | bu-hamej — email `replay_safe=FALSE` seed | Email connector seed to set `replay_safe=FALSE` | Discovered-from bu-1f91v.8 |
 | bu-vc9qx — spark24h precision | spark24h uniform-distribution approximation | Discovered-from bu-1f91v.10 |
@@ -469,8 +470,9 @@ The routes are gated on `INGESTION_DISPATCH_CONSOLE=true` (default in dev, false
 
 ## 12. Summary Verdict
 
-- **15/15 mandates verified** with code citations (see §6). No gap beads required.
-- **Audit-log coverage: 100%** (13/13 mutation paths; `reauth` is not a mutation).
+- **15/15 mandates verified** with code citations (see §6). One implementation gap discovered during the Phase 6 review and filed as **bu-iu5k0** (transaction wrapper for `bulk_replay`); this weakens Mandate 1's audit-mutation atomicity and Mandate 5's lock-holding guarantee but does not invalidate the rest of the coverage matrix.
+- **Audit-log coverage: 100%** (13/13 mutation paths emit an audit row; `reauth` is not a mutation). One atomicity gap in `bulk_replay` tracked as **bu-iu5k0**.
 - **No structural gaps found.** All spec requirements are implemented and merged.
 - **Follow-ups filed during implementation:** bu-hamej (email replay_safe seed), bu-vc9qx (spark24h precision), bu-3iz4j (spec language repair). These are improvements, not coverage gaps.
+- **Gap filed during reconciliation review:** **bu-iu5k0** (`bulk_replay` transaction wrapper). This IS a coverage gap and blocks full epic closure.
 - The `opsx:sync` step was skipped — the archive in PR #1801 already relocated all spec deltas.
