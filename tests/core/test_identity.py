@@ -205,3 +205,56 @@ async def test_create_temp_contact():
     pool3.acquire.return_value.__aenter__ = AsyncMock(side_effect=Exception("connection refused"))
     pool3.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     assert await create_temp_contact(pool3, "telegram", "999") is None
+
+
+# ---------------------------------------------------------------------------
+# Spec scenario: Telegram chat resolves to entity via has-handle triple
+# (relationship-facts/spec.md §"Scenario: Telegram chat resolves to entity via has-handle triple")
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_telegram_via_has_handle_triple():
+    """Telegram chat resolves to entity via has-handle triple in relationship.entity_facts.
+
+    Spec: resolve_contact_by_channel('telegram', 'telegram:12345') MUST return a
+    ResolvedContact with entity_id set when a has-handle triple exists in
+    relationship.entity_facts with predicate='has-handle', object='telegram:12345',
+    object_kind='literal', validity='active'.
+
+    The returned ResolvedContact MUST have entity_id populated; contact_id is None
+    (the new triple-store resolution path does not involve public.contacts).
+
+    Reference: openspec/changes/relationship-tabs-to-entities/specs/relationship-facts/spec.md
+    Scenario: "Telegram chat resolves to entity via has-handle triple"
+    """
+    entity_id = uuid.uuid4()
+
+    # Simulate a pool where relationship.entity_facts yields a match for
+    # predicate='has-handle', object='telegram:12345'.
+    # The new SQL shape (per spec) returns: entity_id, name, roles.
+    mock_row = MagicMock()
+    mock_row.__getitem__ = lambda self, k: {
+        "entity_id": entity_id,
+        "name": "Alice",
+        "roles": [],
+        # contact_id is absent in the new resolution path
+    }[k]
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=mock_row)
+
+    result = await resolve_contact_by_channel(pool, "telegram", "telegram:12345")
+
+    assert result is not None, (
+        "resolve_contact_by_channel must return a ResolvedContact when a has-handle triple "
+        "exists for telegram:12345 — got None (implementation likely still queries "
+        "public.contact_info instead of relationship.entity_facts)"
+    )
+    assert result.entity_id == entity_id, (
+        f"entity_id must equal the entity from the has-handle triple (expected {entity_id}, "
+        f"got {result.entity_id})"
+    )
+    # contact_id is None in the triple-store resolution path (no public.contacts lookup).
+    assert result.contact_id is None, (
+        "contact_id must be None when resolving via has-handle triple — the entity_facts "
+        "path does not join public.contacts"
+    )
