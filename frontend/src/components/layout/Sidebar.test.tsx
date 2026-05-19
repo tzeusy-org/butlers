@@ -449,18 +449,16 @@ describe("Sidebar", () => {
         groupButton!.click();
       });
 
-      // After expanding, contacts and groups links are present
-      const contactsLink = container.querySelector('a[href="/contacts"]');
+      // After expanding, groups link is present (contacts removed in §8.10)
       const groupsLink = container.querySelector('a[href="/groups"]');
-      expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
       expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
     });
 
     it("auto-expands group when child route is active", () => {
-      render("/contacts");
+      render("/groups");
 
-      const contactsLink = container.querySelector('a[href="/contacts"]');
-      expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
+      const groupsLink = container.querySelector('a[href="/groups"]');
+      expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
     });
 
     it("sets aria-expanded on group header button", () => {
@@ -576,14 +574,14 @@ describe("Sidebar", () => {
       );
       expect(groupButton).toBeTruthy();
 
-      // Before click: contacts link is inside an inert/aria-hidden container
-      // After click: contacts link becomes accessible
+      // Before click: groups link is inside an inert/aria-hidden container
+      // After click: groups link becomes accessible
       act(() => {
         groupButton!.click();
       });
 
-      const contactsLink = container.querySelector('a[href="/contacts"]');
-      expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
+      const groupsLink = container.querySelector('a[href="/groups"]');
+      expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
     });
 
     it("auto-expands group when navigating to /groups in mobile mode", () => {
@@ -795,11 +793,12 @@ describe("Sidebar", () => {
       expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
     });
 
-    it("auto-expands when navigating to /contacts/:id", () => {
-      render("/contacts/abc123");
+    it("does not show /contacts link (removed in §8.10 entity-redesign)", () => {
+      render("/groups");
 
+      // /contacts is no longer in the Relationships group; groups is the only child
       const contactsLink = container.querySelector('a[href="/contacts"]');
-      expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(contactsLink).toBeNull();
     });
   });
 });

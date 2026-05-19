@@ -18,7 +18,6 @@ import SettingsSpendPage from './pages/SettingsSpendPage.tsx'
 import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import SettingsModelsPage from './pages/SettingsModelsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
-import ContactsPage from './pages/ContactsPage.tsx'
 import ContactDetailPage from './pages/ContactDetailPage.tsx'
 import GroupsPage from './pages/GroupsPage.tsx'
 import MeasurementsPage from './pages/MeasurementsPage.tsx'
@@ -138,7 +137,8 @@ export const router = createBrowserRouter(
         { path: '/approvals', element: <ApprovalsPage /> },
         { path: '/approvals/rules', element: <ApprovalRulesPage /> },
         { path: '/calendar', element: <CalendarWorkspacePage /> },
-        { path: '/contacts', element: <ContactsPage /> },
+        // /contacts → /entities?has=contact (§8.10 entity-redesign redirect)
+        { path: '/contacts', element: <Navigate to="/entities?has=contact" replace /> },
         { path: '/contacts/:contactId', element: <ContactDetailPage /> },
         { path: '/groups', element: <GroupsPage /> },
         { path: '/health/measurements', element: <MeasurementsPage /> },
