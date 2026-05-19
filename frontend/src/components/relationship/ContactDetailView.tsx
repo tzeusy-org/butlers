@@ -897,7 +897,7 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
                 to={`/entities/${contact.entity_id}`}
                 className="text-primary text-sm font-medium hover:underline"
               >
-                View entity →
+                View entity activity →
               </Link>
               <Button
                 variant="ghost"
