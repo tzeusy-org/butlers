@@ -17,6 +17,7 @@ import {
   getEntityLinkedContacts,
   getEntityLoans,
   getEntityMessageThreads,
+  getEntityNeighbours,
   getEntityNotes,
   getEntityTimeline,
   getRelationshipEntityQueue,
@@ -94,6 +95,15 @@ export function useEntityDates(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-dates", entityId],
     queryFn: () => getEntityDates(entityId!),
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch relational neighbours grouped by predicate for a relationship entity (§9.2). */
+export function useEntityNeighbours(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-neighbours", entityId],
+    queryFn: () => getEntityNeighbours(entityId!),
     enabled: !!entityId,
   });
 }
