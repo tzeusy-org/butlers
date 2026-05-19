@@ -154,3 +154,29 @@ See `AGENTS.md` for full beads workflow details.
 ## Implementation Plan
 
 Development follows milestones defined in `PROJECT_PLAN.md`. Use the `superpowers:executing-plans` skill to implement tasks from that plan. A separate `MEMORY_PROJECT_PLAN.md` covers the tiered memory subsystem (Eden → Mid-Term → Long-Term, LRU-based promotion/eviction).
+
+## API Conventions
+
+### Cursor Pagination (BREAKING — Phase 2b, PR #1755)
+
+`GET /api/ingestion/events` uses **keyset (cursor) pagination** — the `page`/`limit` params are gone.
+
+Response envelope:
+```json
+{"events": [...], "next_cursor": "<opaque>", "has_more": true}
+```
+
+- Pass `cursor=<next_cursor>` to fetch the next page.
+- `has_more: false` means you are at the last page.
+- No `total` field is returned.
+- Keyset order: `received_at DESC, id DESC`.
+
+### Degraded-Mode Response Envelope (Phase 4a, PRs #1762, #1798)
+
+Endpoints that query Prometheus for aggregate metrics (`GET /api/ingestion/pipeline?window=24h`, `GET /api/ingestion/connectors/summaries`, `GET /api/ingestion/connectors/cross-summary`) always return HTTP 200. When Prometheus is unreachable, aggregate fields contain zeros and the envelope includes:
+
+```json
+{"...", "aggregates_available": false}
+```
+
+Never treat a missing or `false` `aggregates_available` field as an error — show a "metrics unavailable" indicator in the UI instead.

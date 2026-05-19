@@ -3,7 +3,7 @@
 ## Purpose
 Defines the unified ingestion filtering and routing rule system that replaces both the triage-specific rule system and the source filter system. All ingestion rules are stored in a single `ingestion_rules` table with scope-based evaluation: `'global'` rules are evaluated post-ingest/pre-LLM by the Switchboard; `'connector:<type>:<identity>'` rules are evaluated at the connector before Switchboard submission.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Ingestion rules data model
 

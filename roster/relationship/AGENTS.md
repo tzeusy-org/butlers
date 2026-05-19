@@ -50,3 +50,4 @@ When learning about a person or recording new information:
 # Notes to self
 
 - MCP tool input gotcha: `contact_create.details` and `interaction_log.metadata` validate as dicts (Pydantic `dict_type`), even if some tool signatures/docs imply strings — pass JSON objects, not JSON-encoded strings.
+- Priority contacts: contacts added to `public.priority_contacts` (butler='gmail') are used by GmailPolicyEvaluator (15-min TTL DB cache) to assign `high_priority` policy tier. Add/remove entries via `POST/DELETE /api/ingestion/priority-contacts`. The old `GMAIL_KNOWN_CONTACTS_PATH` flat-file env var has been removed.
