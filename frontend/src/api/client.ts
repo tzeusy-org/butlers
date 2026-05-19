@@ -1897,6 +1897,19 @@ export function getEntityDates(entityId: string): Promise<EntityImportantDate[]>
   );
 }
 
+/** Forget (hard-delete with tombstone) a relationship entity.
+ *
+ * Maps to DELETE /api/butlers/relationship/entities/{entity_id}.
+ * Retracts all active entity_facts and tombstones the entity row.
+ * Irreversible. Owner-only (returns 403 if no owner entity).
+ */
+export function forgetRelationshipEntity(entityId: string): Promise<void> {
+  return apiFetch<void>(
+    `/relationship/entities/${encodeURIComponent(entityId)}`,
+    { method: "DELETE" },
+  );
+}
+
 /** Pin or clear an entity's Dunbar tier. tier=null clears the pin. */
 export function updateEntityDunbarTier(
   entityId: string,

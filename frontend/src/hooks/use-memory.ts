@@ -32,6 +32,7 @@ import {
   updateEntityInfo,
   updateMemoryRetentionPolicies,
   getDunbarRanking,
+  forgetRelationshipEntity,
 } from "@/api/index.ts";
 import type {
   CreateEntityInfoRequest,
@@ -201,6 +202,22 @@ export function useDeleteEntity() {
       deleteEntity(opts.entityId, { retireFacts: opts.retireFacts }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Hard-delete (forget with tombstone) a relationship entity.
+ *
+ * Calls DELETE /api/butlers/relationship/entities/{id}.
+ * Retracts all active facts and tombstones the entity. Irreversible.
+ */
+export function useForgetRelationshipEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => forgetRelationshipEntity(entityId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
     },
   });
 }

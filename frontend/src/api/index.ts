@@ -70,6 +70,7 @@ export {
   getEntityNeighbours,
   getEntityConcentration,
   updateEntityDunbarTier,
+  forgetRelationshipEntity,
   getEpisode,
   getEpisodes,
   getFact,
