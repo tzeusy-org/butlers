@@ -215,9 +215,10 @@ export function useForgetRelationshipEntity() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (entityId: string) => forgetRelationshipEntity(entityId),
-    onSuccess: () => {
+    onSuccess: (_, entityId) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
     },
   });
 }
