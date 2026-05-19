@@ -263,6 +263,7 @@ import type {
   DunbarTierOverrideResponse,
   EntityFinderSearchResponse,
   NeighboursResponse,
+  ConcentrationResponse,
   LinkedContactSummary,
   MessageThreadSummary,
   RelationshipEntityDetail,
@@ -1975,6 +1976,22 @@ export function getEntityNeighbours(entityId: string): Promise<NeighboursRespons
   return apiFetch<NeighboursResponse>(
     `/relationship/entities/${encodeURIComponent(entityId)}/neighbours`,
   );
+}
+
+/**
+ * Fetch concentration balance-sheet for a relational predicate (§9.3, bu-0vosj).
+ *
+ * Hits GET /api/relationship/entities/concentration?pred=<predicate>.
+ * The response always includes ``predicate_tabs`` (full list of relational
+ * predicates from the registry) so the frontend can render tabs without a
+ * separate request.
+ *
+ * Returns owner-only gate 403 when no owner entity is registered.
+ * Defaults to predicate ``'knows'`` when ``pred`` is omitted.
+ */
+export function getEntityConcentration(pred?: string): Promise<ConcentrationResponse> {
+  const qs = pred ? `?pred=${encodeURIComponent(pred)}` : "";
+  return apiFetch<ConcentrationResponse>(`/relationship/entities/concentration${qs}`);
 }
 
 /** Link a contact to an entity. */
