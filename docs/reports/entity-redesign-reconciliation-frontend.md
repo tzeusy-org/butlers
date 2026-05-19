@@ -12,13 +12,13 @@
   the backend report.
 - **11 §8.x beads closed** (bu-s2bgc, bu-h4s95, bu-370h1, bu-m4ya3, bu-zvtxh, bu-wx2r0,
   bu-ar4zf, bu-wi06b, bu-ec2wb, bu-qsipw, bu-xfjwk).
-- **15 frontend spec requirements** audited (from `dashboard-relationship/spec.md`); 11 fully
-  covered, 4 have gaps or deltas.
-- **11 tasks.md §8.x tasks** audited; 10 shipped, 1 descoped (§8.5 is split across two PRs
+- **15 frontend spec requirements** audited (from `dashboard-relationship/spec.md`); 8 fully
+  covered, 7 have gaps, deltas, or partial coverage (2 PARTIAL, 4 GAP, 1 DELTA).
+- **11 tasks.md §8.x tasks** audited; all 11 closed (§8.5 is split across two PRs
   but both merged).
 - **7 known follow-up beads** listed and verified (bu-h9ta6, bu-u5ktp, bu-hhiq9, bu-2nbjv,
   bu-r6vft, bu-macfj, bu-ki9w4) — all confirmed open with correct `discovered-from` links.
-- **4 new gaps identified** in this audit; see "Discovered Gaps" section.
+- **7 new gaps identified** in this audit; see "Discovered Gaps" section.
 
 ---
 
@@ -48,7 +48,7 @@ All 11 §8.x beads are closed. All PRs are merged to `main`.
 
 | # | Requirement (spec section) | Test file(s) | Status |
 |---|---|---|---|
-| 1 | Contact detail: header card with role badges, entity link, warning when no entity_id | `ContactDetailPage.test.tsx:185` (null entity_id → no PulseStrip); `ContactDetailView.tsx:894–918` (link present/absent) | PARTIAL — no test asserts "View entity activity →" link text or `/butlers/relationship/entities/` target; see Gap F-01 |
+| 1 | Contact detail: header card with role badges, entity link, warning when no entity_id | `ContactDetailPage.test.tsx:185` (null entity_id → no PulseStrip); `ContactDetailView.tsx:894–918` (link present/absent) | PARTIAL — no test asserts "View entity activity →" link text or `/butlers/relationship/entities/` target; see Delta D-05 |
 | 2 | Contact detail: click-to-reveal secured credential | `ContactDetailPage.test.tsx:140` (secured=false case); no test for secured=true masking + reveal flow | GAP — F-02 |
 | 3 | Contact detail: email as `mailto:`, phone as `tel:` | No test exercises `<a href="mailto:…">` or `<a href="tel:…">` | GAP — F-02 |
 | 4 | Contact detail: contact not found → 404 message | No explicit 404 test in `ContactDetailPage.test.tsx` | GAP — F-02 |
