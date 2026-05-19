@@ -1013,3 +1013,16 @@ export type {
   KillRequest,
   KillResponse,
 } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Entity Finder (Cmd-K, bu-xfjwk)
+// ---------------------------------------------------------------------------
+
+export { searchRelationshipEntities } from "./client.ts";
+
+export type {
+  EntityFinderMatchKind,
+  EntityFinderSearchResult,
+  EntityFinderSearchResponse,
+  EntityFinderSearchParams,
+} from "./types.ts";

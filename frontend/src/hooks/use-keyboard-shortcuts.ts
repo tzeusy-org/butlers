@@ -7,6 +7,7 @@ declare global {
 import { useEffect } from "react";
 import { useNavigate } from "react-router";
 import { dispatchOpenCommandPalette } from "@/lib/command-palette";
+import { dispatchOpenEntityFinder } from "@/lib/entity-finder";
 
 export function useKeyboardShortcuts() {
   const navigate = useNavigate();
@@ -23,14 +24,14 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Cmd/Ctrl+K → focus search
+      // Cmd/Ctrl+K → entity-first finder (EntityFinder, bu-xfjwk)
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        dispatchOpenCommandPalette();
+        dispatchOpenEntityFinder();
         return;
       }
 
-      // / → focus search
+      // / → legacy command palette (global nav search)
       if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         dispatchOpenCommandPalette();

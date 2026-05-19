@@ -7,6 +7,7 @@
  * activity view (notes, interactions, gifts, loans, timeline).
  */
 
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -18,6 +19,7 @@ import {
   getEntityMessageThreads,
   getEntityNotes,
   getEntityTimeline,
+  searchRelationshipEntities,
   updateEntityDunbarTier,
 } from "@/api/index.ts";
 
@@ -90,6 +92,56 @@ export function useEntityDates(entityId: string | undefined) {
     queryKey: ["entity-dates", entityId],
     queryFn: () => getEntityDates(entityId!),
     enabled: !!entityId,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entity Finder search (Cmd-K, bu-xfjwk)
+// ---------------------------------------------------------------------------
+
+const ENTITY_FINDER_DEBOUNCE_MS = 200;
+const ENTITY_FINDER_MIN_QUERY_LENGTH = 1;
+const ENTITY_FINDER_DEFAULT_LIMIT = 8;
+
+/**
+ * Debounced hook that fetches entity search results from
+ * GET /api/butlers/relationship/entities/search.
+ *
+ * Enabled as soon as the query is non-empty. Returns results already ordered
+ * by server-side score (prefix > contact_fact > substring > predicate).
+ * Empty or whitespace queries return undefined data (hook is disabled).
+ */
+export function useEntityFinderSearch(
+  query: string,
+  options?: { limit?: number },
+) {
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
+
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setDebouncedQuery(query),
+      ENTITY_FINDER_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const trimmed = debouncedQuery.trim();
+
+  return useQuery({
+    queryKey: [
+      "entity-finder-search",
+      trimmed,
+      options?.limit ?? ENTITY_FINDER_DEFAULT_LIMIT,
+    ],
+    queryFn: () =>
+      searchRelationshipEntities(
+        trimmed,
+        options?.limit ?? ENTITY_FINDER_DEFAULT_LIMIT,
+      ),
+    enabled: trimmed.length >= ENTITY_FINDER_MIN_QUERY_LENGTH,
+    // Keep stale results visible while a new query is in-flight so the
+    // Finder doesn't flash blank during fast typing.
+    placeholderData: (prev) => prev,
   });
 }
 

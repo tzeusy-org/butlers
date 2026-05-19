@@ -261,6 +261,7 @@ import type {
   EntityImportantDate,
   EntityTimelineItem,
   DunbarTierOverrideResponse,
+  EntityFinderSearchResponse,
   LinkedContactSummary,
   MessageThreadSummary,
   RelationshipEntityDetail,
@@ -1899,6 +1900,23 @@ export function updateEntityDunbarTier(
   return apiFetch<DunbarTierOverrideResponse>(
     `/relationship/entities/${encodeURIComponent(entityId)}/dunbar-tier`,
     { method: "PATCH", body: JSON.stringify({ tier }) },
+  );
+}
+
+/** Search relationship entities using rule-based ranking (deterministic Finder, bu-xfjwk).
+ *
+ * Hits GET /api/butlers/relationship/entities/search — server scores results by
+ * prefix > contact-fact > substring > predicate match. Results are already ordered
+ * by score DESC. An empty or whitespace-only query returns an empty result set.
+ */
+export function searchRelationshipEntities(
+  q: string,
+  limit?: number,
+): Promise<EntityFinderSearchResponse> {
+  const sp = new URLSearchParams({ q });
+  if (limit != null) sp.set("limit", String(limit));
+  return apiFetch<EntityFinderSearchResponse>(
+    `/relationship/entities/search?${sp.toString()}`,
   );
 }
 
