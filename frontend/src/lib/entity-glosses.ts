@@ -1,0 +1,202 @@
+// ---------------------------------------------------------------------------
+// entity-glosses.ts -- canned voice glosses for the entity detail page
+//
+// Anti-temptation guardrail (Brief §4, Open Question 23):
+//   Detail-page voice glosses are CANNED STRINGS, NOT LLM calls.
+//   No dynamic string generation beyond simple variable substitution.
+//   Reaching for an LLM call here costs ~$0.12/user/day (100 users → $12/day)
+//   and violates the "composure is the brand" Section 0 contract.
+//
+// Fallback model (Cartesian product: 6 tiers × 4 states × 8 categories = 192):
+//   Because 192 fully-distinct hand-edited entries is impractical to maintain,
+//   this module uses a two-level fallback:
+//
+//   1. Category-specific overrides: GLOSSES_OVERRIDES[(tier, state, category)]
+//      — sparse table of entries that genuinely differ by entity type.
+//   2. Base glosses: GLOSSES_BASE[(tier, state)]
+//      — fully exhaustive (6 × 4 = 24 entries); type-guaranteed complete.
+//
+//   getEntityGloss() tries (tier, state, category) first, then (tier, state).
+//   The type system guarantees that (tier, state) always has a value
+//   (Record<DunbarTier, Record<EntityState, string>> is structurally complete).
+//
+//   This means "missing combination" never reaches runtime, but a tsc error
+//   fires if you omit any (tier, state) pair from GLOSSES_BASE.
+//
+// Voice tone:
+//   Clinical, terse, observational. Present tense. No em-dashes.
+//   Serif italic context (Source Serif 4). Sentences complete but spare.
+// ---------------------------------------------------------------------------
+
+import type { DunbarTier } from "@/components/ui/TierBadge"
+import type { EntityState } from "@/components/ui/StateDot"
+import type { EntityType } from "@/components/ui/EntityMark"
+
+// ---------------------------------------------------------------------------
+// Re-export the dimension types for consumers who only import from this file.
+// ---------------------------------------------------------------------------
+
+export type { DunbarTier, EntityState, EntityType }
+
+// ---------------------------------------------------------------------------
+// Base gloss table: exhaustive over (tier, state).
+//
+// TypeScript enforces completeness: Record<DunbarTier, Record<EntityState, string>>
+// means every DunbarTier must have an entry, and within each entry every
+// EntityState must have a value. A missing combination is a compile error.
+// ---------------------------------------------------------------------------
+
+const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
+  5: {
+    healthy:
+      "Support clique. Highest-signal relationship in the graph. Expect regular contact and mutual investment.",
+    unidentified:
+      "Support clique candidate, identity unresolved. Resolve before acting on tier weight.",
+    "duplicate-candidate":
+      "Support clique. A duplicate record may split the interaction history. Merge before drawing conclusions.",
+    stale: "Support clique, but no recent contact. Tier weight is decaying.",
+  },
+  15: {
+    healthy:
+      "Sympathy group. Close enough to call on in a personal crisis. Contact rhythm is active.",
+    unidentified:
+      "Sympathy group candidate, identity unresolved. Confirm before weighting.",
+    "duplicate-candidate":
+      "Sympathy group. A duplicate may dilute the signal. Consider merging.",
+    stale: "Sympathy group, no recent activity. Relationship may be drifting.",
+  },
+  50: {
+    healthy:
+      "Good friend. Regular enough contact to maintain contextual awareness.",
+    unidentified:
+      "Good friend tier candidate, identity unresolved. Enrich the record to confirm.",
+    "duplicate-candidate":
+      "Good friend tier. A parallel record exists. Merge to avoid split history.",
+    stale: "Good friend tier, but contact has lapsed. Consider re-engagement.",
+  },
+  150: {
+    healthy: "Meaningful contact. Active in the network.",
+    unidentified:
+      "Meaningful-tier candidate, identity incomplete. Add context to resolve.",
+    "duplicate-candidate":
+      "Meaningful contact with a potential duplicate. Review before weighting this node.",
+    stale: "Meaningful contact, low recent activity. Relationship is fading.",
+  },
+  500: {
+    healthy:
+      "Acquaintance. Known but loosely coupled. Useful for weak-tie bridging.",
+    unidentified:
+      "Acquaintance tier, identity unresolved. Minimal data available.",
+    "duplicate-candidate":
+      "Acquaintance with a duplicate candidate. Low priority, but worth a merge pass.",
+    stale: "Acquaintance, no recent signal. Likely outer-ring contact.",
+  },
+  1500: {
+    healthy: "Recognizable contact. Outer boundary of the network.",
+    unidentified:
+      "Recognizable tier, identity unknown. Enrich or archive.",
+    "duplicate-candidate":
+      "Recognizable contact with a duplicate record. Likely a data-import artifact.",
+    stale: "Recognizable contact, no recent activity. Likely dormant.",
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Category-specific override table: sparse, optional.
+//
+// Use only when a category genuinely warrants different copy than the base
+// gloss for the same (tier, state). Keep this table small; the base gloss
+// is the right default for most combinations.
+//
+// Key format: `${tier}:${state}:${category}` (string literal key).
+// No TypeScript exhaustiveness enforcement here by design -- overrides are
+// additive, not required. The base table is the safety net.
+// ---------------------------------------------------------------------------
+
+type GlossKey = `${DunbarTier}:${EntityState}:${EntityType}`
+
+const GLOSSES_OVERRIDES: Partial<Record<GlossKey, string>> = {
+  // Organizations in the support clique are institutional anchors, not friends.
+  "5:healthy:organization":
+    "Core institutional relationship. Strategic or deeply operational dependency.",
+  "5:stale:organization":
+    "Core institution, no recent engagement. Check if the relationship has shifted.",
+
+  // Places at high tier reflect a deeply significant location.
+  "5:healthy:place":
+    "Highly significant location. Likely a home, workplace, or recurring venue.",
+  "15:healthy:place":
+    "Frequently visited or personally significant location.",
+
+  // Events at high tier are anchoring milestones.
+  "5:healthy:event":
+    "Defining event. Anchors a significant period or transition.",
+  "15:healthy:event":
+    "Major event, recently or frequently relevant.",
+
+  // Products and accounts get a more transactional voice.
+  "150:healthy:product":
+    "Actively used product. Appears in recent interaction context.",
+  "150:healthy:account":
+    "Active account. Linked to recent activity.",
+  "500:healthy:product":
+    "Known product, peripheral use. Low interaction weight.",
+  "500:healthy:account":
+    "Known account, low engagement.",
+}
+
+// ---------------------------------------------------------------------------
+// Public lookup function.
+//
+// Resolution order:
+//   1. (tier, state, category) override -- if present, use it.
+//   2. (tier, state) base gloss         -- always defined; type-guaranteed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the canned voice gloss for an entity.
+ *
+ * @param tier     Dunbar tier (5, 15, 50, 150, 500, 1500).
+ * @param state    Entity curation state.
+ * @param category Entity type / category.
+ * @returns        A short, canned gloss string for display in the Editorial view.
+ *
+ * @example
+ *   getEntityGloss({ tier: 5, state: "healthy", category: "person" })
+ *   // => "Support clique. Highest-signal relationship in the graph. ..."
+ *
+ *   getEntityGloss({ tier: 5, state: "healthy", category: "organization" })
+ *   // => "Core institutional relationship. Strategic or deeply operational dependency."
+ */
+export function getEntityGloss({
+  tier,
+  state,
+  category,
+}: {
+  tier: DunbarTier
+  state: EntityState
+  category: EntityType
+}): string {
+  // 1. Try the category-specific override.
+  const overrideKey: GlossKey = `${tier}:${state}:${category}`
+  const override = GLOSSES_OVERRIDES[overrideKey]
+  if (override !== undefined) {
+    return override
+  }
+
+  // 2. Fall back to the base gloss. Always defined -- Record guarantees it.
+  return GLOSSES_BASE[tier][state]
+}
+
+// ---------------------------------------------------------------------------
+// Compile-time exhaustiveness check.
+//
+// This const assignment verifies that GLOSSES_BASE satisfies the full
+// Record<DunbarTier, Record<EntityState, string>> shape. If any tier or state
+// is missing, tsc will emit a type error here -- not at the call site.
+// ---------------------------------------------------------------------------
+
+const _exhaustivenessCheck: Record<DunbarTier, Record<EntityState, string>> =
+  GLOSSES_BASE
+// Suppress unused-variable lint warning (the point is the type check, not the value).
+void _exhaustivenessCheck
