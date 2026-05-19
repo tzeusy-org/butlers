@@ -1,16 +1,42 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import EntityDetailPage from "@/pages/EntityDetailPage";
+import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
 import type { EntityDetail } from "@/api/types";
 
-// Mock react-router's useParams so we can control the entityId
+// Mock react-router's useParams and useSearchParams so we can control both
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
-  return { ...actual, useParams: vi.fn(() => ({ entityId: "entity-001" })) };
+  return {
+    ...actual,
+    useParams: vi.fn(() => ({ entityId: "entity-001" })),
+    useSearchParams: vi.fn(() => [new URLSearchParams(), vi.fn()]),
+  };
+});
+
+// ---------------------------------------------------------------------------
+// localStorage mock
+// ---------------------------------------------------------------------------
+// renderToStaticMarkup runs in Node (no real DOM), so we shim localStorage.
+// The readPersistedEntityMode() helper catches access errors and falls back
+// to "editorial", but having a controllable mock lets us assert mode paths.
+
+const localStorageMock = (() => {
+  let store: Record<string, string | null> = {};
+  return {
+    getItem: vi.fn((key: string) => store[key] ?? null),
+    setItem: vi.fn((key: string, value: string) => { store[key] = value; }),
+    removeItem: vi.fn((key: string) => { delete store[key]; }),
+    clear: vi.fn(() => { store = {}; }),
+  };
+})();
+
+Object.defineProperty(globalThis, "localStorage", {
+  value: localStorageMock,
+  writable: true,
 });
 
 // Mock all hooks used by EntityDetailPage — we only care about useEntity here
@@ -213,4 +239,94 @@ describe("EntityDetailPage — facts section", () => {
     expect(html).toContain("Load more facts");
     expect(html).toContain("1 of 2");
   });
+});
+
+// ---------------------------------------------------------------------------
+// Mode toggle — Editorial / Workbench
+// ---------------------------------------------------------------------------
+
+describe("EntityDetailPage — Editorial/Workbench mode toggle", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // Clear the localStorage mock store between tests
+    localStorageMock.clear();
+    // Reset to default (no URL mode param)
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+  });
+
+  it("defaults to editorial mode when localStorage is empty", () => {
+    localStorageMock.getItem.mockReturnValue(null);
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    // Mode toggle button renders the current mode label
+    expect(html).toContain("Editorial");
+    // data-testid attribute is present
+    expect(html).toContain('data-testid="entity-mode-toggle"');
+  });
+
+  it("reads workbench mode from localStorage", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "workbench" : null,
+    );
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain("Workbench");
+  });
+
+  it("reads editorial mode from localStorage", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "editorial" : null,
+    );
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain("Editorial");
+  });
+
+  it("falls back to editorial when localStorage has an invalid value", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "not-a-valid-mode" : null,
+    );
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain("Editorial");
+    expect(html).not.toContain("not-a-valid-mode");
+  });
+
+  it("URL mode=workbench param overrides localStorage editorial", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "editorial" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("mode=workbench"),
+      vi.fn(),
+    ]);
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain("Workbench");
+  });
+
+  it("URL mode=editorial param overrides localStorage workbench", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "workbench" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("mode=editorial"),
+      vi.fn(),
+    ]);
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain("Editorial");
+  });
+
+  it.each(["editorial", "workbench"] as const)(
+    "renders existing content in %s mode (activity section preserved)",
+    (mode) => {
+      localStorageMock.getItem.mockImplementation((key: string) =>
+        key === ENTITY_MODE_STORAGE_KEY ? mode : null,
+      );
+      setEntityState(BASE_ENTITY);
+      const html = renderPage();
+      expect(html).toContain("Activity");
+    },
+  );
 });
