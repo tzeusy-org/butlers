@@ -451,43 +451,6 @@ def parse_label_list(raw: str | None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Known contacts cache loader
-# ---------------------------------------------------------------------------
-
-
-def load_known_contacts_from_file(path: str) -> frozenset[str]:
-    """Load known contact email addresses from a JSON file.
-
-    Expected format:
-        {"contacts": ["alice@example.com", "bob@example.com"], "generated_at": "..."}
-    or a plain list of strings.
-
-    Returns frozenset of normalized email addresses.
-    """
-    import json
-    import pathlib
-
-    p = pathlib.Path(path)
-    if not p.exists():
-        logger.warning("Known contacts file not found: %s; treating as empty", path)
-        return frozenset()
-
-    try:
-        data = json.loads(p.read_text())
-        if isinstance(data, dict):
-            contacts = data.get("contacts") or []
-        elif isinstance(data, list):
-            contacts = data
-        else:
-            logger.warning("Unexpected known contacts file format at %s; treating as empty", path)
-            return frozenset()
-        return frozenset(_normalize_email(str(c)) for c in contacts if c)
-    except Exception as exc:
-        logger.warning("Failed to load known contacts from %s: %s", path, exc)
-        return frozenset()
-
-
-# ---------------------------------------------------------------------------
 # DB-backed priority contacts cache (15-min TTL)
 # ---------------------------------------------------------------------------
 
@@ -502,30 +465,19 @@ class GmailPolicyEvaluator:
     joined to ``public.contact_info`` to resolve email addresses.  The cache
     refreshes automatically when it is older than 15 minutes.
 
-    Flat-file fallback (GMAIL_KNOWN_CONTACTS_PATH)
-    -----------------------------------------------
     If the DB is unreachable during a cache refresh, the evaluator retains its
-    previous cache and logs a warning.  When the previous cache is empty (e.g.
-    on the first call before any successful DB load), the evaluator consults the
-    flat-file at ``known_contacts_path`` as a one-cycle fallback.  DB results
-    always take precedence on any conflict; the flat-file is ignored once the DB
-    has been successfully queried at least once.
-
-    The flat-file path and reader are deprecated and will be removed in §4.7
-    (cleanup bead, Wave 3) once the DB-wiring bead has been measured stable.
+    previous cache and logs a warning.  On the very first call, if the DB is
+    unavailable, an empty set is returned.
 
     Spec: ingestion-priority-contacts §Requirement: GmailPolicyEvaluator wiring
-    Spec: ingestion-priority-contacts §Requirement: GMAIL_KNOWN_CONTACTS_PATH deprecation
     """
 
     def __init__(
         self,
         db_pool: asyncpg.Pool | None = None,
-        known_contacts_path: str | None = None,
         ttl: float = _PRIORITY_CONTACTS_TTL,
     ) -> None:
         self._db_pool = db_pool
-        self._known_contacts_path = known_contacts_path
         self._ttl = ttl
         self._cache: frozenset[str] = frozenset()
         # float('-inf') ensures the cache is always expired on the very first call,
@@ -534,7 +486,6 @@ class GmailPolicyEvaluator:
         # expression `time.monotonic() - 0.0 < ttl` evaluated to False, silently
         # skipping the first DB refresh and returning an empty frozenset.
         self._cache_loaded_at: float = float("-inf")
-        self._db_ever_loaded: bool = False
 
     def _cache_expired(self) -> bool:
         return (time.monotonic() - self._cache_loaded_at) >= self._ttl
@@ -559,7 +510,6 @@ class GmailPolicyEvaluator:
             )
             self._cache = frozenset(_normalize_email(row["value"]) for row in rows)
             self._cache_loaded_at = time.monotonic()
-            self._db_ever_loaded = True
             logger.debug(
                 "GmailPolicyEvaluator: refreshed %d priority contact emails from DB",
                 len(self._cache),
@@ -574,22 +524,11 @@ class GmailPolicyEvaluator:
     async def get_known_contacts(self) -> frozenset[str]:
         """Return the current set of known-contact email addresses.
 
-        Refreshes from DB if the cache has expired.  Falls back to the flat-file
-        only when the DB has never been successfully loaded and the cache is empty.
+        Refreshes from DB if the cache has expired.  Returns an empty set
+        if the DB has never been successfully loaded.
         """
         if self._cache_expired():
             await self._refresh_from_db()
-
-        # One-cycle flat-file fallback: consult the file only when the DB has
-        # never returned any rows (DB was unreachable since startup or this is
-        # the very first call and the DB refresh failed).
-        if not self._db_ever_loaded and not self._cache and self._known_contacts_path:
-            flat_contacts = load_known_contacts_from_file(self._known_contacts_path)
-            logger.debug(
-                "GmailPolicyEvaluator: DB not yet loaded; using flat-file fallback (%d entries)",
-                len(flat_contacts),
-            )
-            return flat_contacts
 
         return self._cache
 
@@ -621,7 +560,6 @@ __all__ = [
     "evaluate_message_policy",
     "MessagePolicyResult",
     # Helpers
-    "load_known_contacts_from_file",
     "_normalize_email",
     # DB-backed evaluator
     "GmailPolicyEvaluator",
