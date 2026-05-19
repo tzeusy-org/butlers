@@ -18,7 +18,7 @@
  */
 
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import type {
   RelationshipEntitySummary,
@@ -382,10 +382,14 @@ function QueueSection({
 // ---------------------------------------------------------------------------
 
 export function EntitiesIndexPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [typeFilter, setTypeFilter] = useState<EntityType | null>(null);
   const [stateFilter, setStateFilter] = useState<EntityState | null>(null);
-  const [hasContact, setHasContact] = useState(false);
   const [offset, setOffset] = useState(0);
+
+  // URL is the source of truth for the has=contact filter.
+  // ?has=contact activates the chip; any other value or absence deactivates it.
+  const hasContact = searchParams.get("has") === "contact";
 
   const params: RelationshipEntityListParams = {
     entity_type: typeFilter ?? undefined,
@@ -420,7 +424,18 @@ export function EntitiesIndexPage() {
   }
 
   function handleHasContactChange(v: boolean) {
-    setHasContact(v);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (v) {
+          next.set("has", "contact");
+        } else {
+          next.delete("has");
+        }
+        return next;
+      },
+      { replace: false },
+    );
     handleFilterChange();
   }
 
