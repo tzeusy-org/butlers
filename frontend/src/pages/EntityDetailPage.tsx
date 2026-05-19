@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   Check,
   Layers,
@@ -33,6 +33,16 @@ import {
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Page } from "@/components/ui/page";
@@ -63,6 +73,7 @@ import {
 } from "@/hooks/use-entities";
 import {
   useEntity,
+  useForgetRelationshipEntity,
   usePromoteEntity,
   useRevealEntitySecret,
   useSetLinkedContact,
@@ -1648,6 +1659,7 @@ function EntityDetailModeToggle({
 export default function EntityDetailPage() {
   const { entityId } = useParams<{ entityId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   // ---------------------------------------------------------------------------
   // Mode — editorial vs workbench
@@ -1684,6 +1696,23 @@ export default function EntityDetailPage() {
   const entity = data?.data;
   const updateEntity = useUpdateEntity();
   const promoteEntity = usePromoteEntity();
+  const forgetEntity = useForgetRelationshipEntity();
+
+  const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
+  const [forgetError, setForgetError] = useState<string | null>(null);
+
+  const handleForgetConfirm = async () => {
+    if (!entityId) return;
+    setForgetError(null);
+    try {
+      await forgetEntity.mutateAsync(entityId);
+      toast.success(`Forgot ${entity?.canonical_name ?? "entity"}`);
+      setForgetDialogOpen(false);
+      void navigate("/entities");
+    } catch (err) {
+      setForgetError(err instanceof Error ? err.message : "Failed to forget entity");
+    }
+  };
 
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState("");
@@ -1795,18 +1824,35 @@ export default function EntityDetailPage() {
   );
 
   const pageArchetype = mode === "editorial" ? "detail" : "overview";
-  const modeToggle = (
-    <EntityDetailModeToggle mode={mode} onModeChange={setMode} />
+  const pageActions = (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        data-testid="forget-entity-button"
+        aria-label="Forget this entity"
+        title="Forget this entity — irreversible hard delete"
+        onClick={() => {
+          setForgetError(null);
+          setForgetDialogOpen(true);
+        }}
+        className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <Trash2 className="h-3.5 w-3.5" aria-hidden />
+        Forget
+      </button>
+      <EntityDetailModeToggle mode={mode} onModeChange={setMode} />
+    </div>
   );
 
   return (
+    <>
     <Page
       archetype={pageArchetype}
       title={entity?.canonical_name ?? entityId ?? "Entity"}
       loading={isLoading}
       error={error ?? null}
       breadcrumbs={breadcrumbs}
-      actions={modeToggle}
+      actions={pageActions}
     >
       {entity && entityId && (
         <>
@@ -2122,5 +2168,49 @@ export default function EntityDetailPage() {
         </>
       )}
     </Page>
+
+    {/* Forget entity confirmation dialog */}
+    <AlertDialog
+      open={forgetDialogOpen}
+      onOpenChange={(open) => {
+        if (!open) {
+          setForgetDialogOpen(false);
+          setForgetError(null);
+        }
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Forget this entity?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Are you sure you want to forget{" "}
+            <strong>{entity?.canonical_name ?? "this entity"}</strong>? This
+            will retract all associated facts and permanently remove the entity
+            from your memory graph. This action cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {forgetError && (
+          <p className="px-1 text-sm text-destructive" role="alert">
+            {forgetError}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={forgetEntity.isPending}>
+            Cancel
+          </AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={forgetEntity.isPending}
+            onClick={(event) => {
+              event.preventDefault();
+              void handleForgetConfirm();
+            }}
+          >
+            {forgetEntity.isPending ? "Forgetting…" : "Forget this entity"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

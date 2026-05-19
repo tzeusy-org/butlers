@@ -44,6 +44,7 @@ vi.mock("@/hooks/use-memory", () => ({
   useEntity: vi.fn(),
   useUpdateEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePromoteEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useForgetRelationshipEntity: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCreateEntityInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useUpdateEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
