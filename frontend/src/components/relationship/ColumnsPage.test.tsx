@@ -320,6 +320,41 @@ describe("ColumnsPage — click neighbour appends column", () => {
     const bobCall = calls.find((c) => c[0] === BOB_ENTITY_ID);
     expect(bobCall).toBeTruthy();
   });
+
+  it("clicking a neighbour in column 0 when three columns are visible truncates to two columns", async () => {
+    // Three-column path: owner → bob → carol
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage(
+      `/entities/columns?path=${OWNER_ENTITY_ID},${BOB_ENTITY_ID},${CAROL_ENTITY_ID}`,
+    );
+
+    // Column 0 shows owner's neighbours (Bob and Carol in KNOWS_NEIGHBOURS).
+    // Click Carol in column 0 — should truncate to [owner, carol] (not append carol to [owner,bob,carol]).
+    const carolBtns = container.querySelectorAll(
+      `[data-entity-id='${CAROL_ENTITY_ID}'][data-column-index='0']`,
+    ) as NodeListOf<HTMLButtonElement>;
+    expect(carolBtns.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      carolBtns[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // After click, useEntityNeighbours should have been called for carol (new column 1).
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    const carolCall = calls.find((c) => c[0] === CAROL_ENTITY_ID);
+    expect(carolCall).toBeTruthy();
+
+    // Column 2 (previously carol) should have been removed — only two column panels.
+    const col2 = container.querySelector("[data-testid='column-panel-2']");
+    expect(col2).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

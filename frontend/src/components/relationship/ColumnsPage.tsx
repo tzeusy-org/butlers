@@ -60,9 +60,9 @@ function serialisePath(ids: string[]): string {
 
 interface NeighbourItemProps {
   entry: NeighbourEntry;
-  /** Column index this item belongs to (used for test attribution). */
+  /** Column index this item belongs to (used for path truncation and test attribution). */
   columnIndex: number;
-  onSelect: (entityId: string) => void;
+  onSelect: (entityId: string, columnIndex: number) => void;
 }
 
 function NeighbourItem({ entry, columnIndex, onSelect }: NeighbourItemProps) {
@@ -74,7 +74,7 @@ function NeighbourItem({ entry, columnIndex, onSelect }: NeighbourItemProps) {
       <button
         type="button"
         className="flex items-center gap-2 text-left text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-        onClick={() => onSelect(entry.entity_id)}
+        onClick={() => onSelect(entry.entity_id, columnIndex)}
         aria-label={`Select entity ${entry.entity_id}`}
         data-entity-id={entry.entity_id}
         data-column-index={columnIndex}
@@ -106,7 +106,7 @@ interface PredicateGroupProps {
   predicate: string;
   entries: NeighbourEntry[];
   columnIndex: number;
-  onSelect: (entityId: string) => void;
+  onSelect: (entityId: string, columnIndex: number) => void;
 }
 
 function PredicateGroup({ predicate, entries, columnIndex, onSelect }: PredicateGroupProps) {
@@ -140,7 +140,7 @@ interface ColumnPanelProps {
   columnIndex: number;
   /** True when this column is the rightmost (currently active) one. */
   isActive: boolean;
-  onSelect: (entityId: string) => void;
+  onSelect: (entityId: string, columnIndex: number) => void;
 }
 
 function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelProps) {
@@ -244,13 +244,17 @@ export default function ColumnsPage() {
   const columnIds: string[] = pathIds.length > 0 ? pathIds : anchorId ? [anchorId] : [];
 
   /**
-   * Append a new entity to the path CSV.
+   * Select an entity from column `columnIndex`, truncating any columns to the
+   * right before appending the new selection.
    *
-   * When the user is on the owner-fallback view (no ?path= yet), seed the path
-   * with [currentAnchorId, selectedEntityId] so the URL captures both columns.
-   * currentAnchorId is captured from the outer-scope variable at call time.
+   * Finder-style behaviour: clicking an item in column N replaces columns
+   * N+1..end with the newly selected entity's column.
+   *
+   * When the user is on the owner-fallback view (no ?path= yet), the base is
+   * seeded with [anchorId] so the URL captures both the anchor and the new
+   * selection.
    */
-  function handleSelect(selectedEntityId: string) {
+  function handleSelect(selectedEntityId: string, columnIndex: number) {
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -258,9 +262,11 @@ export default function ColumnsPage() {
         // If no ?path= yet, seed with the resolved anchor (owner fallback).
         const base =
           currentPath.length > 0 ? currentPath : anchorId ? [anchorId] : [];
-        // Avoid appending the same entity twice in a row.
-        if (base[base.length - 1] === selectedEntityId) return next;
-        const newPath = [...base, selectedEntityId];
+        // Truncate to the clicked column's position, then append the selection.
+        const truncated = base.slice(0, columnIndex + 1);
+        // No-op if the clicked column already ends with this entity.
+        if (truncated[truncated.length - 1] === selectedEntityId) return next;
+        const newPath = [...truncated, selectedEntityId];
         next.set("path", serialisePath(newPath));
         return next;
       },
