@@ -18,7 +18,7 @@
  */
 
 import { useCallback } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeftIcon, NetworkIcon } from "lucide-react";
 
@@ -105,8 +105,8 @@ function AnchorCard({ entityId }: AnchorCardProps) {
           <CardTitle className="text-xl">{data.canonical_name}</CardTitle>
           {data.roles.includes("owner") && (
             <Badge
-              style={{ backgroundColor: "var(--role-owner)", color: "#fff" }}
-              className="text-xs"
+              style={{ backgroundColor: "var(--role-owner)" }}
+              className="text-xs text-white"
             >
               Owner
             </Badge>
@@ -265,7 +265,6 @@ function NeighbourFanOut({ entityId, onRecentre }: NeighbourFanOutProps) {
 
 export default function HopPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
 
   const centerParam = searchParams.get("center");
 
@@ -281,7 +280,14 @@ export default function HopPage() {
 
   const handleRecentre = useCallback(
     (entityId: string) => {
-      setSearchParams({ center: entityId }, { replace: false });
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("center", entityId);
+          return next;
+        },
+        { replace: false },
+      );
     },
     [setSearchParams],
   );
@@ -319,7 +325,16 @@ export default function HopPage() {
             variant="ghost"
             size="sm"
             className="gap-1 text-muted-foreground"
-            onClick={() => navigate("/entities/hop", { replace: false })}
+            onClick={() =>
+              setSearchParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  next.delete("center");
+                  return next;
+                },
+                { replace: false },
+              )
+            }
             data-testid="clear-center-btn"
           >
             <ArrowLeftIcon className="h-3.5 w-3.5" aria-hidden />

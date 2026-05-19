@@ -1962,6 +1962,8 @@ export function getRelationshipEntityQueue(params?: {
   const qs = sp.toString();
   return apiFetch<RelationshipQueueResponse>(
     `/relationship/entities/queue${qs ? `?${qs}` : ""}`,
+  );
+}
 
 /** Fetch relational neighbours grouped by predicate for an entity (§9.2, bu-4wn79).
  *
