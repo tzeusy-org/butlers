@@ -104,20 +104,22 @@ async def _insert_contact(
     first_name: str | None = None,
     last_name: str | None = None,
     nickname: str | None = None,
+    company: str | None = None,
     entity_id: uuid.UUID | None = None,
     roles: list[str] | None = None,
 ) -> uuid.UUID:
     return await pool.fetchval(
         """
         INSERT INTO public.contacts
-            (name, first_name, last_name, nickname, entity_id, roles)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (name, first_name, last_name, nickname, company, entity_id, roles)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         """,
         name,
         first_name,
         last_name,
         nickname,
+        company,
         entity_id,
         roles or [],
     )
@@ -537,3 +539,221 @@ async def test_apply_is_idempotent_no_double_mint(
             "SELECT entity_id FROM public.contacts WHERE first_name = 'Carol'"
         )
         assert carol_entity_id is not None
+
+
+# ---------------------------------------------------------------------------
+# --force-nameless tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_force_nameless_false_still_defers_nameless_orphan(
+    provisioned_postgres_pool, tmp_path: Path
+) -> None:
+    """Default behavior (force_nameless=False): nameless orphan goes to notify-path."""
+    mod = _load_script()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_schema(pool)
+
+        await _insert_contact(pool, name="unknown", company="Acme Corp")
+        await _create_snapshot_from_contacts(pool, _DATE_LABEL)
+
+        with patch.object(
+            mod,
+            "_send_telegram_notification",
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as mock_notify:
+            rc = await mod.run_resolver(
+                date_label=_DATE_LABEL,
+                report_path=tmp_path / "orphans.md",
+                apply=True,
+                force_nameless=False,
+                _pool=pool,
+            )
+
+        assert rc == 0
+        mock_notify.assert_called_once(), "Notify should be called for nameless orphan by default"
+
+        # entity_id must remain NULL — check while pool is still open
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE name = 'unknown'"
+        )
+        assert entity_id is None, "Default (no --force-nameless): entity_id must stay NULL"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_force_nameless_true_mints_with_company(
+    provisioned_postgres_pool, tmp_path: Path
+) -> None:
+    """force_nameless=True + company set → minted with company-derived canonical_name."""
+    mod = _load_script()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_schema(pool)
+
+        await _insert_contact(pool, name="unknown", company="Acme Corp")
+        await _create_snapshot_from_contacts(pool, _DATE_LABEL)
+
+        rc = await mod.run_resolver(
+            date_label=_DATE_LABEL,
+            report_path=tmp_path / "orphans.md",
+            apply=True,
+            force_nameless=True,
+            _pool=pool,
+        )
+
+        assert rc == 0
+
+        # An entity should have been minted
+        entity_count = await pool.fetchval("SELECT COUNT(*) FROM public.entities")
+        assert entity_count == 1, "force_nameless should mint an entity"
+
+        canonical = await pool.fetchval("SELECT canonical_name FROM public.entities LIMIT 1")
+        assert canonical is not None
+        assert "Acme Corp" in canonical, f"Expected company name in canonical: {canonical!r}"
+        assert "Contact at" in canonical, f"Expected 'Contact at' prefix: {canonical!r}"
+
+        # contact.entity_id should be backfilled
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE name = 'unknown'"
+        )
+        assert entity_id is not None, "force_nameless should backfill entity_id"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_force_nameless_true_mints_with_roles(
+    provisioned_postgres_pool, tmp_path: Path
+) -> None:
+    """force_nameless=True + no company but has roles → minted with roles-derived name."""
+    mod = _load_script()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_schema(pool)
+
+        await _insert_contact(pool, name="unknown", roles=["admin", "billing"])
+        await _create_snapshot_from_contacts(pool, _DATE_LABEL)
+
+        rc = await mod.run_resolver(
+            date_label=_DATE_LABEL,
+            report_path=tmp_path / "orphans.md",
+            apply=True,
+            force_nameless=True,
+            _pool=pool,
+        )
+
+        assert rc == 0
+
+        canonical = await pool.fetchval("SELECT canonical_name FROM public.entities LIMIT 1")
+        assert canonical is not None
+        assert "admin" in canonical and "billing" in canonical, (
+            f"Expected roles in canonical: {canonical!r}"
+        )
+        assert "contact" in canonical.lower(), f"Expected 'contact' suffix: {canonical!r}"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_force_nameless_true_mints_with_id_fallback(
+    provisioned_postgres_pool, tmp_path: Path
+) -> None:
+    """force_nameless=True + no company + no roles → minted with id-fallback name."""
+    mod = _load_script()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_schema(pool)
+
+        contact_id = await _insert_contact(pool, name="unknown")
+        await _create_snapshot_from_contacts(pool, _DATE_LABEL)
+
+        rc = await mod.run_resolver(
+            date_label=_DATE_LABEL,
+            report_path=tmp_path / "orphans.md",
+            apply=True,
+            force_nameless=True,
+            _pool=pool,
+        )
+
+        assert rc == 0
+
+        canonical = await pool.fetchval("SELECT canonical_name FROM public.entities LIMIT 1")
+        assert canonical is not None
+        # Short UUID prefix should appear in the fallback name
+        short_id = str(contact_id)[:8]
+        assert short_id in canonical, (
+            f"Expected short contact ID {short_id!r} in canonical: {canonical!r}"
+        )
+        assert "Unnamed" in canonical or "contact" in canonical.lower(), (
+            f"Expected fallback indicator in canonical: {canonical!r}"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_force_nameless_dry_run_produces_would_mint(
+    provisioned_postgres_pool, tmp_path: Path
+) -> None:
+    """force_nameless=True + dry-run → dry-run-would-mint with synthetic name in note."""
+    mod = _load_script()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_schema(pool)
+
+        await _insert_contact(pool, name="unknown", company="Beta Inc")
+        await _create_snapshot_from_contacts(pool, _DATE_LABEL)
+
+        report_path = tmp_path / "orphans.md"
+        rc = await mod.run_resolver(
+            date_label=_DATE_LABEL,
+            report_path=report_path,
+            apply=False,
+            force_nameless=True,
+            _pool=pool,
+        )
+
+        assert rc == 0
+
+        # No writes should have happened
+        entity_count = await pool.fetchval("SELECT COUNT(*) FROM public.entities")
+        assert entity_count == 0, "Dry-run must not write entities even with force_nameless"
+
+    # Report is on disk — read after pool closes, that's fine
+    content = report_path.read_text()
+    assert "dry-run-would-mint" in content, "Should show would-mint outcome"
+    assert "synthetic canonical_name (--force-nameless)" in content, (
+        "Note should identify it as synthetic"
+    )
+    assert "Beta Inc" in content, "Company name should appear in report"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_force_nameless_does_not_affect_named_orphans(
+    provisioned_postgres_pool, tmp_path: Path
+) -> None:
+    """force_nameless=True does not change behaviour for orphans that have a real name signal."""
+    mod = _load_script()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_schema(pool)
+
+        # Orphan with a real name signal
+        await _insert_contact(pool, name="Diana Real", first_name="Diana", last_name="Real")
+        await _create_snapshot_from_contacts(pool, _DATE_LABEL)
+
+        rc = await mod.run_resolver(
+            date_label=_DATE_LABEL,
+            report_path=tmp_path / "orphans.md",
+            apply=True,
+            force_nameless=True,
+            _pool=pool,
+        )
+
+        assert rc == 0
+
+        canonical = await pool.fetchval("SELECT canonical_name FROM public.entities LIMIT 1")
+        # Should use the real name, not a synthetic one
+        assert canonical == "Diana Real", (
+            f"Named orphan should keep real canonical_name, got: {canonical!r}"
+        )
+
+    content = (tmp_path / "orphans.md").read_text()
+    assert "synthetic" not in content, "Named orphan note must not mention synthetic"
