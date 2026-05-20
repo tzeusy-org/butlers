@@ -4,7 +4,6 @@ Covers:
 1. Migration file structure and revision chain (unit — no DB required).
 2. SQL shape: upgrade() emits an idempotent UPDATE targeting connector_type='gmail'.
 3. SQL shape: downgrade() emits a matching UPDATE restoring replay_safe=TRUE.
-4. REPLAY_UNSAFE_CONNECTOR_TYPES constant includes 'gmail'.
 """
 
 from __future__ import annotations
@@ -94,11 +93,6 @@ class TestMigrationFileAndChain:
         """downgrade() is a callable."""
         mod = _load_migration()
         assert callable(getattr(mod, "downgrade", None))
-
-    def test_replay_unsafe_connector_types_includes_gmail(self) -> None:
-        """REPLAY_UNSAFE_CONNECTOR_TYPES includes 'gmail'."""
-        mod = _load_migration()
-        assert "gmail" in mod.REPLAY_UNSAFE_CONNECTOR_TYPES
 
 
 class TestUpgradeSQLShape:

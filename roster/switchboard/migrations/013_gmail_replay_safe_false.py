@@ -33,10 +33,6 @@ down_revision = "sw_012"
 branch_labels = None
 depends_on = None
 
-# Connector types that must have replay_safe = FALSE per the
-# connector-replay-idempotency-policy spec.
-REPLAY_UNSAFE_CONNECTOR_TYPES = ("gmail",)
-
 
 def upgrade() -> None:
     # Idempotent: only touches rows that still have replay_safe = TRUE.
