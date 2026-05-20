@@ -2413,7 +2413,7 @@ async def search_entities(
             -- Branch 1: prefix match on canonical_name or any alias (score=100)
             SELECT
                 e.id AS entity_id,
-                $2::int AS score,
+                $2 AS score,
                 'prefix'::text AS match_kind
             FROM public.entities e
             WHERE (e.metadata->>'merged_into') IS NULL
@@ -2431,7 +2431,7 @@ async def search_entities(
             -- Matches entities with a has-* fact whose object value contains q
             SELECT
                 f.subject AS entity_id,
-                $3::int AS score,
+                $3 AS score,
                 'contact_fact'::text AS match_kind
             FROM relationship.entity_facts f
             WHERE f.predicate LIKE 'has-%'
@@ -2444,7 +2444,7 @@ async def search_entities(
             -- Branch 3: substring match on canonical_name or any alias (score=50)
             SELECT
                 e.id AS entity_id,
-                $4::int AS score,
+                $4 AS score,
                 'substring'::text AS match_kind
             FROM public.entities e
             WHERE (e.metadata->>'merged_into') IS NULL
@@ -2463,7 +2463,7 @@ async def search_entities(
             -- label contains q (e.g. searching "vendor" matches "purchased-from")
             SELECT
                 f.subject AS entity_id,
-                $5::int AS score,
+                $5 AS score,
                 'predicate'::text AS match_kind
             FROM relationship.entity_facts f
             WHERE f.predicate ILIKE ('%' || $1 || '%')
@@ -3379,8 +3379,8 @@ async def get_entities_concentration(
         WITH agg AS (
             SELECT
                 f.subject                               AS entity_id,
-                SUM(COALESCE(f.weight, 1))::bigint      AS weight_sum,
-                COUNT(*)::int                           AS fact_count,
+                SUM(COALESCE(f.weight, 1))              AS weight_sum,
+                COUNT(*)                                AS fact_count,
                 MAX(f.last_seen)                        AS last_seen
             FROM relationship.entity_facts f
             WHERE f.predicate = $1
