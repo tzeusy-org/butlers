@@ -13,43 +13,41 @@ Three-part spec:
   12c — Daemon startup must fail fatally when DASHBOARD_API_KEY is unset and
          BUTLERS_ENV != 'dev'.
 
-All 12a and 12b endpoint tests are marked xfail(strict=False) because the
-endpoints listed in the spec are not yet implemented. The xfail annotation
-names the bead(s) responsible for each endpoint so the guardrail tightens
-automatically once those beads land.
+All 12a and 12b endpoint tests are real passing assertions; the endpoints and their
+owner-only authorization gates have all shipped (beads 9.4, 9.7, 9.8, 9.9, 9.10,
+9.11).  Tests in these classes lock in the 403/non-403 contract so regressions are
+caught immediately.
 
-The 12c startup test is also marked xfail because the startup gate is not yet
-implemented in src/butlers/api/app.py (the lifespan handler currently only warns
-on DASHBOARD_EXPORT_SECRET; a fatal check for DASHBOARD_API_KEY in non-dev
-environments remains a future deliverable per clause 12c).
+The 12c startup test remains xfail: the fatal DASHBOARD_API_KEY check for non-dev
+environments has not yet been implemented in src/butlers/api/app.py (the lifespan
+handler currently only warns on DASHBOARD_EXPORT_SECRET).
 
 Architecture notes
 ------------------
-The owner-only check described in the spec is an endpoint-level authorization
-layer distinct from the ApiKeyMiddleware (which provides 401 on a bad/missing
-API key). The endpoint-level owner check resolves the caller's entity via the DB
-and raises HTTP 403 + ``{"code": "owner_required"}`` when the caller's entity
-lacks the 'owner' role — mirroring the pattern used by the briefing endpoint and
-the egress endpoint (see tests/dashboard/test_briefing.py and
-tests/api/test_system.py).
+The owner-only check is an endpoint-level authorization layer distinct from the
+ApiKeyMiddleware (which provides 401 on a bad/missing API key).  The endpoint-level
+owner check calls ``_get_owner_roles(pool)`` which fetches the first entity whose
+``roles`` column contains ``'owner'`` and returns the roles list.  Access is denied
+when the list is ``None`` (DB error) or does not include ``'owner'``.
+
+The pattern used here is ``_get_owner_roles`` + roles inspection — NOT the older
+``_assert_owner_entity_exists`` helper which only checks for row existence and is
+therefore incompatible with the mock fixture below.  All owner-gated endpoints in
+this router use the ``_get_owner_roles`` pattern.
 
 The tests use httpx.AsyncClient with a mocked DB pool (same approach as
 test_entity_tabs.py and test_chronicler_boundary.py) so no real Postgres or
-Docker is required. Every test that sends a request to a not-yet-implemented
-endpoint is xfail; once an endpoint ships the corresponding test flips to a real
-assertion.
+Docker is required.
 
 Non-owner simulation
 --------------------
-To simulate a non-owner caller we configure a mock DB pool whose response to
-the owner-role lookup returns an entity WITHOUT 'owner' in its roles array.
-The endpoint implementation is expected to query public.entities (or an
-equivalent resolver) with the 'owner' = ANY(roles) predicate and reject the
-request when the caller's identity does not match.
+To simulate a non-owner caller we configure a mock DB pool whose ``fetchrow``
+returns a row with ``roles=[]``.  The ``_get_owner_roles`` helper returns that
+list, and ``"owner" not in []`` triggers the 403 response.
 
-Because the endpoint implementations do not yet exist, the xfail tests simply
-assert that the route returns 403 + owner_required — the failure mode today is
-404 (route not found), which satisfies ``xfail(strict=False)``.
+To simulate an owner caller we set ``roles=["owner"]``.  The helper returns
+``["owner"]``, the check passes, and the endpoint proceeds normally (returning
+whatever the mocked pool produces for subsequent queries).
 """
 
 from __future__ import annotations
@@ -157,7 +155,7 @@ def _assert_owner_required(resp: httpx.Response) -> None:
 # ---------------------------------------------------------------------------
 # Clause 12a — Mutation endpoints (POST / DELETE)
 #
-# Awaiting beads:
+# All endpoints shipped (beads 9.7, 9.8, 9.9, 9.10, 9.11):
 #   POST /entities               → bead 9.7 (entity create)
 #   POST /entities/{id}/merge    → bead 9.8 (entity merge)
 #   POST /entities/{id}/archive  → bead 9.9 (entity archive)
@@ -172,39 +170,27 @@ def _assert_owner_required(resp: httpx.Response) -> None:
 class TestClause12aMutationNonOwner:
     """Non-owner callers MUST receive HTTP 403 + owner_required on all mutation endpoints."""
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="POST /entities not yet implemented; awaiting bead 9.7",
-    )
     async def test_post_entities_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "post", f"{_BASE}", json_body={"canonical_name": "Test"})
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="POST /entities/{id}/merge not yet implemented; awaiting bead 9.8",
-    )
     async def test_post_entities_merge_non_owner_403(self):
         app = _non_owner_app()
+        other = uuid4()
         resp = await _request(
-            app, "post", f"{_BASE}/{_ENT_ID}/merge", json_body={"merge_into": str(uuid4())}
+            app,
+            "post",
+            f"{_BASE}/{_ENT_ID}/merge",
+            json_body={"entityA": str(_ENT_ID), "entityB": str(other), "keepAs": "A"},
         )
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="POST /entities/{id}/archive not yet implemented; awaiting bead 9.9",
-    )
     async def test_post_entities_archive_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "post", f"{_BASE}/{_ENT_ID}/archive", json_body={})
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="POST /entities/{id}/promote-tier not yet implemented; awaiting bead 9.10",
-    )
     async def test_post_entities_promote_tier_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(
@@ -212,10 +198,6 @@ class TestClause12aMutationNonOwner:
         )
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="DELETE /entities/{id} not yet implemented; awaiting bead 9.7",
-    )
     async def test_delete_entity_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "delete", f"{_BASE}/{_ENT_ID}")
@@ -228,10 +210,6 @@ class TestClause12aMutationNonOwner:
         )
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="POST /entities/{id}/contacts not yet implemented; awaiting bead 9.7",
-    )
     async def test_post_entity_contacts_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(
@@ -242,13 +220,6 @@ class TestClause12aMutationNonOwner:
         )
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason=(
-            "DELETE /entities/{id}/contacts/{pred}/{valueHash} not yet implemented; "
-            "awaiting bead 9.7"
-        ),
-    )
     async def test_delete_entity_contact_fact_non_owner_403(self):
         app = _non_owner_app()
         fake_hash = "abc123"
@@ -261,14 +232,10 @@ class TestClause12aMutationOwner:
 
     These tests verify the gate does not block legitimate owner requests.
     The assertion is relaxed: we accept any status code other than 403 with
-    owner_required (e.g. 404/422 from the not-yet-implemented endpoint, or
-    200/201 once the endpoint ships).
+    owner_required (e.g. 404 from a missing entity in the mock, or 200/201
+    on a successful mutation).
     """
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="POST /entities not yet implemented; awaiting bead 9.7",
-    )
     async def test_post_entities_owner_not_rejected(self):
         app = _owner_app()
         resp = await _request(app, "post", f"{_BASE}", json_body={"canonical_name": "Test"})
@@ -278,10 +245,6 @@ class TestClause12aMutationOwner:
             code = body.get("code") or (body.get("error") or {}).get("code")
             assert code != "owner_required", "Owner caller was incorrectly rejected."
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="DELETE /entities/{id} not yet implemented; awaiting bead 9.7",
-    )
     async def test_delete_entity_owner_not_rejected(self):
         app = _owner_app()
         resp = await _request(app, "delete", f"{_BASE}/{_ENT_ID}")
@@ -294,7 +257,7 @@ class TestClause12aMutationOwner:
 # ---------------------------------------------------------------------------
 # Clause 12b — PII-bearing GET endpoints
 #
-# Awaiting beads:
+# All endpoints shipped (beads 9.7, 9.11, 9.12, 9.13):
 #   GET /entities/queue            → bead 9.11 (curation queue)
 #   GET /entities/search           → bead 9.12 (finder / cmd-K)
 #   GET /entities/{id}/contacts    → bead 9.7 (entity contacts read)
@@ -306,37 +269,21 @@ class TestClause12aMutationOwner:
 class TestClause12bPiiReadsNonOwner:
     """Non-owner callers MUST receive HTTP 403 + owner_required on PII-bearing GET endpoints."""
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="GET /entities/queue not yet implemented; awaiting bead 9.11",
-    )
     async def test_get_queue_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "get", f"{_BASE}/queue")
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="GET /entities/search not yet implemented; awaiting bead 9.12",
-    )
     async def test_get_search_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "get", f"{_BASE}/search?q=alice")
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="GET /entities/{id}/contacts not yet implemented; awaiting bead 9.7",
-    )
     async def test_get_entity_contacts_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/contacts")
         _assert_owner_required(resp)
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="GET /entities/{id}/neighbours not yet implemented; awaiting bead 9.7",
-    )
     async def test_get_entity_neighbours_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/neighbours")
@@ -351,10 +298,6 @@ class TestClause12bPiiReadsNonOwner:
 class TestClause12bPiiReadsOwner:
     """Owner callers MUST NOT be rejected by the owner_required gate on PII GET endpoints."""
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="GET /entities/queue not yet implemented; awaiting bead 9.11",
-    )
     async def test_get_queue_owner_not_rejected(self):
         app = _owner_app()
         resp = await _request(app, "get", f"{_BASE}/queue")
@@ -363,10 +306,6 @@ class TestClause12bPiiReadsOwner:
             code = body.get("code") or (body.get("error") or {}).get("code")
             assert code != "owner_required", "Owner caller was incorrectly rejected."
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="GET /entities/{id}/contacts not yet implemented; awaiting bead 9.7",
-    )
     async def test_get_entity_contacts_owner_not_rejected(self):
         app = _owner_app()
         resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/contacts")
