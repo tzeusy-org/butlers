@@ -16,7 +16,7 @@ the shared ``provisioned_postgres_pool`` fixture).
 
 Issue: bu-uj3xv
 Parent epic: bu-ao6uh (entity-redesign)
-Spec anchor: openspec/changes/relationship-tabs-to-entities/specs/relationship-facts/spec.md
+Spec anchor: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/relationship-facts/spec.md
              §"Requirement: Credentials carve-out"
              Brief §6b Amendment 1.1.A.4 (credentials do NOT become triples)
 """

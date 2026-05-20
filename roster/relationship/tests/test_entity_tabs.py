@@ -1,7 +1,7 @@
 """Integration tests for entity-keyed tab API endpoints.
 
 Covers all 11 spec scenarios from
-``openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
+``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
 § "Entity-level tab APIs".
 
 Each test hits the FastAPI router via httpx.AsyncClient with a mocked DB pool,

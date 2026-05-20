@@ -196,7 +196,7 @@ Identity resolution is invoked at:
 
 ### Amendment 2 (2026-05-19) — Contacts as RDF Triples
 
-Applied per `openspec/changes/relationship-tabs-to-entities/rfc-amendments/0004-amendment-2-contacts-as-triples.md`.
+Applied per `openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/rfc-amendments/0004-amendment-2-contacts-as-triples.md`.
 
 **Summary:** The 3-table identity model (`public.entities`, `public.contacts`, `public.contact_info`) collapsed to a 2-table model (`public.entities` + `relationship.entity_facts` triple store). Contact channel identifiers are now stored as RDF facts (e.g., `(entity_id, "has-email", "alice@example.com")`), eliminating two-table indirection and providing native multi-valuedness, provenance, and verification status.
 

@@ -1,7 +1,7 @@
 """Tests for /api/relationship/entities/{id}/contacts CRUD endpoints.
 
 Covers spec scenarios from
-``openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
+``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
 § "Requirement: Owner-only authorization for entity endpoints" Amendment 12a/12b,
 and the contact-fact CRUD requirement (tasks.md §9.4).
 

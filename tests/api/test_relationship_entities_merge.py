@@ -1,7 +1,7 @@
 """Tests for POST /api/relationship/entities/{id}/merge (entity-level merge).
 
 Spec anchor:
-  openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
+  openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
   Requirement: Owner-only authorization for entity endpoints — Clause 12a (Amendment 12a)
   Task: tasks.md §9.10 (bu-jp6r6)
 

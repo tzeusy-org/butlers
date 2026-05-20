@@ -17,7 +17,7 @@ dedicated ``relationship.credentials`` table, co-located with the relationship
 butler (canonical credential writer, per ``roster/relationship/butler.toml``).
 
 This migration creates that table per the Phase 2 decision documented in
-``openspec/changes/relationship-tabs-to-entities/specs/relationship-facts/spec.md``
+``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/relationship-facts/spec.md``
 §"Requirement: Credentials carve-out".
 
 Schema
