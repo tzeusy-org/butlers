@@ -108,6 +108,17 @@ bd sync               # Commit and push changes
   ```
 - This imports newer `.beads/issues.jsonl` state into the active worktree so `bd show <new-id>` resolves deterministically.
 
+### Worktree node_modules
+
+When working on frontend changes in a worktree created by `bd worktree create`, the frontend build toolchain (TypeScript, vitest) fails without `node_modules`. Rather than copy the entire cache (wasting disk space), the setup script symlinks `frontend/node_modules` from the main repo's copy, keeping your worktree in sync automatically when `package.json` changes.
+
+Run this after creating a worktree:
+```bash
+./scripts/setup_worktree.sh
+```
+
+The script symlinks `frontend/node_modules` and silently skips if the main repo hasn't run `npm install` yet. It is safe to run multiple times (idempotent).
+
 ### Key Concepts
 
 - **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
