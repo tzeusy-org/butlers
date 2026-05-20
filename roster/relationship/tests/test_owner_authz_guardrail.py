@@ -392,6 +392,39 @@ class TestClause12bPiiReadsOwner:
 class TestClause12cStartupGate:
     """Daemon must refuse startup in non-dev environments when DASHBOARD_API_KEY is unset."""
 
+    # IMPLEMENTER NOTE (clause 12c) — bu-yv4da
+    # -------------------------------------------------------------------------
+    # If the DASHBOARD_API_KEY guard fires inside the FastAPI *lifespan* handler
+    # (i.e. inside the ``@asynccontextmanager`` passed to ``FastAPI(lifespan=…)``
+    # in src/butlers/api/app.py) rather than directly inside ``create_app()``,
+    # you MUST convert this test to use ``fastapi.testclient.TestClient`` instead
+    # of ``httpx.AsyncClient`` with ``httpx.ASGITransport``.
+    #
+    # Why: ``httpx.AsyncClient(transport=ASGITransport(app=app))`` does NOT
+    # trigger FastAPI lifespan events (startup / shutdown). The lifespan context
+    # manager is only exercised when the ASGI server is started — which
+    # ``TestClient`` (via Starlette's ``TestClient``) does by running the app
+    # in a thread with proper startup/shutdown. An ``AsyncClient`` + ``ASGITransport``
+    # will happily serve requests without ever entering the lifespan block, so the
+    # guard will never fire and ``pytest.raises`` will fail, making the test always
+    # xfail instead of flipping to a real pass once the implementation lands.
+    #
+    # Conversion recipe (remove the xfail decorator too once the guard is live):
+    #
+    #   from fastapi.testclient import TestClient
+    #
+    #   def test_startup_fails_when_api_key_unset_in_production(self, monkeypatch):
+    #       monkeypatch.setenv("BUTLERS_ENV", "production")
+    #       monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    #       app = create_app(api_key=None)
+    #       with pytest.raises((RuntimeError, SystemExit, ValueError)):
+    #           with TestClient(app):  # __enter__ runs lifespan startup
+    #               pass
+    #
+    # If the guard fires in ``create_app()`` itself (before lifespan), the current
+    # async approach is fine — the ``pytest.raises`` block will catch it at
+    # ``create_app(api_key=None)`` and both styles work.
+    # -------------------------------------------------------------------------
     @pytest.mark.xfail(
         strict=False,
         reason=(
