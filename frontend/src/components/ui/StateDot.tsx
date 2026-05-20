@@ -20,8 +20,9 @@ import { cn } from "@/lib/utils"
  * - "duplicate-candidate"  → amber  (--amber)
  * - "stale"                → red    (--red)
  * - "healthy"              → green  (--green)
+ * - "archived"             → muted  (--muted-foreground)
  */
-export type EntityState = "unidentified" | "duplicate-candidate" | "stale" | "healthy"
+export type EntityState = "unidentified" | "duplicate-candidate" | "stale" | "healthy" | "archived"
 
 export interface StateDotProps extends React.HTMLAttributes<HTMLSpanElement> {
   /** Entity curation state. Drives the dot color. */
@@ -39,6 +40,7 @@ const STATE_COLORS: Record<EntityState, string> = {
   "duplicate-candidate": "var(--amber)",
   stale: "var(--red)",
   healthy: "var(--green)",
+  archived: "var(--muted-foreground)",
 }
 
 /** Human-readable label for each state (used as aria-label fallback). */
@@ -47,6 +49,7 @@ const STATE_LABELS: Record<EntityState, string> = {
   "duplicate-candidate": "Duplicate candidate",
   stale: "Stale",
   healthy: "Healthy",
+  archived: "Archived",
 }
 
 /**

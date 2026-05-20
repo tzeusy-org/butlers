@@ -3,7 +3,7 @@
  *
  * Verifies:
  * - getEntityGloss returns a non-empty string for every (tier, state, category)
- *   tuple (full Cartesian product coverage: 6 × 4 × 8 = 192 combinations).
+ *   tuple (full Cartesian product coverage: 6 × 5 × 8 = 240 combinations).
  * - Category-specific overrides are returned when present.
  * - Base glosses are returned when no override exists.
  * - Return values never include em-dashes (per Brief tone guidance).
@@ -37,7 +37,7 @@ const ALL_CATEGORIES: EntityType[] = [...ENTITY_TYPE_VALUES]
 // Full Cartesian product: 192 combinations.
 // ---------------------------------------------------------------------------
 
-describe("getEntityGloss -- full Cartesian product (6 × 4 × 8 = 192 combos)", () => {
+describe("getEntityGloss -- full Cartesian product (6 × 5 × 8 = 240 combos)", () => {
   for (const tier of ALL_TIERS) {
     for (const state of ALL_STATES) {
       for (const category of ALL_CATEGORIES) {
