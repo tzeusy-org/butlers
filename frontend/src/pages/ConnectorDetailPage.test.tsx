@@ -46,10 +46,13 @@ vi.mock("@/components/ingestion/ConnectorRulesSection", () => ({
   ConnectorRulesSection: () => <div data-testid="connector-rules-section" />,
 }));
 
-vi.mock("@/components/ingestion/BatchSettingsCard", () => ({
-  BatchSettingsCard: () => <div data-testid="batch-settings-card" />,
-  BATCH_CONNECTOR_TYPES: new Set<string>(),
-}));
+vi.mock("@/components/ingestion/BatchSettingsCard", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/ingestion/BatchSettingsCard")>();
+  return {
+    ...actual,
+    BatchSettingsCard: () => <div data-testid="batch-settings-card" />,
+  };
+});
 
 type UseConnectorDetailResult = ReturnType<typeof useConnectorDetail>;
 type UseConnectorStatsResult = ReturnType<typeof useConnectorStats>;
