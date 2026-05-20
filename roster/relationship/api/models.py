@@ -308,7 +308,28 @@ class EntityInfoEntry(BaseModel):
 
 
 class EntityDetail(BaseModel):
-    """Full entity record with entity_info entries."""
+    """Full entity record with entity_info entries.
+
+    ``state`` reflects the highest-priority curation bucket the entity matches,
+    using the same classification logic as ``GET /entities/queue``:
+
+    - ``'healthy'`` — no flags, has a recent fact within the past 365 days, no shared identifiers.
+    - ``'unidentified'`` — ``metadata->>'unidentified' = 'true'``.
+    - ``'duplicate-candidate'`` — ``metadata->>'duplicate_candidate' = 'true'`` OR shares a
+      ``has-email`` / ``has-phone`` fact value with at least one other entity.
+    - ``'stale'`` — no active ``relationship.entity_facts`` fact with ``last_seen`` within
+      the past 365 days.
+
+    Priority (highest to lowest): unidentified > duplicate-candidate > stale > healthy.
+
+    ``state_evidence`` mirrors the ``evidence`` dict from the queue entry for non-healthy states:
+
+    - ``unidentified`` — ``{}``
+    - ``duplicate-candidate`` — ``{"predicate": ..., "shared_value": ...,
+      "peer_entity_ids": [...]}`` or ``{}`` when flagged via metadata only (no shared fact).
+    - ``stale`` — ``{"last_seen": "<iso-datetime>|null"}``
+    - ``healthy`` — ``None``
+    """
 
     id: UUID
     canonical_name: str
@@ -319,6 +340,8 @@ class EntityDetail(BaseModel):
     created_at: datetime
     updated_at: datetime
     entity_info: list[EntityInfoEntry] = Field(default_factory=list)
+    state: Literal["healthy", "unidentified", "duplicate-candidate", "stale"] = "healthy"
+    state_evidence: dict[str, Any] | None = None
 
 
 class CreateEntityInfoRequest(BaseModel):
