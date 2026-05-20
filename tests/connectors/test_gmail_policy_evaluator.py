@@ -39,6 +39,12 @@ def _make_pool(emails: list[str] | None = None, *, raises: Exception | None = No
 
 
 async def test_evaluator_loads_contacts_from_db():
+    # Previously flaked on CI runners with low uptime: _cache_loaded_at was
+    # initialised to 0.0, so `time.monotonic() - 0.0 < ttl` evaluated False on
+    # freshly-booted runners (uptime < TTL seconds), silently skipping the DB
+    # refresh and returning an empty frozenset.  Fixed in PR #1800 by
+    # initialising _cache_loaded_at to float("-inf") so the cache is always
+    # treated as expired on the first call regardless of system uptime.
     pool = _make_pool(["alice@example.com", "bob@example.com"])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
