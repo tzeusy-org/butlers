@@ -464,3 +464,134 @@ describe("EntitiesIndexPage — ?has=contact URL param", () => {
     expect(lastCall?.has).toBe("contact");
   });
 });
+
+describe("EntitiesIndexPage — ?type= URL param", () => {
+  it("pre-activates the type chip when navigated to ?type=person", () => {
+    renderPage("/entities?type=person");
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const firstCall = calls[0][0];
+    expect(firstCall?.entity_type).toBe("person");
+  });
+
+  it("does NOT pass entity_type when URL has no ?type param", () => {
+    renderPage("/entities");
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const firstCall = calls[0][0];
+    expect(firstCall?.entity_type).toBeUndefined();
+  });
+
+  it("toggling type chip OFF removes ?type from URL while preserving other params", async () => {
+    renderPage("/entities?type=person&has=contact");
+
+    // Verify initial state: type=person is active
+    let calls = vi.mocked(useRelationshipEntities).mock.calls;
+    expect(calls[0][0]?.entity_type).toBe("person");
+    expect(calls[0][0]?.has).toBe("contact");
+
+    const personChip = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Person",
+    );
+    expect(personChip).toBeTruthy();
+
+    await act(async () => {
+      personChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // After toggling OFF, entity_type should be gone but has=contact remains
+    calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const lastCall = calls[calls.length - 1][0];
+    expect(lastCall?.entity_type).toBeUndefined();
+    expect(lastCall?.has).toBe("contact");
+  });
+
+  it("toggling type chip ON adds ?type to URL while preserving other params", async () => {
+    renderPage("/entities?has=contact");
+
+    const orgChip = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Org",
+    );
+    expect(orgChip).toBeTruthy();
+
+    await act(async () => {
+      orgChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const lastCall = calls[calls.length - 1][0];
+    expect(lastCall?.entity_type).toBe("organization");
+    expect(lastCall?.has).toBe("contact");
+  });
+});
+
+describe("EntitiesIndexPage — ?state= URL param", () => {
+  it("pre-activates the state chip when navigated to ?state=unidentified", () => {
+    renderPage("/entities?state=unidentified");
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const firstCall = calls[0][0];
+    expect(firstCall?.state).toBe("unidentified");
+  });
+
+  it("does NOT pass state when URL has no ?state param", () => {
+    renderPage("/entities");
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const firstCall = calls[0][0];
+    expect(firstCall?.state).toBeUndefined();
+  });
+
+  it("toggling state chip ON adds ?state to URL while preserving other params", async () => {
+    renderPage("/entities?has=contact");
+
+    const unidentifiedChip = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Unidentified",
+    );
+    expect(unidentifiedChip).toBeTruthy();
+
+    await act(async () => {
+      unidentifiedChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const lastCall = calls[calls.length - 1][0];
+    expect(lastCall?.state).toBe("unidentified");
+    expect(lastCall?.has).toBe("contact");
+  });
+
+  it("toggling state chip OFF removes ?state from URL while preserving other params", async () => {
+    renderPage("/entities?state=unidentified&has=contact");
+
+    // Verify initial state
+    let calls = vi.mocked(useRelationshipEntities).mock.calls;
+    expect(calls[0][0]?.state).toBe("unidentified");
+    expect(calls[0][0]?.has).toBe("contact");
+
+    const unidentifiedChip = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Unidentified",
+    );
+    expect(unidentifiedChip).toBeTruthy();
+
+    await act(async () => {
+      unidentifiedChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const lastCall = calls[calls.length - 1][0];
+    expect(lastCall?.state).toBeUndefined();
+    expect(lastCall?.has).toBe("contact");
+  });
+});
+
+describe("EntitiesIndexPage — combined URL params", () => {
+  it("pre-activates type, state, and has=contact chips when all three are in URL", () => {
+    renderPage("/entities?type=person&state=unidentified&has=contact");
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const firstCall = calls[0][0];
+    expect(firstCall?.entity_type).toBe("person");
+    expect(firstCall?.state).toBe("unidentified");
+    expect(firstCall?.has).toBe("contact");
+  });
+});
