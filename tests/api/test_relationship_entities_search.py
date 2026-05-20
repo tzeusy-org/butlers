@@ -71,14 +71,15 @@ def _app_with_pool(
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app with a mocked relationship DB pool.
 
-    ``fetchrow_return`` controls the _assert_owner_entity_exists() call.
-    When it returns a row with ``id`` present, the owner gate passes.
-    When it returns None, the gate raises 403.
+    ``fetchrow_return`` controls the ``_get_owner_roles`` call.
+    When it returns a row with ``id`` and ``roles=["owner"]``, the owner gate passes.
+    When it returns None, the gate returns 403.
     ``fetch_rows`` is returned by ``pool.fetch`` (the search results).
     """
     # Default: owner entity found (gate passes).
+    # Must include ``roles`` so _get_owner_roles can inspect row["roles"].
     if fetchrow_return is None:
-        fetchrow_return = {"id": uuid4()}
+        fetchrow_return = {"id": uuid4(), "roles": ["owner"]}
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=fetchrow_return)
@@ -363,7 +364,7 @@ async def test_search_returns_200_for_owner():
     """GET /entities/search returns 200 (not 403) when owner entity exists."""
     app, _ = _app_with_pool(
         fetch_rows=[_make_search_row()],
-        fetchrow_return={"id": uuid4()},
+        fetchrow_return={"id": uuid4(), "roles": ["owner"]},
     )
     resp = await _get(app, q="test")
     assert resp.status_code == 200
