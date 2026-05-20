@@ -69,6 +69,9 @@ const OWNER_ENTITY: RelationshipEntityDetail = {
   metadata: {},
   created_at: "2025-01-01T00:00:00Z",
   updated_at: "2025-01-01T00:00:00Z",
+  state: "healthy",
+  state_evidence: null,
+  entity_info: [],
 };
 
 const BOB_ENTITY: RelationshipEntityDetail = {
@@ -80,6 +83,9 @@ const BOB_ENTITY: RelationshipEntityDetail = {
   metadata: {},
   created_at: "2025-01-01T00:00:00Z",
   updated_at: "2025-01-01T00:00:00Z",
+  state: "healthy",
+  state_evidence: null,
+  entity_info: [],
 };
 
 const KNOWS_NEIGHBOURS: NeighboursResponse = {

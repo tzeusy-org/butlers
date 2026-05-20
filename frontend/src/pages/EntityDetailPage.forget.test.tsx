@@ -81,6 +81,11 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useEntityFacts: vi.fn(() => ({
+    data: { facts: [], total: 0, offset: 0, limit: 20, has_more: false },
+    isFetching: false,
+    error: null,
+  })),
 }));
 
 vi.mock("@/hooks/use-contacts", () => ({
