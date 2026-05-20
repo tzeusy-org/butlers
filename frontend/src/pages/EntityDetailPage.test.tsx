@@ -5,7 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
-import type { EntityDetail } from "@/api/types";
+import { useEntityFacts } from "@/hooks/use-entities";
+import type { EntityDetail, EntityFact } from "@/api/types";
 
 // Mock react-router's useParams and useSearchParams so we can control both
 vi.mock("react-router", async (importOriginal) => {
@@ -62,6 +63,10 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useEntityFacts: vi.fn(() => ({
+    data: { facts: [], total: 0, offset: 0, limit: 20, has_more: false },
+    isFetching: false,
+  })),
 }));
 
 vi.mock("@/hooks/use-contacts", () => ({
@@ -455,38 +460,43 @@ describe("EntityDetailPage — entity gloss", () => {
 // Workbench mode — ProvenanceGrid
 // ---------------------------------------------------------------------------
 
-const SAMPLE_FACT = {
+// EntityFact from relationship.entity_facts (real provenance fields, bu-mg4dk)
+const SAMPLE_ENTITY_FACT: EntityFact = {
   id: "fact-wb-1",
   subject: "entity-001",
-  predicate: "works_at",
-  content: "Acme Corp",
-  importance: 7.5,
-  confidence: 0.9,
-  decay_rate: 0.008,
-  permanence: "standard",
-  source_butler: "general",
-  source_episode_id: null,
-  session_id: "sess-abc",
-  supersedes_id: null,
-  entity_id: "entity-001",
-  entity_name: "Test Owner",
-  object_entity_id: null,
-  object_entity_name: null,
+  predicate: "works-at",
+  object: "Acme Corp",
+  object_kind: "literal",
+  src: "general",
+  conf: 1.0,
+  weight: 5,
+  last_observed_at: "2025-03-10T08:00:00Z",
+  verified: false,
+  primary: null,
   validity: "active",
-  scope: "global",
-  reference_count: 1,
   created_at: "2025-03-10T08:00:00Z",
-  last_referenced_at: null,
-  last_confirmed_at: null,
-  tags: [],
-  metadata: {},
 };
+
+function setEntityFacts(facts: EntityFact[], opts: { has_more?: boolean; total?: number } = {}) {
+  vi.mocked(useEntityFacts).mockReturnValue({
+    data: {
+      facts,
+      total: opts.total ?? facts.length,
+      offset: 0,
+      limit: 20,
+      has_more: opts.has_more ?? false,
+    },
+    isFetching: false,
+  } as ReturnType<typeof useEntityFacts>);
+}
 
 describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorageMock.clear();
     vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+    // Default: no facts from relationship.entity_facts
+    setEntityFacts([]);
   });
 
   function setMode(mode: "editorial" | "workbench") {
@@ -497,11 +507,8 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
 
   it("Workbench mode renders the provenance grid section", () => {
     setMode("workbench");
-    setEntityState({
-      ...BASE_ENTITY,
-      recent_facts: [SAMPLE_FACT],
-      recent_facts_total: 1,
-    });
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
     const html = renderPage();
     expect(html).toContain('data-testid="provenance-grid"');
     expect(html).toContain("Provenance");
@@ -509,64 +516,49 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
 
   it("Editorial mode does NOT render the provenance grid", () => {
     setMode("editorial");
-    setEntityState({
-      ...BASE_ENTITY,
-      recent_facts: [SAMPLE_FACT],
-      recent_facts_total: 1,
-    });
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
     const html = renderPage();
     expect(html).not.toContain('data-testid="provenance-grid"');
     expect(html).not.toContain("Provenance");
   });
 
-  it("Workbench renders fact predicate and content in the grid", () => {
+  it("Workbench renders real provenance fields: predicate, object, and src", () => {
     setMode("workbench");
-    setEntityState({
-      ...BASE_ENTITY,
-      recent_facts: [SAMPLE_FACT],
-      recent_facts_total: 1,
-    });
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
     const html = renderPage();
-    // predicate displayed (underscores replaced with spaces)
+    // predicate displayed (dashes/underscores replaced with spaces)
     expect(html).toContain("works at");
-    // object content
+    // object value (literal)
     expect(html).toContain("Acme Corp");
-    // source butler
+    // src (source butler)
     expect(html).toContain("general");
   });
 
-  it("Workbench renders grid column headers (Predicate, Importance, Recorded)", () => {
+  it("Workbench renders real column headers: Predicate, Weight, Last Observed", () => {
     setMode("workbench");
-    setEntityState({
-      ...BASE_ENTITY,
-      recent_facts: [SAMPLE_FACT],
-      recent_facts_total: 1,
-    });
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
     const html = renderPage();
     expect(html).toContain("Predicate");
-    expect(html).toContain("Importance");
-    expect(html).toContain("Recorded");
+    expect(html).toContain("Weight");
+    expect(html).toContain("Last Observed");
   });
 
   it("Workbench shows empty state when no facts exist", () => {
     setMode("workbench");
-    setEntityState({
-      ...BASE_ENTITY,
-      recent_facts: [],
-      recent_facts_total: 0,
-    });
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([]);
     const html = renderPage();
     expect(html).toContain('data-testid="provenance-grid"');
     expect(html).toContain("No facts linked to this entity.");
   });
 
-  it("Workbench grid renders sort buttons for Predicate, Importance, and Recorded columns", () => {
+  it("Workbench grid renders sort buttons with aria-sort attributes", () => {
     setMode("workbench");
-    setEntityState({
-      ...BASE_ENTITY,
-      recent_facts: [SAMPLE_FACT],
-      recent_facts_total: 1,
-    });
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
     const html = renderPage();
     // Sort buttons are clickable — verify aria-sort attributes are present
     expect(html).toContain('aria-sort="none"');
@@ -574,16 +566,41 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
     expect(html).toMatch(/aria-sort="(ascending|descending)"/);
   });
 
-  it("Workbench shows load-more button when hasMore is true", () => {
+  it("Workbench shows load-more button when has_more is true", () => {
     setMode("workbench");
-    setEntityState({
-      ...BASE_ENTITY,
-      recent_facts: [SAMPLE_FACT],
-      recent_facts_total: 50,
-      recent_facts_has_more: true,
-    });
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT], { has_more: true, total: 50 });
     const html = renderPage();
     expect(html).toContain("Load more facts");
+  });
+
+  it("Workbench renders weight value from relationship.entity_facts", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([{ ...SAMPLE_ENTITY_FACT, weight: 7 }]);
+    const html = renderPage();
+    expect(html).toContain("7");
+  });
+
+  it("Workbench renders object_kind from relationship.entity_facts", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
+    const html = renderPage();
+    expect(html).toContain("literal");
+  });
+
+  it("Workbench renders entity link when object_kind is entity", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    const entityRefFact: EntityFact = {
+      ...SAMPLE_ENTITY_FACT,
+      object: "entity-002",
+      object_kind: "entity",
+    };
+    setEntityFacts([entityRefFact]);
+    const html = renderPage();
+    expect(html).toContain('href="/entities/entity-002"');
   });
 });
 

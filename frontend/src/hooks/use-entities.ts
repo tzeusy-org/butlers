@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getEntityConcentration,
   getEntityDates,
+  getEntityFacts,
   getEntityGifts,
   getEntityInteractions,
   getEntityLinkedContacts,
@@ -26,7 +27,7 @@ import {
   searchRelationshipEntities,
   updateEntityDunbarTier,
 } from "@/api/index.ts";
-import type { RelationshipEntityListParams } from "@/api/index.ts";
+import type { EntityFactsParams, RelationshipEntityListParams } from "@/api/index.ts";
 
 /** Fetch all contacts linked to a relationship entity. */
 export function useEntityLinkedContacts(entityId: string | undefined) {
@@ -105,6 +106,26 @@ export function useEntityNeighbours(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-neighbours", entityId],
     queryFn: () => getEntityNeighbours(entityId!),
+    enabled: !!entityId,
+  });
+}
+
+/**
+ * Fetch per-fact provenance data from relationship.entity_facts (bu-mg4dk).
+ *
+ * Provides real provenance fields for the Workbench ProvenanceGrid (§6b Amendment 7):
+ * weight, last_observed_at, object_kind, src.
+ *
+ * @param entityId — the entity UUID to fetch facts for.
+ * @param params — optional offset/limit pagination parameters.
+ */
+export function useEntityFacts(
+  entityId: string | undefined,
+  params?: EntityFactsParams,
+) {
+  return useQuery({
+    queryKey: ["entity-facts", entityId, params?.offset ?? 0, params?.limit ?? 20],
+    queryFn: () => getEntityFacts(entityId!, params),
     enabled: !!entityId,
   });
 }

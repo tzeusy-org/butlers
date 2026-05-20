@@ -332,6 +332,8 @@ import type {
   MemoryAccess,
   KillRequest,
   KillResponse,
+  EntityFactsResponse,
+  EntityFactsParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1989,6 +1991,28 @@ export function getEntityNeighbours(entityId: string): Promise<NeighboursRespons
   return apiFetch<NeighboursResponse>(
     `/relationship/entities/${encodeURIComponent(entityId)}/neighbours`,
   );
+}
+
+/**
+ * Fetch per-fact provenance data for an entity from relationship.entity_facts (bu-mg4dk).
+ *
+ * Hits GET /api/butlers/relationship/entities/{id}/facts — returns active triples
+ * with real provenance fields: weight, last_observed_at, object_kind, src.
+ *
+ * Used by the Workbench ProvenanceGrid (§6b Amendment 7).
+ * Returns owner-only gate 403 when no owner entity is registered.
+ */
+export function getEntityFacts(
+  entityId: string,
+  params?: EntityFactsParams,
+): Promise<EntityFactsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/facts?${qs.toString()}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/facts`;
+  return apiFetch<EntityFactsResponse>(path);
 }
 
 /**
