@@ -12,6 +12,7 @@ boundaries exist, and how the system is deployed.
 | [deployment.md](deployment.md) | How is the system deployed and what ports/services exist? |
 | [dependencies.md](dependencies.md) | What depends on what -- internally and externally? |
 | [integration.md](integration.md) | How do subsystems connect at their boundaries? |
+| [module-vs-butler.md](module-vs-butler.md) | What is the difference between a butler (daemon) and a module (pluggable tool surface)? |
 | [frontend.md](frontend.md) | Where does the dashboard's design language live -- shell, routes, page archetypes, component domains, token plumbing? |
 | [detail-page-audit.md](detail-page-audit.md) | Which existing detail page is the cleanest base for a shared `<DetailPage>` shell, and what gets migrated first? |
 
