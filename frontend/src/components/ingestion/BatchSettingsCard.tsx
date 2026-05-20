@@ -28,12 +28,6 @@ import type { useUpdateConnectorSettings } from "@/hooks/use-ingestion";
 const FLUSH_INTERVAL_MIN = 60;
 const FLUSH_INTERVAL_MAX = 7200;
 
-/** Connector types that support batch settings. */
-export const BATCH_CONNECTOR_TYPES = new Set([
-  "telegram_user_client",
-  "whatsapp_user_client",
-]);
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
