@@ -182,8 +182,9 @@ class OrphanRow:
         short_id = str(self.id)[:8]
         if self.company and self.company.strip():
             return f"Contact at {self.company.strip()} (#{short_id})"
-        if self.roles:
-            role_str = ", ".join(self.roles)
+        valid_roles = [r.strip() for r in self.roles if r and r.strip()]
+        if valid_roles:
+            role_str = ", ".join(valid_roles)
             return f"{role_str} contact (#{short_id})"
         return f"Unnamed contact #{short_id}"
 
