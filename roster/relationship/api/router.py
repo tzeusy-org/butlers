@@ -2474,6 +2474,7 @@ async def search_entities(
     SELECT
         r.entity_id,
         e.canonical_name,
+        e.entity_type,
         r.score,
         r.match_kind
     FROM ranked r
@@ -2497,6 +2498,7 @@ async def search_entities(
         SearchResultEntry(
             entity_id=row["entity_id"],
             canonical_name=row["canonical_name"],
+            entity_type=row["entity_type"],
             score=int(row["score"]),
             match_kind=row["match_kind"],
         )

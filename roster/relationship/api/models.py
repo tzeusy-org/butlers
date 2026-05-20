@@ -773,6 +773,7 @@ class SearchResultEntry(BaseModel):
 
     ``entity_id`` is the UUID of the matching entity.
     ``canonical_name`` is the entity's canonical name.
+    ``entity_type`` is the entity's type (person, organization, place, …).
     ``score`` is the ranking score:
       - 100  prefix match on name or alias
       - 70   substring match on a contact-fact value
@@ -787,6 +788,7 @@ class SearchResultEntry(BaseModel):
 
     entity_id: UUID
     canonical_name: str
+    entity_type: str
     score: int
     match_kind: Literal["prefix", "contact_fact", "substring", "predicate"]
 

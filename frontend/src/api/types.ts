@@ -5018,6 +5018,7 @@ export type EntityFinderMatchKind = "prefix" | "contact_fact" | "substring" | "p
 export interface EntityFinderSearchResult {
   entity_id: string;
   canonical_name: string;
+  entity_type: string;
   score: number;
   match_kind: EntityFinderMatchKind;
 }
