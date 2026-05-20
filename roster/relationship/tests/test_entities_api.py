@@ -1319,7 +1319,7 @@ class TestEntityFacts:
         object_kind: str = "literal",
         src: str = "relationship",
         weight: int | None = 5,
-        last_seen: "datetime | None" = None,
+        last_seen: datetime | None = None,
     ) -> MagicMock:
         data = {
             "id": uuid4(),
@@ -1347,7 +1347,7 @@ class TestEntityFacts:
         entity_exists: bool = True,
         fact_rows: list | None = None,
         total_count: int | None = None,
-    ) -> tuple["FastAPI", "AsyncMock"]:
+    ) -> tuple[FastAPI, AsyncMock]:
         mock_pool = AsyncMock()
         owner_row = _make_owner_row() if owner_exists else None
         entity_val = 1 if entity_exists else None
