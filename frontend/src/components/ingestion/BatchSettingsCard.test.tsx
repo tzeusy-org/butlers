@@ -5,7 +5,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { BatchSettingsCard, BATCH_CONNECTOR_TYPES } from "./BatchSettingsCard";
+import { BatchSettingsCard } from "./BatchSettingsCard";
+import { BATCH_CONNECTOR_TYPES } from "./BatchSettingsCard.constants";
 import type { ConnectorDetail } from "@/api/types.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =

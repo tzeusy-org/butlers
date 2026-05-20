@@ -51,10 +51,8 @@ import {
 import { LivenessBadge } from "@/components/ingestion/LivenessBadge";
 import { VolumeTrendChart } from "@/components/ingestion/VolumeTrendChart";
 import { ConnectorRulesSection } from "@/components/ingestion/ConnectorRulesSection";
-import {
-  BatchSettingsCard,
-  BATCH_CONNECTOR_TYPES,
-} from "@/components/ingestion/BatchSettingsCard";
+import { BatchSettingsCard } from "@/components/ingestion/BatchSettingsCard";
+import { BATCH_CONNECTOR_TYPES } from "@/components/ingestion/BatchSettingsCard.constants";
 import {
   useConnectorDetail,
   useConnectorStats,
