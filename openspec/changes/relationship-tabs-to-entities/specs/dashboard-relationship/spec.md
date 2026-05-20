@@ -489,8 +489,9 @@ also changes how the header and contact facts are rendered.
   Resident/Operator toggle — Phase 1 Amendment 10 mandates the distinct key and distinct
   vocabulary).
 - Missing, invalid, or unsupported values in `localStorage` MUST default to `editorial`.
-- `?view=workbench` URL parameter overrides `localStorage` for the current page load only;
+- `?mode=workbench` URL parameter overrides `localStorage` for the current page load only;
   toggling via the UI updates both URL and `localStorage`.
+  _(Design history: param name reconciled from `?view=` → `?mode=` to match shipped code, bu-monvg.)_
 
 **Forget affordance (binding):**
 - Both modes MUST surface a "Forget this entity" action in the Page header (NOT a kebab
