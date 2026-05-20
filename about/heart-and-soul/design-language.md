@@ -235,16 +235,16 @@ the use case before being treated as binding.
      EntityDetailPage has two modes: Editorial and Workbench. Editorial
      is an editorial-archetype page and the Display 44px headline
      carve-out above applies: it renders via `<Page archetype="detail">`
-     and opens with the 44px Display headline. Workbench is a
-     workspace-grade record page: it renders via `<Page
-     archetype="overview">` (no separate "workspace" archetype exists),
-     keeps the standard `text-2xl` H1, and does not get the Display
-     tier. The Editorial/Workbench toggle is a `localStorage`-persisted
-     mode switch in the Page shell's actions slot; the two modes share
-     one route and one `<Page>` mount. Per Amendment 7 update
-     (2026-05-17-entity-brief.md §6b): the Display 44px tier satisfies
-     the 1.2 type-ratio floor (44/24 = 1.83, above the floor) and
-     requires no further reconciliation.
+     with a 44px Display headline. Workbench is a workspace-grade record
+     page: it renders via `<Page archetype="overview">` (the `workspace`
+     archetype gap is left to Phase 2 per entity-brief.md R3; `overview`
+     is the interim choice), keeps the standard `text-2xl` H1, and does
+     not get the Display tier. The Editorial/Workbench toggle is a
+     `localStorage`-persisted mode switch in the Page shell's actions
+     slot; the two modes share one route and one `<Page>` mount. Per
+     Amendment 7 update (2026-05-17-entity-brief.md §6b): the Display
+     44px tier satisfies the 1.2 type-ratio floor (44/24 = 1.83, above
+     the floor) and requires no further reconciliation.
    - **Workspace-grade record pages do not get a tier-2 hero.**
      Butler detail, contact detail, conversation detail, and similar
      operator record pages keep identity in the `<Page>` shell title
