@@ -607,12 +607,14 @@ class TestEntitySearch:
         *,
         entity_id: UUID | None = None,
         canonical_name: str = "Alice Example",
+        entity_type: str = "person",
         score: int = 100,
         match_kind: str = "prefix",
     ) -> MagicMock:
         data = {
             "entity_id": entity_id or uuid4(),
             "canonical_name": canonical_name,
+            "entity_type": entity_type,
             "score": score,
             "match_kind": match_kind,
         }
@@ -1232,6 +1234,7 @@ class TestEntityNeighbours:
         predicate: str = "knows",
         object_val: str | None = None,
         direction: str = "forward",
+        canonical_name: str = "Test Entity",
     ) -> MagicMock:
         data = {
             "id": uuid4(),
@@ -1246,6 +1249,7 @@ class TestEntityNeighbours:
             "verified": False,
             "primary": None,
             "direction": direction,
+            "canonical_name": canonical_name,
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
