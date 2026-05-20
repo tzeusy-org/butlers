@@ -1,6 +1,6 @@
 # LLM Pricing — Phase D cost-audit reference
 
-> **last_verified: 2026-01** (assistant knowledge cutoff).
+> **last_verified: 2026-05** (assistant knowledge cutoff).
 >
 > Phase D subagents: if today's date is more than 60 days past `last_verified`, fetch live pricing from `https://www.anthropic.com/pricing` before computing dollar verdicts. Use the table below as the source for tokens-to-dollars math.
 
@@ -8,7 +8,7 @@
 
 | Model class | Input | Output | Cache write (5 min TTL) | Cache write (1 h TTL) | Cache hit |
 |-------------|-------|--------|-------------------------|-----------------------|-----------|
-| Opus 4.x    | $15   | $75    | $18.75                  | $30                   | $1.50     |
+| Opus 4.x    | $5    | $25    | $6.25                   | $10                   | $0.50     |
 | Sonnet 4.x  | $3    | $15    | $3.75                   | $6                    | $0.30     |
 | Haiku 4.x   | $1    | $5     | $1.25                   | $2                    | $0.10     |
 
