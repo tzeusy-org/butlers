@@ -257,7 +257,7 @@ upstream references in the beads graph; tasks 10.3, 10.7 above carry the corresp
   (no extra prefix on include_router call — discovery collects routers, mounting happens in
   app.py), tests/api/test_relationship_entities_*.py (all use
   /api/relationship/entities/* paths). -->
-- [ ] 12.3 Update `about/heart-and-soul/design-language.md` (if needed) to clarify the
+- [x] 12.3 Update `about/heart-and-soul/design-language.md` (if needed) to clarify the
   editorial-archetype vs workspace-archetype distinction for EntityDetailPage Editorial
   vs Workbench (per Phase 1 Amendment 7). Effort: **S**.
 - [ ] 12.4 Add to `about/lay-and-land/` a note clarifying the module-vs-butler distinction
