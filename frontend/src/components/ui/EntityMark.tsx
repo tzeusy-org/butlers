@@ -14,6 +14,8 @@
 // EntityMark is for entities in the entity graph.
 // ---------------------------------------------------------------------------
 
+import { ENTITY_BADGE_TEXT } from "@/lib/entity-model"
+
 // ---------------------------------------------------------------------------
 // Type-glyph catalog
 // Per prototype/data.jsx: person → initials; others → fixed glyph.
@@ -161,7 +163,7 @@ export function EntityMark({
   const bg = tone === "fill" ? hue : "transparent"
   const fg =
     tone === "fill"
-      ? "#fff"
+      ? ENTITY_BADGE_TEXT
       : isUnidentified
         ? "var(--amber)"
         : "var(--fg)"
