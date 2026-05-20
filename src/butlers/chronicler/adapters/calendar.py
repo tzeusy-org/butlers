@@ -33,6 +33,24 @@ Butler-managed calendar exclusion (defence-in-depth):
   Calendar lane even if the writer-side guard is ever bypassed.
   The exclusion is applied via an inner join against ``calendar_sources``
   in ``_fetch_instances``.
+
+Entity-id resolution (bu-f4755):
+- Each calendar episode is tagged with the ``entity_id`` of the Google
+  account whose calendar produced the event.  The lookup path is:
+    ``{schema}.calendar_sources.metadata->>'account_email'``
+    → ``public.google_accounts.entity_id``
+- Resolution is done once per schema (not per row) and degrades
+  gracefully: if the table is absent, the email is missing, or no
+  matching Google account row exists, ``entity_id`` is left ``NULL``
+  and a debug-level log is emitted.
+- The dedup guard (``seen_origin``) means the **first** schema that
+  projects a given ``origin_instance_ref`` determines the episode's
+  ``entity_id``.  In practice every schema shares the same owner
+  entity, so the winning schema makes no difference.
+- To backfill ``entity_id`` on pre-013 episodes, run:
+    ``python scripts/backfill_episode_entity_id.py [--dry-run]``
+  Or reset the adapter watermark in ``projection_checkpoints`` to
+  ``NULL`` and let the next scheduled run re-project all rows.
 """
 
 from __future__ import annotations
@@ -40,6 +58,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
@@ -106,6 +125,10 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 )
                 continue
 
+            # Resolve entity_id once per schema (not per row) — all calendar
+            # instances in a schema belong to the same Google account owner.
+            entity_id = await self._resolve_schema_entity_id(pool, schema)
+
             for row in rows:
                 dedup_key = row["origin_instance_ref"]
                 if dedup_key in seen_origin:
@@ -113,7 +136,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     continue
                 seen_origin.add(dedup_key)
 
-                await self._project_row(chronicler_pool, schema, row)
+                await self._project_row(chronicler_pool, schema, row, entity_id=entity_id)
                 result.rows_projected += 1
                 result.episodes_closed += 1
 
@@ -125,6 +148,89 @@ class CalendarCompletedAdapter(ProjectionAdapter):
 
         result.watermark = latest_watermark
         return result
+
+    async def _resolve_schema_entity_id(
+        self,
+        pool: asyncpg.Pool,
+        schema: str,
+    ) -> UUID | None:
+        """Resolve the entity_id for the Google account that owns this schema's calendar.
+
+        Lookup path:
+          ``{schema}.calendar_sources.metadata->>'account_email'``
+          → ``public.google_accounts.entity_id``
+
+        Returns ``None`` and logs at DEBUG level when any step fails:
+        - calendar_sources table absent (calendar module not installed)
+        - no user-lane source with an ``account_email`` in metadata
+        - no ``public.google_accounts`` row matching the email
+        - ``public.google_accounts`` table absent
+        """
+        quoted = self._quote_ident(schema)
+        try:
+            async with pool.acquire() as conn:
+                # Step 1: get account_email from a user-lane calendar source in this schema.
+                email_row = await conn.fetchrow(
+                    f"""
+                    SELECT metadata->>'account_email' AS account_email
+                    FROM {quoted}.calendar_sources
+                    WHERE lane = 'user'
+                      AND metadata->>'account_email' IS NOT NULL
+                    LIMIT 1
+                    """
+                )
+                if email_row is None:
+                    logger.debug(
+                        "CalendarCompletedAdapter: no user-lane source with account_email "
+                        "in schema %r — entity_id will be NULL",
+                        schema,
+                    )
+                    return None
+
+                account_email: str = email_row["account_email"]
+
+                # Step 2: look up entity_id from public.google_accounts.
+                entity_row = await conn.fetchrow(
+                    """
+                    SELECT entity_id
+                    FROM public.google_accounts
+                    WHERE email = $1
+                    LIMIT 1
+                    """,
+                    account_email,
+                )
+                if entity_row is None:
+                    logger.debug(
+                        "CalendarCompletedAdapter: google account %r not found in "
+                        "public.google_accounts — entity_id will be NULL",
+                        account_email,
+                    )
+                    return None
+
+                raw = entity_row["entity_id"]
+                if raw is None:
+                    return None
+                if isinstance(raw, UUID):
+                    return raw
+                if isinstance(raw, str):
+                    return UUID(raw)
+                # Unexpected type (e.g. in tests with mis-configured mocks).
+                logger.debug(
+                    "CalendarCompletedAdapter: entity_id has unexpected type %r "
+                    "for schema %r — entity_id will be NULL",
+                    type(raw).__name__,
+                    schema,
+                )
+                return None
+
+        except asyncpg.PostgresError:
+            logger.debug(
+                "CalendarCompletedAdapter: entity_id resolution failed for schema %r "
+                "(table absent or query error) — entity_id will be NULL",
+                schema,
+                exc_info=True,
+            )
+            return None
 
     async def _fetch_instances(
         self,
@@ -204,6 +310,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         schema: str,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode:
         instance_id = row["id"]
         # Stable across schemas and resync rounds: the upstream Google
@@ -257,6 +365,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     title=resolved_title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
+                    entity_id=entity_id,
                 ),
             )
         return episode
@@ -293,9 +402,52 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         return '"' + name.replace('"', '""') + '"'
 
 
+async def resolve_calendar_account_entity_id(
+    pool: asyncpg.Pool,
+    *,
+    account_email: str,
+) -> UUID | None:
+    """Return the ``public.entities`` UUID for a Google account email address.
+
+    Used by the backfill script to resolve ``entity_id`` for historical
+    episodes without touching the adapter's watermark.
+
+    Returns ``None`` when:
+    - ``public.google_accounts`` table is absent.
+    - No row matches ``email``.
+    - The matching row has ``entity_id IS NULL``.
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT entity_id
+                FROM public.google_accounts
+                WHERE email = $1
+                LIMIT 1
+                """,
+                account_email,
+            )
+    except asyncpg.PostgresError:
+        logger.debug(
+            "resolve_calendar_account_entity_id: query failed for %r",
+            account_email,
+            exc_info=True,
+        )
+        return None
+
+    if row is None:
+        return None
+    raw = row["entity_id"]
+    if raw is None:
+        return None
+    return raw if isinstance(raw, UUID) else UUID(str(raw))
+
+
 __all__ = [
     "BUTLER_MANAGED_SOURCE_KINDS",
     "CalendarCompletedAdapter",
     "EPISODE_TYPE_SCHEDULED_BLOCK",
     "SOURCE_NAME",
+    "resolve_calendar_account_entity_id",
 ]

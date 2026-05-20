@@ -478,3 +478,62 @@ Both queries run against the `chronicler` schema. If the first returns non-zero
 rows after the adapter has run, either the migration has not been applied
 (`alembic upgrade chronicler@head`) or the adapter has not yet re-projected
 (wait for the next scheduled run or trigger manually).
+
+## Backfilling entity_id on historical episodes (bu-f4755)
+
+Migration `chronicler_013` added the `entity_id` column to `chronicler.episodes`.
+Episodes projected **before** the adapter change (PR accompanying bu-f4755) have
+`entity_id = NULL`.
+
+### Option A — Run the backfill script (recommended)
+
+```bash
+# Dry-run: shows what would be updated, no DB writes.
+uv run python scripts/backfill_episode_entity_id.py --dry-run
+
+# Apply: writes entity_id on NULL rows for google_calendar.completed episodes.
+uv run python scripts/backfill_episode_entity_id.py
+```
+
+The script resolves `entity_id` via:
+```
+{schema}.calendar_sources.metadata->>'account_email'
+  → public.google_accounts.entity_id
+```
+
+It is **idempotent** (rows already carrying `entity_id` are skipped) and can be
+re-run safely at any time.
+
+### Option B — Watermark reset (full re-projection)
+
+Reset the adapter watermark to `NULL` so the next scheduled run re-projects all
+calendar episodes from scratch (each row will receive `entity_id` at projection time).
+
+```sql
+-- Reset the global watermark for google_calendar.completed.
+-- Run this against the chronicler schema.
+UPDATE chronicler.projection_checkpoints
+SET watermark = NULL,
+    watermark_id = NULL,
+    updated_at = now()
+WHERE source_name = 'google_calendar.completed'
+  AND subsource IS NULL;
+```
+
+After the reset, trigger a manual adapter run or wait for the next scheduled
+invocation.  All episodes will be upserted in place with `entity_id` populated.
+
+**Trade-off:** Option A is surgical (touches only NULL rows, no adapter re-run
+overhead).  Option B is simpler to operate but re-projects every episode even
+those that already have `entity_id`.
+
+### Verify backfill completeness
+
+```sql
+-- Should return zero rows when all google_calendar.completed episodes are backfilled.
+SELECT COUNT(*) AS remaining_null
+FROM chronicler.episodes
+WHERE source_name = 'google_calendar.completed'
+  AND entity_id IS NULL
+  AND tombstone_at IS NULL;
+```
