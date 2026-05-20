@@ -4065,6 +4065,12 @@ export interface DunbarTierOverrideResponse {
 /**
  * Relationship-scoped entity detail from GET /api/relationship/entities/{id}.
  * Separate from the memory-butler EntityDetail — this surface is activity-focused.
+ *
+ * `state` is the highest-priority curation bucket this entity belongs to, using
+ * the same classification logic as GET /entities/queue.
+ *
+ * `state_evidence` mirrors the `evidence` dict from the queue for non-healthy
+ * states, or null for healthy entities.
  */
 export interface RelationshipEntityDetail {
   id: string;
@@ -4075,6 +4081,9 @@ export interface RelationshipEntityDetail {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  state: "healthy" | "unidentified" | "duplicate-candidate" | "stale";
+  state_evidence: Record<string, unknown> | null;
+  entity_info: EntityInfoEntry[];
 }
 
 /**

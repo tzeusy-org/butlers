@@ -2913,6 +2913,118 @@ _QUEUE_DEFAULT_LIMIT = 50
 _QUEUE_MAX_LIMIT = 200
 
 
+async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | None]:
+    """Classify a single entity into its highest-priority curation bucket.
+
+    Returns ``(state, evidence)`` where ``state`` is one of:
+    ``'healthy'``, ``'unidentified'``, ``'duplicate-candidate'``, ``'stale'``.
+
+    Classification logic and priority order are identical to ``GET /entities/queue``:
+    1. unidentified — ``metadata->>'unidentified' = 'true'``
+    2. duplicate-candidate — metadata flag OR shared has-email/has-phone fact value
+    3. stale — no active fact with ``last_seen`` within the past 365 days
+
+    Evidence shape per state:
+    - ``unidentified`` — ``{}``
+    - ``duplicate-candidate`` (metadata flag only) — ``{}``
+    - ``duplicate-candidate`` (shared fact) — ``{"predicate": ..., "shared_value": ...,
+      "peer_entity_ids": [...]}``
+    - ``stale`` — ``{"last_seen": "<iso-datetime>|null"}``
+    - ``healthy`` — ``None``
+
+    Canonical semantics live in ``get_entities_queue``; keep this helper in sync
+    with any changes to the queue SQL.
+    """
+    dup_predicates_literal = ", ".join(f"'{p}'" for p in _DUP_DETECTION_PREDICATES)
+
+    row = await pool.fetchrow(
+        f"""
+        WITH entity AS (
+            SELECT
+                metadata->>'unidentified' = 'true'          AS is_unidentified,
+                metadata->>'duplicate_candidate' = 'true'   AS is_dup_flagged,
+                (
+                    SELECT max(rf.last_seen)
+                    FROM relationship.entity_facts rf
+                    WHERE rf.subject = $1
+                      AND rf.validity = 'active'
+                ) AS last_seen,
+                EXISTS (
+                    SELECT 1 FROM relationship.entity_facts rf
+                    WHERE rf.subject = $1
+                      AND rf.validity = 'active'
+                      AND rf.last_seen > (now() - INTERVAL '{_STALE_DAYS} days')
+                ) AS has_fresh_fact
+            FROM public.entities
+            WHERE id = $1
+        ),
+        dup_detected AS (
+            SELECT
+                grp.predicate,
+                grp.object AS shared_value,
+                (
+                    SELECT json_agg(DISTINCT f2.subject::text)
+                    FROM relationship.entity_facts f2
+                    WHERE f2.predicate = grp.predicate
+                      AND f2.object = grp.object
+                      AND f2.validity = 'active'
+                      AND f2.subject <> $1
+                ) AS peer_entity_ids
+            FROM (
+                SELECT predicate, object
+                FROM relationship.entity_facts
+                WHERE predicate IN ({dup_predicates_literal})
+                  AND validity = 'active'
+                GROUP BY predicate, object
+                HAVING count(DISTINCT subject) > 1
+            ) AS grp
+            JOIN relationship.entity_facts f_link
+                ON f_link.subject = $1
+               AND f_link.predicate = grp.predicate
+               AND f_link.object = grp.object
+               AND f_link.validity = 'active'
+            LIMIT 1
+        )
+        SELECT
+            e.is_unidentified,
+            e.is_dup_flagged,
+            e.has_fresh_fact,
+            e.last_seen,
+            d.predicate        AS dup_predicate,
+            d.shared_value     AS dup_shared_value,
+            d.peer_entity_ids  AS dup_peer_entity_ids
+        FROM entity e
+        LEFT JOIN dup_detected d ON true
+        """,
+        entity_id,
+    )
+
+    if row is None:
+        # Entity not found — caller will have already raised 404 before calling this.
+        return "healthy", None
+
+    if row["is_unidentified"]:
+        return "unidentified", {}
+
+    if row["is_dup_flagged"] or row["dup_predicate"] is not None:
+        if row["dup_predicate"] is not None:
+            peer_ids = row["dup_peer_entity_ids"]
+            evidence: dict = {
+                "predicate": row["dup_predicate"],
+                "shared_value": row["dup_shared_value"],
+                "peer_entity_ids": peer_ids if isinstance(peer_ids, list) else [],
+            }
+        else:
+            evidence = {}
+        return "duplicate-candidate", evidence
+
+    if not row["has_fresh_fact"]:
+        last_seen_val = row["last_seen"]
+        return "stale", {"last_seen": str(last_seen_val) if last_seen_val is not None else None}
+
+    return "healthy", None
+
+
 @router.get("/entities/queue", response_model=QueueResponse)
 async def get_entities_queue(
     limit: int = Query(_QUEUE_DEFAULT_LIMIT, ge=1, le=_QUEUE_MAX_LIMIT),
@@ -3475,10 +3587,17 @@ async def get_entity(
     entity_id: UUID,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> EntityDetail:
-    """Get full entity detail including entity_info entries.
+    """Get full entity detail including entity_info entries and state classification.
 
     Secured entity_info values are masked (value=None) in the response.
     Use GET /entities/{id}/secrets/{info_id} to reveal a secured value.
+
+    ``state`` reflects the highest-priority curation bucket this entity belongs to
+    (``'healthy'``, ``'unidentified'``, ``'duplicate-candidate'``, or ``'stale'``),
+    using the same classification logic as ``GET /entities/queue``.
+
+    ``state_evidence`` mirrors the ``evidence`` dict from the queue for non-healthy
+    states, or ``null`` for healthy entities.
     """
     pool = _pool(db)
 
@@ -3495,14 +3614,17 @@ async def get_entity(
     if row is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
-    info_rows = await pool.fetch(
-        """
-        SELECT id, type, value, label, is_primary, secured
-        FROM public.entity_info
-        WHERE entity_id = $1
-        ORDER BY type
-        """,
-        entity_id,
+    info_rows, (state, state_evidence) = await asyncio.gather(
+        pool.fetch(
+            """
+            SELECT id, type, value, label, is_primary, secured
+            FROM public.entity_info
+            WHERE entity_id = $1
+            ORDER BY type
+            """,
+            entity_id,
+        ),
+        _classify_entity_state(pool, entity_id),
     )
 
     entity_info = [
@@ -3533,6 +3655,8 @@ async def get_entity(
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         entity_info=entity_info,
+        state=state,
+        state_evidence=state_evidence,
     )
 
 

@@ -146,6 +146,31 @@ def _make_entity_info_row(
     return row
 
 
+def _make_classify_row(
+    *,
+    is_unidentified: bool = False,
+    is_dup_flagged: bool = False,
+    has_fresh_fact: bool = True,
+    last_seen: datetime | None = None,
+    dup_predicate: str | None = None,
+    dup_shared_value: str | None = None,
+    dup_peer_entity_ids: list | None = None,
+) -> MagicMock:
+    """Row returned by _classify_entity_state's fetchrow call."""
+    data = {
+        "is_unidentified": is_unidentified,
+        "is_dup_flagged": is_dup_flagged,
+        "has_fresh_fact": has_fresh_fact,
+        "last_seen": last_seen,
+        "dup_predicate": dup_predicate,
+        "dup_shared_value": dup_shared_value,
+        "dup_peer_entity_ids": dup_peer_entity_ids,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    return row
+
+
 def _wire_app(mock_pool: AsyncMock) -> FastAPI:
     """Attach a mock pool to a fresh create_app() instance."""
     mock_db = MagicMock(spec=DatabaseManager)
@@ -263,9 +288,13 @@ class TestGetEntityDetail:
         *,
         entity_row: MagicMock | None = None,
         info_rows: list | None = None,
+        classify_row: MagicMock | None = None,
     ) -> tuple[FastAPI, AsyncMock]:
         mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=entity_row)
+        # fetchrow is called twice: (1) entity lookup, (2) _classify_entity_state.
+        # Default classify_row to healthy so existing tests don't need to specify it.
+        default_classify = classify_row if classify_row is not None else _make_classify_row()
+        mock_pool.fetchrow = AsyncMock(side_effect=[entity_row, default_classify])
         mock_pool.fetch = AsyncMock(return_value=info_rows or [])
         return _wire_app(mock_pool), mock_pool
 
@@ -315,6 +344,150 @@ class TestGetEntityDetail:
         app, _ = self._make_app(entity_row=entity)
         resp = await _get(app, _ENTITY_PATH)
         assert resp.status_code == 200
+
+    async def test_state_and_state_evidence_present_in_response(self):
+        """Response body always includes 'state' and 'state_evidence' fields."""
+        entity = _make_entity_row(entity_id=_ENT_ID)
+        app, _ = self._make_app(entity_row=entity)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "state" in body
+        assert "state_evidence" in body
+
+
+# ===========================================================================
+# §9.2 state classification — entity detail state field
+# ===========================================================================
+
+
+class TestGetEntityDetailState:
+    """State classification field on GET /entities/{id} — §9.2 extension [bu-x8ztv]."""
+
+    def _make_app_with_classify(
+        self,
+        *,
+        classify_row: MagicMock,
+        info_rows: list | None = None,
+    ) -> FastAPI:
+        """Wire app with a specific classification row for _classify_entity_state."""
+        entity = _make_entity_row(entity_id=_ENT_ID)
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(side_effect=[entity, classify_row])
+        mock_pool.fetch = AsyncMock(return_value=info_rows or [])
+        return _wire_app(mock_pool)
+
+    async def test_healthy_entity_state(self):
+        """Healthy entity (no flags, fresh fact, no shared identifiers) → state='healthy', evidence=None."""
+        classify = _make_classify_row(
+            is_unidentified=False,
+            is_dup_flagged=False,
+            has_fresh_fact=True,
+            dup_predicate=None,
+        )
+        app = self._make_app_with_classify(classify_row=classify)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "healthy"
+        assert body["state_evidence"] is None
+
+    async def test_unidentified_entity_state(self):
+        """Entity with unidentified=true in metadata → state='unidentified', evidence={}."""
+        classify = _make_classify_row(
+            is_unidentified=True,
+            is_dup_flagged=False,
+            has_fresh_fact=False,
+        )
+        app = self._make_app_with_classify(classify_row=classify)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "unidentified"
+        assert body["state_evidence"] == {}
+
+    async def test_stale_entity_state(self):
+        """Stale entity (no recent fact in 365 days) → state='stale', evidence has last_seen."""
+        stale_dt = _NOW - timedelta(days=400)
+        classify = _make_classify_row(
+            is_unidentified=False,
+            is_dup_flagged=False,
+            has_fresh_fact=False,
+            last_seen=stale_dt,
+        )
+        app = self._make_app_with_classify(classify_row=classify)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "stale"
+        assert "last_seen" in body["state_evidence"]
+        assert body["state_evidence"]["last_seen"] is not None
+
+    async def test_stale_entity_with_no_facts(self):
+        """Stale entity with no facts at all → state='stale', evidence has last_seen=null."""
+        classify = _make_classify_row(
+            is_unidentified=False,
+            is_dup_flagged=False,
+            has_fresh_fact=False,
+            last_seen=None,
+        )
+        app = self._make_app_with_classify(classify_row=classify)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "stale"
+        assert body["state_evidence"]["last_seen"] is None
+
+    async def test_duplicate_candidate_via_metadata_flag(self):
+        """Entity with duplicate_candidate=true flag → state='duplicate-candidate', evidence={}."""
+        classify = _make_classify_row(
+            is_unidentified=False,
+            is_dup_flagged=True,
+            has_fresh_fact=True,
+            dup_predicate=None,
+        )
+        app = self._make_app_with_classify(classify_row=classify)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "duplicate-candidate"
+        assert body["state_evidence"] == {}
+
+    async def test_duplicate_candidate_via_shared_email(self):
+        """Entity sharing a has-email value → state='duplicate-candidate', evidence has predicate."""
+        peer_id = str(uuid4())
+        classify = _make_classify_row(
+            is_unidentified=False,
+            is_dup_flagged=False,
+            has_fresh_fact=True,
+            dup_predicate="has-email",
+            dup_shared_value="shared@example.com",
+            dup_peer_entity_ids=[peer_id],
+        )
+        app = self._make_app_with_classify(classify_row=classify)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "duplicate-candidate"
+        ev = body["state_evidence"]
+        assert ev["predicate"] == "has-email"
+        assert ev["shared_value"] == "shared@example.com"
+        assert peer_id in ev["peer_entity_ids"]
+
+    async def test_priority_unidentified_beats_stale(self):
+        """Entity matching both unidentified and stale → reports 'unidentified' (higher priority)."""
+        classify = _make_classify_row(
+            is_unidentified=True,
+            is_dup_flagged=False,
+            has_fresh_fact=False,  # also stale — but unidentified wins
+            last_seen=None,
+        )
+        app = self._make_app_with_classify(classify_row=classify)
+        resp = await _get(app, _ENTITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "unidentified"
+        assert body["state_evidence"] == {}
 
 
 # ===========================================================================
