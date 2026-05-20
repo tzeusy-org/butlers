@@ -168,6 +168,26 @@ class OrphanRow:
             return n
         return None
 
+    def synthetic_canonical_name(self) -> str:
+        """Return a synthetic canonical_name for nameless orphans (--force-nameless).
+
+        Priority:
+          1. Company name: "Contact at <company> (#{id[:8]})"
+          2. Roles list:   "<role1, role2> contact (#{id[:8]})"
+          3. ID fallback:  "Unnamed contact #{id[:8]}"
+
+        The short UUID suffix keeps names unique-ish and makes it easy for a
+        human reviewing the entity catalog to spot synthetic entries later.
+        """
+        short_id = str(self.id)[:8]
+        if self.company and self.company.strip():
+            return f"Contact at {self.company.strip()} (#{short_id})"
+        valid_roles = [r.strip() for r in self.roles if r and r.strip()]
+        if valid_roles:
+            role_str = ", ".join(valid_roles)
+            return f"{role_str} contact (#{short_id})"
+        return f"Unnamed contact #{short_id}"
+
 
 @dataclass
 class ResolutionOutcome:
@@ -380,30 +400,47 @@ async def _resolve_orphan(
     orphan: OrphanRow,
     *,
     apply: bool,
+    force_nameless: bool = False,
 ) -> ResolutionOutcome:
-    """Resolve a single orphan row.  Returns a ResolutionOutcome."""
+    """Resolve a single orphan row.  Returns a ResolutionOutcome.
+
+    When ``force_nameless=True`` and the orphan has no canonical-name signal,
+    a synthetic canonical_name is derived from company/roles/id instead of
+    deferring to owner notification.  Default behavior (``force_nameless=False``)
+    is unchanged.
+    """
     canonical = orphan.canonical_name_signal()
+
+    # When force_nameless is set and there is no real name signal, synthesise one
+    # so the orphan can follow the mint path instead of the notify path.
+    if canonical is None and force_nameless:
+        canonical = orphan.synthetic_canonical_name()
+        synthetic = True
+    else:
+        synthetic = False
 
     if canonical is not None:
         # --- Mint path ---
+        note_suffix = "; synthetic canonical_name (--force-nameless)" if synthetic else ""
         if apply:
             entity_id = await _mint_entity_and_backfill(pool, orphan, canonical)
             return ResolutionOutcome(
                 orphan=orphan,
                 status="minted",
                 entity_id=entity_id,
-                note=f"canonical_name={canonical!r}",
+                note=f"canonical_name={canonical!r}{note_suffix}",
             )
         else:
             logger.info(
-                "[DRY-RUN] Would mint entity for contact %s (canonical_name=%r)",
+                "[DRY-RUN] Would mint entity for contact %s (canonical_name=%r%s)",
                 orphan.id,
                 canonical,
+                ", synthetic" if synthetic else "",
             )
             return ResolutionOutcome(
                 orphan=orphan,
                 status="dry-run-would-mint",
-                note=f"canonical_name={canonical!r}",
+                note=f"canonical_name={canonical!r}{note_suffix}",
             )
     else:
         # --- Notify path ---
@@ -560,6 +597,7 @@ async def _run_resolver_with_pool(
     date_label: str,
     report_path: Path,
     apply: bool,
+    force_nameless: bool = False,
 ) -> int:
     """Execute the resolver using an already-open pool.  Does NOT close the pool."""
     _validate_date_label(date_label)
@@ -582,11 +620,15 @@ async def _run_resolver_with_pool(
 
     if not apply:
         logger.info("[DRY-RUN] No writes will be performed. Pass --apply to enable writes.")
+    if force_nameless:
+        logger.info(
+            "--force-nameless: nameless orphans will be auto-minted with synthetic canonical_name."
+        )
 
     stats = ResolverStats(total_orphans=len(orphans))
 
     for orphan in orphans:
-        outcome = await _resolve_orphan(pool, orphan, apply=apply)
+        outcome = await _resolve_orphan(pool, orphan, apply=apply, force_nameless=force_nameless)
         stats.outcomes.append(outcome)
         if outcome.status == "minted":
             stats.minted += 1
@@ -614,12 +656,21 @@ async def run_resolver(
     date_label: str,
     report_path: Path,
     apply: bool,
+    force_nameless: bool = False,
     _pool: asyncpg.Pool | None = None,
 ) -> int:
     """Run the orphan resolver.  Returns 0 on success, 1 on error.
 
-    The ``_pool`` parameter is for testing only — callers should omit it so
-    the function creates and closes its own pool.
+    Args:
+        date_label:     YYYYMMDD label matching the snapshot table to process.
+        report_path:    Where to write the Markdown report.
+        apply:          If False (default), performs a dry-run with no writes.
+        force_nameless: When True, orphans with no canonical-name signal are
+                        auto-minted using a synthetic name (company/roles/id)
+                        instead of being deferred to owner notification.
+                        When False (default), behavior is unchanged.
+        _pool:          For testing only — callers should omit this so the
+                        function creates and closes its own pool.
     """
     own_pool = _pool is None
     pool = _pool if _pool is not None else await _create_pool()
@@ -629,6 +680,7 @@ async def run_resolver(
             date_label=date_label,
             report_path=report_path,
             apply=apply,
+            force_nameless=force_nameless,
         )
     except Exception:
         logger.exception("Resolver failed")
@@ -682,6 +734,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help=f"Where to write the orphan-resolver report (default: {default_report}).",
     )
+    parser.add_argument(
+        "--force-nameless",
+        action="store_true",
+        default=False,
+        help=(
+            "Auto-mint nameless orphans using a synthetic canonical_name "
+            "(derived from company, roles, or contact ID) instead of deferring "
+            "to owner notification. Has no effect on orphans that already have a "
+            "canonical-name signal."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -692,6 +755,7 @@ def main() -> None:
             date_label=args.date,
             report_path=args.report_path,
             apply=args.apply,
+            force_nameless=args.force_nameless,
         )
     )
     sys.exit(rc)
