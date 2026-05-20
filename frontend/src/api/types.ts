@@ -5089,3 +5089,51 @@ export interface ConcentrationResponse {
   predicate_tabs: PredicateTab[];
   total: number;
 }
+
+// ---------------------------------------------------------------------------
+// Entity provenance facts (GET /api/butlers/relationship/entities/{id}/facts)
+// Workbench-mode ProvenanceGrid — per §6b Amendment 7 (bu-mg4dk).
+// ---------------------------------------------------------------------------
+
+/**
+ * One triple from relationship.entity_facts for the Workbench ProvenanceGrid.
+ *
+ * Provenance fields:
+ * - ``weight`` — relational aggregation weight (null when not yet scored).
+ * - ``last_observed_at`` — most-recent observation timestamp (null when never re-observed).
+ * - ``object_kind`` — ``"literal"`` for plain values; ``"entity"`` for entity refs.
+ * - ``src`` — butler slug that authored the fact.
+ *
+ * Note: ``source_event_id`` is not yet a column in relationship.entity_facts.
+ * Use ``src`` for source attribution until that column is added.
+ */
+export interface EntityFact {
+  id: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  object_kind: "literal" | "entity";
+  src: string;
+  conf: number;
+  weight: number | null;
+  last_observed_at: string | null;
+  verified: boolean;
+  primary: boolean | null;
+  validity: string;
+  created_at: string;
+}
+
+/** Response envelope for GET /api/butlers/relationship/entities/{id}/facts. */
+export interface EntityFactsResponse {
+  facts: EntityFact[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+}
+
+/** Query parameters for entity facts endpoints. */
+export interface EntityFactsParams {
+  offset?: number;
+  limit?: number;
+}

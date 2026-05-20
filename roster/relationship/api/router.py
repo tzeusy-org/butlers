@@ -117,6 +117,8 @@ if _models_path.exists():
         DismissQueueResponse = _models_module.DismissQueueResponse
         ActivityEntry = _models_module.ActivityEntry
         ActivityResponse = _models_module.ActivityResponse
+        EntityFactEntry = _models_module.EntityFactEntry
+        EntityFactsResponse = _models_module.EntityFactsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -4932,6 +4934,116 @@ async def delete_entity_contact(
     )
 
     return DeleteContactResponse(deleted=True, fact_id=fact_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/facts — per-fact provenance grid (bu-mg4dk)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/entities/{entity_id}/facts",
+    response_model=EntityFactsResponse,
+)
+async def list_entity_facts(
+    entity_id: UUID,
+    offset: int = Query(0, ge=0, description="Pagination offset."),
+    limit: int = Query(20, ge=1, le=200, description="Page size (max 200)."),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityFactsResponse:
+    """List active triples for an entity from ``relationship.entity_facts``.
+
+    Returns all active facts for the entity (as subject) with per-fact
+    provenance fields required by the Workbench ProvenanceGrid (§6b Amendment 7):
+
+    - ``weight`` — relational aggregation weight (NULL when not yet scored).
+    - ``last_observed_at`` — most-recent observation timestamp (DB: ``last_seen``).
+    - ``object_kind`` — ``'literal'`` for plain values; ``'entity'`` for entity refs.
+    - ``src`` — butler slug that authored the fact.
+
+    Note: ``source_event_id`` is not yet a column in ``relationship.entity_facts``;
+    it is a planned schema addition. Use ``src`` for source attribution.
+
+    Owner-only authz gate (Clause 12b, Amendment 12b): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist in ``public.entities``.
+    Returns ``{"facts": [], "total": 0, ...}`` when no active facts exist.
+
+    Ordered by ``created_at DESC``.
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12b).
+    await _assert_owner_entity_exists(pool)
+
+    # Entity existence check.
+    await _assert_entity_exists(pool, entity_id)
+
+    total = await pool.fetchval(
+        """
+        SELECT count(*)
+        FROM relationship.entity_facts
+        WHERE subject  = $1
+          AND validity = 'active'
+        """,
+        entity_id,
+    )
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            f.id,
+            f.subject,
+            f.predicate,
+            f.object,
+            f.object_kind,
+            f.src,
+            f.conf,
+            f.weight,
+            f.last_seen,
+            f.verified,
+            f."primary",
+            f.validity,
+            f.created_at
+        FROM relationship.entity_facts f
+        WHERE f.subject  = $1
+          AND f.validity = 'active'
+        ORDER BY f.created_at DESC
+        OFFSET $2
+        LIMIT  $3
+        """,
+        entity_id,
+        offset,
+        limit,
+    )
+
+    facts = [
+        EntityFactEntry(
+            id=r["id"],
+            subject=r["subject"],
+            predicate=r["predicate"],
+            object=r["object"],
+            object_kind=r["object_kind"],
+            src=r["src"],
+            conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+            weight=r["weight"],
+            last_observed_at=r["last_seen"],
+            verified=r["verified"],
+            primary=r["primary"],
+            validity=r["validity"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+    return EntityFactsResponse(
+        facts=facts,
+        total=total,
+        offset=offset,
+        limit=limit,
+        has_more=total > offset + limit,
+    )
 
 
 # ---------------------------------------------------------------------------

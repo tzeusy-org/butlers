@@ -1303,3 +1303,61 @@ class ActivityResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ---------------------------------------------------------------------------
+# Entity provenance facts models (bu-mg4dk)
+# ---------------------------------------------------------------------------
+
+
+class EntityFactEntry(BaseModel):
+    """One triple from ``relationship.entity_facts`` for the entity provenance grid.
+
+    Returned by ``GET /entities/{id}/facts`` — the Workbench-mode provenance
+    endpoint.  Each row represents one active fact authored by the relationship
+    butler's triple store.
+
+    Provenance fields per §6b Amendment 7 (entity-brief.md):
+
+    - ``weight`` — relational aggregation weight (NULL when not yet scored).
+    - ``last_observed_at`` — most-recent observation timestamp (``last_seen``
+      in the DB column; NULL when the fact has never been re-observed).
+    - ``object_kind`` — ``'literal'`` for plain values; ``'entity'`` when the
+      object is another entity's UUID.
+    - ``src`` — butler slug that authored the fact (e.g. ``'relationship'``).
+
+    Note: ``source_event_id`` is not yet a column in ``relationship.entity_facts``;
+    it is a planned addition tracked separately.  Use ``src`` for authorship.
+    """
+
+    id: UUID
+    subject: UUID
+    predicate: str
+    object: str
+    object_kind: str
+    src: str
+    conf: float
+    weight: int | None = None
+    last_observed_at: datetime | None = None
+    verified: bool
+    primary: bool | None = None
+    validity: str
+    created_at: datetime
+
+
+class EntityFactsResponse(BaseModel):
+    """Response for ``GET /entities/{id}/facts``.
+
+    ``facts`` is a flat list of all active triples for the entity from
+    ``relationship.entity_facts``.  Ordered by ``created_at DESC``.
+
+    ``total`` is the count of active triples before pagination.
+    ``offset`` and ``limit`` echo the request parameters.
+    ``has_more`` is True when ``total > offset + limit``.
+    """
+
+    facts: list[EntityFactEntry]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool

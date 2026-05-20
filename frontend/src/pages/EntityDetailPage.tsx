@@ -21,6 +21,7 @@ import type { DunbarTier, EntityState, EntityType } from "@/lib/entity-glosses";
 
 import type {
   ContactSummary,
+  EntityFact,
   EntityImportantDate,
   EntityInfoEntry,
   EntityTimelineItem,
@@ -76,6 +77,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
 import {
   useEntityDates,
+  useEntityFacts,
   useEntityGifts,
   useEntityLinkedContacts,
   useEntityLoans,
@@ -1566,15 +1568,17 @@ function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
 // ProvenanceGrid — Workbench mode dense sortable per-fact grid
 //
 // Per §6b Amendment 7: Workbench = dense sortable provenance grid with
-// per-fact source attribution, importance (proxy for weight), and timestamp.
+// real per-fact provenance fields from relationship.entity_facts (bu-mg4dk):
+//   - weight       — relational aggregation weight (INT, nullable)
+//   - last_observed_at — most-recent observation timestamp (nullable)
+//   - object_kind  — 'literal' | 'entity'
+//   - src          — authoring butler slug
 //
-// NOTE: The current entity detail API returns `importance` (not a separate
-// `weight` field), `created_at` (not `last_observed_at`), and `source_butler`
-// (not a per-event source ID). A follow-up bead tracks adding dedicated
-// weight / last_observed_at / source_event_id fields to the entity facts API.
+// Note: source_event_id is not yet a column in relationship.entity_facts and
+// is tracked as a separate schema addition. Use src for source attribution.
 // ---------------------------------------------------------------------------
 
-type ProvenanceSortKey = "predicate" | "importance" | "created_at";
+type ProvenanceSortKey = "predicate" | "weight" | "last_observed_at";
 type SortDir = "asc" | "desc";
 
 interface ProvenanceSortState {
@@ -1584,19 +1588,21 @@ interface ProvenanceSortState {
 
 const DEFAULT_SORT_DIRECTIONS: Record<ProvenanceSortKey, SortDir> = {
   predicate: "asc",
-  importance: "desc",
-  created_at: "desc",
+  weight: "desc",
+  last_observed_at: "desc",
 };
 
-function _sortFacts(facts: Fact[], sort: ProvenanceSortState): Fact[] {
+function _sortEntityFacts(facts: EntityFact[], sort: ProvenanceSortState): EntityFact[] {
   return [...facts].sort((a, b) => {
     let cmp = 0;
     if (sort.key === "predicate") {
       cmp = a.predicate.localeCompare(b.predicate);
-    } else if (sort.key === "importance") {
-      cmp = (a.importance ?? 0) - (b.importance ?? 0);
-    } else if (sort.key === "created_at") {
-      cmp = a.created_at.localeCompare(b.created_at);
+    } else if (sort.key === "weight") {
+      cmp = (a.weight ?? 0) - (b.weight ?? 0);
+    } else if (sort.key === "last_observed_at") {
+      const aTs = a.last_observed_at ?? a.created_at;
+      const bTs = b.last_observed_at ?? b.created_at;
+      cmp = aTs.localeCompare(bTs);
     }
     return sort.dir === "asc" ? cmp : -cmp;
   });
@@ -1635,22 +1641,24 @@ function SortHeaderButton({
   );
 }
 
-function ProvenanceGrid({
-  entityId,
-  facts,
-  total,
-  hasMore,
-  isFetching,
-  onLoadMore,
-}: {
-  entityId: string;
-  facts: Fact[];
-  total: number;
-  hasMore: boolean;
-  isFetching: boolean;
-  onLoadMore: () => void;
-}) {
-  const [sort, setSort] = useState<ProvenanceSortState>({ key: "created_at", dir: "desc" });
+const PROVENANCE_FACTS_PAGE_SIZE = 20;
+const PROVENANCE_FACTS_MAX_LIMIT = 200;
+
+function ProvenanceGrid({ entityId }: { entityId: string }) {
+  const [offset, setOffset] = useState(0);
+  const [sort, setSort] = useState<ProvenanceSortState>({
+    key: "last_observed_at",
+    dir: "desc",
+  });
+
+  const { data, isFetching, error } = useEntityFacts(entityId, {
+    offset: 0,
+    limit: Math.min(offset + PROVENANCE_FACTS_PAGE_SIZE, PROVENANCE_FACTS_MAX_LIMIT),
+  });
+
+  const facts = useMemo(() => data?.facts ?? [], [data?.facts]);
+  const total = data?.total ?? 0;
+  const hasMore = data?.has_more ?? false;
 
   function handleSort(key: ProvenanceSortKey) {
     setSort((prev) =>
@@ -1660,7 +1668,18 @@ function ProvenanceGrid({
     );
   }
 
-  const sorted = useMemo(() => _sortFacts(facts, sort), [facts, sort]);
+  const sorted = useMemo(() => _sortEntityFacts(facts, sort), [facts, sort]);
+
+  if (error) {
+    return (
+      <section className="space-y-3" data-testid="provenance-grid">
+        <h2 className="text-lg font-semibold">Provenance</h2>
+        <p role="alert" className="text-destructive text-sm py-4">
+          {error instanceof Error ? error.message : "Failed to load provenance facts."}
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="space-y-3" data-testid="provenance-grid">
@@ -1688,11 +1707,11 @@ function ProvenanceGrid({
                 />
               </TableHead>
               <TableHead className="text-muted-foreground text-xs">Object</TableHead>
-              <TableHead className="text-muted-foreground text-xs">Validity</TableHead>
+              <TableHead className="text-muted-foreground text-xs">Kind</TableHead>
               <TableHead className="text-muted-foreground text-xs">
                 <SortHeaderButton
-                  label="Importance"
-                  column="importance"
+                  label="Weight"
+                  column="weight"
                   sort={sort}
                   onSort={handleSort}
                 />
@@ -1700,8 +1719,8 @@ function ProvenanceGrid({
               <TableHead className="text-muted-foreground text-xs">Source</TableHead>
               <TableHead className="text-muted-foreground text-xs">
                 <SortHeaderButton
-                  label="Recorded"
-                  column="created_at"
+                  label="Last Observed"
+                  column="last_observed_at"
                   sort={sort}
                   onSort={handleSort}
                 />
@@ -1710,7 +1729,7 @@ function ProvenanceGrid({
           </TableHeader>
           <TableBody>
             {sorted.map((fact) => (
-              <ProvenanceRow key={fact.id} fact={fact} entityId={entityId} />
+              <ProvenanceRow key={fact.id} fact={fact} />
             ))}
           </TableBody>
         </Table>
@@ -1721,7 +1740,7 @@ function ProvenanceGrid({
           <Button
             variant="outline"
             size="sm"
-            onClick={onLoadMore}
+            onClick={() => setOffset((prev) => prev + PROVENANCE_FACTS_PAGE_SIZE)}
             disabled={isFetching}
           >
             {isFetching ? "Loading..." : "Load more facts"}
@@ -1732,65 +1751,42 @@ function ProvenanceGrid({
   );
 }
 
-function ProvenanceRow({ fact, entityId }: { fact: Fact; entityId: string }) {
-  const isIncoming =
-    fact.object_entity_id === entityId && fact.entity_id !== entityId;
-  const created = new Date(fact.created_at);
+function ProvenanceRow({ fact }: { fact: EntityFact }) {
+  const isEntityRef = fact.object_kind === "entity";
+  const lastObserved = fact.last_observed_at
+    ? new Date(fact.last_observed_at)
+    : new Date(fact.created_at);
 
-  const objectCell = isIncoming ? (
-    <>
-      <Link
-        to={`/entities/${fact.entity_id}`}
-        className="text-primary hover:underline"
-      >
-        {fact.entity_name ?? fact.subject}
-      </Link>
-      <span className="text-muted-foreground"> → this entity</span>
-    </>
-  ) : fact.object_entity_id ? (
+  const objectCell = isEntityRef ? (
     <Link
-      to={`/entities/${fact.object_entity_id}`}
+      to={`/entities/${fact.object}`}
       className="text-primary hover:underline"
     >
-      {fact.object_entity_name ?? fact.content}
+      {fact.object}
     </Link>
   ) : (
-    <span className="truncate max-w-[16rem] inline-block" title={fact.content}>
-      {fact.content}
+    <span className="truncate max-w-[16rem] inline-block" title={fact.object}>
+      {fact.object}
     </span>
   );
 
   return (
     <TableRow>
       <TableCell className="text-xs capitalize font-medium">
-        {fact.predicate.replaceAll("_", " ")}
+        {fact.predicate.replaceAll("-", " ").replaceAll("_", " ")}
       </TableCell>
       <TableCell className="text-xs">{objectCell}</TableCell>
-      <TableCell className="text-xs">
-        <Badge
-          variant={fact.validity === "active" ? "secondary" : "outline"}
-          className="text-[10px] capitalize"
-        >
-          {fact.validity}
-        </Badge>
+      <TableCell className="text-xs text-muted-foreground">
+        {fact.object_kind}
       </TableCell>
       <TableCell className="text-xs tabular-nums">
-        {fact.importance.toFixed(1)}
+        {fact.weight != null ? fact.weight : <span className="text-muted-foreground">—</span>}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">
-        {fact.source_butler ?? "—"}
-        {fact.session_id && (
-          <Link
-            to={sessionDetailHref(fact.session_id, fact.source_butler)}
-            className="text-primary ml-1 hover:underline"
-            title={fact.session_id}
-          >
-            ↗
-          </Link>
-        )}
+        {fact.src}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground tabular-nums">
-        <Time value={created} mode="absolute" precision="day" />
+        <Time value={lastObserved} mode="absolute" precision="day" />
       </TableCell>
     </TableRow>
   );
@@ -2386,17 +2382,8 @@ export default function EntityDetailPage() {
               />
             </>
           ) : (
-            /* Workbench mode — dense sortable provenance grid, no editorial noise */
-            <ProvenanceGrid
-              entityId={entity.id}
-              facts={entity.recent_facts}
-              total={entity.recent_facts_total}
-              hasMore={entity.recent_facts_has_more}
-              isFetching={isFetching}
-              onLoadMore={() =>
-                setFactsLimit((current) => current + FACTS_PAGE_SIZE)
-              }
-            />
+            /* Workbench mode — dense sortable provenance grid with real provenance fields */
+            <ProvenanceGrid entityId={entity.id} />
           )}
 
           {/* Practical drawer — collapsed by default, owner setup forces it open */}

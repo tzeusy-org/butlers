@@ -1299,3 +1299,146 @@ class TestEntityNeighbours:
         resp = await _get(app, _NEIGHBOURS_PATH)
         assert resp.status_code == 200
         assert resp.json()["neighbours"] == {}
+
+
+# ===========================================================================
+# GET /entities/{entity_id}/facts — per-fact provenance grid (bu-mg4dk)
+# ===========================================================================
+
+_FACTS_PATH = f"/api/relationship/entities/{_ENT_ID}/facts"
+
+
+class TestEntityFacts:
+    """GET /entities/{id}/facts — per-fact provenance fields (bu-mg4dk)."""
+
+    def _make_fact_row(
+        self,
+        *,
+        predicate: str = "works-at",
+        object_val: str = "Acme Corp",
+        object_kind: str = "literal",
+        src: str = "relationship",
+        weight: int | None = 5,
+        last_seen: "datetime | None" = None,
+    ) -> MagicMock:
+        data = {
+            "id": uuid4(),
+            "subject": _ENT_ID,
+            "predicate": predicate,
+            "object": object_val,
+            "object_kind": object_kind,
+            "src": src,
+            "conf": 1.0,
+            "weight": weight,
+            "last_seen": last_seen,
+            "verified": False,
+            "primary": None,
+            "validity": "active",
+            "created_at": _NOW,
+        }
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        return row
+
+    def _make_app(
+        self,
+        *,
+        owner_exists: bool = True,
+        entity_exists: bool = True,
+        fact_rows: list | None = None,
+        total_count: int | None = None,
+    ) -> tuple["FastAPI", "AsyncMock"]:
+        mock_pool = AsyncMock()
+        owner_row = _make_owner_row() if owner_exists else None
+        entity_val = 1 if entity_exists else None
+
+        # GET /facts call sequence:
+        #   1. fetchrow → owner-entity gate
+        #   2. fetchval → entity existence check
+        #   3. fetchval → COUNT(*) for total
+        #   4. fetch → fact rows
+        rows = fact_rows or []
+        count = total_count if total_count is not None else len(rows)
+
+        mock_pool.fetchrow = AsyncMock(return_value=owner_row)
+        mock_pool.fetchval = AsyncMock(side_effect=[entity_val, count])
+        mock_pool.fetch = AsyncMock(return_value=rows)
+
+        return _wire_app(mock_pool), mock_pool
+
+    async def test_happy_path_returns_200_with_facts(self):
+        """GET /entities/{id}/facts returns 200 with provenance facts."""
+        rows = [self._make_fact_row()]
+        app, _ = self._make_app(fact_rows=rows)
+        resp = await _get(app, _FACTS_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "facts" in body
+        assert body["total"] == 1
+        assert body["has_more"] is False
+
+    async def test_response_shape_includes_provenance_fields(self):
+        """Facts response includes weight, last_observed_at, object_kind, src."""
+        rows = [self._make_fact_row(weight=7, object_kind="literal", src="relationship")]
+        app, _ = self._make_app(fact_rows=rows)
+        resp = await _get(app, _FACTS_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        fact = body["facts"][0]
+        assert "weight" in fact
+        assert fact["weight"] == 7
+        assert "last_observed_at" in fact
+        assert "object_kind" in fact
+        assert fact["object_kind"] == "literal"
+        assert "src" in fact
+        assert fact["src"] == "relationship"
+
+    async def test_owner_gate_returns_403(self):
+        """GET /entities/{id}/facts returns 403 when no owner entity."""
+        app, _ = self._make_app(owner_exists=False)
+        resp = await _get(app, _FACTS_PATH)
+        _assert_owner_required(resp)
+
+    async def test_missing_entity_returns_404(self):
+        """GET /entities/{id}/facts returns 404 for unknown entity."""
+        app, _ = self._make_app(entity_exists=False)
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/facts")
+        assert resp.status_code == 404
+
+    async def test_empty_facts_returns_empty_list(self):
+        """Entity with no active triples returns empty facts list."""
+        app, _ = self._make_app(fact_rows=[], total_count=0)
+        resp = await _get(app, _FACTS_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["facts"] == []
+        assert body["total"] == 0
+        assert body["has_more"] is False
+
+    async def test_has_more_is_true_when_total_exceeds_limit(self):
+        """has_more is True when total > offset + limit."""
+        rows = [self._make_fact_row() for _ in range(20)]
+        app, _ = self._make_app(fact_rows=rows, total_count=50)
+        resp = await _get(app, _FACTS_PATH, limit=20)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["has_more"] is True
+        assert body["total"] == 50
+
+    async def test_sql_uses_entity_facts_not_facts_table(self):
+        """GET /entities/{id}/facts SQL must use relationship.entity_facts."""
+        app, pool = self._make_app(fact_rows=[])
+        await _get(app, _FACTS_PATH)
+        fetch_call_sql = pool.fetch.call_args[0][0]
+        assert "relationship.entity_facts" in fetch_call_sql
+        assert "relationship.facts" not in fetch_call_sql
+
+    async def test_sql_selects_required_provenance_columns(self):
+        """SQL must SELECT weight, last_seen, object_kind, src."""
+        app, pool = self._make_app(fact_rows=[])
+        await _get(app, _FACTS_PATH)
+        fetch_call_sql = pool.fetch.call_args[0][0]
+        assert "weight" in fetch_call_sql
+        assert "last_seen" in fetch_call_sql
+        assert "object_kind" in fetch_call_sql
+        assert "src" in fetch_call_sql
