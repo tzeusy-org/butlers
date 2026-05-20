@@ -28,7 +28,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query
 
-from butlers.modules.metrics.prometheus import async_query
+from butlers.modules.metrics.prometheus import async_query, async_query_range
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,59 @@ def _degraded_response(window: str) -> dict:
 # ---------------------------------------------------------------------------
 # PromQL helpers
 # ---------------------------------------------------------------------------
+
+_SPARK24H_QUERY = "sum(increase(ingestion_events_ingested_total[1h]))"
+_SPARK24H_STEP = "3600"  # 1 hour in seconds
+
+
+async def _query_spark24h_buckets(prom_url: str) -> list[int] | None:
+    """Fetch true hourly buckets for the 24h sparkline via a Prometheus range query.
+
+    Returns a list of exactly 24 ints (oldest bucket first, most-recent last),
+    or ``None`` on any Prometheus error / empty matrix (caller falls back to
+    uniform distribution via ``_build_spark24h``).
+    """
+    now = int(time.time())
+    start = str(now - 24 * 3600)
+    end = str(now)
+
+    results = await async_query_range(
+        prom_url,
+        _SPARK24H_QUERY,
+        start=start,
+        end=end,
+        step=_SPARK24H_STEP,
+    )
+
+    if not results or "error" in results[0]:
+        if results:
+            logger.warning(
+                "spark24h range query failed: %s", results[0].get("error", "unknown error")
+            )
+        else:
+            logger.debug("spark24h range query returned empty matrix")
+        return None
+
+    # The first (and only, because the query is a sum) series contains the values.
+    try:
+        raw_values: list[list] = results[0]["values"]
+    except (KeyError, IndexError):
+        logger.warning("spark24h range query: unexpected result shape")
+        return None
+
+    if not raw_values:
+        return None
+
+    # Convert string values to ints.  Prometheus may return 24 or 25 points
+    # depending on boundary alignment; take the last 24 to stay within window.
+    buckets = [int(float(v)) for _, v in raw_values]
+    if len(buckets) > 24:
+        buckets = buckets[-24:]
+    elif len(buckets) < 24:
+        # Pad the front with zeros so the caller always gets exactly 24 buckets.
+        buckets = [0] * (24 - len(buckets)) + buckets
+
+    return buckets
 
 
 async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
@@ -165,12 +218,13 @@ async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
         filtered24h = int(_extract_scalar(filtered24h_results))
 
     # ---- spark24h — 24 hourly buckets (always 24h, regardless of window) ----
-    # We use a simplified approach: query hourly totals via an instant query
-    # over 24h window sliced into 24 buckets using subqueries.
-    # For simplicity: use the ingested total and distribute evenly if only
-    # a single counter is available (Prometheus range queries are in async_query_range).
-    # Fall back to uniform distribution of the 24h ingested total.
-    spark24h = _build_spark24h(int(ingested) if window == "24h" else int(ingested))
+    # Attempt a true per-hour range query; fall back to uniform distribution when
+    # Prometheus is unavailable or returns no data.
+    spark24h_buckets = await _query_spark24h_buckets(prom_url)
+    if spark24h_buckets is None:
+        spark24h: list[int] = _build_spark24h(int(ingested))
+    else:
+        spark24h = spark24h_buckets
 
     # ---- routed_pct ----
     total_events = ingested + filtered + errored

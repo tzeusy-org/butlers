@@ -645,7 +645,10 @@ async def test_pipeline_stats_degraded_mode_prometheus_error(app):
 
 
 async def test_pipeline_stats_healthy_response(app):
-    """GET /api/ingestion/pipeline returns aggregates_available=true on healthy Prometheus."""
+    """GET /api/ingestion/pipeline returns aggregates_available=true on healthy Prometheus.
+
+    spark24h comes from the range query when it succeeds.
+    """
     from butlers.api.routers import ingestion_pipeline as _pip_mod
 
     _pip_mod._pipeline_cache.clear()
@@ -653,6 +656,10 @@ async def test_pipeline_stats_healthy_response(app):
     # Simulate successful Prometheus responses for all queries
     def _prom_result(value: float):
         return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    # 24 hourly buckets for the range query (oldest → most-recent)
+    _range_buckets = [[1234560000 + i * 3600, str(i * 10)] for i in range(24)]
+    _range_result = [{"metric": {}, "values": _range_buckets}]
 
     with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
         with patch(
@@ -667,10 +674,15 @@ async def test_pipeline_stats_healthy_response(app):
                 _prom_result(15.0),  # filtered24h
             ],
         ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/ingestion/pipeline?window=24h")
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=_range_result,
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
 
     assert resp.status_code == 200
     body = resp.json()
@@ -679,7 +691,8 @@ async def test_pipeline_stats_healthy_response(app):
     assert body["filtered"] == 20
     assert body["errored"] == 5
     assert body["routed_by_butler"] == {"atlas": 80}
-    assert len(body["spark24h"]) == 24
+    # spark24h must be the real range buckets, not a uniform distribution
+    assert body["spark24h"] == [i * 10 for i in range(24)]
 
 
 async def test_pipeline_stats_ttl_cache_second_request_served_from_cache(app):
@@ -698,23 +711,30 @@ async def test_pipeline_stats_ttl_cache_second_request_served_from_cache(app):
         call_count += 1
         return _prom_result(42.0)
 
+    _range_buckets = [[1234560000 + i * 3600, "5"] for i in range(24)]
+
     with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
         with patch(
             "butlers.api.routers.ingestion_pipeline.async_query",
             side_effect=_mock_query,
         ):
-            # First request populates cache
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp1 = await client.get("/api/ingestion/pipeline?window=24h")
-            calls_after_first = call_count
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": _range_buckets}],
+            ):
+                # First request populates cache
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp1 = await client.get("/api/ingestion/pipeline?window=24h")
+                calls_after_first = call_count
 
-            # Second request — should use cache, no new Prometheus calls
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp2 = await client.get("/api/ingestion/pipeline?window=24h")
+                # Second request — should use cache, no new Prometheus calls
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp2 = await client.get("/api/ingestion/pipeline?window=24h")
 
     assert resp1.status_code == 200
     assert resp2.status_code == 200
@@ -731,6 +751,186 @@ async def test_pipeline_stats_invalid_window_400(app):
     ) as client:
         resp = await client.get("/api/ingestion/pipeline?window=invalid")
     assert resp.status_code == 422
+
+
+async def test_pipeline_stats_spark24h_from_range_query(app):
+    """spark24h is populated from the Prometheus range query when it succeeds.
+
+    The returned bucket values should match what async_query_range returns —
+    not a uniform distribution of the ingested total.
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    # Distinct per-hour values so we can verify real bucketing (not uniform).
+    hourly_values = list(range(24))  # 0, 1, 2, … 23
+    _range_result = [
+        {
+            "metric": {},
+            "values": [[1234560000 + i * 3600, str(hourly_values[i])] for i in range(24)],
+        }
+    ]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result(276.0),  # ingested (sum of 0..23 = 276)
+                _prom_result(0.0),  # filtered
+                _prom_result(0.0),  # errored
+                [],  # routed — empty vector
+                _prom_result(0.0),  # rate1h
+                _prom_result(0.0),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=_range_result,
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is True
+    assert len(body["spark24h"]) == 24
+    # Must be real per-bucket values, not uniform distribution.
+    assert body["spark24h"] == hourly_values
+
+
+async def test_pipeline_stats_spark24h_fallback_on_range_error(app):
+    """spark24h falls back to uniform distribution when the range query returns an error.
+
+    The endpoint must still return 200 with aggregates_available=true because the
+    instant queries (ingested, filtered, …) did succeed.
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result(48.0),  # ingested
+                _prom_result(0.0),  # filtered
+                _prom_result(0.0),  # errored
+                [],  # routed
+                _prom_result(0.0),  # rate1h
+                _prom_result(0.0),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"error": "connection refused"}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is True
+    assert len(body["spark24h"]) == 24
+    # Should be uniform distribution: 48 // 24 = 2 per bucket.
+    assert body["spark24h"] == [2] * 24
+
+
+async def test_pipeline_stats_spark24h_fallback_on_empty_matrix(app):
+    """spark24h falls back to uniform distribution when the range query returns an empty matrix."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result(24.0),  # ingested
+                _prom_result(0.0),  # filtered
+                _prom_result(0.0),  # errored
+                [],  # routed
+                _prom_result(0.0),  # rate1h
+                _prom_result(0.0),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[],  # empty matrix
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is True
+    assert len(body["spark24h"]) == 24
+    # Uniform distribution: 24 // 24 = 1 per bucket.
+    assert body["spark24h"] == [1] * 24
+
+
+async def test_pipeline_stats_spark24h_trims_25_buckets_to_24(app):
+    """async_query_range can return 25 points due to boundary inclusion; we trim to 24."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    # 25 buckets: we should keep the last 24 (most-recent).
+    raw_25 = [[1234560000 + i * 3600, str(i)] for i in range(25)]
+    _range_result = [{"metric": {}, "values": raw_25}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result(0.0),  # ingested
+                _prom_result(0.0),  # filtered
+                _prom_result(0.0),  # errored
+                [],  # routed
+                _prom_result(0.0),  # rate1h
+                _prom_result(0.0),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=_range_result,
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["spark24h"]) == 24
+    # We dropped the first bucket (index 0 = oldest) and kept indices 1..24.
+    assert body["spark24h"] == list(range(1, 25))
 
 
 # ---------------------------------------------------------------------------
