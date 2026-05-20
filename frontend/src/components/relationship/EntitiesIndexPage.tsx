@@ -383,12 +383,24 @@ function QueueSection({
 
 export function EntitiesIndexPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [typeFilter, setTypeFilter] = useState<EntityType | null>(null);
-  const [stateFilter, setStateFilter] = useState<EntityState | null>(null);
   const [offset, setOffset] = useState(0);
 
-  // URL is the source of truth for the has=contact filter.
-  // ?has=contact activates the chip; any other value or absence deactivates it.
+  // URL is the source of truth for all filter chips.
+  // ?type=person activates the Person chip; any other value or absence deactivates it.
+  // ?state=unidentified activates the Unidentified chip; etc.
+  // ?has=contact activates the Has contact chip; any other value or absence deactivates it.
+  const rawType = searchParams.get("type");
+  const typeFilter: EntityType | null =
+    rawType !== null && (ENTITY_TYPES as readonly string[]).includes(rawType)
+      ? (rawType as EntityType)
+      : null;
+
+  const rawState = searchParams.get("state");
+  const stateFilter: EntityState | null =
+    rawState !== null && STATE_CHIPS.some((c) => c.value === rawState)
+      ? (rawState as EntityState)
+      : null;
+
   const hasContact = searchParams.get("has") === "contact";
 
   const params: RelationshipEntityListParams = {
@@ -408,19 +420,36 @@ export function EntitiesIndexPage() {
   const hasMore = offset + PAGE_SIZE < total;
   const hasPrev = offset > 0;
 
-  function handleFilterChange() {
-    // Reset pagination when filters change
+  function handleTypeChange(type: EntityType | null) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (type !== null) {
+          next.set("type", type);
+        } else {
+          next.delete("type");
+        }
+        return next;
+      },
+      { replace: false },
+    );
     setOffset(0);
   }
 
-  function handleTypeChange(type: EntityType | null) {
-    setTypeFilter(type);
-    handleFilterChange();
-  }
-
   function handleStateChange(state: EntityState | null) {
-    setStateFilter(state);
-    handleFilterChange();
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (state !== null) {
+          next.set("state", state);
+        } else {
+          next.delete("state");
+        }
+        return next;
+      },
+      { replace: false },
+    );
+    setOffset(0);
   }
 
   function handleHasContactChange(v: boolean) {
@@ -436,7 +465,7 @@ export function EntitiesIndexPage() {
       },
       { replace: false },
     );
-    handleFilterChange();
+    setOffset(0);
   }
 
   return (
