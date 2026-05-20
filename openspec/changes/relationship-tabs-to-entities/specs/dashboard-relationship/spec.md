@@ -80,6 +80,10 @@ The page MUST contain:
 
 3. **Unified ActivityTimeline** — a single vertically-scrolling event stream sourced from the entity timeline endpoint (`GET /api/butlers/relationship/entities/{id}/timeline`). The stream MUST display all supported event kinds: interactions, notes, gifts, loans, and life events. Filter pills at the top of the stream allow the user to narrow the view to a single event kind. The active filter is single-select: pills are: **All**, **Interactions**, **Notes**, **Gifts**, **Loans**, **Life events**. Selecting a pill hides all other kinds in the stream (client-side filtering; no additional API call). Empty stream state MUST display an appropriate message (e.g., "No activity recorded yet." when All is active, or "No interactions yet." when a specific kind pill is active). The stream MUST be sorted `valid_at DESC` with `created_at DESC` as a tie-break, consistent with the timeline endpoint sort contract.
 
+4. **Gifts panel** — a structured display of gift-scoped facts (gifts with occasion, status, and description). This panel MAY be hidden when empty. This is a separate surface complementing the unified ActivityTimeline above; the timeline includes gifts mixed with other event kinds, whereas this panel dedicates focus to gifts alone.
+
+5. **Loans panel** — a structured display of loan-scoped facts (loans with amount, direction, settlement status, and description). This panel MAY be hidden when empty. Like the Gifts panel above, this surface coexists with the unified ActivityTimeline.
+
 #### Scenario: Entity detail page renders with unified timeline
 
 - **WHEN** a user navigates to `/butlers/relationship/entities/ent-456-uuid` and the entity exists
@@ -443,10 +447,10 @@ Phase 1 Open Question 1).
 
 The Entity detail page (`/butlers/relationship/entities/:id`, established by the
 "Entity detail page" requirement above) SHALL render in one of two modes:
-**Editorial** (default) or **Workbench**. The unified ActivityTimeline defined above is
-present in both modes; the toggle changes how the header and contact facts are rendered.
-In Workbench mode the ActivityTimeline is replaced by the ProvenanceGrid (see
-`bu-r6vft`), which surfaces every provenance column in a dense, sortable grid.
+**Editorial** (default) or **Workbench**. The unified ActivityTimeline is present in
+Editorial mode. In Workbench mode it is replaced by the ProvenanceGrid (see
+`bu-r6vft`), which surfaces every provenance column in a dense, sortable grid. The toggle
+also changes how the header and contact facts are rendered.
 
 **Editorial mode** is the default and MUST:
 - Use `<Page archetype="detail">` (per the in-flight `detail-page-archetype` change) with
