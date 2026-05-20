@@ -196,3 +196,133 @@ describe("ContactDetailPage — rendering", () => {
     expect(html).toContain("Alice Example");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Secured credential reveal [bu-6dyn5]
+// ---------------------------------------------------------------------------
+// The SecuredInfoEntry sub-component masks contact_info entries with
+// secured=true and value=null. A "Reveal" button triggers the reveal API.
+// These tests cover the static initial state; click interaction is covered in
+// ContactDetailPage.interactions.test.tsx.
+
+describe("ContactDetailPage — secured credential reveal", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders masked dots (••••••••) when secured entry has no value", () => {
+    setContactState({
+      ...BASE_CONTACT,
+      contact_info: [
+        {
+          id: "ci-secret-1",
+          type: "other",
+          value: null,     // not yet revealed
+          is_primary: false,
+          secured: true,
+          parent_id: null,
+        },
+      ],
+    });
+    const html = renderPage();
+    // SecuredInfoEntry renders bullet dots as ••••••••
+    expect(html).toContain("••••••••");
+  });
+
+  it("renders a Reveal button next to the masked entry", () => {
+    setContactState({
+      ...BASE_CONTACT,
+      contact_info: [
+        {
+          id: "ci-secret-1",
+          type: "other",
+          value: null,
+          is_primary: false,
+          secured: true,
+          parent_id: null,
+        },
+      ],
+    });
+    const html = renderPage();
+    // The Reveal button text is rendered for unrevealed secured entries
+    expect(html).toContain("Reveal");
+  });
+
+  it("does NOT render masked dots when secured entry already has a value", () => {
+    setContactState({
+      ...BASE_CONTACT,
+      contact_info: [
+        {
+          id: "ci-secret-1",
+          type: "other",
+          value: "my-secret-token",
+          is_primary: false,
+          secured: true,
+          parent_id: null,
+        },
+      ],
+    });
+    const html = renderPage();
+    // When value is present the dots are not shown; the value itself is shown
+    expect(html).not.toContain("••••••••");
+    expect(html).toContain("my-secret-token");
+  });
+
+  it("does NOT render masked dots for non-secured entries", () => {
+    setContactState({
+      ...BASE_CONTACT,
+      contact_info: [
+        {
+          id: "ci-email-1",
+          type: "email",
+          value: "alice@example.com",
+          is_primary: true,
+          secured: false,
+          parent_id: null,
+        },
+      ],
+    });
+    const html = renderPage();
+    expect(html).not.toContain("••••••••");
+    expect(html).toContain("alice@example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 404 / error path [bu-6dyn5]
+// ---------------------------------------------------------------------------
+// When useContact returns an error (e.g. 404 from the API), ContactDetailPage
+// passes the error to DetailPage which renders an error card. The page must
+// not crash.
+
+describe("ContactDetailPage — error / 404 path", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders error card when useContact returns an error", () => {
+    setContactState(null, { error: new Error("Contact not found") });
+    const html = renderPage();
+    // DetailPage renders an alert card with this heading on error
+    expect(html).toContain("Something went wrong");
+  });
+
+  it("includes the error message in the error card", () => {
+    setContactState(null, { error: new Error("Contact not found") });
+    const html = renderPage();
+    expect(html).toContain("Contact not found");
+  });
+
+  it("does not crash or throw when contact is not found", () => {
+    // Verifies the page renders without throwing for a 404-equivalent state
+    setContactState(null, { error: new Error("404 Not Found") });
+    expect(() => renderPage()).not.toThrow();
+  });
+
+  it("renders error state without any contact content", () => {
+    setContactState(null, { error: new Error("Contact not found") });
+    const html = renderPage();
+    // No contact-specific content is shown in error state
+    expect(html).not.toContain("Add contact info");
+  });
+});
