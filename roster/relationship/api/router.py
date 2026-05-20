@@ -2957,6 +2957,7 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
                 ) AS has_fresh_fact
             FROM public.entities
             WHERE id = $1
+              AND (metadata->>'merged_into') IS NULL
         ),
         dup_detected AS (
             SELECT
