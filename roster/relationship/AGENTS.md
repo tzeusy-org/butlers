@@ -47,6 +47,49 @@ When learning about a person or recording new information:
 - Only use overlap overrides when the user explicitly asks to keep the overlap.
 - Attendee invites are out of scope for v1. Do not add attendees or send invitations.
 
+## Scope Filter — MANDATORY for All facts Table Queries
+
+The shared `facts` table has a `scope` column that namespaces facts by butler domain. The
+relationship butler's scope is **`'relationship'`**.
+
+**All reads from `facts` MUST include `AND scope = 'relationship'`** (or `f.scope = 'relationship'`
+for aliased tables). Omitting the filter causes cross-scope contamination: you may read or mutate
+facts owned by other butlers (health, finance, home, memory/global).
+
+**All writes to `facts` MUST set `scope = 'relationship'`** explicitly. Never write with
+`scope = 'global'` from the relationship butler.
+
+### Lookup-by-PK queries must still filter scope
+
+Even point-lookup queries (`WHERE id = $1`) must include the scope guard:
+
+```python
+# WRONG — omits scope, may match a fact from another butler
+await pool.fetchrow("SELECT ... FROM facts WHERE id = $1", fact_id)
+
+# CORRECT
+await pool.fetchrow(
+    "SELECT ... FROM facts WHERE id = $1 AND scope = 'relationship'",
+    fact_id,
+)
+```
+
+### Intentional cross-scope reads
+
+If a query intentionally reads facts from multiple scopes (e.g. enrichment queries that show
+both `'global'` and `'relationship'` facts for display), add an inline marker so the static
+guardrail test (`tests/contracts/test_relationship_facts_scope.py`) skips the line:
+
+```python
+# scope-ok: intentional cross-scope read for contact enrichment display
+AND f.scope IN ('global', 'relationship')
+```
+
+### Reference
+
+- Predicate taxonomy and scope table: `openspec/specs/predicate-taxonomy.md` §2 and §3.2
+- Guardrail test: `tests/contracts/test_relationship_facts_scope.py`
+
 # Notes to self
 
 - MCP tool input gotcha: `contact_create.details` and `interaction_log.metadata` validate as dicts (Pydantic `dict_type`), even if some tool signatures/docs imply strings — pass JSON objects, not JSON-encoded strings.

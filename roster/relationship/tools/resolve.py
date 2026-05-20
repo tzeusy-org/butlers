@@ -536,6 +536,8 @@ async def _compute_salience(
 
     # Batch query 4: Fact and note counts from SPO facts table.
     try:
+        # scope-ok: intentional cross-scope read — counts both 'global' (memory/consolidation)
+        # and 'relationship' facts so the contact detail view shows the full fact/note tally.
         fact_note_rows = await pool.fetch(
             """
             SELECT

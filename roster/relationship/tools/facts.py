@@ -52,7 +52,7 @@ async def _fact_set_spo(
         SET validity = 'superseded'
         WHERE entity_id = $1
           AND predicate = $2
-          AND scope = 'global'
+          AND scope = 'relationship'
           AND validity = 'active'
           AND valid_at IS NULL
         """,
@@ -63,7 +63,7 @@ async def _fact_set_spo(
     row = await pool.fetchrow(
         """
         INSERT INTO facts (subject, predicate, content, metadata, validity, scope, entity_id)
-        VALUES ($1, $2, $3, $4, 'active', 'global', $5)
+        VALUES ($1, $2, $3, $4, 'active', 'relationship', $5)
         RETURNING id, subject, predicate, content, metadata, created_at
         """,
         subject,
@@ -106,7 +106,7 @@ async def _fact_list_spo(
         SELECT id, predicate, content, created_at
         FROM facts
         WHERE entity_id = $1
-          AND scope = 'global'
+          AND scope = 'relationship'
           AND validity = 'active'
           AND valid_at IS NULL
         ORDER BY predicate

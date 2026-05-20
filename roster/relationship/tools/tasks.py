@@ -203,7 +203,8 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
     from butlers.modules.memory.storage import store_fact
 
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, entity_id FROM facts WHERE id = $1",
+        "SELECT id, subject, content, metadata, entity_id FROM facts"
+        " WHERE id = $1 AND scope = 'relationship'",
         task_id,
     )
     if row is None:
@@ -252,7 +253,8 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
 async def task_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
     """Delete a task (mark as retracted)."""
     row = await pool.fetchrow(
-        "SELECT id, subject, content FROM facts WHERE id = $1 AND predicate = 'contact_task'",
+        "SELECT id, subject, content FROM facts"
+        " WHERE id = $1 AND predicate = 'contact_task' AND scope = 'relationship'",
         task_id,
     )
     if row is None:

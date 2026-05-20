@@ -184,7 +184,8 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
     from butlers.modules.memory.storage import store_fact
 
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, entity_id FROM facts WHERE id = $1",
+        "SELECT id, subject, content, metadata, entity_id FROM facts"
+        " WHERE id = $1 AND scope = 'relationship'",
         loan_id,
     )
     if row is None:
