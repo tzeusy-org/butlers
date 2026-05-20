@@ -91,7 +91,7 @@ def _app_with_pool(
     ``fetch_rows`` is returned by pool.fetch (the neighbours query).
     """
     if owner_row is None:
-        owner_row = {"id": uuid4()}
+        owner_row = {"id": uuid4(), "roles": ["owner"]}
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=owner_row)
@@ -146,7 +146,7 @@ async def test_owner_gate_returns_403_when_no_owner():
     app = _no_owner_app()
     resp = await _get(app)
     assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "owner_required"
+    assert resp.json()["code"] == "owner_required"
 
 
 # ---------------------------------------------------------------------------
