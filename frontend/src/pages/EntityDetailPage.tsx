@@ -1642,6 +1642,7 @@ function SortHeaderButton({
 }
 
 const PROVENANCE_FACTS_PAGE_SIZE = 20;
+const PROVENANCE_FACTS_MAX_LIMIT = 200;
 
 function ProvenanceGrid({ entityId }: { entityId: string }) {
   const [offset, setOffset] = useState(0);
@@ -1650,9 +1651,9 @@ function ProvenanceGrid({ entityId }: { entityId: string }) {
     dir: "desc",
   });
 
-  const { data, isFetching } = useEntityFacts(entityId, {
+  const { data, isFetching, error } = useEntityFacts(entityId, {
     offset: 0,
-    limit: offset + PROVENANCE_FACTS_PAGE_SIZE,
+    limit: Math.min(offset + PROVENANCE_FACTS_PAGE_SIZE, PROVENANCE_FACTS_MAX_LIMIT),
   });
 
   const facts = useMemo(() => data?.facts ?? [], [data?.facts]);
@@ -1668,6 +1669,17 @@ function ProvenanceGrid({ entityId }: { entityId: string }) {
   }
 
   const sorted = useMemo(() => _sortEntityFacts(facts, sort), [facts, sort]);
+
+  if (error) {
+    return (
+      <section className="space-y-3" data-testid="provenance-grid">
+        <h2 className="text-lg font-semibold">Provenance</h2>
+        <p role="alert" className="text-destructive text-sm py-4">
+          {error instanceof Error ? error.message : "Failed to load provenance facts."}
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="space-y-3" data-testid="provenance-grid">

@@ -4980,17 +4980,14 @@ async def list_entity_facts(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    total = (
-        await pool.fetchval(
-            """
+    total = await pool.fetchval(
+        """
         SELECT count(*)
         FROM relationship.entity_facts
         WHERE subject  = $1
           AND validity = 'active'
         """,
-            entity_id,
-        )
-        or 0
+        entity_id,
     )
 
     rows = await pool.fetch(

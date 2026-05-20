@@ -66,6 +66,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityFacts: vi.fn(() => ({
     data: { facts: [], total: 0, offset: 0, limit: 20, has_more: false },
     isFetching: false,
+    error: null,
   })),
 }));
 
@@ -477,16 +478,22 @@ const SAMPLE_ENTITY_FACT: EntityFact = {
   created_at: "2025-03-10T08:00:00Z",
 };
 
-function setEntityFacts(facts: EntityFact[], opts: { has_more?: boolean; total?: number } = {}) {
+function setEntityFacts(
+  facts: EntityFact[],
+  opts: { has_more?: boolean; total?: number; error?: Error } = {},
+) {
   vi.mocked(useEntityFacts).mockReturnValue({
-    data: {
-      facts,
-      total: opts.total ?? facts.length,
-      offset: 0,
-      limit: 20,
-      has_more: opts.has_more ?? false,
-    },
+    data: opts.error
+      ? undefined
+      : {
+          facts,
+          total: opts.total ?? facts.length,
+          offset: 0,
+          limit: 20,
+          has_more: opts.has_more ?? false,
+        },
     isFetching: false,
+    error: opts.error ?? null,
   } as ReturnType<typeof useEntityFacts>);
 }
 
@@ -601,6 +608,16 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
     setEntityFacts([entityRefFact]);
     const html = renderPage();
     expect(html).toContain('href="/entities/entity-002"');
+  });
+
+  it("Workbench shows error message when useEntityFacts returns an error", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([], { error: new Error("Failed to fetch facts") });
+    const html = renderPage();
+    expect(html).toContain('data-testid="provenance-grid"');
+    expect(html).toContain("Failed to fetch facts");
+    expect(html).not.toContain("No facts linked to this entity.");
   });
 });
 
