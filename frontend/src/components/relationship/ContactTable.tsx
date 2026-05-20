@@ -45,6 +45,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -292,7 +293,7 @@ export default function ContactTable({
               className="cursor-pointer"
               style={
                 activeLabel === label.name
-                  ? { backgroundColor: labelStyle(label), color: "#fff" }
+                  ? { backgroundColor: labelStyle(label), color: ENTITY_BADGE_TEXT }
                   : {}
               }
               onClick={() =>

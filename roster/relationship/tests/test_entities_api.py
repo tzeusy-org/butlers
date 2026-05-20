@@ -607,12 +607,14 @@ class TestEntitySearch:
         *,
         entity_id: UUID | None = None,
         canonical_name: str = "Alice Example",
+        entity_type: str = "person",
         score: int = 100,
         match_kind: str = "prefix",
     ) -> MagicMock:
         data = {
             "entity_id": entity_id or uuid4(),
             "canonical_name": canonical_name,
+            "entity_type": entity_type,
             "score": score,
             "match_kind": match_kind,
         }
@@ -1232,6 +1234,7 @@ class TestEntityNeighbours:
         predicate: str = "knows",
         object_val: str | None = None,
         direction: str = "forward",
+        canonical_name: str = "Test Entity",
     ) -> MagicMock:
         data = {
             "id": uuid4(),
@@ -1246,6 +1249,7 @@ class TestEntityNeighbours:
             "verified": False,
             "primary": None,
             "direction": direction,
+            "canonical_name": canonical_name,
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
@@ -1319,7 +1323,7 @@ class TestEntityFacts:
         object_kind: str = "literal",
         src: str = "relationship",
         weight: int | None = 5,
-        last_seen: "datetime | None" = None,
+        last_seen: datetime | None = None,
     ) -> MagicMock:
         data = {
             "id": uuid4(),
@@ -1347,7 +1351,7 @@ class TestEntityFacts:
         entity_exists: bool = True,
         fact_rows: list | None = None,
         total_count: int | None = None,
-    ) -> tuple["FastAPI", "AsyncMock"]:
+    ) -> tuple[FastAPI, AsyncMock]:
         mock_pool = AsyncMock()
         owner_row = _make_owner_row() if owner_exists else None
         entity_val = 1 if entity_exists else None

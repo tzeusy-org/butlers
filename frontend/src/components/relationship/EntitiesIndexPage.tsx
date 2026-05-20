@@ -36,6 +36,7 @@ import {
   useRelationshipEntities,
   useRelationshipEntityQueue,
 } from "@/hooks/use-entities";
+import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -223,7 +224,7 @@ function EntityTable({ entities, isLoading }: EntityTableProps) {
                   </Link>
                   {entity.roles?.includes("owner") && (
                     <Badge
-                      style={{ backgroundColor: "var(--role-owner)", color: "#fff" }}
+                      style={{ backgroundColor: "var(--role-owner)", color: ENTITY_BADGE_TEXT }}
                       className="text-xs"
                     >
                       Owner
@@ -233,7 +234,7 @@ function EntityTable({ entities, isLoading }: EntityTableProps) {
                     <Badge
                       style={{
                         backgroundColor: "var(--state-unidentified)",
-                        color: "#fff",
+                        color: ENTITY_BADGE_TEXT,
                       }}
                       className="text-xs"
                     >

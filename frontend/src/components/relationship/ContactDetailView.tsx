@@ -36,6 +36,7 @@ import {
   useRevealContactSecret,
 } from "@/hooks/use-contacts";
 import { useUnlinkContact } from "@/hooks/use-memory";
+import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -886,7 +887,7 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
                       key={label.id}
                       style={{
                         backgroundColor: labelStyle(label),
-                        color: "#fff",
+                        color: ENTITY_BADGE_TEXT,
                       }}
                     >
                       {label.name}
