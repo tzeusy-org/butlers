@@ -3028,7 +3028,7 @@ async def get_entities_queue(
                 )
             )::jsonb AS evidence_json
         FROM public.entities e
-        JOIN (
+        CROSS JOIN (
             SELECT predicate, object
             FROM relationship.entity_facts
             WHERE predicate IN ({dup_predicates_literal})
@@ -3036,7 +3036,6 @@ async def get_entities_queue(
             GROUP BY predicate, object
             HAVING count(DISTINCT subject) > 1
         ) AS grp
-            ON grp.predicate IN ({dup_predicates_literal})
         JOIN relationship.entity_facts f_link
             ON f_link.subject = e.id
            AND f_link.predicate = grp.predicate
