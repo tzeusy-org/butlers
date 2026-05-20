@@ -242,9 +242,21 @@ upstream references in the beads graph; tasks 10.3, 10.7 above carry the corresp
 ## 12. Documentation
 
 - [ ] 12.1 RFC 0004 amendment (per task 10.6). Effort: **S**.
-- [ ] 12.2 RFC 0007 namespace note: confirm all new endpoints live under
+- [x] 12.2 RFC 0007 namespace note: confirm all new endpoints live under
   `/api/butlers/relationship/entities/*` per Phase 1 Amendment 2; no RFC 0007 amendment
   needed (existing auto-discovery prefix per `rfcs/0007:31` already covers them). Effort: **XS**.
+  <!-- Verified 2026-05-20 (bu-oew0h): All entity endpoints in roster/relationship/api/router.py
+  are registered at paths /entities/*, /entities/{id}/*, etc., under the router's own
+  prefix="/api/relationship" (router.py:123). The auto-discovery in router_discovery.py mounts
+  them as-is (app.include_router with no additional prefix), giving final URLs of
+  /api/relationship/entities/*. Per RFC 0007:31, the auto-discovery prefix for the
+  "relationship" butler IS /api/relationship — the brief's mention of
+  /api/butlers/relationship/entities/* was imprecise but the conclusion stands: the routes are
+  fully covered by the existing auto-discovery mechanism. No RFC 0007 amendment filed. -->
+  <!-- Evidence: roster/relationship/api/router.py:123 (prefix), src/butlers/api/app.py:322
+  (no extra prefix on include_router call — discovery collects routers, mounting happens in
+  app.py), tests/api/test_relationship_entities_*.py (all use
+  /api/relationship/entities/* paths). -->
 - [ ] 12.3 Update `about/heart-and-soul/design-language.md` (if needed) to clarify the
   editorial-archetype vs workspace-archetype distinction for EntityDetailPage Editorial
   vs Workbench (per Phase 1 Amendment 7). Effort: **S**.
