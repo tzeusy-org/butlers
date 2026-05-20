@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
+  ArrowDown,
+  ArrowUp,
+  ChevronsUpDown,
   Check,
   Layers,
   Loader2,
@@ -45,6 +48,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Page } from "@/components/ui/page";
 import {
   Card,
@@ -1552,6 +1563,240 @@ function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// ProvenanceGrid — Workbench mode dense sortable per-fact grid
+//
+// Per §6b Amendment 7: Workbench = dense sortable provenance grid with
+// per-fact source attribution, importance (proxy for weight), and timestamp.
+//
+// NOTE: The current entity detail API returns `importance` (not a separate
+// `weight` field), `created_at` (not `last_observed_at`), and `source_butler`
+// (not a per-event source ID). A follow-up bead tracks adding dedicated
+// weight / last_observed_at / source_event_id fields to the entity facts API.
+// ---------------------------------------------------------------------------
+
+type ProvenanceSortKey = "predicate" | "importance" | "created_at";
+type SortDir = "asc" | "desc";
+
+interface ProvenanceSortState {
+  key: ProvenanceSortKey;
+  dir: SortDir;
+}
+
+const DEFAULT_SORT_DIRECTIONS: Record<ProvenanceSortKey, SortDir> = {
+  predicate: "asc",
+  importance: "desc",
+  created_at: "desc",
+};
+
+function _sortFacts(facts: Fact[], sort: ProvenanceSortState): Fact[] {
+  return [...facts].sort((a, b) => {
+    let cmp = 0;
+    if (sort.key === "predicate") {
+      cmp = a.predicate.localeCompare(b.predicate);
+    } else if (sort.key === "importance") {
+      cmp = (a.importance ?? 0) - (b.importance ?? 0);
+    } else if (sort.key === "created_at") {
+      cmp = a.created_at.localeCompare(b.created_at);
+    }
+    return sort.dir === "asc" ? cmp : -cmp;
+  });
+}
+
+function SortHeaderButton({
+  label,
+  column,
+  sort,
+  onSort,
+}: {
+  label: string;
+  column: ProvenanceSortKey;
+  sort: ProvenanceSortState;
+  onSort: (key: ProvenanceSortKey) => void;
+}) {
+  const active = sort.key === column;
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+      onClick={() => onSort(column)}
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      {label}
+      {active ? (
+        sort.dir === "asc" ? (
+          <ArrowUp className="h-3 w-3" aria-hidden />
+        ) : (
+          <ArrowDown className="h-3 w-3" aria-hidden />
+        )
+      ) : (
+        <ChevronsUpDown className="h-3 w-3 opacity-40" aria-hidden />
+      )}
+    </button>
+  );
+}
+
+function ProvenanceGrid({
+  entityId,
+  facts,
+  total,
+  hasMore,
+  isFetching,
+  onLoadMore,
+}: {
+  entityId: string;
+  facts: Fact[];
+  total: number;
+  hasMore: boolean;
+  isFetching: boolean;
+  onLoadMore: () => void;
+}) {
+  const [sort, setSort] = useState<ProvenanceSortState>({ key: "created_at", dir: "desc" });
+
+  function handleSort(key: ProvenanceSortKey) {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: DEFAULT_SORT_DIRECTIONS[key] },
+    );
+  }
+
+  const sorted = useMemo(() => _sortFacts(facts, sort), [facts, sort]);
+
+  return (
+    <section className="space-y-3" data-testid="provenance-grid">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-lg font-semibold">Provenance</h2>
+        <span className="text-muted-foreground text-xs">
+          {facts.length} of {total} facts
+        </span>
+      </div>
+
+      {facts.length === 0 ? (
+        <p className="text-muted-foreground py-6 text-center text-sm">
+          No facts linked to this entity.
+        </p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="text-muted-foreground text-xs">
+                <SortHeaderButton
+                  label="Predicate"
+                  column="predicate"
+                  sort={sort}
+                  onSort={handleSort}
+                />
+              </TableHead>
+              <TableHead className="text-muted-foreground text-xs">Object</TableHead>
+              <TableHead className="text-muted-foreground text-xs">Validity</TableHead>
+              <TableHead className="text-muted-foreground text-xs">
+                <SortHeaderButton
+                  label="Importance"
+                  column="importance"
+                  sort={sort}
+                  onSort={handleSort}
+                />
+              </TableHead>
+              <TableHead className="text-muted-foreground text-xs">Source</TableHead>
+              <TableHead className="text-muted-foreground text-xs">
+                <SortHeaderButton
+                  label="Recorded"
+                  column="created_at"
+                  sort={sort}
+                  onSort={handleSort}
+                />
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((fact) => (
+              <ProvenanceRow key={fact.id} fact={fact} entityId={entityId} />
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      {hasMore && (
+        <div className="flex justify-center pt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onLoadMore}
+            disabled={isFetching}
+          >
+            {isFetching ? "Loading..." : "Load more facts"}
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProvenanceRow({ fact, entityId }: { fact: Fact; entityId: string }) {
+  const isIncoming =
+    fact.object_entity_id === entityId && fact.entity_id !== entityId;
+  const created = new Date(fact.created_at);
+
+  const objectCell = isIncoming ? (
+    <>
+      <Link
+        to={`/entities/${fact.entity_id}`}
+        className="text-primary hover:underline"
+      >
+        {fact.entity_name ?? fact.subject}
+      </Link>
+      <span className="text-muted-foreground"> → this entity</span>
+    </>
+  ) : fact.object_entity_id ? (
+    <Link
+      to={`/entities/${fact.object_entity_id}`}
+      className="text-primary hover:underline"
+    >
+      {fact.object_entity_name ?? fact.content}
+    </Link>
+  ) : (
+    <span className="truncate max-w-[16rem] inline-block" title={fact.content}>
+      {fact.content}
+    </span>
+  );
+
+  return (
+    <TableRow>
+      <TableCell className="text-xs capitalize font-medium">
+        {fact.predicate.replaceAll("_", " ")}
+      </TableCell>
+      <TableCell className="text-xs">{objectCell}</TableCell>
+      <TableCell className="text-xs">
+        <Badge
+          variant={fact.validity === "active" ? "secondary" : "outline"}
+          className="text-[10px] capitalize"
+        >
+          {fact.validity}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-xs tabular-nums">
+        {fact.importance.toFixed(1)}
+      </TableCell>
+      <TableCell className="text-xs text-muted-foreground">
+        {fact.source_butler ?? "—"}
+        {fact.session_id && (
+          <Link
+            to={sessionDetailHref(fact.session_id, fact.source_butler)}
+            className="text-primary ml-1 hover:underline"
+            title={fact.session_id}
+          >
+            ↗
+          </Link>
+        )}
+      </TableCell>
+      <TableCell className="text-xs text-muted-foreground tabular-nums">
+        <Time value={created} mode="absolute" precision="day" />
+      </TableCell>
+    </TableRow>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Entity gloss — canned voice gloss for the Editorial layout
 //
 // Derives (tier, state, category) from the entity data and renders the
@@ -2101,44 +2346,58 @@ export default function EntityDetailPage() {
             />
           </section>
 
-          {/* Entity gloss — Editorial only; canned voice string for this entity's (tier, state, category) */}
-          {mode === "editorial" && (
-            <EntityGlossBlock
-              dunbarTier={entity.dunbar_tier}
-              unidentified={entity.unidentified}
-              entityType={entity.entity_type}
+          {mode === "editorial" ? (
+            <>
+              {/* Entity gloss — canned voice string for this entity's (tier, state, category) */}
+              <EntityGlossBlock
+                dunbarTier={entity.dunbar_tier}
+                unidentified={entity.unidentified}
+                entityType={entity.entity_type}
+              />
+
+              {/* Profile snapshot — birthday, place, work, family, upcoming */}
+              <ProfileSnapshot entityId={entityId} facts={entity.recent_facts} />
+
+              {/* Activity timeline — primary content */}
+              <ActivityTimeline entityId={entityId} />
+
+              {/* Gifts and loans — structured panels, hidden when empty */}
+              <div className="grid gap-6 sm:grid-cols-2">
+                <GiftsPanel entityId={entityId} />
+                <LoansPanel entityId={entityId} />
+              </div>
+
+              {/* Message threads — only when matches exist */}
+              <MessageThreadsSection entityId={entityId} />
+
+              {/* Linked contacts — only when contacts exist */}
+              <LinkedContactsList entityId={entityId} />
+
+              {/* Facts — grouped by predicate family */}
+              <FactsSection
+                entityId={entity.id}
+                facts={entity.recent_facts}
+                total={entity.recent_facts_total}
+                hasMore={entity.recent_facts_has_more}
+                isFetching={isFetching}
+                onLoadMore={() =>
+                  setFactsLimit((current) => current + FACTS_PAGE_SIZE)
+                }
+              />
+            </>
+          ) : (
+            /* Workbench mode — dense sortable provenance grid, no editorial noise */
+            <ProvenanceGrid
+              entityId={entity.id}
+              facts={entity.recent_facts}
+              total={entity.recent_facts_total}
+              hasMore={entity.recent_facts_has_more}
+              isFetching={isFetching}
+              onLoadMore={() =>
+                setFactsLimit((current) => current + FACTS_PAGE_SIZE)
+              }
             />
           )}
-
-          {/* Profile snapshot — birthday, place, work, family, upcoming */}
-          <ProfileSnapshot entityId={entityId} facts={entity.recent_facts} />
-
-          {/* Activity timeline — primary content */}
-          <ActivityTimeline entityId={entityId} />
-
-          {/* Gifts and loans — structured panels, hidden when empty */}
-          <div className="grid gap-6 sm:grid-cols-2">
-            <GiftsPanel entityId={entityId} />
-            <LoansPanel entityId={entityId} />
-          </div>
-
-          {/* Message threads — only when matches exist */}
-          <MessageThreadsSection entityId={entityId} />
-
-          {/* Linked contacts — only when contacts exist */}
-          <LinkedContactsList entityId={entityId} />
-
-          {/* Facts — grouped by predicate family */}
-          <FactsSection
-            entityId={entity.id}
-            facts={entity.recent_facts}
-            total={entity.recent_facts_total}
-            hasMore={entity.recent_facts_has_more}
-            isFetching={isFetching}
-            onLoadMore={() =>
-              setFactsLimit((current) => current + FACTS_PAGE_SIZE)
-            }
-          />
 
           {/* Practical drawer — collapsed by default, owner setup forces it open */}
           <PracticalDrawer entity={entity} forceOpen={ownerNeedsSetup}>
