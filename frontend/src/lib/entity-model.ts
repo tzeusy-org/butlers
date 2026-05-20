@@ -4,8 +4,9 @@
 // Spec discipline (dashboard-relationship/spec.md §"Dispatch design language
 // token discipline"): hex literals are ONLY permitted here in the entity
 // component tree. All other files in frontend/src/components/relationship/*,
-// frontend/src/pages/entities/*, and frontend/src/pages/butlers/relationship/*
-// MUST reference the constants below instead of writing inline hex.
+// frontend/src/components/ui/EntityMark.tsx, frontend/src/pages/entities/*,
+// and frontend/src/pages/butlers/relationship/* MUST reference the constants
+// below instead of writing inline hex.
 //
 // When adding a new entity color constant, add it here first, then reference
 // it from components. Never introduce a new hex literal directly in a
