@@ -126,7 +126,8 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     from butlers.modules.memory.storage import store_fact
 
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, entity_id FROM facts WHERE id = $1",
+        "SELECT id, subject, content, metadata, entity_id FROM facts"
+        " WHERE id = $1 AND scope = 'relationship'",
         gift_id,
     )
     if row is None:
