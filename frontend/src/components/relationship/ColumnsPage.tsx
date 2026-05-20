@@ -75,12 +75,12 @@ function NeighbourItem({ entry, columnIndex, onSelect }: NeighbourItemProps) {
         type="button"
         className="flex items-center gap-2 text-left text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
         onClick={() => onSelect(entry.entity_id, columnIndex)}
-        aria-label={`Select entity ${entry.entity_id}`}
+        aria-label={`Select entity ${entry.canonical_name || entry.entity_id}`}
         data-entity-id={entry.entity_id}
         data-column-index={columnIndex}
       >
         <NetworkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden />
-        <span>{entry.entity_id}</span>
+        <span>{entry.canonical_name || entry.entity_id}</span>
       </button>
 
       <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0 ml-4">

@@ -80,6 +80,7 @@ const KNOWS_NEIGHBOURS: NeighboursResponse = {
     knows: [
       {
         entity_id: BOB_ENTITY_ID,
+        canonical_name: "Bob Friend",
         direction: "forward",
         src: "relationship",
         conf: 1.0,
@@ -92,6 +93,7 @@ const KNOWS_NEIGHBOURS: NeighboursResponse = {
     "family-of": [
       {
         entity_id: CAROL_ENTITY_ID,
+        canonical_name: "Carol Danvers",
         direction: "reverse",
         src: "relationship",
         conf: 0.9,

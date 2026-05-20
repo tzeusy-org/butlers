@@ -143,11 +143,11 @@ function NeighbourRow({ entry, onRecentre }: NeighbourRowProps) {
         type="button"
         className="flex items-center gap-2 text-left text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
         onClick={() => onRecentre(entityId)}
-        aria-label={`Re-centre on entity ${entityId}`}
+        aria-label={`Re-centre on entity ${entry.canonical_name || entityId}`}
         data-entity-id={entityId}
       >
         <NetworkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden />
-        <span>{entityId}</span>
+        <span>{entry.canonical_name || entityId}</span>
       </button>
 
       <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0 ml-4">

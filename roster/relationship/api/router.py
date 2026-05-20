@@ -4532,6 +4532,8 @@ async def list_entity_neighbours(
 
     # Query relationship.entity_facts for both directions, joining predicate_registry
     # to filter only kind='relational' predicates (excludes has-* contact facts).
+    # Also JOIN public.entities to resolve canonical_name for each neighbour.
+    # The neighbour is f.object when forward (subject=anchor), f.subject otherwise.
     rows = await pool.fetch(
         """
         SELECT
@@ -4549,9 +4551,14 @@ async def list_entity_neighbours(
             CASE
                 WHEN f.subject = $1 THEN 'forward'
                 ELSE 'reverse'
-            END AS direction
+            END AS direction,
+            e.canonical_name
         FROM relationship.entity_facts f
         JOIN relationship.entity_predicate_registry pr ON pr.predicate = f.predicate
+        LEFT JOIN public.entities e ON e.id = CASE
+            WHEN f.subject = $1 THEN f.object::uuid
+            ELSE f.subject
+        END
         WHERE pr.kind = 'relational'
           AND f.validity = 'active'
           AND f.object_kind = 'entity'
@@ -4588,6 +4595,7 @@ async def list_entity_neighbours(
 
         entry = NeighbourEntry(
             entity_id=neighbour_uuid,
+            canonical_name=r["canonical_name"] or "",
             direction=direction,
             src=r["src"],
             conf=float(r["conf"]) if r["conf"] is not None else 1.0,
