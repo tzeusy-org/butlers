@@ -2388,8 +2388,12 @@ async def search_entities(
     if not q_clean:
         return SearchResponse(results=[], total=0, q=q, limit=limit)
 
-    # Owner-only gate (Clause 12b, Amendment 12b).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only gate (Clause 12b, Amendment 12b) — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # ---------------------------------------------------------------------------
     # Ranking SQL
@@ -2766,8 +2770,12 @@ async def promote_entity(
 
     pool = _pool(db)
 
-    # Amendment 12a: owner-only write gate.
-    await _assert_owner_entity_exists(pool)
+    # Amendment 12a: owner-only write gate — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -2949,8 +2957,12 @@ async def get_entities_queue(
     """
     pool = _pool(db)
 
-    # Owner-only gate (Clause 12b).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only gate (Clause 12b) — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     dup_predicates_literal = ", ".join(f"'{p}'" for p in _DUP_DETECTION_PREDICATES)
 
@@ -3336,8 +3348,12 @@ async def get_entities_concentration(
     """
     pool = _pool(db)
 
-    # Owner-only gate (Clause 12b).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only gate (Clause 12b) — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # -------------------------------------------------------------------
     # 1. Fetch predicate tabs from registry (kind='relational').
@@ -4527,8 +4543,12 @@ async def list_entity_neighbours(
     """
     pool = _pool(db)
 
-    # Owner-only gate (Clause 12b).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only gate (Clause 12b) — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
@@ -4700,8 +4720,12 @@ async def list_entity_contacts(
     """
     pool = _pool(db)
 
-    # Owner-only gate (Clause 12b).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only gate (Clause 12b) — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
@@ -4772,8 +4796,12 @@ async def add_entity_contact(
 
     pool = _pool(db)
 
-    # Owner-only authz gate (Clause 12a — write surface).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only authz gate (Clause 12a — write surface) — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
@@ -4881,8 +4909,12 @@ async def delete_entity_contact(
             },
         )
 
-    # Owner-only authz gate (Clause 12a — write surface).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only authz gate (Clause 12a — write surface) — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
@@ -5466,8 +5498,12 @@ async def merge_entities(
     """
     pool = _pool(db)
 
-    # Amendment 12a: owner-only write gate.
-    await _assert_owner_entity_exists(pool)
+    # Amendment 12a: owner-only write gate — roles-aware pattern.
+    # Uses _get_owner_roles (inspects roles field) so the mock in
+    # test_owner_authz_guardrail.py correctly produces 403 for non-owner callers.
+    owner_roles = await _get_owner_roles(pool)
+    if owner_roles is None or "owner" not in owner_roles:
+        return _make_owner_required_response()
 
     # Validate request: entityA and entityB must be distinct.
     if body.entityA == body.entityB:
