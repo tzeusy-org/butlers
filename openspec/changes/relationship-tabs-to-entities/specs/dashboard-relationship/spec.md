@@ -70,7 +70,7 @@ The page MUST NOT contain a tabbed content area for notes, interactions, gifts, 
 
 ### Requirement: Entity detail page
 
-The frontend SHALL render an entity detail page at `/butlers/relationship/entities/:id` displaying the entity's identity header and activity tabs. This is the canonical surface for browsing notes, interactions, gifts, loans, and the unified timeline for any entity in `public.entities`. This surface coexists with the memory butler's identity-focused entity detail page at `/entities/:id`; the two pages serve different audiences (relationship browsing vs. credential and identity admin) and deep-link to each other.
+The frontend SHALL render an entity detail page at `/butlers/relationship/entities/:id` displaying the entity's identity header and a unified activity stream. This is the canonical surface for browsing notes, interactions, gifts, loans, and life events for any entity in `public.entities`. This surface coexists with the memory butler's identity-focused entity detail page at `/entities/:id`; the two pages serve different audiences (relationship browsing vs. credential and identity admin) and deep-link to each other.
 
 The page MUST contain:
 
@@ -78,14 +78,21 @@ The page MUST contain:
 
 2. **Linked contacts section** — listing all rows in `public.contacts` where `entity_id` matches, with each row showing `first_name + last_name`, primary `contact_info` entries (one email/phone), and a link to the contact detail page.
 
-3. **Tabbed content area** — five tabs in this order: Notes, Interactions, Gifts, Loans, Timeline. Each tab is paginated and loads its data from the corresponding entity-level API endpoint (see "Entity-level tab APIs"). Empty tabs MUST display an appropriate empty-state message (e.g., "No notes for this entity yet").
+3. **Unified ActivityTimeline** — a single vertically-scrolling event stream sourced from the entity timeline endpoint (`GET /api/butlers/relationship/entities/{id}/timeline`). The stream MUST display all supported event kinds: interactions, notes, gifts, loans, and life events. Filter pills at the top of the stream allow the user to narrow the view to a single event kind. The active filter is single-select: pills are: **All**, **Interactions**, **Notes**, **Gifts**, **Loans**, **Life events**. Selecting a pill hides all other kinds in the stream (client-side filtering; no additional API call). Empty stream state MUST display an appropriate message (e.g., "No activity recorded yet." when All is active, or "No interactions yet." when a specific kind pill is active). The stream MUST be sorted `valid_at DESC` with `created_at DESC` as a tie-break, consistent with the timeline endpoint sort contract.
 
-#### Scenario: Entity detail page renders with tabs
+#### Scenario: Entity detail page renders with unified timeline
 
 - **WHEN** a user navigates to `/butlers/relationship/entities/ent-456-uuid` and the entity exists
 - **THEN** the header card MUST display the entity's `canonical_name`, `entity_type`, and any `roles`
 - **AND** the linked contacts section MUST list all contacts whose `entity_id` matches
-- **AND** the five tabs MUST be rendered, each loading data from its respective endpoint
+- **AND** the ActivityTimeline MUST be rendered with "All" pill active and all event kinds visible
+
+#### Scenario: Filter pill narrows the stream
+
+- **WHEN** a user activates the "Interactions" pill on the ActivityTimeline
+- **THEN** only events with `kind = "interaction"` MUST be visible in the stream
+- **AND** no additional API call MUST be issued (filtering is client-side)
+- **AND** the "Interactions" pill MUST appear in the active state and all other pills MUST appear inactive
 
 #### Scenario: Entity not found
 
@@ -94,8 +101,8 @@ The page MUST contain:
 
 #### Scenario: Entity with no facts
 
-- **WHEN** a user navigates to an entity that has zero matching facts across all five predicates
-- **THEN** all five tabs MUST display empty-state messages
+- **WHEN** a user navigates to an entity that has zero matching facts
+- **THEN** the ActivityTimeline MUST display the empty-state message "No activity recorded yet."
 - **AND** the page MUST render without errors
 
 #### Scenario: Unidentified entity badge
@@ -103,6 +110,10 @@ The page MUST contain:
 - **WHEN** an entity has `metadata->>'unidentified' = 'true'`
 - **THEN** the header card MUST display an "Unidentified" badge
 - **AND** the rest of the page MUST render normally
+
+---
+
+> **Design history:** Originally specced as five separate tabs (Notes / Interactions / Gifts / Loans / Timeline); consolidated into one filterable stream per shipped UX. See bu-afx6k for the design-update decision.
 
 ---
 
@@ -432,9 +443,10 @@ Phase 1 Open Question 1).
 
 The Entity detail page (`/butlers/relationship/entities/:id`, established by the
 "Entity detail page" requirement above) SHALL render in one of two modes:
-**Editorial** (default) or **Workbench**. The five-tab structure (Notes / Interactions /
-Gifts / Loans / Timeline) defined above is preserved in both modes; the toggle changes
-how each tab and the header are rendered.
+**Editorial** (default) or **Workbench**. The unified ActivityTimeline defined above is
+present in both modes; the toggle changes how the header and contact facts are rendered.
+In Workbench mode the ActivityTimeline is replaced by the ProvenanceGrid (see
+`bu-r6vft`), which surfaces every provenance column in a dense, sortable grid.
 
 **Editorial mode** is the default and MUST:
 - Use `<Page archetype="detail">` (per the in-flight `detail-page-archetype` change) with
