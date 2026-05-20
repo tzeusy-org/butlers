@@ -354,7 +354,7 @@ async def bulk_replay_ingestion_events(
                          AND cr.endpoint_identity = fe.endpoint_identity
                         WHERE fe.id = ANY($1::uuid[])
                           AND fe.status IN ('filtered', 'error', 'replay_failed', 'replay_complete')
-                        FOR UPDATE SKIP LOCKED
+                        FOR UPDATE OF fe SKIP LOCKED
                         """,
                         event_ids,
                     )
