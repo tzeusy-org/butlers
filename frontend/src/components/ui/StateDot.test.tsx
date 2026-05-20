@@ -25,6 +25,7 @@ describe("StateDot: state-to-color mapping", () => {
     { state: "duplicate-candidate" as const, token: "var(--amber)" },
     { state: "stale" as const, token: "var(--red)" },
     { state: "healthy" as const, token: "var(--green)" },
+    { state: "archived" as const, token: "var(--muted-foreground)" },
   ] as const
 
   for (const { state, token } of STATE_CASES) {
@@ -81,6 +82,11 @@ describe("StateDot: accessibility", () => {
   it('state="healthy" has aria-label="Healthy"', () => {
     const html = renderToStaticMarkup(<StateDot state="healthy" />)
     expect(html).toContain('aria-label="Healthy"')
+  })
+
+  it('state="archived" has aria-label="Archived"', () => {
+    const html = renderToStaticMarkup(<StateDot state="archived" />)
+    expect(html).toContain('aria-label="Archived"')
   })
 })
 

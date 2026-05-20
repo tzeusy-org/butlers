@@ -7,14 +7,14 @@
 //   Reaching for an LLM call here costs ~$0.12/user/day (100 users → $12/day)
 //   and violates the "composure is the brand" Section 0 contract.
 //
-// Fallback model (Cartesian product: 6 tiers × 4 states × 8 categories = 192):
+// Fallback model (Cartesian product: 6 tiers × 5 states × 8 categories = 240):
 //   Because 192 fully-distinct hand-edited entries is impractical to maintain,
 //   this module uses a two-level fallback:
 //
 //   1. Category-specific overrides: GLOSSES_OVERRIDES[(tier, state, category)]
 //      — sparse table of entries that genuinely differ by entity type.
 //   2. Base glosses: GLOSSES_BASE[(tier, state)]
-//      — fully exhaustive (6 × 4 = 24 entries); type-guaranteed complete.
+//      — fully exhaustive (6 × 5 = 30 entries); type-guaranteed complete.
 //
 //   getEntityGloss() tries (tier, state, category) first, then (tier, state).
 //   The type system guarantees that (tier, state) always has a value
@@ -55,6 +55,7 @@ export const ENTITY_STATE_VALUES: readonly EntityState[] = [
   "unidentified",
   "duplicate-candidate",
   "stale",
+  "archived",
 ]
 
 export const ENTITY_TYPE_VALUES: readonly EntityType[] = [
@@ -85,6 +86,7 @@ const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
     "duplicate-candidate":
       "Support clique. A duplicate record may split the interaction history. Merge before drawing conclusions.",
     stale: "Support clique, but no recent contact. Tier weight is decaying.",
+    archived: "Support clique contact, now archived. Record preserved; source tombstoned.",
   },
   15: {
     healthy:
@@ -94,6 +96,7 @@ const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
     "duplicate-candidate":
       "Sympathy group. A duplicate may dilute the signal. Consider merging.",
     stale: "Sympathy group, no recent activity. Relationship may be drifting.",
+    archived: "Sympathy group contact, now archived. Record preserved for history.",
   },
   50: {
     healthy:
@@ -103,6 +106,7 @@ const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
     "duplicate-candidate":
       "Good friend tier. A parallel record exists. Merge to avoid split history.",
     stale: "Good friend tier, but contact has lapsed. Consider re-engagement.",
+    archived: "Good friend tier contact, now archived. Interaction history retained.",
   },
   150: {
     healthy: "Meaningful contact. Active in the network.",
@@ -111,6 +115,7 @@ const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
     "duplicate-candidate":
       "Meaningful contact with a potential duplicate. Review before weighting this node.",
     stale: "Meaningful contact, low recent activity. Relationship is fading.",
+    archived: "Meaningful contact, now archived. No longer active in the network.",
   },
   500: {
     healthy:
@@ -120,6 +125,7 @@ const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
     "duplicate-candidate":
       "Acquaintance with a duplicate candidate. Low priority, but worth a merge pass.",
     stale: "Acquaintance, no recent signal. Likely outer-ring contact.",
+    archived: "Acquaintance, now archived. Peripheral record; source removed.",
   },
   1500: {
     healthy: "Recognizable contact. Outer boundary of the network.",
@@ -128,6 +134,7 @@ const GLOSSES_BASE: Record<DunbarTier, Record<EntityState, string>> = {
     "duplicate-candidate":
       "Recognizable contact with a duplicate record. Likely a data-import artifact.",
     stale: "Recognizable contact, no recent activity. Likely dormant.",
+    archived: "Recognizable contact, now archived. Outer-boundary record removed from active graph.",
   },
 }
 
