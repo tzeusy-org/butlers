@@ -54,6 +54,11 @@ function labelStyle(label: { color: string | null; name: string }): string {
   return categoryHueVar(label.name);
 }
 
+/** Strip spaces and parentheses from a phone string for use in tel: href. */
+function sanitizePhoneHref(phone: string): string {
+  return phone.replace(/[\s()]/g, "");
+}
+
 /** Return inline background style for a role badge. */
 function roleBadgeStyle(role: string): React.CSSProperties {
   switch (role.toLowerCase()) {
@@ -101,10 +106,29 @@ function SecuredInfoEntry({
   }
 
   if (!entry.secured) {
+    if (displayValue === null || displayValue === undefined) {
+      return (
+        <span className="text-sm">
+          <span className="text-muted-foreground italic">&mdash;</span>
+        </span>
+      );
+    }
+    if (entry.type === "email") {
+      return (
+        <a href={`mailto:${displayValue}`} className="text-sm text-primary hover:underline">
+          {displayValue}
+        </a>
+      );
+    }
+    if (entry.type === "phone") {
+      return (
+        <a href={`tel:${sanitizePhoneHref(displayValue)}`} className="text-sm text-primary hover:underline">
+          {displayValue}
+        </a>
+      );
+    }
     return (
-      <span className="text-sm">
-        {displayValue ?? <span className="text-muted-foreground italic">&mdash;</span>}
-      </span>
+      <span className="text-sm">{displayValue}</span>
     );
   }
 
@@ -306,13 +330,17 @@ function ContactInfoSection({ contact }: { contact: ContactDetail }) {
           {contact.email && (
             <div className="flex gap-2">
               <span className="text-muted-foreground text-sm w-24 shrink-0">Email</span>
-              <span className="text-sm">{contact.email}</span>
+              <a href={`mailto:${contact.email}`} className="text-sm text-primary hover:underline">
+                {contact.email}
+              </a>
             </div>
           )}
           {contact.phone && (
             <div className="flex gap-2">
               <span className="text-muted-foreground text-sm w-24 shrink-0">Phone</span>
-              <span className="text-sm">{contact.phone}</span>
+              <a href={`tel:${sanitizePhoneHref(contact.phone)}`} className="text-sm text-primary hover:underline">
+                {contact.phone}
+              </a>
             </div>
           )}
           {contact.address && (
