@@ -153,7 +153,7 @@ async def _contacts_breakdown(pool: asyncpg.Pool, table: str) -> list[dict]:
         SELECT
             CASE WHEN entity_id IS NULL THEN 'no_entity' ELSE 'has_entity' END AS bucket,
             COUNT(*) AS row_count
-        FROM public.{table}
+        FROM public."{table}"
         GROUP BY 1
         ORDER BY 1
         """
@@ -175,7 +175,7 @@ async def _contact_info_breakdown(pool: asyncpg.Pool, table: str) -> list[dict]:
             COUNT(*) AS row_count,
             COUNT(CASE WHEN secured THEN 1 END) AS secured_count,
             COUNT(CASE WHEN is_primary THEN 1 END) AS primary_count
-        FROM public.{table}
+        FROM public."{table}"
         GROUP BY type
         ORDER BY row_count DESC, type
         """
@@ -186,7 +186,7 @@ async def _contact_info_breakdown(pool: asyncpg.Pool, table: str) -> list[dict]:
 async def _orphan_count(pool: asyncpg.Pool, contacts_table: str) -> int:
     """Count contacts with entity_id IS NULL (orphans for migration bead 5.5)."""
     result: int = await pool.fetchval(
-        f"SELECT COUNT(*) FROM public.{contacts_table} WHERE entity_id IS NULL"
+        f'SELECT COUNT(*) FROM public."{contacts_table}" WHERE entity_id IS NULL'
     )
     return result
 
