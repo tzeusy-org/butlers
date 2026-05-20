@@ -1,7 +1,7 @@
 """Tests for POST /api/relationship/entities/{id}/promote-tier.
 
 Spec anchor:
-  openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
+  openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
   Requirement: Owner-only authorization for entity endpoints — Clause 12a (Amendment 12a)
   Brief §6b Amendment 6 — tier promotion is a FACT, not a column write.
   Task: tasks.md §9.8 (bu-wmigz)

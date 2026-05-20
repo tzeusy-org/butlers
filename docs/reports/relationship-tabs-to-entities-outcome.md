@@ -244,7 +244,7 @@ When the dev stack image is next rebuilt, the following should be spot-checked:
 
 ## Spec Artifacts
 
-The OpenSpec change is archived at `openspec/changes/relationship-tabs-to-entities/`.
+The OpenSpec change is archived at `openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/`.
 The `openspec validate relationship-tabs-to-entities --strict` gate is green.
-The `dashboard-relationship` spec delta is at `openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md`.
+The `dashboard-relationship` spec delta is at `openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md`.
 The pre-change cruft audit is at `docs/reports/relationship-tabs-cruft-audit.md`.

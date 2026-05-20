@@ -11,7 +11,7 @@ Covers:
 
 Issue: bu-jwllb
 Parent epic: bu-uhjxr (entity-redesign)
-Spec anchor: openspec/changes/relationship-tabs-to-entities/specs/relationship-facts/spec.md
+Spec anchor: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/relationship-facts/spec.md
              §"Requirement: Central writer — relationship_assert_fact()"
              Amendment 14 (dual-write reconciliation contract)
              RFC 0017 §2.3 (owner carve-out)

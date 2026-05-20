@@ -18,7 +18,7 @@ Post-migration Python script (Migration bead 5.5).  Reads orphan rows from
 
 Spec anchor
 -----------
-``openspec/changes/relationship-tabs-to-entities/specs/relationship-facts/spec.md``
+``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/relationship-facts/spec.md``
 § "Requirement: Orphan contact handling" (Amendment 1.1.A.3 update).
 
 Usage

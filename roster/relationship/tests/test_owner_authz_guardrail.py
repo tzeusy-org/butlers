@@ -1,6 +1,6 @@
 """Owner-only authorization guardrail tests — Amendment 12 (clauses 12a, 12b, 12c).
 
-Source: openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
+Source: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
         Requirement: Owner-only authorization for entity endpoints (§ Amendment 12)
 Task:   tasks.md §12.8
 

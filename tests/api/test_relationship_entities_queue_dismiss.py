@@ -1,7 +1,7 @@
 """Tests for POST /api/relationship/entities/queue/dismiss.
 
 Covers spec scenarios from
-``openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
+``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
 § "Requirement: Entity curation queue" (dismiss action) and Amendment 12a
 (owner-only write gate).
 

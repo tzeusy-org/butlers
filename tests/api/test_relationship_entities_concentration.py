@@ -1,7 +1,7 @@
 """Tests for GET /api/relationship/entities/concentration (weight aggregation endpoint).
 
 Covers spec scenarios from
-``openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
+``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
 § "Requirement: Entity Concentration view" and Amendment 12b (owner-only gate).
 
 Each test hits the FastAPI router via httpx.AsyncClient with a mocked DB pool

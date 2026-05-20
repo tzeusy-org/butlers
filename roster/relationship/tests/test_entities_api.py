@@ -1,8 +1,8 @@
 """Integration tests for the /api/relationship/entities/* API surface.
 
 Spec anchor:
-  openspec/changes/relationship-tabs-to-entities/tasks.md §9.13 + §12.8
-  openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
+  openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §9.13 + §12.8
+  openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
 
 Endpoints under test (§9.1–§9.12):
   9.1   GET  /entities                         — list + filter + pagination
