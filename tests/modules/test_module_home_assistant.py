@@ -310,6 +310,26 @@ class TestEntityCache:
 
         assert "sensor.gone" not in ha_module._entity_cache
 
+    async def test_coalesced_ws_payload_resolves_pending_results(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        first: asyncio.Future[dict[str, Any]] = loop.create_future()
+        second: asyncio.Future[dict[str, Any]] = loop.create_future()
+        ha_module._ws_pending[7] = first
+        ha_module._ws_pending[8] = second
+
+        await ha_module._dispatch_ws_payload(
+            [
+                {"type": "result", "id": 7, "success": True, "result": {"ok": "first"}},
+                {"type": "result", "id": 8, "success": True, "result": {"ok": "second"}},
+            ]
+        )
+
+        assert first.result() == {"ok": "first"}
+        assert second.result() == {"ok": "second"}
+        assert ha_module._ws_pending == {}
+
     @pytest.mark.parametrize(
         ("event_type", "method_name", "task_attr"),
         [
