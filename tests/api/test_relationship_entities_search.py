@@ -49,6 +49,7 @@ def _make_search_row(
     *,
     entity_id: UUID | None = None,
     canonical_name: str = "Alice Example",
+    entity_type: str = "person",
     score: int = 100,
     match_kind: str = "prefix",
 ) -> MagicMock:
@@ -56,6 +57,7 @@ def _make_search_row(
     data = {
         "entity_id": entity_id or uuid4(),
         "canonical_name": canonical_name,
+        "entity_type": entity_type,
         "score": score,
         "match_kind": match_kind,
     }
@@ -445,5 +447,38 @@ async def test_response_shape_contains_required_fields():
     result = body["results"][0]
     assert "entity_id" in result
     assert "canonical_name" in result
+    assert "entity_type" in result
     assert "score" in result
     assert "match_kind" in result
+
+
+# ---------------------------------------------------------------------------
+# Scenario: entity_type is included in search results
+# ---------------------------------------------------------------------------
+
+
+async def test_entity_type_included_in_search_results():
+    """Search results must include entity_type from public.entities."""
+    rows = [
+        _make_search_row(
+            entity_id=_ENTITY_ID_1,
+            canonical_name="Alice Smith",
+            entity_type="person",
+            score=100,
+            match_kind="prefix",
+        ),
+        _make_search_row(
+            entity_id=_ENTITY_ID_2,
+            canonical_name="Acme Corp",
+            entity_type="organization",
+            score=50,
+            match_kind="substring",
+        ),
+    ]
+    app, _ = _app_with_pool(fetch_rows=rows)
+    resp = await _get(app, q="a")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"][0]["entity_type"] == "person"
+    assert body["results"][1]["entity_type"] == "organization"

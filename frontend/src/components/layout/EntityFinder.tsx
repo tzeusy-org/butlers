@@ -229,7 +229,7 @@ export default function EntityFinder() {
                 >
                   {/* Entity type glyph */}
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-muted font-mono text-xs font-semibold text-muted-foreground">
-                    {entityTypeGlyph("")}
+                    {entityTypeGlyph(result.entity_type)}
                   </span>
 
                   <div className="min-w-0 flex-1">

@@ -158,12 +158,14 @@ describe("EntityFinder", () => {
         {
           entity_id: "uuid-alice",
           canonical_name: "Alice",
+          entity_type: "person",
           score: 100,
           match_kind: "prefix",
         },
         {
           entity_id: "uuid-bob",
           canonical_name: "Bob",
+          entity_type: "person",
           score: 50,
           match_kind: "substring",
         },
@@ -231,6 +233,7 @@ describe("EntityFinder", () => {
         {
           entity_id: "uuid-carol",
           canonical_name: "Carol Danvers",
+          entity_type: "person",
           score: 100,
           match_kind: "prefix",
         },
