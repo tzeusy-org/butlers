@@ -1582,6 +1582,12 @@ interface ProvenanceSortState {
   dir: SortDir;
 }
 
+const DEFAULT_SORT_DIRECTIONS: Record<ProvenanceSortKey, SortDir> = {
+  predicate: "asc",
+  importance: "desc",
+  created_at: "desc",
+};
+
 function _sortFacts(facts: Fact[], sort: ProvenanceSortState): Fact[] {
   return [...facts].sort((a, b) => {
     let cmp = 0;
@@ -1650,7 +1656,7 @@ function ProvenanceGrid({
     setSort((prev) =>
       prev.key === key
         ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
-        : { key, dir: key === "predicate" ? "asc" : "desc" },
+        : { key, dir: DEFAULT_SORT_DIRECTIONS[key] },
     );
   }
 
