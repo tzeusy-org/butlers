@@ -1195,27 +1195,28 @@ async def test_bulk_replay_skip_locked_real_db(app, provisioned_postgres_pool):
             # Open connection A and hold a FOR UPDATE lock on locked_id.
             # The transaction stays open for the duration of the HTTP call so
             # the handler's SKIP LOCKED SELECT cannot acquire the row lock.
+            # Use conn_a.transaction() so the lock is released automatically
+            # (via ROLLBACK on __aexit__) even if the HTTP call raises.
             async with pool.acquire() as conn_a:
-                await conn_a.execute("BEGIN")
-                await conn_a.fetchrow(
-                    "SELECT id FROM connectors.filtered_events WHERE id = $1::uuid FOR UPDATE",
-                    locked_id,
-                )
-
-                # Connection B (the handler pool) now calls bulk_replay.
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://test"
-                ) as client:
-                    resp = await client.post(
-                        "/api/ingestion/events/replay/bulk",
-                        json={
-                            "event_ids": [locked_id, unlocked_id],
-                            "reason": "real-db-concurrency-test",
-                        },
+                async with conn_a.transaction():
+                    await conn_a.fetchrow(
+                        "SELECT id FROM connectors.filtered_events WHERE id = $1::uuid FOR UPDATE",
+                        locked_id,
                     )
 
-                # Release connection A's lock (ROLLBACK is fine for cleanup).
-                await conn_a.execute("ROLLBACK")
+                    # Connection B (the handler pool) now calls bulk_replay.
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    ) as client:
+                        resp = await client.post(
+                            "/api/ingestion/events/replay/bulk",
+                            json={
+                                "event_ids": [locked_id, unlocked_id],
+                                "reason": "real-db-concurrency-test",
+                            },
+                        )
+
+                # conn_a.transaction() exits here; lock released automatically.
 
             # ----------------------------------------------------------------
             # Assertions on the HTTP response
