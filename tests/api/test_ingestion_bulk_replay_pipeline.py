@@ -1032,3 +1032,246 @@ async def test_cross_summary_aggregates_available_true_with_prometheus(app):
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["aggregates_available"] is True
+
+
+# ---------------------------------------------------------------------------
+# §4.8.3 Real-DB concurrency: FOR UPDATE SKIP LOCKED with two live connections
+# ---------------------------------------------------------------------------
+
+import shutil  # noqa: E402 (needed for docker_available sentinel)
+
+_docker_available = shutil.which("docker") is not None
+
+# DDL executed inline — the provisioned_postgres_pool fixture provisions a
+# blank database (no migrations).  We create only the tables the handler
+# touches so this test is self-contained and fast.
+_CREATE_CONNECTORS_SCHEMA = "CREATE SCHEMA IF NOT EXISTS connectors"
+
+_CREATE_FILTERED_EVENTS_SQL = """
+    CREATE TABLE IF NOT EXISTS connectors.filtered_events (
+        id                  UUID NOT NULL DEFAULT gen_random_uuid(),
+        received_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        connector_type      TEXT NOT NULL,
+        endpoint_identity   TEXT NOT NULL,
+        external_message_id TEXT NOT NULL,
+        source_channel      TEXT NOT NULL,
+        sender_identity     TEXT NOT NULL,
+        subject_or_preview  TEXT,
+        filter_reason       TEXT NOT NULL,
+        status              TEXT NOT NULL DEFAULT 'filtered',
+        full_payload        JSONB NOT NULL,
+        error_detail        TEXT,
+        replay_requested_at TIMESTAMPTZ,
+        replay_completed_at TIMESTAMPTZ,
+        created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (received_at, id),
+        CONSTRAINT chk_filtered_events_status CHECK (status IN (
+            'filtered', 'error', 'replay_pending', 'replay_complete', 'replay_failed'
+        ))
+    )
+"""
+
+# connector_registry lives in public so the unqualified LEFT JOIN in the
+# handler resolves without a custom search_path.
+_CREATE_CONNECTOR_REGISTRY_SQL = """
+    CREATE TABLE IF NOT EXISTS public.connector_registry (
+        connector_type    TEXT NOT NULL,
+        endpoint_identity TEXT NOT NULL,
+        replay_safe       BOOLEAN NOT NULL DEFAULT TRUE,
+        PRIMARY KEY (connector_type, endpoint_identity)
+    )
+"""
+
+_CREATE_AUDIT_LOG_SQL = """
+    CREATE TABLE IF NOT EXISTS public.audit_log (
+        id         BIGSERIAL PRIMARY KEY,
+        ts         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        actor      TEXT NOT NULL,
+        action     TEXT NOT NULL,
+        target     TEXT,
+        note       TEXT,
+        ip         INET,
+        request_id UUID
+    )
+"""
+
+
+_TEST_CONNECTOR_TYPE = "test_connector"
+_TEST_ENDPOINT_IDENTITY = "test_endpoint"
+
+
+async def _provision_bulk_replay_schema(pool) -> None:
+    """Create the tables needed by bulk_replay_ingestion_events in one shot.
+
+    Also inserts a connector_registry row so the handler's LEFT JOIN always
+    finds a match.  PostgreSQL disallows FOR UPDATE on the nullable side of an
+    outer join, which would happen if filtered_events has no matching registry
+    entry.  In production each connector self-registers before writing events,
+    so a matching row is always present.
+    """
+    await pool.execute(_CREATE_CONNECTORS_SCHEMA)
+    await pool.execute(_CREATE_FILTERED_EVENTS_SQL)
+    await pool.execute(_CREATE_CONNECTOR_REGISTRY_SQL)
+    await pool.execute(_CREATE_AUDIT_LOG_SQL)
+    # Seed the connector_registry row used by all test inserts (replay_safe=TRUE).
+    await pool.execute(
+        """
+        INSERT INTO public.connector_registry (connector_type, endpoint_identity, replay_safe)
+        VALUES ($1, $2, TRUE)
+        ON CONFLICT DO NOTHING
+        """,
+        _TEST_CONNECTOR_TYPE,
+        _TEST_ENDPOINT_IDENTITY,
+    )
+
+
+async def _insert_filtered_event(
+    pool,
+    *,
+    source_channel: str = "telegram_bot",
+    status: str = "filtered",
+) -> str:
+    """Insert one row into connectors.filtered_events and return its id as str."""
+    from uuid import uuid4
+
+    row_id = await pool.fetchval(
+        """
+        INSERT INTO connectors.filtered_events
+            (connector_type, endpoint_identity, external_message_id,
+             source_channel, sender_identity, filter_reason,
+             status, full_payload)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id
+        """,
+        _TEST_CONNECTOR_TYPE,
+        _TEST_ENDPOINT_IDENTITY,
+        str(uuid4()),
+        source_channel,
+        "sender@example.com",
+        "test-filter",
+        status,
+        "{}",
+    )
+    return str(row_id)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_replay_skip_locked_real_db(app, provisioned_postgres_pool):
+    """FOR UPDATE SKIP LOCKED with real asyncpg connections — no mocks in the race window.
+
+    Scenario
+    --------
+    Two events are inserted into connectors.filtered_events.  Connection A
+    opens a transaction and locks the first row with SELECT … FOR UPDATE.
+    The bulk_replay handler (connection B via the test HTTP client) then
+    processes both IDs.  Because connection A still holds the row lock:
+
+    - The locked row appears in ``skipped_locked`` (SKIP LOCKED returned 0
+      rows for it).
+    - The unlocked row is accepted, its status mutated to ``replay_pending``,
+      and a ``bulk_submit`` audit row is committed atomically alongside the
+      state change.
+    - The locked row's status is unchanged (still ``filtered``).
+
+    This test is deterministic: connection A's transaction is open throughout
+    the entire HTTP call so there is no timing window where the lock can be
+    released before the handler's SELECT runs.
+    """
+    async with provisioned_postgres_pool(max_pool_size=5) as pool:
+        await _provision_bulk_replay_schema(pool)
+
+        # Insert the two test rows.
+        locked_id = await _insert_filtered_event(pool, source_channel="telegram_bot")
+        unlocked_id = await _insert_filtered_event(pool, source_channel="whatsapp")
+
+        # Wire the real pool into a mock DatabaseManager.
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = pool
+        app.dependency_overrides[_events_get_db_manager] = lambda: mock_db
+
+        try:
+            # Open connection A and hold a FOR UPDATE lock on locked_id.
+            # The transaction stays open for the duration of the HTTP call so
+            # the handler's SKIP LOCKED SELECT cannot acquire the row lock.
+            # Use conn_a.transaction() so the lock is released automatically
+            # (via ROLLBACK on __aexit__) even if the HTTP call raises.
+            async with pool.acquire() as conn_a:
+                async with conn_a.transaction():
+                    await conn_a.fetchrow(
+                        "SELECT id FROM connectors.filtered_events WHERE id = $1::uuid FOR UPDATE",
+                        locked_id,
+                    )
+
+                    # Connection B (the handler pool) now calls bulk_replay.
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    ) as client:
+                        resp = await client.post(
+                            "/api/ingestion/events/replay/bulk",
+                            json={
+                                "event_ids": [locked_id, unlocked_id],
+                                "reason": "real-db-concurrency-test",
+                            },
+                        )
+
+                # conn_a.transaction() exits here; lock released automatically.
+
+            # ----------------------------------------------------------------
+            # Assertions on the HTTP response
+            # ----------------------------------------------------------------
+            assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+            body = resp.json()
+
+            # The unlocked row was successfully replayed.
+            assert body["accepted"] == [unlocked_id], (
+                f"Expected only unlocked_id in accepted; got {body['accepted']}"
+            )
+            # The locked row was skipped by SKIP LOCKED.
+            assert body["skipped_locked"] == [locked_id], (
+                f"Expected locked_id in skipped_locked; got {body['skipped_locked']}"
+            )
+            assert body["capped"] == []
+
+            # ----------------------------------------------------------------
+            # Assertions on DB state
+            # ----------------------------------------------------------------
+            # The unlocked row's status must have been mutated to replay_pending.
+            unlocked_status = await pool.fetchval(
+                "SELECT status FROM connectors.filtered_events WHERE id = $1::uuid",
+                unlocked_id,
+            )
+            assert unlocked_status == "replay_pending", (
+                f"Expected unlocked row status='replay_pending', got {unlocked_status!r}"
+            )
+
+            # The locked row's status must be unchanged (still 'filtered').
+            locked_status = await pool.fetchval(
+                "SELECT status FROM connectors.filtered_events WHERE id = $1::uuid",
+                locked_id,
+            )
+            assert locked_status == "filtered", (
+                f"Expected locked row status unchanged ('filtered'), got {locked_status!r}"
+            )
+
+            # ----------------------------------------------------------------
+            # Audit atomicity: bulk_submit row must be in public.audit_log.
+            # It was written on the same connection + transaction as the UPDATE,
+            # so it commits (or rolls back) together.
+            # ----------------------------------------------------------------
+            audit_count = await pool.fetchval(
+                "SELECT count(*) FROM public.audit_log WHERE action = $1",
+                "ingestion.replay.bulk_submit",
+            )
+            assert audit_count == 1, f"Expected 1 bulk_submit audit row; got {audit_count}"
+
+            # No audit row for bulk_reject (the batch was not rejected).
+            reject_count = await pool.fetchval(
+                "SELECT count(*) FROM public.audit_log WHERE action = $1",
+                "ingestion.replay.bulk_reject",
+            )
+            assert reject_count == 0, f"Expected 0 bulk_reject audit rows; got {reject_count}"
+
+        finally:
+            app.dependency_overrides.pop(_events_get_db_manager, None)
