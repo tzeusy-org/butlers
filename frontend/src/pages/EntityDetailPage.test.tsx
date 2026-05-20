@@ -319,17 +319,25 @@ describe("EntityDetailPage — Editorial/Workbench mode toggle", () => {
     expect(html).toContain("Editorial");
   });
 
-  it.each(["editorial", "workbench"] as const)(
-    "renders existing content in %s mode (activity section preserved)",
-    (mode) => {
-      localStorageMock.getItem.mockImplementation((key: string) =>
-        key === ENTITY_MODE_STORAGE_KEY ? mode : null,
-      );
-      setEntityState(BASE_ENTITY);
-      const html = renderPage();
-      expect(html).toContain("Activity");
-    },
-  );
+  it("renders activity section in editorial mode", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "editorial" : null,
+    );
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain("Activity");
+    expect(html).not.toContain('data-testid="provenance-grid"');
+  });
+
+  it("renders provenance grid in workbench mode instead of activity section", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "workbench" : null,
+    );
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain('data-testid="provenance-grid"');
+    expect(html).not.toContain("Activity");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -440,5 +448,141 @@ describe("EntityDetailPage — entity gloss", () => {
     expect(html).toContain("data-testid=\"entity-gloss\"");
     // Override gloss for 15:healthy:place
     expect(html).toContain("Frequently visited");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workbench mode — ProvenanceGrid
+// ---------------------------------------------------------------------------
+
+const SAMPLE_FACT = {
+  id: "fact-wb-1",
+  subject: "entity-001",
+  predicate: "works_at",
+  content: "Acme Corp",
+  importance: 7.5,
+  confidence: 0.9,
+  decay_rate: 0.008,
+  permanence: "standard",
+  source_butler: "general",
+  source_episode_id: null,
+  session_id: "sess-abc",
+  supersedes_id: null,
+  entity_id: "entity-001",
+  entity_name: "Test Owner",
+  object_entity_id: null,
+  object_entity_name: null,
+  validity: "active",
+  scope: "global",
+  reference_count: 1,
+  created_at: "2025-03-10T08:00:00Z",
+  last_referenced_at: null,
+  last_confirmed_at: null,
+  tags: [],
+  metadata: {},
+};
+
+describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+  });
+
+  function setMode(mode: "editorial" | "workbench") {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? mode : null,
+    );
+  }
+
+  it("Workbench mode renders the provenance grid section", () => {
+    setMode("workbench");
+    setEntityState({
+      ...BASE_ENTITY,
+      recent_facts: [SAMPLE_FACT],
+      recent_facts_total: 1,
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="provenance-grid"');
+    expect(html).toContain("Provenance");
+  });
+
+  it("Editorial mode does NOT render the provenance grid", () => {
+    setMode("editorial");
+    setEntityState({
+      ...BASE_ENTITY,
+      recent_facts: [SAMPLE_FACT],
+      recent_facts_total: 1,
+    });
+    const html = renderPage();
+    expect(html).not.toContain('data-testid="provenance-grid"');
+    expect(html).not.toContain("Provenance");
+  });
+
+  it("Workbench renders fact predicate and content in the grid", () => {
+    setMode("workbench");
+    setEntityState({
+      ...BASE_ENTITY,
+      recent_facts: [SAMPLE_FACT],
+      recent_facts_total: 1,
+    });
+    const html = renderPage();
+    // predicate displayed (underscores replaced with spaces)
+    expect(html).toContain("works at");
+    // object content
+    expect(html).toContain("Acme Corp");
+    // source butler
+    expect(html).toContain("general");
+  });
+
+  it("Workbench renders grid column headers (Predicate, Importance, Recorded)", () => {
+    setMode("workbench");
+    setEntityState({
+      ...BASE_ENTITY,
+      recent_facts: [SAMPLE_FACT],
+      recent_facts_total: 1,
+    });
+    const html = renderPage();
+    expect(html).toContain("Predicate");
+    expect(html).toContain("Importance");
+    expect(html).toContain("Recorded");
+  });
+
+  it("Workbench shows empty state when no facts exist", () => {
+    setMode("workbench");
+    setEntityState({
+      ...BASE_ENTITY,
+      recent_facts: [],
+      recent_facts_total: 0,
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="provenance-grid"');
+    expect(html).toContain("No facts linked to this entity.");
+  });
+
+  it("Workbench grid renders sort buttons for Predicate, Importance, and Recorded columns", () => {
+    setMode("workbench");
+    setEntityState({
+      ...BASE_ENTITY,
+      recent_facts: [SAMPLE_FACT],
+      recent_facts_total: 1,
+    });
+    const html = renderPage();
+    // Sort buttons are clickable — verify aria-sort attributes are present
+    expect(html).toContain('aria-sort="none"');
+    // The active sort column has ascending/descending
+    expect(html).toMatch(/aria-sort="(ascending|descending)"/);
+  });
+
+  it("Workbench shows load-more button when hasMore is true", () => {
+    setMode("workbench");
+    setEntityState({
+      ...BASE_ENTITY,
+      recent_facts: [SAMPLE_FACT],
+      recent_facts_total: 50,
+      recent_facts_has_more: true,
+    });
+    const html = renderPage();
+    expect(html).toContain("Load more facts");
   });
 });
