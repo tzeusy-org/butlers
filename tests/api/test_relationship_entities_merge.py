@@ -59,8 +59,13 @@ def _merge_path(entity_id: UUID | None = None) -> str:
 
 
 def _make_owner_row(entity_id: UUID | None = None) -> MagicMock:
-    """Simulate a row returned by the owner-entity check query."""
-    data = {"id": entity_id or uuid4()}
+    """Simulate a row returned by the owner-entity check query.
+
+    Must include ``roles`` so that ``_get_owner_roles`` can inspect it.
+    The endpoint uses ``_get_owner_roles`` which reads ``row["roles"]`` to
+    decide whether to grant access.
+    """
+    data = {"id": entity_id or uuid4(), "roles": ["owner"]}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
     return row

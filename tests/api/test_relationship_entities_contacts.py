@@ -96,8 +96,13 @@ def _make_contact_fact_row(
 
 
 def _make_owner_row() -> MagicMock:
-    """Simulate a row returned by the owner-entity check query."""
-    data = {"id": _OWNER_ENTITY_ID}
+    """Simulate a row returned by the owner-entity check query.
+
+    Must include ``roles`` so that ``_get_owner_roles`` can inspect it.
+    The endpoint uses ``_get_owner_roles`` which reads ``row["roles"]`` to
+    decide whether to grant access.
+    """
+    data = {"id": _OWNER_ENTITY_ID, "roles": ["owner"]}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
     return row
