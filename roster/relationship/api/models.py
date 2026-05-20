@@ -724,6 +724,7 @@ class NeighbourEntry(BaseModel):
     """A single neighbour entity reached via a relational triple.
 
     ``entity_id`` is the UUID of the OTHER entity (not the queried one).
+    ``canonical_name`` is the neighbour entity's canonical name.
     ``direction`` is ``'forward'`` when the queried entity is the subject
     (queried → neighbour) and ``'reverse'`` when it is the object
     (neighbour → queried).
@@ -734,6 +735,7 @@ class NeighbourEntry(BaseModel):
     """
 
     entity_id: UUID
+    canonical_name: str
     direction: Literal["forward", "reverse"]
     src: str
     conf: float

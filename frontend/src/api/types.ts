@@ -4985,6 +4985,7 @@ export interface ReembedRunResult {
  */
 export interface NeighbourEntry {
   entity_id: string;
+  canonical_name: string;
   direction: "forward" | "reverse";
   src: string;
   conf: number;
