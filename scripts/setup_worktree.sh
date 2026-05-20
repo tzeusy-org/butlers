@@ -52,8 +52,11 @@ for cache_dir in "${CACHE_DIRS[@]}"; do
     mkdir -p "$target_parent"
   fi
 
-  # Use ln -sfn for idempotency: -s (symlink), -f (force overwrite), -n (treat target as file)
-  ln -sfn "$source_path" "$target_path"
+  # Remove existing target (file, symlink, or directory) for idempotency
+  rm -rf "$target_path"
+
+  # Create symlink: -s (symlink), -n (don't follow target symlinks)
+  ln -sn "$source_path" "$target_path"
   SYMLINKED_COUNT=$((SYMLINKED_COUNT + 1))
 done
 
