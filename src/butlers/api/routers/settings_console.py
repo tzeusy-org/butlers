@@ -303,7 +303,7 @@ async def _check_cli_auth(db: DatabaseManager | None) -> list[AttentionItem]:
                         tone="red",
                         kind="auth_renewal",
                         text=f"CLI runtime '{p.display_name}' needs re-authentication.",
-                        action_route="/secrets",
+                        action_route="/secrets?tab=runtimes",
                     )
                 )
     except Exception as exc:
