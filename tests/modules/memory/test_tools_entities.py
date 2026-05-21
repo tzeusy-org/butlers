@@ -1,7 +1,7 @@
 """Behavioral tests for entity MCP tools.
 
 Covers: entity_create, entity_get, entity_update, entity_resolve, entity_merge,
-entity_neighbors — testing through the public tool interface.
+entity_neighbors, _repoint_episode_entities — testing through the public tool interface.
 """
 
 from __future__ import annotations
@@ -10,11 +10,13 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 
 from butlers.modules.memory.tools.entities import (
     _SCORE_EXACT_DEMOTED,
     _SCORE_EXACT_NAME,
+    _repoint_episode_entities,
     entity_create,
     entity_get,
     entity_merge,
@@ -597,6 +599,294 @@ class TestEntityMergeCalendarEntities:
 # Module-level aliases for clarity in test assertions
 src_uuid = SOURCE_UUID
 tgt_uuid = TARGET_UUID
+
+
+# ---------------------------------------------------------------------------
+# entity_merge — episode_entities
+# ---------------------------------------------------------------------------
+
+EPISODE_UUID_1 = uuid.UUID("eeeeeeee-1111-1111-1111-eeeeeeeeeeee")
+EPISODE_UUID_2 = uuid.UUID("ffffffff-2222-2222-2222-ffffffffffff")
+
+
+def _ep_row(episode_id: uuid.UUID, role: str = "participant") -> MagicMock:
+    """Build a mock asyncpg record for episode_entities."""
+    row = MagicMock()
+    row.__getitem__ = lambda s, k: {"episode_id": episode_id, "role": role}[k]
+    return row
+
+
+def _make_chronicler_pool(
+    *,
+    src_ep_rows: list,
+    tgt_ep_rows: list,
+) -> tuple[MagicMock, AsyncMock]:
+    """Build a mock chronicler pool for _repoint_episode_entities / entity_merge.
+
+    conn.fetch side_effect order:
+      1. SELECT ... episode_entities WHERE entity_id = $src  (src rows)
+      2. SELECT ... episode_entities WHERE entity_id = $tgt AND episode_id = ANY(...)  (tgt rows)
+    """
+    pool = MagicMock()
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(side_effect=[src_ep_rows, tgt_ep_rows])
+    conn.execute = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=cm)
+    txn_cm = MagicMock()
+    txn_cm.__aenter__ = AsyncMock(return_value=None)
+    txn_cm.__aexit__ = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=txn_cm)
+    return pool, conn
+
+
+class TestRePointEpisodeEntities:
+    """Unit tests for _repoint_episode_entities helper (6.1, 6.3, 6.4)."""
+
+    async def test_repoints_unshared_episode_to_target(self) -> None:
+        """When only source is linked to an episode, UPDATE entity_id to target."""
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
+            tgt_ep_rows=[],
+        )
+        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
+
+        update_calls = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episode_entities SET entity_id" in c[0][0]
+        ]
+        assert len(update_calls) == 1
+        args = update_calls[0][0]
+        assert args[1] == TARGET_UUID  # new entity_id
+        assert args[2] == SOURCE_UUID  # old entity_id (WHERE entity_id = $2)
+        assert EPISODE_UUID_1 in args[3]  # episode_id in ANY($3)
+
+    async def test_repoints_derived_episodes_column(self) -> None:
+        """episodes.entity_id must also be updated (transition window, bu-cfsgy)."""
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1)],
+            tgt_ep_rows=[],
+        )
+        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
+
+        derived_updates = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episodes SET entity_id" in c[0][0]
+        ]
+        assert len(derived_updates) == 1
+        args = derived_updates[0][0]
+        assert args[1] == TARGET_UUID
+        assert args[2] == SOURCE_UUID
+
+    async def test_dedup_deletes_src_row_when_target_already_linked(self) -> None:
+        """When target is already on the same episode, DELETE the source row."""
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
+            tgt_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
+        )
+        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
+
+        delete_calls = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "DELETE FROM chronicler.episode_entities" in c[0][0]
+        ]
+        assert len(delete_calls) == 1
+        args = delete_calls[0][0]
+        assert SOURCE_UUID in args
+        assert EPISODE_UUID_1 in args[2]
+
+    async def test_dedup_promotes_higher_precedence_role(self) -> None:
+        """When src has 'owner' and tgt has 'participant', tgt row role is promoted to 'owner'."""
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1, "owner")],
+            tgt_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
+        )
+        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
+
+        # The role-promotion UPDATE should appear before the DELETE.
+        # Now batched: one UPDATE per distinct promoted role, not per episode.
+        role_updates = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episode_entities SET role" in c[0][0]
+        ]
+        assert len(role_updates) == 1, "Expected a batched role-promotion UPDATE"
+        args = role_updates[0][0]
+        assert args[1] == "owner"  # promoted role (higher precedence wins)
+        assert args[2] == TARGET_UUID  # WHERE entity_id = $2
+        assert EPISODE_UUID_1 in args[3]  # episode_id in ANY($3)
+
+    async def test_dedup_no_role_update_when_target_already_higher(self) -> None:
+        """When tgt already has 'owner' and src has 'participant', no role UPDATE is issued."""
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
+            tgt_ep_rows=[_ep_row(EPISODE_UUID_1, "owner")],
+        )
+        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
+
+        role_updates = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episode_entities SET role" in c[0][0]
+        ]
+        assert role_updates == [], "No role UPDATE needed when target already has higher precedence"
+
+    async def test_mixed_episodes_update_and_delete(self) -> None:
+        """Source has two episodes; one shared with target (delete), one unique (update)."""
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1, "organizer"), _ep_row(EPISODE_UUID_2)],
+            tgt_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],  # EPISODE_UUID_1 shared
+        )
+        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
+
+        update_calls = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episode_entities SET entity_id" in c[0][0]
+        ]
+        delete_calls = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "DELETE FROM chronicler.episode_entities" in c[0][0]
+        ]
+        assert len(update_calls) == 1  # EPISODE_UUID_2 re-pointed
+        assert len(delete_calls) == 1  # EPISODE_UUID_1 deduped
+
+    async def test_no_source_rows_only_updates_derived_column(self) -> None:
+        """When source has no episode_entities rows, only the derived column UPDATE runs."""
+        ch_pool, ch_conn = _make_chronicler_pool(src_ep_rows=[], tgt_ep_rows=[])
+        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
+
+        ep_entity_updates = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episode_entities SET entity_id" in c[0][0]
+        ]
+        ep_deletes = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "DELETE FROM chronicler.episode_entities" in c[0][0]
+        ]
+        derived_updates = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episodes SET entity_id" in c[0][0]
+        ]
+        assert ep_entity_updates == []
+        assert ep_deletes == []
+        assert len(derived_updates) == 1  # derived column still moved
+
+
+class TestEntityMergeEpisodeEntities:
+    """entity_merge integration tests for episode_entities (6.2, 6.4)."""
+
+    async def test_repoints_episode_entities_via_chronicler_pool(self) -> None:
+        """entity_merge calls _repoint_episode_entities when chronicler_pool is supplied."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        pool, _conn = _merge_pool(src, tgt)
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1)],
+            tgt_ep_rows=[],
+        )
+
+        await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
+
+        update_calls = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episode_entities SET entity_id" in c[0][0]
+        ]
+        assert len(update_calls) == 1
+
+    async def test_episode_entity_dedup_role_promotion_in_merge(self) -> None:
+        """entity_merge dedup case: one row remains, role is higher-precedence after merge."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        pool, _conn = _merge_pool(src, tgt)
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1, "owner")],
+            tgt_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
+        )
+
+        await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
+
+        role_updates = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episode_entities SET role" in c[0][0]
+        ]
+        delete_calls = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "DELETE FROM chronicler.episode_entities" in c[0][0]
+        ]
+        assert len(role_updates) == 1, "Role must be promoted in the surviving target row"
+        assert role_updates[0][0][1] == "owner"
+        assert len(delete_calls) == 1, "Source duplicate row must be deleted"
+
+    async def test_derived_episodes_entity_id_updated_atomically(self) -> None:
+        """chronicler.episodes.entity_id is updated alongside the join table (same txn)."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        pool, _conn = _merge_pool(src, tgt)
+        ch_pool, ch_conn = _make_chronicler_pool(
+            src_ep_rows=[_ep_row(EPISODE_UUID_1)],
+            tgt_ep_rows=[],
+        )
+
+        await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
+
+        derived_updates = [
+            c
+            for c in ch_conn.execute.call_args_list
+            if "UPDATE chronicler.episodes SET entity_id" in c[0][0]
+        ]
+        assert len(derived_updates) == 1
+        args = derived_updates[0][0]
+        assert args[1] == TARGET_UUID
+        assert args[2] == SOURCE_UUID
+
+    async def test_graceful_skip_when_episode_entities_table_absent(self) -> None:
+        """When chronicler.episode_entities is absent, merge completes without raising."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        pool, _conn = _merge_pool(src, tgt)
+
+        # Build a chronicler pool whose fetch raises UndefinedTableError
+        ch_pool = MagicMock()
+        ch_conn = AsyncMock()
+        ch_conn.fetch = AsyncMock(
+            side_effect=asyncpg.exceptions.UndefinedTableError("relation does not exist")
+        )
+        ch_conn.execute = AsyncMock()
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=ch_conn)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        ch_pool.acquire = MagicMock(return_value=cm)
+        txn_cm = MagicMock()
+        txn_cm.__aenter__ = AsyncMock(return_value=None)
+        txn_cm.__aexit__ = AsyncMock(return_value=None)
+        ch_conn.transaction = MagicMock(return_value=txn_cm)
+
+        # Must NOT raise; merge completes and returns normal result
+        result = await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
+        assert result["target_entity_id"] == TARGET_ID
+
+    async def test_no_episode_repointing_when_no_chronicler_pool(self) -> None:
+        """When chronicler_pool is not supplied, no chronicler SQL is executed."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        pool, _conn = _merge_pool(src, tgt)
+
+        # No chronicler_pool passed — should not touch chronicler at all
+        result = await entity_merge(pool, SOURCE_ID, TARGET_ID)
+        assert result["target_entity_id"] == TARGET_ID
 
 
 # ---------------------------------------------------------------------------

@@ -970,12 +970,122 @@ async def _repoint_calendar_event_entities(
                 )
 
 
+async def _repoint_episode_entities(
+    pool: Pool,
+    src_uuid: uuid.UUID,
+    tgt_uuid: uuid.UUID,
+) -> None:
+    """Re-point chronicler.episode_entities rows from source to target entity.
+
+    For each episode associated with *src_uuid*:
+      - If *tgt_uuid* is already associated with the same episode, pick the
+        higher-precedence role (owner > organizer > participant) for the
+        surviving row, update the target row's role if necessary, then delete
+        the source row (deduplication on PK (episode_id, entity_id)).
+      - Otherwise, update the source row's entity_id to *tgt_uuid*.
+
+    Also updates chronicler.episodes.entity_id rows that equal *src_uuid*
+    to *tgt_uuid* (transition window: derived column kept in sync until
+    bu-cfsgy drops the column).
+
+    Runs in a single transaction so both the join table and the derived
+    column move atomically.
+
+    Role precedence (lower number = higher precedence):
+      'owner' = 0, 'organizer' = 1, 'participant' = 2
+    """
+    # Role precedence: lower value = higher priority
+    _ROLE_PRECEDENCE: dict[str, int] = {"owner": 0, "organizer": 1, "participant": 2}
+    _DEFAULT_PRECEDENCE = 99  # unknown roles treated as lowest priority
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            src_rows = await conn.fetch(
+                "SELECT episode_id, role FROM chronicler.episode_entities WHERE entity_id = $1",
+                src_uuid,
+            )
+            if not src_rows:
+                # Also handle the derived column even if no join rows (bu-cfsgy transition)
+                await conn.execute(
+                    # Transition window: keep derived column in sync until bu-cfsgy drops it.
+                    "UPDATE chronicler.episodes SET entity_id = $1 WHERE entity_id = $2",
+                    tgt_uuid,
+                    src_uuid,
+                )
+                return
+
+            src_episode_ids = [r["episode_id"] for r in src_rows]
+            src_role_by_episode = {r["episode_id"]: r["role"] for r in src_rows}
+
+            # Find which of those episodes already have the target entity
+            tgt_rows = await conn.fetch(
+                "SELECT episode_id, role FROM chronicler.episode_entities "
+                "WHERE entity_id = $1 AND episode_id = ANY($2)",
+                tgt_uuid,
+                src_episode_ids,
+            )
+            tgt_role_by_episode = {r["episode_id"]: r["role"] for r in tgt_rows}
+
+            already_linked = set(tgt_role_by_episode.keys())
+            to_delete = [eid for eid in src_episode_ids if eid in already_linked]
+            to_update = [eid for eid in src_episode_ids if eid not in already_linked]
+
+            if to_delete:
+                # For duplicates: pick the higher-precedence role for the surviving target row.
+                # Use Python-side precedence comparison since TEXT LEAST() gives alphabetic order
+                # (opposite of what we want: 'owner' < 'organizer' < 'participant' alphabetically).
+                # Group promotions by role and issue one batched UPDATE per role to minimise
+                # DB round-trips (at most len(distinct roles) == 3 queries instead of N).
+                promotions: dict[str, list] = {}
+                for episode_id in to_delete:
+                    src_role = src_role_by_episode[episode_id]
+                    tgt_role = tgt_role_by_episode[episode_id]
+                    src_prec = _ROLE_PRECEDENCE.get(src_role, _DEFAULT_PRECEDENCE)
+                    tgt_prec = _ROLE_PRECEDENCE.get(tgt_role, _DEFAULT_PRECEDENCE)
+                    if src_prec < tgt_prec:
+                        promotions.setdefault(src_role, []).append(episode_id)
+                for role, eids in promotions.items():
+                    await conn.execute(
+                        "UPDATE chronicler.episode_entities SET role = $1 "
+                        "WHERE entity_id = $2 AND episode_id = ANY($3)",
+                        role,
+                        tgt_uuid,
+                        eids,
+                    )
+                # Delete all source duplicate rows in one batch
+                await conn.execute(
+                    "DELETE FROM chronicler.episode_entities "
+                    "WHERE entity_id = $1 AND episode_id = ANY($2)",
+                    src_uuid,
+                    to_delete,
+                )
+
+            if to_update:
+                # Re-point non-duplicate rows to target in one batch
+                await conn.execute(
+                    "UPDATE chronicler.episode_entities SET entity_id = $1 "
+                    "WHERE entity_id = $2 AND episode_id = ANY($3)",
+                    tgt_uuid,
+                    src_uuid,
+                    to_update,
+                )
+
+            # Transition window: keep chronicler.episodes.entity_id in sync until
+            # bu-cfsgy lands and drops the derived column.
+            await conn.execute(
+                "UPDATE chronicler.episodes SET entity_id = $1 WHERE entity_id = $2",
+                tgt_uuid,
+                src_uuid,
+            )
+
+
 async def entity_merge(
     pool: Pool,
     source_entity_id: str,
     target_entity_id: str,
     *,
     extra_pools: list[Pool] | None = None,
+    chronicler_pool: Pool | None = None,
 ) -> dict[str, Any]:
     """Merge a source entity into a target entity.
 
@@ -992,6 +1102,10 @@ async def entity_merge(
     1c. Re-point calendar_event_entities rows from source to target.
        - If the target is already associated with the same event, the source
          row is deleted (deduplication on (event_id, entity_id)).
+    1d. Re-point chronicler.episode_entities rows from source to target (if
+       chronicler_pool is provided). Deduplication respects role precedence
+       (owner > organizer > participant). Also updates the derived
+       chronicler.episodes.entity_id column during the transition window.
     2. Append source's aliases to target's alias list (deduplicated).
     3. Merge source's metadata into target's metadata (target wins on conflict).
     4. Tombstone source entity (mark as merged_into=target_entity_id, retained
@@ -1004,6 +1118,10 @@ async def entity_merge(
         target_entity_id: UUID string of the entity to merge into (survives).
         extra_pools: Additional pools to re-point facts on (for multi-butler setups
                      where facts may live in different schemas).
+        chronicler_pool: Optional asyncpg pool for the chronicler schema. When
+                         provided, episode_entities and episodes.entity_id are
+                         re-pointed atomically. Pass the chronicler DB pool at call
+                         sites that have access to it.
 
     Returns:
         Dict with keys:
@@ -1138,6 +1256,22 @@ async def entity_merge(
         except asyncpg.UndefinedTableError:
             # Table may not exist in this schema — skip gracefully
             continue
+
+    # ---------------------------------------------------------------
+    # 2c. Re-point chronicler.episode_entities rows from source to target.
+    #     Deduplication on PK (episode_id, entity_id) preserves the
+    #     higher-precedence role (owner > organizer > participant).
+    #     Also updates the chronicler.episodes.entity_id derived column
+    #     for the transition window (until bu-cfsgy drops the column).
+    #     Wrapped in UndefinedTableError guard for deployments where the
+    #     chronicler schema or episode_entities table is absent.
+    # ---------------------------------------------------------------
+    if chronicler_pool is not None:
+        try:
+            await _repoint_episode_entities(chronicler_pool, src_uuid, tgt_uuid)
+        except asyncpg.UndefinedTableError:
+            # chronicler.episode_entities not yet deployed — skip gracefully
+            pass
 
     # ---------------------------------------------------------------
     # 3. Emit audit event
