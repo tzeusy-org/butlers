@@ -23,6 +23,7 @@ import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from prometheus_client import Counter
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -52,6 +53,21 @@ from butlers.identity import resolve_contact_by_channel
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/events", tags=["ingestion"])
+
+
+# ---------------------------------------------------------------------------
+# Prometheus counters — bulk_replay 5xx error observability.
+# Without these, structural DB errors (e.g. FOR UPDATE + LEFT JOIN) silently
+# returned 503s in production for an entire day before being noticed through
+# a different channel.  Counter names follow the pattern:
+# ingestion_bulk_replay_<class>_total (labels: code=<http_status_code>).
+# ---------------------------------------------------------------------------
+
+ingestion_bulk_replay_errors_total = Counter(
+    "ingestion_bulk_replay_errors_total",
+    "Number of 5xx error responses from POST /api/ingestion/events/replay/bulk.",
+    ["code"],
+)
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -321,6 +337,7 @@ async def bulk_replay_ingestion_events(
     try:
         pool = db.credential_shared_pool()
     except KeyError as exc:
+        ingestion_bulk_replay_errors_total.labels(code="503").inc()
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
     client_host = getattr(request.client, "host", None) if request.client else None
@@ -329,6 +346,9 @@ async def bulk_replay_ingestion_events(
     # inside one explicit transaction.  This ensures the FOR UPDATE lock is held until
     # commit (§6.2 mandate-5 concurrency guarantee) and the audit insert is atomic with
     # the state mutation (§6.2 mandate-1 audit-on-mutation semantics).
+    #
+    # ingestion_bulk_replay_errors_total counter is incremented on every 5xx return path
+    # to provide Prometheus-queryable observability over structural failures (e.g. SQL bugs).
     #
     # Previously each pool.fetch() ran in its own implicit transaction, so the FOR UPDATE
     # lock was released the moment the SELECT completed — the UPDATE then had no lock
@@ -362,6 +382,7 @@ async def bulk_replay_ingestion_events(
                     logger.warning(
                         "bulk_replay: failed to lock filtered_events rows", exc_info=True
                     )
+                    ingestion_bulk_replay_errors_total.labels(code="503").inc()
                     raise HTTPException(
                         status_code=503, detail="Database error while locking events"
                     )
@@ -443,6 +464,7 @@ async def bulk_replay_ingestion_events(
                         logger.warning(
                             "bulk_replay: failed to update filtered_events", exc_info=True
                         )
+                        ingestion_bulk_replay_errors_total.labels(code="503").inc()
                         raise HTTPException(
                             status_code=503, detail="Database error during replay marking"
                         )
@@ -472,6 +494,7 @@ async def bulk_replay_ingestion_events(
         raise
     except Exception:
         logger.warning("bulk_replay: unexpected error during transaction", exc_info=True)
+        ingestion_bulk_replay_errors_total.labels(code="503").inc()
         raise HTTPException(status_code=503, detail="Database error during bulk replay")
 
     return {

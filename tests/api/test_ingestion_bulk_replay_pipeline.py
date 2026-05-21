@@ -306,6 +306,168 @@ async def test_bulk_replay_503_on_db_unavailable(app):
 
 
 # ---------------------------------------------------------------------------
+# §4.9 Prometheus telemetry: ingestion_bulk_replay_errors_total counter
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_replay_503_pool_unavailable_increments_counter(app):
+    """503 from pool unavailability increments ingestion_bulk_replay_errors_total{code="503"}.
+
+    bu-j5lx7: Without this counter, structural DB errors returned 503s for an entire
+    production day before detection via a different channel.
+    """
+    import butlers.api.routers.ingestion_events as _mod
+
+    # Read current counter value before the request
+    before = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+
+    _app_with_events_db(app, shared_pool_error=KeyError("no shared pool"))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/ingestion/events/replay/bulk",
+            json={"event_ids": [str(uuid4())], "reason": "test"},
+        )
+
+    assert resp.status_code == 503
+    after = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+    assert after == before + 1, (
+        f"Counter should have incremented by 1; before={before} after={after}"
+    )
+
+
+async def test_bulk_replay_503_lock_failure_increments_counter(app):
+    """503 from Phase 1 row-lock failure increments ingestion_bulk_replay_errors_total{code="503"}.
+
+    Simulates the asyncpg FeatureNotSupportedError (or any DB exception) raised when
+    the FOR UPDATE SKIP LOCKED query fails, e.g. due to a LEFT JOIN constraint.
+    """
+    import butlers.api.routers.ingestion_events as _mod
+
+    before = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+
+    # conn.fetch raises an exception on the first call (Phase 1 lock attempt)
+    conn = _make_conn(fetch_side_effect=RuntimeError("FOR UPDATE with LEFT JOIN not supported"))
+    pool = _make_pool_with_conn(conn)
+    _app_with_events_db(app, shared_pool=pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/ingestion/events/replay/bulk",
+            json={"event_ids": [str(uuid4())], "reason": "test"},
+        )
+
+    assert resp.status_code == 503
+    after = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+    assert after == before + 1, (
+        f"Counter should have incremented by 1; before={before} after={after}"
+    )
+
+
+async def test_bulk_replay_503_update_failure_increments_counter(app):
+    """503 from Phase 3 UPDATE failure increments ingestion_bulk_replay_errors_total{code="503"}.
+
+    Simulates a failure in the UPDATE ... RETURNING step that marks rows replay_pending.
+    """
+    import butlers.api.routers.ingestion_events as _mod
+
+    before = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+
+    event_id = str(uuid4())
+    uuid_val = uuid4()
+
+    locked_row = MagicMock()
+    locked_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "id": uuid_val,
+            "source_channel": "telegram_bot",
+            "replay_safe": True,
+        }[key]
+    )
+
+    # First fetch (Phase 1 SELECT) succeeds, second fetch (Phase 3 UPDATE) raises
+    conn = _make_conn(
+        fetch_side_effect=[
+            [locked_row],  # Phase 1: successful lock
+            RuntimeError("UPDATE failed — simulated DB error"),  # Phase 3: update failure
+        ]
+    )
+    pool = _make_pool_with_conn(conn)
+    _app_with_events_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events._audit_append",
+        new_callable=AsyncMock,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/replay/bulk",
+                json={"event_ids": [event_id], "reason": "test"},
+            )
+
+    assert resp.status_code == 503
+    after = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+    assert after == before + 1, (
+        f"Counter should have incremented by 1; before={before} after={after}"
+    )
+
+
+async def test_bulk_replay_success_does_not_increment_counter(app):
+    """Successful bulk replay does NOT increment ingestion_bulk_replay_errors_total."""
+    import butlers.api.routers.ingestion_events as _mod
+
+    before = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+
+    event_ids = [str(uuid4()) for _ in range(2)]
+    uuids = [uuid4() for _ in range(2)]
+
+    locked_rows = []
+    for u, eid in zip(uuids, event_ids):
+        row = MagicMock()
+        row.__getitem__ = MagicMock(
+            side_effect=lambda key, _u=u: {
+                "id": _u,
+                "source_channel": "telegram_bot",
+                "replay_safe": True,
+            }[key]
+        )
+        locked_rows.append(row)
+
+    updated_rows = []
+    for eid in event_ids:
+        r = MagicMock()
+        r.__getitem__ = MagicMock(side_effect=lambda key, _eid=eid: {"id": _eid}[key])
+        updated_rows.append(r)
+
+    conn = _make_conn(fetch_side_effect=[locked_rows, updated_rows])
+    pool = _make_pool_with_conn(conn)
+    _app_with_events_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events._audit_append",
+        new_callable=AsyncMock,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/replay/bulk",
+                json={"event_ids": event_ids, "reason": "success-test"},
+            )
+
+    assert resp.status_code == 200
+    after = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
+    assert after == before, (
+        f"Counter should NOT have incremented on success; before={before} after={after}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # §4.8.1 Bulk replay concurrency: FOR UPDATE SKIP LOCKED prevents double-replay
 # ---------------------------------------------------------------------------
 
