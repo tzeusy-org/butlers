@@ -53,6 +53,7 @@ class RelationshipModule(Module):
 
     def __init__(self) -> None:
         self._db: Any = None
+        self._chronicler_pool: Any = None  # Lazy pool for chronicler schema (episode repoint)
 
     @property
     def name(self) -> str:
@@ -78,12 +79,47 @@ class RelationshipModule(Module):
     async def on_shutdown(self) -> None:
         """Clear state references."""
         self._db = None
+        if self._chronicler_pool is not None:
+            try:
+                await self._chronicler_pool.close()
+            except Exception:
+                pass
+            self._chronicler_pool = None
 
     def _get_pool(self):
         """Return the asyncpg pool, raising if not initialised."""
         if self._db is None:
             raise RuntimeError("RelationshipModule not initialised -- no DB available")
         return self._db.pool
+
+    async def _get_or_create_chronicler_pool(self) -> Any:
+        """Return a lazily-created asyncpg pool scoped to the chronicler schema.
+
+        Creates a new pool on first call using the same PostgreSQL connection
+        details as ``self._db`` but with ``search_path = chronicler, public``.
+        Returns ``None`` when the module is not initialised.
+
+        The pool is closed in ``on_shutdown()``.
+        """
+        if self._db is None:
+            return None
+        if self._chronicler_pool is None:
+            from butlers.db import Database
+
+            ch_db = Database(
+                db_name=self._db.db_name,
+                schema="chronicler",
+                host=self._db.host,
+                port=self._db.port,
+                user=self._db.user,
+                password=self._db.password,
+                ssl=self._db.ssl,
+                min_pool_size=self._db.min_pool_size,
+                max_pool_size=self._db.max_pool_size,
+            )
+            await ch_db.connect()
+            self._chronicler_pool = ch_db.pool
+        return self._chronicler_pool
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register all relationship MCP tools."""

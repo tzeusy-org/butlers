@@ -660,6 +660,20 @@ async def _get_memory_pool(db: DatabaseManager):
     return None
 
 
+def _get_chronicler_pool(db: DatabaseManager):
+    """Return the chronicler butler's pool if registered, otherwise None.
+
+    The pool is scoped to the ``chronicler`` schema and is used to re-point
+    ``chronicler.episode_entities`` rows during entity_merge. Returns None
+    when the chronicler butler is not registered in this deployment — the
+    merge proceeds without episode_entities repointing in that case (no-op).
+    """
+    try:
+        return db.pool("chronicler")
+    except KeyError:
+        return None
+
+
 async def _suggest_entities(
     rel_pool,
     memory_pool,
@@ -1767,12 +1781,16 @@ async def merge_contact(
             from butlers.modules.memory.tools.entities import entity_merge
 
             memory_pool = await _get_memory_pool(db)
+            # Wire chronicler pool so episode_entities rows are re-pointed.
+            # Returns None when chronicler is not registered — no-op path.
+            ch_pool = _get_chronicler_pool(db)
 
             if memory_pool is not None:
                 await entity_merge(
                     memory_pool,
                     str(src_entity_id),
                     str(tgt_entity_id),
+                    chronicler_pool=ch_pool,
                 )
                 entity_merged = True
         except Exception:  # noqa: BLE001

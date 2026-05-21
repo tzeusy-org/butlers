@@ -84,6 +84,20 @@ def _any_pool(db: DatabaseManager) -> object:
     raise HTTPException(status_code=503, detail="No database pools available")
 
 
+def _chronicler_pool_from_db(db: DatabaseManager) -> object | None:
+    """Return the chronicler butler's pool if registered, otherwise None.
+
+    The chronicler pool is scoped to the ``chronicler`` schema and is used
+    to re-point ``chronicler.episode_entities`` rows during entity_merge.
+    Returns None when the chronicler butler is not registered in this deployment
+    — the merge proceeds without episode_entities repointing in that case.
+    """
+    try:
+        return db.pool("chronicler")
+    except KeyError:
+        return None
+
+
 async def _fan_out_memory_queries(
     db: DatabaseManager,
     *,
@@ -1286,12 +1300,18 @@ async def merge_entity(
             detail="Cannot merge owner entity (source would be tombstoned)",
         )
 
+    # Wire chronicler pool so that episode_entities rows are re-pointed during
+    # the merge. Returns None when the chronicler butler is not registered in
+    # this deployment — merge proceeds without episode repointing in that case.
+    chronicler_pool = _chronicler_pool_from_db(db)
+
     try:
         result = await entity_merge(
             pool,
             source_id,
             target_id,
             extra_pools=extra_pools,
+            chronicler_pool=chronicler_pool,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

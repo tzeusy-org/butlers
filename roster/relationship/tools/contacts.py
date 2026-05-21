@@ -531,6 +531,7 @@ async def contact_merge(
     source_id: uuid.UUID,
     target_id: uuid.UUID,
     memory_pool: asyncpg.Pool | None = None,
+    chronicler_pool: asyncpg.Pool | None = None,
 ) -> dict[str, Any]:
     """Merge source contact into target contact.
 
@@ -540,6 +541,12 @@ async def contact_merge(
     When ``memory_pool`` is provided and both contacts have linked entities,
     the source entity is merged into the target entity via entity_merge so that
     memory facts consolidate under the surviving contact's entity.
+
+    When ``chronicler_pool`` is provided, episode_entities rows in the chronicler
+    schema are re-pointed from the source entity to the target entity as part of
+    the entity_merge call. Pass the chronicler butler's pool at call sites that
+    have access to it; callers without access may pass None (no-op semantics —
+    episode_entities repointing is silently skipped).
 
     Legacy contacts with NULL entity_id are handled gracefully (no crash).
 
@@ -633,6 +640,9 @@ async def contact_merge(
                     entity_pool,
                     str(src_entity_id),
                     str(tgt_entity_id),
+                    chronicler_pool=chronicler_pool,
+                    # chronicler_pool=None is the no-op path: episode_entities
+                    # repointing is silently skipped when caller has no pool.
                 )
             except Exception:
                 logger.exception(

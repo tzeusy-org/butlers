@@ -318,7 +318,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         records (notes, interactions, reminders, etc.) are re-pointed to
         the target.
         """
-        return await _contacts.contact_merge(module._get_pool(), source_id, target_id)
+        chronicler_pool = await module._get_or_create_chronicler_pool()
+        # chronicler_pool is None when the DB is not initialised. When provided,
+        # episode_entities rows are re-pointed as part of the entity_merge call.
+        return await _contacts.contact_merge(
+            module._get_pool(),
+            source_id,
+            target_id,
+            chronicler_pool=chronicler_pool,
+        )
 
     # =================================================================
     # Date tools (group: social)

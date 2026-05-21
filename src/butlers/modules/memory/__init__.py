@@ -184,6 +184,7 @@ class MemoryModule(Module):
         self._db: Any = None
         self._embedding_engine: Any = None
         self._config: MemoryModuleConfig = MemoryModuleConfig()
+        self._chronicler_pool: Any = None  # Lazy pool for chronicler schema (episode repoint)
 
     @property
     def name(self) -> str:
@@ -212,12 +213,48 @@ class MemoryModule(Module):
         """Clear state references."""
         self._db = None
         self._embedding_engine = None
+        if self._chronicler_pool is not None:
+            try:
+                await self._chronicler_pool.close()
+            except Exception:
+                pass
+            self._chronicler_pool = None
 
     def _get_pool(self):
         """Return the asyncpg pool, raising if not initialised."""
         if self._db is None:
             raise RuntimeError("MemoryModule not initialised — no DB available")
         return self._db.pool
+
+    async def _get_or_create_chronicler_pool(self) -> Any:
+        """Return a lazily-created asyncpg pool scoped to the chronicler schema.
+
+        Creates a new pool on first call using the same PostgreSQL connection
+        details as ``self._db`` but with ``search_path = chronicler, public``.
+        Returns ``None`` when the memory module is not initialised (e.g. in
+        tests that do not configure a DB).
+
+        The pool is closed in ``on_shutdown()``.
+        """
+        if self._db is None:
+            return None
+        if self._chronicler_pool is None:
+            from butlers.db import Database
+
+            ch_db = Database(
+                db_name=self._db.db_name,
+                schema="chronicler",
+                host=self._db.host,
+                port=self._db.port,
+                user=self._db.user,
+                password=self._db.password,
+                ssl=self._db.ssl,
+                min_pool_size=self._db.min_pool_size,
+                max_pool_size=self._db.max_pool_size,
+            )
+            await ch_db.connect()
+            self._chronicler_pool = ch_db.pool
+        return self._chronicler_pool
 
     def _get_embedding_engine(self):
         """Return the shared embedding engine for the configured model.
@@ -1128,10 +1165,15 @@ class MemoryModule(Module):
             Returns the updated target entity dict, or None if target not found.
             Raises ValueError if source entity not found or IDs are identical.
             """
+            chronicler_pool = await module._get_or_create_chronicler_pool()
+            # chronicler_pool is None when the DB is not initialised (e.g. tests
+            # that inject a mock pool directly into entity_merge). When provided,
+            # episode_entities rows are re-pointed as part of the merge.
             return await _entities.entity_merge(
                 module._get_pool(),
                 source_entity_id,
                 target_entity_id,
+                chronicler_pool=chronicler_pool,
             )
 
         # --- Cross-butler catalog search tool ---

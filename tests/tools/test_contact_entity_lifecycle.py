@@ -182,7 +182,14 @@ async def test_contact_merge_and_entity_merge_validation():
         await contact_merge(
             pool, source_id=CONTACT_UUID, target_id=CONTACT_UUID2, memory_pool=memory_pool
         )
-        mock_entity_merge.assert_awaited_once_with(memory_pool, str(ENTITY_UUID), str(ENTITY_UUID2))
+        # chronicler_pool=None because contact_merge was called without a
+        # chronicler pool — the no-op path (episode repointing silently skipped).
+        mock_entity_merge.assert_awaited_once_with(
+            memory_pool,
+            str(ENTITY_UUID),
+            str(ENTITY_UUID2),
+            chronicler_pool=None,
+        )
 
     # entity_merge validation: same ID raises
     with pytest.raises(ValueError, match="different"):
