@@ -485,6 +485,48 @@ def test_notification_due_expiry_and_delivery_result():
     assert len(filter_expired_notifications(expired_list, now=now)) == 1
 
 
+@pytest.mark.asyncio
+async def test_event_chain_pass_skips_calendar_projection_when_event_chains_table_missing():
+    """Legacy calendar projection rows must not break tick() without event_chains."""
+    from butlers.core.scheduler import _tick_event_chain_pass
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.fetch_calls: list[str] = []
+
+        async def fetchval(self, sql: str, *args):
+            if "information_schema.tables" in sql and args == ("event_chains",):
+                return False
+            if "information_schema.columns" in sql and args == (
+                "scheduled_tasks",
+                "deadline_status",
+            ):
+                return False
+            raise AssertionError(f"Unexpected fetchval: {sql!r} {args!r}")
+
+        async def fetch(self, sql: str, *args):
+            self.fetch_calls.append(sql)
+            if "information_schema.columns" in sql and args[0] == "calendar_projection":
+                return [
+                    {"column_name": "event_id"},
+                    {"column_name": "butler_name"},
+                    {"column_name": "end_at"},
+                    {"column_name": "chain_triggered"},
+                ]
+            raise AssertionError(f"Unexpected fetch: {sql!r} {args!r}")
+
+        async def execute(self, sql: str, *args):
+            raise AssertionError(f"Unexpected execute: {sql!r} {args!r}")
+
+    pool = FakePool()
+
+    async def noop(**kwargs):
+        pass
+
+    assert await _tick_event_chain_pass(pool, noop, datetime.now(UTC)) == 0
+    assert not any("FROM calendar_projection" in call for call in pool.fetch_calls)
+
+
 # ---------------------------------------------------------------------------
 # 12.11 — tick() integration
 # ---------------------------------------------------------------------------
@@ -978,6 +1020,33 @@ class TestTickIntegration:
         assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'on-critical'"))[
             "status"
         ] == "fired"
+
+    async def test_tick_skips_calendar_event_chain_pass_without_event_chains_table(self, pool):
+        """A partial temporal schema must not make the whole scheduler tick fail."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+
+        async def noop(**kwargs):
+            pass
+
+        await pool.execute("DROP TABLE event_chains")
+        await pool.execute(
+            """
+            INSERT INTO calendar_projection
+                (butler_name, event_id, title, start_at, end_at, chain_triggered)
+            VALUES ('test-butler', 'event-without-chain-table', 'Done', $1, $2, false)
+            """,
+            now - timedelta(hours=1),
+            now - timedelta(minutes=2),
+        )
+
+        assert await tick(pool, noop) == 0
+        row = await pool.fetchrow(
+            "SELECT chain_triggered FROM calendar_projection WHERE event_id = $1",
+            "event-without-chain-table",
+        )
+        assert row["chain_triggered"] is False
 
     async def test_tick_cron_and_sync_schedules(self, pool):
         """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; validates required fields."""

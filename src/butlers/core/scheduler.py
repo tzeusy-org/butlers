@@ -794,6 +794,40 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
     return bool(result)
 
 
+async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
+    """Return True if *table* exists in the pool's current schema."""
+    result = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = $1
+        )
+        """,
+        table,
+    )
+    return bool(result)
+
+
+async def _has_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> bool:
+    """Return True if *table* has every named column in the pool's current schema."""
+    if not columns:
+        return True
+    rows = await pool.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = $1
+          AND column_name = ANY($2::text[])
+        """,
+        table,
+        sorted(columns),
+    )
+    found = {row["column_name"] for row in rows}
+    return columns.issubset(found)
+
+
 async def _tick_deadline_pass(
     pool: asyncpg.Pool,
     dispatch_fn,
@@ -828,10 +862,23 @@ async def _tick_deadline_pass(
         is_deadline_blocked,
     )
 
-    # Skip the deadline pass if the schema hasn't been migrated yet
+    # Skip the deadline pass if the schema hasn't been fully migrated yet.
+    # Long-lived databases can briefly hold a partial temporal schema after a
+    # failed or interrupted migration; tick() must keep cron dispatch alive.
+    required_deadline_columns = {
+        "task_type",
+        "target_date",
+        "lead_time_days",
+        "alert_thresholds",
+        "deadline_status",
+        "fired_thresholds",
+        "depends_on",
+    }
     if has_task_type_col is None:
         has_task_type_col = await _has_column(pool, "scheduled_tasks", "task_type")
-    if not has_task_type_col:
+    if not has_task_type_col or not await _has_columns(
+        pool, "scheduled_tasks", required_deadline_columns
+    ):
         return 0, 0
 
     deadline_rows = await pool.fetch(
@@ -1055,19 +1102,23 @@ async def _tick_event_chain_pass(
 
     chains_fired = 0
 
+    # event_chains is a prerequisite for every trigger in this pass.  Bail out
+    # early so we avoid unnecessary schema probes for calendar_projection and
+    # scheduled_tasks when the core table is missing.
+    has_event_chains_table = await _has_table(pool, "event_chains")
+    if not has_event_chains_table:
+        return 0
+
     # --- Trigger: calendar_event_end ---
-    # Only evaluated when calendar_projection table exists (it's optional).
-    calendar_table_exists = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = 'calendar_projection'
-        )
-        """
+    # Only evaluated when the optional calendar_projection table exists with
+    # the legacy projection columns this pass reads.
+    calendar_projection_ready = await _has_columns(
+        pool,
+        "calendar_projection",
+        {"event_id", "butler_name", "end_at", "chain_triggered"},
     )
 
-    if calendar_table_exists:
+    if calendar_projection_ready:
         # Find calendar events that ended before now and haven't triggered chains yet
         ended_events = await pool.fetch(
             """
@@ -1132,17 +1183,7 @@ async def _tick_event_chain_pass(
     #
     # Guard: skip if scheduled_tasks lacks deadline columns (pre-migration schema).
     has_deadline_status_col = await _has_column(pool, "scheduled_tasks", "deadline_status")
-    has_event_chains_table = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = 'event_chains'
-        )
-        """
-    )
-
-    if has_deadline_status_col and has_event_chains_table:
+    if has_deadline_status_col:
         # Fetch active deadline_passed chains and join to deadline status in one query.
         deadline_passed_chains = await pool.fetch(
             """
