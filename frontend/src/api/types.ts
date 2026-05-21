@@ -4140,6 +4140,47 @@ export interface RelationshipQueueResponse {
   offset: number;
 }
 
+/** Request body for POST /api/butlers/relationship/entities. */
+export interface PromoteRelationshipEntityRequest {
+  entity_id: string;
+  canonical_name: string;
+  entity_type: string;
+  roles?: string[] | null;
+  initial_facts?: Array<{
+    predicate: string;
+    object: string;
+    object_kind?: "literal" | "entity";
+    conf?: number;
+    primary?: boolean | null;
+  }>;
+}
+
+/** Request body for POST /api/butlers/relationship/entities/{id}/merge. */
+export interface MergeRelationshipEntitiesRequest {
+  entityA: string;
+  entityB: string;
+  keepAs: "A" | "B";
+}
+
+/** Response for POST /api/butlers/relationship/entities/{id}/merge. */
+export interface MergeRelationshipEntitiesResponse {
+  kept_entity_id: string;
+  tombstoned_entity_id: string;
+  subject_facts_rewired: number;
+  object_facts_rewired: number;
+}
+
+/** Response for POST /api/butlers/relationship/entities/queue/dismiss. */
+export interface DismissRelationshipEntityQueueResponse {
+  dismissed: Array<{
+    entity_id: string;
+    outcome: string;
+    fact_id: string | null;
+    action_id: string | null;
+  }>;
+  status: string;
+}
+
 // ---------------------------------------------------------------------------
 // System endpoints — GET /api/system/*
 // ---------------------------------------------------------------------------
