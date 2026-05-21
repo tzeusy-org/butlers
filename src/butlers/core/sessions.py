@@ -163,23 +163,44 @@ async def session_create(
             f"'schedule:<task-name>', or 'deadline:<task-name>'"
         )
 
-    session_id: uuid.UUID = await pool.fetchval(
-        """
-        INSERT INTO sessions
-            (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
-             complexity, resolution_source)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING id
-        """,
-        _strip_untranslatable_chars(prompt),
-        trigger_source,
-        trace_id,
-        model,
-        request_id,
-        ingestion_event_id,
-        complexity,
-        resolution_source,
-    )
+    # Sanitize once up front so the retry path does not redo the work.
+    sanitized_prompt = _strip_untranslatable_chars(prompt)
+
+    async def _insert(resolved_ingestion_event_id: str | None) -> uuid.UUID:
+        return await pool.fetchval(
+            """
+            INSERT INTO sessions
+                (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
+                 complexity, resolution_source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id
+            """,
+            sanitized_prompt,
+            trigger_source,
+            trace_id,
+            model,
+            request_id,
+            resolved_ingestion_event_id,
+            complexity,
+            resolution_source,
+        )
+
+    try:
+        session_id: uuid.UUID = await _insert(ingestion_event_id)
+    except asyncpg.ForeignKeyViolationError as exc:
+        constraint_name = getattr(exc, "constraint_name", None)
+        is_ingestion_event_fk = (
+            constraint_name == "sessions_ingestion_event_id_fkey"
+            or "sessions_ingestion_event_id_fkey" in str(exc)
+        )
+        if ingestion_event_id is None or not is_ingestion_event_fk:
+            raise
+        logger.warning(
+            "Session ingestion_event_id=%s no longer exists; creating session without "
+            "ingestion-event linkage",
+            ingestion_event_id,
+        )
+        session_id = await _insert(None)
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
     return session_id
 
