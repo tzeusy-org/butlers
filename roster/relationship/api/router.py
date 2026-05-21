@@ -2559,6 +2559,22 @@ _ENTITY_LIST_DEFAULT_LIMIT = 50
 _ENTITY_LIST_MAX_LIMIT = 200
 
 
+def _active_entity_condition(alias: str = "e") -> str:
+    """SQL predicate for entities visible in standard active surfaces.
+
+    Archives have existed under both ``metadata.archived`` and legacy
+    ``metadata.archived_at``.  Treat both as hidden from default lists/queues.
+    """
+    metadata = f"{alias}.metadata"
+    return f"""
+        ({metadata}->>'merged_into') IS NULL
+        AND ({metadata}->>'archived') IS DISTINCT FROM 'true'
+        AND ({metadata}->>'archived_at') IS NULL
+        AND ({metadata}->>'tombstone') IS DISTINCT FROM 'true'
+        AND ({metadata}->>'deleted_at') IS NULL
+    """
+
+
 @router.get("/entities", response_model=EntityListResponse)
 async def list_entities(
     entity_type: str | None = Query(
@@ -2624,7 +2640,7 @@ async def list_entities(
 
     # Build the WHERE clause incrementally.
     conditions: list[str] = [
-        "(e.metadata->>'merged_into') IS NULL",
+        _active_entity_condition("e"),
     ]
     args: list[object] = []
     arg_idx = 1
@@ -2973,9 +2989,9 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
                       AND rf.validity = 'active'
                       AND rf.last_seen > (now() - INTERVAL '{_STALE_DAYS} days')
                 ) AS has_fresh_fact
-            FROM public.entities
-            WHERE id = $1
-              AND (metadata->>'merged_into') IS NULL
+            FROM public.entities e
+            WHERE e.id = $1
+              AND {_active_entity_condition("e")}
         ),
         dup_detected AS (
             SELECT
@@ -3095,7 +3111,7 @@ async def get_entities_queue(
     #
     # Bucket 1 — unidentified
     # -------------------------------------------------------------------
-    unidentified_sql = """
+    unidentified_sql = f"""
         SELECT
             e.id            AS entity_id,
             e.canonical_name,
@@ -3107,10 +3123,10 @@ async def get_entities_queue(
                   AND rf.validity = 'active'
             ) AS last_seen,
             'unidentified'::text AS bucket,
-            '{}'::jsonb AS evidence_json
+            '{{}}'::jsonb AS evidence_json
         FROM public.entities e
         WHERE (e.metadata->>'unidentified')::text = 'true'
-          AND (e.metadata->>'merged_into') IS NULL
+          AND {_active_entity_condition("e")}
     """
 
     # -------------------------------------------------------------------
@@ -3119,7 +3135,7 @@ async def get_entities_queue(
     #   2a. metadata flag
     #   2b. shared has-email / has-phone value detected via self-join
     # -------------------------------------------------------------------
-    dup_metadata_sql = """
+    dup_metadata_sql = f"""
         SELECT
             e.id            AS entity_id,
             e.canonical_name,
@@ -3131,11 +3147,11 @@ async def get_entities_queue(
                   AND rf.validity = 'active'
             ) AS last_seen,
             'duplicate-candidate'::text AS bucket,
-            '{}'::jsonb AS evidence_json
+            '{{}}'::jsonb AS evidence_json
         FROM public.entities e
         WHERE (e.metadata->>'duplicate_candidate')::text = 'true'
           AND (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
-          AND (e.metadata->>'merged_into') IS NULL
+          AND {_active_entity_condition("e")}
     """
 
     # Deterministic dup-detection: find entities sharing a has-email / has-phone value.
@@ -3180,7 +3196,7 @@ async def get_entities_queue(
            AND f_link.object = grp.object
            AND f_link.validity = 'active'
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
-          AND (e.metadata->>'merged_into') IS NULL
+          AND {_active_entity_condition("e")}
     """
 
     # -------------------------------------------------------------------
@@ -3211,7 +3227,7 @@ async def get_entities_queue(
             )::jsonb AS evidence_json
         FROM public.entities e
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
-          AND (e.metadata->>'merged_into') IS NULL
+          AND {_active_entity_condition("e")}
           AND NOT EXISTS (
               SELECT 1 FROM relationship.entity_facts rf
               WHERE rf.subject = e.id

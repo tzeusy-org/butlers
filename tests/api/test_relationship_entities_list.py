@@ -266,6 +266,23 @@ async def test_entity_type_filter_returns_matching_entities():
 
 
 # ---------------------------------------------------------------------------
+# Scenario: archived/tombstoned entities are excluded from default list
+# ---------------------------------------------------------------------------
+
+
+async def test_default_list_sql_excludes_archived_and_tombstoned_entities():
+    app, pool = _app_with_pool(total=0, fetch_rows=[])
+    resp = await _get(app)
+
+    assert resp.status_code == 200
+    fetch_sql = pool.fetch.call_args[0][0]
+    assert "archived" in fetch_sql
+    assert "archived_at" in fetch_sql
+    assert "tombstone" in fetch_sql
+    assert "deleted_at" in fetch_sql
+
+
+# ---------------------------------------------------------------------------
 # Scenario: state=unidentified filter
 # ---------------------------------------------------------------------------
 
