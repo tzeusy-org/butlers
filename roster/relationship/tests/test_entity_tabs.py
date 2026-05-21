@@ -1056,6 +1056,29 @@ def _make_entity_row(**kwargs) -> MagicMock:
     return row
 
 
+def _make_classify_row(**kwargs) -> MagicMock:
+    """Build a MagicMock row for the _classify_entity_state CTE query (PR #1862).
+
+    The handler's second fetchrow (inside _classify_entity_state) reads these
+    keys to decide the entity's curation state.  Defaults yield a 'healthy'
+    classification so existing JSONB-metadata regression tests don't have to
+    care about state semantics.
+    """
+    data = {
+        "is_unidentified": False,
+        "is_dup_flagged": False,
+        "has_fresh_fact": True,
+        "last_seen": _NOW,
+        "dup_predicate": None,
+        "dup_shared_value": None,
+        "dup_peer_entity_ids": None,
+        **kwargs,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
 def _app_with_entity_pool(
     *,
     entity_row: MagicMock | None,
@@ -1063,11 +1086,16 @@ def _app_with_entity_pool(
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app whose pool serves a single entity row via fetchrow.
 
-    The entity GET handler calls pool.fetchrow for the entity then pool.fetch
-    for entity_info. ``entity_row=None`` simulates the 404 path.
+    The entity GET handler calls ``pool.fetchrow`` twice — once for the entity
+    row and a second time inside ``_classify_entity_state`` (PR #1862) — then
+    ``pool.fetch`` for entity_info.  ``entity_row=None`` simulates the 404 path
+    (the classifier fetchrow is never reached).
     """
+    classify_row = _make_classify_row()
+
     mock_pool = AsyncMock()
-    mock_pool.fetchrow = AsyncMock(return_value=entity_row)
+    # First fetchrow → entity row; second fetchrow → classifier row.
+    mock_pool.fetchrow = AsyncMock(side_effect=[entity_row, classify_row])
     mock_pool.fetch = AsyncMock(return_value=info_rows or [])
 
     mock_db = MagicMock(spec=DatabaseManager)
