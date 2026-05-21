@@ -537,3 +537,97 @@ WHERE source_name = 'google_calendar.completed'
   AND entity_id IS NULL
   AND tombstone_at IS NULL;
 ```
+
+## Migration 014 — episode_entities join table (bu-t0130)
+
+Migration `chronicler_014` (`roster/chronicler/migrations/014_episode_entities.py`)
+adds multi-entity support to chronicler episodes.
+
+### Pre-condition
+
+`chronicler_013` must be applied first (adds the `entity_id` column to
+`chronicler.episodes` that the view in 013 and 014 both expose).
+
+### Post-conditions
+
+After `chronicler_014` runs:
+
+- **`chronicler.episode_entities` table** exists with composite PK
+  `(episode_id, entity_id)`, an `ON DELETE CASCADE` FK to `chronicler.episodes(id)`,
+  and `role TEXT CHECK (role IN ('owner', 'organizer', 'participant'))`.
+  No FK on `entity_id` against `public.entities` (matches the existing chronicler
+  convention — chronicler boots before the relationship butler schema exists in
+  some deployments).
+- **`episode_entities_entity_idx`** index exists on `(entity_id, episode_id)` for
+  efficient entity-first activity queries.
+- **`v_episodes_corrected`** is recreated with a new `participant_entity_ids UUID[]`
+  column appended at the end.  The column is **never NULL**: episodes with no rows
+  in `episode_entities` return `'{}'::uuid[]` via `COALESCE`.  Array order is
+  role-precedence (`owner`=0, `organizer`=1, `participant`=2) then `entity_id ASC`.
+
+### Role-precedence collapse rule
+
+Writers (`CalendarCompletedAdapter` and the backfill script) MUST collapse
+multiple roles for the same `(episode_id, entity_id)` pair before writing,
+keeping the highest-precedence role:
+
+```
+'owner' > 'organizer' > 'participant'
+```
+
+Because the PK is `(episode_id, entity_id)`, each `entity_id` appears at most
+once per episode.  An attendee who is also the calendar account owner is written
+exactly once with `role='owner'`.
+
+### Backfilling episode_entities (bu-xuqyo)
+
+Historical `google_calendar.completed` episodes projected before this adapter
+change have no rows in `episode_entities`.  Two options:
+
+**Option A — Targeted backfill script (recommended, bead bu-xuqyo):**
+
+```bash
+# Dry-run: shows what would be written, no DB changes.
+uv run python scripts/backfill_episode_participants.py --dry-run
+
+# Apply: upserts episode_entities for all google_calendar.completed episodes.
+uv run python scripts/backfill_episode_participants.py
+```
+
+Idempotent — safe to re-run.
+
+**Option B — Watermark reset (full re-projection):**
+
+Reset the `google_calendar.completed` watermark to NULL so the adapter
+re-projects all historical meetings.  Heavier than Option A (re-writes titles
+and runs the full dedup pass), but uses the existing operator playbook.
+
+```sql
+UPDATE chronicler.projection_checkpoints
+SET watermark = NULL,
+    watermark_id = NULL,
+    updated_at = now()
+WHERE source_name = 'google_calendar.completed'
+  AND (subsource IS NULL OR subsource = '');
+```
+
+### Verify episode_entities is populated
+
+```sql
+-- Non-zero means the adapter has written participant rows.
+SELECT COUNT(*) AS total_links FROM chronicler.episode_entities;
+
+-- View column is non-NULL and returns arrays (empty or populated).
+SELECT
+    (participant_entity_ids IS NOT NULL) AS column_present,
+    COUNT(*) AS n
+FROM chronicler.v_episodes_corrected
+GROUP BY 1;
+```
+
+### Cleanup window (bead bu-cfsgy)
+
+After at least two release cycles, bead `bu-cfsgy` will drop the derived
+`episodes.entity_id` column and remove the legacy single-column filter path.
+Do NOT run that cleanup until telemetry confirms no callers are reading
+`episodes.entity_id` directly (target: zero callers for 30 days).
