@@ -19,6 +19,15 @@
 
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import {
+  ArchiveIcon,
+  CheckCircleIcon,
+  GitMergeIcon,
+  Loader2Icon,
+  TrashIcon,
+  XIcon,
+} from "lucide-react";
+import { toast } from "sonner";
 
 import type {
   RelationshipEntitySummary,
@@ -27,12 +36,27 @@ import type {
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import {
+  useArchiveRelationshipEntity,
+  useDismissRelationshipEntityQueueItem,
+  useEntityFinderSearch,
+  useForgetRelationshipEntity,
+  useMergeRelationshipEntities,
+  usePromoteRelationshipEntity,
   useRelationshipEntities,
   useRelationshipEntityQueue,
 } from "@/hooks/use-entities";
@@ -69,6 +93,314 @@ const STATE_CHIPS = [
   { value: "stale", label: "Stale" },
 ] as const;
 type EntityState = (typeof STATE_CHIPS)[number]["value"];
+
+type ActionEntity = {
+  id: string;
+  canonical_name: string;
+  entity_type: string;
+  roles?: string[];
+};
+
+function isOwner(entity: ActionEntity) {
+  return entity.roles?.includes("owner") ?? false;
+}
+
+// ---------------------------------------------------------------------------
+// Relationship entity actions
+// ---------------------------------------------------------------------------
+
+function PromoteEntityButton({ entity }: { entity: ActionEntity }) {
+  const promoteMutation = usePromoteRelationshipEntity();
+
+  async function handlePromote() {
+    try {
+      await promoteMutation.mutateAsync({
+        entityId: entity.id,
+        canonicalName: entity.canonical_name,
+        entityType: entity.entity_type,
+      });
+      toast.success(`Promoted ${entity.canonical_name}`);
+    } catch (err) {
+      toast.error(`Promote failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={`Promote ${entity.canonical_name}`}
+      title="Promote"
+      disabled={promoteMutation.isPending}
+      onClick={handlePromote}
+    >
+      {promoteMutation.isPending ? (
+        <Loader2Icon className="animate-spin" />
+      ) : (
+        <CheckCircleIcon />
+      )}
+    </Button>
+  );
+}
+
+function ArchiveEntityButton({ entity }: { entity: ActionEntity }) {
+  const archiveMutation = useArchiveRelationshipEntity();
+
+  async function handleArchive() {
+    try {
+      await archiveMutation.mutateAsync(entity.id);
+      toast.success(`Archived ${entity.canonical_name}`);
+    } catch (err) {
+      toast.error(`Archive failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={`Archive ${entity.canonical_name}`}
+      title={isOwner(entity) ? "Cannot archive owner" : "Archive"}
+      disabled={isOwner(entity) || archiveMutation.isPending}
+      onClick={handleArchive}
+    >
+      {archiveMutation.isPending ? (
+        <Loader2Icon className="animate-spin" />
+      ) : (
+        <ArchiveIcon />
+      )}
+    </Button>
+  );
+}
+
+function ForgetEntityDialog({
+  entity,
+  onOpenChange,
+}: {
+  entity: ActionEntity | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const forgetMutation = useForgetRelationshipEntity();
+
+  function handleClose(open: boolean) {
+    onOpenChange(open);
+  }
+
+  async function handleForget() {
+    if (!entity) return;
+    try {
+      await forgetMutation.mutateAsync(entity.id);
+      toast.success(`Deleted ${entity.canonical_name}`);
+      handleClose(false);
+    } catch (err) {
+      toast.error(`Forget failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+
+  return (
+    <Dialog open={entity !== null} onOpenChange={handleClose}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Delete entity</DialogTitle>
+          <DialogDescription>
+            Delete {entity?.canonical_name}? This tombstones the entity and retracts active
+            relationship facts. This action cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => handleClose(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={forgetMutation.isPending}
+            onClick={handleForget}
+          >
+            {forgetMutation.isPending ? "Deleting..." : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ForgetEntityButton({
+  entity,
+  onSelect,
+}: {
+  entity: ActionEntity;
+  onSelect: (entity: ActionEntity) => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={`Delete ${entity.canonical_name}`}
+      title={isOwner(entity) ? "Cannot delete owner" : "Delete"}
+      disabled={isOwner(entity)}
+      onClick={() => onSelect(entity)}
+    >
+      <TrashIcon />
+    </Button>
+  );
+}
+
+function DismissQueueItemButton({ entity }: { entity: ActionEntity }) {
+  const dismissMutation = useDismissRelationshipEntityQueueItem();
+
+  async function handleDismiss() {
+    try {
+      await dismissMutation.mutateAsync(entity.id);
+      toast.success(`Dismissed ${entity.canonical_name}`);
+    } catch (err) {
+      toast.error(`Dismiss failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={`Dismiss ${entity.canonical_name}`}
+      title="Dismiss"
+      disabled={dismissMutation.isPending}
+      onClick={handleDismiss}
+    >
+      {dismissMutation.isPending ? (
+        <Loader2Icon className="animate-spin" />
+      ) : (
+        <XIcon />
+      )}
+    </Button>
+  );
+}
+
+function MergeEntityButton({
+  entity,
+  onSelect,
+}: {
+  entity: ActionEntity;
+  onSelect: (entity: ActionEntity) => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={`Merge ${entity.canonical_name}`}
+      title="Merge"
+      onClick={() => onSelect(entity)}
+    >
+      <GitMergeIcon />
+    </Button>
+  );
+}
+
+function EntityMergeDialog({
+  sourceEntity,
+  onOpenChange,
+}: {
+  sourceEntity: ActionEntity | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [targetId, setTargetId] = useState<string | null>(null);
+  const mergeMutation = useMergeRelationshipEntities();
+  const { data, isFetching } = useEntityFinderSearch(search, { limit: 8 });
+
+  const candidates = (data?.results ?? []).filter(
+    (candidate) => candidate.entity_id !== sourceEntity?.id,
+  );
+  const selectedTarget = candidates.find((candidate) => candidate.entity_id === targetId);
+
+  function handleClose(open: boolean) {
+    onOpenChange(open);
+    if (!open) {
+      setSearch("");
+      setTargetId(null);
+    }
+  }
+
+  async function handleMerge() {
+    if (!sourceEntity || !selectedTarget) return;
+    try {
+      await mergeMutation.mutateAsync({
+        entityA: sourceEntity.id,
+        entityB: selectedTarget.entity_id,
+        keepAs: "B",
+      });
+      toast.success(`Merged ${sourceEntity.canonical_name} into ${selectedTarget.canonical_name}`);
+      handleClose(false);
+    } catch (err) {
+      toast.error(`Merge failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+
+  return (
+    <Dialog open={sourceEntity !== null} onOpenChange={handleClose}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Merge entity</DialogTitle>
+          <DialogDescription>
+            Merge {sourceEntity?.canonical_name} into an existing entity. The selected target
+            survives.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <Input
+            aria-label="Search merge target"
+            placeholder="Search target entity"
+            value={search}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setTargetId(null);
+            }}
+          />
+          {isFetching && <Skeleton className="h-10 w-full" />}
+          {search.trim() !== "" && candidates.length === 0 && !isFetching && (
+            <p className="text-sm text-muted-foreground">No matching entity found.</p>
+          )}
+          {candidates.length > 0 && (
+            <div className="max-h-56 overflow-y-auto rounded-md border">
+              {candidates.map((candidate) => (
+                <button
+                  key={candidate.entity_id}
+                  type="button"
+                  className={`block w-full px-3 py-2 text-left text-sm hover:bg-muted ${
+                    targetId === candidate.entity_id ? "bg-muted font-medium" : ""
+                  }`}
+                  onClick={() => setTargetId(candidate.entity_id)}
+                >
+                  {candidate.canonical_name}
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {candidate.entity_type}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => handleClose(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={!selectedTarget || mergeMutation.isPending}
+            onClick={handleMerge}
+          >
+            {mergeMutation.isPending ? "Merging..." : "Merge"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Filter chips bar
@@ -170,9 +502,11 @@ const DUNBAR_TIER_LABELS: Record<number, string> = {
 interface EntityTableProps {
   entities: RelationshipEntitySummary[];
   isLoading: boolean;
+  onMergeEntity: (entity: ActionEntity) => void;
+  onForgetEntity: (entity: ActionEntity) => void;
 }
 
-function EntityTable({ entities, isLoading }: EntityTableProps) {
+function EntityTable({ entities, isLoading, onMergeEntity, onForgetEntity }: EntityTableProps) {
   if (isLoading) {
     return (
       <div className="space-y-2">
@@ -203,6 +537,7 @@ function EntityTable({ entities, isLoading }: EntityTableProps) {
             <th className="pb-2 pr-4 font-medium">Last seen</th>
             <th className="pb-2 pr-4 font-medium text-right tabular-nums">Contacts</th>
             <th className="pb-2 font-medium">Aliases</th>
+            <th className="pb-2 pl-4 font-medium text-right">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -265,6 +600,16 @@ function EntityTable({ entities, isLoading }: EntityTableProps) {
               <td className="py-2.5 text-muted-foreground text-xs">
                 {entity.aliases.length > 0 ? entity.aliases.join(", ") : "—"}
               </td>
+              <td className="py-2.5 pl-4">
+                <div className="flex justify-end gap-1">
+                  {entity.metadata?.["unidentified"] === "true" && (
+                    <PromoteEntityButton entity={entity} />
+                  )}
+                  <MergeEntityButton entity={entity} onSelect={onMergeEntity} />
+                  <ArchiveEntityButton entity={entity} />
+                  <ForgetEntityButton entity={entity} onSelect={onForgetEntity} />
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -277,7 +622,7 @@ function EntityTable({ entities, isLoading }: EntityTableProps) {
 // Curation queue right rail (9.5)
 // ---------------------------------------------------------------------------
 
-function QueueRail() {
+function QueueRail({ onMergeEntity }: { onMergeEntity: (entity: ActionEntity) => void }) {
   const { data, isLoading, isError, error } = useRelationshipEntityQueue({ limit: 20 });
 
   if (isLoading) {
@@ -325,6 +670,7 @@ function QueueRail() {
           title="Unidentified"
           items={unidentified}
           accentColor="var(--amber)"
+          onMergeEntity={onMergeEntity}
         />
       )}
       {duplicates.length > 0 && (
@@ -332,6 +678,7 @@ function QueueRail() {
           title="Duplicate candidate"
           items={duplicates}
           accentColor="var(--amber)"
+          onMergeEntity={onMergeEntity}
         />
       )}
       {stale.length > 0 && (
@@ -339,6 +686,7 @@ function QueueRail() {
           title="Stale"
           items={stale}
           accentColor="var(--muted-foreground)"
+          onMergeEntity={onMergeEntity}
         />
       )}
     </div>
@@ -349,10 +697,12 @@ function QueueSection({
   title,
   items,
   accentColor,
+  onMergeEntity,
 }: {
   title: string;
   items: RelationshipQueueEntry[];
   accentColor: string;
+  onMergeEntity: (entity: ActionEntity) => void;
 }) {
   return (
     <div>
@@ -363,16 +713,37 @@ function QueueSection({
         {title}
       </p>
       <ul className="space-y-1">
-        {items.map((entry) => (
-          <li key={entry.entity_id} className="text-sm">
-            <Link
-              to={`/entities/${entry.entity_id}`}
-              className="text-primary hover:underline"
+        {items.map((entry) => {
+          const actionEntity: ActionEntity = {
+            id: entry.entity_id,
+            canonical_name: entry.canonical_name,
+            entity_type: entry.entity_type,
+          };
+
+          return (
+            <li
+              key={entry.entity_id}
+              className="flex items-center justify-between gap-2 text-sm"
             >
-              {entry.canonical_name}
-            </Link>
-          </li>
-        ))}
+              <Link
+                to={`/entities/${entry.entity_id}`}
+                className="min-w-0 truncate text-primary hover:underline"
+              >
+                {entry.canonical_name}
+              </Link>
+              <div className="flex shrink-0 gap-1">
+                {entry.bucket === "unidentified" && (
+                  <PromoteEntityButton entity={actionEntity} />
+                )}
+                {entry.bucket !== "stale" && (
+                  <MergeEntityButton entity={actionEntity} onSelect={onMergeEntity} />
+                )}
+                {entry.bucket === "stale" && <ArchiveEntityButton entity={actionEntity} />}
+                <DismissQueueItemButton entity={actionEntity} />
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -385,6 +756,8 @@ function QueueSection({
 export function EntitiesIndexPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [offset, setOffset] = useState(0);
+  const [mergeSourceEntity, setMergeSourceEntity] = useState<ActionEntity | null>(null);
+  const [forgetSourceEntity, setForgetSourceEntity] = useState<ActionEntity | null>(null);
 
   // URL is the source of truth for all filter chips.
   // ?type=person activates the Person chip; any other value or absence deactivates it.
@@ -494,7 +867,12 @@ export function EntitiesIndexPage() {
       <div className="flex gap-6">
         {/* Main column — entity table */}
         <div className="min-w-0 flex-1 space-y-4">
-          <EntityTable entities={entities} isLoading={isLoading} />
+          <EntityTable
+            entities={entities}
+            isLoading={isLoading}
+            onMergeEntity={setMergeSourceEntity}
+            onForgetEntity={setForgetSourceEntity}
+          />
 
           {/* Pagination */}
           {total > 0 && (
@@ -530,9 +908,23 @@ export function EntitiesIndexPage() {
           aria-label="Curation queue"
         >
           <p className="text-sm font-semibold text-foreground">Queue</p>
-          <QueueRail />
+          <QueueRail onMergeEntity={setMergeSourceEntity} />
         </aside>
       </div>
+      {mergeSourceEntity !== null && (
+        <EntityMergeDialog
+          sourceEntity={mergeSourceEntity}
+          onOpenChange={(open) => {
+            if (!open) setMergeSourceEntity(null);
+          }}
+        />
+      )}
+      <ForgetEntityDialog
+        entity={forgetSourceEntity}
+        onOpenChange={(open) => {
+          if (!open) setForgetSourceEntity(null);
+        }}
+      />
     </Page>
   );
 }

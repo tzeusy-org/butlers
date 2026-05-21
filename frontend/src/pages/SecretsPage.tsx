@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 
 import type { EntitySummary, SecretEntry } from "@/api/index.ts";
 import { revealEntitySecret } from "@/api/index.ts";
@@ -31,6 +32,7 @@ import { HomeAssistantSection } from "@/components/settings/HomeAssistantSetupCa
 import { OwnTracksSection } from "@/components/settings/OwnTracksSetupCard";
 import { SteamSection } from "@/components/settings/SteamSetupCard";
 import { WhatsAppSection } from "@/components/settings/WhatsAppSetupCard";
+import { CLIAuthCard } from "@/components/settings/CLIAuthCard";
 import { useButlers } from "@/hooks/use-butlers";
 import { useEntities, useEntity } from "@/hooks/use-memory";
 import { useSecrets } from "@/hooks/use-secrets";
@@ -474,26 +476,52 @@ function UserSecretsSection() {
 // Main page
 // ---------------------------------------------------------------------------
 
+const SECRETS_TABS = ["system", "user", "runtimes"] as const;
+type SecretsTab = (typeof SECRETS_TABS)[number];
+
+function isSecretsTab(value: string | null): value is SecretsTab {
+  return value !== null && (SECRETS_TABS as readonly string[]).includes(value);
+}
+
 export default function SecretsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const activeTab: SecretsTab = isSecretsTab(tabParam) ? tabParam : "system";
+
+  function handleTabChange(next: string) {
+    if (!isSecretsTab(next)) return;
+    const params = new URLSearchParams(searchParams);
+    if (next === "system") {
+      params.delete("tab");
+    } else {
+      params.set("tab", next);
+    }
+    setSearchParams(params, { replace: true });
+  }
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Secrets</h1>
         <p className="text-muted-foreground mt-1">
-          Manage system-wide and user-specific credentials.
+          Manage system-wide credentials, user-specific OAuth, and CLI runtime authentication.
         </p>
       </div>
 
-      <Tabs defaultValue="system">
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="system">System</TabsTrigger>
           <TabsTrigger value="user">User</TabsTrigger>
+          <TabsTrigger value="runtimes">CLI runtimes</TabsTrigger>
         </TabsList>
         <TabsContent value="system">
           <SystemSecretsSection />
         </TabsContent>
         <TabsContent value="user">
           <UserSecretsSection />
+        </TabsContent>
+        <TabsContent value="runtimes">
+          <CLIAuthCard />
         </TabsContent>
       </Tabs>
     </div>

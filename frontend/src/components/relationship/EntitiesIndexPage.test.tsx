@@ -28,6 +28,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 vi.mock("@/hooks/use-entities", () => ({
   useRelationshipEntities: vi.fn(),
   useRelationshipEntityQueue: vi.fn(),
+  usePromoteRelationshipEntity: vi.fn(),
+  useArchiveRelationshipEntity: vi.fn(),
+  useForgetRelationshipEntity: vi.fn(),
+  useDismissRelationshipEntityQueueItem: vi.fn(),
+  useMergeRelationshipEntities: vi.fn(),
   // Other exports from use-entities that the module re-exports
   useEntityLinkedContacts: vi.fn(),
   useEntityNotes: vi.fn(),
@@ -42,6 +47,11 @@ vi.mock("@/hooks/use-entities", () => ({
 }));
 
 import {
+  useArchiveRelationshipEntity,
+  useDismissRelationshipEntityQueueItem,
+  useForgetRelationshipEntity,
+  useMergeRelationshipEntities,
+  usePromoteRelationshipEntity,
   useRelationshipEntities,
   useRelationshipEntityQueue,
 } from "@/hooks/use-entities";
@@ -111,6 +121,11 @@ function makeQueryClient() {
 
 let container: HTMLDivElement;
 let root: Root;
+let promoteMutateAsync: ReturnType<typeof vi.fn>;
+let archiveMutateAsync: ReturnType<typeof vi.fn>;
+let forgetMutateAsync: ReturnType<typeof vi.fn>;
+let dismissMutateAsync: ReturnType<typeof vi.fn>;
+let mergeMutateAsync: ReturnType<typeof vi.fn>;
 
 function renderPage(initialUrl = "/entities") {
   const qc = makeQueryClient();
@@ -127,6 +142,11 @@ function renderPage(initialUrl = "/entities") {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  promoteMutateAsync = vi.fn().mockResolvedValue({});
+  archiveMutateAsync = vi.fn().mockResolvedValue(undefined);
+  forgetMutateAsync = vi.fn().mockResolvedValue(undefined);
+  dismissMutateAsync = vi.fn().mockResolvedValue({});
+  mergeMutateAsync = vi.fn().mockResolvedValue({});
 
   // Default: empty list + empty queue
   vi.mocked(useRelationshipEntities).mockReturnValue({
@@ -142,6 +162,27 @@ beforeEach(() => {
     isError: false,
     error: null,
   } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+  vi.mocked(usePromoteRelationshipEntity).mockReturnValue({
+    mutateAsync: promoteMutateAsync,
+    isPending: false,
+  } as unknown as ReturnType<typeof usePromoteRelationshipEntity>);
+  vi.mocked(useArchiveRelationshipEntity).mockReturnValue({
+    mutateAsync: archiveMutateAsync,
+    isPending: false,
+  } as unknown as ReturnType<typeof useArchiveRelationshipEntity>);
+  vi.mocked(useForgetRelationshipEntity).mockReturnValue({
+    mutateAsync: forgetMutateAsync,
+    isPending: false,
+  } as unknown as ReturnType<typeof useForgetRelationshipEntity>);
+  vi.mocked(useDismissRelationshipEntityQueueItem).mockReturnValue({
+    mutateAsync: dismissMutateAsync,
+    isPending: false,
+  } as unknown as ReturnType<typeof useDismissRelationshipEntityQueueItem>);
+  vi.mocked(useMergeRelationshipEntities).mockReturnValue({
+    mutateAsync: mergeMutateAsync,
+    isPending: false,
+  } as unknown as ReturnType<typeof useMergeRelationshipEntities>);
 
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -241,6 +282,41 @@ describe("EntitiesIndexPage — entity table", () => {
     // At least one skeleton div should be rendered
     const skeletons = container.querySelectorAll("[class*='animate-pulse']");
     expect(skeletons.length).toBeGreaterThan(0);
+  });
+
+  it("renders management actions for each entity row", () => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+
+    renderPage();
+
+    expect(container.querySelector("button[aria-label='Merge Alice Fogg']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Archive Alice Fogg']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Delete Alice Fogg']")).toBeTruthy();
+  });
+
+  it("archives an entity from the row action", async () => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+
+    renderPage();
+
+    const archiveButton = container.querySelector("button[aria-label='Archive Alice Fogg']");
+    expect(archiveButton).toBeTruthy();
+
+    await act(async () => {
+      archiveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(archiveMutateAsync).toHaveBeenCalledWith(ALICE.id);
   });
 });
 
@@ -372,6 +448,110 @@ describe("EntitiesIndexPage — right rail queue", () => {
     expect(rail?.textContent).toContain("Unknown Person");
     expect(rail?.textContent).toContain("Stale");
     expect(rail?.textContent).toContain("Old Contact");
+  });
+
+  it("renders inline queue actions by bucket", () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-u-001",
+          canonical_name: "Unknown Person",
+          entity_type: "person",
+          bucket: "unidentified",
+          evidence: {},
+          last_seen: null,
+        },
+        {
+          entity_id: "ent-d-001",
+          canonical_name: "Duplicate Person",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: {},
+          last_seen: null,
+        },
+        {
+          entity_id: "ent-s-001",
+          canonical_name: "Old Contact",
+          entity_type: "person",
+          bucket: "stale",
+          evidence: {},
+          last_seen: "2023-01-01T00:00:00Z",
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+
+    expect(container.querySelector("button[aria-label='Promote Unknown Person']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Merge Unknown Person']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Dismiss Unknown Person']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Merge Duplicate Person']")).toBeTruthy();
+    expect(container.querySelector("button[aria-label='Archive Old Contact']")).toBeTruthy();
+  });
+
+  it("promotes an unidentified queue item inline", async () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-u-001",
+          canonical_name: "Unknown Person",
+          entity_type: "person",
+          bucket: "unidentified",
+          evidence: {},
+          last_seen: null,
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+
+    const promoteButton = container.querySelector("button[aria-label='Promote Unknown Person']");
+    expect(promoteButton).toBeTruthy();
+
+    await act(async () => {
+      promoteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(promoteMutateAsync).toHaveBeenCalledWith({
+      entityId: "ent-u-001",
+      canonicalName: "Unknown Person",
+      entityType: "person",
+    });
+  });
+
+  it("dismisses a queue item inline", async () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-u-001",
+          canonical_name: "Unknown Person",
+          entity_type: "person",
+          bucket: "unidentified",
+          evidence: {},
+          last_seen: null,
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+
+    const dismissButton = container.querySelector("button[aria-label='Dismiss Unknown Person']");
+    expect(dismissButton).toBeTruthy();
+
+    await act(async () => {
+      dismissButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(dismissMutateAsync).toHaveBeenCalledWith("ent-u-001");
   });
 });
 

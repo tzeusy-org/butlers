@@ -11,6 +11,9 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  archiveRelationshipEntity,
+  dismissRelationshipEntityQueueItem,
+  forgetRelationshipEntity,
   getEntityConcentration,
   getEntityDates,
   getEntityFacts,
@@ -24,10 +27,17 @@ import {
   getEntityTimeline,
   getRelationshipEntityQueue,
   listRelationshipEntities,
+  mergeRelationshipEntities,
+  promoteRelationshipEntity,
   searchRelationshipEntities,
   updateEntityDunbarTier,
 } from "@/api/index.ts";
-import type { EntityFactsParams, RelationshipEntityListParams } from "@/api/index.ts";
+import type {
+  EntityFactsParams,
+  MergeRelationshipEntitiesRequest,
+  PromoteRelationshipEntityRequest,
+  RelationshipEntityListParams,
+} from "@/api/index.ts";
 
 /** Fetch all contacts linked to a relationship entity. */
 export function useEntityLinkedContacts(entityId: string | undefined) {
@@ -225,6 +235,83 @@ export function useRelationshipEntityQueue(params?: {
   return useQuery({
     queryKey: ["relationship-entity-queue", params],
     queryFn: () => getRelationshipEntityQueue(params),
+  });
+}
+
+function invalidateRelationshipEntityIndex(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+  void queryClient.invalidateQueries({ queryKey: ["relationship-entity-queue"] });
+  void queryClient.invalidateQueries({ queryKey: ["entity-finder-search"] });
+}
+
+/** Promote an existing unidentified entity through the relationship API. */
+export function usePromoteRelationshipEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      canonicalName,
+      entityType,
+    }: {
+      entityId: string;
+      canonicalName: string;
+      entityType: string;
+    }) => {
+      const request: PromoteRelationshipEntityRequest = {
+        entity_id: entityId,
+        canonical_name: canonicalName,
+        entity_type: entityType,
+      };
+      return promoteRelationshipEntity(request);
+    },
+    onSuccess: (_, { entityId }) => {
+      invalidateRelationshipEntityIndex(queryClient);
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entity", entityId] });
+    },
+  });
+}
+
+/** Archive an entity through the relationship API. */
+export function useArchiveRelationshipEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => archiveRelationshipEntity(entityId),
+    onSuccess: () => invalidateRelationshipEntityIndex(queryClient),
+  });
+}
+
+/** Forget an entity through the relationship API. */
+export function useForgetRelationshipEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => forgetRelationshipEntity(entityId),
+    onSuccess: (_, entityId) => {
+      invalidateRelationshipEntityIndex(queryClient);
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entity", entityId] });
+    },
+  });
+}
+
+/** Dismiss an entity from the relationship curation queue. */
+export function useDismissRelationshipEntityQueueItem() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => dismissRelationshipEntityQueueItem(entityId),
+    onSuccess: () => invalidateRelationshipEntityIndex(queryClient),
+  });
+}
+
+/** Merge two entities through the relationship API. */
+export function useMergeRelationshipEntities() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: MergeRelationshipEntitiesRequest) =>
+      mergeRelationshipEntities(request),
+    onSuccess: (_, request) => {
+      invalidateRelationshipEntityIndex(queryClient);
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entity", request.entityA] });
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entity", request.entityB] });
+    },
   });
 }
 

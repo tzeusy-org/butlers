@@ -1190,6 +1190,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - Core Alembic migration revisions must stay globally unique and linear; `tests/config/test_migration_contract.py` now asserts duplicate `revision` IDs fail before compose migrations do.
 - Alembic migrations that rewrite enum-like `TEXT` values guarded by `CHECK` constraints must drop/replace the old constraint before writing new values; otherwise live upgrades fail even if fresh-schema tests pass.
 - The relationship butler has `[modules.memory]`, so `relationship.facts` and `relationship.predicate_registry` are memory-module bare tables in that schema. New relationship-domain triple-store work must use `relationship.entity_facts` plus `relationship.entity_predicate_registry`, and keep tests proving migrations tolerate existing memory-shaped tables.
+- Entity-redesign routing lives in `frontend/src/router-config.tsx`, not `frontend/src/router.tsx`: `/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/social-map`, and `/contacts -> /entities?has=contact` are mounted there. `router.tsx` only owns redirect helper components. Cmd/Ctrl+K opens the shipped `EntityFinder`; the legacy `CommandPalette` remains mounted but uses a different event.
 
 ### Backup strategy (bu-t102m)
 - Strategy chosen: filesystem pg_dump cron. Simplest defensible approach for an owner-sovereign, single-instance system. No new external dependencies (no Minio/S3, no WAL archiving).

@@ -270,6 +270,10 @@ import type {
   RelationshipEntityListResponse,
   RelationshipEntityListParams,
   RelationshipQueueResponse,
+  DismissRelationshipEntityQueueResponse,
+  MergeRelationshipEntitiesRequest,
+  MergeRelationshipEntitiesResponse,
+  PromoteRelationshipEntityRequest,
   InstanceFacts,
   DatabaseFacts,
   BackupFacts,
@@ -1978,6 +1982,44 @@ export function getRelationshipEntityQueue(params?: {
   const qs = sp.toString();
   return apiFetch<RelationshipQueueResponse>(
     `/relationship/entities/queue${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Promote an existing unidentified relationship entity in-place. */
+export function promoteRelationshipEntity(
+  request: PromoteRelationshipEntityRequest,
+): Promise<RelationshipEntityDetail> {
+  return apiFetch<RelationshipEntityDetail>("/relationship/entities", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+/** Archive a relationship entity, hiding it from default entity views. */
+export function archiveRelationshipEntity(entityId: string): Promise<void> {
+  return apiFetch<void>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/archive`,
+    { method: "POST" },
+  );
+}
+
+/** Dismiss a relationship entity from the curation queue. */
+export function dismissRelationshipEntityQueueItem(
+  entityId: string,
+): Promise<DismissRelationshipEntityQueueResponse> {
+  return apiFetch<DismissRelationshipEntityQueueResponse>(
+    "/relationship/entities/queue/dismiss",
+    { method: "POST", body: JSON.stringify({ entity_id: entityId }) },
+  );
+}
+
+/** Merge two relationship entities, keeping the requested survivor. */
+export function mergeRelationshipEntities(
+  request: MergeRelationshipEntitiesRequest,
+): Promise<MergeRelationshipEntitiesResponse> {
+  return apiFetch<MergeRelationshipEntitiesResponse>(
+    `/relationship/entities/${encodeURIComponent(request.entityA)}/merge`,
+    { method: "POST", body: JSON.stringify(request) },
   );
 }
 
