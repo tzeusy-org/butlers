@@ -136,6 +136,9 @@ def _coerce_payload(value: Any) -> dict[str, Any]:
 
 def _row_to_episode(row: Any) -> ChroniclerEpisode:
     payload = _coerce_payload(row["payload"])
+    keys = row.keys()
+    raw_ids = row["participant_entity_ids"] if "participant_entity_ids" in keys else None
+    participant_entity_ids = [str(uid) for uid in raw_ids] if raw_ids is not None else []
     return ChroniclerEpisode(
         id=str(row["id"]),
         source_name=row["source_name"],
@@ -162,6 +165,7 @@ def _row_to_episode(row: Any) -> ChroniclerEpisode:
             row["episode_type"],
             trigger_source=payload.get("trigger_source"),
         ),
+        participant_entity_ids=participant_entity_ids,
     )
 
 
@@ -277,6 +281,14 @@ async def list_episodes(
         None,
         description="Overlap window end (both overlaps_start and overlaps_end required)",
     ),
+    entity_id: UUID | None = Query(
+        None,
+        description="Filter by owner entity_id (exact match on episodes.entity_id)",
+    ),
+    participant_entity_id: UUID | None = Query(
+        None,
+        description="Filter episodes where the entity appears in any role via episode_entities",
+    ),
     include_tombstoned: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
@@ -312,6 +324,12 @@ async def list_episodes(
         clauses.append(f"start_at < ${len(args)}")
         args.append(overlaps_start)
         clauses.append(f"(end_at IS NULL OR end_at > ${len(args)})")
+    if entity_id is not None:
+        args.append(entity_id)
+        clauses.append(f"entity_id = ${len(args)}")
+    if participant_entity_id is not None:
+        args.append(participant_entity_id)
+        clauses.append(f"${len(args)}::uuid = ANY(participant_entity_ids)")
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 

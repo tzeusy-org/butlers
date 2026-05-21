@@ -142,6 +142,7 @@ class Episode:
     tombstone_at: datetime | None = None
     tombstone_reason: str | None = None
     entity_id: UUID | None = None
+    participant_entity_ids: list[UUID] = field(default_factory=list)
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -172,6 +173,7 @@ class CorrectedEpisode:
     created_at: datetime
     updated_at: datetime
     entity_id: UUID | None = None
+    participant_entity_ids: list[UUID] = field(default_factory=list)
 
     @property
     def is_corrected(self) -> bool:

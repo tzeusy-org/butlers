@@ -146,6 +146,10 @@ class ChroniclerEpisode(BaseModel):
     ``chronicler.aggregations.category_for``. One of the values in
     ``CATEGORIES`` (e.g. ``work``, ``calendar``, ``music``, ...) or
     ``other`` when the source/type pair is unmapped."""
+    participant_entity_ids: list[str] = Field(default_factory=list)
+    """UUIDs of all entities linked to this episode via episode_entities join table.
+    Ordered by role precedence (owner > organizer > participant) then entity_id ASC.
+    Empty list when no entity links exist."""
 
 
 class ChroniclerOverride(BaseModel):

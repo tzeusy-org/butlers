@@ -88,6 +88,11 @@ def _row_to_episode(row: asyncpg.Record) -> Episode:
         tombstone_at=row["tombstone_at"],
         tombstone_reason=row["tombstone_reason"],
         entity_id=row["entity_id"] if "entity_id" in keys else None,
+        participant_entity_ids=(
+            list(row["participant_entity_ids"])
+            if "participant_entity_ids" in keys and row["participant_entity_ids"] is not None
+            else []
+        ),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -117,6 +122,11 @@ def _row_to_corrected_episode(row: asyncpg.Record) -> CorrectedEpisode:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         entity_id=row["entity_id"] if "entity_id" in keys else None,
+        participant_entity_ids=(
+            list(row["participant_entity_ids"])
+            if "participant_entity_ids" in keys and row["participant_entity_ids"] is not None
+            else []
+        ),
     )
 
 
@@ -589,6 +599,7 @@ async def list_episodes(
     source_name: str | None = None,
     episode_type: str | None = None,
     entity_id: UUID | None = None,
+    participant_entity_id: UUID | None = None,
     overlaps_with: tuple[datetime, datetime] | None = None,
     include_tombstoned: bool = False,
     limit: int = 100,
@@ -613,6 +624,9 @@ async def list_episodes(
     if entity_id is not None:
         args.append(entity_id)
         clauses.append(f"entity_id = ${len(args)}")
+    if participant_entity_id is not None:
+        args.append(participant_entity_id)
+        clauses.append(f"${len(args)}::uuid = ANY(participant_entity_ids)")
     if overlaps_with is not None:
         window_start, window_end = overlaps_with
         args.append(window_end)
