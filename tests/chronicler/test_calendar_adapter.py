@@ -9,13 +9,23 @@ Also covers the butler-managed calendar exclusion guard (defence-in-depth):
 instances whose ``calendar_sources.lane = 'butler'`` must never be projected
 into the user's Chronicle Calendar lane. Cross-schema dedup via
 ``origin_instance_ref`` collapse (regression for "five Labour Day bars" bug).
+
+Episode-entities join table (bu-3zve1):
+- Owner-only graceful degradation when ``calendar_event_entities`` is absent.
+- Schema skipped (no projection, no delete) on transient DB error.
+- Owner + participants written when join table present.
+- DELETE-then-INSERT replaces stale attendees on second adapter run.
+- Idempotent replay does not duplicate ``episode_entities`` rows.
+- ``episodes.entity_id`` equals the owner row in ``episode_entities``.
+- Role-precedence collapse when the same entity appears as both owner
+  and participant (owner wins).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -95,6 +105,21 @@ def _chronicler_pool() -> AsyncMock:
     return pool
 
 
+def _chronicler_pool_with_tracking() -> tuple[AsyncMock, AsyncMock]:
+    """Return a (pool, conn) pair where conn.execute/executemany calls are trackable.
+
+    The conn is also configured with a transaction() context manager that is
+    compatible with ``async with conn.transaction():``.
+    """
+    conn = AsyncMock()
+    conn.execute = AsyncMock(return_value=None)
+    conn.executemany = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    return pool, conn
+
+
 async def _project_one(row: _Row) -> Episode:
     """Drive ``_project_row`` directly with a single row and capture the Episode."""
     adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
@@ -112,6 +137,57 @@ async def _project_one(row: _Row) -> Episode:
         await adapter._project_row(cp, "butler_test", row)
     assert captured, "upsert_episode was not invoked"
     return captured[0]
+
+
+async def _project_one_tracked(
+    row: _Row,
+    *,
+    entity_id: UUID | None = None,
+    participant_ids: list[UUID] | None = None,
+) -> tuple[Episode, AsyncMock]:
+    """Drive ``_project_row`` and return the Episode plus the chronicler conn mock.
+
+    The conn mock captures all execute/executemany calls so tests can inspect
+    which SQL statements were issued for ``episode_entities``.
+
+    The fake ``upsert_episode`` returns the episode with a stable UUID so
+    ``_upsert_episode_entities`` has a valid episode.id to work with.
+    """
+    adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
+    captured: list[Episode] = []
+    episode_id = uuid4()
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        episode = Episode(
+            id=episode_id,
+            source_name=episode.source_name,
+            source_ref=episode.source_ref,
+            episode_type=episode.episode_type,
+            start_at=episode.start_at,
+            end_at=episode.end_at,
+            precision=episode.precision,
+            title=episode.title,
+            payload=episode.payload,
+            privacy=episode.privacy,
+            entity_id=episode.entity_id,
+        )
+        captured.append(episode)
+        return episode
+
+    cp, conn = _chronicler_pool_with_tracking()
+    with patch(
+        "butlers.chronicler.adapters.calendar.upsert_episode",
+        side_effect=_fake_upsert,
+    ):
+        await adapter._project_row(
+            cp,
+            "butler_test",
+            row,
+            entity_id=entity_id,
+            participant_ids=participant_ids,
+        )
+    assert captured, "upsert_episode was not invoked"
+    return captured[0], conn
 
 
 # ---------------------------------------------------------------------------
@@ -363,3 +439,342 @@ async def test_project_collapses_same_origin_under_multiple_event_ids_in_one_sch
     assert result.rows_projected == 1
     assert len(captured) == 1
     assert captured[0].source_ref == f"calendar:{shared_origin_ref}"
+
+
+# ---------------------------------------------------------------------------
+# episode_entities join table (bu-3zve1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_episode_entities_owner_only_when_table_absent() -> None:
+    """When calendar_event_entities is absent, only the owner row is written.
+
+    _fetch_event_entities returns {} when the table is missing (detected via
+    information_schema.tables).  The adapter must degrade gracefully and write
+    only the owner entity to episode_entities.
+    """
+    owner_id = uuid4()
+    row = _make_row(event_title="Team sync")
+
+    adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
+    episode_id = uuid4()
+    captured_upserts: list[Episode] = []
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        episode = Episode(
+            id=episode_id,
+            source_name=episode.source_name,
+            source_ref=episode.source_ref,
+            episode_type=episode.episode_type,
+            start_at=episode.start_at,
+            end_at=episode.end_at,
+            precision=episode.precision,
+            title=episode.title,
+            payload=episode.payload,
+            privacy=episode.privacy,
+            entity_id=episode.entity_id,
+        )
+        captured_upserts.append(episode)
+        return episode
+
+    cp, conn = _chronicler_pool_with_tracking()
+
+    # Simulate calendar_event_entities absent by patching _fetch_event_entities
+    # to return an empty mapping (table-absent path returns {}).
+    with (
+        patch.object(
+            adapter,
+            "_fetch_event_entities",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "butlers.chronicler.adapters.calendar.upsert_episode",
+            side_effect=_fake_upsert,
+        ),
+    ):
+        await adapter._project_row(cp, "butler_test", row, entity_id=owner_id)
+
+    assert captured_upserts, "upsert_episode was not called"
+
+    # DELETE should have run for the episode.
+    delete_calls = [c for c in conn.execute.call_args_list if "DELETE" in str(c)]
+    assert delete_calls, "DELETE FROM episode_entities was not called"
+
+    # INSERT should have been called with owner entity only.
+    insert_calls = conn.executemany.call_args_list
+    assert len(insert_calls) == 1, f"Expected 1 executemany call, got {len(insert_calls)}"
+    rows_inserted = insert_calls[0].args[1]
+    assert len(rows_inserted) == 1, (
+        f"Expected 1 row inserted (owner-only), got {len(rows_inserted)}"
+    )
+    ep_id_arg, entity_id_arg, role_arg = rows_inserted[0]
+    assert ep_id_arg == episode_id
+    assert entity_id_arg == owner_id
+    assert role_arg == "owner"
+
+
+@pytest.mark.unit
+async def test_project_skips_schema_on_transient_fetch_event_entities_error() -> None:
+    """A transient DB error in _fetch_event_entities causes the schema to be skipped.
+
+    When _fetch_event_entities returns None (transient error), the adapter must
+    NOT proceed to project rows and must NOT delete existing episode_entities.
+    A warning is appended to the result instead.
+    """
+    row = _make_row(event_title="Weekly planning")
+
+    adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
+    captured_upserts: list[Episode] = []
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        captured_upserts.append(episode)
+        return episode
+
+    with (
+        patch.object(
+            adapter,
+            "_fetch_instances",
+            new=AsyncMock(return_value=[row]),
+        ),
+        patch.object(
+            adapter,
+            "_fetch_event_entities",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.chronicler.adapters.calendar.upsert_episode",
+            side_effect=_fake_upsert,
+        ),
+    ):
+        result = await adapter.project(
+            MagicMock(),
+            chronicler_pool=_chronicler_pool(),
+            since=None,
+        )
+
+    # No episodes projected — schema was skipped.
+    assert result.rows_projected == 0, "Schema must be skipped when fetch_event_entities fails"
+    assert captured_upserts == [], "upsert_episode must not be called on transient error"
+    # A warning must be recorded.
+    assert any("butler_test" in w for w in result.warnings), (
+        "A warning about the skipped schema must be appended to result.warnings"
+    )
+
+
+@pytest.mark.unit
+async def test_episode_entities_owner_and_participants_when_table_present() -> None:
+    """When join table is present, owner + participants are all written."""
+    owner_id = uuid4()
+    participant_a = uuid4()
+    participant_b = uuid4()
+    row = _make_row(event_title="All-hands")
+
+    episode, conn = await _project_one_tracked(
+        row,
+        entity_id=owner_id,
+        participant_ids=[participant_a, participant_b],
+    )
+
+    # DELETE must run first.
+    delete_calls = [c for c in conn.execute.call_args_list if "DELETE" in str(c)]
+    assert delete_calls, "DELETE FROM episode_entities was not called"
+
+    # executemany must be called with 3 rows: owner + 2 participants.
+    insert_calls = conn.executemany.call_args_list
+    assert len(insert_calls) == 1, f"Expected 1 executemany call, got {len(insert_calls)}"
+    rows_inserted = insert_calls[0].args[1]
+    assert len(rows_inserted) == 3, (
+        f"Expected 3 rows (owner + 2 participants), got {len(rows_inserted)}"
+    )
+
+    roles_by_entity = {eid: role for _, eid, role in rows_inserted}
+    assert roles_by_entity[owner_id] == "owner"
+    assert roles_by_entity[participant_a] == "participant"
+    assert roles_by_entity[participant_b] == "participant"
+
+    # episodes.entity_id (transition window) must equal the owner.
+    assert episode.entity_id == owner_id
+
+
+@pytest.mark.unit
+async def test_episode_entities_delete_then_insert_replaces_stale_attendees() -> None:
+    """On a second adapter run, stale episode_entities rows are replaced.
+
+    The adapter does DELETE-then-INSERT so upstream attendee removals
+    (e.g. a participant was uninvited) propagate on the next run.  We simulate
+    two consecutive calls to _project_row and verify the DELETE runs each time.
+    """
+    owner_id = uuid4()
+    participant_old = uuid4()
+    participant_new = uuid4()
+    row = _make_row(event_title="Planning meeting")
+    episode_id = uuid4()
+
+    adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        return Episode(
+            id=episode_id,
+            source_name=episode.source_name,
+            source_ref=episode.source_ref,
+            episode_type=episode.episode_type,
+            start_at=episode.start_at,
+            end_at=episode.end_at,
+            precision=episode.precision,
+            title=episode.title,
+            payload=episode.payload,
+            privacy=episode.privacy,
+            entity_id=episode.entity_id,
+        )
+
+    # First run: participant_old is an attendee.
+    cp1, conn1 = _chronicler_pool_with_tracking()
+    with patch("butlers.chronicler.adapters.calendar.upsert_episode", side_effect=_fake_upsert):
+        await adapter._project_row(
+            cp1, "butler_test", row, entity_id=owner_id, participant_ids=[participant_old]
+        )
+
+    # Second run: participant_old is gone; participant_new arrives.
+    cp2, conn2 = _chronicler_pool_with_tracking()
+    with patch("butlers.chronicler.adapters.calendar.upsert_episode", side_effect=_fake_upsert):
+        await adapter._project_row(
+            cp2, "butler_test", row, entity_id=owner_id, participant_ids=[participant_new]
+        )
+
+    # Both runs must have emitted a DELETE.
+    for conn in (conn1, conn2):
+        delete_calls = [c for c in conn.execute.call_args_list if "DELETE" in str(c)]
+        assert delete_calls, "DELETE FROM episode_entities was not called on this run"
+
+    # Second run must write owner + participant_new (not participant_old).
+    insert_calls2 = conn2.executemany.call_args_list
+    assert len(insert_calls2) == 1
+    rows2 = insert_calls2[0].args[1]
+    entity_ids_written = {eid for _, eid, _ in rows2}
+    assert participant_new in entity_ids_written, "participant_new must be in second run"
+    assert participant_old not in entity_ids_written, (
+        "participant_old was removed upstream and must not appear in second run"
+    )
+
+
+@pytest.mark.unit
+async def test_episode_entities_idempotent_replay_no_duplicates() -> None:
+    """Replaying the same row twice produces the same set — no duplicate rows.
+
+    The DELETE-then-INSERT pattern ensures idempotency: running the adapter
+    twice with the same attendee set produces exactly the same rows (no
+    duplicates), because the DELETE clears all prior rows before re-inserting.
+    """
+    owner_id = uuid4()
+    participant_id = uuid4()
+    row = _make_row(event_title="Weekly 1:1")
+    episode_id = uuid4()
+
+    adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        return Episode(
+            id=episode_id,
+            source_name=episode.source_name,
+            source_ref=episode.source_ref,
+            episode_type=episode.episode_type,
+            start_at=episode.start_at,
+            end_at=episode.end_at,
+            precision=episode.precision,
+            title=episode.title,
+            payload=episode.payload,
+            privacy=episode.privacy,
+            entity_id=episode.entity_id,
+        )
+
+    all_inserted_rows: list[list] = []
+
+    for _ in range(2):
+        cp, conn = _chronicler_pool_with_tracking()
+        with patch("butlers.chronicler.adapters.calendar.upsert_episode", side_effect=_fake_upsert):
+            await adapter._project_row(
+                cp, "butler_test", row, entity_id=owner_id, participant_ids=[participant_id]
+            )
+        insert_calls = conn.executemany.call_args_list
+        assert len(insert_calls) == 1
+        all_inserted_rows.append(insert_calls[0].args[1])
+
+    # Both runs must insert the same rows (same count, same entity_ids, same roles).
+    rows_run1 = sorted((str(eid), role) for _, eid, role in all_inserted_rows[0])
+    rows_run2 = sorted((str(eid), role) for _, eid, role in all_inserted_rows[1])
+    assert rows_run1 == rows_run2, (
+        "Idempotent replay must produce identical episode_entities rows on every run"
+    )
+    assert len(rows_run1) == 2, "Expected 2 rows (owner + participant)"
+
+
+@pytest.mark.unit
+async def test_episode_entity_id_equals_owner_row_in_episode_entities() -> None:
+    """episodes.entity_id (transition column) must equal the 'owner' row's entity_id.
+
+    During the transition window, the derived episodes.entity_id column and the
+    episode_entities row with role='owner' must carry the same UUID so that
+    legacy readers (which filter on episodes.entity_id) continue to work.
+    """
+    owner_id = uuid4()
+    participant_id = uuid4()
+    row = _make_row(event_title="Kickoff")
+
+    episode, conn = await _project_one_tracked(
+        row,
+        entity_id=owner_id,
+        participant_ids=[participant_id],
+    )
+
+    # episodes.entity_id must equal owner_id.
+    assert episode.entity_id == owner_id, (
+        "episodes.entity_id must match the owner_id for the transition window"
+    )
+
+    # The owner row in episode_entities must also carry owner_id.
+    insert_calls = conn.executemany.call_args_list
+    assert insert_calls, "executemany was not called"
+    rows_inserted = insert_calls[0].args[1]
+    owner_rows = [(ep_id, eid, role) for ep_id, eid, role in rows_inserted if role == "owner"]
+    assert len(owner_rows) == 1, "Expected exactly one 'owner' row in episode_entities"
+    assert owner_rows[0][1] == owner_id, (
+        "episode_entities owner row entity_id must match episodes.entity_id"
+    )
+
+
+@pytest.mark.unit
+async def test_episode_entities_role_precedence_collapse_owner_beats_participant() -> None:
+    """When the same entity appears as both owner and participant, role='owner' wins.
+
+    The calendar module may list the account owner as an attendee in
+    calendar_event_entities.  The adapter must collapse the two signals to a
+    single row with role='owner' (highest precedence), never 'participant'.
+    """
+    owner_id = uuid4()
+    other_participant = uuid4()
+
+    # owner_id appears in both the owner slot AND the participant_ids list.
+    row = _make_row(event_title="Review session")
+    episode, conn = await _project_one_tracked(
+        row,
+        entity_id=owner_id,
+        participant_ids=[owner_id, other_participant],  # owner_id listed as participant too
+    )
+
+    insert_calls = conn.executemany.call_args_list
+    assert insert_calls, "executemany was not called"
+    rows_inserted = insert_calls[0].args[1]
+    roles_by_entity = {eid: role for _, eid, role in rows_inserted}
+
+    # owner_id must appear exactly once with role='owner'.
+    assert owner_id in roles_by_entity, "owner_id must be in episode_entities"
+    assert roles_by_entity[owner_id] == "owner", (
+        f"Expected role='owner' for owner_id but got {roles_by_entity[owner_id]!r}"
+    )
+    # other_participant gets 'participant'.
+    assert roles_by_entity[other_participant] == "participant"
+    # Only 2 unique entities (no duplicate row for owner_id).
+    assert len(rows_inserted) == 2, (
+        f"Expected 2 rows (owner + other_participant), got {len(rows_inserted)}"
+    )

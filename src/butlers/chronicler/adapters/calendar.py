@@ -51,6 +51,28 @@ Entity-id resolution (bu-f4755):
     ``python scripts/backfill_episode_entity_id.py [--dry-run]``
   Or reset the adapter watermark in ``projection_checkpoints`` to
   ``NULL`` and let the next scheduled run re-project all rows.
+
+Multi-entity participant resolution (bu-3zve1):
+- In addition to the owner entity, the adapter reads the calendar
+  module's ``{schema}.calendar_event_entities`` join table to discover
+  all attendees already resolved to entities at calendar-sync time.
+- This lookup is performed in BATCH per schema (one query per schema)
+  before the row projection loop — never per row.
+- In ``_project_row``, after upserting the canonical episode, the
+  adapter calls ``_upsert_episode_entities`` to atomically
+  DELETE-then-INSERT ``chronicler.episode_entities`` rows so attendee
+  changes upstream propagate deterministically.
+- Role-precedence collapse: if the same entity_id appears as both
+  owner and participant, it is written once with ``role='owner'``
+  (highest-precedence wins: owner > organizer > participant).
+- The derived ``episodes.entity_id`` column (migration chronicler_013)
+  is preserved for the transition window (bu-cfsgy will drop it after
+  two release cycles).
+- When ``calendar_event_entities`` is absent (calendar module not
+  installed), the adapter degrades gracefully: only the owner row is
+  written into ``episode_entities``.  A DEBUG log is emitted.
+  To backfill episode_entities on historical rows, run:
+    ``python scripts/backfill_episode_participants.py [--dry-run]``
 """
 
 from __future__ import annotations
@@ -67,6 +89,14 @@ from butlers.chronicler.models import Episode, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 
 logger = logging.getLogger(__name__)
+
+# Role-precedence used when collapsing multiple roles for the same entity_id.
+# Higher = more important; the highest-precedence role wins.
+_ROLE_PRECEDENCE: dict[str, int] = {
+    "owner": 2,
+    "organizer": 1,
+    "participant": 0,
+}
 
 SOURCE_NAME = "google_calendar.completed"
 EPISODE_TYPE_SCHEDULED_BLOCK = "scheduled_block"
@@ -129,6 +159,20 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             # instances in a schema belong to the same Google account owner.
             entity_id = await self._resolve_schema_entity_id(pool, schema)
 
+            # Collect the event_ids present in this batch so we can do a
+            # single per-schema query against calendar_event_entities.
+            event_ids = [row["event_id"] for row in rows]
+            # Mapping: event_id (UUID) → list of entity_ids (participant set)
+            # resolved by the calendar module's _upsert_event_entities path.
+            # None means a transient DB error — skip this schema to avoid
+            # deleting existing participant links on the basis of bad data.
+            event_entities = await self._fetch_event_entities(pool, schema, event_ids)
+            if event_entities is None:
+                result.warnings.append(
+                    f"Failed to fetch event entities for schema {schema!r}; skipping"
+                )
+                continue
+
             for row in rows:
                 dedup_key = row["origin_instance_ref"]
                 if dedup_key in seen_origin:
@@ -136,7 +180,14 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     continue
                 seen_origin.add(dedup_key)
 
-                await self._project_row(chronicler_pool, schema, row, entity_id=entity_id)
+                participant_ids = event_entities.get(row["event_id"], [])
+                await self._project_row(
+                    chronicler_pool,
+                    schema,
+                    row,
+                    entity_id=entity_id,
+                    participant_ids=participant_ids,
+                )
                 result.rows_projected += 1
                 result.episodes_closed += 1
 
@@ -232,6 +283,71 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             )
             return None
 
+    async def _fetch_event_entities(
+        self,
+        pool: asyncpg.Pool,
+        schema: str,
+        event_ids: list[UUID],
+    ) -> dict[UUID, list[UUID]] | None:
+        """Batch-load participant entity_ids from the calendar module's join table.
+
+        Executes ONE query per schema (never per row) to load all
+        ``{schema}.calendar_event_entities`` rows for the given event_ids.
+
+        Returns a mapping ``event_id → [entity_id, ...]`` for every event_id
+        that has at least one resolved attendee.  Events with no rows are not
+        present in the returned dict (caller should default to ``[]``).
+
+        Degrades gracefully when ``calendar_event_entities`` is absent
+        (calendar module not installed): emits a DEBUG log and returns ``{}``.
+        Returns ``None`` on other database errors so the caller can skip the
+        schema without deleting existing participant links.
+        """
+        if not event_ids:
+            return {}
+
+        quoted = self._quote_ident(schema)
+        try:
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = $1
+                          AND table_name = 'calendar_event_entities'
+                    )
+                    """,
+                    schema,
+                )
+                if not exists:
+                    logger.debug(
+                        "episode_entities.schema_absent: calendar_event_entities missing "
+                        "for schema %r — falling back to owner-only episode_entities",
+                        schema,
+                    )
+                    return {}
+
+                rows = await conn.fetch(
+                    f"""
+                    SELECT cee.event_id, cee.entity_id
+                    FROM {quoted}.calendar_event_entities AS cee
+                    WHERE cee.event_id = ANY($1)
+                    """,
+                    event_ids,
+                )
+        except asyncpg.PostgresError:
+            logger.exception("Failed reading calendar_event_entities for schema %r", schema)
+            return None
+
+        result: dict[UUID, list[UUID]] = {}
+        for row in rows:
+            raw_eid = row["event_id"]
+            raw_mid = row["entity_id"]
+            eid: UUID = raw_eid if isinstance(raw_eid, UUID) else UUID(str(raw_eid))
+            mid: UUID = raw_mid if isinstance(raw_mid, UUID) else UUID(str(raw_mid))
+            result.setdefault(eid, []).append(mid)
+        return result
+
     async def _fetch_instances(
         self,
         pool: asyncpg.Pool,
@@ -305,6 +421,65 @@ class CalendarCompletedAdapter(ProjectionAdapter):
 
         return list(rows)
 
+    @staticmethod
+    async def _upsert_episode_entities(
+        conn: asyncpg.Connection,
+        episode_id: UUID,
+        *,
+        owner_id: UUID | None,
+        participant_ids: list[UUID],
+    ) -> None:
+        """Atomically replace episode_entities rows for the given episode.
+
+        Executes DELETE + INSERT inside a single transaction so:
+        - attendee removals from the upstream calendar propagate on the
+          next adapter run (DELETE wipes the stale set first).
+        - attendee additions are picked up (INSERT writes the new set).
+        - idempotent replays are safe (same set → same rows, no duplicates).
+
+        Role-precedence collapse is performed in Python before writing:
+        - The owner entity (when present) is written with ``role='owner'``.
+        - All other participants are written with ``role='participant'``.
+        - If a participant_id equals owner_id, the owner row wins and
+          only one row is written (``role='owner'``).
+
+        Uses ``ON CONFLICT (episode_id, entity_id) DO UPDATE SET role = EXCLUDED.role``
+        after the DELETE as an extra idempotency guard, but in practice
+        the DELETE ensures no conflict rows exist for new INSERTs.
+
+        When neither owner_id nor participant_ids resolves to any entity,
+        the DELETE still runs (clears any stale rows) and no INSERT is issued.
+        """
+        # Build the deduplicated (entity_id → role) map using role precedence.
+        # Higher _ROLE_PRECEDENCE value wins.
+        entity_role: dict[UUID, str] = {}
+
+        # Participants go in first at the lowest precedence.
+        for pid in participant_ids:
+            if pid not in entity_role:
+                entity_role[pid] = "participant"
+
+        # Owner goes in last (highest precedence — always overwrites participant).
+        if owner_id is not None:
+            entity_role[owner_id] = "owner"
+
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM episode_entities WHERE episode_id = $1",
+                episode_id,
+            )
+            if entity_role:
+                rows_to_insert = list(entity_role.items())  # [(entity_id, role), ...]
+                await conn.executemany(
+                    """
+                    INSERT INTO episode_entities (episode_id, entity_id, role)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (episode_id, entity_id)
+                    DO UPDATE SET role = EXCLUDED.role
+                    """,
+                    [(episode_id, eid, role) for eid, role in rows_to_insert],
+                )
+
     async def _project_row(
         self,
         chronicler_pool: asyncpg.Pool,
@@ -312,6 +487,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         row: asyncpg.Record,
         *,
         entity_id: UUID | None = None,
+        participant_ids: list[UUID] | None = None,
     ) -> Episode:
         instance_id = row["id"]
         # Stable across schemas and resync rounds: the upstream Google
@@ -367,6 +543,18 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     privacy=Privacy.NORMAL,
                     entity_id=entity_id,
                 ),
+            )
+            # Write the multi-entity join table (bu-3zve1).
+            # DELETE-then-INSERT inside a transaction so upstream attendee
+            # removals propagate and replays are idempotent.
+            # episodes.entity_id (the derived owner column from migration 013)
+            # continues to be written above for the transition window; it will
+            # be dropped by bu-cfsgy after two release cycles.
+            await self._upsert_episode_entities(
+                conn,
+                episode.id,
+                owner_id=entity_id,
+                participant_ids=participant_ids or [],
             )
         return episode
 
