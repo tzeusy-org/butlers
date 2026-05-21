@@ -5860,9 +5860,14 @@ async def _fetch_chronicler_activity(
 ) -> list[ActivityEntry]:
     """Fetch episodes from the chronicler butler via MCP.
 
-    Calls ``chronicler_list_episodes(entity_id=<entity_id>, limit=500)``
+    Calls ``chronicler_list_episodes(participant_entity_id=<entity_id>, limit=500)``
     and converts each corrected episode into an ``ActivityEntry`` with
     ``src='chronicler'``.
+
+    Uses ``participant_entity_id`` (join-based multi-role filter) rather than
+    the legacy ``entity_id`` (owner-only column filter) so that meeting episodes
+    where the requested entity is an organizer or attendee — but not the calendar
+    owner — surface in the entity's activity feed.
 
     Returns an empty list when the chronicler is unreachable, the MCP
     call fails, or ``mcp_manager`` is None — graceful degrade, never raises.
@@ -5879,7 +5884,7 @@ async def _fetch_chronicler_activity(
         result = await asyncio.wait_for(
             client.call_tool(
                 "chronicler_list_episodes",
-                {"entity_id": str(entity_id), "limit": 500},
+                {"participant_entity_id": str(entity_id), "limit": 500},
             ),
             timeout=_CHRONICLER_ACTIVITY_TIMEOUT_S,
         )

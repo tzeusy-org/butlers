@@ -142,6 +142,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         source_name: str | None = None,
         episode_type: str | None = None,
         entity_id: str | None = None,
+        participant_entity_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -152,9 +153,17 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             start_to: ISO-8601 datetime upper bound on episode start (exclusive).
             source_name: Filter to a specific source adapter.
             episode_type: Filter to a specific episode type.
-            entity_id: Filter to episodes associated with this entity UUID.
-                Only episodes explicitly linked to the entity at projection time
-                are returned (episodes with ``entity_id = NULL`` are excluded).
+            entity_id: Filter to episodes owned by this entity UUID (owner-only
+                filter via the ``episodes.entity_id`` column).  Only episodes
+                explicitly linked as owner at projection time are returned.
+                Preserved for backward compatibility — prefer
+                ``participant_entity_id`` for the multi-role view.
+            participant_entity_id: Filter to episodes where this entity UUID
+                appears in any role (owner, organizer, or participant) via the
+                ``episode_entities`` join table.  Use this for entity activity
+                feeds that should surface meetings where the entity attended
+                but did not own the calendar.  Composes with ``entity_id``
+                (AND semantics) when both are supplied.
             limit: Maximum rows to return (max 500).
             offset: Row offset for pagination.
 
@@ -181,6 +190,9 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             source_name=source_name,
             episode_type=episode_type,
             entity_id=UUID(entity_id) if entity_id is not None else None,
+            participant_entity_id=(
+                UUID(participant_entity_id) if participant_entity_id not in (None, "") else None
+            ),
             limit=limit,
             offset=offset,
         )

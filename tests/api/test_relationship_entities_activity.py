@@ -484,14 +484,19 @@ class TestPagination:
 
 
 # ---------------------------------------------------------------------------
-# Scenario: MCP call carries entity_id filter
+# Scenario: MCP call carries participant_entity_id filter (bu-xpv7f)
 # ---------------------------------------------------------------------------
 
 
 class TestChroniclerMcpCall:
-    """The endpoint calls chronicler_list_episodes with the correct entity_id."""
+    """The endpoint calls chronicler_list_episodes with participant_entity_id (not entity_id).
 
-    async def test_mcp_tool_called_with_entity_id(self):
+    Per design §D5, the aggregator uses the join-based participant_entity_id filter so
+    meeting episodes where the entity is an attendee (not the calendar owner) surface in
+    the entity's activity feed.
+    """
+
+    async def test_mcp_tool_called_with_participant_entity_id(self):
         ep_id = uuid4()
         episodes = [_make_episode_dict(episode_id=ep_id)]
         app, _, mock_mcp = _app_with_mocks(fact_rows=[], chronicler_episodes=episodes)
@@ -509,7 +514,60 @@ class TestChroniclerMcpCall:
         tool_name = call_args[0][0]
         tool_kwargs = call_args[0][1]
         assert tool_name == "chronicler_list_episodes"
-        assert tool_kwargs["entity_id"] == str(_ENTITY_ID)
+        # Must use participant_entity_id (join-based multi-role), NOT entity_id (owner-only).
+        assert tool_kwargs.get("participant_entity_id") == str(_ENTITY_ID), (
+            "aggregator must call chronicler_list_episodes with participant_entity_id, not entity_id"
+        )
+        assert "entity_id" not in tool_kwargs, (
+            "aggregator must not pass the legacy owner-only entity_id filter"
+        )
+
+    async def test_participant_episodes_surface_in_activity_feed(self):
+        """A meeting episode where the entity is a PARTICIPANT (not owner) appears in activity.
+
+        This tests the core requirement of §5.2: the aggregator must surface episodes
+        where the requested entity is a participant, not just the calendar owner.
+
+        The mock returns an episode (simulating one that matched via participant_entity_id
+        in the join table). The test verifies the episode appears in the activity response
+        and is tagged src='chronicler'.
+        """
+        participant_entity_id = uuid4()
+        owner_entity_id = uuid4()  # Different entity — the calendar account owner
+
+        # Build an episode dict that represents a meeting where our entity attended
+        # but is NOT the owner (entity_id on the episode row would be owner_entity_id).
+        ep_id = uuid4()
+        episode = _make_episode_dict(
+            episode_id=ep_id,
+            canonical_start_at=_NOW,
+            canonical_title="Team standup (participant view)",
+        )
+
+        # Wire the app with our participant entity as the target.
+        activity_path = _ACTIVITY_PATH_TEMPLATE.format(entity_id=participant_entity_id)
+        app, _, mock_mcp = _app_with_mocks(fact_rows=[], chronicler_episodes=[episode])
+        resp = await _get(app, path=activity_path)
+
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # The episode must appear in the activity feed.
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["src"] == "chronicler"
+        assert item["kind"] == "episode"
+        assert item["episode_id"] == str(ep_id)
+        assert item["summary"] == "Team standup (participant view)"
+
+        # Verify the MCP call used participant_entity_id (join-based), not entity_id.
+        mock_client = mock_mcp.get_client.return_value
+        call_args = mock_client.call_tool.call_args
+        tool_kwargs = call_args[0][1]
+        assert tool_kwargs.get("participant_entity_id") == str(participant_entity_id)
+        assert "entity_id" not in tool_kwargs, "Must not pass owner-only entity_id to the MCP call"
+        # Confirm: the owner entity is NOT what was passed — this is the participant check.
+        assert tool_kwargs.get("participant_entity_id") != str(owner_entity_id)
 
 
 # ---------------------------------------------------------------------------
