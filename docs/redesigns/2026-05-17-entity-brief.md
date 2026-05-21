@@ -519,7 +519,7 @@ EntityDetailPage **Editorial** is an editorial-archetype detail page (Display 44
 
 ### Amendment 8 — `<Page>` primitive conformance
 
-All six routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/:id`, `/entities/social-map`) render inside `<Page>` with page-owned breadcrumbs per the in-flight `page-primitive-spec-sync` change. EntityDetailPage Editorial uses `<Page archetype="detail">` per the in-flight `detail-page-archetype` change. The Editorial/Workbench toggle lives in the Page shell's actions slot.
+All six routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/:id`, `/entities/social-map`) render inside `<Page>` with page-owned breadcrumbs per the in-flight `page-primitive-spec-sync` change. EntityDetailPage Editorial uses `<Page archetype="editorial">` (bu-hm0oe: additive resolution, does not modify `archetype="detail"`; the `editorial` archetype renders a Display 44px shell heading when breadcrumbs or actions are supplied). The Editorial/Workbench toggle lives in the Page shell's actions slot.
 
 ### Amendment 9 — Token discipline
 

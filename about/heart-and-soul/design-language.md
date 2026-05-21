@@ -234,8 +234,10 @@ the use case before being treated as binding.
    - **EntityDetailPage Editorial vs Workbench (Amendment 7).** The
      EntityDetailPage has two modes: Editorial and Workbench. Editorial
      is an editorial-archetype page and the Display 44px headline
-     carve-out above applies: it renders via `<Page archetype="detail">`
-     with a 44px Display headline. Workbench is a workspace-grade record
+     carve-out above applies: it renders via `<Page archetype="editorial">`
+     which renders the title as a Display 44px headline when breadcrumbs
+     or actions are supplied (bu-hm0oe: resolution b — additive, does not
+     touch `archetype="detail"`). Workbench is a workspace-grade record
      page: it renders via `<Page archetype="overview">` (the `workspace`
      archetype gap is left to Phase 2 per entity-brief.md R3; `overview`
      is the interim choice), keeps the standard `text-2xl` H1, and does

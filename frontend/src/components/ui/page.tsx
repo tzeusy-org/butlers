@@ -116,6 +116,61 @@ function HeadingBlock({
   );
 }
 
+/**
+ * Heading block for the editorial archetype.
+ *
+ * Renders the title as a Display-tier headline: 44px / weight 500 /
+ * tracking -0.025em / leading 1.08 (sans). This is the Display tier
+ * reserved for editorial pages per design-language.md Non-Negotiable 2
+ * and Brief §6b Amendment 7. Only rendered when breadcrumbs or actions
+ * are present — editorial pages that manage their own heading in children
+ * (e.g. DashboardPage, ChroniclesPage) do not pass these props and
+ * therefore receive no shell heading.
+ */
+function EditorialHeadingBlock({
+  title,
+  description,
+  breadcrumbs,
+  status,
+  actions,
+}: {
+  title: string;
+  description?: string;
+  breadcrumbs?: Breadcrumb[];
+  status?: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      {breadcrumbs && breadcrumbs.length > 0 && (
+        <Breadcrumbs items={breadcrumbs} />
+      )}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-3">
+            <h1
+              style={{
+                fontFamily: "var(--font-sans)",
+                fontSize: "44px",
+                fontWeight: 500,
+                letterSpacing: "-0.025em",
+                lineHeight: 1.08,
+              }}
+            >
+              {title}
+            </h1>
+            {status && <div className="flex items-center gap-2">{status}</div>}
+          </div>
+          {description && (
+            <p className="text-muted-foreground mt-1">{description}</p>
+          )}
+        </div>
+        {actions && <div className="shrink-0">{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
 /** Extract a human-readable error message from an unknown error */
 function extractErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -328,17 +383,23 @@ export function Page({
         </ArchetypeWrapper>
       );
     }
+    // Editorial with shell heading: breadcrumbs or actions supplied, so the Page
+    // shell renders an EditorialHeadingBlock. Show the same heading skeleton and
+    // breadcrumbs here for consistency. Without breadcrumbs/actions (e.g.
+    // DashboardPage), children manage their own heading — skip the shell skeleton.
+    const editorialHasShellHeading = archetype === "editorial" &&
+      ((breadcrumbs != null && breadcrumbs.length > 0) || actions != null);
+    const showShellHeadingSkeleton = archetype !== "editorial" || editorialHasShellHeading;
     return (
       <ArchetypeWrapper archetype={archetype}>
         <div className="space-y-6" role="status" aria-label="Loading">
           {/* Render breadcrumbs even while loading so the shell auto-builder
-              stays suppressed and navigation context is visible immediately. */}
-          {breadcrumbs && breadcrumbs.length > 0 && (
+              stays suppressed and navigation context is visible immediately.
+              For editorial without a shell heading, breadcrumbs are in children. */}
+          {showShellHeadingSkeleton && breadcrumbs && breadcrumbs.length > 0 && (
             <Breadcrumbs items={breadcrumbs} />
           )}
-          {/* The editorial archetype manages its own heading region inside children;
-              it does not render the standard HeadingBlock skeleton. */}
-          {archetype !== "editorial" && <HeadingBlockSkeleton />}
+          {showShellHeadingSkeleton && <HeadingBlockSkeleton />}
           {archetype === "overview" && <OverviewSkeleton />}
           {archetype === "list" && <ListSkeleton />}
           {archetype === "detail" && <DetailSkeleton />}
@@ -428,9 +489,29 @@ export function Page({
   }
 
   // -- Children --------------------------------------------------------------
-  // For editorial archetype, children own the full layout (no HeadingBlock,
-  // no space-y-6 wrapper). The two-column grid is composed directly in children.
+  // For editorial archetype: when breadcrumbs or actions are present the shell
+  // renders an EditorialHeadingBlock (Display 44px) above children, giving
+  // the page standard chrome (breadcrumbs, title, actions) at editorial scale.
+  // When neither is provided, children own the full layout (e.g. DashboardPage,
+  // ChroniclesPage compose their own Display headline inside children).
   if (archetype === "editorial") {
+    const hasShellHeading = (breadcrumbs != null && breadcrumbs.length > 0) || actions != null;
+    if (hasShellHeading) {
+      return (
+        <ArchetypeWrapper archetype={archetype}>
+          <div className="space-y-6">
+            <EditorialHeadingBlock
+              title={title}
+              description={description}
+              breadcrumbs={breadcrumbs}
+              status={status}
+              actions={actions}
+            />
+            {children}
+          </div>
+        </ArchetypeWrapper>
+      );
+    }
     return (
       <ArchetypeWrapper archetype={archetype}>
         {children}

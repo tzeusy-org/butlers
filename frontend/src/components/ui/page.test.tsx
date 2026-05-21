@@ -416,6 +416,103 @@ describe("Page -- archetype layout", () => {
 });
 
 // ---------------------------------------------------------------------------
+// editorial archetype
+// ---------------------------------------------------------------------------
+
+describe("Page -- editorial archetype", () => {
+  it("renders children without shell h1 when no breadcrumbs or actions supplied", () => {
+    const html = render({
+      title: "Overview",
+      archetype: "editorial",
+      children: <div data-testid="editorial-body">body</div>,
+    });
+    expect(html).toContain("body");
+    // No shell h1 — the editorial page manages its own heading in children
+    expect(html).not.toContain("<h1");
+  });
+
+  it("renders Display 44px h1 when breadcrumbs are supplied", () => {
+    const html = render({
+      title: "Alice Example",
+      archetype: "editorial",
+      breadcrumbs: [
+        { label: "Home", href: "/" },
+        { label: "Entities", href: "/entities" },
+        { label: "Alice Example" },
+      ],
+      children: <div>entity content</div>,
+    });
+    expect(html).toContain("<h1");
+    expect(html).toContain("Alice Example");
+    // Display 44px uses inline style — assert both font-size and font-weight
+    expect(html).toContain("font-size:44px");
+    expect(html).toContain("font-weight:500");
+  });
+
+  it("renders Display 44px h1 when actions are supplied (no breadcrumbs)", () => {
+    const html = render({
+      title: "Entity Name",
+      archetype: "editorial",
+      actions: <button>Toggle</button>,
+      children: <div>content</div>,
+    });
+    expect(html).toContain("<h1");
+    expect(html).toContain("Entity Name");
+    expect(html).toContain("font-size:44px");
+  });
+
+  it("breadcrumbs appear before h1 in editorial shell heading", () => {
+    const html = render({
+      title: "Entity Name",
+      archetype: "editorial",
+      breadcrumbs: [{ label: "Entities", href: "/entities" }, { label: "Entity Name" }],
+      children: <div>content</div>,
+    });
+    const breadcrumbPos = html.indexOf('aria-label="Breadcrumb"');
+    const h1Pos = html.indexOf("<h1");
+    expect(breadcrumbPos).toBeGreaterThanOrEqual(0);
+    expect(h1Pos).toBeGreaterThan(breadcrumbPos);
+  });
+
+  it("renders children after the shell heading when breadcrumbs are provided", () => {
+    const html = render({
+      title: "Entity Name",
+      archetype: "editorial",
+      breadcrumbs: [{ label: "Entities", href: "/entities" }, { label: "Entity Name" }],
+      children: <div data-testid="entity-sections">sections</div>,
+    });
+    const h1Pos = html.indexOf("<h1");
+    const childrenPos = html.indexOf("sections");
+    expect(childrenPos).toBeGreaterThan(h1Pos);
+  });
+
+  it("loading: renders heading skeleton when breadcrumbs are supplied", () => {
+    const html = render({
+      title: "Entity Name",
+      archetype: "editorial",
+      breadcrumbs: [{ label: "Entities", href: "/entities" }, { label: "Entity Name" }],
+      loading: true,
+      children: <div>SHOULD NOT APPEAR</div>,
+    });
+    expect(html).not.toContain("SHOULD NOT APPEAR");
+    // HeadingBlockSkeleton: h-8 w-48
+    expect(html).toContain("h-8 w-48");
+  });
+
+  it("loading: no heading skeleton when no breadcrumbs or actions (DashboardPage pattern)", () => {
+    const html = render({
+      title: "Overview",
+      archetype: "editorial",
+      loading: true,
+      children: <div>SHOULD NOT APPEAR</div>,
+    });
+    expect(html).not.toContain("SHOULD NOT APPEAR");
+    // No shell heading skeleton — editorial page manages its own heading
+    expect(html).not.toContain("h-8 w-48");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Children render (happy path)
 // ---------------------------------------------------------------------------
 
