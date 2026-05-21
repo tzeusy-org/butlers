@@ -344,6 +344,33 @@ describe("EntityDetailPage — Editorial/Workbench mode toggle", () => {
     expect(html).toContain('data-testid="provenance-grid"');
     expect(html).not.toContain("Activity");
   });
+
+  // bu-hm0oe: Editorial mode must use archetype="editorial" with Display 44px headline.
+  // Brief §6b Amendment 7: the Page shell renders the entity name as Display 44px
+  // when breadcrumbs are provided (which EntityDetailPage always supplies).
+  it("editorial mode: Page shell renders entity name with Display 44px (font-size:44px)", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "editorial" : null,
+    );
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Alice Editorial" });
+    const html = renderPage();
+    expect(html).toContain("Alice Editorial");
+    // The editorial archetype renders the shell heading with inline style
+    // font-size:44px when breadcrumbs are supplied (EntityDetailPage always
+    // passes breadcrumbs, so the shell heading is always active in editorial mode).
+    expect(html).toContain("font-size:44px");
+  });
+
+  it("workbench mode: Page shell does NOT render Display 44px (uses overview archetype)", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "workbench" : null,
+    );
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Alice Workbench" });
+    const html = renderPage();
+    expect(html).toContain("Alice Workbench");
+    // Workbench uses archetype="overview" — no Display 44px inline style
+    expect(html).not.toContain("font-size:44px");
+  });
 });
 
 // ---------------------------------------------------------------------------

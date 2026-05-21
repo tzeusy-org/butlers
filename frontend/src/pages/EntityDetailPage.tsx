@@ -2064,7 +2064,10 @@ export default function EntityDetailPage() {
     [entity?.canonical_name, entityId],
   );
 
-  const pageArchetype = mode === "editorial" ? "detail" : "overview";
+  // Editorial mode uses archetype="editorial" for the Display 44px headline
+  // (Brief §6b Amendment 7). Workbench uses archetype="overview" (interim,
+  // per entity-brief.md R3; workspace archetype gap deferred to Phase 2).
+  const pageArchetype = mode === "editorial" ? "editorial" : "overview";
   const pageActions = (
     <div className="flex items-center gap-2">
       <button
