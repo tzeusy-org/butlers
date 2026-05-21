@@ -175,23 +175,65 @@ function ArchiveEntityButton({ entity }: { entity: ActionEntity }) {
   );
 }
 
-function ForgetEntityButton({ entity }: { entity: ActionEntity }) {
+function ForgetEntityDialog({
+  entity,
+  onOpenChange,
+}: {
+  entity: ActionEntity | null;
+  onOpenChange: (open: boolean) => void;
+}) {
   const forgetMutation = useForgetRelationshipEntity();
 
-  async function handleForget() {
-    const confirmed = window.confirm(
-      `Delete ${entity.canonical_name}? This tombstones the entity and retracts active relationship facts.`,
-    );
-    if (!confirmed) return;
+  function handleClose(open: boolean) {
+    onOpenChange(open);
+  }
 
+  async function handleForget() {
+    if (!entity) return;
     try {
       await forgetMutation.mutateAsync(entity.id);
       toast.success(`Deleted ${entity.canonical_name}`);
+      handleClose(false);
     } catch (err) {
       toast.error(`Forget failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     }
   }
 
+  return (
+    <Dialog open={entity !== null} onOpenChange={handleClose}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Delete entity</DialogTitle>
+          <DialogDescription>
+            Delete {entity?.canonical_name}? This tombstones the entity and retracts active
+            relationship facts. This action cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => handleClose(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={forgetMutation.isPending}
+            onClick={handleForget}
+          >
+            {forgetMutation.isPending ? "Deleting..." : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ForgetEntityButton({
+  entity,
+  onSelect,
+}: {
+  entity: ActionEntity;
+  onSelect: (entity: ActionEntity) => void;
+}) {
   return (
     <Button
       type="button"
@@ -199,14 +241,10 @@ function ForgetEntityButton({ entity }: { entity: ActionEntity }) {
       size="icon-xs"
       aria-label={`Delete ${entity.canonical_name}`}
       title={isOwner(entity) ? "Cannot delete owner" : "Delete"}
-      disabled={isOwner(entity) || forgetMutation.isPending}
-      onClick={handleForget}
+      disabled={isOwner(entity)}
+      onClick={() => onSelect(entity)}
     >
-      {forgetMutation.isPending ? (
-        <Loader2Icon className="animate-spin" />
-      ) : (
-        <TrashIcon />
-      )}
+      <TrashIcon />
     </Button>
   );
 }
@@ -465,9 +503,10 @@ interface EntityTableProps {
   entities: RelationshipEntitySummary[];
   isLoading: boolean;
   onMergeEntity: (entity: ActionEntity) => void;
+  onForgetEntity: (entity: ActionEntity) => void;
 }
 
-function EntityTable({ entities, isLoading, onMergeEntity }: EntityTableProps) {
+function EntityTable({ entities, isLoading, onMergeEntity, onForgetEntity }: EntityTableProps) {
   if (isLoading) {
     return (
       <div className="space-y-2">
@@ -568,7 +607,7 @@ function EntityTable({ entities, isLoading, onMergeEntity }: EntityTableProps) {
                   )}
                   <MergeEntityButton entity={entity} onSelect={onMergeEntity} />
                   <ArchiveEntityButton entity={entity} />
-                  <ForgetEntityButton entity={entity} />
+                  <ForgetEntityButton entity={entity} onSelect={onForgetEntity} />
                 </div>
               </td>
             </tr>
@@ -718,6 +757,7 @@ export function EntitiesIndexPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [offset, setOffset] = useState(0);
   const [mergeSourceEntity, setMergeSourceEntity] = useState<ActionEntity | null>(null);
+  const [forgetSourceEntity, setForgetSourceEntity] = useState<ActionEntity | null>(null);
 
   // URL is the source of truth for all filter chips.
   // ?type=person activates the Person chip; any other value or absence deactivates it.
@@ -831,6 +871,7 @@ export function EntitiesIndexPage() {
             entities={entities}
             isLoading={isLoading}
             onMergeEntity={setMergeSourceEntity}
+            onForgetEntity={setForgetSourceEntity}
           />
 
           {/* Pagination */}
@@ -878,6 +919,12 @@ export function EntitiesIndexPage() {
           }}
         />
       )}
+      <ForgetEntityDialog
+        entity={forgetSourceEntity}
+        onOpenChange={(open) => {
+          if (!open) setForgetSourceEntity(null);
+        }}
+      />
     </Page>
   );
 }
