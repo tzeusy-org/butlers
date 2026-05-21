@@ -538,6 +538,72 @@ WHERE source_name = 'google_calendar.completed'
   AND tombstone_at IS NULL;
 ```
 
+## Backfilling episode_entities on historical episodes (bu-xuqyo)
+
+Migration `chronicler_014` added the `episode_entities` join table to `chronicler`.
+Episodes projected **before** the adapter change (bu-3zve1, PR #1869) have no rows
+in `episode_entities` — only the owner's `entity_id` column is populated.
+
+### Option A — Run the backfill script (recommended)
+
+```bash
+# Dry-run: shows what would be written, no DB changes.
+uv run python scripts/backfill_episode_participants.py --dry-run
+
+# Apply: upserts episode_entities for all google_calendar.completed episodes.
+uv run python scripts/backfill_episode_participants.py
+```
+
+The script resolves participant entity_ids via:
+```
+chronicler.episodes.payload->>'origin_instance_ref'
+  → {schema}.calendar_event_instances.origin_instance_ref → event_id
+  → {schema}.calendar_event_entities.event_id → entity_id (participant)
+```
+
+The owner row (`role='owner'`) is written from `episodes.entity_id`.
+Participant rows (`role='participant'`) come from the calendar module's upstream join table.
+Role-precedence collapse: if the owner is also listed as an attendee, one row is written
+with `role='owner'` (owner > organizer > participant).
+
+It is **idempotent** (DELETE + INSERT per episode) and can be re-run safely at any time.
+
+### Option B — Watermark reset (full re-projection)
+
+Reset the adapter watermark to `NULL` so the next scheduled run re-projects all
+calendar episodes from scratch.  Each row will receive `episode_entities` rows at
+projection time (heavier than Option A — re-writes titles and re-runs the dedup pass).
+
+```sql
+UPDATE chronicler.projection_checkpoints
+SET watermark = NULL,
+    watermark_id = NULL,
+    updated_at = now()
+WHERE source_name = 'google_calendar.completed';
+```
+
+After the reset, trigger a manual adapter run or wait for the next scheduled
+invocation.
+
+**Trade-off:** Option A is surgical (touches only `episode_entities`, no adapter re-run
+overhead).  Option B is simpler to operate but re-projects every episode including
+those that already have `episode_entities` rows.
+
+### Verify backfill completeness
+
+```sql
+-- Non-zero means episode_entities has been populated.
+SELECT COUNT(*) AS total_links FROM chronicler.episode_entities;
+
+-- Episodes with no episode_entities rows (expected to be empty after backfill).
+SELECT e.id, e.payload->>'schema' AS schema
+FROM chronicler.episodes e
+LEFT JOIN chronicler.episode_entities ee ON ee.episode_id = e.id
+WHERE e.source_name = 'google_calendar.completed'
+  AND e.tombstone_at IS NULL
+  AND ee.episode_id IS NULL;
+```
+
 ## Migration 014 — episode_entities join table (bu-t0130)
 
 Migration `chronicler_014` (`roster/chronicler/migrations/014_episode_entities.py`)
