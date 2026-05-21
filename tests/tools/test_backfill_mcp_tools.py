@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import socket
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -50,6 +52,30 @@ async def test_backfill_poll():
         await backfill_poll(pool3, connector_type="plaid", endpoint_identity="")
 
 
+async def test_backfill_poll_transient_connectivity_logs_warning_without_endpoint(caplog):
+    """Transient DB connectivity failures do not emit QA-triggering error logs or PII."""
+    from butlers.tools.switchboard.backfill.connector import backfill_poll
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=socket.gaierror(-3, "Temporary failure in name resolution")
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="database error"):
+        await backfill_poll(
+            pool,
+            connector_type="gmail",
+            endpoint_identity="alice@example.com",
+        )
+
+    assert any(
+        "backfill.poll transient connectivity failure" in record.message
+        for record in caplog.records
+    )
+    assert all(record.levelno < logging.ERROR for record in caplog.records)
+    assert all("alice@example.com" not in record.message for record in caplog.records)
+
+
 async def test_backfill_progress_validates_inputs():
     """backfill_progress raises ValueError for negative rows_processed or rows_skipped."""
     from butlers.tools.switchboard.backfill.connector import backfill_progress
@@ -75,3 +101,45 @@ async def test_backfill_progress_validates_inputs():
             rows_skipped=-1,
             cost_spent_cents_delta=0,
         )
+
+
+async def test_backfill_progress_transient_connectivity_logs_warning(caplog):
+    """Transient update failures are propagated but logged below ERROR."""
+    from butlers.tools.switchboard.backfill.connector import backfill_progress
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            {
+                "connector_type": "gmail",
+                "endpoint_identity": "alice@example.com",
+                "status": "active",
+                "cost_spent_cents": 0,
+                "daily_cost_cap_cents": 500,
+            },
+            socket.gaierror(-3, "Temporary failure in name resolution"),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="database error"):
+        await backfill_progress(
+            pool,
+            job_id=_JOB_ID,
+            connector_type="gmail",
+            endpoint_identity="alice@example.com",
+            rows_processed=1,
+            rows_skipped=0,
+            cost_spent_cents_delta=0,
+        )
+
+    assert any(
+        "backfill.progress transient connectivity failure" in record.message
+        for record in caplog.records
+    )
+    assert all(record.levelno < logging.ERROR for record in caplog.records)
+    assert all("alice@example.com" not in record.message for record in caplog.records)
+    assert any(
+        "gmail" in record.message and "<endpoint-redacted>" in record.message
+        for record in caplog.records
+        if "transient connectivity failure" in record.message
+    )

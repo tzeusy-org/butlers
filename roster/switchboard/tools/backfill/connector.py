@@ -13,14 +13,69 @@ for the full contract.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import socket
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_CONNECTIVITY_ERRNOS = frozenset(
+    {
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+        errno.EPIPE,
+        errno.ETIMEDOUT,
+    }
+)
+
+_TRANSIENT_CONNECTIVITY_MESSAGE_FRAGMENTS = (
+    "temporary failure in name resolution",
+    "name or service not known",
+    "nodename nor servname provided",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "host is unreachable",
+    "connect call failed",
+    "timed out",
+    "the database system is shutting down",
+    "the database system is starting up",
+    "too many connections",
+)
+
+
+def _is_transient_connectivity_error(exc: BaseException) -> bool:
+    """Return True when an exception chain looks like a transient connect failure."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, ConnectionRefusedError | ConnectionResetError | socket.gaierror):
+            return True
+        if isinstance(cur, TimeoutError):
+            return True
+        if (
+            isinstance(cur, OSError)
+            and getattr(cur, "errno", None) in _TRANSIENT_CONNECTIVITY_ERRNOS
+        ):
+            return True
+        message = str(cur).lower()
+        if any(fragment in message for fragment in _TRANSIENT_CONNECTIVITY_MESSAGE_FRAGMENTS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _redact_endpoint_identity(endpoint_identity: str) -> str:
+    """Return a non-PII endpoint label suitable for operational logs."""
+    return "<endpoint-redacted>" if endpoint_identity else "<endpoint-empty>"
 
 
 async def backfill_poll(
@@ -106,13 +161,22 @@ async def backfill_poll(
             endpoint_identity,
         )
     except Exception as exc:
-        logger.error(
-            "backfill.poll failed for %s/%s: %s",
-            connector_type,
-            endpoint_identity,
-            exc,
-            exc_info=True,
-        )
+        safe_endpoint = _redact_endpoint_identity(endpoint_identity)
+        if _is_transient_connectivity_error(exc):
+            logger.warning(
+                "backfill.poll transient connectivity failure for %s/%s: %s",
+                connector_type,
+                safe_endpoint,
+                exc,
+            )
+        else:
+            logger.error(
+                "backfill.poll failed for %s/%s: %s",
+                connector_type,
+                safe_endpoint,
+                exc,
+                exc_info=True,
+            )
         raise RuntimeError(f"backfill.poll database error: {exc}") from exc
 
     if row is None:
@@ -306,7 +370,24 @@ async def backfill_progress(
             is_terminal,
         )
     except Exception as exc:
-        logger.error("backfill.progress failed for job %s: %s", job_id_val, exc, exc_info=True)
+        safe_endpoint = _redact_endpoint_identity(endpoint_identity)
+        if _is_transient_connectivity_error(exc):
+            logger.warning(
+                "backfill.progress transient connectivity failure for %s/%s job %s: %s",
+                connector_type,
+                safe_endpoint,
+                job_id_val,
+                exc,
+            )
+        else:
+            logger.error(
+                "backfill.progress failed for %s/%s job %s: %s",
+                connector_type,
+                safe_endpoint,
+                job_id_val,
+                exc,
+                exc_info=True,
+            )
         raise RuntimeError(f"backfill.progress database error: {exc}") from exc
 
     authoritative_status = result["status"]
