@@ -180,6 +180,57 @@ In Docker Compose, butler services use:
 OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4318
 ```
 
+## Dashboard API Prometheus Metrics
+
+Several dashboard API endpoints expose `prometheus_client` counters (text format, scraped by
+the Prometheus scrape job that already collects connector health endpoints). These cover error
+paths that historically went undetected for extended periods.
+
+### `ingestion_bulk_replay_errors_total`
+
+**Source:** `src/butlers/api/routers/ingestion_events.py`
+**Type:** Counter
+**Labels:** `code` (HTTP status code string, e.g. `"503"`)
+
+Incremented on every 5xx response from `POST /api/ingestion/events/replay/bulk`. All four
+error paths in the handler are instrumented:
+
+1. Shared database pool unavailable (pool key lookup fails → HTTP 503)
+2. Phase 1 row-lock failure (FOR UPDATE SKIP LOCKED query exception → HTTP 503)
+3. Phase 3 UPDATE failure (replay_pending marking exception → HTTP 503)
+4. Catch-all unexpected exception (any other unhandled error → HTTP 503)
+
+**Why this counter exists:** In 2026-05-20 a structural SQL incompatibility (FOR UPDATE +
+LEFT JOIN) caused every call to this endpoint to return 503. Without a counter, the failure
+was undetected for an entire production day. The counter enables Prometheus alerts and
+Grafana dashboards that surface these failures within minutes.
+
+**Recommended alert rule (Prometheus alerting):**
+
+```yaml
+- alert: BulkReplay503sElevated
+  expr: increase(ingestion_bulk_replay_errors_total{code="503"}[5m]) > 2
+  for: 2m
+  labels:
+    severity: warning
+  annotations:
+    summary: "bulk_replay endpoint returning 503s"
+    description: >
+      POST /api/ingestion/events/replay/bulk has returned
+      {{ $value | printf "%.0f" }} HTTP 503 responses in the last 5 minutes.
+      Check server logs for DB connectivity or SQL errors.
+```
+
+**Grafana PromQL examples:**
+
+```promql
+# Total 503s in the last hour
+increase(ingestion_bulk_replay_errors_total{code="503"}[1h])
+
+# Rate of 503s over 5-minute windows
+rate(ingestion_bulk_replay_errors_total{code="503"}[5m])
+```
+
 ## Related Pages
 
 - [Docker Deployment](docker-deployment.md) -- Service configuration including OTLP endpoints
