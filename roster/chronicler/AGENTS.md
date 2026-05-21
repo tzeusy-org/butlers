@@ -697,3 +697,39 @@ After at least two release cycles, bead `bu-cfsgy` will drop the derived
 `episodes.entity_id` column and remove the legacy single-column filter path.
 Do NOT run that cleanup until telemetry confirms no callers are reading
 `episodes.entity_id` directly (target: zero callers for 30 days).
+
+## Grafana panel proposal — participant resolution telemetry (bu-qlce5, PR #1871)
+
+NOTE: This is a documentation-only proposal. No Grafana dashboard JSON is wired in this
+bead. A follow-up bead can wire the actual panel.
+
+### Proposed panel 1 — Adapter participant resolution rate
+
+- **Metric:** `rate(chronicler_episode_participants_resolved_total[5m])` grouped by `schema`
+- **Type:** Time-series
+- **Why useful:** Shows how many participant `episode_entities` rows the calendar adapter
+  resolves per second, broken down by butler schema. A sustained rate of zero for a schema
+  that is expected to have meeting attendees indicates either the backfill (`bu-xuqyo`) has
+  not run yet, or `calendar_event_entities` is missing for that schema.
+
+### Proposed panel 2 — Episode list filter_kind request rate
+
+- **Metric:** `rate(otelcol_receiver_accepted_spans_total[5m])` filtered on span attribute
+  `chronicler.episodes.filter_kind` (values: `participant_join`, `owner_only`, `none`)
+- **Type:** Time-series or stat panel
+- **Why useful:** Compares the rate of API calls using `?participant_entity_id=` (participant_join)
+  against `?entity_id=` (owner_only) and bare unfiltered calls (none). A flat-zero rate for
+  `participant_join` while the adapter counter is non-zero means the multi-entity feed is not
+  yet being consumed by any client — either the frontend integration is pending or callers are
+  still using the owner-only filter.
+
+### Gap insight
+
+The gap between `chronicler_episode_participants_resolved_total` (adapter writes) and the
+`participant_join` request rate (API filter usage) is the key signal:
+
+- **High adapter rate + zero participant_join calls:** backfill is running but no client
+  consumes multi-entity episodes yet.
+- **High both:** integration is live.
+- **Zero adapter rate:** `calendar_event_entities` is absent on all schemas or the adapter
+  has not run since bu-3zve1 (PR #1869) was deployed.

@@ -83,12 +83,23 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from prometheus_client import Counter
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prometheus counters
+# ---------------------------------------------------------------------------
+
+chronicler_episode_participants_resolved_total = Counter(
+    "chronicler_episode_participants_resolved_total",
+    "Number of episode_entities participant rows resolved by the calendar adapter, by schema.",
+    ["schema"],
+)
 
 # Role-precedence used when collapsing multiple roles for the same entity_id.
 # Higher = more important; the highest-precedence role wins.
@@ -188,6 +199,13 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     entity_id=entity_id,
                     participant_ids=participant_ids,
                 )
+                # Increment the participant-resolution counter by the number of
+                # participant rows written (excludes the owner row, which is always
+                # written but is not a "participant" in the multi-entity sense).
+                if participant_ids:
+                    chronicler_episode_participants_resolved_total.labels(schema=schema).inc(
+                        len(participant_ids)
+                    )
                 result.rows_projected += 1
                 result.episodes_closed += 1
 
@@ -635,6 +653,7 @@ async def resolve_calendar_account_entity_id(
 __all__ = [
     "BUTLER_MANAGED_SOURCE_KINDS",
     "CalendarCompletedAdapter",
+    "chronicler_episode_participants_resolved_total",
     "EPISODE_TYPE_SCHEDULED_BLOCK",
     "SOURCE_NAME",
     "resolve_calendar_account_entity_id",

@@ -300,57 +300,68 @@ async def list_episodes(
             detail="overlaps_start and overlaps_end must be provided together",
         )
 
-    pool = _pool(db)
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.episodes.list") as span:
+        # Emit a filter_kind dimension so request rate can be sliced by query
+        # shape in Grafana.  Mirrors the chronicler.episodes.explain pattern.
+        if participant_entity_id is not None:
+            span.set_attribute("chronicler.episodes.filter_kind", "participant_join")
+        elif entity_id is not None:
+            span.set_attribute("chronicler.episodes.filter_kind", "owner_only")
+        else:
+            span.set_attribute("chronicler.episodes.filter_kind", "none")
 
-    clauses: list[str] = []
-    args: list[Any] = []
+        pool = _pool(db)
 
-    if not include_tombstoned:
-        clauses.append("tombstone_at IS NULL")
-    if source_name is not None:
-        args.append(source_name)
-        clauses.append(f"source_name = ${len(args)}")
-    if episode_type is not None:
-        args.append(episode_type)
-        clauses.append(f"episode_type = ${len(args)}")
-    if start_from is not None:
-        args.append(start_from)
-        clauses.append(f"start_at >= ${len(args)}")
-    if start_to is not None:
-        args.append(start_to)
-        clauses.append(f"start_at < ${len(args)}")
-    if overlaps_start is not None and overlaps_end is not None:
-        args.append(overlaps_end)
-        clauses.append(f"start_at < ${len(args)}")
-        args.append(overlaps_start)
-        clauses.append(f"(end_at IS NULL OR end_at > ${len(args)})")
-    if entity_id is not None:
-        args.append(entity_id)
-        clauses.append(f"entity_id = ${len(args)}")
-    if participant_entity_id is not None:
-        args.append(participant_entity_id)
-        clauses.append(f"${len(args)}::uuid = ANY(participant_entity_ids)")
+        clauses: list[str] = []
+        args: list[Any] = []
 
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        if not include_tombstoned:
+            clauses.append("tombstone_at IS NULL")
+        if source_name is not None:
+            args.append(source_name)
+            clauses.append(f"source_name = ${len(args)}")
+        if episode_type is not None:
+            args.append(episode_type)
+            clauses.append(f"episode_type = ${len(args)}")
+        if start_from is not None:
+            args.append(start_from)
+            clauses.append(f"start_at >= ${len(args)}")
+        if start_to is not None:
+            args.append(start_to)
+            clauses.append(f"start_at < ${len(args)}")
+        if overlaps_start is not None and overlaps_end is not None:
+            args.append(overlaps_end)
+            clauses.append(f"start_at < ${len(args)}")
+            args.append(overlaps_start)
+            clauses.append(f"(end_at IS NULL OR end_at > ${len(args)})")
+        if entity_id is not None:
+            args.append(entity_id)
+            clauses.append(f"entity_id = ${len(args)}")
+        if participant_entity_id is not None:
+            args.append(participant_entity_id)
+            clauses.append(f"${len(args)}::uuid = ANY(participant_entity_ids)")
 
-    total = await pool.fetchval(f"SELECT count(*) FROM v_episodes_corrected{where}", *args) or 0
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
-    args.append(limit)
-    args.append(offset)
-    rows = await pool.fetch(
-        f"""
-        SELECT * FROM v_episodes_corrected{where}
-        ORDER BY start_at DESC
-        LIMIT ${len(args) - 1} OFFSET ${len(args)}
-        """,
-        *args,
-    )
+        total = await pool.fetchval(f"SELECT count(*) FROM v_episodes_corrected{where}", *args) or 0
 
-    data = [_row_to_episode(r) for r in rows]
-    return PaginatedResponse[ChroniclerEpisode](
-        data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
-    )
+        args.append(limit)
+        args.append(offset)
+        rows = await pool.fetch(
+            f"""
+            SELECT * FROM v_episodes_corrected{where}
+            ORDER BY start_at DESC
+            LIMIT ${len(args) - 1} OFFSET ${len(args)}
+            """,
+            *args,
+        )
+
+        data = [_row_to_episode(r) for r in rows]
+        return PaginatedResponse[ChroniclerEpisode](
+            data=data,
+            meta=PaginationMeta(total=total, offset=offset, limit=limit),
+        )
 
 
 # ── GET /api/chronicler/episodes/{id} ─────────────────────────────────────
