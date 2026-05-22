@@ -951,7 +951,7 @@ design language with the following token rules (per Phase 1 Amendment 9 + Brief 
 1. **No new tokens** outside `frontend/src/index.css`. The redesign reuses `--bg`, `--bg-elev`,
    `--bg-deep`, `--fg`, `--mfg`, `--dim`, `--border`, `--border-soft`, `--border-strong`,
    `--red`, `--amber`, `--green`, `--category-1..8` (butler hues, EntityMark glyph only),
-   `--tier-1..5` (Dunbar ramp), and `--severity-*` (per in-flight `token-system-spec-sync`).
+   `--tier-1..6` (Dunbar ramp, six layers: 5/15/50/150/500/1500), and `--severity-*` (per in-flight `token-system-spec-sync`).
 
    **Token namespace bridging (R3 gap note):** the Dispatch tokens (`--bg`, `--fg`, `--mfg`,
    `--dim`, `--border-soft`, `--border-strong`) are NOT present in shipped
@@ -961,7 +961,7 @@ design language with the following token rules (per Phase 1 Amendment 9 + Brief 
    EITHER (a) adding the Dispatch tokens to `frontend/src/index.css` mapped 1:1 to the
    shadcn tokens they replace, OR (b) rewriting component classes to use the existing
    shadcn token names. The choice is deferred to implementation; this spec is shape-only.
-   `--tier-1..5` already ships in `frontend/src/index.css` and is not part of this gap.
+   `--tier-1..6` already ships in `frontend/src/index.css` and is not part of this gap.
 2. **No hex literals** anywhere in `frontend/src/components/relationship/*`, `frontend/src/pages/entities/*`,
    or `frontend/src/pages/butlers/relationship/*` EXCEPT in `frontend/src/lib/entity-model.ts`
    and the predicate-catalog UI.

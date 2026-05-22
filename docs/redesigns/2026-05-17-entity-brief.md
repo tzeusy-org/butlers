@@ -34,7 +34,7 @@ Today the Butlers app fragments the "people and things I care about" surface acr
   - _Why:_ The owner needs to see what's broken without leaving home. Colour leaking into rows = overdesigned.
 - **Every fact carries provenance.** `src` (butler that wrote it), `conf` (0..1), `lastSeen`, `weight`, `verified`, `primary`. The model never drops these even when the Editorial view hides them. Workbench surfaces them; Finder ranks by them.
   - _Why:_ Honesty in the data layer; flexibility in presentation. Two detail views (Editorial default, Workbench toggle) read the same record.
-- **Editorial + Workbench as one page, two affordances.** Default detail page is editorial (calm, hides provenance). A toggle (icon in header or `?view=workbench`) surfaces every metadata column.
+- **Editorial + Workbench as one page, two affordances.** Default detail page is editorial (calm, hides provenance). A toggle (icon in header or `?mode=workbench`) surfaces every metadata column.
   - _Why:_ 90% of detail visits are reading, not editing. The 10% power user gets the dense form without burdening the 90%.
 - **App-wide Cmd-K Finder.** Single entry point that searches across entity names, aliases, contact-facts, predicate labels. Resolves to entities first; eventually any record.
   - _Why:_ Direct lookup beats navigation. The Finder is the only surface that hits `/api/search`; everything else uses typed endpoints.
@@ -110,7 +110,7 @@ This redesign restructures the entity surface area of the Butlers dashboard: it 
 
 **Butler category hues** (letter-mark only; NEVER borders/backgrounds/text): `--category-1..8` tokens map 1:1 to butlers; EntityMark uses `typeColor()` lookup.
 
-**Tier ramp** (Dunbar): `--tier-1..5` coloured dots in TierBadge (progressively cooler).
+**Tier ramp** (Dunbar): `--tier-1..6` coloured dots in TierBadge (progressively cooler; six layers: 5/15/50/150/500/1500).
 
 #### Typography
 
@@ -196,7 +196,7 @@ Cards · gradients · glassmorphism · drop shadows · emoji · italic-serif as 
 | Concentration row | `/entities/concentration?pred=X` | `entityId`, `weight`, `share`, `lastSeen`, predicate label | `RELATIONS` filtered by predicate |
 | Concentration rollup | `/entities/concentration?pred=X` | `total`, `top3Share` (precomputed) | `RELATIONS` aggregation |
 | Detail editorial (right pane) | `/entities/:id` | Entity + contacts (grouped by pred) + relations (grouped by pred) + `verified` flags | `ENTITY_INDEX`, `CONTACT_FACTS`, `RELATIONS` |
-| Detail workbench toggle | `/entities/:id?view=workbench` | Same as editorial + `conf`, `src`, `weight` unhidden | `ENTITY_INDEX`, `CONTACT_FACTS`, `RELATIONS` + `meta` fields |
+| Detail workbench toggle | `/entities/:id?mode=workbench` | Same as editorial + `conf`, `src`, `weight` unhidden | `ENTITY_INDEX`, `CONTACT_FACTS`, `RELATIONS` + `meta` fields |
 | Finder results | App-wide Cmd-K | `kind` (entity vs other), `id`, `label`, `score`, `matchedOn` | Fuzzy match over `ENTITIES` + `CONTACT_FACTS` + `PREDICATES` |
 | Finder detail preview | Cmd-K result detail | Entity summary (name, type, tier, lastSeen, top 2 contacts) | Entity + `contactsFor()` call |
 
@@ -373,7 +373,7 @@ Cross-reference against Section 0 design intent:
 Consolidated from Phases A–D. Numbered for `/project-direction` Phase 2 to resolve before locking specs.
 
 1. **[Phase A · README.md:298-301]** Social Map is left untouched. If the existing `SocialMapPage.tsx` is in good shape, leave it. If stale, propose a refresh as separate work — Dunbar circle is canonically about intimacy, Hop about exploration.
-2. **[Phase A · README.md:302-304]** Workbench detail view is a power-user toggle, not a replacement for Editorial. Toggle pattern open: icon button in page header vs. `?view=workbench` query param.
+2. **[Phase A · README.md:302-304]** Workbench detail view is a power-user toggle, not a replacement for Editorial. Toggle pattern open: icon button in page header vs. `?mode=workbench` query param. _(Historical note: this prompt originally used `?view=workbench`; shipped code uses `?mode=workbench`.)_
 3. **[Phase A · README.md:305-307]** Bulk merge UX ("I imported 800 contacts, now have 200 unidentified") is out of scope for this pack. Worth filing as a discovered-from follow-up.
 4. **[Phase A · exp-detail.jsx:123]** `BreadcrumbStrip` component referenced but not defined in the bundle. Implementation pattern open.
 5. **[Phase A · README.md:35 + app.jsx:87]** Social-map `exp-social-map.jsx` missing; route kept from existing codebase.

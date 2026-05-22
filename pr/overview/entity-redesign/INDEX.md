@@ -12,7 +12,7 @@ prompts/
   03-columns.md                   ← /entities/columns Finder cascade
   04-concentration.md             ← /entities/concentration balance sheet
   05-detail-editorial.md          ← /entities/:id default detail page
-  06-detail-workbench.md          ← /entities/:id?view=workbench power-user toggle
+  06-detail-workbench.md          ← /entities/:id?mode=workbench power-user toggle
   07-finder.md                    ← app-wide Cmd-K spotlight
 reference/
   DESIGN_LANGUAGE.md              ← canonical Dispatch reference

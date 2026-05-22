@@ -16,7 +16,7 @@ pages/
   EntityHopPage.tsx                  Hop (prompt 02)
   EntityColumnsPage.tsx              Columns (prompt 03)
   EntityConcentrationPage.tsx        Concentration (prompt 04)
-  EntityDetailPage.tsx               Editorial detail (prompt 05) + ?view=workbench (prompt 06)
+  EntityDetailPage.tsx               Editorial detail (prompt 05) + ?mode=workbench (prompt 06)
 
 components/entities/
   EntityMark.tsx                     existing or new — initials/glyph mark
