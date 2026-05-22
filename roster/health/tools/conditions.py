@@ -10,7 +10,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _normalize_end_date
+from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +27,6 @@ def _get_embedding_engine() -> Any:
 
         _embedding_engine = get_embedding_engine()
     return _embedding_engine
-
-
-async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity's id from public.entities."""
-    try:
-        row = await pool.fetchrow(
-            "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
-        )
-        return row["id"] if row else None
-    except asyncpg.PostgresError:
-        logger.debug(
-            "_get_owner_entity_id: public.entities query failed",
-            exc_info=True,
-        )
-        return None
 
 
 def _fact_to_condition(row: dict[str, Any]) -> dict[str, Any]:
