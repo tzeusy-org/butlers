@@ -262,9 +262,10 @@ already, per `roster/relationship/butler.toml:106-114`.
 > during bead 5. `relationship.credentials` does not exist at migration time (table DDL ships in
 > bead 10.4 / bu-uj3xv). The copy of secured rows from the pre-migration snapshot into
 > `relationship.credentials` is intentionally deferred to a follow-up bead to be created
-> post bu-uj3xv. Until that bead lands, any `secured=true` rows from the pre-migration
-> `public.contact_info_pre_migration_<YYYYMMDD>` snapshot are accessible in the snapshot
-> table only and are NOT yet present in `relationship.credentials`.
+> post bu-uj3xv. Until that bead lands, `secured=true` rows remain accessible via
+> `public.contact_info` (authoritative until bead 8, read-only until bead 10) and the
+> pre-migration `public.contact_info_pre_migration_<YYYYMMDD>` snapshot, but are NOT yet
+> present in `relationship.credentials`.
 
 #### Scenario: Credentials are not surfaced on entity contacts endpoint
 - **WHEN** `GET /api/butlers/relationship/entities/{id}/contacts` is called for an entity
