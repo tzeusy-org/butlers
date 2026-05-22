@@ -255,9 +255,16 @@ already, per `roster/relationship/butler.toml:106-114`.
 - **WHEN** the Migration bead 5 backfill job iterates `public.contact_info` and encounters
   a row with `secured = true`
 - **THEN** the backfill MUST skip the row (no triple emitted in `relationship.entity_facts`)
-- **AND** the row MUST be copied to `relationship.credentials` instead
 - **AND** the backfill report MUST tally skipped-credential count distinctly from
   triple-emitted count
+
+> **Deferred copy — known gap (bu-l6bb0):** The row is NOT copied to `relationship.credentials`
+> during bead 5. `relationship.credentials` does not exist at migration time (table DDL ships in
+> bead 10.4 / bu-uj3xv). The copy of secured rows from the pre-migration snapshot into
+> `relationship.credentials` is intentionally deferred to a follow-up bead to be created
+> post bu-uj3xv. Until that bead lands, any `secured=true` rows from the pre-migration
+> `public.contact_info_pre_migration_<YYYYMMDD>` snapshot are accessible in the snapshot
+> table only and are NOT yet present in `relationship.credentials`.
 
 #### Scenario: Credentials are not surfaced on entity contacts endpoint
 - **WHEN** `GET /api/butlers/relationship/entities/{id}/contacts` is called for an entity
