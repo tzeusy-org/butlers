@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -66,7 +66,14 @@ test-qg-serial:
 test-qg-parallel:
 	$(MAKE) test-qg
 
-check: lint test
+# Structural SQL safety: flag FOR UPDATE queries with unqualified outer joins.
+# PostgreSQL raises "FOR UPDATE cannot be applied to the nullable side of an
+# outer join" at runtime — mock-based tests silently bypass this.
+# Safe form: FOR UPDATE OF <table>  (excludes the nullable join side)
+check-for-update-joins:
+	python3 scripts/check_for_update_joins.py src/ tests/ roster/
+
+check: lint check-for-update-joins test
 
 # Version management — single source of truth is pyproject.toml
 # Usage: make bump-version VERSION=1.2.3
