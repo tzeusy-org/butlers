@@ -51,8 +51,7 @@ NOT to a `public.contacts` contact or `public.contact_info` row.
 entity_id=$1 AND type='google_oauth_refresh'`.
 
 **Write pattern:** `INSERT INTO public.entity_info (entity_id, type, value, secured,
-is_primary)` during `create_google_account()` and during reconnect in
-`disconnect_account()`.
+is_primary)` during `create_google_account()` (upsert on conflict).
 
 **Delete pattern:** `DELETE FROM public.entity_info WHERE entity_id=$1 AND
 type='google_oauth_refresh'` during `disconnect_account()`.
