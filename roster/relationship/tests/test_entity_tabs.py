@@ -1091,11 +1091,14 @@ def _app_with_entity_pool(
     ``pool.fetch`` for entity_info.  ``entity_row=None`` simulates the 404 path
     (the classifier fetchrow is never reached).
     """
-    classify_row = _make_classify_row()
-
     mock_pool = AsyncMock()
     # First fetchrow → entity row; second fetchrow → classifier row.
-    mock_pool.fetchrow = AsyncMock(side_effect=[entity_row, classify_row])
+    # When entity_row is None (404 path) the classifier is never reached, so
+    # omit it from the side_effect list to keep the mock honest.
+    fetchrow_side_effects = [entity_row]
+    if entity_row is not None:
+        fetchrow_side_effects.append(_make_classify_row())
+    mock_pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effects)
     mock_pool.fetch = AsyncMock(return_value=info_rows or [])
 
     mock_db = MagicMock(spec=DatabaseManager)
