@@ -1,11 +1,17 @@
-"""Tests for relationship.entity_facts re-pointing during contact_merge (bu-9z7nd).
+"""Tests for relationship.entity_facts re-pointing during contact_merge.
 
-contact_merge() must re-point ALL active triples in relationship.entity_facts
-where subject = source entity_id to subject = target entity_id.  This fills the
-gap identified in bu-9z7nd: entity_merge re-points memory.facts but cannot
-reach relationship.entity_facts (different column layout: subject vs entity_id).
+Covers bu-9z7nd (subject-side) and bu-igcxb (object-side).
 
-Test scope:
+contact_merge() must re-point ALL active triples in relationship.entity_facts:
+- SUBJECT side (bu-9z7nd): rows where subject = source entity_id → subject = target entity_id.
+- OBJECT side (bu-igcxb): rows where object = source entity_id::text AND object_kind = 'entity'
+  → object = target entity_id::text. These are relational predicates ('knows', 'family-of')
+  where the merged-away entity appears as the object.
+
+entity_merge re-points memory.facts but cannot reach relationship.entity_facts
+(different column layout: subject/object vs entity_id/object_entity_id).
+
+Test scope (subject-side):
   (a) Source triples with no conflict → re-pointed to target subject.
   (b) Source triple conflicts with target (target wins) → source superseded.
   (c) Source triple conflicts with target (source wins) → conflict superseded,
@@ -15,6 +21,14 @@ Test scope:
   (e) Table absent (UndefinedTableError or similar) → warning swallowed; merge
       still returns target contact dict.
   (f) Source entity_id is NULL → entity_facts block is skipped entirely.
+
+Test scope (object-side, bu-igcxb):
+  (g) Basic object-side re-point: row with object = src entity → object = tgt entity.
+  (h) Object-side conflict (target wins) → source object-row superseded.
+  (i) Object-side conflict (source wins) → conflict superseded, source re-pointed.
+  (j) object_kind='literal' rows are NOT re-pointed (only 'entity' rows are touched).
+  (k) NULL entity_id paths: object-side block skipped when source entity_id is NULL.
+  (l) Idempotency: second merge finds no object-side source rows → no-op.
 
 All tests are pure unit tests (no Docker / Postgres required).
 """
@@ -105,6 +119,7 @@ def _make_ef_row(
     subject: uuid.UUID,
     predicate: str = "has-email",
     object_val: str = "src@example.com",
+    object_kind: str = "literal",
     conf: float = 1.0,
 ) -> dict:
     """Minimal relationship.entity_facts row dict."""
@@ -113,6 +128,25 @@ def _make_ef_row(
         "subject": subject,
         "predicate": predicate,
         "object": object_val,
+        "object_kind": object_kind,
+        "conf": conf,
+    }
+
+
+def _make_obj_ef_row(
+    row_id: uuid.UUID,
+    subject: uuid.UUID,
+    predicate: str = "knows",
+    object_val: str | None = None,
+    conf: float = 1.0,
+) -> dict:
+    """Build a relationship.entity_facts row where object is an entity UUID string."""
+    return {
+        "id": row_id,
+        "subject": subject,
+        "predicate": predicate,
+        "object": object_val if object_val is not None else str(_SRC_ENTITY_ID),
+        "object_kind": "entity",
         "conf": conf,
     }
 
@@ -122,6 +156,7 @@ def _make_pool(
     target_row: dict,
     *,
     ef_rows_on_conn: list[dict] | None = None,
+    obj_ef_rows_on_conn: list[dict] | None = None,
     conn_fetchrow_side_effect: list[Any] | None = None,
 ) -> tuple[MagicMock, MagicMock]:
     """Build a pool mock wired for contact_merge.
@@ -131,8 +166,13 @@ def _make_pool(
       2. pool.fetchrow(target contact)
       3. pool.fetch(source contact_info pre-fetch)
       4. pool.acquire() → conn for the _child_tables transaction
-      5. pool.acquire() → conn for the entity_facts re-point transaction
-      6. pool.fetchrow(final target fetch)
+      5. pool.acquire() → conn for the entity_facts subject re-point transaction
+      6. pool.acquire() → conn for the entity_facts object re-point transaction (bu-igcxb)
+      7. pool.fetchrow(final target fetch)
+
+    conn.fetch is called twice inside entity-facts blocks:
+      - First call (subject side): returns ef_rows_on_conn
+      - Second call (object side): returns obj_ef_rows_on_conn
 
     Returns (pool, conn) so tests can assert on conn.execute / conn.fetch.
     """
@@ -143,8 +183,13 @@ def _make_pool(
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
-    # conn.fetch returns entity_facts rows for the SELECT inside the ef block
-    conn.fetch = AsyncMock(return_value=ef_rows_on_conn or [])
+    # conn.fetch is called once per entity_facts block (subject then object).
+    conn.fetch = AsyncMock(
+        side_effect=[
+            ef_rows_on_conn or [],  # subject-side SELECT
+            obj_ef_rows_on_conn or [],  # object-side SELECT
+        ]
+    )
     # conn.fetchrow returns conflict-check results; callers override as needed
     if conn_fetchrow_side_effect is not None:
         conn.fetchrow = AsyncMock(side_effect=conn_fetchrow_side_effect)
@@ -375,7 +420,7 @@ class TestEntityFactsRepointOnMerge:
             src_row,
             tgt_row,
             ef_rows_on_conn=ef_rows,
-            # All three rows have no conflict
+            # All three rows have no conflict (subject side only; object side returns [])
             conn_fetchrow_side_effect=[None, None, None],
         )
 
@@ -389,4 +434,227 @@ class TestEntityFactsRepointOnMerge:
         assert str(ef_id1) in repointed_ids
         assert str(ef_id2) in repointed_ids
         assert str(ef_id3) in repointed_ids
+        assert result["id"] == _TARGET_ID
+
+
+# ---------------------------------------------------------------------------
+# Object-side re-pointing tests (bu-igcxb)
+# ---------------------------------------------------------------------------
+
+
+class TestObjectSideEntityFactsRepointOnMerge:
+    """entity_facts rows with object=source entity_id (object_kind='entity') are re-pointed."""
+
+    async def test_basic_object_repoint_no_conflict(self):
+        """(g) Row where object=src entity, no conflict → object updated to tgt entity."""
+        from butlers.tools.relationship.contacts import contact_merge
+
+        src_row = _make_contact_row(_SOURCE_ID, _SRC_ENTITY_ID)
+        tgt_row = _make_contact_row(_TARGET_ID, _TGT_ENTITY_ID)
+        obj_ef_id = uuid.uuid4()
+        other_subject = uuid.uuid4()
+
+        # subject-side: empty; object-side: one relational triple
+        obj_ef_rows = [
+            _make_obj_ef_row(
+                obj_ef_id,
+                other_subject,
+                predicate="knows",
+                object_val=str(_SRC_ENTITY_ID),
+            )
+        ]
+
+        pool, conn = _make_pool(
+            src_row,
+            tgt_row,
+            ef_rows_on_conn=[],  # subject side: nothing to re-point
+            obj_ef_rows_on_conn=obj_ef_rows,
+            conn_fetchrow_side_effect=[None],  # no conflict for the object-side row
+        )
+
+        with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
+            result = await contact_merge(pool, _SOURCE_ID, _TARGET_ID)
+
+        update_calls = [str(c) for c in conn.execute.call_args_list]
+        # Should have called UPDATE ... SET object = tgt WHERE id = obj_ef_id
+        obj_repoint_calls = [c for c in update_calls if "SET object" in c]
+        assert len(obj_repoint_calls) == 1
+        assert str(_TGT_ENTITY_ID) in obj_repoint_calls[0]
+        assert str(obj_ef_id) in obj_repoint_calls[0]
+        assert result["id"] == _TARGET_ID
+
+    async def test_object_conflict_target_wins_supersedes_source(self):
+        """(h) Target has matching triple with higher conf → source object-row superseded."""
+        from butlers.tools.relationship.contacts import contact_merge
+
+        src_row = _make_contact_row(_SOURCE_ID, _SRC_ENTITY_ID)
+        tgt_row = _make_contact_row(_TARGET_ID, _TGT_ENTITY_ID)
+        obj_ef_id = uuid.uuid4()
+        conflict_id = uuid.uuid4()
+        other_subject = uuid.uuid4()
+
+        obj_ef_rows = [
+            _make_obj_ef_row(
+                obj_ef_id,
+                other_subject,
+                predicate="family-of",
+                object_val=str(_SRC_ENTITY_ID),
+                conf=0.4,
+            )
+        ]
+        conflict_row = {"id": conflict_id, "conf": 0.9}
+
+        pool, conn = _make_pool(
+            src_row,
+            tgt_row,
+            ef_rows_on_conn=[],
+            obj_ef_rows_on_conn=obj_ef_rows,
+            conn_fetchrow_side_effect=[conflict_row],
+        )
+
+        with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
+            await contact_merge(pool, _SOURCE_ID, _TARGET_ID)
+
+        update_calls = [str(c) for c in conn.execute.call_args_list]
+        supersede_calls = [c for c in update_calls if "superseded" in c]
+        obj_repoint_calls = [c for c in update_calls if "SET object" in c]
+        # Source row should be superseded; no object re-point
+        assert len(supersede_calls) == 1
+        assert str(obj_ef_id) in supersede_calls[0]
+        assert len(obj_repoint_calls) == 0
+
+    async def test_object_conflict_source_wins_supersedes_conflict_and_repoints(self):
+        """(i) Source has higher conf → conflict superseded, source object updated to target."""
+        from butlers.tools.relationship.contacts import contact_merge
+
+        src_row = _make_contact_row(_SOURCE_ID, _SRC_ENTITY_ID)
+        tgt_row = _make_contact_row(_TARGET_ID, _TGT_ENTITY_ID)
+        obj_ef_id = uuid.uuid4()
+        conflict_id = uuid.uuid4()
+        other_subject = uuid.uuid4()
+
+        obj_ef_rows = [
+            _make_obj_ef_row(
+                obj_ef_id,
+                other_subject,
+                predicate="knows",
+                object_val=str(_SRC_ENTITY_ID),
+                conf=0.95,
+            )
+        ]
+        conflict_row = {"id": conflict_id, "conf": 0.3}
+
+        pool, conn = _make_pool(
+            src_row,
+            tgt_row,
+            ef_rows_on_conn=[],
+            obj_ef_rows_on_conn=obj_ef_rows,
+            conn_fetchrow_side_effect=[conflict_row],
+        )
+
+        with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
+            await contact_merge(pool, _SOURCE_ID, _TARGET_ID)
+
+        update_calls = [str(c) for c in conn.execute.call_args_list]
+        supersede_calls = [c for c in update_calls if "superseded" in c]
+        obj_repoint_calls = [c for c in update_calls if "SET object" in c]
+        # The conflict (target row) is superseded
+        assert len(supersede_calls) == 1
+        assert str(conflict_id) in supersede_calls[0]
+        # Source row is re-pointed to target entity
+        assert len(obj_repoint_calls) == 1
+        assert str(_TGT_ENTITY_ID) in obj_repoint_calls[0]
+        assert str(obj_ef_id) in obj_repoint_calls[0]
+
+    async def test_literal_object_rows_not_repointed(self):
+        """(j) Rows with object_kind='literal' are not touched by object-side re-pointing.
+
+        The SQL query filters on object_kind = 'entity'; literal rows must not be
+        returned and therefore must not produce any UPDATE calls.  We verify this by
+        confirming the SELECT issued to the conn uses the 'entity' discriminator.
+        """
+        from butlers.tools.relationship.contacts import contact_merge
+
+        src_row = _make_contact_row(_SOURCE_ID, _SRC_ENTITY_ID)
+        tgt_row = _make_contact_row(_TARGET_ID, _TGT_ENTITY_ID)
+
+        # Simulate the DB correctly not returning literal rows (they are excluded by WHERE)
+        pool, conn = _make_pool(
+            src_row,
+            tgt_row,
+            ef_rows_on_conn=[],
+            obj_ef_rows_on_conn=[],  # no entity-kind object rows returned
+        )
+
+        with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
+            result = await contact_merge(pool, _SOURCE_ID, _TARGET_ID)
+
+        # Verify the SELECT for object-side used object_kind = 'entity' discriminator
+        fetch_calls = [str(c) for c in conn.fetch.call_args_list]
+        obj_side_fetches = [c for c in fetch_calls if "object_kind" in c and "'entity'" in c]
+        assert len(obj_side_fetches) >= 1, (
+            "Expected at least one conn.fetch call with object_kind='entity' filter"
+        )
+        # No object SET calls (nothing to re-point)
+        update_calls = [str(c) for c in conn.execute.call_args_list]
+        obj_repoint_calls = [c for c in update_calls if "SET object" in c]
+        assert len(obj_repoint_calls) == 0
+        assert result["id"] == _TARGET_ID
+
+    async def test_null_source_entity_skips_object_side_block(self):
+        """(k) NULL entity_id: neither subject-side nor object-side block executes."""
+        from butlers.tools.relationship.contacts import contact_merge
+
+        src_row = _make_contact_row(_SOURCE_ID, entity_id=None)
+        tgt_row = _make_contact_row(_TARGET_ID, _TGT_ENTITY_ID)
+
+        pool, conn = _make_pool(src_row, tgt_row)
+
+        with _patch_table_columns(), _patch_entity_merge() as mock_em, _patch_retract_all():
+            result = await contact_merge(pool, _SOURCE_ID, _TARGET_ID)
+
+        mock_em.assert_not_awaited()
+        update_calls = [str(c) for c in conn.execute.call_args_list]
+        ef_updates = [c for c in update_calls if "entity_facts" in c]
+        assert len(ef_updates) == 0
+        assert result["id"] == _TARGET_ID
+
+    async def test_object_side_idempotency_second_call_is_no_op(self):
+        """(l) After object-side re-pointing, second merge finds no source object rows."""
+        from butlers.tools.relationship.contacts import contact_merge
+
+        src_row = _make_contact_row(_SOURCE_ID, _SRC_ENTITY_ID)
+        tgt_row = _make_contact_row(_TARGET_ID, _TGT_ENTITY_ID)
+        obj_ef_id = uuid.uuid4()
+        other_subject = uuid.uuid4()
+
+        # First call: one object-side row, no conflict
+        obj_ef_rows = [_make_obj_ef_row(obj_ef_id, other_subject, object_val=str(_SRC_ENTITY_ID))]
+        pool1, conn1 = _make_pool(
+            src_row,
+            tgt_row,
+            ef_rows_on_conn=[],
+            obj_ef_rows_on_conn=obj_ef_rows,
+            conn_fetchrow_side_effect=[None],
+        )
+        with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
+            await contact_merge(pool1, _SOURCE_ID, _TARGET_ID)
+
+        # Confirm first call did re-point
+        update_calls_1 = [str(c) for c in conn1.execute.call_args_list]
+        assert any("SET object" in c for c in update_calls_1)
+
+        # Second call: no object-side source rows (all re-pointed after first merge)
+        pool2, conn2 = _make_pool(
+            src_row,
+            tgt_row,
+            ef_rows_on_conn=[],
+            obj_ef_rows_on_conn=[],
+        )
+        with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
+            result = await contact_merge(pool2, _SOURCE_ID, _TARGET_ID)
+
+        update_calls_2 = [str(c) for c in conn2.execute.call_args_list]
+        obj_updates_2 = [c for c in update_calls_2 if "entity_facts" in c]
+        assert len(obj_updates_2) == 0
         assert result["id"] == _TARGET_ID

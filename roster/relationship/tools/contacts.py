@@ -782,7 +782,77 @@ async def contact_merge(
                                     )
             except asyncpg.PostgresError:  # noqa: BLE001 — best-effort; never block the legacy commit
                 logger.warning(
-                    "contact_merge: entity_facts re-pointing failed "
+                    "contact_merge: entity_facts subject re-pointing failed "
+                    "(source=%s target=%s) — swallowed",
+                    src_entity_id,
+                    tgt_entity_id,
+                    exc_info=True,
+                )
+
+            # Object-side re-pointing (bu-igcxb).
+            # Re-point rows where object = src_entity_id::text AND object_kind = 'entity'.
+            # These represent relational predicates (knows, family-of, etc.) where the
+            # source entity appears as the *object* of the triple.  entity_merge cannot
+            # reach these because it operates on memory.facts, not relationship.entity_facts.
+            #
+            # Conflict resolution mirrors the subject-side block: if the target already has
+            # an active triple with the same (subject, predicate, object=target::text),
+            # higher confidence wins; the loser is superseded.
+            try:
+                src_obj_str = str(src_entity_id)
+                tgt_obj_str = str(tgt_entity_id)
+                async with pool.acquire() as _obj_conn:
+                    async with _obj_conn.transaction():
+                        obj_ef_rows = await _obj_conn.fetch(
+                            "SELECT id, subject, predicate, conf FROM relationship.entity_facts "
+                            "WHERE object = $1 AND object_kind = 'entity' AND validity = 'active'",
+                            src_obj_str,
+                        )
+                        for obj_ef in obj_ef_rows:
+                            obj_conflict = await _obj_conn.fetchrow(
+                                "SELECT id, conf FROM relationship.entity_facts "
+                                "WHERE subject = $1 AND predicate = $2 "
+                                "AND object = $3 "
+                                "AND validity = 'active'",
+                                obj_ef["subject"],
+                                obj_ef["predicate"],
+                                tgt_obj_str,
+                            )
+                            if obj_conflict is None:
+                                # No conflict — re-point object to target entity.
+                                await _obj_conn.execute(
+                                    "UPDATE relationship.entity_facts "
+                                    "SET object = $1, updated_at = now() WHERE id = $2",
+                                    tgt_obj_str,
+                                    obj_ef["id"],
+                                )
+                            else:
+                                # Conflict — higher confidence wins; supersede the loser.
+                                if obj_ef["conf"] > obj_conflict["conf"]:
+                                    # Source wins: supersede conflict, then re-point source.
+                                    await _obj_conn.execute(
+                                        "UPDATE relationship.entity_facts "
+                                        "SET validity = 'superseded', updated_at = now() "
+                                        "WHERE id = $1",
+                                        obj_conflict["id"],
+                                    )
+                                    await _obj_conn.execute(
+                                        "UPDATE relationship.entity_facts "
+                                        "SET object = $1, updated_at = now() WHERE id = $2",
+                                        tgt_obj_str,
+                                        obj_ef["id"],
+                                    )
+                                else:
+                                    # Target wins: supersede source row.
+                                    await _obj_conn.execute(
+                                        "UPDATE relationship.entity_facts "
+                                        "SET validity = 'superseded', updated_at = now() "
+                                        "WHERE id = $1",
+                                        obj_ef["id"],
+                                    )
+            except asyncpg.PostgresError:  # noqa: BLE001 — best-effort; never block the legacy commit
+                logger.warning(
+                    "contact_merge: entity_facts object re-pointing failed "
                     "(source=%s target=%s) — swallowed",
                     src_entity_id,
                     tgt_entity_id,
