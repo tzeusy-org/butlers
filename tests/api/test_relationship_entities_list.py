@@ -249,9 +249,11 @@ async def test_entity_type_filter_passes_to_query():
     resp = await _get(app, entity_type="organization")
 
     assert resp.status_code == 200
-    # Verify "organization" was sent as a query arg to the pool
+    # Verify "organization" was sent as a query arg to the pool. The filter is
+    # bound as a text[] array param (``e.entity_type = ANY($n::text[])``), so it
+    # appears in the positional args as ``["organization"]``.
     fetch_call = pool.fetch.call_args[0]
-    assert "organization" in fetch_call
+    assert ["organization"] in fetch_call
 
 
 async def test_entity_type_filter_returns_matching_entities():
