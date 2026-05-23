@@ -1,7 +1,7 @@
-# 06 · Detail · Workbench — /entities/:id?view=workbench · the console
+# 06 · Detail · Workbench — /entities/:id?mode=workbench · the console
 
 **A toggle, not a replacement.** The Editorial layout (prompt 05) is the
-default. The Workbench is reached by `?view=workbench` or the pill in
+default. The Workbench is reached by `?mode=workbench` or the pill in
 the page header. Aimed at sessions where the user is *fixing* the graph,
 not reading about a person.
 
@@ -159,7 +159,7 @@ entity to test the duplicate-warning panel.
 
 ## Acceptance criteria
 
-- [ ] `?view=workbench` toggles to Workbench from any entity detail
+- [ ] `?mode=workbench` toggles to Workbench from any entity detail
       page; toggle pill round-trips.
 - [ ] Left rail shows top relations; middle KPI strip aligns to 4
       columns; right rail shows actions + confidence.

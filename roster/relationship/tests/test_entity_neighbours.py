@@ -51,8 +51,14 @@ def _make_fact_row(
     weight: int | None = None,
     verified: bool = False,
     primary: bool | None = None,
+    canonical_name: str = "",
 ) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record for a facts row."""
+    """Build a MagicMock that behaves like an asyncpg Record for a facts row.
+
+    The neighbours SQL also selects ``canonical_name`` from the LEFT JOIN on
+    ``public.entities`` (PR #1849); include it in the mock row so the handler's
+    ``r["canonical_name"]`` lookup does not KeyError.
+    """
     if subject is None:
         subject = _ENT_ID
     if object_val is None:
@@ -71,6 +77,7 @@ def _make_fact_row(
         "verified": verified,
         "primary": primary,
         "direction": direction,
+        "canonical_name": canonical_name,
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
@@ -78,8 +85,14 @@ def _make_fact_row(
 
 
 def _make_owner_row() -> MagicMock:
-    """Simulate a row returned by the owner-entity check query."""
-    data = {"id": _OWNER_ENTITY_ID}
+    """Simulate a row returned by the owner-entity check query.
+
+    Must include ``roles`` because _get_owner_roles() (PR #1859 refactor of the
+    Amendment 12a/12b gate) reads ``row["roles"]`` to verify ``'owner'`` is
+    present.  See PR #1863 for the same fix applied to the older
+    tests/api/test_relationship_entities_neighbours.py.
+    """
+    data = {"id": _OWNER_ENTITY_ID, "roles": ["owner"]}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
     return row

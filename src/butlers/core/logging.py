@@ -173,6 +173,17 @@ class CredentialRedactionFilter(logging.Filter):
         return True
 
 
+class ButlerContextFileFilter(logging.Filter):
+    """Route shared-process file logs to the active butler's file only."""
+
+    def __init__(self, butler_name: str) -> None:
+        super().__init__()
+        self._butler_name = butler_name
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003, ARG002
+        return get_butler_context() == self._butler_name
+
+
 # ---------------------------------------------------------------------------
 # Noise suppression
 # ---------------------------------------------------------------------------
@@ -368,6 +379,8 @@ def configure_logging(
                 log_root / _DIR_BUTLERS / f"{log_name}.log",
                 file_processors,
             )
+            if butler_name:
+                butler_handler.addFilter(ButlerContextFileFilter(butler_name))
             root.addHandler(butler_handler)
 
             # Noise/transport logs → logs/uvicorn/{name}.log
@@ -383,6 +396,8 @@ def configure_logging(
                 log_root / _DIR_UVICORN / f"{log_name}.log",
                 file_processors,
             )
+            if butler_name:
+                uvicorn_handler.addFilter(ButlerContextFileFilter(butler_name))
             for name in _NOISE_LOGGERS:
                 logging.getLogger(name).addHandler(uvicorn_handler)
         except OSError as exc:

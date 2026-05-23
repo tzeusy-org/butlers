@@ -122,6 +122,9 @@ full_sync_interval_days = 6
 [modules.memory]
 groups = ["core", "feedback", "entity", "admin"]
 
+[modules.approvals]
+groups = ["actions"]
+
 [modules.relationship]
 groups = ["contacts", "interactions", "management", "tracking"]
 

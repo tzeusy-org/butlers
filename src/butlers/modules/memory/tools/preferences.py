@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.owner import resolve_owner_entity as _resolve_owner_entity
 from butlers.modules.memory.tools._helpers import _storage, get_embedding_engine
 
 # ---------------------------------------------------------------------------
@@ -31,44 +32,16 @@ PREFERENCE_GENERAL_SCOPE = "global"
 async def _resolve_owner(pool: Pool) -> tuple[uuid.UUID, str]:
     """Resolve the owner entity from public.contacts / public.entities.
 
+    Delegates to the shared ``butlers.core.owner.resolve_owner_entity`` helper
+    which implements the two-step fallback (contacts JOIN then entities-only).
+
     Returns:
         Tuple of (entity_id, canonical_name).
 
     Raises:
         ValueError: When no owner entity can be resolved.
     """
-    # Primary path: contacts table with entity_id FK.
-    # Note: public.contacts.roles was dropped in core_016; roles are on public.entities.
-    row = await pool.fetchrow(
-        """
-        SELECT e.id, e.canonical_name
-        FROM public.contacts c
-        JOIN public.entities e ON c.entity_id = e.id
-        WHERE 'owner' = ANY(e.roles)
-          AND c.entity_id IS NOT NULL
-        LIMIT 1
-        """
-    )
-    if row:
-        return row["id"], row["canonical_name"]
-
-    # Fallback: entities with owner role directly.
-    row = await pool.fetchrow(
-        """
-        SELECT id, canonical_name
-        FROM public.entities
-        WHERE 'owner' = ANY(roles)
-        LIMIT 1
-        """
-    )
-    if row:
-        return row["id"], row["canonical_name"]
-
-    raise ValueError(
-        "Owner entity could not be resolved. "
-        "Ensure the butler has started up successfully (owner entity bootstrap) "
-        "or create an owner contact via the identity setup workflow."
-    )
+    return await _resolve_owner_entity(pool)
 
 
 # ---------------------------------------------------------------------------

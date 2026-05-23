@@ -82,7 +82,7 @@ interface Entity {
 
   // Optional fields
   role?: 'owner' | 'admin';
-  tier?: 0 | 1 | 2 | 3 | 4 | 5;   // 0 = owner; 1..5 = Dunbar tier
+  tier?: 0 | 1 | 2 | 3 | 4 | 5 | 6;   // 0 = owner; 1..6 = Dunbar tier (5/15/50/150/500/1500)
   aliases?: string[];
   category?: string;              // e.g. 'employer' | 'vendor' | 'subscription'
 
@@ -96,6 +96,13 @@ interface Entity {
 ```
 
 `firstSeen` and `lastSeen` must be indexed for time-series queries.
+
+**Dunbar tier ramp (six layers):** `tier` maps to one of six Dunbar-inspired size rings.
+`0` is the owner pseudo-tier (excluded from the ramp); tiers `1..6` correspond to Dunbar
+values 5 / 15 / 50 / 150 / 500 / 1500. The sixth layer (tier-6, 1500, "Recognizable") is the
+outermost ring — casual acquaintances and recognised-but-unconnected entities. It renders
+with the `--tier-6` CSS token (gray dot in `TierBadge`). Any entity whose computed tier
+exceeds 1500 also falls into tier-6.
 
 ### 0.4 — Relation record
 

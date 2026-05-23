@@ -321,7 +321,7 @@ describe("EntitiesIndexPage — entity table", () => {
 });
 
 describe("EntitiesIndexPage — filter chips", () => {
-  it("calls useRelationshipEntities with entity_type when type chip is clicked", async () => {
+  it("defaults the entity list to people and organizations", () => {
     vi.mocked(useRelationshipEntities).mockReturnValue({
       data: makeListResponse([]),
       isLoading: false,
@@ -331,25 +331,37 @@ describe("EntitiesIndexPage — filter chips", () => {
 
     renderPage();
 
-    // Verify initial call with no filters
     expect(vi.mocked(useRelationshipEntities)).toHaveBeenCalledWith(
-      expect.objectContaining({ entity_type: undefined }),
+      expect.objectContaining({ entity_type: ["person", "organization"] }),
+    );
+  });
+
+  it("supports multiselect type chips", async () => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+
+    renderPage();
+
+    expect(vi.mocked(useRelationshipEntities)).toHaveBeenCalledWith(
+      expect.objectContaining({ entity_type: ["person", "organization"] }),
     );
 
-    // Click "Person" chip
-    const personChip = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent?.trim() === "Person",
+    const locationChip = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Location",
     );
-    expect(personChip).toBeTruthy();
+    expect(locationChip).toBeTruthy();
 
     await act(async () => {
-      personChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      locationChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    // Should now be called with entity_type = "person"
     const calls = vi.mocked(useRelationshipEntities).mock.calls;
     const lastCall = calls[calls.length - 1][0];
-    expect(lastCall?.entity_type).toBe("person");
+    expect(lastCall?.entity_type).toEqual(["person", "organization", "location"]);
   });
 
   it("calls useRelationshipEntities with has=contact when chip is clicked", async () => {
@@ -651,23 +663,31 @@ describe("EntitiesIndexPage — ?type= URL param", () => {
 
     const calls = vi.mocked(useRelationshipEntities).mock.calls;
     const firstCall = calls[0][0];
-    expect(firstCall?.entity_type).toBe("person");
+    expect(firstCall?.entity_type).toEqual(["person"]);
   });
 
-  it("does NOT pass entity_type when URL has no ?type param", () => {
+  it("pre-activates multiple type chips when navigated to repeated ?type params", () => {
+    renderPage("/entities?type=person&type=organization");
+
+    const calls = vi.mocked(useRelationshipEntities).mock.calls;
+    const firstCall = calls[0][0];
+    expect(firstCall?.entity_type).toEqual(["person", "organization"]);
+  });
+
+  it("uses People and Orgs when URL has no ?type param", () => {
     renderPage("/entities");
 
     const calls = vi.mocked(useRelationshipEntities).mock.calls;
     const firstCall = calls[0][0];
-    expect(firstCall?.entity_type).toBeUndefined();
+    expect(firstCall?.entity_type).toEqual(["person", "organization"]);
   });
 
-  it("toggling type chip OFF removes ?type from URL while preserving other params", async () => {
+  it("toggling type chip OFF removes just that type while preserving other params", async () => {
     renderPage("/entities?type=person&has=contact");
 
     // Verify initial state: type=person is active
     let calls = vi.mocked(useRelationshipEntities).mock.calls;
-    expect(calls[0][0]?.entity_type).toBe("person");
+    expect(calls[0][0]?.entity_type).toEqual(["person"]);
     expect(calls[0][0]?.has).toBe("contact");
 
     const personChip = Array.from(container.querySelectorAll("button")).find(
@@ -679,15 +699,15 @@ describe("EntitiesIndexPage — ?type= URL param", () => {
       personChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    // After toggling OFF, entity_type should be gone but has=contact remains
+    // After toggling OFF, the explicit empty type selection is preserved.
     calls = vi.mocked(useRelationshipEntities).mock.calls;
     const lastCall = calls[calls.length - 1][0];
-    expect(lastCall?.entity_type).toBeUndefined();
+    expect(lastCall?.entity_type).toEqual([]);
     expect(lastCall?.has).toBe("contact");
   });
 
   it("toggling type chip ON adds ?type to URL while preserving other params", async () => {
-    renderPage("/entities?has=contact");
+    renderPage("/entities?type=person&has=contact");
 
     const orgChip = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim() === "Org",
@@ -700,7 +720,7 @@ describe("EntitiesIndexPage — ?type= URL param", () => {
 
     const calls = vi.mocked(useRelationshipEntities).mock.calls;
     const lastCall = calls[calls.length - 1][0];
-    expect(lastCall?.entity_type).toBe("organization");
+    expect(lastCall?.entity_type).toEqual(["person", "organization"]);
     expect(lastCall?.has).toBe("contact");
   });
 });
@@ -770,7 +790,7 @@ describe("EntitiesIndexPage — combined URL params", () => {
 
     const calls = vi.mocked(useRelationshipEntities).mock.calls;
     const firstCall = calls[0][0];
-    expect(firstCall?.entity_type).toBe("person");
+    expect(firstCall?.entity_type).toEqual(["person"]);
     expect(firstCall?.state).toBe("unidentified");
     expect(firstCall?.has).toBe("contact");
   });

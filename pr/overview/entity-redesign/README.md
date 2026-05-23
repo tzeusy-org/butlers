@@ -145,7 +145,7 @@ font-variant-numeric: tabular-nums;
 --role-owner          /* purple/violet — authority signal */
 --role-admin          /* warm amber — elevated access */
 --state-unidentified  /* orange — pending merge */
---tier-1 .. --tier-5  /* dunbar tier ramp */
+--tier-1 .. --tier-6  /* dunbar tier ramp (5/15/50/150/500/1500) */
 ```
 
 ### What this design system says NO to, hard
@@ -301,7 +301,7 @@ production code:
   intimacy, and Hop is canonically about exploration.
 - **The Workbench detail view** is a power-user toggle, not a replacement
   for Editorial. The toggle pattern (icon button in the page header, or
-  a query param `?view=workbench`) is open.
+  a query param `?mode=workbench`) is open.
 - **Bulk merge UX** for "I just imported 800 contacts and now have 200
   unidentified rows" — the Index covers single-row merge; a bulk flow
   may need its own surface. Out of scope for this pack, worth noting.

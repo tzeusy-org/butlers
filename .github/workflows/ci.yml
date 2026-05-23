@@ -44,6 +44,9 @@ jobs:
       - name: Format check
         run: uv run ruff format --check src/ tests/ roster/ conftest.py -q
 
+      - name: SQL safety check (FOR UPDATE + outer join)
+        run: make check-for-update-joins
+
       - name: Unit tests
         run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
 

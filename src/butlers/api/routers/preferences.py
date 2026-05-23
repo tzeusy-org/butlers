@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
+from butlers.core.owner import resolve_owner_entity_id_two_step as _resolve_owner_entity_id_two_step
 
 logger = logging.getLogger(__name__)
 
@@ -71,43 +73,22 @@ def _all_pools(db: DatabaseManager) -> list[Any]:
 
 
 # ---------------------------------------------------------------------------
-# Owner resolution — mirrors _resolve_owner in the MCP tool
+# Owner resolution — delegates to the shared butlers.core.owner helper
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_owner_entity_id(pool: Any) -> str | None:
+async def _resolve_owner_entity_id(pool: Any) -> uuid.UUID | None:
     """Resolve the owner entity_id from a single pool.
 
-    Mirrors the two-step fallback in the memory module's ``_resolve_owner``:
+    Delegates to the shared ``butlers.core.owner.resolve_owner_entity_id_two_step``
+    helper which implements the canonical two-step fallback:
     1. ``public.contacts JOIN public.entities`` (primary path).
     2. ``public.entities`` directly (fallback for installs where the owner
        entity exists without a contact row, e.g. early bootstrap states).
 
-    Returns the entity_id string, or ``None`` when the owner cannot be found.
+    Returns the entity UUID, or ``None`` when the owner cannot be found.
     """
-    row = await pool.fetchrow(
-        """
-        SELECT e.id
-        FROM public.contacts c
-        JOIN public.entities e ON c.entity_id = e.id
-        WHERE 'owner' = ANY(e.roles)
-          AND c.entity_id IS NOT NULL
-        LIMIT 1
-        """
-    )
-    if row is not None:
-        return row["id"]
-
-    # Fallback: entities with owner role but no contact row yet.
-    row = await pool.fetchrow(
-        """
-        SELECT id
-        FROM public.entities
-        WHERE 'owner' = ANY(roles)
-        LIMIT 1
-        """
-    )
-    return row["id"] if row is not None else None
+    return await _resolve_owner_entity_id_two_step(pool)
 
 
 # ---------------------------------------------------------------------------

@@ -185,6 +185,7 @@ all_candidates AS (
     JOIN tier_order t
         ON COALESCE(bmo.complexity_tier, mc.complexity_tier) = t.tier
     WHERE COALESCE(bmo.enabled, mc.enabled) = true
+      AND mc.last_verified_ok IS DISTINCT FROM false
 ),
 winning AS (
     SELECT effective_tier, tier_ord, MAX(effective_priority) AS max_priority

@@ -53,6 +53,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.owner import fetch_owner_entity_id as _get_owner_entity_id
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -83,25 +85,6 @@ def _get_embedding_engine() -> Any:
 
         _embedding_engine = get_embedding_engine()
     return _embedding_engine
-
-
-async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity's id from public.entities.
-
-    Uses public.entities WHERE 'owner' = ANY(roles).  Returns None gracefully
-    when the table does not exist yet or when no owner entity is present.
-    """
-    try:
-        row = await pool.fetchrow(
-            "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
-        )
-        return row["id"] if row else None
-    except asyncpg.PostgresError:
-        logger.debug(
-            "_get_owner_entity_id: public.entities query failed (table may not exist yet)",
-            exc_info=True,
-        )
-        return None
 
 
 # ---------------------------------------------------------------------------

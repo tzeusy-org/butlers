@@ -170,3 +170,27 @@ def test_log_directory_structure_and_credential_redaction(tmp_path: Path):
         len([f for f in logging.getLogger().filters if isinstance(f, CredentialRedactionFilter)])
         == 1
     )
+
+
+def test_per_butler_file_handlers_filter_by_context(tmp_path: Path):
+    """Multi-butler processes must not fan one record out to every butler log."""
+    configure_logging(fmt="json", log_root=tmp_path, butler_name="switchboard")
+    configure_logging(fmt="json", log_root=tmp_path, butler_name="lifestyle")
+
+    log = logging.getLogger("butlers.test")
+    set_butler_context("switchboard")
+    log.error("switchboard-only event")
+
+    set_butler_context("lifestyle")
+    log.error("lifestyle-only event")
+
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    switchboard_log = (tmp_path / "butlers" / "switchboard.log").read_text()
+    lifestyle_log = (tmp_path / "butlers" / "lifestyle.log").read_text()
+
+    assert "switchboard-only event" in switchboard_log
+    assert "switchboard-only event" not in lifestyle_log
+    assert "lifestyle-only event" in lifestyle_log
+    assert "lifestyle-only event" not in switchboard_log

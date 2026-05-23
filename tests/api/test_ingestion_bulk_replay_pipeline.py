@@ -348,7 +348,9 @@ async def test_bulk_replay_503_lock_failure_increments_counter(app):
     before = _mod.ingestion_bulk_replay_errors_total.labels(code="503")._value.get()
 
     # conn.fetch raises an exception on the first call (Phase 1 lock attempt)
-    conn = _make_conn(fetch_side_effect=RuntimeError("FOR UPDATE with LEFT JOIN not supported"))
+    conn = _make_conn(
+        fetch_side_effect=RuntimeError("FOR UPDATE with LEFT JOIN not supported")
+    )  # check-for-update-joins: ignore
     pool = _make_pool_with_conn(conn)
     _app_with_events_db(app, shared_pool=pool)
 
@@ -1266,7 +1268,7 @@ async def _provision_bulk_replay_schema(pool) -> None:
     """Create the tables needed by bulk_replay_ingestion_events in one shot.
 
     Also inserts a connector_registry row so the handler's LEFT JOIN always
-    finds a match.  PostgreSQL disallows FOR UPDATE on the nullable side of an
+    finds a match.  PostgreSQL disallows FOR UPDATE on the nullable side of an  # check-for-update-joins: ignore
     outer join, which would happen if filtered_events has no matching registry
     entry.  In production each connector self-registers before writing events,
     so a matching row is always present.

@@ -1102,7 +1102,7 @@ async def test_retry_on_transient_remote_compaction_failure(caplog):
 
 
 async def test_retry_on_transient_model_capacity_failure(caplog):
-    """Codex model-capacity failures should retry and recover when capacity clears."""
+    """Transient Codex model-capacity failures should retry and recover."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
     call_count = 0
@@ -1112,7 +1112,7 @@ async def test_retry_on_transient_model_capacity_failure(caplog):
         call_count += 1
         proc = AsyncMock()
         proc.returncode = 1 if call_count == 1 else 0
-        proc.pid = 100 + call_count
+        proc.pid = 200 + call_count
         proc.communicate = AsyncMock(
             return_value=(
                 b"" if call_count == 1 else b"ok",

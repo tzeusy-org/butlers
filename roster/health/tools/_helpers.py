@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, time
 from typing import Any
 
 import asyncpg
+
+from butlers.core.owner import fetch_owner_entity_id as _fetch_owner_entity_id
+
+
+async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
+    """Resolve the owner entity's UUID from ``public.entities``.
+
+    Delegates to the shared ``butlers.core.owner.fetch_owner_entity_id`` helper.
+    Kept here so that health-tool modules can import it from a single intra-package
+    location without taking a direct dependency on the core package hierarchy.
+    """
+    return await _fetch_owner_entity_id(pool)
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:

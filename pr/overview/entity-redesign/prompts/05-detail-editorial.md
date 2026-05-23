@@ -181,7 +181,7 @@ Top right of the page (next to the breadcrumb's right side), a pill:
 [ workbench → ]
 ```
 
-Switches to the Workbench layout (prompt 06). Query param: `?view=workbench`.
+Switches to the Workbench layout (prompt 06). Query param: `?mode=workbench`.
 
 ### 5.11 — Keyboard
 
@@ -223,7 +223,7 @@ layout.
 ## Acceptance criteria
 
 - [ ] `/entities/:id` renders the editorial layout by default.
-- [ ] `?view=workbench` switches to the Workbench layout (prompt 06).
+- [ ] `?mode=workbench` switches to the Workbench layout (prompt 06).
 - [ ] Sparkline renders 90 daily buckets; absent days render as a faint
       4% rect of full bucket height (do not collapse to zero — that
       would lose the timeline shape).

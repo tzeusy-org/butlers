@@ -199,7 +199,6 @@ def _looks_like_transient_cli_failure(error_detail: str) -> bool:
         "codex_core::compact_remote",
         "compact_remote",
         "remote compaction failed",
-        "selected model is at capacity",
         "model is at capacity",
     )
     return any(marker in lowered for marker in markers)

@@ -135,7 +135,10 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_single_target_routing(self, mock_load):
+        captured_kwargs = {}
+
         async def mock_dispatch(**kwargs):
+            captured_kwargs.update(kwargs)
             return FakeSpawnerResult(
                 output="Routed to health butler.",
                 tool_calls=[
@@ -156,6 +159,7 @@ class TestMessagePipelineProcess:
         assert result.routed_targets == ["health"]
         assert result.acked_targets == ["health"]
         assert result.failed_targets == []
+        assert captured_kwargs["timeout_override"] == 30
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -264,4 +268,5 @@ class TestInferFallbackTarget:
 class TestPipelineConfig:
     def test_defaults(self):
         cfg = PipelineConfig()
-        assert isinstance(cfg.enable_ingress_dedupe, bool)
+        assert cfg.enable_ingress_dedupe is True
+        assert cfg.classification_timeout_s == 30

@@ -26,6 +26,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.health._helpers import _get_owner_entity_id
+
 logger = logging.getLogger(__name__)
 
 VALID_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
@@ -100,26 +102,6 @@ async def _write_to_health_meals(
             meal_id,
             exc_info=True,
         )
-
-
-async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity's id from public.entities.
-
-    Uses the canonical post-core_016 path: ``'owner' = ANY(roles)`` on
-    ``public.entities``.  Returns ``None`` gracefully when the table does not
-    exist yet (pre-migration databases) or when no owner entity is present.
-    """
-    try:
-        row = await pool.fetchrow(
-            "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
-        )
-        return row["id"] if row else None
-    except asyncpg.PostgresError:
-        logger.debug(
-            "_get_owner_entity_id: public.entities query failed (table may not exist yet)",
-            exc_info=True,
-        )
-        return None
 
 
 def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:

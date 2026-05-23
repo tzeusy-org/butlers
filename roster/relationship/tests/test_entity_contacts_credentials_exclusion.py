@@ -37,7 +37,21 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 _ENT_ID = uuid4()
+_OWNER_ENTITY_ID = uuid4()
 _NOW = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
+
+
+def _make_owner_row() -> MagicMock:
+    """Simulate a row returned by the owner-entity check query.
+
+    Must include ``roles`` because _get_owner_roles() (PR #1859 refactor of the
+    Amendment 12a/12b gate) reads ``row["roles"]`` to verify ``'owner'`` is
+    present.  Without ``roles``, the contacts endpoint returns HTTP 403.
+    """
+    data = {"id": _OWNER_ENTITY_ID, "roles": ["owner"]}
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
 
 
 def _make_entity_fact_row(**kwargs) -> MagicMock:
@@ -64,16 +78,24 @@ def _make_entity_fact_row(**kwargs) -> MagicMock:
 
 def _app_with_pool(
     *,
+    owner_exists: bool = True,
     entity_exists: bool = True,
     fetch_rows: list | None = None,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app whose relationship DB pool returns controlled rows.
 
+    Call sequence inside the contacts endpoint:
+      1. pool.fetchrow → owner entity check (None → 403)
+      2. pool.fetchval → entity-exists check (None → 404)
+      3. pool.fetch    → entity_facts rows for has-* predicates
+
+    ``owner_exists`` controls whether fetchrow returns an owner row.
     ``entity_exists`` controls the ``fetchval`` response for the entity-exists
     check (returns 1 if True, None if False).
     ``fetch_rows`` is returned by pool.fetch for the facts query.
     """
     mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
     mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
 

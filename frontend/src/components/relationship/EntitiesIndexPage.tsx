@@ -77,6 +77,8 @@ const ENTITY_TYPES = [
   "other",
 ] as const;
 type EntityType = (typeof ENTITY_TYPES)[number];
+const DEFAULT_ENTITY_TYPES: EntityType[] = ["person", "organization"];
+const EMPTY_TYPE_SENTINEL = "__none__";
 
 const TYPE_LABELS: Record<EntityType, string> = {
   person: "Person",
@@ -407,16 +409,16 @@ function EntityMergeDialog({
 // ---------------------------------------------------------------------------
 
 interface FilterChipsProps {
-  typeFilter: EntityType | null;
+  typeFilters: EntityType[];
   stateFilter: EntityState | null;
   hasContact: boolean;
-  onTypeChange: (type: EntityType | null) => void;
+  onTypeChange: (type: EntityType) => void;
   onStateChange: (state: EntityState | null) => void;
   onHasContactChange: (v: boolean) => void;
 }
 
 function FilterChips({
-  typeFilter,
+  typeFilters,
   stateFilter,
   hasContact,
   onTypeChange,
@@ -429,9 +431,9 @@ function FilterChips({
       {ENTITY_TYPES.map((t) => (
         <Button
           key={t}
-          variant={typeFilter === t ? "default" : "outline"}
+          variant={typeFilters.includes(t) ? "default" : "outline"}
           size="sm"
-          onClick={() => onTypeChange(typeFilter === t ? null : t)}
+          onClick={() => onTypeChange(t)}
         >
           {TYPE_LABELS[t]}
         </Button>
@@ -760,14 +762,15 @@ export function EntitiesIndexPage() {
   const [forgetSourceEntity, setForgetSourceEntity] = useState<ActionEntity | null>(null);
 
   // URL is the source of truth for all filter chips.
-  // ?type=person activates the Person chip; any other value or absence deactivates it.
+  // Repeated ?type=person&type=organization activates multiple type chips.
+  // Absence defaults to people + organizations for the base index.
   // ?state=unidentified activates the Unidentified chip; etc.
   // ?has=contact activates the Has contact chip; any other value or absence deactivates it.
-  const rawType = searchParams.get("type");
-  const typeFilter: EntityType | null =
-    rawType !== null && (ENTITY_TYPES as readonly string[]).includes(rawType)
-      ? (rawType as EntityType)
-      : null;
+  const rawTypes = searchParams.getAll("type");
+  const typeFilters: EntityType[] =
+    rawTypes.length === 0
+      ? DEFAULT_ENTITY_TYPES
+      : ENTITY_TYPES.filter((type) => rawTypes.includes(type));
 
   const rawState = searchParams.get("state");
   const stateFilter: EntityState | null =
@@ -778,7 +781,7 @@ export function EntitiesIndexPage() {
   const hasContact = searchParams.get("has") === "contact";
 
   const params: RelationshipEntityListParams = {
-    entity_type: typeFilter ?? undefined,
+    entity_type: typeFilters,
     state: stateFilter ?? undefined,
     has: hasContact ? "contact" : undefined,
     limit: PAGE_SIZE,
@@ -794,14 +797,23 @@ export function EntitiesIndexPage() {
   const hasMore = offset + PAGE_SIZE < total;
   const hasPrev = offset > 0;
 
-  function handleTypeChange(type: EntityType | null) {
+  function handleTypeChange(type: EntityType) {
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        if (type !== null) {
-          next.set("type", type);
+        const currentRawTypes = next.getAll("type");
+        const currentTypes =
+          currentRawTypes.length === 0
+            ? DEFAULT_ENTITY_TYPES
+            : ENTITY_TYPES.filter((candidate) => currentRawTypes.includes(candidate));
+        const selected = currentTypes.includes(type)
+          ? currentTypes.filter((candidate) => candidate !== type)
+          : ENTITY_TYPES.filter((candidate) => currentTypes.includes(candidate) || candidate === type);
+        next.delete("type");
+        if (selected.length === 0) {
+          next.append("type", EMPTY_TYPE_SENTINEL);
         } else {
-          next.delete("type");
+          selected.forEach((candidate) => next.append("type", candidate));
         }
         return next;
       },
@@ -855,7 +867,7 @@ export function EntitiesIndexPage() {
 
       {/* Filter chips */}
       <FilterChips
-        typeFilter={typeFilter}
+        typeFilters={typeFilters}
         stateFilter={stateFilter}
         hasContact={hasContact}
         onTypeChange={handleTypeChange}

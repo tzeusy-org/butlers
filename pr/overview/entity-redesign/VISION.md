@@ -18,7 +18,7 @@ Today the Butlers app fragments the "people and things I care about" surface acr
   - _Why:_ The owner needs to see what's broken without leaving home. Colour leaking into rows = overdesigned.
 - **Every fact carries provenance.** `src` (butler that wrote it), `conf` (0..1), `lastSeen`, `weight`, `verified`, `primary`. The model never drops these even when the Editorial view hides them. Workbench surfaces them; Finder ranks by them.
   - _Why:_ Honesty in the data layer; flexibility in presentation. Two detail views (Editorial default, Workbench toggle) read the same record.
-- **Editorial + Workbench as one page, two affordances.** Default detail page is editorial (calm, hides provenance). A toggle (icon in header or `?view=workbench`) surfaces every metadata column.
+- **Editorial + Workbench as one page, two affordances.** Default detail page is editorial (calm, hides provenance). A toggle (icon in header or `?mode=workbench`) surfaces every metadata column.
   - _Why:_ 90% of detail visits are reading, not editing. The 10% power user gets the dense form without burdening the 90%.
 - **App-wide Cmd-K Finder.** Single entry point that searches across entity names, aliases, contact-facts, predicate labels. Resolves to entities first; eventually any record.
   - _Why:_ Direct lookup beats navigation. The Finder is the only surface that hits `/api/search`; everything else uses typed endpoints.

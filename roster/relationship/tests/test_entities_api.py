@@ -267,12 +267,32 @@ class TestListEntities:
         assert resp.status_code == 400
 
     async def test_entity_type_filter_passes_to_query(self):
-        """entity_type= filter is forwarded to the DB query."""
+        """Single entity_type= filter is forwarded to the DB query."""
         app, pool = self._make_app(total=0, fetch_rows=[])
         resp = await _get(app, _LIST_PATH, entity_type="organization")
         assert resp.status_code == 200
         fetch_call = pool.fetch.call_args[0]
-        assert "organization" in fetch_call
+        assert ["organization"] in fetch_call
+
+    async def test_entity_type_filter_accepts_multiple_values(self):
+        """Repeated entity_type= filters are forwarded as a type list."""
+        app, pool = self._make_app(total=0, fetch_rows=[])
+        resp = await _get(app, _LIST_PATH, entity_type=["person", "organization"])
+        assert resp.status_code == 200
+        fetch_call = pool.fetch.call_args[0]
+        assert ["person", "organization"] in fetch_call
+
+    async def test_entity_list_sorts_people_by_tier_then_last_seen(self):
+        """List ordering keeps people first by tier ASC, then last_seen ASC."""
+        app, pool = self._make_app(total=0, fetch_rows=[])
+        resp = await _get(app, _LIST_PATH)
+        assert resp.status_code == 200
+        data_sql = pool.fetch.call_args[0][0]
+        assert "CASE entity_type" in data_sql
+        assert "WHEN 'person' THEN 0" in data_sql
+        assert "WHEN 'organization' THEN 1" in data_sql
+        assert "CASE WHEN entity_type = 'person' THEN tier END ASC NULLS LAST" in data_sql
+        assert "CASE WHEN entity_type = 'person' THEN last_seen END ASC NULLS LAST" in data_sql
 
 
 # ===========================================================================

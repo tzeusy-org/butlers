@@ -2577,8 +2577,12 @@ def _active_entity_condition(alias: str = "e") -> str:
 
 @router.get("/entities", response_model=EntityListResponse)
 async def list_entities(
-    entity_type: str | None = Query(
-        None, description="Filter by entity_type (e.g. person, organization)"
+    entity_type: list[str] | None = Query(
+        None,
+        description=(
+            "Filter by one or more entity_type values. Repeat the parameter for "
+            "multiselect filters, e.g. entity_type=person&entity_type=organization."
+        ),
     ),
     state: str | None = Query(
         None,
@@ -2604,8 +2608,8 @@ async def list_entities(
 
     **Filters**
 
-    - ``entity_type`` — filters ``public.entities.entity_type`` (e.g. ``person``,
-      ``organization``, ``location``).
+    - ``entity_type`` — repeatable filter for ``public.entities.entity_type``
+      (e.g. ``person`` + ``organization``).
     - ``state`` — state chip filter:
         - ``unidentified``: entities where ``metadata->>'unidentified' = 'true'``.
         - ``duplicate-candidate``: entities where ``metadata->>'duplicate_candidate' = 'true'``.
@@ -2645,10 +2649,11 @@ async def list_entities(
     args: list[object] = []
     arg_idx = 1
 
-    # entity_type filter
-    if entity_type is not None:
-        conditions.append(f"e.entity_type = ${arg_idx}")
-        args.append(entity_type)
+    # entity_type filter (repeatable query param for the frontend multiselect).
+    entity_types = [t for t in (entity_type or []) if t]
+    if entity_types:
+        conditions.append(f"e.entity_type = ANY(${arg_idx}::text[])")
+        args.append(entity_types)
         arg_idx += 1
 
     # state filter
@@ -2689,45 +2694,70 @@ async def list_entities(
     # Count query (no pagination)
     count_sql = f"SELECT count(*) FROM public.entities e {where_clause}"
 
-    # Data query: annotate with pinned tier (from facts) and last_seen
+    # Data query: annotate with pinned tier (from facts) and last_seen.
+    # People are sorted as a relationship working set: closest tier first, then
+    # oldest last_seen first for re-engagement; other types remain alphabetical.
     data_sql = f"""
+        WITH annotated AS (
+            SELECT
+                e.id,
+                e.canonical_name,
+                e.entity_type,
+                e.aliases,
+                e.roles,
+                e.metadata,
+                e.created_at,
+                e.updated_at,
+                -- Pinned Dunbar tier override from relationship.entity_facts
+                (
+                    SELECT (rf.object)::int
+                    FROM relationship.entity_facts rf
+                    WHERE rf.subject = e.id
+                      AND rf.predicate = 'dunbar_tier_override'
+                      AND rf.validity = 'active'
+                    ORDER BY rf.created_at DESC
+                    LIMIT 1
+                ) AS tier,
+                -- Most-recent last_seen across all active relationship facts
+                (
+                    SELECT max(rf.last_seen)
+                    FROM relationship.entity_facts rf
+                    WHERE rf.subject = e.id
+                      AND rf.validity = 'active'
+                ) AS last_seen,
+                -- Count of contact-type facts
+                (
+                    SELECT count(*)
+                    FROM relationship.entity_facts rf
+                    WHERE rf.subject = e.id
+                      AND rf.predicate IN ({", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)})
+                      AND rf.validity = 'active'
+                ) AS contact_fact_count
+            FROM public.entities e
+            {where_clause}
+        )
         SELECT
-            e.id,
-            e.canonical_name,
-            e.entity_type,
-            e.aliases,
-            e.roles,
-            e.metadata,
-            e.created_at,
-            e.updated_at,
-            -- Pinned Dunbar tier override from relationship.entity_facts
-            (
-                SELECT (rf.object)::int
-                FROM relationship.entity_facts rf
-                WHERE rf.subject = e.id
-                  AND rf.predicate = 'dunbar_tier_override'
-                  AND rf.validity = 'active'
-                ORDER BY rf.created_at DESC
-                LIMIT 1
-            ) AS tier,
-            -- Most-recent last_seen across all active relationship facts
-            (
-                SELECT max(rf.last_seen)
-                FROM relationship.entity_facts rf
-                WHERE rf.subject = e.id
-                  AND rf.validity = 'active'
-            ) AS last_seen,
-            -- Count of contact-type facts
-            (
-                SELECT count(*)
-                FROM relationship.entity_facts rf
-                WHERE rf.subject = e.id
-                  AND rf.predicate IN ({", ".join(f"'{p}'" for p in _HAS_CONTACT_PREDICATES)})
-                  AND rf.validity = 'active'
-            ) AS contact_fact_count
-        FROM public.entities e
-        {where_clause}
-        ORDER BY e.canonical_name ASC
+            id,
+            canonical_name,
+            entity_type,
+            aliases,
+            roles,
+            metadata,
+            created_at,
+            updated_at,
+            tier,
+            last_seen,
+            contact_fact_count
+        FROM annotated
+        ORDER BY
+            CASE entity_type
+                WHEN 'person' THEN 0
+                WHEN 'organization' THEN 1
+                ELSE 2
+            END,
+            CASE WHEN entity_type = 'person' THEN tier END ASC NULLS LAST,
+            CASE WHEN entity_type = 'person' THEN last_seen END ASC NULLS LAST,
+            canonical_name ASC
         OFFSET ${arg_idx} LIMIT ${arg_idx + 1}
     """
     count_args = list(args)
