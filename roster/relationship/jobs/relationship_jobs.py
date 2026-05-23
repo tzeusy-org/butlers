@@ -1355,6 +1355,35 @@ _CI_TYPE_TO_PREDICATE: dict[str, str] = {
 }
 
 
+async def _registered_contact_info_predicates(db_pool: asyncpg.Pool) -> set[str]:
+    """Return mapped contact-info predicates present in the registry.
+
+    The reconciler has a static contact_info.type -> predicate map, but the
+    central writer validates against ``relationship.entity_predicate_registry``.
+    Checking the registry once lets the reconciler count registry drift as a
+    skipped predicate instead of repeatedly surfacing writer errors per row.
+    """
+    mapped_predicates = sorted(set(_CI_TYPE_TO_PREDICATE.values()))
+    try:
+        rows = await db_pool.fetch(
+            """
+            SELECT predicate
+            FROM relationship.entity_predicate_registry
+            WHERE predicate = ANY($1::text[])
+            """,
+            mapped_predicates,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "contact_info_reconciler: failed to load predicate registry; "
+            "mapped contact_info predicates will be skipped",
+            exc_info=True,
+        )
+        return set()
+
+    return {row["predicate"] for row in rows}
+
+
 def _reconciler_interval_minutes() -> int:
     """Return the reconciler interval in minutes (default 30, env-overridable)."""
     raw = os.environ.get(_RECONCILER_INTERVAL_ENV)
@@ -1430,6 +1459,8 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "rows_skipped_orphan": 0,
         "rows_skipped_no_predicate": 0,
     }
+
+    registered_predicates = await _registered_contact_info_predicates(db_pool)
 
     # -----------------------------------------------------------------------
     # Step 1: Sweep public.contact_info rows that DON'T have an active triple.
@@ -1523,6 +1554,17 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     ci_id,
                 )
             stats["rows_skipped_no_predicate"] += 1
+            continue
+
+        if predicate not in registered_predicates:
+            stats["rows_skipped_no_predicate"] += 1
+            logger.warning(
+                "contact_info_reconciler: predicate=%s for ci_type=%r is not registered; "
+                "skipping ci_id=%s",
+                predicate,
+                ci_type,
+                ci_id,
+            )
             continue
 
         # Provenance fields.

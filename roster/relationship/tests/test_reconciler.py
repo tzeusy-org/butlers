@@ -46,10 +46,22 @@ _WRITER_PATCH_TARGET = (
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(rows: list[dict]) -> AsyncMock:
+_REGISTERED_TEST_PREDICATES = {
+    "has-email",
+    "has-phone",
+    "has-handle",
+    "has-website",
+}
+
+
+def _registry_rows(predicates: set[str] | None = None) -> list[dict]:
+    return [{"predicate": predicate} for predicate in sorted(predicates or _REGISTERED_TEST_PREDICATES)]
+
+
+def _make_pool(rows: list[dict], *, registered_predicates: set[str] | None = None) -> AsyncMock:
     """Return a mock asyncpg.Pool whose fetch() returns *rows*."""
     pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=rows)
+    pool.fetch = AsyncMock(side_effect=[_registry_rows(registered_predicates), rows])
     pool.execute = AsyncMock(return_value="OK")
     return pool
 
@@ -395,6 +407,21 @@ class TestUnrecognisedType:
             result = await run_contact_info_reconciler(pool)
 
         assert result["rows_skipped_no_predicate"] == 1
+        mock_writer.assert_not_called()
+
+    async def test_mapped_type_with_unregistered_predicate_is_skipped(self):
+        """Mapped ci_types are skipped when the DB registry is missing the predicate."""
+        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
+
+        row = _ci_row(ci_type="phone", ci_value="+15559999999")
+        pool = _make_pool(rows=[row], registered_predicates={"has-email"})
+
+        with patch(_WRITER_PATCH_TARGET, new_callable=AsyncMock) as mock_writer:
+            result = await run_contact_info_reconciler(pool)
+
+        assert result["rows_skipped_no_predicate"] == 1
+        assert result["rows_error"] == 0
+        assert result["rows_reconciled"] == 0
         mock_writer.assert_not_called()
 
 
