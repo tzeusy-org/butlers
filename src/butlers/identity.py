@@ -344,6 +344,29 @@ async def create_temp_contact(
                     channel_value,
                 )
 
+        # Dual-write shim (Group A): best-effort post-commit triple emission (Amendment 14).
+        # Called after the SQL transaction commits.  Failure is swallowed — never blocks return.
+        try:
+            from butlers.tools.relationship.dual_write import emit_contact_info_fact
+
+            await emit_contact_info_fact(
+                pool,
+                contact_id=contact_id,
+                ci_type=channel_type,
+                value=channel_value,
+                is_primary=True,
+                src="dual-write",
+            )
+        except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+            logger.warning(
+                "create_temp_contact: emit_contact_info_fact failed for contact %s "
+                "(ci_type=%r, value=%r) — dual-write failure swallowed",
+                contact_id,
+                channel_type,
+                channel_value,
+                exc_info=True,
+            )
+
         return ResolvedContact(
             contact_id=contact_id,
             name=name,

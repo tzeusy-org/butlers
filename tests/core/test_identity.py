@@ -4,13 +4,14 @@ Covers:
 - resolve_contact_by_channel: owner, non-owner, unknown→None, DB error→None, string UUID coercion
 - build_identity_preamble: owner, known non-owner with/without entity_id, unknown with temp_id
 - create_temp_contact: creates new, returns existing on race, DB error→None
+- create_temp_contact dual-write shim (Group A, bu-3jfvv): flag on/off, shim failure swallowed
 """
 
 from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,6 +23,11 @@ from butlers.identity import (
 )
 
 pytestmark = pytest.mark.unit
+
+_FLAG_ENV = "BUTLERS_CONTACT_INFO_DUAL_WRITE"
+# Patch the function in its home module — create_temp_contact uses a deferred import,
+# so patching the source module is the only stable anchor.
+_EMIT_FACT_PATCH = "butlers.tools.relationship.dual_write.emit_contact_info_fact"
 
 _OWNER_ID = uuid.uuid4()
 _CONTACT_ID = uuid.uuid4()
@@ -205,3 +211,135 @@ async def test_create_temp_contact():
     pool3.acquire.return_value.__aenter__ = AsyncMock(side_effect=Exception("connection refused"))
     pool3.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     assert await create_temp_contact(pool3, "telegram", "999") is None
+
+
+# ---------------------------------------------------------------------------
+# create_temp_contact — dual-write shim parity tests (Group A, bu-3jfvv)
+# ---------------------------------------------------------------------------
+
+# Design contract (Amendment 14):
+#   - SQL is authoritative. Legacy write commits first; triple write is best-effort.
+#   - Shim failures are swallowed; legacy SQL commit is never blocked or rolled back.
+#   - Flag is read on every call via ``dual_write_enabled()``.
+#
+# Test scope:
+#   (a) Flag off → emit_contact_info_fact called but returns early internally.
+#   (b) Flag on  → emit_contact_info_fact is called after SQL commit with correct args.
+#   (c) Shim raises → failure swallowed; ResolvedContact is still returned.
+
+
+def _make_create_temp_contact_pool(
+    new_contact_id: uuid.UUID,
+    new_entity_id: uuid.UUID,
+) -> MagicMock:
+    """Build pool mock wired for create_temp_contact (new-contact path)."""
+    mock_contact_row = MagicMock()
+    mock_contact_row.__getitem__ = lambda self, k: {
+        "id": new_contact_id,
+        "name": f"Unknown (telegram {new_contact_id})",
+        "entity_id": new_entity_id,
+    }[k]
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(side_effect=[None, mock_contact_row])
+    mock_conn.fetchval = AsyncMock(return_value=new_entity_id)
+    mock_conn.execute = AsyncMock()
+
+    mock_transaction = AsyncMock()
+    mock_transaction.__aenter__ = AsyncMock(return_value=mock_transaction)
+    mock_transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=mock_transaction)
+
+    pool = MagicMock()
+    pool.acquire = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    return pool
+
+
+class TestCreateTempContactDualWriteShim:
+    """create_temp_contact: emit_contact_info_fact is called after the INSERT commits."""
+
+    async def test_emit_fact_called_when_flag_on(self, monkeypatch):
+        """(b) emit_contact_info_fact is called once after the INSERT commits."""
+        monkeypatch.setenv(_FLAG_ENV, "1")
+
+        contact_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
+        pool = _make_create_temp_contact_pool(contact_id, entity_id)
+
+        with patch(_EMIT_FACT_PATCH, new_callable=AsyncMock) as mock_emit:
+            result = await create_temp_contact(pool, "telegram", "12345")
+
+        mock_emit.assert_awaited_once()
+        call_kwargs = mock_emit.call_args.kwargs
+        assert call_kwargs["contact_id"] == contact_id
+        assert call_kwargs["ci_type"] == "telegram"
+        assert call_kwargs["value"] == "12345"
+        assert call_kwargs["is_primary"] is True
+        assert result is not None and result.contact_id == contact_id
+
+    async def test_emit_fact_called_when_flag_off(self, monkeypatch):
+        """(a) emit_contact_info_fact is called even when flag is off (returns early internally)."""
+        monkeypatch.delenv(_FLAG_ENV, raising=False)
+
+        contact_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
+        pool = _make_create_temp_contact_pool(contact_id, entity_id)
+
+        with patch(_EMIT_FACT_PATCH, new_callable=AsyncMock) as mock_emit:
+            result = await create_temp_contact(pool, "telegram", "12345")
+
+        # Call-site always invokes helper; helper checks flag internally.
+        mock_emit.assert_awaited_once()
+        assert result is not None and result.contact_id == contact_id
+
+    async def test_shim_failure_does_not_block_return_value(self, monkeypatch):
+        """(c) emit_contact_info_fact raising does not propagate — ResolvedContact is returned."""
+        monkeypatch.setenv(_FLAG_ENV, "1")
+
+        contact_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
+        pool = _make_create_temp_contact_pool(contact_id, entity_id)
+
+        with patch(
+            _EMIT_FACT_PATCH,
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("triple store down"),
+        ):
+            result = await create_temp_contact(pool, "telegram", "12345")
+
+        assert result is not None and result.contact_id == contact_id
+
+    async def test_shim_not_called_when_existing_contact_found(self, monkeypatch):
+        """Shim is NOT called when the race path returns an existing contact (no new INSERT)."""
+        monkeypatch.setenv(_FLAG_ENV, "1")
+
+        existing_id = uuid.uuid4()
+        existing_row = MagicMock()
+        existing_row.__getitem__ = lambda self, k: {
+            "contact_id": existing_id,
+            "name": "Alice",
+            "roles": [],
+            "entity_id": None,
+        }[k]
+
+        mock_transaction = AsyncMock()
+        mock_transaction.__aenter__ = AsyncMock(return_value=mock_transaction)
+        mock_transaction.__aexit__ = AsyncMock(return_value=False)
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value=existing_row)
+        mock_conn.transaction = MagicMock(return_value=mock_transaction)
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(_EMIT_FACT_PATCH, new_callable=AsyncMock) as mock_emit:
+            result = await create_temp_contact(pool, "telegram", "777")
+
+        # Existing path returns inside the transaction — no INSERT, so no shim call.
+        mock_emit.assert_not_called()
+        assert result is not None and result.contact_id == existing_id
