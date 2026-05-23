@@ -199,6 +199,7 @@ def _looks_like_transient_cli_failure(error_detail: str) -> bool:
         "codex_core::compact_remote",
         "compact_remote",
         "remote compaction failed",
+        "model is at capacity",
     )
     return any(marker in lowered for marker in markers)
 
@@ -1566,7 +1567,7 @@ class CodexAdapter(RuntimeAdapter):
                     diag = (self._last_process_info or {}).get("stderr", "")
                     diag_short = diag.strip()[:500] if diag else "(no stderr)"
                     logger.warning(
-                        "Codex CLI hit transient remote-compaction failure — retrying "
+                        "Codex CLI hit transient backend failure — retrying "
                         "after %.1fs (attempt %d/%d). stderr: %s",
                         delay,
                         subprocess_attempt_count + 1,
@@ -1596,8 +1597,7 @@ class CodexAdapter(RuntimeAdapter):
                         self._last_process_info["attempt_count"] = subprocess_attempt_count
                         self._last_process_info["result_source"] = "first"
                     logger.error(
-                        "Codex CLI transient remote-compaction failure persisted after "
-                        "%d attempts: %s",
+                        "Codex CLI transient backend failure persisted after %d attempts: %s",
                         subprocess_attempt_count,
                         first_exc,
                     )

@@ -1089,11 +1089,59 @@ async def test_retry_on_transient_remote_compaction_failure(caplog):
 
     assert call_count == 2
     assert result_text == "ok"
-    assert any(
-        "hit transient remote-compaction failure" in rec.getMessage() for rec in caplog.records
-    )
+    assert any("hit transient backend failure" in rec.getMessage() for rec in caplog.records)
     assert not any(
         rec.levelno >= logging.ERROR and "remote compaction failed" in rec.getMessage()
+        for rec in caplog.records
+    )
+    info = adapter.last_process_info
+    assert info["result_source"] == "retry"
+    assert info["attempt_count"] == 2
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is True
+
+
+async def test_retry_on_transient_model_capacity_failure(caplog):
+    """Transient Codex model-capacity failures should retry and recover."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 1 if call_count == 1 else 0
+        proc.pid = 200 + call_count
+        proc.communicate = AsyncMock(
+            return_value=(
+                b"" if call_count == 1 else b"ok",
+                (
+                    b"Selected model is at capacity. Please try a different model.\n"
+                    if call_count == 1
+                    else b""
+                ),
+            )
+        )
+        return proc
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.runtimes.codex"):
+        with (
+            patch(_EXEC, side_effect=_mock_exec),
+            patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0,)),
+        ):
+            result_text, _, _ = await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers=_MCP_SERVERS,
+                env={},
+            )
+
+    assert call_count == 2
+    assert result_text == "ok"
+    assert any("hit transient backend failure" in rec.getMessage() for rec in caplog.records)
+    assert not any(
+        rec.levelno >= logging.ERROR and "Selected model is at capacity" in rec.getMessage()
         for rec in caplog.records
     )
     info = adapter.last_process_info
