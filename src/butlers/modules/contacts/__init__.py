@@ -999,6 +999,33 @@ async def _enrich_telegram_chat_ids(provider: TelegramContactsProvider, pool: An
             local_contact_id,
             chat_id_str,
         )
+
+        # Dual-write shim (Group C): best-effort post-commit triple emission (Amendment 14).
+        # ``telegram_chat_id`` is intentionally NOT in _CI_TYPE_TO_PREDICATE — it is a routing
+        # identifier (numeric chat ID), not a user-facing handle.  emit_contact_info_fact()
+        # will log a debug skip and return immediately for unmapped types.  The shim call is
+        # kept here for pattern consistency so future predicate additions need only update the
+        # mapping in dual_write.py; no call-site changes will be required.
+        try:
+            from butlers.tools.relationship.dual_write import emit_contact_info_fact
+
+            await emit_contact_info_fact(
+                pool,
+                contact_id=local_contact_id,
+                ci_type="telegram_chat_id",
+                value=chat_id_str,
+                is_primary=False,
+                src="dual-write",
+            )
+        except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+            logger.warning(
+                "_enrich_telegram_chat_ids: emit_contact_info_fact failed for contact %s "
+                "(ci_type='telegram_chat_id', value=%r) — dual-write failure swallowed",
+                local_contact_id,
+                chat_id_str,
+                exc_info=True,
+            )
+
         enriched += 1
 
     if enriched:
