@@ -193,7 +193,7 @@ def _looks_like_transport_failure(error_detail: str) -> bool:
 
 
 def _looks_like_transient_cli_failure(error_detail: str) -> bool:
-    """Return True when Codex stderr matches a known transient backend failure."""
+    """Return True when Codex output matches a known transient backend failure."""
     lowered = error_detail.lower()
     markers = (
         "codex_core::compact_remote",
