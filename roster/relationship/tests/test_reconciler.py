@@ -21,6 +21,7 @@ and relationship_assert_fact() are mocked via unittest.mock.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -55,7 +56,9 @@ _REGISTERED_TEST_PREDICATES = {
 
 
 def _registry_rows(predicates: set[str] | None = None) -> list[dict]:
-    return [{"predicate": predicate} for predicate in sorted(predicates or _REGISTERED_TEST_PREDICATES)]
+    return [
+        {"predicate": predicate} for predicate in sorted(predicates or _REGISTERED_TEST_PREDICATES)
+    ]
 
 
 def _make_pool(rows: list[dict], *, registered_predicates: set[str] | None = None) -> AsyncMock:
@@ -367,12 +370,27 @@ class TestWriterError:
         from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
 
         pool = AsyncMock()
-        pool.fetch = AsyncMock(side_effect=RuntimeError("Connection refused"))
+        pool.fetch = AsyncMock(side_effect=[_registry_rows(), RuntimeError("Connection refused")])
 
         result = await run_contact_info_reconciler(pool)
 
         assert result["rows_error"] >= 1
         assert result["rows_scanned"] == 0
+
+    async def test_registry_fetch_failure_returns_error_stats(self):
+        """If the predicate registry lookup fails, the job aborts before the sweep."""
+        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
+
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=RuntimeError("Connection refused"))
+
+        with patch(_WRITER_PATCH_TARGET, new_callable=AsyncMock) as mock_writer:
+            result = await run_contact_info_reconciler(pool)
+
+        assert result["rows_error"] == 1
+        assert result["rows_scanned"] == 0
+        assert pool.fetch.await_count == 1
+        mock_writer.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +440,30 @@ class TestUnrecognisedType:
         assert result["rows_skipped_no_predicate"] == 1
         assert result["rows_error"] == 0
         assert result["rows_reconciled"] == 0
+        mock_writer.assert_not_called()
+
+    async def test_unregistered_predicate_warns_once_per_predicate(self, caplog):
+        """Repeated rows for one missing predicate emit one warning per run."""
+        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
+
+        rows = [
+            _ci_row(ci_type="phone", ci_value="+15550000001"),
+            _ci_row(ci_type="phone", ci_value="+15550000002"),
+        ]
+        pool = _make_pool(rows=rows, registered_predicates={"has-email"})
+
+        with (
+            caplog.at_level(logging.WARNING),
+            patch(_WRITER_PATCH_TARGET, new_callable=AsyncMock) as mock_writer,
+        ):
+            result = await run_contact_info_reconciler(pool)
+
+        warnings = [
+            record for record in caplog.records if "predicate=has-phone" in record.getMessage()
+        ]
+        assert result["rows_skipped_no_predicate"] == 2
+        assert result["rows_error"] == 0
+        assert len(warnings) == 1
         mock_writer.assert_not_called()
 
 

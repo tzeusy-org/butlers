@@ -1355,7 +1355,7 @@ _CI_TYPE_TO_PREDICATE: dict[str, str] = {
 }
 
 
-async def _registered_contact_info_predicates(db_pool: asyncpg.Pool) -> set[str]:
+async def _registered_contact_info_predicates(db_pool: asyncpg.Pool) -> set[str] | None:
     """Return mapped contact-info predicates present in the registry.
 
     The reconciler has a static contact_info.type -> predicate map, but the
@@ -1375,11 +1375,10 @@ async def _registered_contact_info_predicates(db_pool: asyncpg.Pool) -> set[str]
         )
     except Exception:  # noqa: BLE001
         logger.warning(
-            "contact_info_reconciler: failed to load predicate registry; "
-            "mapped contact_info predicates will be skipped",
+            "contact_info_reconciler: failed to load predicate registry; aborting run",
             exc_info=True,
         )
-        return set()
+        return None
 
     return {row["predicate"] for row in rows}
 
@@ -1461,6 +1460,11 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
     }
 
     registered_predicates = await _registered_contact_info_predicates(db_pool)
+    if registered_predicates is None:
+        stats["rows_error"] += 1
+        return stats
+
+    unregistered_warned: set[str] = set()
 
     # -----------------------------------------------------------------------
     # Step 1: Sweep public.contact_info rows that DON'T have an active triple.
@@ -1558,13 +1562,15 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
         if predicate not in registered_predicates:
             stats["rows_skipped_no_predicate"] += 1
-            logger.warning(
-                "contact_info_reconciler: predicate=%s for ci_type=%r is not registered; "
-                "skipping ci_id=%s",
-                predicate,
-                ci_type,
-                ci_id,
-            )
+            if predicate not in unregistered_warned:
+                logger.warning(
+                    "contact_info_reconciler: predicate=%s for ci_type=%r is not registered; "
+                    "skipping ci_id=%s (and subsequent rows with this predicate)",
+                    predicate,
+                    ci_type,
+                    ci_id,
+                )
+                unregistered_warned.add(predicate)
             continue
 
         # Provenance fields.
