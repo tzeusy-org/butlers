@@ -18,6 +18,7 @@ import asyncpg
 import pytest
 
 from butlers.core.model_routing import (
+    _RESOLVE_SQL,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     _check_deprecated_tier,
@@ -91,6 +92,12 @@ def test_deprecated_tier_shim_remaps_and_warns(caplog: pytest.LogCaptureFixture)
     assert len(caplog.records) == 0
 
 
+@pytest.mark.unit
+def test_resolver_sql_excludes_failed_verification_rows() -> None:
+    """The resolver must not dispatch models whose latest verification failed."""
+    assert "mc.last_verified_ok IS DISTINCT FROM false" in _RESOLVE_SQL
+
+
 # ---------------------------------------------------------------------------
 # Integration helpers
 # ---------------------------------------------------------------------------
@@ -129,6 +136,7 @@ async def _insert_catalog_entry(
     priority: int = 0,
     session_timeout_s: int = 1800,
     extra_args: list[str] | None = None,
+    last_verified_ok: bool | None = None,
 ) -> str:
     import json
 
@@ -136,8 +144,11 @@ async def _insert_catalog_entry(
     row = await pool.fetchrow(
         """
         INSERT INTO public.model_catalog
-            (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority, session_timeout_s)
-        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+            (
+                alias, runtime_type, model_id, extra_args, complexity_tier,
+                enabled, priority, session_timeout_s, last_verified_ok
+            )
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
         RETURNING id
         """,
         alias,
@@ -148,6 +159,7 @@ async def _insert_catalog_entry(
         enabled,
         priority,
         session_timeout_s,
+        last_verified_ok,
     )
     return str(row["id"])
 
@@ -239,6 +251,63 @@ async def test_resolve_returns_catalog_session_timeout(pool: asyncpg.Pool) -> No
     assert extra_args == []
     assert str(catalog_entry_id) == entry_id
     assert session_timeout_s == 2400
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_excludes_failed_verification_rows(pool: asyncpg.Pool) -> None:
+    """Rows that failed verification are not dispatch candidates.
+
+    ``NULL`` means untested and remains eligible; ``true`` means verified and
+    remains eligible. ``false`` records a recent verification failure such as a
+    timeout and must not be selected again until verification succeeds.
+    """
+    await _insert_catalog_entry(
+        pool,
+        alias="timed-out-opencode",
+        runtime_type="opencode",
+        model_id="opencode-go/slow-model",
+        complexity_tier="workhorse",
+        priority=100,
+        last_verified_ok=False,
+    )
+    verified_id = await _insert_catalog_entry(
+        pool,
+        alias="verified-codex",
+        runtime_type="codex",
+        model_id="gpt-5.4-mini",
+        complexity_tier="workhorse",
+        priority=10,
+        last_verified_ok=True,
+    )
+    untested_id = await _insert_catalog_entry(
+        pool,
+        alias="untested-codex",
+        runtime_type="codex",
+        model_id="gpt-5.3-codex-spark",
+        complexity_tier="cheap",
+        priority=10,
+        last_verified_ok=None,
+    )
+
+    result = await resolve_model(
+        pool, "switchboard", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert result is not None
+    assert result[1] == "gpt-5.4-mini"
+    assert str(result[3]) == verified_id
+
+    await pool.execute(
+        "UPDATE public.model_catalog SET last_verified_ok = false WHERE id = $1",
+        uuid.UUID(verified_id),
+    )
+    result = await resolve_model(
+        pool, "switchboard", Complexity.WORKHORSE, allow_tier_fallthrough=True
+    )
+    assert result is not None
+    assert result[1] == "gpt-5.3-codex-spark"
+    assert str(result[3]) == untested_id
 
 
 @pytest.mark.integration
