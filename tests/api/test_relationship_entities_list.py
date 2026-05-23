@@ -250,8 +250,8 @@ async def test_entity_type_filter_passes_to_query():
 
     assert resp.status_code == 200
     # Verify "organization" was sent as a query arg to the pool
-    fetch_call = pool.fetch.call_args[0]
-    assert "organization" in fetch_call
+    _, fetch_args, *_ = pool.fetch.call_args[0]
+    assert "organization" in fetch_args
 
 
 async def test_entity_type_filter_returns_matching_entities():
