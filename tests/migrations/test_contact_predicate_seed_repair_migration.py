@@ -1,4 +1,4 @@
-"""Tests for rel_017 contact predicate seed repair migration."""
+"""Tests for rel_017 predicate seed repair migration."""
 
 from __future__ import annotations
 
@@ -58,7 +58,15 @@ def test_upgrade_upserts_has_handle_predicate() -> None:
     assert "object_kind = EXCLUDED.object_kind" in joined
 
 
-def test_upgrade_repairs_all_contact_predicates() -> None:
+def test_upgrade_batches_predicate_repair() -> None:
+    sqls = _collect_upgrade_sqls()
+    insert_sqls = [
+        sql for sql in sqls if "INSERT INTO relationship.entity_predicate_registry" in sql
+    ]
+    assert len(insert_sqls) == 1
+
+
+def test_upgrade_repairs_all_rel014_predicates() -> None:
     sqls = _collect_upgrade_sqls()
     joined = "\n".join(sqls)
     for predicate in (
@@ -68,8 +76,28 @@ def test_upgrade_repairs_all_contact_predicates() -> None:
         "has-address",
         "has-birthday",
         "has-website",
+        "knows",
+        "family-of",
+        "partner-of",
+        "parent-of",
+        "child-of",
+        "colleague-of",
+        "friend-of",
+        "co-attended",
+        "purchased-from",
+        "subscribed-to",
+        "visited",
+        "dunbar_tier_override",
     ):
         assert f"'{predicate}'" in joined
+
+
+def test_upgrade_refreshes_predicate_metadata() -> None:
+    sqls = _collect_upgrade_sqls()
+    joined = "\n".join(sqls)
+    assert "kind = EXCLUDED.kind" in joined
+    assert "description = EXCLUDED.description" in joined
+    assert "Object is a JSON number (1-5)." in joined
 
 
 def test_downgrade_is_noop() -> None:

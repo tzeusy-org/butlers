@@ -1,18 +1,18 @@
-"""predicate_registry: repair contact predicate seed rows.
+"""predicate_registry: repair predicate seed rows.
 
 Revision ID: rel_017
 Revises: rel_016
 Create Date: 2026-05-23 00:00:00.000000
 
-Some deployed databases may have already run ``rel_014`` before the contact
-predicate catalog included the channel-collapsed ``has-handle`` row.  The
-contact-info reconciler maps Telegram/LinkedIn/Twitter/other rows to
-``has-handle``, so those databases reject the central writer validation until
-the predicate registry is repaired.
+Some deployed databases may have already run ``rel_014`` before the current
+predicate catalog was complete. The contact-info reconciler maps
+Telegram/LinkedIn/Twitter/other rows to ``has-handle``, so databases missing
+that row reject central writer validation until the predicate registry is
+repaired.
 
 This forward migration is intentionally idempotent: it upserts the current
-contact predicate seed set without relying on the original ``rel_014`` seed
-loop being re-run.
+``rel_014`` predicate seed set without relying on the original seed loop being
+re-run.
 """
 
 from __future__ import annotations
@@ -42,6 +42,46 @@ _CONTACT_PREDICATES: list[tuple[str, str, str, str]] = [
     ("has-website", "contact", "literal", "Web URL associated with the entity."),
 ]
 
+_RELATIONAL_PREDICATES: list[tuple[str, str, str, str]] = [
+    ("knows", "relational", "entity", "Generic acquaintance or social connection."),
+    ("family-of", "relational", "entity", "Generic family relationship (undirected)."),
+    ("partner-of", "relational", "entity", "Romantic or life partner."),
+    (
+        "parent-of",
+        "relational",
+        "entity",
+        "Parent-child relationship (directed: subject is parent).",
+    ),
+    ("child-of", "relational", "entity", "Parent-child relationship (directed: subject is child)."),
+    ("colleague-of", "relational", "entity", "Professional colleague or co-worker."),
+    ("friend-of", "relational", "entity", "Close friendship."),
+    ("co-attended", "relational", "entity", "Both entities attended the same event or place."),
+    ("purchased-from", "relational", "entity", "Subject made a purchase from the object entity."),
+    (
+        "subscribed-to",
+        "relational",
+        "entity",
+        "Subject holds a subscription with the object entity.",
+    ),
+    ("visited", "relational", "entity", "Subject visited the object entity (person or place)."),
+]
+
+_OVERRIDE_PREDICATES: list[tuple[str, str, str, str]] = [
+    (
+        "dunbar_tier_override",
+        "override",
+        "literal",
+        "Manual Dunbar-tier assignment that supersedes the computed weight tier. "
+        "Object is a JSON number (1-5).",
+    ),
+]
+
+_ALL_PREDICATES = _CONTACT_PREDICATES + _RELATIONAL_PREDICATES + _OVERRIDE_PREDICATES
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
 
 def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
     """GRANT privilege ON table TO role; tolerate older DBs missing roles."""
@@ -66,17 +106,29 @@ def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
 
 
 def upgrade() -> None:
-    for predicate, kind, object_kind, description in _CONTACT_PREDICATES:
-        safe_desc = description.replace("'", "''")
-        op.execute(f"""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES ('{predicate}', '{kind}', '{object_kind}', '{safe_desc}')
-            ON CONFLICT (predicate) DO UPDATE
-            SET kind = EXCLUDED.kind,
-                object_kind = EXCLUDED.object_kind,
-                description = EXCLUDED.description
-        """)
+    values_sql = ",\n            ".join(
+        "("
+        + ", ".join(
+            (
+                _sql_literal(predicate),
+                _sql_literal(kind),
+                _sql_literal(object_kind),
+                _sql_literal(description),
+            )
+        )
+        + ")"
+        for predicate, kind, object_kind, description in _ALL_PREDICATES
+    )
+    op.execute(f"""
+        INSERT INTO relationship.entity_predicate_registry
+            (predicate, kind, object_kind, description)
+        VALUES
+            {values_sql}
+        ON CONFLICT (predicate) DO UPDATE
+        SET kind = EXCLUDED.kind,
+            object_kind = EXCLUDED.object_kind,
+            description = EXCLUDED.description
+    """)
 
     _grant_best_effort(_TABLE_FQN, _TABLE_PRIVILEGES, _RELATIONSHIP_ROLE)
 
