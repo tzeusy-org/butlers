@@ -574,7 +574,7 @@ class ContactBackfillWriter:
             # 1. Concurrent duplicate inserts for the same (contact_id, type, value).
             # 2. The UNIQUE(type, value) constraint: if this value is already
             #    linked to a *different* contact, we skip insertion silently.
-            await self._pool.execute(
+            insert_status = await self._pool.execute(
                 """
                 INSERT INTO public.contact_info (contact_id, type, value, label, is_primary)
                 VALUES ($1, $2, $3, $4, $5)
@@ -586,6 +586,33 @@ class ContactBackfillWriter:
                 label,
                 primary,
             )
+
+            # Dual-write shim (Group D): best-effort post-commit triple emission (Amendment 14).
+            # Only emit when the INSERT actually created a row (status == "INSERT 0 1").
+            # When ON CONFLICT DO NOTHING silently skips because the (type, value) pair is
+            # already claimed by a *different* contact, we must not assert a triple for the
+            # caller's entity — that would contradict the authoritative SQL state.
+            if insert_status == "INSERT 0 1":
+                try:
+                    from butlers.tools.relationship.dual_write import emit_contact_info_fact
+
+                    await emit_contact_info_fact(
+                        self._pool,
+                        contact_id=local_id,
+                        ci_type=type_,
+                        value=value,
+                        is_primary=primary,
+                        src="dual-write",
+                    )
+                except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+                    logger.warning(
+                        "upsert_contact_info: emit_contact_info_fact failed for contact %s "
+                        "(ci_type=%r, value=%r) — dual-write failure swallowed",
+                        local_id,
+                        type_,
+                        value,
+                        exc_info=True,
+                    )
 
     async def upsert_addresses(
         self,
