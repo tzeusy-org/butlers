@@ -34,7 +34,7 @@ Nine remaining adapters have not yet been evaluated for this treatment. This doc
 
 **Meaningful: Yes.** Focus blocks are inferred from owner-driven activity: long task sessions the owner ran, or calendar events the owner explicitly titled as focus/deep work/pomodoro. Every `focus_block` episode records what the owner was doing. `entity_id` = owner.
 
-**Implementation sketch:** The adapter reads from `chronicler.episodes` (not a butler schema), so there is no per-schema entity lookup. The owner entity_id can be resolved once at adapter construction time (or lazily on first run) from `public.contacts WHERE 'owner' = ANY(roles)` joined to the entity graph, and stamped on every upserted episode. No per-row resolution needed.
+**Implementation sketch:** The adapter reads from `chronicler.episodes` (not a butler schema), so there is no per-schema entity lookup. The owner entity_id should be resolved once at the start of the `project()` call (consistent with the architectural pattern of providing database access during projection, not at construction) from `public.contacts WHERE 'owner' = ANY(roles)` joined to the entity graph, and stamped on every upserted episode. No per-row resolution needed.
 
 ---
 
