@@ -733,14 +733,7 @@ class TestParityEventualConsistency:
             _ci_sweep_row(entity_id=entity_id, ci_type="telegram", ci_value="tg_handle"),
         ]
 
-        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome, AssertResult
-        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
-
-        inserted_result = AssertResult(outcome=AssertOutcome.inserted, fact_id=uuid.uuid4())
-        pool = _make_reconciler_pool(rows=rows)
-
-        with patch(_WRITER_PATCH_TARGET, new_callable=AsyncMock, return_value=inserted_result):
-            stats = await run_contact_info_reconciler(pool)
+        stats = await _run_reconciler_and_assert_triple(rows=rows)
 
         # After one pass all missing triples are asserted: drift = 0.
         assert stats["rows_scanned"] == 3
