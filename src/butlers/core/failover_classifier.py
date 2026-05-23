@@ -156,16 +156,6 @@ _GUARDRAIL_MARKERS: tuple[str, ...] = (
     "degenerate loop",
 )
 
-# Substrings matched (lowercased) against the exception message to identify
-# business / application-level failures.  These SUPPRESS failover.
-_BUSINESS_ERROR_MARKERS: tuple[str, ...] = (
-    "validation error",
-    "invalid input",
-    "schema error",
-    "pydantic",
-    "value error",
-)
-
 
 # ---------------------------------------------------------------------------
 # Classification context dataclass
@@ -392,7 +382,6 @@ def _is_mcp_tool_discovery_error(exc: BaseException) -> bool:
     Uses class-name matching to avoid a hard import dependency on the Codex
     adapter from this module, keeping the classifier adapter-agnostic.  The
     ``MCPToolDiscoveryError`` class is a ``RuntimeError`` subclass defined in
-    ``butlers.core.runtimes.codex``; callers that have the real class can also
-    pass it directly and the ``isinstance`` check in the parent is a fallback.
+    ``butlers.core.runtimes.codex``.
     """
     return type(exc).__name__ == "MCPToolDiscoveryError"
