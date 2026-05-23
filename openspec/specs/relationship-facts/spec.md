@@ -215,6 +215,12 @@ SQL commits, MCP duplicates → racing supersession). The migration spec encodes
   sweeps `public.contact_info` rows lacking a matching active triple in `relationship.entity_facts`
   and emits them via the central writer. The reconciler is idempotent on
   `(subject, predicate, object)`.
+- **Registry-drift exception.** If the reconciler's static `contact_info.type` mapping resolves
+  to a predicate that is absent from `relationship.entity_predicate_registry`, the reconciler
+  MUST NOT call the central writer for those rows. It MUST count them under
+  `rows_skipped_no_predicate`, log the missing predicate once per run, and leave the rows
+  unreconciled until the registry seed/migration drift is repaired. A non-zero
+  `rows_skipped_no_predicate` count is not a successful zero-drift state.
 - **Parity tests are eventual, not synchronous.** Migration bead 6 ("parity tests") asserts
   24h-window reconciliation, NOT write-time synchrony.
 - **Central writer safety** (cross-ref to Requirement: Central writer): safe to call from
@@ -349,4 +355,3 @@ to a separate verification table at that point.
 - **THEN** no predicate named `verified-by` (or analogue) MUST appear in the registry
 - **AND** any attempt to assert such a predicate MUST be rejected by the central writer
   per Requirement: Predicate catalog
-

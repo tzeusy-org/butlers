@@ -159,14 +159,32 @@ def _make_contact_info_update_pool(
     return pool
 
 
-def _make_reconciler_pool(rows: list[dict]) -> AsyncMock:
+_REGISTERED_RECONCILER_PREDICATES = {
+    "has-email",
+    "has-phone",
+    "has-handle",
+    "has-website",
+}
+
+
+def _registry_rows(predicates: set[str] | None = None) -> list[dict]:
+    if predicates is None:
+        predicates = _REGISTERED_RECONCILER_PREDICATES
+    return [{"predicate": predicate} for predicate in sorted(predicates)]
+
+
+def _make_reconciler_pool(
+    rows: list[dict],
+    *,
+    registered_predicates: set[str] | None = None,
+) -> AsyncMock:
     """Return a pool mock configured for ``run_contact_info_reconciler``.
 
-    The reconciler calls pool.fetch() once to get the sweep rows,
+    The reconciler calls pool.fetch() for the predicate registry and sweep rows,
     then pool.execute() for the checkpoint write (via state_set).
     """
     pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=rows)
+    pool.fetch = AsyncMock(side_effect=[_registry_rows(registered_predicates), rows])
     pool.execute = AsyncMock(return_value="OK")
     return pool
 
