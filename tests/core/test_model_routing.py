@@ -7,6 +7,8 @@ Covers:
   no candidates, round-robin rotation, extra_args, string tier input
 - §3.2 routing contract: tier fallthrough order, priority tie-break, state filter
 - Deprecation shim: legacy vocabulary triggers loud warning and remaps
+- resolve_model_with_effective_tier: same semantics as resolve_model but includes effective tier
+- next_same_tier_candidate: exact-tier failover candidates, exclusions, ordering, override semantics
 """
 
 from __future__ import annotations
@@ -18,11 +20,14 @@ import asyncpg
 import pytest
 
 from butlers.core.model_routing import (
+    _NEXT_SAME_TIER_SQL,
     _RESOLVE_SQL,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     _check_deprecated_tier,
+    next_same_tier_candidate,
     resolve_model,
+    resolve_model_with_effective_tier,
 )
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -96,6 +101,32 @@ def test_deprecated_tier_shim_remaps_and_warns(caplog: pytest.LogCaptureFixture)
 def test_resolver_sql_excludes_failed_verification_rows() -> None:
     """The resolver must not dispatch models whose latest verification failed."""
     assert "mc.last_verified_ok IS DISTINCT FROM false" in _RESOLVE_SQL
+
+
+@pytest.mark.unit
+def test_next_same_tier_sql_excludes_failed_verification_rows() -> None:
+    """The failover resolver SQL must also exclude failed-verification entries."""
+    assert "mc.last_verified_ok IS DISTINCT FROM false" in _NEXT_SAME_TIER_SQL
+
+
+@pytest.mark.unit
+def test_next_same_tier_sql_applies_coalesce_overrides() -> None:
+    """The failover resolver SQL must apply COALESCE for enabled, priority, and tier."""
+    assert "COALESCE(bmo.enabled, mc.enabled)" in _NEXT_SAME_TIER_SQL
+    assert "COALESCE(bmo.priority, mc.priority)" in _NEXT_SAME_TIER_SQL
+    assert "COALESCE(bmo.complexity_tier, mc.complexity_tier)" in _NEXT_SAME_TIER_SQL
+
+
+@pytest.mark.unit
+def test_next_same_tier_sql_uses_deterministic_order() -> None:
+    """Failover ordering must be deterministic (priority DESC, created_at ASC, id ASC)."""
+    assert "ORDER BY effective_priority DESC, created_at ASC, id ASC" in _NEXT_SAME_TIER_SQL
+
+
+@pytest.mark.unit
+def test_next_same_tier_sql_excludes_attempted_ids() -> None:
+    """Failover SQL must exclude the attempted catalog entry IDs."""
+    assert "mc.id != ALL($3::uuid[])" in _NEXT_SAME_TIER_SQL
 
 
 # ---------------------------------------------------------------------------
@@ -652,3 +683,418 @@ async def test_resolve_deprecated_string_tier_warns(
 
     assert result is not None and result[1] == "workhorse-model-id"
     assert any("DEPRECATED" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — resolve_model_with_effective_tier
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_with_effective_tier_returns_effective_tier(pool: asyncpg.Pool) -> None:
+    """resolve_model_with_effective_tier returns 6-tuple with effective_tier appended."""
+    entry_id = await _insert_catalog_entry(
+        pool,
+        alias="workhorse-ewt",
+        model_id="model-workhorse-ewt",
+        complexity_tier="workhorse",
+        priority=5,
+    )
+    result = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert result is not None
+    assert len(result) == 6
+    runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s, effective_tier = result
+    assert runtime_type == "claude"
+    assert model_id == "model-workhorse-ewt"
+    assert extra_args == []
+    assert str(catalog_entry_id) == entry_id
+    assert session_timeout_s == 1800
+    assert effective_tier == "workhorse"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_with_effective_tier_fallthrough_reports_resolved_tier(
+    pool: asyncpg.Pool,
+) -> None:
+    """When tier fallthrough occurs, effective_tier reflects the actual tier found."""
+    await _insert_catalog_entry(
+        pool,
+        alias="cheap-ewt",
+        model_id="model-cheap-ewt",
+        complexity_tier="cheap",
+        priority=5,
+    )
+    # Request reasoning; no reasoning entry → falls through to cheap
+    result = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.REASONING, allow_tier_fallthrough=True
+    )
+    assert result is not None
+    assert result[1] == "model-cheap-ewt"
+    assert result[5] == "cheap"  # effective_tier reflects cheap, not reasoning
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_with_effective_tier_none_when_no_match(pool: asyncpg.Pool) -> None:
+    """Returns None when no entry qualifies in any tier."""
+    result = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.REASONING, allow_tier_fallthrough=False
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — next_same_tier_candidate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_empty_catalog_returns_none(pool: asyncpg.Pool) -> None:
+    """Returns None when catalog is empty."""
+    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert result is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_returns_matching_entry(pool: asyncpg.Pool) -> None:
+    """Returns a matching candidate when one exists in the tier."""
+    entry_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-basic",
+        model_id="model-nst-basic",
+        complexity_tier="workhorse",
+        priority=5,
+    )
+    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert result is not None
+    runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = result
+    assert runtime_type == "claude"
+    assert model_id == "model-nst-basic"
+    assert extra_args == []
+    assert str(catalog_entry_id) == entry_id
+    assert session_timeout_s == 1800
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_excludes_attempted_id(pool: asyncpg.Pool) -> None:
+    """Excludes already-attempted catalog entry IDs."""
+    entry_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-exclude",
+        model_id="model-nst-exclude",
+        complexity_tier="workhorse",
+        priority=5,
+    )
+    # Exclude the only entry → None
+    result = await next_same_tier_candidate(pool, "general", "workhorse", [uuid.UUID(entry_id)])
+    assert result is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_priority_ordering(pool: asyncpg.Pool) -> None:
+    """Returns highest-priority entry first; deterministic by priority DESC, created_at ASC."""
+    # Insert two entries at different priorities
+    low_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-ord-low",
+        model_id="model-nst-low",
+        complexity_tier="workhorse",
+        priority=5,
+    )
+    high_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-ord-high",
+        model_id="model-nst-high",
+        complexity_tier="workhorse",
+        priority=20,
+    )
+
+    # Without exclusions, should return high-priority entry
+    r1 = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert r1 is not None and r1[1] == "model-nst-high"
+
+    # Exclude the high-priority entry → should return low-priority entry
+    r2 = await next_same_tier_candidate(pool, "general", "workhorse", [uuid.UUID(high_id)])
+    assert r2 is not None and r2[1] == "model-nst-low"
+
+    # Exclude both → None
+    r3 = await next_same_tier_candidate(
+        pool, "general", "workhorse", [uuid.UUID(high_id), uuid.UUID(low_id)]
+    )
+    assert r3 is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_does_not_cross_tier(pool: asyncpg.Pool) -> None:
+    """Failover does NOT cross tier boundaries — only exact effective tier is searched."""
+    # Insert reasoning and cheap entries only (no workhorse)
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-cross-reasoning",
+        model_id="model-nst-reasoning",
+        complexity_tier="reasoning",
+        priority=10,
+    )
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-cross-cheap",
+        model_id="model-nst-cheap",
+        complexity_tier="cheap",
+        priority=10,
+    )
+
+    # Searching workhorse tier → no results (reasoning and cheap not included)
+    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert result is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_excludes_disabled_entries(pool: asyncpg.Pool) -> None:
+    """Disabled catalog entries (enabled=False) are never returned as failover candidates."""
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-disabled",
+        model_id="model-nst-disabled",
+        complexity_tier="workhorse",
+        priority=20,
+        enabled=False,
+    )
+    enabled_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-enabled",
+        model_id="model-nst-enabled",
+        complexity_tier="workhorse",
+        priority=5,
+        enabled=True,
+    )
+
+    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert result is not None and result[1] == "model-nst-enabled"
+    assert str(result[3]) == enabled_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_excludes_failed_verification(pool: asyncpg.Pool) -> None:
+    """Entries with last_verified_ok=false are excluded from failover candidates."""
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-failed-ok",
+        model_id="model-nst-failed",
+        complexity_tier="workhorse",
+        priority=50,
+        last_verified_ok=False,
+    )
+    good_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-good-ok",
+        model_id="model-nst-good",
+        complexity_tier="workhorse",
+        priority=5,
+        last_verified_ok=None,  # untested — eligible
+    )
+
+    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert result is not None and result[1] == "model-nst-good"
+    assert str(result[3]) == good_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_applies_override_disable(pool: asyncpg.Pool) -> None:
+    """Butler override that disables an entry hides it for that butler only."""
+    entry_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-ovr-disable",
+        model_id="model-nst-ovr-disabled",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-ovr-visible",
+        model_id="model-nst-ovr-visible",
+        complexity_tier="workhorse",
+        priority=5,
+    )
+    # Override disables the high-priority entry for butler "restricted"
+    await _insert_override(pool, butler_name="restricted", catalog_entry_id=entry_id, enabled=False)
+
+    # For "restricted": disabled entry hidden → returns lower-priority visible entry
+    r_restricted = await next_same_tier_candidate(pool, "restricted", "workhorse", [])
+    assert r_restricted is not None and r_restricted[1] == "model-nst-ovr-visible"
+
+    # For "general": disabled override does not apply → returns high-priority entry
+    r_general = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert r_general is not None and r_general[1] == "model-nst-ovr-disabled"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_applies_override_priority(pool: asyncpg.Pool) -> None:
+    """Butler override that boosts priority of a lower-priority entry surfaces it first."""
+    low_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-prio-low",
+        model_id="model-nst-prio-low",
+        complexity_tier="workhorse",
+        priority=5,
+    )
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-prio-high",
+        model_id="model-nst-prio-high",
+        complexity_tier="workhorse",
+        priority=20,
+    )
+    # Override boosts low-priority entry to 100 for butler "boosted"
+    await _insert_override(
+        pool,
+        butler_name="boosted",
+        catalog_entry_id=low_id,
+        enabled=True,
+        priority=100,
+    )
+
+    # For "general": high-priority catalog entry wins normally
+    r_general = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert r_general is not None and r_general[1] == "model-nst-prio-high"
+
+    # For "boosted": override lifts the low entry to priority 100 → it wins
+    r_boosted = await next_same_tier_candidate(pool, "boosted", "workhorse", [])
+    assert r_boosted is not None and r_boosted[1] == "model-nst-prio-low"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_override_tier_remap_excludes_from_original(
+    pool: asyncpg.Pool,
+) -> None:
+    """Override remapping a workhorse entry to reasoning hides it from workhorse failover."""
+    remapped_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-remapped",
+        model_id="model-nst-remapped",
+        complexity_tier="workhorse",
+        priority=20,
+    )
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-remap-visible",
+        model_id="model-nst-remap-visible",
+        complexity_tier="workhorse",
+        priority=5,
+    )
+    # Override remaps the high-priority workhorse entry to reasoning for butler "remapper"
+    await _insert_override(
+        pool,
+        butler_name="remapper",
+        catalog_entry_id=remapped_id,
+        enabled=True,
+        complexity_tier="reasoning",
+    )
+
+    # For "remapper" searching workhorse: remapped entry is gone → only visible remains
+    r = await next_same_tier_candidate(pool, "remapper", "workhorse", [])
+    assert r is not None and r[1] == "model-nst-remap-visible"
+
+    # For "remapper" searching reasoning: remapped entry is found
+    r_reasoning = await next_same_tier_candidate(pool, "remapper", "reasoning", [])
+    assert r_reasoning is not None and r_reasoning[1] == "model-nst-remapped"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_deterministic_tiebreak_ordering(pool: asyncpg.Pool) -> None:
+    """When multiple entries share the same priority, ordering is by created_at ASC then id ASC."""
+    await pool.execute("""
+        INSERT INTO public.model_catalog
+            (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
+        VALUES
+            ('nst-tie-first',  'claude', 'model-nst-tie-a', 'cheap', 10,
+             '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'),
+            ('nst-tie-second', 'codex',  'model-nst-tie-b', 'cheap', 10,
+             '2026-01-02 00:00:00+00', '2026-01-02 00:00:00+00'),
+            ('nst-tie-third',  'claude', 'model-nst-tie-c', 'cheap', 10,
+             '2026-01-03 00:00:00+00', '2026-01-03 00:00:00+00')
+    """)
+
+    # First call: all available → returns the earliest-created (tie-a)
+    r1 = await next_same_tier_candidate(pool, "general", "cheap", [])
+    assert r1 is not None and r1[1] == "model-nst-tie-a"
+
+    # Exclude tie-a → returns tie-b (next by created_at)
+    r2 = await next_same_tier_candidate(pool, "general", "cheap", [r1[3]])
+    assert r2 is not None and r2[1] == "model-nst-tie-b"
+
+    # Exclude tie-a and tie-b → returns tie-c
+    r3 = await next_same_tier_candidate(pool, "general", "cheap", [r1[3], r2[3]])
+    assert r3 is not None and r3[1] == "model-nst-tie-c"
+
+    # Exclude all → None
+    r4 = await next_same_tier_candidate(pool, "general", "cheap", [r1[3], r2[3], r3[3]])
+    assert r4 is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_no_mutation_of_round_robin_counter(pool: asyncpg.Pool) -> None:
+    """next_same_tier_candidate does NOT increment the round-robin counter.
+
+    The round-robin counter is managed exclusively by resolve_model; failover
+    candidate fetching must not interfere with it.
+    """
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-rr-check",
+        model_id="model-nst-rr",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+    butler = "rr-check-butler"
+
+    # Call resolve_model once to create the counter row at 0
+    await resolve_model(pool, butler, Complexity.WORKHORSE, allow_tier_fallthrough=False)
+    rows_before = await pool.fetch(
+        "SELECT counter FROM public.model_round_robin_counters WHERE butler_name = $1",
+        butler,
+    )
+    counter_before = rows_before[0]["counter"] if rows_before else None
+
+    # Call next_same_tier_candidate multiple times
+    for _ in range(3):
+        await next_same_tier_candidate(pool, butler, "workhorse", [])
+
+    rows_after = await pool.fetch(
+        "SELECT counter FROM public.model_round_robin_counters WHERE butler_name = $1",
+        butler,
+    )
+    counter_after = rows_after[0]["counter"] if rows_after else None
+
+    # Counter must not have changed
+    assert counter_before == counter_after
