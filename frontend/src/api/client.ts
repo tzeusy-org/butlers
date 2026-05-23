@@ -1955,7 +1955,13 @@ export function listRelationshipEntities(
   params?: RelationshipEntityListParams,
 ): Promise<RelationshipEntityListResponse> {
   const sp = new URLSearchParams();
-  if (params?.entity_type) sp.set("entity_type", params.entity_type);
+  if (params?.entity_type) {
+    if (params.entity_type.length === 0) {
+      sp.append("entity_type", "__none__");
+    } else {
+      params.entity_type.forEach((type) => sp.append("entity_type", type));
+    }
+  }
   if (params?.state) sp.set("state", params.state);
   if (params?.has) sp.set("has", params.has);
   if (params?.limit != null) sp.set("limit", String(params.limit));

@@ -4115,7 +4115,7 @@ export interface RelationshipEntityListResponse {
 
 /** Query parameters for the relationship entity list endpoint (§9.1). */
 export interface RelationshipEntityListParams {
-  entity_type?: string;
+  entity_type?: string[];
   state?: "unidentified" | "duplicate-candidate" | "stale";
   has?: "contact";
   limit?: number;
