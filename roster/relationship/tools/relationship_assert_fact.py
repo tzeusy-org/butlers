@@ -213,6 +213,8 @@ async def _upsert_fact(
             """,
             old_id,
         )
+        # Keep the replacement insert conflict-safe as well: overlapping
+        # reconciler runs can supersede the same old active row concurrently.
         new_id = await conn.fetchval(
             """
             INSERT INTO relationship.entity_facts (
@@ -225,6 +227,15 @@ async def _upsert_fact(
                 $5, $6, $7, $8, $9, $10,
                 'active', now(), now()
             )
+            ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
+            DO UPDATE
+                SET src        = EXCLUDED.src,
+                    conf       = EXCLUDED.conf,
+                    last_seen  = EXCLUDED.last_seen,
+                    weight     = EXCLUDED.weight,
+                    verified   = EXCLUDED.verified,
+                    "primary"  = EXCLUDED."primary",
+                    updated_at = now()
             RETURNING id
             """,
             subject,
