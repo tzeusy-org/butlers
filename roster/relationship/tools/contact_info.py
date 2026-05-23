@@ -370,14 +370,13 @@ async def contact_info_update(
 
     # Dual-write shim: best-effort post-commit triple assertion (Amendment 14).
     # The SQL transaction has committed above; any failure here is swallowed.
-    effective_value = result.get("value", row["value"])
-    effective_primary = result.get("is_primary", row["is_primary"])
+    # result comes from RETURNING * so all NOT NULL columns are guaranteed present.
     await emit_contact_info_fact(
         pool,
         contact_id=contact_id,
         ci_type=row_type,
-        value=effective_value,
-        is_primary=bool(effective_primary),
+        value=result["value"],
+        is_primary=result["is_primary"],
     )
 
     return result
@@ -432,9 +431,9 @@ async def contact_info_remove(
     # The DELETE has committed above; any failure here is swallowed.
     await retract_contact_info_fact(
         pool,
-        contact_id=uuid.UUID(str(row["contact_id"])),
-        ci_type=str(row["type"]),
-        value=str(row["value"]),
+        contact_id=row["contact_id"],
+        ci_type=row["type"],
+        value=row["value"],
     )
 
 
