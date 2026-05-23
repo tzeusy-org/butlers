@@ -184,6 +184,118 @@ async def emit_contact_info_fact(
 
 
 # ---------------------------------------------------------------------------
+# Bulk shim helpers for Group G (contacts.py writers)
+# ---------------------------------------------------------------------------
+
+
+async def emit_all_contact_info_facts(
+    pool: asyncpg.Pool,
+    *,
+    contact_id: uuid.UUID,
+    src: str = "dual-write",
+) -> None:
+    """Best-effort post-commit emission of triples for ALL contact_info rows of a contact.
+
+    Fetches every ``public.contact_info`` row linked to *contact_id* and calls
+    :func:`emit_contact_info_fact` for each.  Designed for Group G writers
+    (``contact_create``, ``contact_update``) where the contact row changes but
+    the ``contact_info`` rows are untouched — re-emitting them keeps the triple
+    store consistent after an identity-relevant contact mutation.
+
+    Must be called AFTER the SQL transaction has committed.  Any failure is
+    swallowed — this MUST never raise.
+    """
+    if not dual_write_enabled():
+        return
+
+    try:
+        rows = await pool.fetch(
+            "SELECT type, value, is_primary FROM public.contact_info WHERE contact_id = $1",
+            contact_id,
+        )
+    except Exception:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "emit_all_contact_info_facts: failed to fetch contact_info rows for contact %s "
+            "— dual-write emission skipped",
+            contact_id,
+            exc_info=True,
+        )
+        return
+
+    for row in rows:
+        await emit_contact_info_fact(
+            pool,
+            contact_id=contact_id,
+            ci_type=row["type"],
+            value=row["value"],
+            is_primary=bool(row.get("is_primary", False)),
+            src=src,
+        )
+
+
+async def retract_all_contact_info_facts(
+    pool: asyncpg.Pool,
+    *,
+    contact_id: uuid.UUID,
+    prefetched_rows: list[dict] | None = None,
+    src: str = "dual-write",
+) -> None:
+    """Best-effort post-commit retraction of ALL contact_info triples for a contact.
+
+    Fetches every ``public.contact_info`` row linked to *contact_id* (or uses
+    *prefetched_rows* when supplied) and calls :func:`retract_contact_info_fact`
+    for each.  Designed for Group G writers (``contact_archive``,
+    ``contact_merge``) where the contact becomes inactive and its channel facts
+    should be retracted from the triple store.
+
+    Must be called AFTER the SQL transaction has committed.  Any failure is
+    swallowed — this MUST never raise.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    contact_id:
+        UUID of the contact whose triples should be retracted.
+    prefetched_rows:
+        Pre-fetched contact_info rows (dicts with ``type`` and ``value`` keys).
+        When supplied, the DB fetch is skipped.  Callers that snapshot rows
+        *before* a transaction re-points them (e.g. ``contact_merge``) should
+        pass the snapshot here so the retraction reflects the pre-merge state.
+    src:
+        Provenance source slug (default ``'dual-write'``).
+    """
+    if not dual_write_enabled():
+        return
+
+    if prefetched_rows is not None:
+        rows: list = prefetched_rows
+    else:
+        try:
+            rows = await pool.fetch(
+                "SELECT type, value FROM public.contact_info WHERE contact_id = $1",
+                contact_id,
+            )
+        except Exception:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "retract_all_contact_info_facts: failed to fetch contact_info rows for contact %s "
+                "— dual-write retraction skipped",
+                contact_id,
+                exc_info=True,
+            )
+            return
+
+    for row in rows:
+        await retract_contact_info_fact(
+            pool,
+            contact_id=contact_id,
+            ci_type=row["type"],
+            value=row["value"],
+            src=src,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Shim for contact_info deletions / retractions (placeholder)
 # ---------------------------------------------------------------------------
 

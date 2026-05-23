@@ -10,6 +10,10 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship._schema import table_columns
+from butlers.tools.relationship.dual_write import (
+    emit_all_contact_info_facts,
+    retract_all_contact_info_facts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +289,23 @@ async def contact_create(
         """,
         *values,
     )
-    return _parse_contact(row)
+    result = _parse_contact(row)
+
+    # Dual-write shim (Group G): best-effort post-commit triple emission (Amendment 14).
+    # No contact_info rows exist at contact-creation time; any rows added later are shimmed
+    # by contact_info_add (Group H).  This call is a structural no-op today and exists so
+    # that the shim call-site is in place when the reconciler gains a name-facts write path.
+    contact_uuid: uuid.UUID = row["id"]
+    try:
+        await emit_all_contact_info_facts(pool, contact_id=contact_uuid)
+    except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+        logger.warning(
+            "contact_create: emit_all_contact_info_facts failed for contact %s — swallowed",
+            contact_uuid,
+            exc_info=True,
+        )
+
+    return result
 
 
 async def contact_update(
@@ -394,6 +414,19 @@ async def contact_update(
                 last_name=result.get("last_name"),
                 nickname=result.get("nickname"),
             )
+
+    # Dual-write shim (Group G): best-effort post-commit triple emission (Amendment 14).
+    # contact_update modifies contact fields only — no contact_info rows are changed.
+    # Emit all current contact_info rows for this contact so the triple store stays in
+    # sync after any identity-relevant updates (e.g. a name/company change).
+    try:
+        await emit_all_contact_info_facts(pool, contact_id=contact_id)
+    except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+        logger.warning(
+            "contact_update: emit_all_contact_info_facts failed for contact %s — swallowed",
+            contact_id,
+            exc_info=True,
+        )
 
     return result
 
@@ -523,7 +556,21 @@ async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str
             f"Contact {contact_id} not found. "
             "Use contact_search(query=<name>) to find the correct contact ID."
         )
-    return _parse_contact(row)
+    result = _parse_contact(row)
+
+    # Dual-write shim (Group G): best-effort post-commit retraction (Amendment 14).
+    # Archiving a contact soft-removes it; retract all its contact_info triples so the
+    # triple store does not retain stale channel facts for an archived contact.
+    try:
+        await retract_all_contact_info_facts(pool, contact_id=contact_id)
+    except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+        logger.warning(
+            "contact_archive: retract_all_contact_info_facts failed for contact %s — swallowed",
+            contact_id,
+            exc_info=True,
+        )
+
+    return result
 
 
 async def contact_merge(
@@ -573,6 +620,23 @@ async def contact_merge(
         )
 
     cols = await table_columns(pool, "contacts")
+
+    # Dual-write shim (Group G): capture source contact_info rows BEFORE the transaction
+    # re-points them to the target contact.  After the commit we retract triples for the
+    # source entity's channel facts (best-effort, Amendment 14).
+    _src_ci_rows: list[asyncpg.Record] = []
+    try:
+        _src_ci_rows = await pool.fetch(
+            "SELECT type, value FROM public.contact_info WHERE contact_id = $1",
+            source_id,
+        )
+    except Exception:  # noqa: BLE001 — best-effort pre-fetch; merge proceeds regardless
+        logger.warning(
+            "contact_merge: pre-fetch of source contact_info rows failed "
+            "(source=%s) — retraction shim will be skipped",
+            source_id,
+            exc_info=True,
+        )
 
     # Tables that reference contacts — re-point source -> target
     _child_tables = [
@@ -650,6 +714,24 @@ async def contact_merge(
                     src_entity_id,
                     tgt_entity_id,
                 )
+
+    # Dual-write shim (Group G): best-effort post-commit retraction (Amendment 14).
+    # Retract triples for every contact_info row that belonged to the source contact.
+    # The rows are now re-pointed to target in SQL; pass the pre-merge snapshot so the
+    # retraction reflects the source-entity channel facts that no longer apply.
+    if _src_ci_rows:
+        try:
+            await retract_all_contact_info_facts(
+                pool,
+                contact_id=source_id,
+                prefetched_rows=[dict(r) for r in _src_ci_rows],
+            )
+        except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+            logger.warning(
+                "contact_merge: retract_all_contact_info_facts failed for source %s — swallowed",
+                source_id,
+                exc_info=True,
+            )
 
     # Fetch the updated target
     updated_row = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", target_id)
