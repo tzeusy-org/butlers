@@ -43,6 +43,7 @@ _FLAG_ENV = "BUTLERS_CONTACT_INFO_DUAL_WRITE"
 # Patch at the source so the deferred-import path resolves correctly.
 _EMIT_FACT_PATCH = "butlers.tools.relationship.dual_write.emit_contact_info_fact"
 
+
 def _import_fn():
     from butlers.api.routers.oauth import _register_google_health_contact_info
 
