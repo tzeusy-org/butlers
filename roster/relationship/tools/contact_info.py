@@ -11,6 +11,7 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship.contacts import _parse_contact
+from butlers.tools.relationship.dual_write import emit_contact_info_fact, retract_contact_info_fact
 
 _CONTACT_INFO_TYPES = {"email", "phone", "telegram", "linkedin", "twitter", "website", "other"}
 _CONTACT_INFO_CONTEXTS = {"personal", "work", "other"}
@@ -247,6 +248,16 @@ async def contact_info_add(
                 effective_context,
             )
 
+    # Dual-write shim: best-effort post-commit triple assertion (Amendment 14).
+    # The SQL transaction has committed above; any failure here is swallowed.
+    await emit_contact_info_fact(
+        pool,
+        contact_id=contact_id,
+        ci_type=type,
+        value=value,
+        is_primary=is_primary,
+    )
+
     return dict(row)
 
 
@@ -355,7 +366,20 @@ async def contact_info_update(
             f"Contact info {contact_info_id} not found. "
             "Use contact_info_list(contact_id=...) to list contact info entries."
         )
-    return dict(updated)
+    result = dict(updated)
+
+    # Dual-write shim: best-effort post-commit triple assertion (Amendment 14).
+    # The SQL transaction has committed above; any failure here is swallowed.
+    # result comes from RETURNING * so all NOT NULL columns are guaranteed present.
+    await emit_contact_info_fact(
+        pool,
+        contact_id=contact_id,
+        ci_type=row_type,
+        value=result["value"],
+        is_primary=result["is_primary"],
+    )
+
+    return result
 
 
 async def contact_info_list(
@@ -402,6 +426,15 @@ async def contact_info_remove(
         )
 
     await pool.execute("DELETE FROM public.contact_info WHERE id = $1", contact_info_id)
+
+    # Dual-write shim: best-effort post-commit retraction (Amendment 14).
+    # The DELETE has committed above; any failure here is swallowed.
+    await retract_contact_info_fact(
+        pool,
+        contact_id=row["contact_id"],
+        ci_type=row["type"],
+        value=row["value"],
+    )
 
 
 async def contact_search_by_info(
