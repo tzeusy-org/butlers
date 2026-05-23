@@ -67,3 +67,5 @@ sync-branch: "beads-sync"
 # - github.repo
 
 sync.mode: "dolt-native"
+dolt.host: 127.0.0.1
+dolt.port: 3307
