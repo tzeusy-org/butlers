@@ -56,9 +56,9 @@ _REGISTERED_TEST_PREDICATES = {
 
 
 def _registry_rows(predicates: set[str] | None = None) -> list[dict]:
-    return [
-        {"predicate": predicate} for predicate in sorted(predicates or _REGISTERED_TEST_PREDICATES)
-    ]
+    if predicates is None:
+        predicates = _REGISTERED_TEST_PREDICATES
+    return [{"predicate": predicate} for predicate in sorted(predicates)]
 
 
 def _make_pool(rows: list[dict], *, registered_predicates: set[str] | None = None) -> AsyncMock:
@@ -462,6 +462,27 @@ class TestUnrecognisedType:
             record for record in caplog.records if "predicate=has-phone" in record.getMessage()
         ]
         assert result["rows_skipped_no_predicate"] == 2
+        assert result["rows_error"] == 0
+        assert len(warnings) == 1
+        mock_writer.assert_not_called()
+
+    async def test_empty_registry_skips_mapped_predicates(self, caplog):
+        """An empty registry is registry drift, not a writer error per row."""
+        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
+
+        row = _ci_row(ci_type="email", ci_value="missing-registry@example.com")
+        pool = _make_pool(rows=[row], registered_predicates=set())
+
+        with (
+            caplog.at_level(logging.WARNING),
+            patch(_WRITER_PATCH_TARGET, new_callable=AsyncMock) as mock_writer,
+        ):
+            result = await run_contact_info_reconciler(pool)
+
+        warnings = [
+            record for record in caplog.records if "predicate=has-email" in record.getMessage()
+        ]
+        assert result["rows_skipped_no_predicate"] == 1
         assert result["rows_error"] == 0
         assert len(warnings) == 1
         mock_writer.assert_not_called()

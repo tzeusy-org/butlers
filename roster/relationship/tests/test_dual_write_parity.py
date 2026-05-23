@@ -168,10 +168,9 @@ _REGISTERED_RECONCILER_PREDICATES = {
 
 
 def _registry_rows(predicates: set[str] | None = None) -> list[dict]:
-    return [
-        {"predicate": predicate}
-        for predicate in sorted(predicates or _REGISTERED_RECONCILER_PREDICATES)
-    ]
+    if predicates is None:
+        predicates = _REGISTERED_RECONCILER_PREDICATES
+    return [{"predicate": predicate} for predicate in sorted(predicates)]
 
 
 def _make_reconciler_pool(
