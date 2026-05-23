@@ -5,6 +5,12 @@ Provides:
 - ``resolve_model(pool, butler_name, complexity_tier)`` — highest-priority enabled model
   in tier whose state ∈ {verified, untested}; falls through canonical tier order if none
   qualify in the requested tier.
+- ``resolve_model_with_effective_tier(pool, butler_name, complexity_tier)`` — same as
+  ``resolve_model`` but also returns the effective tier that produced the candidate (needed
+  for same-tier failover to stay within the resolved tier).
+- ``next_same_tier_candidate(pool, butler_name, effective_tier, attempted_ids)`` — returns
+  the next eligible model in an exact effective complexity tier, excluding already-attempted
+  catalog entry IDs.  Used by the spawner failover loop to iterate within the same tier.
 - ``QuotaStatus`` dataclass — result of a pre-spawn token quota check.
 - ``check_token_quota(pool, catalog_entry_id)`` — CTE-based single-query quota check.
 - ``record_token_usage(pool, ...)`` — best-effort ledger INSERT.
@@ -225,6 +231,56 @@ FROM candidates c, next_counter nc
 WHERE c.rn = (nc.counter % c.total)
 """
 
+# SQL for same-tier failover candidate resolution.
+#
+# Accepts:
+#   $1 — butler_name (text)
+#   $2 — exact effective tier (text), e.g. 'workhorse'
+#   $3 — already-attempted catalog entry IDs (uuid[]) — excluded from results
+#
+# Strategy (same-tier failover — §model-catalog/next-eligible-same-tier-candidate):
+# 1. all_candidates: Join catalog + overrides; apply COALESCE semantics for enabled,
+#    priority, and complexity_tier; filter to the exact effective tier; exclude attempted
+#    IDs; filter disabled and failed-verification entries.
+# 2. best_priority:  Find the maximum effective_priority across all remaining candidates.
+# 3. top_candidates: Narrow to entries at best_priority, ordered deterministically:
+#    effective_priority DESC, created_at ASC, id ASC.  Round-robin is NOT used here —
+#    deterministic ordering ensures predictable failover progression.
+# 4. Return the first row.
+#
+# Returns: (runtime_type, model_id, extra_args, id, session_timeout_s)
+# Returns no rows when no qualifying candidate remains.
+_NEXT_SAME_TIER_SQL = """
+WITH
+all_candidates AS (
+    SELECT
+        mc.runtime_type,
+        mc.model_id,
+        mc.extra_args,
+        mc.id,
+        mc.session_timeout_s,
+        mc.created_at,
+        COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
+        COALESCE(bmo.priority, mc.priority) AS effective_priority
+    FROM public.model_catalog mc
+    LEFT JOIN public.butler_model_overrides bmo
+        ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    WHERE COALESCE(bmo.enabled, mc.enabled) = true
+      AND mc.last_verified_ok IS DISTINCT FROM false
+      AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
+      AND mc.id != ALL($3::uuid[])
+)
+SELECT
+    runtime_type,
+    model_id,
+    extra_args,
+    id,
+    session_timeout_s
+FROM all_candidates
+ORDER BY effective_priority DESC, created_at ASC, id ASC
+LIMIT 1
+"""
+
 # CTE-based single-query for both 24h and 30d windows.
 # Fast path (no limits row) is handled in Python before executing this query.
 _QUOTA_CHECK_SQL = """
@@ -363,6 +419,127 @@ async def resolve_model(
             butler_name,
             effective_tier,
         )
+    return (
+        row["runtime_type"],
+        row["model_id"],
+        _parse_extra_args(row["extra_args"]),
+        row["id"],
+        row["session_timeout_s"],
+    )
+
+
+async def resolve_model_with_effective_tier(
+    pool: asyncpg.Pool,
+    butler_name: str,
+    complexity_tier: Complexity | str,
+    *,
+    allow_tier_fallthrough: bool = True,
+) -> tuple[str, str, list[str], uuid.UUID, int, str] | None:
+    """Resolve the best model for a butler and return the effective tier alongside.
+
+    Identical to ``resolve_model`` except the returned tuple includes the effective
+    complexity tier that actually produced the candidate.  Callers that implement
+    same-tier failover need this to restrict subsequent ``next_same_tier_candidate``
+    calls to the resolved tier.
+
+    Parameters
+    ----------
+    pool:
+        An asyncpg connection pool connected to the butlers database.
+    butler_name:
+        The butler identity name (e.g. ``"general"``).
+    complexity_tier:
+        A ``Complexity`` enum value or its string equivalent.
+    allow_tier_fallthrough:
+        When True (default), fall through to the next canonical tier if no entry
+        qualifies in the requested tier.
+
+    Returns
+    -------
+    tuple[str, str, list[str], uuid.UUID, int, str] | None
+        ``(runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s,
+        effective_tier)`` or ``None`` if no enabled entries match.
+        ``effective_tier`` is the canonical tier string that produced the candidate
+        (may differ from ``complexity_tier`` when tier fallthrough occurred).
+    """
+    if isinstance(complexity_tier, Complexity):
+        tier_value = complexity_tier.value
+    else:
+        tier_value = _check_deprecated_tier(str(complexity_tier))
+
+    if allow_tier_fallthrough and tier_value in TIER_FALLTHROUGH_ORDER:
+        start_idx = TIER_FALLTHROUGH_ORDER.index(tier_value)
+        tiers_to_try = list(TIER_FALLTHROUGH_ORDER[start_idx:])
+    else:
+        tiers_to_try = [tier_value]
+
+    row = await pool.fetchrow(_RESOLVE_SQL, butler_name, tiers_to_try)
+    if row is None:
+        return None
+
+    effective_tier = row["effective_tier"]
+    if effective_tier != tier_value:
+        logger.debug(
+            "resolve_model_with_effective_tier: no entry in tier %r for butler %r; "
+            "fell through to %r",
+            tier_value,
+            butler_name,
+            effective_tier,
+        )
+    return (
+        row["runtime_type"],
+        row["model_id"],
+        _parse_extra_args(row["extra_args"]),
+        row["id"],
+        row["session_timeout_s"],
+        effective_tier,
+    )
+
+
+async def next_same_tier_candidate(
+    pool: asyncpg.Pool,
+    butler_name: str,
+    effective_tier: str,
+    attempted_ids: list[uuid.UUID],
+) -> tuple[str, str, list[str], uuid.UUID, int] | None:
+    """Return the next eligible model in the exact effective tier, excluding attempted IDs.
+
+    Used by the spawner failover loop to iterate over same-tier candidates without
+    repeating entries that have already been attempted or explicitly skipped.
+
+    Resolution applies the same COALESCE override semantics as ``resolve_model``
+    (per-butler ``enabled``, ``priority``, and ``complexity_tier`` overrides take
+    precedence over catalog defaults).  State filtering mirrors the primary resolver:
+    entries with ``last_verified_ok = false`` are excluded.
+
+    Ordering is deterministic — NOT round-robin — so failover progression is
+    predictable: ``effective_priority DESC``, then ``created_at ASC``, then ``id ASC``.
+
+    Parameters
+    ----------
+    pool:
+        An asyncpg connection pool connected to the butlers database.
+    butler_name:
+        The butler identity name.  Used to look up per-butler overrides.
+    effective_tier:
+        The exact effective complexity tier to search (canonical string, e.g.
+        ``"workhorse"``).  Must match the effective tier returned by the initial
+        ``resolve_model`` or ``resolve_model_with_effective_tier`` call so that
+        failover stays within the same resolved tier.
+    attempted_ids:
+        Catalog entry IDs that have already been attempted or explicitly skipped
+        for this logical session.  All of these are excluded from the result.
+
+    Returns
+    -------
+    tuple[str, str, list[str], uuid.UUID, int] | None
+        ``(runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s)``
+        for the next eligible candidate, or ``None`` when all same-tier candidates
+        are exhausted.
+    """
+    row = await pool.fetchrow(_NEXT_SAME_TIER_SQL, butler_name, effective_tier, attempted_ids)
+    if row is None:
+        return None
     return (
         row["runtime_type"],
         row["model_id"],
