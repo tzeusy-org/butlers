@@ -564,6 +564,9 @@ async def upsert_google_health_contact_info(
     The function is exposed from the connector module because the contact
     shape is owned by the connector's contract.
     """
+    insert_status: str | None = None
+    owner_contact_id_for_shim: uuid.UUID | None = None
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Ensure an owner contact exists linked to the owner entity.
@@ -591,7 +594,7 @@ async def upsert_google_health_contact_info(
                 )
             contact_id = owner_contact["id"]
 
-            await conn.execute(
+            insert_status = await conn.execute(
                 """
                 INSERT INTO public.contact_info (contact_id, type, value, secured)
                 VALUES ($1, 'google_health', $2, false)
@@ -599,6 +602,36 @@ async def upsert_google_health_contact_info(
                 """,
                 contact_id,
                 google_user_id,
+            )
+            owner_contact_id_for_shim = contact_id
+
+    # Dual-write shim (Group F): best-effort post-commit triple emission (Amendment 14).
+    # Only emit when the INSERT actually created a row (asyncpg status == "INSERT 0 1").
+    # When ON CONFLICT DO NOTHING silently skips because the (type, value) pair is already
+    # claimed by a different contact, we must not assert a triple for the owner entity —
+    # that would contradict the authoritative SQL state.
+    # Note: google_health is currently unmapped in _CI_TYPE_TO_PREDICATE, so emit_contact_info_fact
+    # will no-op internally. The gate is kept as a correctness safeguard so that if the
+    # predicate mapping is added in the future, spurious triples on conflict paths are prevented.
+    if insert_status == "INSERT 0 1" and owner_contact_id_for_shim is not None:
+        try:
+            from butlers.tools.relationship.dual_write import emit_contact_info_fact
+
+            await emit_contact_info_fact(
+                pool,
+                contact_id=owner_contact_id_for_shim,
+                ci_type="google_health",
+                value=google_user_id,
+                is_primary=False,
+                src="dual-write",
+            )
+        except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
+            logger.warning(
+                "upsert_google_health_contact_info: emit_contact_info_fact failed for "
+                "contact %s (ci_type='google_health', value=%r) — dual-write failure swallowed",
+                owner_contact_id_for_shim,
+                google_user_id,
+                exc_info=True,
             )
 
 
