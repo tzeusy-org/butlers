@@ -69,7 +69,7 @@ def test_build_config_file_and_tool_call_formats(tmp_path: Path):
             "functionCall": {"name": "my_tool", "args": {"arg1": "val1"}},
         }
     )
-    _, tool_calls = _parse_gemini_output(line, "", 0)
+    _, tool_calls = _parse_gemini_output(line, "")
     assert len(tool_calls) == 1 and tool_calls[0]["id"] == "fc1"
     assert tool_calls[0]["name"] == "my_tool" and tool_calls[0]["input"] == {"arg1": "val1"}
 
