@@ -75,7 +75,7 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
 
 
 def _parse_gemini_output(
-    stdout: str, stderr: str, returncode: int
+    stdout: str, stderr: str
 ) -> tuple[str | None, list[dict[str, Any]]]:
     """Parse Gemini CLI output into (result_text, tool_calls).
 
@@ -94,18 +94,12 @@ def _parse_gemini_output(
         Raw stdout from the Gemini process.
     stderr:
         Raw stderr from the Gemini process.
-    returncode:
-        Exit code from the Gemini process.
 
     Returns
     -------
     tuple[str | None, list[dict[str, Any]]]
         (result_text, tool_calls)
     """
-    if returncode != 0:
-        error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
-        logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
-        return (f"Error: {error_detail}", [])
 
     result_text: str | None = None
     tool_calls: list[dict[str, Any]] = []
@@ -348,7 +342,7 @@ class GeminiAdapter(RuntimeAdapter):
                 logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
                 raise RuntimeError(f"Gemini CLI exited with code {returncode}: {error_detail}")
 
-            result_text, tool_calls = _parse_gemini_output(stdout, stderr, returncode)
+            result_text, tool_calls = _parse_gemini_output(stdout, stderr)
             # Token reporting contract: Gemini CLI does not expose token counts
             # in its output format. Usage is None — no ledger row will be written
             # for this invocation. This is intentional and documented.

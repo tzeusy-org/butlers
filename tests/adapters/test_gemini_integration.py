@@ -116,7 +116,7 @@ class TestParserWithRealOutput:
         stdout, stderr, rc = _run_gemini("What is 3+3? Answer in one word.")
         assert rc == 0, f"gemini failed: {stderr}"
 
-        result_text, tool_calls = _parse_gemini_output(stdout, stderr, rc)
+        result_text, tool_calls = _parse_gemini_output(stdout, stderr)
         assert result_text is not None, "Parser returned None result_text"
         assert len(result_text) > 0, "Parser returned empty result_text"
 
@@ -125,7 +125,7 @@ class TestParserWithRealOutput:
         stdout, stderr, rc = _run_gemini("Use the shell to run: echo 'parser-gemini-test'")
         assert rc == 0, f"gemini failed: {stderr}"
 
-        result_text, tool_calls = _parse_gemini_output(stdout, stderr, rc)
+        result_text, tool_calls = _parse_gemini_output(stdout, stderr)
         assert len(tool_calls) >= 1, f"Expected at least 1 tool call. stdout sample: {stdout[:500]}"
         tc = tool_calls[0]
         assert tc["name"], f"Tool call has empty name: {tc}"
