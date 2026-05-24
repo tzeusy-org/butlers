@@ -46,13 +46,26 @@
 
 ## 5. Provenance, Schema, And Observability
 
-- [ ] 5.1 Choose the smallest durable provenance shape: extend `dispatch_failures` and
+- [x] 5.1 Choose the smallest durable provenance shape: extend `dispatch_failures` and
       session process logs if sufficient; otherwise add `public.model_dispatch_attempts`.
-- [ ] 5.2 If adding a public table, add a core Alembic migration, targeted grants, and update
+      — Added `public.model_dispatch_attempts` (core_104 migration). Chose new table
+      over extending `dispatch_failures` because: (a) quota skips happen before any
+      terminal failure and cannot go in `dispatch_failures`; (b) `dispatch_failures` is
+      semantically terminal-only; (c) the spec names the new table explicitly.
+      Rows track quota_skip, runtime_failure, suppressed, exhausted, and success outcomes
+      with `attempt_index`, `logical_session_id`, `tool_call_count`, and `failure_reason`.
+- [x] 5.2 If adding a public table, add a core Alembic migration, targeted grants, and update
       RFC 0006 / `openspec/specs/database-security/spec.md` write authorization docs.
-- [ ] 5.3 Expose failed primary, quota skips, fallback success, suppression reason, and
+      — Migration `alembic/versions/core/core_104_model_dispatch_attempts.py` adds the table
+      with SELECT, INSERT grants for all `_ALL_RUNTIME_ROLES` and `connector_writer`.
+      `openspec/specs/database-security/spec.md` updated (see "Dispatch attempt provenance
+      table writes" scenario added to the write authorization matrix).
+- [x] 5.3 Expose failed primary, quota skips, fallback success, suppression reason, and
       failover exhaustion through the existing model failure-tail API or a minimal sibling
       endpoint.
+      — Added `GET /api/settings/models/{id}/attempts` in `model_settings.py` returning
+      `PaginatedResponse[DispatchAttemptEntry]` with all provenance fields. `dispatch_failures`
+      endpoint is unchanged (still serves terminal-failure rows only).
 - [ ] 5.4 Emit metrics for failover attempts, suppressed failovers, and exhausted failovers.
 - [ ] 5.5 Add API tests for provenance visibility and migration tests for any schema changes.
 
