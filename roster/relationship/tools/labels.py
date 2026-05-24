@@ -36,13 +36,24 @@ async def contact_search_by_label(pool: asyncpg.Pool, label_name: str) -> list[d
     """Search contacts by label name, using entity canonical_name for display (bead 7)."""
     rows = await pool.fetch(
         """
-        SELECT c.*, COALESCE(e.canonical_name, c.name) AS canonical_name
+        SELECT c.*,
+               COALESCE(
+                   e.canonical_name,
+                   NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+                   c.nickname,
+                   'Unknown'
+               ) AS canonical_name
         FROM contacts c
         JOIN contact_labels cl ON c.id = cl.contact_id
         JOIN labels l ON cl.label_id = l.id
         LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE l.name = $1 AND c.listed = true
-        ORDER BY COALESCE(e.canonical_name, c.name)
+        ORDER BY COALESCE(
+            e.canonical_name,
+            NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+            c.nickname,
+            'Unknown'
+        )
         """,
         label_name,
     )

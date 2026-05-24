@@ -62,12 +62,23 @@ async def group_members(pool: asyncpg.Pool, group_id: uuid.UUID) -> list[dict[st
     """List all members of a group, using entity canonical_name for display (bead 7)."""
     rows = await pool.fetch(
         """
-        SELECT c.*, COALESCE(e.canonical_name, c.name) AS name
+        SELECT c.*,
+               COALESCE(
+                   e.canonical_name,
+                   NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+                   c.nickname,
+                   'Unknown'
+               ) AS name
         FROM contacts c
         JOIN group_members gm ON c.id = gm.contact_id
         LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE gm.group_id = $1
-        ORDER BY COALESCE(e.canonical_name, c.name)
+        ORDER BY COALESCE(
+            e.canonical_name,
+            NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+            c.nickname,
+            'Unknown'
+        )
         """,
         group_id,
     )

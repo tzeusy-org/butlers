@@ -162,7 +162,13 @@ async def relationship_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[d
     """List all relationships for a contact, using entity canonical_name for display (bead 7)."""
     rows = await pool.fetch(
         """
-        SELECT r.*, COALESCE(e.canonical_name, c.name) AS related_name
+        SELECT r.*,
+               COALESCE(
+                   e.canonical_name,
+                   NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+                   c.nickname,
+                   'Unknown'
+               ) AS related_name
         FROM relationships r
         JOIN contacts c ON r.contact_b = c.id
         LEFT JOIN public.entities e ON e.id = c.entity_id
