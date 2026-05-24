@@ -457,19 +457,6 @@ def _relative(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "Pre-existing on main as of 2026-05-24: "
-        "src/butlers/modules/memory/tools/reading.py line 303 contains `<=>` "
-        "(pgvector distance operator) and is transitively reachable from router.py via "
-        "butlers.tools.relationship.contacts (lazy function-level import) → "
-        "butlers.modules.memory.tools.entities → memory.__init__ → reading.py. "
-        "All files in the import chain are identical on main and agent/bu-akads. "
-        "Follow-up: fix contacts.py lazy memory imports so they are not reachable "
-        "from the /entities/search guard walk, or exclude reading.py's pgvector usage "
-        "from the first-party scan scope."
-    )
-)
 def test_finder_no_llm_transitive_walk_passes_current_codebase() -> None:
     """The full transitive import graph of /entities/search contains no LLM/embedding code.
 
