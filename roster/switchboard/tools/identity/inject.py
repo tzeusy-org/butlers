@@ -11,7 +11,7 @@ For each incoming message:
    and notify the owner (exactly once per new unknown sender).
 3. Build the identity preamble and inject it at the top of the routed prompt.
 
-The preamble formats are (``contact_id`` removed in bu-akads read-path cut-over):
+Preamble formats (``entity_id`` is the canonical identifier post bu-akads):
 
 * Owner (with entity_id):    ``[Source: Owner (entity_id: {eid}), via {channel}]``
 * Owner (no entity_id):      ``[Source: Owner, via {channel}]``
@@ -21,8 +21,13 @@ The preamble formats are (``contact_id`` removed in bu-akads read-path cut-over)
   ``-- pending disambiguation]``
 * Unknown (no entity_id):    ``[Source: Unknown sender, via {channel} -- pending disambiguation]``
 
-The result includes ``contact_id``, ``entity_id``, and ``sender_roles`` for
-population in ``routing_log`` so every routed message carries identity context.
+The result includes ``entity_id`` and ``sender_roles`` for population in
+``routing_log``.  ``contact_id`` is carried for backward compatibility: it is
+always ``None`` for resolved (known) contacts — ``resolve_contact_by_channel``
+returns ``contact_id=None`` post bu-akads — and may be non-``None`` only when
+``create_temp_contact`` succeeds for an unknown sender (that path still writes
+to ``public.contacts``).  See the routing-log-contact-id audit report for the
+full deprecation analysis.
 """
 
 from __future__ import annotations
@@ -59,7 +64,13 @@ class IdentityResolutionResult:
         The structured identity preamble line to prepend to the routed prompt.
         Empty string when resolution was skipped (no channel_value provided).
     contact_id:
-        UUID of the resolved or created contact, or ``None``.
+        UUID of the resolved or created contact, or ``None``.  Post bu-akads
+        this is always ``None`` for resolved (known) contacts because
+        ``resolve_contact_by_channel`` no longer queries ``public.contacts``.
+        It may be non-``None`` only for unknown senders whose temp contact was
+        successfully created via ``create_temp_contact``.  Kept for backward
+        compatibility with ``routing_log.contact_id``; consider deprecating
+        once the column is confirmed redundant (see audit report).
     entity_id:
         UUID of the linked memory entity, or ``None``.
     sender_roles:
