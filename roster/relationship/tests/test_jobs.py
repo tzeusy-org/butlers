@@ -1169,6 +1169,29 @@ CREATE TABLE IF NOT EXISTS public.calendar_events (
 )
 """
 
+# relationship.entity_facts: triple-store for contact/relational predicates (migration rel_013).
+# run_interaction_sync now resolves sender identities via this table instead of public.contact_info.
+CREATE_RELATIONSHIP_ENTITY_FACTS_SQL = """
+CREATE SCHEMA IF NOT EXISTS relationship;
+CREATE TABLE IF NOT EXISTS relationship.entity_facts (
+    id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
+    predicate   TEXT        NOT NULL,
+    object      TEXT        NOT NULL,
+    object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
+    src         TEXT        NOT NULL DEFAULT 'test',
+    conf        FLOAT       NOT NULL DEFAULT 1.0,
+    last_seen   TIMESTAMPTZ,
+    weight      INT,
+    verified    BOOL        NOT NULL DEFAULT false,
+    "primary"   BOOL,
+    validity    TEXT        NOT NULL DEFAULT 'active'
+                    CHECK (validity IN ('active', 'retracted', 'superseded')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
 
 async def _setup_interaction_sync_schema(pool) -> None:
     """Create tables needed for interaction sync tests."""
@@ -1183,6 +1206,8 @@ async def _setup_interaction_sync_schema(pool) -> None:
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_sync ON facts (subject, predicate)"
     )
+    # run_interaction_sync resolves sender identities via relationship.entity_facts (rel_013)
+    await pool.execute(CREATE_RELATIONSHIP_ENTITY_FACTS_SQL)
     # store_fact() requires predicate_registry and memory_links
     await pool.execute(CREATE_PREDICATE_REGISTRY_SQL)
     await pool.execute(CREATE_MEMORY_LINKS_SQL)
@@ -1240,7 +1265,12 @@ async def _insert_contact_info(
     value: str,
     is_primary: bool = True,
 ) -> str:
-    """Insert a public.contact_info row and return its UUID string."""
+    """Insert a public.contact_info row and a matching relationship.entity_facts triple.
+
+    The interaction_sync job resolves sender identities via relationship.entity_facts
+    (post bead-7 cut-over).  Each call here also inserts the corresponding triple so
+    tests that rely on identity resolution continue to work.
+    """
     ci_id = str(uuid.uuid4())
     await pool.execute(
         """
@@ -1253,6 +1283,32 @@ async def _insert_contact_info(
         value,
         is_primary,
     )
+    # Also insert the corresponding entity_facts triple for bead-7 resolution.
+    # Map contact_info type → entity_facts predicate per relationship_jobs.py channel map.
+    _ci_type_to_predicate = {
+        "telegram_chat_id": "has-handle",
+        "whatsapp_jid": "has-handle",
+        "email": "has-email",
+        "phone": "has-phone",
+    }
+    predicate = _ci_type_to_predicate.get(ci_type, "has-handle")
+    # Look up entity_id from public.contacts (set by _insert_public_contact).
+    entity_id = await pool.fetchval(
+        "SELECT entity_id FROM public.contacts WHERE id = $1::uuid",
+        contact_id,
+    )
+    if entity_id is not None:
+        await pool.execute(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, validity)
+            VALUES ($1, $2, $3, 'literal', 'test', 'active')
+            ON CONFLICT DO NOTHING
+            """,
+            entity_id,
+            predicate,
+            value,
+        )
     return ci_id
 
 

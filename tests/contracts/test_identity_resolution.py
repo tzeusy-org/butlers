@@ -57,7 +57,7 @@ class TestIdentityPreambleFormat:
         owner = ResolvedContact(contact_id=cid, name="Owner", roles=["owner"], entity_id=eid)
         p = build_identity_preamble(owner, "telegram")
         assert p.startswith("[Source: Owner") and p.endswith("]")
-        assert f"contact_id: {cid}" in p and f"entity_id: {eid}" in p and "via telegram" in p
+        assert f"entity_id: {eid}" in p and "via telegram" in p
 
         # Known contact
         contact = ResolvedContact(contact_id=cid, name="Chloe", roles=[], entity_id=eid)
@@ -90,7 +90,12 @@ class TestResolveContactFunction:
     """RFC 0004: resolve_contact_by_channel() is the single resolution entry point."""
 
     def test_function_signature_and_source_structure(self):
-        """Async; accepts pool/channel_type/channel_value; uses 3-table JOIN; None on error."""
+        """Async; accepts pool/channel_type/channel_value; queries entity_facts triples; None on error.
+
+        Migration bead 7 (bu-akads): function now queries relationship.entity_facts
+        instead of public.contact_info / public.contacts.  Source structure
+        tokens updated accordingly.
+        """
         import asyncio
         import inspect
 
@@ -105,16 +110,15 @@ class TestResolveContactFunction:
         assert "pool" in params and "channel_type" in params and "channel_value" in params
 
         src = inspect.getsource(resolve_contact_by_channel)
+        # Bead 7: queries entity_facts triples, not contact_info/contacts
         for token in [
-            "contact_info",
-            "contacts",
+            "entity_facts",
             "entities",
-            "type",
-            "value",
+            "predicate",
             "return None",
             "except",
         ]:
-            assert token in src
+            assert token in src, f"Expected token {token!r} in resolve_contact_by_channel source"
 
         assert callable(create_temp_contact)
         assert "unidentified" in inspect.getsource(create_temp_contact)

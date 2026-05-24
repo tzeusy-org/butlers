@@ -11,12 +11,15 @@ For each incoming message:
    and notify the owner (exactly once per new unknown sender).
 3. Build the identity preamble and inject it at the top of the routed prompt.
 
-The preamble formats are:
+The preamble formats are (``contact_id`` removed in bu-akads read-path cut-over):
 
-* Owner:        ``[Source: Owner (contact_id: {cid}, entity_id: {eid}), via {channel}]``
-* Known:        ``[Source: {name} (contact_id: {cid}, entity_id: {eid}), via {channel}]``
-* Unknown:      ``[Source: Unknown sender (contact_id: {cid}), via {channel}
-  -- pending disambiguation]``
+* Owner (with entity_id):    ``[Source: Owner (entity_id: {eid}), via {channel}]``
+* Owner (no entity_id):      ``[Source: Owner, via {channel}]``
+* Known (with entity_id):    ``[Source: {name} (entity_id: {eid}), via {channel}]``
+* Known (no entity_id):      ``[Source: {name}, via {channel}]``
+* Unknown (with entity_id):  ``[Source: Unknown sender (entity_id: {eid}), via {channel}``
+  ``-- pending disambiguation]``
+* Unknown (no entity_id):    ``[Source: Unknown sender, via {channel} -- pending disambiguation]``
 
 The result includes ``contact_id``, ``entity_id``, and ``sender_roles`` for
 population in ``routing_log`` so every routed message carries identity context.

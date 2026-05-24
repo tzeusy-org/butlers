@@ -208,7 +208,7 @@ def _known_contact_patch(email: str = "user@example.com") -> Any:
         contact_id=uuid.UUID("00000000-0000-0000-0000-ffffffffffff"),
         name="Test Contact",
         roles=["owner"],
-        entity_id=None,
+        entity_id=uuid.UUID("00000000-0000-0000-0000-eeeeeeeeeeee"),
     )
 
     async def _mock_resolve(pool: Any, channel_type: str, channel_value: str) -> Any:

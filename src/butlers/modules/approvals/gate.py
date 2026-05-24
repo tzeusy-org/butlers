@@ -202,11 +202,19 @@ async def _resolve_target_contact(
     channel_type, channel_value = identity
 
     if channel_type == "contact_id":
-        # Direct UUID lookup on public.contacts
+        # contact_id dispatch: look up entity via public.contacts (kept until bead 8).
+        # After bead 8 the caller will pass entity_id directly; for now we still
+        # resolve via the contacts table to maintain backward compatibility.
         try:
             row = await pool.fetchrow(
-                "SELECT id AS contact_id, name, roles, entity_id "
-                "FROM public.contacts WHERE id = $1::uuid",
+                """
+                SELECT e.id               AS entity_id,
+                       e.canonical_name   AS name,
+                       COALESCE(e.roles, '{}') AS roles
+                FROM public.contacts c
+                JOIN public.entities e ON e.id = c.entity_id
+                WHERE c.id = $1::uuid
+                """,
                 channel_value,
             )
         except Exception:  # noqa: BLE001
@@ -224,22 +232,15 @@ async def _resolve_target_contact(
         raw_roles = row["roles"]
         roles = [str(r) for r in raw_roles] if isinstance(raw_roles, (list, tuple)) else []
 
-        contact_id_val = row["contact_id"]
-        if not isinstance(contact_id_val, UUID):
-            try:
-                contact_id_val = UUID(str(contact_id_val))
-            except (ValueError, AttributeError):
-                return None
-
         entity_id = row["entity_id"]
-        if entity_id is not None and not isinstance(entity_id, UUID):
+        if not isinstance(entity_id, UUID):
             try:
                 entity_id = UUID(str(entity_id))
             except (ValueError, AttributeError):
-                entity_id = None
+                return None
 
         return ResolvedContact(
-            contact_id=contact_id_val,
+            contact_id=None,  # entity_id is authoritative post bead 7
             name=row["name"] or None,
             roles=roles,
             entity_id=entity_id,
@@ -457,9 +458,17 @@ def _make_gate_wrapper(
             and identity[0] != "contact_id"
         ):
             channel_type, channel_value = identity
-            owner_is_primary = await is_primary_contact(
-                pool, resolved_contact.contact_id, channel_type, channel_value
-            )
+            if resolved_contact.entity_id is None:
+                # No entity_id — cannot check primacy; treat as non-primary so
+                # the action falls through to the rules/parking flow.
+                owner_is_primary = False
+            else:
+                owner_is_primary = await is_primary_contact(
+                    pool,
+                    resolved_contact.entity_id,
+                    channel_type,
+                    channel_value,
+                )
         else:
             # contact_id dispatch or unresolvable: treat as primary (no specific
             # address to gate against; contact_id resolution already prefers primary).
@@ -503,7 +512,7 @@ def _make_gate_wrapper(
                 reason="target contact has owner role",
                 metadata={
                     "tool_name": tool_name,
-                    "contact_id": str(resolved_contact.contact_id),
+                    "entity_id": str(resolved_contact.entity_id),
                 },
                 occurred_at=now,
             )
@@ -518,10 +527,10 @@ def _make_gate_wrapper(
             )
 
             logger.info(
-                "Owner-targeted auto-approve: tool %r (action=%s, contact=%s, risk_tier=%s)",
+                "Owner-targeted auto-approve: tool %r (action=%s, entity=%s, risk_tier=%s)",
                 tool_name,
                 action_id,
-                resolved_contact.contact_id,
+                resolved_contact.entity_id,
                 risk_tier.value,
             )
 

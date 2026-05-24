@@ -140,7 +140,9 @@ async def pool(provisioned_postgres_pool):
                 decided_by  TEXT,
                 decided_at  TIMESTAMPTZ,
                 execution_result JSONB,
-                approval_rule_id UUID
+                approval_rule_id UUID,
+                why         TEXT,
+                evidence    JSONB       NOT NULL DEFAULT '[]'::jsonb
             )
         """)
 
@@ -472,15 +474,26 @@ class TestOwnerCarveOut:
         assert result.fact_id is not None
         assert result.action_id is None
 
-    async def test_owner_carve_out_repeated_calls_each_create_pending_action(
-        self, pool, owner_entity
-    ):
-        """Each pending_approval call creates a new pending_action row."""
+    async def test_owner_carve_out_repeated_calls_dedup_same_action_id(self, pool, owner_entity):
+        """Repeated calls with the same (subject, predicate, object) return the same
+        pending_action row — dedup prevents duplicate approvals for the same identity
+        triple (introduced in fix: dedup owner approvals + populate why/evidence).
+        """
         r1 = await relationship_assert_fact(
             pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
         )
         r2 = await relationship_assert_fact(
             pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
+        )
+        assert r1.action_id == r2.action_id
+
+    async def test_owner_carve_out_different_object_creates_new_action(self, pool, owner_entity):
+        """Different object value must produce a distinct pending_action row."""
+        r1 = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
+        )
+        r2 = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, "other@example.com", src="a"
         )
         assert r1.action_id != r2.action_id
 

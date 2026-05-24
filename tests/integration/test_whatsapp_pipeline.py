@@ -248,16 +248,36 @@ class _GateTestPool:
         self.approval_events: list[dict[str, Any]] = []
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
-        if "public.contact_info" in query:
-            # _is_primary_contact query: WHERE contact_id=$1 AND type=$2 AND value=$3
-            if "is_primary" in query and len(args) == 3:
-                channel_type = str(args[1])
+        if "relationship.entity_facts" in query and args:
+            if '"primary"' in query and len(args) == 3:
+                # is_primary_contact query (bead 7): SELECT "primary" FROM relationship.entity_facts
+                # WHERE subject=$1 AND predicate=$2 AND object=$3
                 channel_value = str(args[2])
-                contact = self._contacts.get((channel_type, channel_value))
+                found = any(ci_val == channel_value for (ci_type, ci_val) in self._contacts)
+                if not found:
+                    return None
+                return {"primary": True}
+            if "ef.subject" in query and "entity_facts ef" in query and len(args) >= 2:
+                # resolve_contact_by_channel: SELECT ef.subject AS entity_id, e.canonical_name, ...
+                # WHERE ef.predicate=$1 AND ef.object=$2
+                channel_value = str(args[1])
+                # Find contact by value (ignore predicate matching for mock simplicity)
+                contact = next(
+                    (
+                        c
+                        for (ci_type, ci_val), c in self._contacts.items()
+                        if ci_val == channel_value
+                    ),
+                    None,
+                )
                 if contact is None:
                     return None
-                # Any explicitly registered contact is treated as primary in this mock.
-                return {"is_primary": True}
+                return {
+                    "entity_id": contact.get("entity_id"),
+                    "name": contact.get("name"),
+                    "roles": contact.get("roles", []),
+                }
+        if "public.contact_info" in query:
             # Channel-resolution query: WHERE type=$1 AND value=$2
             if len(args) >= 2:
                 key = (str(args[0]), str(args[1]))
@@ -316,16 +336,15 @@ class TestApprovalGateWhatsApp:
         from butlers.modules.approvals.gate import apply_approval_gates
         from butlers.modules.approvals.models import ActionStatus
 
-        owner_contact_id = uuid.uuid4()
+        owner_entity_id = uuid.uuid4()
         owner_jid = "15559990000@s.whatsapp.net"
 
         pool = _GateTestPool(
             contacts={
                 ("whatsapp_jid", owner_jid): {
-                    "contact_id": owner_contact_id,
                     "name": "Owner",
                     "roles": ["owner"],
-                    "entity_id": None,
+                    "entity_id": owner_entity_id,
                 }
             }
         )
@@ -382,24 +401,27 @@ class TestWhatsAppJIDResolution:
         return pool
 
     async def test_jid_resolution_paths(self):
-        """Direct JID hit, phone fallback on miss, group JID returns None without phone fallback."""
-        contact_id = uuid.uuid4()
+        """Direct JID hit, phone fallback on miss, group JID returns None without phone fallback.
 
-        # Direct hit
-        pool = self._make_pool_with_rows(
-            {"contact_id": contact_id, "name": "Alice", "roles": [], "entity_id": None}
-        )
+        Bead 7 (bu-akads): resolve_contact_by_channel now queries relationship.entity_facts.
+        contact_id is always None post cut-over; entity_id is the authoritative key.
+        """
+        entity_id = uuid.uuid4()
+
+        # Direct hit — mock returns entity_facts shape: entity_id, name, roles
+        pool = self._make_pool_with_rows({"entity_id": entity_id, "name": "Alice", "roles": []})
         result = await resolve_contact_by_channel(
             pool, "whatsapp_jid", "15551234567@s.whatsapp.net"
         )
-        assert result is not None and result.contact_id == contact_id
+        assert result is not None and result.contact_id is None  # bead 7: entity_id is primary
+        assert result.entity_id == entity_id
         pool.fetchrow.assert_called_once()
 
         # Phone cross-reference fallback
-        owner_id = uuid.uuid4()
+        owner_entity_id = uuid.uuid4()
         pool2 = self._make_pool_with_rows(
             None,
-            {"contact_id": owner_id, "name": "Owner", "roles": ["owner"], "entity_id": None},
+            {"entity_id": owner_entity_id, "name": "Owner", "roles": ["owner"]},
         )
         result2 = await resolve_contact_by_channel(
             pool2, "whatsapp_jid", "15550001111@s.whatsapp.net"

@@ -863,6 +863,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             if sender_identity:
                 lookup_pairs.append((ci_type, sender_identity))
 
+    # Post bead-7 cut-over: resolved maps (ci_type, value) → contact_id for backward
+    # compat with interaction_log() which still uses contact_id in subject keys.
+    # The query now goes through relationship.entity_facts (triple store) joined back
+    # to public.contacts to retrieve the contact_id.
     resolved: dict[tuple[str, str], uuid.UUID] = {}  # (ci_type, value) -> contact_id
     owner_contact_ids: set[uuid.UUID] = set()
 
@@ -874,17 +878,27 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             contact_rows = await db_pool.fetch(
                 """
                 SELECT
-                    ci.type        AS ci_type,
-                    ci.value       AS ci_value,
-                    ci.contact_id  AS contact_id,
-                    COALESCE(e.roles, '{}') AS roles
-                FROM public.contact_info ci
-                JOIN public.contacts c ON c.id = ci.contact_id
-                LEFT JOIN public.entities e ON e.id = c.entity_id
-                JOIN (
-                    SELECT DISTINCT pairs.ci_type, pairs.ci_value
-                    FROM UNNEST($1::text[], $2::text[]) AS pairs(ci_type, ci_value)
-                ) pairs ON ci.type = pairs.ci_type AND ci.value = pairs.ci_value
+                    pairs.ci_type,
+                    pairs.ci_value,
+                    c.id                        AS contact_id,
+                    COALESCE(e.roles, '{}')     AS roles
+                FROM (
+                    SELECT DISTINCT p.ci_type, p.ci_value
+                    FROM UNNEST($1::text[], $2::text[]) AS p(ci_type, ci_value)
+                ) pairs
+                JOIN relationship.entity_facts ef
+                  ON ef.predicate = CASE pairs.ci_type
+                        WHEN 'email'            THEN 'has-email'
+                        WHEN 'phone'            THEN 'has-phone'
+                        WHEN 'telegram_chat_id' THEN 'has-handle'
+                        WHEN 'whatsapp_jid'     THEN 'has-handle'
+                        ELSE 'has-handle'
+                     END
+                 AND ef.object      = pairs.ci_value
+                 AND ef.object_kind = 'literal'
+                 AND ef.validity    = 'active'
+                JOIN public.entities e ON e.id = ef.subject
+                LEFT JOIN public.contacts c ON c.entity_id = ef.subject
                 """,
                 ci_types,
                 ci_values,
@@ -896,6 +910,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
         for cr in contact_rows:
             contact_id = cr["contact_id"]
+            if contact_id is None:
+                continue
             if not isinstance(contact_id, uuid.UUID):
                 try:
                     contact_id = uuid.UUID(str(contact_id))
@@ -1201,17 +1217,21 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     if all_attendee_emails:
         try:
+            # Post bead-7 cut-over: resolve emails via relationship.entity_facts (has-email
+            # triple) joined back to public.contacts for backward compat with interaction_log().
             resolved_rows = await db_pool.fetch(
                 """
                 SELECT
-                    ci.contact_id,
-                    LOWER(ci.value) AS email,
-                    COALESCE(e.roles, '{}') AS roles
-                FROM public.contact_info ci
-                JOIN public.contacts c ON c.id = ci.contact_id
-                LEFT JOIN public.entities e ON e.id = c.entity_id
-                WHERE ci.type = 'email'
-                  AND LOWER(ci.value) = ANY($1::text[])
+                    c.id                        AS contact_id,
+                    LOWER(ef.object)            AS email,
+                    COALESCE(e.roles, '{}')     AS roles
+                FROM relationship.entity_facts ef
+                JOIN public.entities e ON e.id = ef.subject
+                LEFT JOIN public.contacts c ON c.entity_id = ef.subject
+                WHERE ef.predicate   = 'has-email'
+                  AND ef.object_kind = 'literal'
+                  AND ef.validity    = 'active'
+                  AND LOWER(ef.object) = ANY($1::text[])
                 """,
                 list(all_attendee_emails),
             )
@@ -1222,6 +1242,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
         for rr in resolved_rows:
             cid = rr["contact_id"]
+            if cid is None:
+                continue
             if not isinstance(cid, uuid.UUID):
                 try:
                     cid = uuid.UUID(str(cid))
