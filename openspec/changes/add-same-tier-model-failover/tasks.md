@@ -58,13 +58,24 @@
 
 ## 6. Adapter Error Surface Review
 
-- [ ] 6.1 Audit Codex, Claude Code, Gemini, and OpenCode adapter exceptions and process
+- [x] 6.1 Audit Codex, Claude Code, Gemini, and OpenCode adapter exceptions and process
       metadata to ensure the classifier can distinguish systemic failures from normal
       session failures.
-- [ ] 6.2 Add or update adapter tests for pre-tool-call CLI failure, rate limit, timeout,
+      — Audit complete: see `docs/reports/failover-classifier-audit-2026-05-24.md`.
+      Two concrete bugs found and fixed: (a) Gemini adapter did not raise RuntimeError
+      for non-zero exits (HIGH — failover dead code); (b) Codex compact_remote failures
+      not covered in classifier rate-limit markers (MEDIUM — false negative).
+- [x] 6.2 Add or update adapter tests for pre-tool-call CLI failure, rate limit, timeout,
       and MCP discovery failure surfaces.
-- [ ] 6.3 Keep adapter-internal retry behavior separate from cross-model failover; record
+      — Added tests in `tests/adapters/test_gemini_adapter.py` for non-zero exit paths
+      (auth, rate-limit, network, exit-code fallback, process_info recording).
+      Added tests in `tests/core/test_failover_classifier.py` for compact_remote coverage.
+- [x] 6.3 Keep adapter-internal retry behavior separate from cross-model failover; record
       both forms of provenance without conflating them.
+      — Verified compliant: Codex adapter's internal retry loops (transient CLI + MCP
+      discovery) exhaust before propagating to spawner. last_process_info records
+      retry_attempted/retry_succeeded/attempt_count independently of spawner failover
+      metrics (record_failover_attempt/suppressed/exhausted).
 
 ## 7. End-To-End Verification
 

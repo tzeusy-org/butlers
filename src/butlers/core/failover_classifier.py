@@ -114,6 +114,11 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "retry after",
     "backoff",
     "throttl",
+    # Codex-specific transient backend failures — the adapter retries these
+    # internally; when all internal retries are exhausted, failover to a
+    # different same-tier model is the correct response.
+    "compact_remote",
+    "remote compaction failed",
 )
 
 # Substrings matched (lowercased) against the exception message to detect

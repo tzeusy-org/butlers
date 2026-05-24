@@ -343,6 +343,11 @@ class GeminiAdapter(RuntimeAdapter):
                 "runtime_type": "gemini",
             }
 
+            if returncode != 0:
+                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
+                raise RuntimeError(f"Gemini CLI exited with code {returncode}: {error_detail}")
+
             result_text, tool_calls = _parse_gemini_output(stdout, stderr, returncode)
             # Token reporting contract: Gemini CLI does not expose token counts
             # in its output format. Usage is None — no ledger row will be written
