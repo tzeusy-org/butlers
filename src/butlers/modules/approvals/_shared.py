@@ -33,6 +33,7 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "phone": "has-phone",
     "telegram": "has-handle",
     "telegram_user_id": "has-handle",
+    "telegram_user_client": "has-handle",
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",

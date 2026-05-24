@@ -181,12 +181,17 @@ async def check_email_recipient(
 
     # Owner primary address → always allowed (no further checks needed)
     if contact is not None and "owner" in contact.roles:
-        is_primary = await is_primary_contact(
-            pool,
-            contact.entity_id,
-            "email",
-            email_target,  # type: ignore[arg-type]
-        )
+        if contact.entity_id is None:
+            # Owner contact has no entity_id — cannot check primacy; treat as non-primary
+            # so the address falls through to the rules/parking flow.
+            is_primary = False
+        else:
+            is_primary = await is_primary_contact(
+                pool,
+                contact.entity_id,
+                "email",
+                email_target,
+            )
         if is_primary:
             return EmailGuardDecision(allowed=True, reason="owner")
 

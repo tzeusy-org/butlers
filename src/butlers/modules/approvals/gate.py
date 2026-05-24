@@ -458,12 +458,17 @@ def _make_gate_wrapper(
             and identity[0] != "contact_id"
         ):
             channel_type, channel_value = identity
-            owner_is_primary = await is_primary_contact(
-                pool,
-                resolved_contact.entity_id,  # type: ignore[arg-type]
-                channel_type,
-                channel_value,
-            )
+            if resolved_contact.entity_id is None:
+                # No entity_id — cannot check primacy; treat as non-primary so
+                # the action falls through to the rules/parking flow.
+                owner_is_primary = False
+            else:
+                owner_is_primary = await is_primary_contact(
+                    pool,
+                    resolved_contact.entity_id,
+                    channel_type,
+                    channel_value,
+                )
         else:
             # contact_id dispatch or unresolvable: treat as primary (no specific
             # address to gate against; contact_id resolution already prefers primary).
