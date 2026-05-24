@@ -28,8 +28,7 @@ Change 'decommission-contact-detail-page' is valid
 
 ### AC2 — Contradictory dashboard-relationship route language is resolved
 
-**PARTIAL PASS — two non-trivial gaps remain; one set of gaps is addressable as
-trivial fixups, but two require operator decision before implementation begins.**
+**PARTIAL PASS — three semantic gaps remain (F1, F2, F3); all three require operator decision before implementation begins.**
 
 The delta spec at `openspec/changes/decommission-contact-detail-page/specs/dashboard-relationship/spec.md`
 correctly replaces the three requirements that are primary subjects of this change:
