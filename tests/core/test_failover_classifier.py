@@ -345,6 +345,29 @@ class TestRateLimitErrorsEligible:
         assert _eligible(dec)
         assert "rate_limit" in dec.reason
 
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            # Codex-specific transient backend failures — adapter exhausts internal
+            # retries before propagating; spawner should attempt cross-model failover.
+            "Codex CLI exited with code 1: codex_core::compact_remote failed",
+            "Codex CLI exited with code 1: remote compaction failed",
+            "compact_remote: could not compact session history",
+        ],
+    )
+    def test_codex_compact_remote_is_eligible(self, msg: str) -> None:
+        """Codex compact_remote / remote compaction failures are failover-eligible.
+
+        These are transient Codex backend failures.  The adapter retries them
+        internally; when all internal retries are exhausted the spawner should
+        attempt failover to another same-tier model.
+        """
+        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        assert _eligible(dec), (
+            f"Expected eligible for compact_remote msg={msg!r}, got: {dec.reason}"
+        )
+        assert "rate_limit" in dec.reason
+
 
 # ---------------------------------------------------------------------------
 # AC-1d: MCP discovery failures ARE eligible
