@@ -74,9 +74,7 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
     return dict(env)
 
 
-def _parse_gemini_output(
-    stdout: str, stderr: str
-) -> tuple[str | None, list[dict[str, Any]]]:
+def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dict[str, Any]]]:
     """Parse Gemini CLI output into (result_text, tool_calls).
 
     The Gemini CLI may output JSON or plain text to stdout. We attempt
