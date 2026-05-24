@@ -1866,7 +1866,7 @@ class Spawner:
                     )
                     resolved_runtime_type = fallback_runtime_type
                     model = fallback_model
-                    catalog_extra_args = []
+                    merged_args = []
                     catalog_timeout_s = None
                     resolution_source = "static_fallback"
                     runtime = self._get_or_create_adapter(fallback_runtime_type).create_worker()
