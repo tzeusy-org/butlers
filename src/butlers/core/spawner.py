@@ -793,6 +793,70 @@ async def resolve_provider_config(
     }
 
 
+# ---------------------------------------------------------------------------
+# Dispatch attempt provenance helper
+# ---------------------------------------------------------------------------
+
+_DISPATCH_ATTEMPTS_INSERT = """
+    INSERT INTO public.model_dispatch_attempts
+        (session_id, catalog_entry_id, butler, outcome,
+         failure_reason, error_code, error_message,
+         tool_call_count, attempt_index, logical_session_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+"""
+
+
+async def _write_dispatch_attempt(
+    pool: asyncpg.Pool,
+    *,
+    catalog_entry_id: uuid.UUID,
+    butler: str,
+    outcome: str,
+    attempt_index: int,
+    session_id: uuid.UUID | None = None,
+    failure_reason: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    tool_call_count: int | None = None,
+    logical_session_id: str | None = None,
+) -> None:
+    """Write one attempt row to public.model_dispatch_attempts (best-effort).
+
+    ``outcome`` must be one of:
+    - ``'quota_skip'``    — candidate skipped before invocation due to quota
+    - ``'runtime_failure'`` — adapter raised a failover-eligible error
+    - ``'suppressed'``    — failover decision was ineligible (side effects / unknown)
+    - ``'exhausted'``     — all same-tier candidates tried, none succeeded
+    - ``'success'``       — this attempt produced the final successful result
+
+    Never raises — write failures are logged at DEBUG and silently ignored so
+    the caller session is never disrupted by provenance instrumentation.
+    """
+    _error_message_trunc = error_message[:4096] if error_message else None
+    try:
+        await pool.execute(
+            _DISPATCH_ATTEMPTS_INSERT,
+            session_id,
+            catalog_entry_id,
+            butler,
+            outcome,
+            failure_reason,
+            error_code,
+            _error_message_trunc,
+            tool_call_count,
+            attempt_index,
+            logical_session_id,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to write dispatch attempt for butler=%s catalog_entry_id=%s outcome=%s",
+            butler,
+            catalog_entry_id,
+            outcome,
+            exc_info=True,
+        )
+
+
 class Spawner:
     """Core component that invokes ephemeral AI runtime instances for a butler.
 
@@ -1401,6 +1465,13 @@ class Spawner:
         # skip to the next same-tier candidate.  Hard-block only when no candidates
         # remain.  The attempted_ids list grows as we skip quota-exhausted entries.
         # ---------------------------------------------------------------------------
+
+        # Mint effective_request_id here (before the quota-skip loop) so that
+        # quota_skip rows share the same logical_session_id as subsequent rows
+        # (suppressed / runtime_failure / success) even when request_id is None
+        # (scheduler/tick triggers).
+        effective_request_id: str = request_id or generate_uuid7_string()
+
         _attempted_ids: list[uuid.UUID] = []
 
         if catalog_entry_id is not None and self._pool is not None:
@@ -1429,7 +1500,18 @@ class Spawner:
                     catalog_entry_id,
                     quota_msg,
                 )
+                _skipped_attempt_index = len(_attempted_ids)
                 _attempted_ids.append(catalog_entry_id)
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome="quota_skip",
+                    attempt_index=_skipped_attempt_index,
+                    failure_reason=quota_msg,
+                    tool_call_count=0,
+                    logical_session_id=effective_request_id,
+                )
 
                 if _failover_effective_tier is None:
                     # No tier pinned (shouldn't happen in this branch, but be safe)
@@ -1450,6 +1532,8 @@ class Spawner:
                         self._config.name,
                         _failover_effective_tier,
                     )
+                    # The last skipped entry is also the exhausted entry; no extra
+                    # row needed — the quota_skip row already captures it.
                     return SpawnerResult(success=False, error=quota_msg, model=model)
 
                 # Advance to the next candidate.
@@ -1511,11 +1595,8 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
-            # Ensure every session has a non-null request_id.
-            # Connector-sourced sessions supply one from the ingestion pipeline.
-            # Internally-triggered sessions (tick, scheduler, manual trigger) do
-            # not have an external request_id, so we mint a fresh UUID7 here.
-            effective_request_id: str = request_id or generate_uuid7_string()
+            # effective_request_id was minted before the quota-skip loop above
+            # (non-null for both connector-sourced and internal triggers).
 
             # Create session record with trace_id and request_id
             if self._pool is not None:
@@ -1792,11 +1873,45 @@ class Spawner:
                         self._config.name,
                         _failover_decision.reason,
                     )
+                    # Record suppression provenance (best-effort).
+                    if self._pool is not None and catalog_entry_id is not None:
+                        await _write_dispatch_attempt(
+                            self._pool,
+                            catalog_entry_id=catalog_entry_id,
+                            butler=self._config.name,
+                            outcome="suppressed",
+                            attempt_index=len(_attempted_ids),
+                            session_id=session_id,
+                            failure_reason=_failover_decision.reason,
+                            error_code=type(_attempt_exc).__name__,
+                            error_message=str(_attempt_exc),
+                            tool_call_count=len(_attempt_tool_calls),
+                            logical_session_id=effective_request_id,
+                        )
                     # Restore tool calls for the outer except block.
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
-                # Failover eligible — attempt next same-tier candidate.
+                # Failover eligible — record runtime_failure provenance for the
+                # attempt that just failed before advancing to the next candidate.
+                _failed_catalog_entry_id = catalog_entry_id
+                _failed_attempt_index = len(_attempted_ids)
+                if self._pool is not None and _failed_catalog_entry_id is not None:
+                    await _write_dispatch_attempt(
+                        self._pool,
+                        catalog_entry_id=_failed_catalog_entry_id,
+                        butler=self._config.name,
+                        outcome="runtime_failure",
+                        attempt_index=_failed_attempt_index,
+                        session_id=session_id,
+                        failure_reason=_failover_decision.reason,
+                        error_code=type(_attempt_exc).__name__,
+                        error_message=str(_attempt_exc),
+                        tool_call_count=len(_attempt_tool_calls),
+                        logical_session_id=effective_request_id,
+                    )
+
+                # Attempt next same-tier candidate.
                 if catalog_entry_id is not None:
                     _attempted_ids.append(catalog_entry_id)
 
@@ -1825,6 +1940,7 @@ class Spawner:
                         _failover_effective_tier,
                         _attempt_count,
                     )
+                    # The runtime_failure row for the last attempt was already written above.
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
@@ -1936,6 +2052,21 @@ class Spawner:
                             session_id,
                             exc_info=True,
                         )
+
+                # Record successful fallback attempt provenance when failover occurred.
+                # Only written when _attempted_ids is non-empty (meaning at least one
+                # prior attempt failed or was skipped before this success).
+                if _attempted_ids and self._pool is not None and catalog_entry_id is not None:
+                    await _write_dispatch_attempt(
+                        self._pool,
+                        catalog_entry_id=catalog_entry_id,
+                        butler=self._config.name,
+                        outcome="success",
+                        attempt_index=len(_attempted_ids),
+                        session_id=session_id,
+                        tool_call_count=len(tool_calls) if tool_calls else 0,
+                        logical_session_id=effective_request_id,
+                    )
 
                 # Write process-level diagnostics (best-effort, never blocks result)
                 proc_info = runtime.last_process_info

@@ -504,3 +504,133 @@ async def test_model_failures_returns_real_rows(app):
     assert rows[0]["error_message"] == "Session timed out after 30s"
     assert rows[0]["butler"] == "general"
     assert rows[0]["session_id"] == str(session_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/models/{id}/attempts — failover attempt provenance
+# ---------------------------------------------------------------------------
+
+
+async def test_model_attempts_404_on_missing_entry(app):
+    """GET /api/settings/models/{id}/attempts returns 404 when catalog entry absent."""
+    _, mock_pool = _app_with_pool(app, fetchval_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{uuid.uuid4()}/attempts")
+    assert resp.status_code == 404
+
+
+async def test_model_attempts_empty_on_missing_table(app):
+    """GET /api/settings/models/{id}/attempts returns empty list if table absent."""
+    import asyncpg.exceptions
+
+    entry_id = uuid.uuid4()
+    _, mock_pool = _app_with_pool(app, fetchval_result=entry_id)
+    mock_pool.fetchval = AsyncMock(side_effect=[entry_id, "2026-01-01 00:00:00+00"])
+    mock_pool.fetch = AsyncMock(
+        side_effect=asyncpg.exceptions.UndefinedTableError("model_dispatch_attempts")
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/attempts?since=24h")
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_model_attempts_422_on_bad_since(app):
+    """GET /api/settings/models/{id}/attempts returns 422 on unrecognised 'since' value."""
+    entry_id = uuid.uuid4()
+    _, mock_pool = _app_with_pool(app, fetchval_result=entry_id)
+    mock_pool.fetchval = AsyncMock(return_value=entry_id)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/attempts?since=badvalue")
+    assert resp.status_code == 422
+
+
+async def test_model_attempts_returns_real_rows(app):
+    """GET /api/settings/models/{id}/attempts returns provenance rows."""
+    from datetime import UTC, datetime
+
+    entry_id = uuid.uuid4()
+    attempt_ts = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
+
+    attempt_row = {
+        "ts": attempt_ts,
+        "butler": "general",
+        "outcome": "quota_skip",
+        "attempt_index": 0,
+        "failure_reason": "Token quota exhausted for catalog entry 'claude-sonnet': 24h",
+        "error_code": None,
+        "error_message": None,
+        "tool_call_count": 0,
+        "session_id": None,
+        "logical_session_id": "req-abc-123",
+    }
+
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetchval = AsyncMock(side_effect=[entry_id, attempt_ts, 1])
+    mock_pool.fetch = AsyncMock(return_value=[_mock_record(attempt_row)])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/attempts?since=24h&limit=10")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["total"] == 1
+    rows = body["data"]
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "quota_skip"
+    assert rows[0]["attempt_index"] == 0
+    assert rows[0]["butler"] == "general"
+    assert rows[0]["logical_session_id"] == "req-abc-123"
+    assert rows[0]["tool_call_count"] == 0
+    assert rows[0]["session_id"] is None
+
+
+async def test_model_attempts_suppressed_row_shape(app):
+    """GET /api/settings/models/{id}/attempts returns suppressed rows with failure reason."""
+    from datetime import UTC, datetime
+
+    entry_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    attempt_ts = datetime(2026, 5, 24, 11, 0, 0, tzinfo=UTC)
+
+    attempt_row = {
+        "ts": attempt_ts,
+        "butler": "general",
+        "outcome": "suppressed",
+        "attempt_index": 0,
+        "failure_reason": "tool_calls_present:2 captured",
+        "error_code": "RuntimeError",
+        "error_message": "Model failed mid-session",
+        "tool_call_count": 2,
+        "session_id": session_id,
+        "logical_session_id": "req-def-456",
+    }
+
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetchval = AsyncMock(side_effect=[entry_id, attempt_ts, 1])
+    mock_pool.fetch = AsyncMock(return_value=[_mock_record(attempt_row)])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/attempts?since=7d")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    rows = body["data"]
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "suppressed"
+    assert rows[0]["tool_call_count"] == 2
+    assert rows[0]["error_code"] == "RuntimeError"
+    assert rows[0]["failure_reason"] == "tool_calls_present:2 captured"
+    assert rows[0]["session_id"] == str(session_id)
