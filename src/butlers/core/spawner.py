@@ -1465,6 +1465,13 @@ class Spawner:
         # skip to the next same-tier candidate.  Hard-block only when no candidates
         # remain.  The attempted_ids list grows as we skip quota-exhausted entries.
         # ---------------------------------------------------------------------------
+
+        # Mint effective_request_id here (before the quota-skip loop) so that
+        # quota_skip rows share the same logical_session_id as subsequent rows
+        # (suppressed / runtime_failure / success) even when request_id is None
+        # (scheduler/tick triggers).
+        effective_request_id: str = request_id or generate_uuid7_string()
+
         _attempted_ids: list[uuid.UUID] = []
 
         if catalog_entry_id is not None and self._pool is not None:
@@ -1503,7 +1510,7 @@ class Spawner:
                     attempt_index=_skipped_attempt_index,
                     failure_reason=quota_msg,
                     tool_call_count=0,
-                    logical_session_id=request_id,
+                    logical_session_id=effective_request_id,
                 )
 
                 if _failover_effective_tier is None:
@@ -1588,11 +1595,8 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
-            # Ensure every session has a non-null request_id.
-            # Connector-sourced sessions supply one from the ingestion pipeline.
-            # Internally-triggered sessions (tick, scheduler, manual trigger) do
-            # not have an external request_id, so we mint a fresh UUID7 here.
-            effective_request_id: str = request_id or generate_uuid7_string()
+            # effective_request_id was minted before the quota-skip loop above
+            # (non-null for both connector-sourced and internal triggers).
 
             # Create session record with trace_id and request_id
             if self._pool is not None:
@@ -1876,7 +1880,7 @@ class Spawner:
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
                             outcome="suppressed",
-                            attempt_index=_attempt_count - 1 + len(_attempted_ids),
+                            attempt_index=len(_attempted_ids),
                             session_id=session_id,
                             failure_reason=_failover_decision.reason,
                             error_code=type(_attempt_exc).__name__,
@@ -1891,7 +1895,7 @@ class Spawner:
                 # Failover eligible — record runtime_failure provenance for the
                 # attempt that just failed before advancing to the next candidate.
                 _failed_catalog_entry_id = catalog_entry_id
-                _failed_attempt_index = _attempt_count - 1 + len(_attempted_ids)
+                _failed_attempt_index = len(_attempted_ids)
                 if self._pool is not None and _failed_catalog_entry_id is not None:
                     await _write_dispatch_attempt(
                         self._pool,
@@ -2052,7 +2056,7 @@ class Spawner:
                 # Record successful fallback attempt provenance when failover occurred.
                 # Only written when _attempted_ids is non-empty (meaning at least one
                 # prior attempt failed or was skipped before this success).
-                if _attempted_ids and catalog_entry_id is not None:
+                if _attempted_ids and self._pool is not None and catalog_entry_id is not None:
                     await _write_dispatch_attempt(
                         self._pool,
                         catalog_entry_id=catalog_entry_id,

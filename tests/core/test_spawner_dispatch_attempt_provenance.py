@@ -672,3 +672,378 @@ class TestDispatchAttemptBestEffort:
         # The quota exhaustion error is the real result, not the INSERT failure
         assert result.success is False
         assert "quota" in (result.error or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Bug fixes (bu-fqkip review)
+# ---------------------------------------------------------------------------
+
+
+class TestLogicalSessionIdCorrelation:
+    """Bug 1: quota_skip rows must use the same logical_session_id as later rows.
+
+    When request_id is None (scheduler/tick trigger), effective_request_id is
+    minted before the quota-skip loop so all rows for the same session share
+    the same non-null UUID.
+    """
+
+    async def test_quota_skip_logical_session_id_not_null_when_request_id_none(
+        self, tmp_path: Path
+    ) -> None:
+        """quota_skip row has a non-null logical_session_id even when request_id is None."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_DENIED_24H,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            # trigger() is called without a request_id (simulates scheduler/tick trigger)
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_SuccessAdapter(),
+            ).trigger("hello", "tick")
+
+        assert result.success is False
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        assert len(attempts) >= 1
+        quota_skip_rows = [a for a in attempts if a[4] == "quota_skip"]
+        assert len(quota_skip_rows) >= 1
+        # logical_session_id is the 10th positional arg ($10 in SQL, index 10)
+        logical_session_id = quota_skip_rows[0][10]
+        assert logical_session_id is not None, (
+            "quota_skip row must have a non-null logical_session_id even when request_id is None"
+        )
+        # Must be a valid UUID7-style string (36 chars with hyphens)
+        assert len(logical_session_id) == 36, f"Expected UUID string, got: {logical_session_id!r}"
+
+    async def test_quota_skip_and_runtime_failure_share_logical_session_id(
+        self, tmp_path: Path
+    ) -> None:
+        """quota_skip and runtime_failure rows share the same logical_session_id."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                side_effect=[_QUOTA_DENIED_24H, _QUOTA_ALLOWED],
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=[
+                    (DEFAULT_RUNTIME_TYPE, "claude-fallback", [], _FALLBACK_ID, 1800),
+                    None,  # exhausted after failover attempt
+                ],
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(eligible=True, reason="cli_missing"),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter("boom"),
+            ).trigger("hello", "tick")
+
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        quota_skip_rows = [a for a in attempts if a[4] == "quota_skip"]
+        runtime_failure_rows = [a for a in attempts if a[4] == "runtime_failure"]
+
+        if quota_skip_rows and runtime_failure_rows:
+            qs_lsid = quota_skip_rows[0][10]
+            rf_lsid = runtime_failure_rows[0][10]
+            assert qs_lsid is not None
+            assert rf_lsid is not None
+            assert qs_lsid == rf_lsid, (
+                f"quota_skip logical_session_id={qs_lsid!r} must equal "
+                f"runtime_failure logical_session_id={rf_lsid!r}"
+            )
+
+
+class TestAttemptIndexAccuracy:
+    """Bugs 2 & 3: attempt_index must equal len(_attempted_ids) at write time.
+
+    The old formula `_attempt_count - 1 + len(_attempted_ids)` double-counted
+    because failed attempts are appended to _attempted_ids AFTER the write.
+    """
+
+    async def test_suppressed_attempt_index_equals_zero_on_first_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """suppressed row at first attempt has attempt_index=0 (not 1 from _attempt_count)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(
+                    eligible=False, reason="tool_calls_present:1 captured"
+                ),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter("side effects"),
+            ).trigger("hello", "tick")
+
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        suppressed_rows = [a for a in attempts if a[4] == "suppressed"]
+        assert len(suppressed_rows) == 1
+        # attempt_index is the 9th positional arg ($9, index 9)
+        assert suppressed_rows[0][9] == 0, (
+            f"suppressed attempt_index should be 0 on first attempt, got {suppressed_rows[0][9]}"
+        )
+
+    async def test_runtime_failure_attempt_index_equals_zero_on_first_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """runtime_failure row at first attempt has attempt_index=0."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(eligible=True, reason="cli_missing"),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter("boom"),
+            ).trigger("hello", "tick")
+
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        runtime_failure_rows = [a for a in attempts if a[4] == "runtime_failure"]
+        assert len(runtime_failure_rows) >= 1
+        assert runtime_failure_rows[0][9] == 0, (
+            f"runtime_failure attempt_index should be 0 on first attempt, "
+            f"got {runtime_failure_rows[0][9]}"
+        )
+
+    async def test_runtime_failure_attempt_index_increments_after_quota_skip(
+        self, tmp_path: Path
+    ) -> None:
+        """runtime_failure attempt_index is 1 when one quota_skip preceded it."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                side_effect=[_QUOTA_DENIED_24H, _QUOTA_ALLOWED],
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=[
+                    (DEFAULT_RUNTIME_TYPE, "claude-fallback", [], _FALLBACK_ID, 1800),
+                    None,
+                ],
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(eligible=True, reason="cli_missing"),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter("boom"),
+            ).trigger("hello", "tick")
+
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        quota_skip_rows = [a for a in attempts if a[4] == "quota_skip"]
+        runtime_failure_rows = [a for a in attempts if a[4] == "runtime_failure"]
+        # quota_skip should be attempt_index=0, runtime_failure should be attempt_index=1
+        assert len(quota_skip_rows) == 1
+        assert quota_skip_rows[0][9] == 0
+        if runtime_failure_rows:
+            assert runtime_failure_rows[0][9] == 1, (
+                f"runtime_failure after 1 quota_skip should have attempt_index=1, "
+                f"got {runtime_failure_rows[0][9]}"
+            )
+
+
+class TestSuccessPoolGuard:
+    """Finding A: success write site must guard against pool=None."""
+
+    async def test_no_success_write_when_pool_is_none(self, tmp_path: Path) -> None:
+        """Success row is not attempted when pool is None (avoids AttributeError)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        call_count = 0
+
+        class _FailThenSucceed(RuntimeAdapter):
+            @property
+            def binary_name(self) -> str:
+                return "mock"
+
+            async def invoke(self, *args: Any, **kwargs: Any) -> tuple[str, list, dict | None]:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise RuntimeError("primary failed")
+                return "ok", [], None
+
+            async def reset(self) -> None:
+                pass
+
+            def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
+                import json
+
+                p = tmp_dir / "cfg.json"
+                p.write_text(json.dumps({"mcpServers": mcp_servers}))
+                return p
+
+            def parse_system_prompt_file(self, config_dir: Path) -> str:
+                return ""
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(eligible=True, reason="cli_missing"),
+            ),
+        ):
+            # pool=None means no DB writes — must not raise AttributeError
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=None,
+                runtime=_FailThenSucceed(),
+            ).trigger("hello", "tick")
+
+        # With pool=None, no session_create either, so session result is still computed
+        # The key assertion is: no AttributeError / NoneType exception was raised
+        # (reaching here means it didn't crash)
+        assert result is not None
