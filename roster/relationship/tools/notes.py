@@ -156,16 +156,10 @@ async def note_search(
         rows = await pool.fetch(
             """
             SELECT f.id, f.content, f.created_at, f.metadata,
-                   COALESCE(
-                       NULLIF(TRIM(CONCAT_WS(' ',
-                           COALESCE(c.first_name, ''),
-                           COALESCE(c.last_name, '')
-                       )), ''),
-                       c.nickname,
-                       'Unknown'
-                   ) AS contact_name
+                   COALESCE(e.canonical_name, 'Unknown') AS contact_name
             FROM facts f
             JOIN contacts c ON f.subject = 'contact:' || c.id::text
+            LEFT JOIN public.entities e ON e.id = c.entity_id
             WHERE f.subject = $1
               AND f.predicate = 'contact_note'
               AND f.scope = 'relationship'
@@ -186,17 +180,11 @@ async def note_search(
     rows = await pool.fetch(
         """
         SELECT f.id, f.content, f.created_at, f.metadata,
-               COALESCE(
-                   NULLIF(TRIM(CONCAT_WS(' ',
-                       COALESCE(c.first_name, ''),
-                       COALESCE(c.last_name, '')
-                   )), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS contact_name,
+               COALESCE(e.canonical_name, 'Unknown') AS contact_name,
                c.id AS _contact_id
         FROM facts f
         JOIN contacts c ON f.subject = 'contact:' || c.id::text
+        LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE f.predicate = 'contact_note'
           AND f.scope = 'relationship'
           AND f.validity = 'active'

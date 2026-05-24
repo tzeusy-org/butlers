@@ -7,8 +7,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._schema import contact_name_expr, table_columns
-
 
 async def relationship_types_list(
     pool: asyncpg.Pool, group: str | None = None
@@ -161,14 +159,13 @@ async def relationship_add(
 
 
 async def relationship_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[dict[str, Any]]:
-    """List all relationships for a contact."""
-    contact_cols = await table_columns(pool, "contacts")
-    name_sql = contact_name_expr(contact_cols, alias="c")
+    """List all relationships for a contact, using entity canonical_name for display (bead 7)."""
     rows = await pool.fetch(
-        f"""
-        SELECT r.*, {name_sql} AS related_name
+        """
+        SELECT r.*, COALESCE(e.canonical_name, c.name) AS related_name
         FROM relationships r
         JOIN contacts c ON r.contact_b = c.id
+        LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE r.contact_a = $1
         ORDER BY r.created_at
         """,

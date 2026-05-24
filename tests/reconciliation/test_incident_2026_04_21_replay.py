@@ -189,7 +189,7 @@ class TestAC1EmailGuardNonPrimary:
         )
         pool = AsyncMock()
         # Targeted address is NOT primary
-        pool.fetchrow = AsyncMock(return_value={"is_primary": False})
+        pool.fetchrow = AsyncMock(return_value={"primary": False})
 
         with (
             patch(
@@ -234,7 +234,7 @@ class TestAC1EmailGuardNonPrimary:
             roles=["owner"],
         )
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"is_primary": True})
+        pool.fetchrow = AsyncMock(return_value={"primary": True})
 
         with patch(
             "butlers.identity.resolve_contact_by_channel",

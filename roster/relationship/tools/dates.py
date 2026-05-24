@@ -67,13 +67,10 @@ async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[
     rows = await pool.fetch(
         """
         SELECT d.*,
-               COALESCE(
-                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS contact_name
+               COALESCE(e.canonical_name, 'Unknown') AS contact_name
         FROM important_dates d
         JOIN contacts c ON d.contact_id = c.id
+        LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE c.listed = true
         ORDER BY d.month, d.day
         """

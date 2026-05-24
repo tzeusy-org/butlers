@@ -1,8 +1,13 @@
 """Shared identity resolution utilities.
 
 Provides ``resolve_contact_by_channel`` — the canonical reverse-lookup that
-maps a channel identifier (type + value) to a known contact and their
+maps a channel identifier (type + value) to a known entity and their
 associated roles and entity_id.
+
+Migration bead 7 (bu-akads): reads from ``relationship.entity_facts`` triples
+(predicate ``has-handle``, ``has-email``, ``has-phone``) joined to
+``public.entities``.  ``public.contact_info`` / ``public.contacts`` are no
+longer consulted by the primary resolution path.
 
 Used by:
 - Switchboard ingestion path (before routing) to inject sender identity preambles.
@@ -27,6 +32,23 @@ _WHATSAPP_INDIVIDUAL_JID_SUFFIX = "@s.whatsapp.net"
 _WHATSAPP_JID_PHONE_RE = re.compile(r"^(\d+)@s\.whatsapp\.net$")
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Channel-type → relationship.entity_facts predicate mapping (bead 7 cut-over)
+# Must stay in sync with dual_write._CI_TYPE_TO_PREDICATE
+# ---------------------------------------------------------------------------
+_CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
+    "email": "has-email",
+    "phone": "has-phone",
+    "telegram": "has-handle",
+    "telegram_user_id": "has-handle",
+    "telegram_user_client": "has-handle",
+    "linkedin": "has-handle",
+    "twitter": "has-handle",
+    "website": "has-website",
+    "other": "has-handle",
+    "whatsapp_jid": "has-handle",
+}
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
@@ -54,20 +76,53 @@ class ResolvedContact:
     Attributes
     ----------
     contact_id:
-        UUID of the resolved contact in public.contacts.
+        UUID of the resolved contact in public.contacts.  May be ``None``
+        after the bead-7 cut-over when resolution goes through
+        ``relationship.entity_facts`` (entity_id is the authoritative key).
     name:
         Display name of the contact (may be ``None`` if not set).
     roles:
         List of roles assigned to the linked entity (e.g., ``['owner']``).
-        Sourced from ``public.entities.roles`` via entity JOIN.
+        Sourced from ``public.entities.roles``.
     entity_id:
         UUID of the linked entity in public.entities, or ``None`` if not linked.
     """
 
-    contact_id: UUID
+    contact_id: UUID | None
     name: str | None
     roles: list[str]
     entity_id: UUID | None
+
+
+async def _resolve_entity_by_triple(
+    pool: asyncpg.Pool,
+    predicate: str,
+    object_value: str,
+) -> asyncpg.Record | None:
+    """Query ``relationship.entity_facts`` for an active triple and join entity info.
+
+    Returns a row with ``entity_id``, ``name`` (canonical_name), and ``roles``,
+    or ``None`` when not found or on DB error.
+    """
+    try:
+        return await pool.fetchrow(
+            """
+            SELECT ef.subject                     AS entity_id,
+                   e.canonical_name               AS name,
+                   COALESCE(e.roles, '{}')        AS roles
+            FROM   relationship.entity_facts ef
+            JOIN   public.entities e ON e.id = ef.subject
+            WHERE  ef.predicate    = $1
+              AND  ef.object       = $2
+              AND  ef.object_kind  = 'literal'
+              AND  ef.validity     = 'active'
+            LIMIT  1
+            """,
+            predicate,
+            object_value,
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def resolve_contact_by_channel(
@@ -75,84 +130,62 @@ async def resolve_contact_by_channel(
     channel_type: str,
     channel_value: str,
 ) -> ResolvedContact | None:
-    """Resolve a contact from a channel identifier.
+    """Resolve an entity from a channel identifier via ``relationship.entity_facts``.
 
-    Queries ``public.contact_info JOIN public.contacts LEFT JOIN public.entities``
-    to map a channel identifier to a known contact record.  Roles are read from
-    the linked entity (``public.entities.roles``).  Returns ``None`` when no
-    contact is found for the given (type, value) pair.
+    Queries ``relationship.entity_facts`` to map a channel identifier to a known
+    entity.  Roles and canonical name are read from ``public.entities``.
+    Returns ``None`` when no entity is found for the given (type, value) pair.
+
+    Migration bead 7 (bu-akads): this function now queries the triples store
+    (``relationship.entity_facts``) directly, using predicates ``has-handle``,
+    ``has-email``, and ``has-phone``.  ``public.contact_info`` / ``public.contacts``
+    are no longer consulted.
 
     Parameters
     ----------
     pool:
         asyncpg connection pool.  The executing role must have at minimum
-        ``SELECT`` on ``public.contact_info`` and ``public.contacts``.
+        ``SELECT`` on ``relationship.entity_facts`` and ``public.entities``.
     channel_type:
-        The contact_info type field (e.g., ``"telegram"``, ``"email"``).
+        The channel type (e.g., ``"telegram"``, ``"email"``).
     channel_value:
-        The contact_info value field (e.g., a Telegram chat ID string or
-        an email address).
+        The channel value (e.g., a Telegram chat ID string or an email address).
 
     Returns
     -------
     ResolvedContact | None
         A populated ``ResolvedContact`` on success, or ``None`` if no match
-        is found or either shared table does not yet exist.
+        is found or the tables do not yet exist.
 
     Notes
     -----
-    - The UNIQUE constraint on ``(type, value)`` in ``public.contact_info``
-      (added by core_007 migration) guarantees at most one result.
-    - ``entity_id`` is read from ``contacts.entity_id`` which references
-      ``public.entities(id)``.  Roles are sourced from the entity, not the
-      contact.
+    - ``entity_id`` is the authoritative key post bead 7.  ``contact_id`` on
+      the returned dataclass will be ``None`` since we no longer query
+      ``public.contacts``.
     - This function is safe to call if the migration has not yet run —
       it returns ``None`` gracefully.
     """
-    try:
-        row: asyncpg.Record | None = await pool.fetchrow(
-            """
-            SELECT c.id                          AS contact_id,
-                   c.name                        AS name,
-                   COALESCE(e.roles, '{}')       AS roles,
-                   c.entity_id                   AS entity_id
-            FROM   public.contact_info ci
-            JOIN   public.contacts c ON c.id = ci.contact_id
-            LEFT JOIN public.entities e ON e.id = c.entity_id
-            WHERE  ci.type = $1
-              AND  ci.value = $2
-            LIMIT  1
-            """,
-            channel_type,
-            channel_value,
-        )
-    except Exception:  # noqa: BLE001
-        logger.debug(
-            "resolve_contact_by_channel: DB query failed (table may not exist yet); returning None",
-            exc_info=True,
-        )
-        return None
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    row: asyncpg.Record | None = None
+
+    if predicate is not None:
+        try:
+            row = await _resolve_entity_by_triple(pool, predicate, channel_value)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "resolve_contact_by_channel: DB query failed "
+                "(table may not exist yet); returning None",
+                exc_info=True,
+            )
+            return None
 
     if row is None and channel_type == "telegram_user_client":
+        # telegram_user_client fallback: try has-handle with telegram: prefix
         telegram_value = (
             channel_value if channel_value.startswith("telegram:") else f"telegram:{channel_value}"
         )
         try:
-            row = await pool.fetchrow(
-                """
-                SELECT c.id                          AS contact_id,
-                       c.name                        AS name,
-                       COALESCE(e.roles, '{}')       AS roles,
-                       c.entity_id                   AS entity_id
-                FROM   public.contact_info ci
-                JOIN   public.contacts c ON c.id = ci.contact_id
-                LEFT JOIN public.entities e ON e.id = c.entity_id
-                WHERE  ci.type = 'telegram_user_id'
-                  AND  ci.value = $1
-                LIMIT  1
-                """,
-                telegram_value,
-            )
+            row = await _resolve_entity_by_triple(pool, "has-handle", telegram_value)
         except Exception:  # noqa: BLE001
             logger.debug(
                 "resolve_contact_by_channel: telegram_user_client fallback query failed",
@@ -163,28 +196,13 @@ async def resolve_contact_by_channel(
     if row is None:
         # WhatsApp JID fallback: if no direct match, try phone-number cross-reference.
         # Extracts the E.164 phone prefix from "<number>@s.whatsapp.net" JIDs and
-        # queries with type="phone" to link against contacts from other providers
+        # queries has-phone to link against entities from other providers
         # (e.g. Google Contacts) that share the same number.
         if channel_type == "whatsapp_jid":
             phone = _extract_whatsapp_jid_phone(channel_value)
             if phone is not None:
                 try:
-                    phone_row: asyncpg.Record | None = await pool.fetchrow(
-                        """
-                        SELECT c.id                          AS contact_id,
-                               c.name                        AS name,
-                               COALESCE(e.roles, '{}')       AS roles,
-                               c.entity_id                   AS entity_id
-                        FROM   public.contact_info ci
-                        JOIN   public.contacts c ON c.id = ci.contact_id
-                        LEFT JOIN public.entities e ON e.id = c.entity_id
-                        WHERE  ci.type = 'phone'
-                          AND  ci.value = $1
-                        LIMIT  1
-                        """,
-                        phone,
-                    )
-                    row = phone_row
+                    row = await _resolve_entity_by_triple(pool, "has-phone", phone)
                 except Exception:  # noqa: BLE001
                     logger.debug(
                         "resolve_contact_by_channel: phone fallback query failed; returning None",
@@ -194,19 +212,12 @@ async def resolve_contact_by_channel(
         if row is None:
             return None
 
-    contact_id = row["contact_id"]
-    if not isinstance(contact_id, UUID):
-        try:
-            contact_id = UUID(str(contact_id))
-        except (ValueError, AttributeError):
-            return None
-
     entity_id = row["entity_id"]
-    if entity_id is not None and not isinstance(entity_id, UUID):
+    if not isinstance(entity_id, UUID):
         try:
             entity_id = UUID(str(entity_id))
         except (ValueError, AttributeError):
-            entity_id = None
+            return None
 
     raw_roles = row["roles"]
     if isinstance(raw_roles, (list, tuple)):
@@ -215,7 +226,7 @@ async def resolve_contact_by_channel(
         roles = []
 
     return ResolvedContact(
-        contact_id=contact_id,
+        contact_id=None,  # entity_id is now the authoritative key (bead 7)
         name=row["name"] or None,
         roles=roles,
         entity_id=entity_id,
@@ -392,6 +403,9 @@ def build_identity_preamble(
 ) -> str:
     """Build the structured identity preamble for a routed prompt.
 
+    Migration bead 7 (bu-akads): ``contact_id`` is no longer included in the
+    preamble output.  ``entity_id`` is the canonical identifier.
+
     Parameters
     ----------
     resolved:
@@ -399,7 +413,8 @@ def build_identity_preamble(
     channel:
         The source channel (e.g., ``"telegram"``).
     temp_contact_id:
-        contact_id of the temporary contact created for an unknown sender.
+        Kept for backward compatibility with ``create_temp_contact`` callers.
+        No longer emitted in the preamble string.
     temp_entity_id:
         entity_id of the temporary contact (may be ``None``).
 
@@ -407,33 +422,31 @@ def build_identity_preamble(
     -------
     str
         A formatted preamble line, e.g.:
-        - ``"[Source: Owner (contact_id: <uuid>, entity_id: <uuid>), via telegram]"``
-        - ``"[Source: Chloe (contact_id: <uuid>, entity_id: <uuid>), via telegram]"``
-        - ``"[Source: Unknown sender (contact_id: <uuid>), via telegram --
+        - ``"[Source: Owner (entity_id: <uuid>), via telegram]"``
+        - ``"[Source: Chloe (entity_id: <uuid>), via telegram]"``
+        - ``"[Source: Unknown sender (entity_id: <uuid>), via telegram --
           pending disambiguation]"``
     """
     if resolved is not None:
+        eid = resolved.entity_id
         if "owner" in resolved.roles:
-            cid = resolved.contact_id
-            eid = resolved.entity_id
             if eid is not None:
-                return f"[Source: Owner (contact_id: {cid}, entity_id: {eid}), via {channel}]"
-            return f"[Source: Owner (contact_id: {cid}), via {channel}]"
+                return f"[Source: Owner (entity_id: {eid}), via {channel}]"
+            return f"[Source: Owner, via {channel}]"
         # Known non-owner
         name = resolved.name or "Unknown Contact"
-        cid = resolved.contact_id
-        eid = resolved.entity_id
         if eid is not None:
-            return f"[Source: {name} (contact_id: {cid}, entity_id: {eid}), via {channel}]"
-        return f"[Source: {name} (contact_id: {cid}), via {channel}]"
+            return f"[Source: {name} (entity_id: {eid}), via {channel}]"
+        return f"[Source: {name}, via {channel}]"
 
     # Unknown sender
+    if temp_entity_id is not None:
+        return (
+            f"[Source: Unknown sender (entity_id: {temp_entity_id}), "
+            f"via {channel} -- pending disambiguation]"
+        )
     if temp_contact_id is not None:
-        if temp_entity_id is not None:
-            return (
-                f"[Source: Unknown sender (contact_id: {temp_contact_id}, "
-                f"entity_id: {temp_entity_id}), via {channel} -- pending disambiguation]"
-            )
+        # Fallback for create_temp_contact which always returns a contact_id
         return (
             f"[Source: Unknown sender (contact_id: {temp_contact_id}), "
             f"via {channel} -- pending disambiguation]"

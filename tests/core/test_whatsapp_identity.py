@@ -47,31 +47,32 @@ def test_extract_whatsapp_jid_phone():
 
 async def test_resolve_whatsapp_jid():
     """Direct JID match; owner JID; phone fallback on miss; group JID→None (no fallback);
-    both miss→None; DB error→None; non-whatsapp→no fallback."""
-    # Direct match
-    pool = _make_pool_with_rows(
-        {"contact_id": _CONTACT_ID, "name": "Alice", "roles": [], "entity_id": _ENTITY_ID}
-    )
+    both miss→None; DB error→None; non-whatsapp→no fallback.
+
+    Bead 7 (bu-akads): resolve_contact_by_channel now queries relationship.entity_facts.
+    contact_id is always None; entity_id is the authoritative key.
+    """
+    # Direct match — entity_facts shape: entity_id, name, roles
+    pool = _make_pool_with_rows({"entity_id": _ENTITY_ID, "name": "Alice", "roles": []})
     r = await resolve_contact_by_channel(pool, "whatsapp_jid", "1234567890@s.whatsapp.net")
-    assert r is not None and r.contact_id == _CONTACT_ID
+    assert r is not None and r.contact_id is None  # bead 7: entity_id is authoritative
+    assert r.entity_id == _ENTITY_ID
     pool.fetchrow.assert_called_once()
-    assert pool.fetchrow.call_args[0][1] == "whatsapp_jid"
+    # Bead 7: query uses has-handle predicate (arg[1]), not channel type
+    assert pool.fetchrow.call_args[0][1] == "has-handle"
 
     # Owner direct match
-    pool2 = _make_pool_with_rows(
-        {"contact_id": _OWNER_ID, "name": "Owner", "roles": ["owner"], "entity_id": None}
-    )
+    pool2 = _make_pool_with_rows({"entity_id": _OWNER_ID, "name": "Owner", "roles": ["owner"]})
     r2 = await resolve_contact_by_channel(pool2, "whatsapp_jid", "9876543210@s.whatsapp.net")
     assert r2 is not None and "owner" in r2.roles
 
-    # Phone fallback: direct miss → phone lookup
-    pool3 = _make_pool_with_rows(
-        None, {"contact_id": _CONTACT_ID, "name": "Bob", "roles": [], "entity_id": _ENTITY_ID}
-    )
+    # Phone fallback: direct miss → phone lookup (has-phone predicate)
+    pool3 = _make_pool_with_rows(None, {"entity_id": _ENTITY_ID, "name": "Bob", "roles": []})
     r3 = await resolve_contact_by_channel(pool3, "whatsapp_jid", "1234567890@s.whatsapp.net")
     assert r3 is not None and r3.name == "Bob"
     assert pool3.fetchrow.call_count == 2
-    assert "phone" in pool3.fetchrow.call_args_list[1][0][0]
+    # Second call uses has-phone predicate (phone cross-reference fallback)
+    assert pool3.fetchrow.call_args_list[1][0][1] == "has-phone"
 
     # Group JID: no phone fallback
     pool4 = _make_pool_with_rows(None)

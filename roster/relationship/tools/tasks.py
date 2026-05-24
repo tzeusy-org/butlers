@@ -146,23 +146,17 @@ async def task_list(
 
     where = " AND ".join(conditions)
 
-    # Join contacts to add contact_name for task_list without contact_id filter
+    # Join entities via contacts for display name (bead 7: uses canonical_name)
     if contact_id is not None:
         # contact_id is passed as the last param; its index is len(params)+1
         cid_idx = len(params) + 1
         rows = await pool.fetch(
             f"""
             SELECT f.id, f.subject, f.content, f.created_at, f.metadata,
-                   COALESCE(
-                       NULLIF(TRIM(CONCAT_WS(' ',
-                           COALESCE(c.first_name, ''),
-                           COALESCE(c.last_name, '')
-                       )), ''),
-                       c.nickname,
-                       'Unknown'
-                   ) AS contact_name
+                   COALESCE(e.canonical_name, 'Unknown') AS contact_name
             FROM facts f
             JOIN contacts c ON c.id = ${cid_idx}
+            LEFT JOIN public.entities e ON e.id = c.entity_id
             WHERE {where}
             ORDER BY f.created_at DESC
             """,
@@ -174,16 +168,10 @@ async def task_list(
         rows = await pool.fetch(
             f"""
             SELECT f.id, f.subject, f.content, f.created_at, f.metadata,
-                   COALESCE(
-                       NULLIF(TRIM(CONCAT_WS(' ',
-                           COALESCE(c.first_name, ''),
-                           COALESCE(c.last_name, '')
-                       )), ''),
-                       c.nickname,
-                       'Unknown'
-                   ) AS contact_name
+                   COALESCE(e.canonical_name, 'Unknown') AS contact_name
             FROM facts f
             JOIN contacts c ON f.subject LIKE 'contact:' || c.id::text || ':task:%'
+            LEFT JOIN public.entities e ON e.id = c.entity_id
             WHERE {where}
             ORDER BY f.created_at DESC
             """,

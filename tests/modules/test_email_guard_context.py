@@ -81,12 +81,12 @@ class TestIsPrimaryEmail:
 
     async def test_true_when_is_primary_set(self) -> None:
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"is_primary": True})
+        pool.fetchrow = AsyncMock(return_value={"primary": True})
         assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is True
 
     async def test_false_when_not_primary(self) -> None:
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"is_primary": False})
+        pool.fetchrow = AsyncMock(return_value={"primary": False})
         assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is False
 
     async def test_false_when_row_missing(self) -> None:
