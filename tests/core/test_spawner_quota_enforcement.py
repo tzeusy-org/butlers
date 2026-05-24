@@ -132,24 +132,36 @@ class TestSpawnerQuotaEnforcement:
     """Spawner blocks spawn when catalog entry quota is exhausted."""
 
     async def test_spawn_blocked_by_quota(self, tmp_path: Path) -> None:
-        """Spawner returns success=False when 24h or 30d quota is exceeded; adapter not invoked."""
+        """Spawner returns success=False when 24h or 30d quota is exceeded and no fallback exists."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
 
-        # 24h limit exhausted
+        # 24h limit exhausted; no same-tier fallback → hard block
         adapter_24 = _MockAdapter(result_text="should not run")
         with (
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
                 new_callable=AsyncMock,
                 return_value=_quota_denied_24h(),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
         ):
             result = await Spawner(
@@ -158,18 +170,30 @@ class TestSpawnerQuotaEnforcement:
         assert result.success is False and result.error is not None
         assert "24h" in result.error and adapter_24.invoke_calls == 0
 
-        # 30d limit exhausted
+        # 30d limit exhausted; no same-tier fallback → hard block
         adapter_30 = _MockAdapter(result_text="should not run")
         with (
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
                 new_callable=AsyncMock,
                 return_value=_quota_denied_30d(),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
         ):
             result2 = await Spawner(
@@ -193,9 +217,16 @@ class TestSpawnerQuotaEnforcement:
                 patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
                 patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
                 patch(
-                    "butlers.core.spawner.resolve_model",
+                    "butlers.core.spawner.resolve_model_with_effective_tier",
                     new_callable=AsyncMock,
-                    return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                    return_value=(
+                        DEFAULT_RUNTIME_TYPE,
+                        "claude-haiku",
+                        [],
+                        _FAKE_CATALOG_ID,
+                        1800,
+                        "workhorse",
+                    ),
                 ),
                 patch(
                     "butlers.core.spawner.check_token_quota",
@@ -233,7 +264,11 @@ class TestSpawnerQuotaEnforcement:
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch("butlers.core.spawner.resolve_model", new_callable=AsyncMock, return_value=None),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch("butlers.core.spawner.check_token_quota", new_callable=AsyncMock) as mock_quota2,
         ):
             mock_create.return_value = _SESSION_ID
@@ -273,9 +308,16 @@ class TestSpawnerLedgerRecording:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -314,9 +356,16 @@ class TestSpawnerLedgerRecording:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create1,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -345,9 +394,16 @@ class TestSpawnerLedgerRecording:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create2,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",

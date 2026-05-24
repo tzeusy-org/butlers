@@ -520,7 +520,7 @@ class TestSpawnerInvocation:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=(
                     "codex",
@@ -528,6 +528,7 @@ class TestSpawnerInvocation:
                     ["--config", 'model_reasoning_effort="high"'],
                     7,
                     600,
+                    "workhorse",
                 ),
             ),
             patch(
@@ -1253,7 +1254,7 @@ class TestSessionLogging:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1771,7 +1772,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=(
                     DEFAULT_RUNTIME_TYPE,
@@ -1779,6 +1780,7 @@ class TestCatalogModelResolution:
                     [],
                     _FAKE_CATALOG_ID,
                     2400,
+                    "workhorse",
                 ),
             ),
         ):
@@ -1797,7 +1799,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1820,7 +1822,7 @@ class TestCatalogModelResolution:
         adapter = MockAdapter(result_text="ok")
         spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
         with patch(
-            "butlers.core.spawner.resolve_model",
+            "butlers.core.spawner.resolve_model_with_effective_tier",
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_resolve:
@@ -1839,7 +1841,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ) as mock_resolve2,
@@ -1855,7 +1857,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ) as mock_resolve3,
@@ -1899,7 +1901,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=(
                     DEFAULT_RUNTIME_TYPE,
@@ -1907,6 +1909,7 @@ class TestCatalogModelResolution:
                     ["--catalog-arg", "val"],
                     _FAKE_CATALOG_ID,
                     2400,
+                    "workhorse",
                 ),
             ),
         ):
@@ -1946,7 +1949,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=(
                     DEFAULT_RUNTIME_TYPE,
@@ -1954,6 +1957,7 @@ class TestCatalogModelResolution:
                     [],
                     _FAKE_CATALOG_ID,
                     2400,
+                    "workhorse",
                 ),
             ),
         ):
@@ -1973,7 +1977,7 @@ class TestCatalogModelResolution:
 
         for side_effect, return_value in [
             (Exception("DB connection error"), None),
-            (None, ("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID, 2400)),
+            (None, ("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID, 2400, "workhorse")),
         ]:
             captured: dict = {}
 
@@ -2002,7 +2006,7 @@ class TestCatalogModelResolution:
                 patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
                 patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
                 patch(
-                    "butlers.core.spawner.resolve_model",
+                    "butlers.core.spawner.resolve_model_with_effective_tier",
                     new_callable=AsyncMock,
                     **resolve_kwargs,
                 ),
@@ -2037,7 +2041,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch("butlers.core.spawner.write_audit_entry", side_effect=fake_write_audit),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=(
                     DEFAULT_RUNTIME_TYPE,
@@ -2045,6 +2049,7 @@ class TestCatalogModelResolution:
                     [],
                     _FAKE_CATALOG_ID,
                     2400,
+                    "workhorse",
                 ),
             ),
         ):
@@ -2077,7 +2082,7 @@ class TestCatalogModelResolution:
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch("butlers.core.spawner.write_audit_entry", side_effect=fake_write_audit),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -2380,7 +2385,7 @@ class TestIngestionEventIdPropagation:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -2417,7 +2422,7 @@ class TestIngestionEventIdPropagation:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -2467,7 +2472,7 @@ class TestEmitSpendEventWiring:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=(
                     "codex",
@@ -2475,6 +2480,7 @@ class TestEmitSpendEventWiring:
                     [],
                     _FAKE_CATALOG_ID,
                     600,
+                    "workhorse",
                 ),
             ),
             patch(
@@ -2532,7 +2538,7 @@ class TestEmitSpendEventWiring:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock),
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,  # static fallback — no catalog_entry_id
             ),
@@ -2567,7 +2573,7 @@ class TestEmitSpendEventWiring:
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=(
                     "codex",
@@ -2575,6 +2581,7 @@ class TestEmitSpendEventWiring:
                     [],
                     _FAKE_CATALOG_ID,
                     600,
+                    "workhorse",
                 ),
             ),
             patch(
