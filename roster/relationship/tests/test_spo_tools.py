@@ -220,8 +220,9 @@ async def pool(provisioned_postgres_pool):
 
 async def _make_contact(pool, first_name: str) -> dict:
     # Create a linked entity first (required by fact_set → resolve_contact_entity_id)
+    # canonical_name must be set so task_list JOIN can return the display name.
     entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+        "INSERT INTO public.entities (name, canonical_name) VALUES ($1::text, $1::varchar) RETURNING id",
         first_name,
     )
     row = await pool.fetchrow(
