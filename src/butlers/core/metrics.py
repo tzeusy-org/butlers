@@ -87,6 +87,17 @@ Recovery (emitted from healing/dispatch.py and qa/dispatch.py):
   butlers.recovery.execution_failures_total Counter (labels: butler, workflow, phase, error_class)
       Terminal failures from launched workflow phases.
 
+Failover (emitted from spawner.py same-tier failover loop):
+
+  butlers.spawner.failover_attempts_total   Counter (labels: butler, from_model, to_model, reason)
+      Successful failover transitions (primary failed, next candidate invoked).
+
+  butlers.spawner.failover_suppressed_total Counter (labels: butler, reason)
+      Failovers suppressed by the classifier (tool calls captured, guardrail, default-closed, etc.).
+
+  butlers.spawner.failover_exhausted_total  Counter (labels: butler, tier)
+      Failover loops exhausted after all same-tier candidates failed.
+
 All instruments carry a ``butler`` label for per-butler drill-down in Grafana.
 The ``deployment.environment`` resource attribute is set from the ``ENV``
 environment variable when present (e.g. ENV=prod or ENV=dev).
@@ -426,6 +437,35 @@ def _recovery_execution_failures_total() -> metrics.Counter:
     )
 
 
+def _failover_attempts_total() -> metrics.Counter:
+    """Counter: successful failover transitions (labels: butler, from_model, to_model, reason)."""
+    return get_meter().create_counter(
+        name="butlers.spawner.failover_attempts_total",
+        description=(
+            "Same-tier failover transitions where primary failed and next candidate invoked"
+        ),
+        unit="attempts",
+    )
+
+
+def _failover_suppressed_total() -> metrics.Counter:
+    """Counter: failovers suppressed by the classifier (labels: butler, reason)."""
+    return get_meter().create_counter(
+        name="butlers.spawner.failover_suppressed_total",
+        description="Failover decisions suppressed by the eligibility classifier",
+        unit="suppressions",
+    )
+
+
+def _failover_exhausted_total() -> metrics.Counter:
+    """Counter: failover loops exhausted (labels: butler, tier)."""
+    return get_meter().create_counter(
+        name="butlers.spawner.failover_exhausted_total",
+        description="Same-tier failover loops that exhausted all candidate models",
+        unit="exhaustions",
+    )
+
+
 # ---------------------------------------------------------------------------
 # ButlerMetrics — convenience wrapper that caches instruments per butler
 # ---------------------------------------------------------------------------
@@ -487,6 +527,9 @@ class ButlerMetrics:
         self.__recovery_phase_duration: metrics.Histogram | None = None
         self.__recovery_dispatch_decisions: metrics.Counter | None = None
         self.__recovery_execution_failures: metrics.Counter | None = None
+        self.__failover_attempts: metrics.Counter | None = None
+        self.__failover_suppressed: metrics.Counter | None = None
+        self.__failover_exhausted: metrics.Counter | None = None
 
     # -- instrument accessors (lazy init) ------------------------------------
 
@@ -615,6 +658,24 @@ class ButlerMetrics:
         if self.__recovery_execution_failures is None:
             self.__recovery_execution_failures = _recovery_execution_failures_total()
         return self.__recovery_execution_failures
+
+    @property
+    def _failover_attempts(self) -> metrics.Counter:
+        if self.__failover_attempts is None:
+            self.__failover_attempts = _failover_attempts_total()
+        return self.__failover_attempts
+
+    @property
+    def _failover_suppressed(self) -> metrics.Counter:
+        if self.__failover_suppressed is None:
+            self.__failover_suppressed = _failover_suppressed_total()
+        return self.__failover_suppressed
+
+    @property
+    def _failover_exhausted(self) -> metrics.Counter:
+        if self.__failover_exhausted is None:
+            self.__failover_exhausted = _failover_exhausted_total()
+        return self.__failover_exhausted
 
     def ensure_registered(self) -> None:
         """Emit zero-value adds on key gauges so the butler appears in Prometheus.
@@ -791,3 +852,37 @@ class ButlerMetrics:
         """
         attrs = {**self._attrs, "workflow": workflow, "phase": phase, "error_class": error_class}
         self._recovery_failures.add(1, attrs)
+
+    # -- failover recording helpers --------------------------------------------
+
+    def record_failover_attempt(self, *, from_model: str, to_model: str, reason: str) -> None:
+        """Record a same-tier failover transition (primary failed, next candidate invoked).
+
+        Args:
+            from_model: Model ID of the failed primary attempt.
+            to_model: Model ID of the next candidate being tried.
+            reason: Short reason code from the failover classifier (e.g.
+                ``"quota_exhausted"``, ``"timeout_before_work"``).
+        """
+        attrs = {**self._attrs, "from_model": from_model, "to_model": to_model, "reason": reason}
+        self._failover_attempts.add(1, attrs)
+
+    def record_failover_suppressed(self, *, reason: str) -> None:
+        """Record a failover decision suppressed by the classifier.
+
+        Args:
+            reason: Short reason code from the decision (e.g.
+                ``"captured_tool_calls"``, ``"guardrail_termination"``).
+        """
+        # Truncate reason to first token to keep cardinality manageable.
+        short_reason = reason.split(":")[0] if reason else "unknown"
+        self._failover_suppressed.add(1, {**self._attrs, "reason": short_reason})
+
+    def record_failover_exhausted(self, *, tier: str) -> None:
+        """Record that the same-tier failover loop exhausted all candidates.
+
+        Args:
+            tier: The effective tier where all candidates were exhausted
+                (e.g. ``"workhorse"``, ``"cheap"``).
+        """
+        self._failover_exhausted.add(1, {**self._attrs, "tier": tier})

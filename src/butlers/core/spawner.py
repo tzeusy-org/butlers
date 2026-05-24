@@ -44,6 +44,7 @@ from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
+from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.general_settings import (
     build_general_timezone_instruction,
     load_general_settings,
@@ -58,8 +59,9 @@ from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
     check_token_quota,
+    next_same_tier_candidate,
     record_token_usage,
-    resolve_model,
+    resolve_model_with_effective_tier,
 )
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -1328,12 +1330,16 @@ class Spawner:
 
         # Resolve model from the catalog; fall back to the hard-coded default
         # constants only when no catalog entry exists or catalog resolution fails.
+        # resolve_model_with_effective_tier returns a 6-tuple including the effective tier
+        # needed to restrict same-tier failover attempts.
         fallback_runtime_type = DEFAULT_RUNTIME_TYPE
         fallback_model = _FALLBACK_MODEL_ID
         catalog_result = None
         if self._pool is not None:
             try:
-                catalog_result = await resolve_model(self._pool, self._config.name, complexity)
+                catalog_result = await resolve_model_with_effective_tier(
+                    self._pool, self._config.name, complexity
+                )
             except Exception:
                 logger.debug(
                     "Catalog model resolution failed for butler=%s complexity=%s; "
@@ -1349,14 +1355,18 @@ class Spawner:
         _catalog_valid = (
             catalog_result is not None
             and isinstance(catalog_result, tuple)
-            and len(catalog_result) == 5
+            and len(catalog_result) == 6
             and isinstance(catalog_result[0], str)
             and isinstance(catalog_result[1], str)
             and isinstance(catalog_result[2], list)
             and isinstance(catalog_result[4], int)
+            and isinstance(catalog_result[5], str)
         )
-        catalog_entry_id = None
+        catalog_entry_id: uuid.UUID | None = None
         catalog_timeout_s: int | None = None
+        # Effective tier pinned from initial resolution for same-tier failover.
+        # None when using static_fallback (no failover in that path).
+        _failover_effective_tier: str | None = None
         if _catalog_valid:
             assert catalog_result is not None  # narrowing for type checker
             (
@@ -1365,6 +1375,7 @@ class Spawner:
                 catalog_extra_args,
                 catalog_entry_id,
                 catalog_timeout_s,
+                _failover_effective_tier,
             ) = catalog_result
             resolution_source = "catalog"
         else:
@@ -1383,11 +1394,21 @@ class Spawner:
             model,
         )
 
-        # Pre-spawn quota check: block if catalog entry token budget is exhausted.
-        # Only applies when a catalog entry was resolved (not TOML fallback).
+        # ---------------------------------------------------------------------------
+        # Same-tier failover: quota-skip loop
+        #
+        # Before invoking, check quota for the resolved catalog entry.  If exhausted,
+        # skip to the next same-tier candidate.  Hard-block only when no candidates
+        # remain.  The attempted_ids list grows as we skip quota-exhausted entries.
+        # ---------------------------------------------------------------------------
+        _attempted_ids: list[uuid.UUID] = []
+
         if catalog_entry_id is not None and self._pool is not None:
-            quota = await check_token_quota(self._pool, catalog_entry_id)
-            if not quota.allowed:
+            while True:
+                quota = await check_token_quota(self._pool, catalog_entry_id)
+                if quota.allowed:
+                    break
+                # Quota exhausted: record and skip to next same-tier candidate.
                 windows_exceeded = []
                 if quota.limit_24h is not None and quota.usage_24h >= quota.limit_24h:
                     windows_exceeded.append(
@@ -1398,20 +1419,52 @@ class Spawner:
                         f"30d (used={quota.usage_30d}, limit={quota.limit_30d})"
                     )
                 alias = model or str(catalog_entry_id)
-                error_msg = f"Token quota exhausted for catalog entry '{alias}': " + "; ".join(
+                quota_msg = f"Token quota exhausted for catalog entry '{alias}': " + "; ".join(
                     windows_exceeded
                 )
                 logger.warning(
-                    "Spawn blocked by quota for butler=%s catalog_entry_id=%s: %s",
+                    "Quota exhausted for butler=%s catalog_entry_id=%s; "
+                    "seeking next same-tier candidate: %s",
                     self._config.name,
                     catalog_entry_id,
-                    error_msg,
+                    quota_msg,
                 )
-                return SpawnerResult(
-                    success=False,
-                    error=error_msg,
-                    model=model,
+                _attempted_ids.append(catalog_entry_id)
+
+                if _failover_effective_tier is None:
+                    # No tier pinned (shouldn't happen in this branch, but be safe)
+                    return SpawnerResult(success=False, error=quota_msg, model=model)
+
+                next_candidate = await next_same_tier_candidate(
+                    self._pool,
+                    self._config.name,
+                    _failover_effective_tier,
+                    _attempted_ids,
                 )
+                if next_candidate is None:
+                    # No candidates remain: hard block.
+                    self._metrics.record_failover_exhausted(tier=_failover_effective_tier)
+                    logger.warning(
+                        "All same-tier candidates exhausted after quota skips for "
+                        "butler=%s tier=%s",
+                        self._config.name,
+                        _failover_effective_tier,
+                    )
+                    return SpawnerResult(success=False, error=quota_msg, model=model)
+
+                # Advance to the next candidate.
+                next_rt, next_model, next_extra_args, next_entry_id, next_timeout_s = next_candidate
+                self._metrics.record_failover_attempt(
+                    from_model=model,
+                    to_model=next_model,
+                    reason="quota_exhausted",
+                )
+                resolved_runtime_type = next_rt
+                model = next_model
+                catalog_extra_args = next_extra_args
+                catalog_entry_id = next_entry_id
+                catalog_timeout_s = next_timeout_s
+                # Loop again to check quota for the new candidate.
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         provider_config = await self._resolve_provider_config(model)
@@ -1580,98 +1633,246 @@ class Spawner:
 
             await self._ensure_mcp_endpoints_warmed(mcp_servers)
 
-            # Invoke via runtime adapter
-            runtime_invoked = True
-            invoke_kwargs: dict[str, Any] = {
-                "prompt": final_prompt,
-                "system_prompt": system_prompt,
-                "mcp_servers": mcp_servers,
-                "env": env,
-                "max_turns": max_turns,
-                "model": model,
-                "cwd": cwd if cwd is not None else str(self._config_dir),
-            }
-            if merged_args:
-                invoke_kwargs["runtime_args"] = merged_args
-            if timeout_override is not None:
-                timeout_s = timeout_override
-            elif catalog_timeout_s is not None:
-                timeout_s = catalog_timeout_s
-            else:
-                timeout_s = _FALLBACK_SESSION_TIMEOUT_S
-            invoke_kwargs["timeout"] = timeout_s
-            merged_runtime_capture = False
-            try:
-                invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
-                try:
-                    done, _pending = await asyncio.wait(
-                        {invoke_task},
-                        timeout=_runtime_timeout_guard_s(float(timeout_s)),
-                    )
-                    if not done:
-                        invoke_task.cancel()
-                        try:
-                            await asyncio.wait_for(
-                                invoke_task, timeout=_RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S
-                            )
-                        except (TimeoutError, asyncio.CancelledError):
-                            pass
-                        except Exception:
-                            logger.debug(
-                                "Runtime task raised while handling spawner timeout for butler=%s",
-                                self._config.name,
-                                exc_info=True,
-                            )
-                        raise TimeoutError(
-                            f"Session timed out after {timeout_s}s "
-                            f"(model={model}, butler={self._config.name})"
-                        )
-                    result_text, tool_calls, usage = await invoke_task
-                finally:
-                    if not invoke_task.done():
-                        invoke_task.cancel()
-                        try:
-                            await invoke_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
-            except MCPToolDiscoveryError as exc:
-                executed_tool_calls = (
-                    consume_runtime_session_tool_calls(runtime_session_id)
-                    if runtime_session_id
-                    else []
-                )
-                # Always record the consumed buffer so the failure path (below)
-                # can persist these calls instead of re-consuming nothing.
-                preconsumed_runtime_tool_calls = list(executed_tool_calls)
-                merged_tool_calls = _merge_tool_call_records(
-                    exc.tool_calls,
-                    executed_tool_calls,
-                    butler_name=self._config.name,
-                )
-                if not _has_non_command_tool_calls(merged_tool_calls):
-                    raise
+            # ---------------------------------------------------------------------------
+            # Same-tier failover: runtime-failure retry loop
+            #
+            # One logical session may attempt multiple same-tier catalog candidates.
+            # Loop invariant: (model, catalog_entry_id, runtime, merged_args,
+            # catalog_timeout_s) are updated on each failover transition.
+            # The session row (session_id) is created ONCE before this loop and
+            # represents the final outcome. If a fallback model succeeds, the session
+            # row's model field is updated to reflect the model that actually ran.
+            # ---------------------------------------------------------------------------
+            # Hard cap on attempts as a defensive backstop against unbounded looping.
+            _MAX_FAILOVER_ATTEMPTS = 10
+            _attempt_count = 0
 
-                logger.warning(
-                    "Recovered Codex MCP discovery false-negative for butler=%s session=%s; "
-                    "runtime capture confirmed %d MCP tool call(s)",
-                    self._config.name,
-                    session_id,
-                    len([c for c in merged_tool_calls if c.get("name") != "command_execution"]),
+            while True:
+                _attempt_count += 1
+
+                # Build per-attempt invoke kwargs using current (possibly updated) model.
+                runtime_invoked = True
+                invoke_kwargs: dict[str, Any] = {
+                    "prompt": final_prompt,
+                    "system_prompt": system_prompt,
+                    "mcp_servers": mcp_servers,
+                    "env": env,
+                    "max_turns": max_turns,
+                    "model": model,
+                    "cwd": cwd if cwd is not None else str(self._config_dir),
+                }
+                if merged_args:
+                    invoke_kwargs["runtime_args"] = merged_args
+                if timeout_override is not None:
+                    timeout_s = timeout_override
+                elif catalog_timeout_s is not None:
+                    timeout_s = catalog_timeout_s
+                else:
+                    timeout_s = _FALLBACK_SESSION_TIMEOUT_S
+                invoke_kwargs["timeout"] = timeout_s
+                merged_runtime_capture = False
+
+                _attempt_exc: BaseException | None = None
+                _attempt_tool_calls: list[dict[str, Any]] = []
+
+                try:
+                    invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
+                    try:
+                        done, _pending = await asyncio.wait(
+                            {invoke_task},
+                            timeout=_runtime_timeout_guard_s(float(timeout_s)),
+                        )
+                        if not done:
+                            invoke_task.cancel()
+                            try:
+                                await asyncio.wait_for(
+                                    invoke_task, timeout=_RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S
+                                )
+                            except (TimeoutError, asyncio.CancelledError):
+                                pass
+                            except Exception:
+                                logger.debug(
+                                    "Runtime task raised while handling spawner timeout "
+                                    "for butler=%s",
+                                    self._config.name,
+                                    exc_info=True,
+                                )
+                            raise TimeoutError(
+                                f"Session timed out after {timeout_s}s "
+                                f"(model={model}, butler={self._config.name})"
+                            )
+                        result_text, tool_calls, usage = await invoke_task
+                    finally:
+                        if not invoke_task.done():
+                            invoke_task.cancel()
+                            try:
+                                await invoke_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                except MCPToolDiscoveryError as exc:
+                    executed_tool_calls = (
+                        consume_runtime_session_tool_calls(runtime_session_id)
+                        if runtime_session_id
+                        else []
+                    )
+                    # Always record the consumed buffer so the failure path (below)
+                    # can persist these calls instead of re-consuming nothing.
+                    preconsumed_runtime_tool_calls = list(executed_tool_calls)
+                    merged_tool_calls = _merge_tool_call_records(
+                        exc.tool_calls,
+                        executed_tool_calls,
+                        butler_name=self._config.name,
+                    )
+                    if not _has_non_command_tool_calls(merged_tool_calls):
+                        # No confirmed MCP calls — eligible for failover classification.
+                        _attempt_exc = exc
+                        _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
+                        # Reset preconsumed so the outer except handler doesn't
+                        # double-use them if we fall through without a raise.
+                        preconsumed_runtime_tool_calls = None
+                    else:
+                        logger.warning(
+                            "Recovered Codex MCP discovery false-negative for "
+                            "butler=%s session=%s; runtime capture confirmed %d MCP "
+                            "tool call(s)",
+                            self._config.name,
+                            session_id,
+                            len(
+                                [
+                                    c
+                                    for c in merged_tool_calls
+                                    if c.get("name") != "command_execution"
+                                ]
+                            ),
+                        )
+                        result_text, tool_calls, usage = (
+                            exc.result_text,
+                            merged_tool_calls,
+                            exc.usage,
+                        )
+                        merged_runtime_capture = True
+                        proc_info = runtime.last_process_info
+                        if proc_info is not None:
+                            if exc.last_attempt_process_info:
+                                proc_info.update(exc.last_attempt_process_info)
+                            proc_info["mcp_connection_failed"] = False
+                            proc_info["retry_succeeded"] = True
+                            proc_info["result_source"] = "runtime_capture"
+                except Exception as attempt_exc:
+                    # Capture the failure for classification below.
+                    _attempt_exc = attempt_exc
+                    # Collect tool calls captured before the failure.
+                    if preconsumed_runtime_tool_calls is not None:
+                        _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
+                        preconsumed_runtime_tool_calls = None
+                    elif runtime_session_id:
+                        _attempt_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
+
+                # ------------------------------------------------------------------
+                # Handle the attempt outcome.
+                # ------------------------------------------------------------------
+                if _attempt_exc is None:
+                    # Invocation succeeded — exit the failover loop.
+                    break
+
+                # Invocation failed: classify for failover eligibility.
+                _failover_decision = classify_failover_eligibility(
+                    FailoverContext(
+                        exception=_attempt_exc,
+                        tool_calls=_attempt_tool_calls,
+                        process_info=runtime.last_process_info,
+                    )
                 )
-                result_text, tool_calls, usage = exc.result_text, merged_tool_calls, exc.usage
-                merged_runtime_capture = True
-                proc_info = runtime.last_process_info
-                if proc_info is not None:
-                    # Restore the metadata of the attempt that actually produced
-                    # ``result_text``/``usage`` so the persisted process log is
-                    # consistent with the recovered result. Without this, PID
-                    # and stderr would still reflect the first failed attempt
-                    # while the result fields reflect the recovered last attempt.
-                    if exc.last_attempt_process_info:
-                        proc_info.update(exc.last_attempt_process_info)
-                    proc_info["mcp_connection_failed"] = False
-                    proc_info["retry_succeeded"] = True
-                    proc_info["result_source"] = "runtime_capture"
+
+                if not _failover_decision.eligible:
+                    # Failover suppressed — emit metric and re-raise to the outer handler.
+                    self._metrics.record_failover_suppressed(reason=_failover_decision.reason)
+                    logger.debug(
+                        "Failover suppressed for butler=%s: %s",
+                        self._config.name,
+                        _failover_decision.reason,
+                    )
+                    # Restore tool calls for the outer except block.
+                    preconsumed_runtime_tool_calls = _attempt_tool_calls
+                    raise _attempt_exc
+
+                # Failover eligible — attempt next same-tier candidate.
+                if catalog_entry_id is not None:
+                    _attempted_ids.append(catalog_entry_id)
+
+                if (
+                    _failover_effective_tier is None
+                    or self._pool is None
+                    or _attempt_count >= _MAX_FAILOVER_ATTEMPTS
+                ):
+                    # No tier pinned (static_fallback), no pool, or safety cap reached.
+                    preconsumed_runtime_tool_calls = _attempt_tool_calls
+                    raise _attempt_exc
+
+                next_candidate = await next_same_tier_candidate(
+                    self._pool,
+                    self._config.name,
+                    _failover_effective_tier,
+                    _attempted_ids,
+                )
+                if next_candidate is None:
+                    # All same-tier candidates exhausted — terminal failure.
+                    self._metrics.record_failover_exhausted(tier=_failover_effective_tier)
+                    logger.warning(
+                        "All same-tier candidates exhausted for butler=%s tier=%s "
+                        "after %d attempt(s)",
+                        self._config.name,
+                        _failover_effective_tier,
+                        _attempt_count,
+                    )
+                    preconsumed_runtime_tool_calls = _attempt_tool_calls
+                    raise _attempt_exc
+
+                next_rt, next_model, next_extra_args, next_entry_id, next_timeout_s = next_candidate
+                self._metrics.record_failover_attempt(
+                    from_model=model,
+                    to_model=next_model,
+                    reason=_failover_decision.reason.split(":")[0],
+                )
+                logger.info(
+                    "Same-tier failover for butler=%s: %s → %s (tier=%s, reason=%s)",
+                    self._config.name,
+                    model,
+                    next_model,
+                    _failover_effective_tier,
+                    _failover_decision.reason,
+                )
+
+                # Update candidate variables for the next attempt.
+                resolved_runtime_type = next_rt
+                model = next_model
+                merged_args = list(next_extra_args)
+                catalog_entry_id = next_entry_id
+                catalog_timeout_s = next_timeout_s
+
+                # Re-create the runtime adapter for the new model's runtime type.
+                next_provider_config = await self._resolve_provider_config(model)
+                try:
+                    runtime = self._get_or_create_adapter(
+                        resolved_runtime_type, next_provider_config
+                    ).create_worker()
+                except ValueError:
+                    logger.warning(
+                        "Failover candidate resolved unregistered runtime_type=%s for "
+                        "butler=%s; falling back to default runtime_type=%s",
+                        resolved_runtime_type,
+                        self._config.name,
+                        fallback_runtime_type,
+                    )
+                    resolved_runtime_type = fallback_runtime_type
+                    model = fallback_model
+                    merged_args = []
+                    catalog_timeout_s = None
+                    resolution_source = "static_fallback"
+                    runtime = self._get_or_create_adapter(fallback_runtime_type).create_worker()
+                # Loop back to try the next candidate.
+
+            # End of failover loop — invocation succeeded.
 
             if runtime_session_id and not merged_runtime_capture:
                 executed_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
@@ -1718,6 +1919,23 @@ class Spawner:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                 )
+
+                # When failover occurred, the session row was created with the initial
+                # model but the actual invocation succeeded on a fallback model.
+                # Update the model field so the persisted row reflects the model that ran.
+                if _attempted_ids and model is not None:
+                    try:
+                        await self._pool.execute(
+                            "UPDATE sessions SET model = $2 WHERE id = $1",
+                            session_id,
+                            model,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to update session model after failover for session %s",
+                            session_id,
+                            exc_info=True,
+                        )
 
                 # Write process-level diagnostics (best-effort, never blocks result)
                 proc_info = runtime.last_process_info

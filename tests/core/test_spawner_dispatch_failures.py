@@ -95,9 +95,16 @@ class TestSpawnerDispatchFailures:
 
         with (
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -137,9 +144,16 @@ class TestSpawnerDispatchFailures:
 
         with (
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -189,7 +203,7 @@ class TestSpawnerDispatchFailures:
         with (
             # resolve_model returns None → TOML fallback, no catalog_entry_id
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -229,9 +243,16 @@ class TestSpawnerDispatchFailures:
 
         with (
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -270,9 +291,16 @@ class TestSpawnerDispatchFailures:
 
         with (
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -320,9 +348,16 @@ class TestSpawnerDispatchFailures:
 
         with (
             patch(
-                "butlers.core.spawner.resolve_model",
+                "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-haiku",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
