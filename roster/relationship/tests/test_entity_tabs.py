@@ -1439,6 +1439,15 @@ async def _patch(app: FastAPI, path: str, json_body: dict) -> httpx.Response:
 class TestDunbarTierOverride:
     """PATCH /entities/{id}/dunbar-tier — pin or clear an override."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_dunbar_tier_set(self):
+        """Restore the real dunbar_tier_set after each test to prevent mock pollution."""
+        from butlers.tools.relationship import dunbar as _dunbar_mod
+
+        original = _dunbar_mod.dunbar_tier_set
+        yield
+        _dunbar_mod.dunbar_tier_set = original
+
     async def test_returns_404_when_entity_missing(self):
         app, _ = _build_app_for_dunbar_patch(entity_exists=False)
         resp = await _patch(
