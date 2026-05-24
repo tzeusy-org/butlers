@@ -1577,6 +1577,29 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
         last_seen: datetime | None = row.get("ci_created_at")
         is_primary: bool = row["is_primary"]
 
+        # Owner-facing rationale + evidence.  These surface in the approvals
+        # UI when the writer hits the owner carve-out.  Without them the
+        # dossier shows blank cells for every reconciler-generated approval.
+        ci_value_preview = ci_value if len(ci_value) <= 80 else ci_value[:77] + "..."
+        why = (
+            f"The contact-info reconciler found a `public.contact_info` row "
+            f"({ci_type}) on your own contact with no matching active triple "
+            f"in `relationship.entity_facts`. Approve to backfill the "
+            f"`{predicate}` triple ({ci_value_preview}) so the entity graph "
+            f"matches the legacy contact store. Rejecting leaves the triple "
+            f"missing and the next sweep will surface it again."
+        )
+        evidence_list: list[str] = [
+            "source=contact_info_reconciler",
+            f"contact_info.id={ci_id}",
+            f"contact_id={row['contact_id']}",
+            f"contact_info.type={ci_type}",
+            f"contact_info.value={ci_value_preview}",
+            f"is_primary={is_primary}",
+        ]
+        if last_seen is not None:
+            evidence_list.append(f"first_seen={last_seen.isoformat()}")
+
         try:
             result = await relationship_assert_fact(
                 db_pool,
@@ -1589,6 +1612,8 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 last_seen=last_seen,
                 verified=False,
                 primary=is_primary,
+                why=why,
+                evidence=evidence_list,
             )
 
             if result.outcome == AssertOutcome.pending_approval:
