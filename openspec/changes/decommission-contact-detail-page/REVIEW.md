@@ -2,8 +2,8 @@
 
 **Issue:** bu-m8gb6.1
 **Reviewer:** Beads Worker (agent/bu-m8gb6.1)
-**Date:** 2026-05-24
-**Status:** PENDING OPERATOR SIGNOFF
+**Date:** 2026-05-24 (updated 2026-05-25)
+**Status:** RATIFIED — All findings resolved, operator-approved
 
 ---
 
@@ -28,7 +28,7 @@ Change 'decommission-contact-detail-page' is valid
 
 ### AC2 — Contradictory dashboard-relationship route language is resolved
 
-**PARTIAL PASS — three semantic gaps remain (F1, F2, F3); all three require operator decision before implementation begins.**
+**PASS — all semantic gaps resolved per operator decision to fix F1, F2, F3 in this change.**
 
 The delta spec at `openspec/changes/decommission-contact-detail-page/specs/dashboard-relationship/spec.md`
 correctly replaces the three requirements that are primary subjects of this change:
@@ -103,27 +103,12 @@ a follow-on.
 
 ### AC3 — Change explicitly distinguishes frontend routes from `/api/butlers/relationship/entities/*` API namespace
 
-**FAIL — not explicitly stated in the change artifacts.**
+**PASS — resolved per F4 fix.**
 
-The proposal.md says: "Preserve `/api/butlers/relationship/entities/*` as the API
-namespace; only frontend route prose changes." This statement is present in the *proposal*
-but is **not reflected as an explicit normative statement in the delta spec** at
-`specs/dashboard-relationship/spec.md`. The delta spec contains no mentions of `api`,
-`API`, or "API namespace."
-
-This matters because the existing spec has many requirements naming
-`/api/butlers/relationship/entities/*` endpoints (Owner-only auth, entity-level tab
-APIs, entity curation queue, Cmd-K Finder, provenance contract, entity activity
-aggregator). Ratification AC3 requires the *change* (not just the proposal) to
-explicitly call out that `/api/butlers/relationship/entities/*` is unaffected.
-
-**Recommended fix:** Add a brief normative statement at the top of the delta spec (or
-in a dedicated note section) clarifying that the `/api/butlers/relationship/entities/*`
-API namespace is unchanged by this change; only frontend route prose and navigation
-contracts are modified. This is a low-risk clarification that does not change any
-requirement semantics.
-
-Whether to block on this or add it now is an **operator decision**.
+A "Scope Note" block has been added at the top of the delta spec
+(`openspec/changes/decommission-contact-detail-page/specs/dashboard-relationship/spec.md`)
+explicitly stating that this is a FRONTEND-ONLY change and that the
+`/api/butlers/relationship/entities/*` API namespace is NOT affected.
 
 ---
 
@@ -152,12 +137,12 @@ code-level reality.
 
 ## 3. Findings Summary
 
-| ID | Severity | Description | Resolution needed |
-|----|----------|-------------|-------------------|
-| F1 | SEMANTIC | Two requirements in existing spec still name `/butlers/relationship/entities/:id` as the entity detail page: "Entity detail Editorial/Workbench mode toggle" (lines 797–857) and "Dispatch design language token discipline" (line 944–948). Delta does not cover these. | Operator must decide: update in this change or create a follow-on spec-sync bead |
-| F2 | SEMANTIC | "Owner identity and credential management via contact detail page" (line 264) still references `/butlers/relationship/contacts/:id` as the primary mechanism; contact detail is being decommissioned. Delta does not replace this requirement. | Operator must decide: update in this change or create follow-on bead |
-| F3 | SEMANTIC | "Owner identity setup banner" (line 291) and "Pending identities queue on contacts page" (line 318) reference the `/butlers/relationship/contacts` contacts page path, which is not a registered route. Delta does not update these. | Operator must decide: update in this change or create follow-on bead |
-| F4 | MODERATE | AC3: The delta spec contains no explicit statement that the `/api/butlers/relationship/entities/*` API namespace is unaffected. The proposal.md says this, but the spec delta does not. | Recommend adding a one-sentence normative note to the delta spec before implementation |
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| F1 | SEMANTIC | Two requirements in existing spec still name `/butlers/relationship/entities/:id` as the entity detail page: "Entity detail Editorial/Workbench mode toggle" (lines 797–857) and "Dispatch design language token discipline" (line 944–948). Delta does not cover these. | **RESOLVED** — Both requirements added as MODIFIED blocks in the delta spec. "Editorial/Workbench" updated to use `/entities/:entityId` in body text and scenarios. "Dispatch" updated to list `/entities/:entityId` as the sixth route (replacing `/butlers/relationship/entities/:id`). |
+| F2 | SEMANTIC | "Owner identity and credential management via contact detail page" (line 264) still references `/butlers/relationship/contacts/:id` as the primary mechanism; contact detail is being decommissioned. Delta does not replace this requirement. | **RESOLVED** — MODIFIED block added to delta spec re-homing the primary credential management surface to the entity detail contact-channel card at `/entities/:entityId`. Scenarios updated to match. |
+| F3 | SEMANTIC | "Owner identity setup banner" (line 291) and "Pending identities queue on contacts page" (line 318) reference the `/butlers/relationship/contacts` contacts page path, which is not a registered route. Delta does not update these. | **RESOLVED** — Both requirements added as MODIFIED blocks in the delta spec. Banner requirement now references `/entities?has=contact` (entity index). Pending identities queue now references `/entities?has=contact`. All scenarios updated. |
+| F4 | MODERATE | AC3: The delta spec contains no explicit statement that the `/api/butlers/relationship/entities/*` API namespace is unaffected. The proposal.md says this, but the spec delta does not. | **RESOLVED** — "Scope Note" section added at the top of the delta spec explicitly stating this is a FRONTEND-ONLY change and the `/api/butlers/relationship/entities/*` API namespace is unchanged. |
 
 ---
 
@@ -181,35 +166,25 @@ code-level reality.
 
 ---
 
-## 5. Operator Signoff Request
+## 5. Operator Signoff
 
-This review is blocking on operator signoff before implementation proceeds.
+**Operator decision (2026-05-25):** Fix all 4 findings (F1, F2, F3, F4) inline in
+this change before merging. All MODIFIED requirement blocks have been added to the
+delta spec. Strict validation passes.
 
-**Questions requiring operator decision:**
+**All acceptance criteria are now PASS. This change is ratified and ready for
+implementation.**
 
-1. **F1** — Should the "Entity detail Editorial/Workbench mode toggle" and "Dispatch
-   design language token discipline" requirements be updated in this change (by adding
-   additional MODIFIED sections to the delta spec) or deferred to the spec-sync bead
-   (tasks.md task 1.1)?
-
-2. **F2** — Should "Owner identity and credential management via contact detail page" be
-   updated in this change to name the entity-detail contact-channel card or a settings
-   surface as the new primary mechanism, or is this deferred?
-
-3. **F3** — Should "Owner identity setup banner" and "Pending identities queue on contacts
-   page" be updated in this change to reference `/entities?has=contact` (the entity index),
-   or is this deferred?
-
-4. **F4** — Should the delta spec include an explicit normative statement that the
-   `/api/butlers/relationship/entities/*` API namespace is unaffected? (Recommended:
-   yes — low effort, eliminates implementation ambiguity.)
-
-**Recommended minimum before implementation begins:**
-
-- Add F4 note to delta spec (trivial — one sentence, no requirement semantics change).
-- Decide on F1/F2/F3 disposition and either add delta spec sections or create linked
-  follow-on beads with explicit dependency on this change closing.
-
-Once the operator makes decisions on F1–F4 and the delta spec is updated accordingly
-(or the operator explicitly accepts the gaps with documented follow-on beads), this
-change is ready for ratification and implementation can begin.
+Summary of changes made in response to operator decision:
+- **F1:** Added MODIFIED blocks for "Entity detail Editorial / Workbench mode toggle"
+  and "Dispatch design language token discipline" — both now reference
+  `/entities/:entityId` as the canonical route (not `/butlers/relationship/entities/:id`).
+- **F2:** Added MODIFIED block for "Owner identity and credential management via contact
+  detail page" — re-homed primary credential management surface to the entity detail
+  contact-channel card at `/entities/:entityId`.
+- **F3:** Added MODIFIED blocks for "Owner identity setup banner" and "Pending identities
+  queue on contacts page" — both now reference `/entities?has=contact` (the entity index)
+  instead of the unregistered `/butlers/relationship/contacts` route.
+- **F4:** Added "Scope Note" at the top of the delta spec explicitly stating this is a
+  FRONTEND-ONLY change and the `/api/butlers/relationship/entities/*` API namespace is
+  unaffected.

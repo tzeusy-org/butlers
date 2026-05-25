@@ -1,6 +1,12 @@
+## 0. Ratification
+
+- [x] 0.1 Review delta spec and issue REVIEW.md (bu-m8gb6.1, 2026-05-24)
+- [x] 0.2 Operator approved fixing F1–F4 findings inline (2026-05-25)
+- [x] 0.3 All MODIFIED blocks added; strict validation passes; REVIEW.md updated
+
 ## 1. Spec And Route Contract
 
-- [ ] 1.1 Update `openspec/specs/dashboard-relationship/spec.md` via this change so
+- [x] 1.1 Update `openspec/specs/dashboard-relationship/spec.md` via this change so
       `/entities/:entityId` is the canonical entity detail page everywhere.
       Preserve `/api/butlers/relationship/entities/*` as the API namespace; only
       frontend route prose changes.
@@ -8,7 +14,7 @@
       `/entities/:entityId`, not a normative product route.
 - [ ] 1.3 Replace the contact-detail canonical-route requirement with a
       decommissioned compatibility route requirement for `/contacts/:contactId`.
-- [ ] 1.4 Run OpenSpec validation for this change.
+- [x] 1.4 Run OpenSpec validation for this change.
 
 ## 2. Contact Capability Parity Inventory
 
