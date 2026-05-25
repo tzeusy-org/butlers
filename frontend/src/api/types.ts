@@ -2289,6 +2289,43 @@ export interface IngestionEventsParams {
   source_channel?: string;
   /** Filter by event status. Omit to return all events. */
   status?: IngestionEventStatus;
+  /**
+   * Freetext search (ILIKE %q%) against source_channel, source_sender_identity,
+   * and error_detail. Server-side; safe against injection.
+   */
+  q?: string;
+}
+
+/** Time window boundaries for GET /api/ingestion/rollup. */
+export interface IngestionWindowRollupParams {
+  /** ISO-8601 lower bound on received_at (inclusive). */
+  from?: string;
+  /** ISO-8601 upper bound on received_at (exclusive). */
+  to?: string;
+  /** Comma-separated source_channel values (e.g. "email,telegram"). */
+  channels?: string;
+  /** Comma-separated status values (e.g. "ingested,error"). */
+  statuses?: string;
+  /**
+   * Freetext search (ILIKE %q%) against source_channel, source_sender_identity,
+   * and error_detail.
+   */
+  q?: string;
+}
+
+/** Response from GET /api/ingestion/rollup. */
+export interface IngestionWindowRollup {
+  /** Total matching events in the filter window. */
+  events: number;
+  /** Total sessions linked to matching events. */
+  sessions: number;
+  /**
+   * Aggregate cost in USD for the window. Always null until cost-per-event
+   * backend data is available (see follow-up bead).
+   */
+  cost: number | null;
+  /** The active filter window boundaries. */
+  window: { from: string | null; to: string | null };
 }
 
 /** One replay attempt entry from public.audit_log. */

@@ -3,10 +3,11 @@
 Provides:
 
 - ``router`` — endpoints under ``/api/ingestion/events``
+- ``rollup_router`` — endpoints under ``/api/ingestion/rollup``
 
 Endpoints
 ---------
-GET  /api/ingestion/events               — cursor-paginated unified timeline
+GET  /api/ingestion/events               — cursor-paginated unified timeline (supports ?q=)
 GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
@@ -14,12 +15,16 @@ POST /api/ingestion/events/replay/bulk   — bulk replay handler (max 50 events,
 POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 GET  /api/ingestion/events/{id}/replays  — replay attempt history from public.audit_log
 GET  /api/ingestion/events/{id}/sender-contact  — resolve sender_identity to contact name
+
+GET  /api/ingestion/rollup               — aggregate event/session/cost for a filter window
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC
+from datetime import datetime as _datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -34,6 +39,7 @@ from butlers.api.models.ingestion_event import (
     IngestionEventRollup,
     IngestionEventSession,
     IngestionEventSummary,
+    IngestionWindowRollup,
     ReplayHistoryEntry,
     SenderContactResolution,
 )
@@ -47,12 +53,14 @@ from butlers.core.ingestion_events import (
     ingestion_event_rollup,
     ingestion_event_sessions,
     ingestion_events_list,
+    ingestion_window_rollup,
 )
 from butlers.identity import resolve_contact_by_channel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/events", tags=["ingestion"])
+rollup_router = APIRouter(prefix="/api/ingestion/rollup", tags=["ingestion"])
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +117,15 @@ async def list_ingestion_events(
             "appear in both tables. Omit for unified stream."
         ),
     ),
+    q: str | None = Query(
+        None,
+        max_length=200,
+        description=(
+            "Freetext search (ILIKE %%q%%) against source_channel, "
+            "source_sender_identity, and error_detail. "
+            "Parameterized — safe against SQL injection."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CursorPaginatedResponse[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
@@ -119,7 +136,7 @@ async def list_ingestion_events(
 
     Merges ``public.ingestion_events`` (status=ingested, filter_reason=null) with
     ``connectors.filtered_events`` (status/filter_reason from their own columns).
-    Supports optional filtering by ``source_channel`` and ``status``.
+    Supports optional filtering by ``source_channel``, ``status``, and freetext ``q``.
     """
     try:
         pool = db.credential_shared_pool()
@@ -135,7 +152,7 @@ async def list_ingestion_events(
             raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
     result = await ingestion_events_list(
-        pool, limit=limit, cursor=cursor, source_channel=source_channel, status=status
+        pool, limit=limit, cursor=cursor, source_channel=source_channel, status=status, q=q
     )
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]
@@ -677,4 +694,85 @@ async def get_ingestion_event_sender_contact(
 
     return ApiResponse[SenderContactResolution](
         data=SenderContactResolution(resolved=True, name=contact.name, raw=raw_sender)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rollup router dependency stub — wired at app startup same as the events router
+# ---------------------------------------------------------------------------
+
+
+def _get_rollup_db_manager() -> DatabaseManager:
+    """Dependency stub — overridden at app startup or in tests."""
+    raise RuntimeError("DatabaseManager not initialized")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/rollup
+# ---------------------------------------------------------------------------
+
+
+@rollup_router.get("", response_model=IngestionWindowRollup)
+async def get_ingestion_window_rollup(
+    from_: str | None = Query(None, alias="from", description="ISO-8601 lower bound (inclusive)"),
+    to: str | None = Query(None, description="ISO-8601 upper bound (exclusive)"),
+    channels: str | None = Query(
+        None, description="Comma-separated source_channel values (e.g. email,telegram)"
+    ),
+    statuses: str | None = Query(
+        None, description="Comma-separated status values (e.g. ingested,error)"
+    ),
+    q: str | None = Query(
+        None,
+        max_length=200,
+        description="Freetext search (ILIKE %%q%%) against channel, sender, error_detail",
+    ),
+    db: DatabaseManager = Depends(_get_rollup_db_manager),
+) -> IngestionWindowRollup:
+    """Return aggregate event/session/cost counts for the active filter window.
+
+    Accepts the same filter shape as GET /api/ingestion/events.  The ``cost``
+    field is always ``null`` — cost-per-event aggregation is not yet available
+    at the window level (see follow-up bead for cost-per-event backend).
+
+    Returns:
+        200 — ``{events, sessions, cost, window: {from, to}}``
+        503 — shared database unavailable
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    from_dt = None
+    to_dt = None
+    if from_ is not None:
+        try:
+            from_dt = _datetime.fromisoformat(from_).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'from' timestamp: {exc}") from exc
+    if to is not None:
+        try:
+            to_dt = _datetime.fromisoformat(to).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'to' timestamp: {exc}") from exc
+
+    channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
+    status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
+
+    result = await ingestion_window_rollup(
+        pool,
+        from_dt=from_dt,
+        to_dt=to_dt,
+        channels=channel_list,
+        statuses=status_list,
+        q=q,
+        db=db,
+    )
+
+    return IngestionWindowRollup(
+        events=result["events"],
+        sessions=result["sessions"],
+        cost=result["cost"],
+        window=result["window"],
     )

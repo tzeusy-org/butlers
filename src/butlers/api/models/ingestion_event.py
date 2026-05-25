@@ -109,6 +109,34 @@ class IngestionEventRollup(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Window rollup model (GET /api/ingestion/rollup)
+# ---------------------------------------------------------------------------
+
+
+class IngestionWindowRollupWindow(BaseModel):
+    """The time window boundaries for the rollup."""
+
+    from_: str | None = Field(None, alias="from")
+    to: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class IngestionWindowRollup(BaseModel):
+    """Aggregate event/session counts for the active filter window.
+
+    Returned by GET /api/ingestion/rollup.  The ``cost`` field is always
+    ``None`` until cost-per-event data is available at the window level
+    (tracked as a separate follow-up bead).
+    """
+
+    events: int
+    sessions: int
+    cost: float | None = None
+    window: dict[str, str | None]
+
+
+# ---------------------------------------------------------------------------
 # Priority contacts models
 # ---------------------------------------------------------------------------
 

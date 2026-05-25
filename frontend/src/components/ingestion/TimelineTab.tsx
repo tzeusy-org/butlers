@@ -5,15 +5,17 @@
  * hour-grouped with per-minute flame strip, URL-backed event drawer.
  *
  * Layout:
- * - Toolbar: range picker, saved views, status filter (multi-select chips)
+ * - Toolbar: range picker, search input, saved views, channel chips, status filter
  * - Bulk action bar (placeholder — no backend support yet)
  * - Connector attention strip
  * - Ledger: hour-group headers + event rows
+ * - Footer rollup band: events / sessions / cost for the active filter window
  * - Footer: pagination / load-more
  * - Drawer: slides in below the clicked row (backed by ?event=<id>)
  *
  * Data sources:
- * - GET /api/ingestion/events          (cursor-paginated)
+ * - GET /api/ingestion/events          (cursor-paginated; supports ?q= search)
+ * - GET /api/ingestion/rollup          (window-level aggregate; bu-mxtn2)
  * - GET /api/ingestion/events/{id}/sessions  (on expand / drawer)
  * - GET /api/ingestion/events/{id}/replays   (drawer replays tab)
  * - GET /api/ingestion/events/{id}/payload   (drawer raw tab, audit-gated)
@@ -27,10 +29,10 @@
  * §2.9 Connector Attention Strip: highlights connectors with degraded health.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { AlertTriangle, Loader2, RotateCw } from "lucide-react";
+import { AlertTriangle, Loader2, RotateCw, Search, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -38,6 +40,7 @@ import {
   useIngestionEvents,
   useIngestionEventRollup,
   useIngestionEventSenderContact,
+  useIngestionWindowRollup,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import type {
@@ -189,7 +192,7 @@ const STATUS_LABELS: Record<IngestionEventStatus, string> = {
 const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered");
 
 // ---------------------------------------------------------------------------
-// Toolbar — range picker, saved views, status filter
+// Toolbar — range picker, search input, saved views, channel chips, status filter
 // ---------------------------------------------------------------------------
 
 type IngestionRange = "1h" | "24h" | "7d";
@@ -207,6 +210,10 @@ interface ToolbarProps {
   onViewSelect: (v: ViewId) => void;
   enabledStatuses: Set<IngestionEventStatus>;
   onStatusToggle: (s: IngestionEventStatus) => void;
+  searchQuery: string;
+  onSearchChange: (q: string) => void;
+  activeChannels: string[];
+  onChannelRemove: (channel: string) => void;
 }
 
 function Toolbar({
@@ -216,83 +223,146 @@ function Toolbar({
   onViewSelect,
   enabledStatuses,
   onStatusToggle,
+  searchQuery,
+  onSearchChange,
+  activeChannels,
+  onChannelRemove,
 }: ToolbarProps) {
   return (
-    <div className="flex items-center gap-3 flex-wrap py-2 border-b border-border" data-testid="timeline-toolbar">
-      {/* Range picker */}
-      <div className="flex items-center gap-0 border border-border rounded overflow-hidden" data-testid="range-picker">
-        {RANGE_OPTIONS.map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => onRangeChange(id)}
-            className={[
-              "px-3 py-1 font-mono text-[11px] tracking-[0.01em] border-r border-border last:border-r-0 transition-colors",
-              range === id
-                ? "bg-foreground text-background"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            ].join(" ")}
-            data-testid={`range-${id}`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Saved views */}
-      <div className="flex items-center gap-1" data-testid="saved-view-selector">
-        {BUILT_IN_VIEWS.map((view) => (
-          <button
-            key={view.id}
-            type="button"
-            onClick={() => {
-              if (view.statuses !== null) onViewSelect(view.id);
-            }}
-            className={[
-              "rounded px-2.5 py-1 font-mono text-[11px] transition-colors",
-              activeViewId === view.id
-                ? "bg-foreground/10 text-foreground border border-border"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              view.statuses === null ? "opacity-50 cursor-default" : "cursor-pointer",
-            ].join(" ")}
-            title={view.statuses === null ? "Priority view available in Wave 2 (§3.3)" : undefined}
-            data-view={view.id}
-            aria-pressed={activeViewId === view.id}
-          >
-            {view.label}
-            {view.statuses === null && (
-              <span className="ml-1 text-[9px] text-muted-foreground">(soon)</span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* Status filter chips */}
-      <div className="flex items-center gap-1 ml-auto flex-wrap" data-testid="status-filter">
-        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground mr-1">
-          status:
-        </span>
-        {ALL_STATUSES.map((status) => {
-          const active = enabledStatuses.has(status);
-          return (
+    <div className="flex flex-col gap-0 border-b border-border" data-testid="timeline-toolbar">
+      {/* Primary toolbar row */}
+      <div className="flex items-center gap-3 flex-wrap py-2">
+        {/* Range picker */}
+        <div className="flex items-center gap-0 border border-border rounded overflow-hidden" data-testid="range-picker">
+          {RANGE_OPTIONS.map(({ id, label }) => (
             <button
-              key={status}
+              key={id}
               type="button"
-              onClick={() => onStatusToggle(status)}
+              onClick={() => onRangeChange(id)}
               className={[
-                "rounded px-2 py-0.5 font-mono text-[11px] border transition-colors",
-                active
-                  ? "border-foreground/30 bg-muted text-foreground"
-                  : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
+                "px-3 py-1 font-mono text-[11px] tracking-[0.01em] border-r border-border last:border-r-0 transition-colors",
+                range === id
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
               ].join(" ")}
-              data-testid={`status-filter-${status}`}
-              aria-pressed={active}
+              data-testid={`range-${id}`}
             >
-              {STATUS_LABELS[status]}
+              {label}
             </button>
-          );
-        })}
+          ))}
+        </div>
+
+        {/* Search input */}
+        <div className="relative flex items-center" data-testid="search-input-wrapper">
+          <Search className="absolute left-2 size-3 text-muted-foreground pointer-events-none" aria-hidden />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="search events…"
+            className={[
+              "pl-7 pr-2 py-1 font-mono text-[11px] bg-transparent border border-border rounded",
+              "text-foreground placeholder:text-muted-foreground",
+              "focus:outline-none focus:ring-1 focus:ring-ring transition-colors",
+              "w-44",
+            ].join(" ")}
+            data-testid="search-input"
+            aria-label="Search events"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => onSearchChange("")}
+              className="absolute right-1.5 p-0.5 text-muted-foreground hover:text-foreground transition-colors"
+              aria-label="Clear search"
+              data-testid="search-clear"
+            >
+              <X className="size-3" />
+            </button>
+          )}
+        </div>
+
+        {/* Saved views */}
+        <div className="flex items-center gap-1" data-testid="saved-view-selector">
+          {BUILT_IN_VIEWS.map((view) => (
+            <button
+              key={view.id}
+              type="button"
+              onClick={() => {
+                if (view.statuses !== null) onViewSelect(view.id);
+              }}
+              className={[
+                "rounded px-2.5 py-1 font-mono text-[11px] transition-colors",
+                activeViewId === view.id
+                  ? "bg-foreground/10 text-foreground border border-border"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                view.statuses === null ? "opacity-50 cursor-default" : "cursor-pointer",
+              ].join(" ")}
+              title={view.statuses === null ? "Priority view available in Wave 2 (§3.3)" : undefined}
+              data-view={view.id}
+              aria-pressed={activeViewId === view.id}
+            >
+              {view.label}
+              {view.statuses === null && (
+                <span className="ml-1 text-[9px] text-muted-foreground">(soon)</span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* Status filter chips */}
+        <div className="flex items-center gap-1 ml-auto flex-wrap" data-testid="status-filter">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground mr-1">
+            status:
+          </span>
+          {ALL_STATUSES.map((status) => {
+            const active = enabledStatuses.has(status);
+            return (
+              <button
+                key={status}
+                type="button"
+                onClick={() => onStatusToggle(status)}
+                className={[
+                  "rounded px-2 py-0.5 font-mono text-[11px] border transition-colors",
+                  active
+                    ? "border-foreground/30 bg-muted text-foreground"
+                    : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
+                ].join(" ")}
+                data-testid={`status-filter-${status}`}
+                aria-pressed={active}
+              >
+                {STATUS_LABELS[status]}
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      {/* Channel filter chips row — only rendered when channels are active */}
+      {activeChannels.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap pb-2" data-testid="channel-chips">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            channels:
+          </span>
+          {activeChannels.map((channel) => (
+            <button
+              key={channel}
+              type="button"
+              onClick={() => onChannelRemove(channel)}
+              className={[
+                "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
+                "font-mono text-[11px] border border-border/60 bg-muted/40 text-foreground",
+                "hover:bg-muted hover:border-border transition-colors",
+              ].join(" ")}
+              aria-label={`Remove channel filter: ${channel}`}
+              data-testid={`channel-chip-${channel}`}
+            >
+              {channel}
+              <X className="size-2.5" aria-hidden />
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -640,6 +710,45 @@ function LedgerColumnHeaders() {
 }
 
 // ---------------------------------------------------------------------------
+// FooterRollupBand — aggregate events / sessions / cost for the active filter
+// ---------------------------------------------------------------------------
+
+interface FooterRollupBandProps {
+  events: number | undefined;
+  sessions: number | undefined;
+  cost: number | null | undefined;
+  isLoading: boolean;
+}
+
+function FooterRollupBand({ events, sessions, cost, isLoading }: FooterRollupBandProps) {
+  const cell = (label: string, value: string) => (
+    <div className="flex flex-col items-center gap-0.5 min-w-[80px]">
+      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+        {label}
+      </span>
+      <span className="tabular-nums font-mono text-[13px] text-foreground">
+        {isLoading ? <span className="text-muted-foreground">…</span> : value}
+      </span>
+    </div>
+  );
+
+  return (
+    <div
+      className="flex items-center justify-center gap-8 border-t border-border py-2 bg-muted/5"
+      data-testid="footer-rollup-band"
+      aria-label="Filter window aggregate counts"
+    >
+      {cell("events", events !== undefined ? events.toLocaleString() : "—")}
+      <div className="w-px h-4 bg-border/60" aria-hidden />
+      {cell("sessions", sessions !== undefined ? sessions.toLocaleString() : "—")}
+      <div className="w-px h-4 bg-border/60" aria-hidden />
+      {/* cost is always null until cost-per-event backend lands; render em dash */}
+      {cell("cost", cost !== null && cost !== undefined ? formatCost(cost) : "—")}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // TimelineTab
 // ---------------------------------------------------------------------------
 
@@ -738,7 +847,75 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     });
   }, []);
 
-  // Events query
+  // Search — local state drives debounced q for API
+  const urlQ = searchParams.get("q") ?? "";
+  const [searchInputValue, setSearchInputValue] = useState(urlQ);
+  const [debouncedQ, setDebouncedQ] = useState(urlQ);
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchInputValue(value);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        setDebouncedQ(value);
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          if (value) next.set("q", value);
+          else next.delete("q");
+          return next;
+        });
+      }, 300);
+    },
+    [setSearchParams],
+  );
+
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
+
+  // Channel filter — read from URL state ("channels" param, comma-separated)
+  const urlChannels = searchParams.get("channels") ?? "";
+  const activeChannels: string[] = useMemo(
+    () => urlChannels ? urlChannels.split(",").map((c) => c.trim()).filter(Boolean) : [],
+    [urlChannels],
+  );
+
+  const handleChannelRemove = useCallback(
+    (channel: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        const remaining = activeChannels.filter((c) => c !== channel);
+        if (remaining.length > 0) next.set("channels", remaining.join(","));
+        else next.delete("channels");
+        return next;
+      });
+    },
+    [activeChannels, setSearchParams],
+  );
+
+  // Compute ISO-8601 bounds from the range picker selection.
+  // The rollup band uses these to scope its aggregate; the events list is
+  // not time-bounded (it fetches newest-first and the user loads more pages).
+  const rangeWindow = useMemo((): { from: string; to: string } => {
+    const now = new Date();
+    const to = now.toISOString();
+    const hoursBack = range === "1h" ? 1 : range === "7d" ? 7 * 24 : 24;
+    const from = new Date(now.getTime() - hoursBack * 60 * 60 * 1000).toISOString();
+    return { from, to };
+  }, [range]);
+
+  // Events query — pass q and source_channel from URL state
+  const eventsFilters = useMemo(() => ({
+    limit: PAGE_SIZE,
+    ...(debouncedQ ? { q: debouncedQ } : {}),
+    ...(activeChannels.length === 1 ? { source_channel: activeChannels[0] } : {}),
+  }), [debouncedQ, activeChannels]);
+
   const {
     data: infiniteData,
     isLoading,
@@ -746,7 +923,25 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
-  } = useIngestionEvents({ limit: PAGE_SIZE }, { enabled: isActive });
+  } = useIngestionEvents(eventsFilters, { enabled: isActive });
+
+  // Window rollup — fires with the same filter shape plus the active range window.
+  const rollupStatuses = useMemo(() => [...enabledStatuses].join(","), [enabledStatuses]);
+  const rollupChannels = useMemo(() => activeChannels.join(","), [activeChannels]);
+
+  const {
+    data: rollupData,
+    isLoading: rollupLoading,
+  } = useIngestionWindowRollup(
+    {
+      from: rangeWindow.from,
+      to: rangeWindow.to,
+      ...(debouncedQ ? { q: debouncedQ } : {}),
+      ...(rollupChannels ? { channels: rollupChannels } : {}),
+      ...(rollupStatuses ? { statuses: rollupStatuses } : {}),
+    },
+    { enabled: isActive },
+  );
 
   const rawEvents = useMemo(
     () => infiniteData?.pages.flatMap((page) => page.data) ?? [],
@@ -809,6 +1004,10 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
         onViewSelect={handleViewSelect}
         enabledStatuses={enabledStatuses}
         onStatusToggle={handleStatusToggle}
+        searchQuery={searchInputValue}
+        onSearchChange={handleSearchChange}
+        activeChannels={activeChannels}
+        onChannelRemove={handleChannelRemove}
       />
 
       {/* Bulk action bar */}
@@ -856,6 +1055,14 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
           </>
         )}
       </div>
+
+      {/* Footer rollup band — aggregate counts for the active filter window */}
+      <FooterRollupBand
+        events={rollupData?.events}
+        sessions={rollupData?.sessions}
+        cost={rollupData?.cost}
+        isLoading={rollupLoading}
+      />
 
       {/* Load more footer */}
       {events.length > 0 && (

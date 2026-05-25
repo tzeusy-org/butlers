@@ -508,6 +508,7 @@ export {
   getIngestionEvent,
   getIngestionEventSessions,
   getIngestionEventRollup,
+  getIngestionWindowRollup,
   replayIngestionEvent,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
@@ -525,6 +526,8 @@ export type {
   IngestionEventPayload,
   IngestionEventsParams,
   ButlerRollupEntry,
+  IngestionWindowRollup,
+  IngestionWindowRollupParams,
 } from "./types.ts";
 
 export {
