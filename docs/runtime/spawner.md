@@ -67,7 +67,7 @@ The resolution source (`"catalog"` or `"static_fallback"`) is recorded on the se
 
 - Call `check_token_quota()` for the current candidate.
 - If quota is exhausted: write a `quota_skip` row to `public.model_dispatch_attempts`, then call `next_same_tier_candidate()` to find the next eligible model in the same effective tier.
-- If no next candidate exists: emit `model_dispatch_failovers_exhausted_total` metric and return failure.
+- If no next candidate exists: emit `butlers.spawner.failover_exhausted_total` metric and return failure.
 - Repeat until a candidate with remaining quota is found.
 
 All quota-skip rows share the same `logical_session_id` as later attempt rows (minted before the loop, non-null even for internal triggers without a `request_id`).
@@ -98,14 +98,14 @@ The appropriate `RuntimeAdapter` is selected based on the resolved `runtime_type
 
 2. **Consult the classifier:** Call `classify_failover_eligibility(FailoverContext(exception=..., tool_calls=..., process_info=...))`. The classifier returns a `FailoverDecision(eligible, reason)`.
 
-3. **Suppressed path** (`eligible=False`): Emit `model_dispatch_failovers_suppressed_total` metric. Write a `suppressed` row to `public.model_dispatch_attempts`. Re-raise the original exception — the session fails.
+3. **Suppressed path** (`eligible=False`): Emit `butlers.spawner.failover_suppressed_total` metric. Write a `suppressed` row to `public.model_dispatch_attempts`. Re-raise the original exception — the session fails.
 
 4. **Eligible path** (`eligible=True`):
    - Write a `runtime_failure` row to `public.model_dispatch_attempts` for the current candidate.
    - Append the current `catalog_entry_id` to `_attempted_ids`.
    - Call `next_same_tier_candidate(pool, butler_name, effective_tier, _attempted_ids)`.
-   - If a next candidate exists: emit `model_dispatch_failovers_attempted_total`, swap `model`/`runtime_type`/`catalog_entry_id`, re-create the adapter, and loop back to **Runtime Invocation**.
-   - If no candidate remains: emit `model_dispatch_failovers_exhausted_total`, re-raise the last exception.
+   - If a next candidate exists: emit `butlers.spawner.failover_attempts_total`, swap `model`/`runtime_type`/`catalog_entry_id`, re-create the adapter, and loop back to **Runtime Invocation**.
+   - If no candidate remains: emit `butlers.spawner.failover_exhausted_total`, re-raise the last exception.
 
 5. **On success after failover:** Write a `success` row to `public.model_dispatch_attempts` for the winning candidate. Update the session row's `model` field to reflect the fallback model that actually ran.
 

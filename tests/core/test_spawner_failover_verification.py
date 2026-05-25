@@ -21,15 +21,16 @@ Acceptance criteria covered (per bu-ojiij.6 scope):
    fallback=success.
 4. Captured-tool suppression — primary fails AFTER tool call. Classifier returns
    suppressed. Spawner does NOT retry. Verify
-   model_dispatch_failovers_suppressed_total metric emits with right reason label.
+   butlers.spawner.failover_suppressed_total metric emits with right reason label.
 5. Guardrail no-retry — primary fails with guardrail / business failure.
    Classifier returns suppressed. Spawner does NOT retry.
 6. Attempt exhaustion — eligible failure, all same-tier candidates exhausted.
-   Verify model_dispatch_failovers_exhausted_total emits.
+   Verify butlers.spawner.failover_exhausted_total emits.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -105,8 +106,6 @@ class _OkAdapter(RuntimeAdapter):
         pass
 
     def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
-        import json
-
         p = tmp_dir / "cfg.json"
         p.write_text(json.dumps({"mcpServers": mcp_servers}))
         return p
@@ -134,8 +133,6 @@ class _FailAdapter(RuntimeAdapter):
         pass
 
     def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
-        import json
-
         p = tmp_dir / "cfg.json"
         p.write_text(json.dumps({"mcpServers": mcp_servers}))
         return p
@@ -173,8 +170,6 @@ class _FailThenOkAdapter(RuntimeAdapter):
         pass
 
     def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
-        import json
-
         p = tmp_dir / "cfg.json"
         p.write_text(json.dumps({"mcpServers": mcp_servers}))
         return p
@@ -578,8 +573,6 @@ class TestCapturedToolSuppression:
                 pass
 
             def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
-                import json
-
                 p = tmp_dir / "cfg.json"
                 p.write_text(json.dumps({"mcpServers": mcp_servers}))
                 return p
@@ -969,8 +962,6 @@ class TestMCPDiscoveryFailureFailover:
                 pass
 
             def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
-                import json
-
                 p = tmp_dir / "cfg.json"
                 p.write_text(json.dumps({"mcpServers": mcp_servers}))
                 return p
