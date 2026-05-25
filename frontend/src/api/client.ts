@@ -147,6 +147,8 @@ import type {
   IngestionEventSenderContact,
   IngestionEventPayload,
   IngestionEventsParams,
+  IngestionWindowRollup,
+  IngestionWindowRollupParams,
   IngestionRule,
   IngestionRuleCreate,
   IngestionRuleUpdate,
@@ -3506,10 +3508,31 @@ export async function listIngestionEvents(
   if (params?.cursor) sp.set("cursor", params.cursor);
   if (params?.source_channel) sp.set("source_channel", params.source_channel);
   if (params?.status) sp.set("status", params.status);
+  if (params?.q) sp.set("q", params.q);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
   );
+}
+
+/**
+ * Aggregate event/session/cost counts for the active filter window.
+ * GET /api/ingestion/rollup
+ *
+ * Accepts the same filter shape as GET /api/ingestion/events.
+ * The ``cost`` field is always null until cost-per-event data is available.
+ */
+export async function getIngestionWindowRollup(
+  params?: IngestionWindowRollupParams,
+): Promise<IngestionWindowRollup> {
+  const sp = new URLSearchParams();
+  if (params?.from) sp.set("from", params.from);
+  if (params?.to) sp.set("to", params.to);
+  if (params?.channels) sp.set("channels", params.channels);
+  if (params?.statuses) sp.set("statuses", params.statuses);
+  if (params?.q) sp.set("q", params.q);
+  const qs = sp.toString() ? `?${sp.toString()}` : "";
+  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`);
 }
 
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */

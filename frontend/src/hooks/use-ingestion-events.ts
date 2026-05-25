@@ -22,11 +22,18 @@ import {
   listIngestionEvents,
   getIngestionEventSessions,
   getIngestionEventRollup,
+  getIngestionWindowRollup,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
   getIngestionEventPayload,
 } from "@/api/index.ts";
-import type { CursorPaginatedResponse, IngestionEventsParams, IngestionEventSummary } from "@/api/index.ts";
+import type {
+  CursorPaginatedResponse,
+  IngestionEventsParams,
+  IngestionEventSummary,
+  IngestionWindowRollup,
+  IngestionWindowRollupParams,
+} from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -49,6 +56,8 @@ export const ingestionEventKeys = {
     [...ingestionEventKeys.all, requestId, "sender-contact"] as const,
   payload: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "payload"] as const,
+  windowRollup: (params: IngestionWindowRollupParams) =>
+    ["ingestion", "window-rollup", params] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -202,5 +211,26 @@ export function useIngestionEventPayload(
     staleTime: 120_000, // payload rarely changes; longer stale time acceptable
     retry: false,       // don't retry 403 — the gated state is expected
     enabled: !!requestId && options?.enabled !== false,
+  });
+}
+
+/**
+ * Aggregate event/session/cost counts for the active filter window.
+ *
+ * Fetches from GET /api/ingestion/rollup with the same filter params as
+ * GET /api/ingestion/events.  The ``cost`` field is always null until
+ * cost-per-event data is available (see follow-up bead).
+ *
+ * The query is disabled by default — pass `enabled: true` to activate.
+ */
+export function useIngestionWindowRollup(
+  params: IngestionWindowRollupParams = {},
+  options?: { enabled?: boolean },
+) {
+  return useQuery<IngestionWindowRollup>({
+    queryKey: ingestionEventKeys.windowRollup(params),
+    queryFn: () => getIngestionWindowRollup(params),
+    staleTime: 30_000,
+    enabled: options?.enabled !== false,
   });
 }

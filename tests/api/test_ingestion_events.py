@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.pricing import PricingConfig
-from butlers.api.routers.ingestion_events import _get_db_manager
+from butlers.api.routers.ingestion_events import _get_db_manager, _get_rollup_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -445,3 +445,165 @@ async def test_replay_post_writes_audit_log(app):
     call_kwargs = mock_audit_append.await_args.kwargs
     assert call_kwargs["action"] == "ingestion.event.replay"
     assert call_kwargs["target"] == event_id
+
+
+# ---------------------------------------------------------------------------
+# ?q= search parameter on GET /api/ingestion/events (bu-mxtn2)
+# ---------------------------------------------------------------------------
+
+
+async def test_list_events_passes_q_param_to_core(app):
+    """GET /api/ingestion/events?q=foo passes q to ingestion_events_list."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?q=hello")
+
+    assert resp.status_code == 200
+    # Verify q was forwarded to the core function
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("q") == "hello"
+
+
+async def test_list_events_q_absent_passes_none(app):
+    """GET /api/ingestion/events without ?q= passes q=None."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("q") is None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/rollup (bu-mxtn2)
+# ---------------------------------------------------------------------------
+
+
+def _app_with_mock_rollup_db(app: FastAPI, *, shared_pool=None, shared_pool_error=None):
+    """Override the rollup router's DB dependency stub."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    if shared_pool_error is not None:
+        mock_db.credential_shared_pool.side_effect = shared_pool_error
+    else:
+        if shared_pool is None:
+            shared_pool = AsyncMock()
+            shared_pool.fetchval = AsyncMock(return_value=0)
+            shared_pool.fetch = AsyncMock(return_value=[])
+        mock_db.credential_shared_pool.return_value = shared_pool
+    mock_db.fan_out = AsyncMock(return_value={})
+    app.dependency_overrides[_get_rollup_db_manager] = lambda: mock_db
+    return mock_db
+
+
+async def test_rollup_returns_correct_shape(app):
+    """GET /api/ingestion/rollup returns {events, sessions, cost, window}."""
+    _app_with_mock_rollup_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_window_rollup",
+        new_callable=AsyncMock,
+        return_value={
+            "events": 42,
+            "sessions": 7,
+            "cost": None,
+            "window": {"from": None, "to": None},
+        },
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/rollup")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["events"] == 42
+    assert body["sessions"] == 7
+    assert body["cost"] is None
+    assert "window" in body
+
+
+async def test_rollup_passes_filters_to_core(app):
+    """GET /api/ingestion/rollup forwards all filter params to ingestion_window_rollup."""
+    _app_with_mock_rollup_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_window_rollup",
+        new_callable=AsyncMock,
+        return_value={
+            "events": 0,
+            "sessions": 0,
+            "cost": None,
+            "window": {"from": "2026-01-01T00:00:00+00:00", "to": "2026-01-02T00:00:00+00:00"},
+        },
+    ) as mock_rollup:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/rollup"
+                "?from=2026-01-01T00:00:00Z"
+                "&to=2026-01-02T00:00:00Z"
+                "&channels=email,telegram"
+                "&statuses=ingested,error"
+                "&q=test+query"
+            )
+
+    assert resp.status_code == 200
+    assert mock_rollup.await_args is not None
+    call_kwargs = mock_rollup.await_args.kwargs
+    # channels and statuses are passed as lists after CSV parsing
+    assert call_kwargs.get("channels") == ["email", "telegram"]
+    assert call_kwargs.get("statuses") == ["ingested", "error"]
+    assert call_kwargs.get("q") == "test query"
+
+
+async def test_rollup_503_on_db_unavailable(app):
+    """GET /api/ingestion/rollup returns 503 when shared pool unavailable."""
+    _app_with_mock_rollup_db(app, shared_pool_error=KeyError("no shared pool"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/rollup")
+
+    assert resp.status_code == 503
+
+
+async def test_rollup_missing_cost_returns_null(app):
+    """GET /api/ingestion/rollup always returns null for cost field."""
+    _app_with_mock_rollup_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_window_rollup",
+        new_callable=AsyncMock,
+        return_value={
+            "events": 10,
+            "sessions": 2,
+            "cost": None,
+            "window": {"from": None, "to": None},
+        },
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/rollup")
+
+    assert resp.status_code == 200
+    assert resp.json()["cost"] is None

@@ -48,6 +48,7 @@ vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEventSenderContact: vi.fn(),
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
+  useIngestionWindowRollup: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({
@@ -62,6 +63,7 @@ import {
   useIngestionEventReplays,
   useIngestionEventPayload,
   useIngestionEventSessions,
+  useIngestionWindowRollup,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { TimelineTab } from "../TimelineTab";
@@ -177,6 +179,12 @@ function setupDefaultMocks() {
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);
+
+  vi.mocked(useIngestionWindowRollup).mockReturnValue({
+    data: { events: 0, sessions: 0, cost: null, window: { from: null, to: null } },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useIngestionWindowRollup>);
 }
 
 // ---------------------------------------------------------------------------
@@ -679,5 +687,289 @@ describe("EventDrawer — raw payload tab gated state", () => {
     const gatedEl = container.querySelector("[data-testid='raw-tab-gated']");
     expect(gatedEl).not.toBeNull();
     expect(gatedEl!.textContent).toContain("elevated permission");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bu-mxtn2: Search input — toolbar renders search input and clear button
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — search input (bu-mxtn2)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  it("renders the search input in the toolbar", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const searchInput = container.querySelector("[data-testid='search-input']");
+    expect(searchInput).not.toBeNull();
+    expect((searchInput as HTMLInputElement).type).toBe("search");
+  });
+
+  it("shows clear button when search query is pre-populated via URL param", () => {
+    // Initialize with ?q=alice in the URL so searchInputValue starts non-empty
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/?q=alice"]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // Search input should have the value from URL
+    const searchInput = container.querySelector(
+      "[data-testid='search-input']",
+    ) as HTMLInputElement;
+    expect(searchInput.value).toBe("alice");
+
+    // Clear button should appear when value is present
+    const clearBtn = container.querySelector("[data-testid='search-clear']");
+    expect(clearBtn).not.toBeNull();
+  });
+
+  it("does not show clear button when search is empty", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/"]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // No clear button when empty
+    expect(container.querySelector("[data-testid='search-clear']")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bu-mxtn2: Channel chips — chips render and fire remove on click
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — channel filter chips (bu-mxtn2)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  it("renders no channel chips when channels URL param is absent", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/"]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const chips = container.querySelector("[data-testid='channel-chips']");
+    expect(chips).toBeNull();
+  });
+
+  it("renders channel chips when channels URL param is set", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/?channels=email,telegram"]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const chips = container.querySelector("[data-testid='channel-chips']");
+    expect(chips).not.toBeNull();
+
+    const emailChip = container.querySelector("[data-testid='channel-chip-email']");
+    expect(emailChip).not.toBeNull();
+
+    const telegramChip = container.querySelector("[data-testid='channel-chip-telegram']");
+    expect(telegramChip).not.toBeNull();
+  });
+
+  it("clicking a channel chip removes that channel from the filter", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/?channels=email,telegram"]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const emailChip = container.querySelector(
+      "[data-testid='channel-chip-email']",
+    ) as HTMLElement;
+    expect(emailChip).not.toBeNull();
+
+    act(() => {
+      emailChip.click();
+    });
+
+    // After removing email, only telegram chip should remain
+    const emailChipAfter = container.querySelector("[data-testid='channel-chip-email']");
+    expect(emailChipAfter).toBeNull();
+    const telegramChipAfter = container.querySelector("[data-testid='channel-chip-telegram']");
+    expect(telegramChipAfter).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bu-mxtn2: Footer rollup band — renders event/session/cost counters
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — footer rollup band (bu-mxtn2)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  it("renders the footer rollup band with events and sessions", () => {
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: {
+        events: 123,
+        sessions: 45,
+        cost: null,
+        window: { from: null, to: null },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const rollup = container.querySelector("[data-testid='footer-rollup-band']");
+    expect(rollup).not.toBeNull();
+    // Should show formatted event and session counts
+    expect(rollup!.textContent).toContain("123");
+    expect(rollup!.textContent).toContain("45");
+  });
+
+  it("renders cost as em dash when cost is null", () => {
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: {
+        events: 10,
+        sessions: 2,
+        cost: null,
+        window: { from: null, to: null },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const rollup = container.querySelector("[data-testid='footer-rollup-band']");
+    expect(rollup).not.toBeNull();
+    // cost unavailable → em dash
+    expect(rollup!.textContent).toContain("—");
+  });
+
+  it("renders loading state (ellipsis) when rollup is loading", () => {
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const rollup = container.querySelector("[data-testid='footer-rollup-band']");
+    expect(rollup).not.toBeNull();
+    // Loading state renders "…" placeholders (3 cells × one each)
+    expect(rollup!.textContent).toContain("…");
   });
 });
