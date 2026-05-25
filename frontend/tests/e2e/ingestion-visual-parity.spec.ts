@@ -26,6 +26,7 @@
 
 import * as path from "path";
 import * as fs from "fs";
+import { fileURLToPath } from "url";
 import { test, expect, type Page } from "@playwright/test";
 
 const TIMEOUT_MS = 10_000;
@@ -34,9 +35,12 @@ const TIMEOUT_MS = 10_000;
 // Screenshot output directory (relative to repo root)
 // ---------------------------------------------------------------------------
 
+// Use import.meta.url instead of __dirname — this is an ES module project.
+const _dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const SCREENSHOT_DIR = path.resolve(
-  __dirname,
-  "../../../../docs/reports/ingestion-redesign-parity-2026-05-25",
+  _dirname,
+  "../../../docs/reports/ingestion-redesign-parity-2026-05-25",
 );
 
 /** Ensure the screenshot dir exists before writing to it. */
@@ -58,12 +62,25 @@ async function capture(page: Page, slug: string) {
 // Server reachability helper
 // ---------------------------------------------------------------------------
 
-async function tryNavigate(page: Page, url: string): Promise<boolean> {
+/**
+ * Navigate to url, skipping the test if the server is unreachable.
+ *
+ * Only network-level failures (connection refused, timeout) cause a skip.
+ * HTTP 4xx/5xx responses do NOT skip — they signal a broken app.
+ */
+async function navigateOrSkip(
+  page: Page,
+  url: string,
+  baseURL: string | undefined,
+  testCtx: typeof test,
+): Promise<void> {
   try {
-    await page.goto(url, { timeout: TIMEOUT_MS });
-    return true;
+    await page.goto(url, { waitUntil: "networkidle", timeout: TIMEOUT_MS });
   } catch {
-    return false;
+    testCtx.skip(
+      true,
+      `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
+    );
   }
 }
 
@@ -345,16 +362,7 @@ test.describe("ingestion visual parity — route smoke", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
-
-    await page.goto("/ingestion", { waitUntil: "networkidle" });
+    await navigateOrSkip(page, "/ingestion", baseURL, test);
 
     // Timeline ledger must be present
     await expect(page.locator("[data-testid='timeline-ledger']")).toBeVisible({
@@ -399,7 +407,7 @@ test.describe("ingestion visual parity — route smoke", () => {
 
     // Mobile screenshot
     await page.setViewportSize(MOBILE);
-    await page.waitForTimeout(300); // allow reflow
+    await page.waitForLoadState("domcontentloaded"); // allow reflow after viewport resize
     await capture(page, "timeline-mobile");
   });
 
@@ -409,16 +417,7 @@ test.describe("ingestion visual parity — route smoke", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion/connectors");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
-
-    await page.goto("/ingestion/connectors", { waitUntil: "networkidle" });
+    await navigateOrSkip(page, "/ingestion/connectors", baseURL, test);
 
     // Connectors roster must be present
     await expect(page.locator("[data-testid='connectors-roster']")).toBeVisible({
@@ -446,7 +445,7 @@ test.describe("ingestion visual parity — route smoke", () => {
 
     // Mobile screenshot
     await page.setViewportSize(MOBILE);
-    await page.waitForTimeout(300);
+    await page.waitForLoadState("domcontentloaded"); // allow reflow after viewport resize
     await capture(page, "connectors-mobile");
   });
 
@@ -456,36 +455,22 @@ test.describe("ingestion visual parity — route smoke", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(
+    await navigateOrSkip(
       page,
       "/ingestion/connectors/gmail/alice%40example.com",
+      baseURL,
+      test,
     );
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
-
-    await page.goto("/ingestion/connectors/gmail/alice%40example.com", {
-      waitUntil: "networkidle",
-    });
 
     // Either the KPI strip (loaded) or the loading/not-found state should appear.
-    // We accept kpi-strip OR detail-not-found to handle both success and mock-miss paths.
-    const kpiStrip = page.locator("[data-testid='kpi-strip']");
-    const loadingEl = page.locator("[data-testid='detail-loading']");
-    const notFoundEl = page.locator("[data-testid='detail-not-found']");
-
-    // Wait for one of the states to appear
-    await Promise.race([
-      expect(kpiStrip).toBeVisible({ timeout: TIMEOUT_MS }),
-      expect(loadingEl).toBeVisible({ timeout: TIMEOUT_MS }),
-      expect(notFoundEl).toBeVisible({ timeout: TIMEOUT_MS }),
-    ]).catch(() => {
-      // If none resolved positively, assert the kpi-strip as primary
-    });
+    // We accept kpi-strip OR detail-loading OR detail-not-found to handle both
+    // success and mock-miss paths. Use a combined locator (Playwright idiomatic)
+    // instead of Promise.race to avoid resource leaks.
+    await expect(
+      page.locator(
+        "[data-testid='kpi-strip'], [data-testid='detail-loading'], [data-testid='detail-not-found']",
+      ),
+    ).toBeVisible({ timeout: TIMEOUT_MS });
 
     // The page must not crash (no error boundary message)
     await expect(page.locator("body")).not.toContainText(
@@ -504,7 +489,7 @@ test.describe("ingestion visual parity — route smoke", () => {
 
     // Mobile screenshot
     await page.setViewportSize(MOBILE);
-    await page.waitForTimeout(300);
+    await page.waitForLoadState("domcontentloaded"); // allow reflow after viewport resize
     await capture(page, "connector-detail-mobile");
   });
 
@@ -514,16 +499,7 @@ test.describe("ingestion visual parity — route smoke", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion/filters");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
-
-    await page.goto("/ingestion/filters", { waitUntil: "networkidle" });
+    await navigateOrSkip(page, "/ingestion/filters", baseURL, test);
 
     // Five-gate diagram must be present
     const diagram = page.locator('[data-testid="pipeline-gate-diagram"]');
@@ -552,7 +528,7 @@ test.describe("ingestion visual parity — route smoke", () => {
 
     // Mobile screenshot
     await page.setViewportSize(MOBILE);
-    await page.waitForTimeout(300);
+    await page.waitForLoadState("domcontentloaded"); // allow reflow after viewport resize
     await capture(page, "filters-mobile");
   });
 });
@@ -565,14 +541,7 @@ test.describe("ingestion visual parity — legacy redirects", () => {
   test("?tab=connectors → /ingestion/connectors", async ({ page, baseURL }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion?tab=connectors");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await navigateOrSkip(page, "/ingestion?tab=connectors", baseURL, test);
 
     await page.waitForURL(/\/ingestion\/connectors/, { timeout: TIMEOUT_MS });
     expect(page.url()).toMatch(/\/ingestion\/connectors/);
@@ -582,14 +551,7 @@ test.describe("ingestion visual parity — legacy redirects", () => {
   test("?tab=filters → /ingestion/filters", async ({ page, baseURL }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion?tab=filters");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await navigateOrSkip(page, "/ingestion?tab=filters", baseURL, test);
 
     await page.waitForURL(/\/ingestion\/filters/, { timeout: TIMEOUT_MS });
     expect(page.url()).toMatch(/\/ingestion\/filters/);
@@ -602,14 +564,7 @@ test.describe("ingestion visual parity — legacy redirects", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion?tab=history");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await navigateOrSkip(page, "/ingestion?tab=history", baseURL, test);
 
     // Spec: history SHALL map to Timeline — NOT remain a fourth redesigned tab.
     await page.waitForURL(/\/ingestion$/, { timeout: TIMEOUT_MS });
@@ -624,14 +579,7 @@ test.describe("ingestion visual parity — legacy redirects", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion/history");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await navigateOrSkip(page, "/ingestion/history", baseURL, test);
 
     // /ingestion/history has a <Navigate to="/ingestion" replace /> in Dispatch mode.
     await page.waitForURL(/\/ingestion$/, { timeout: TIMEOUT_MS });
@@ -645,17 +593,7 @@ test.describe("ingestion visual parity — legacy redirects", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(
-      page,
-      "/ingestion?tab=connectors&range=24h",
-    );
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await navigateOrSkip(page, "/ingestion?tab=connectors&range=24h", baseURL, test);
 
     await page.waitForURL(/\/ingestion\/connectors/, { timeout: TIMEOUT_MS });
     expect(page.url()).toMatch(/\/ingestion\/connectors/);
@@ -675,19 +613,8 @@ test.describe("ingestion visual parity — drawer deep-link", () => {
   }) => {
     await installCommonMocks(page);
 
-    const ok = await tryNavigate(page, "/ingestion");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
-
     const eventId = "aabbccdd-0000-0000-0000-000000000001";
-    await page.goto(`/ingestion?event=${eventId}`, {
-      waitUntil: "networkidle",
-    });
+    await navigateOrSkip(page, `/ingestion?event=${eventId}`, baseURL, test);
 
     // The EventDrawer must open
     await expect(page.locator("[data-testid='event-drawer']")).toBeVisible({
@@ -714,16 +641,7 @@ test.describe("ingestion visual parity — absence of old shell", () => {
     }) => {
       await installCommonMocks(page);
 
-      const ok = await tryNavigate(page, route);
-      if (!ok) {
-        test.skip(
-          true,
-          `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-        );
-        return;
-      }
-
-      await page.goto(route, { waitUntil: "networkidle" });
+      await navigateOrSkip(page, route, baseURL, test);
 
       // Old card-based shells must be absent
       await expect(
