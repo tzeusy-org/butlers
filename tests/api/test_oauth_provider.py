@@ -372,7 +372,7 @@ async def test_spotify_start_json_mode_scope_base(app):
 
 
 async def test_spotify_callback_happy_path(app):
-    """Spotify callback exchanges code, stores refresh token, returns success payload."""
+    """Spotify callback exchanges code, stores refresh token, redirects to /secrets."""
     app_with_pool, pool = _make_app(app)
 
     state = _generate_state()
@@ -389,17 +389,17 @@ async def test_spotify_callback_happy_path(app):
         patch(_EMIT_AUDIT_PATCH, AsyncMock()) as mock_audit,
     ):
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
                 "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
             )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert body["data"]["success"] is True
-    assert body["data"]["provider"] == "spotify"
+    # Callback now always redirects; default (None) → /secrets
+    assert resp.status_code in (302, 307)
+    location = resp.headers.get("location", "")
+    assert "/secrets" in location
+    assert "u:spotify" in location
 
     # connected audit row emitted
     audit_calls = mock_audit.call_args_list
@@ -495,8 +495,8 @@ async def test_callback_page_of_origin_secrets_redirects_to_secrets(app):
     assert "toast=connected" in location
 
 
-async def test_callback_no_page_of_origin_returns_json_success(app):
-    """When page_of_origin is None (no redirect needed) callback returns JSON."""
+async def test_callback_no_page_of_origin_redirects_to_secrets(app):
+    """When page_of_origin is None (default) callback redirects to /secrets."""
     _make_app(app)
     state = _generate_state()
     _store_state(state, page_of_origin=None, provider="spotify")
@@ -511,15 +511,104 @@ async def test_callback_no_page_of_origin_returns_json_success(app):
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
     ):
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
                 "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
             )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["data"]["success"] is True
+    # Spec: missing/default page_of_origin → /secrets?focus=u:<provider>&toast=connected
+    assert resp.status_code in (302, 307)
+    location = resp.headers.get("location", "")
+    assert "/secrets" in location
+    assert "u:spotify" in location
+    assert "toast=connected" in location
+
+
+# ===========================================================================
+# 8b. Spec-required routing branches: secrets / ingestion / missing
+# ===========================================================================
+
+
+async def test_callback_secrets_page_of_origin(app):
+    """Spec: page_of_origin=secrets → /secrets?focus=u:<provider>&toast=connected."""
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="secrets", provider="spotify")
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+            )
+
+    assert resp.status_code in (302, 307)
+    location = resp.headers.get("location", "")
+    assert location == "/secrets?focus=u:spotify&toast=connected"
+
+
+async def test_callback_ingestion_page_of_origin(app):
+    """Spec: page_of_origin=ingestion → /ingestion/connectors."""
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="ingestion", provider="spotify")
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+            )
+
+    assert resp.status_code in (302, 307)
+    location = resp.headers.get("location", "")
+    assert location == "/ingestion/connectors"
+
+
+async def test_callback_missing_page_of_origin(app):
+    """Spec: missing/None page_of_origin defaults to /secrets?focus=u:<provider>&toast=connected."""
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, provider="spotify")  # no page_of_origin → None
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+            )
+
+    assert resp.status_code in (302, 307)
+    location = resp.headers.get("location", "")
+    assert location == "/secrets?focus=u:spotify&toast=connected"
 
 
 # ===========================================================================
