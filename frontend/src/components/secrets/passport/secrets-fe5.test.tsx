@@ -17,7 +17,7 @@
 //              butler-secrets §Projection-Lens Identity Switcher
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
@@ -325,10 +325,17 @@ describe("DirectionPassport: snapshot (full page with rich mock data)", () => {
    * Snapshot test for the full DirectionPassport rendered with MOCK_INVENTORY.
    * Catches unintended structural regressions.
    *
-   * Note: renderToStaticMarkup removes date-dependent content (today's date in
-   * the eyebrow) from being variable. The snapshot covers the structural skeleton
-   * including data-* attributes and class names.
+   * Date is pinned to 2026-01-15 via vi.useFakeTimers so the eyebrow date
+   * string is stable across days. Without this, the snapshot would fail every
+   * day it was run on a different date.
    */
+
+  beforeAll(() => {
+    vi.useFakeTimers({ now: new Date("2026-01-15T12:00:00.000Z") });
+  });
+  afterAll(() => {
+    vi.useRealTimers();
+  });
 
   it("matches snapshot: default focus (first spine entry)", () => {
     const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
