@@ -86,6 +86,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 from asyncpg.exceptions import UndefinedTableError
@@ -1505,38 +1506,19 @@ async def rotate_user_credential(
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    # Update the value in-place.
+    # Update the value in-place using the primary key from the fetched row.
+    # Using id (PK) is safer than entity_id+LIKE which could match multiple rows
+    # in multi-account scenarios.
     try:
-        if identity is not None:
-            await shared_pool.execute(
-                """
-                UPDATE public.entity_info
-                SET value = $1, updated_at = now()
-                WHERE entity_id = $2
-                  AND type LIKE $3
-                  AND secured = true
-                """,
-                body.value,
-                identity,
-                f"{provider}_%",
-            )
-        else:
-            await shared_pool.execute(
-                """
-                UPDATE public.entity_info
-                SET value = $1, updated_at = now()
-                WHERE id IN (
-                    SELECT ei.id
-                    FROM public.entity_info ei
-                    JOIN public.entities e ON e.id = ei.entity_id
-                    WHERE 'owner' = ANY(e.roles)
-                      AND ei.type LIKE $2
-                      AND ei.secured = true
-                )
-                """,
-                body.value,
-                f"{provider}_%",
-            )
+        await shared_pool.execute(
+            """
+            UPDATE public.entity_info
+            SET value = $1, updated_at = now()
+            WHERE id = $2
+            """,
+            body.value,
+            UUID(detail.id),
+        )
     except Exception as exc:
         logger.warning("rotate_user_credential: update failed for provider=%s: %s", provider, exc)
         raise HTTPException(status_code=503, detail="Credential rotation failed") from exc
@@ -1609,34 +1591,17 @@ async def disconnect_user_credential(
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    # Delete the row(s).
+    # Delete the row using the primary key from the fetched row.
+    # Using id (PK) is safer than entity_id+LIKE which could match multiple rows
+    # in multi-account scenarios.
     try:
-        if identity is not None:
-            await shared_pool.execute(
-                """
-                DELETE FROM public.entity_info
-                WHERE entity_id = $1
-                  AND type LIKE $2
-                  AND secured = true
-                """,
-                identity,
-                f"{provider}_%",
-            )
-        else:
-            await shared_pool.execute(
-                """
-                DELETE FROM public.entity_info
-                WHERE id IN (
-                    SELECT ei.id
-                    FROM public.entity_info ei
-                    JOIN public.entities e ON e.id = ei.entity_id
-                    WHERE 'owner' = ANY(e.roles)
-                      AND ei.type LIKE $1
-                      AND ei.secured = true
-                )
-                """,
-                f"{provider}_%",
-            )
+        await shared_pool.execute(
+            """
+            DELETE FROM public.entity_info
+            WHERE id = $1
+            """,
+            UUID(detail.id),
+        )
     except Exception as exc:
         logger.warning(
             "disconnect_user_credential: delete failed for provider=%s: %s", provider, exc
@@ -1732,69 +1697,24 @@ async def probe_user_credential(
                 )
 
                 # 2. Update test-state cache columns on entity_info.
+                # Use the primary key from the fetched row — safer than entity_id+LIKE
+                # which could match multiple rows in multi-account scenarios.
                 # last_verified is set only on success (per spec §Cache write on probe).
-                if identity is not None:
-                    await conn.execute(
-                        """
-                        UPDATE public.entity_info
-                        SET
-                            last_test_ok = $1,
-                            last_test_code = $2,
-                            last_test_message = $3,
-                            last_verified = CASE WHEN $1 THEN now() ELSE last_verified END
-                        WHERE entity_id = $4
-                          AND type LIKE $5
-                          AND secured = true
-                        """,
-                        probe_ok,
-                        probe_code,
-                        probe_message,
-                        identity,
-                        f"{provider}_%",
-                    )
-                else:
-                    await conn.execute(
-                        """
-                        UPDATE public.entity_info
-                        SET
-                            last_test_ok = $1,
-                            last_test_code = $2,
-                            last_test_message = $3,
-                            last_verified = CASE WHEN $1 THEN now() ELSE last_verified END
-                        WHERE id IN (
-                            SELECT ei.id
-                            FROM public.entity_info ei
-                            JOIN public.entities e ON e.id = ei.entity_id
-                            WHERE 'owner' = ANY(e.roles)
-                              AND ei.type LIKE $4
-                              AND ei.secured = true
-                        )
-                        """,
-                        probe_ok,
-                        probe_code,
-                        probe_message,
-                        f"{provider}_%",
-                    )
-
-                # 3. Audit inside the same transaction.
-                audit_action = "verified" if probe_ok else "failed"
-                target = normalize_credential_key("user", provider)
-                probe_fail_msg = probe_message or "unknown error"
-                note = "Probe ok" if probe_ok else f"Probe failed: {probe_fail_msg}"
-                try:
-                    await audit_router.append(
-                        conn,
-                        _OWNER_ACTOR,
-                        audit_action,
-                        target=target,
-                        note=note,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "probe audit write failed for provider=%s; probe result committed",
-                        provider,
-                        exc_info=True,
-                    )
+                await conn.execute(
+                    """
+                    UPDATE public.entity_info
+                    SET
+                        last_test_ok = $1,
+                        last_test_code = $2,
+                        last_test_message = $3,
+                        last_verified = CASE WHEN $1 THEN now() ELSE last_verified END
+                    WHERE id = $4
+                    """,
+                    probe_ok,
+                    probe_code,
+                    probe_message,
+                    UUID(detail.id),
+                )
 
     except UndefinedTableError as exc:
         raise HTTPException(
@@ -1806,6 +1726,13 @@ async def probe_user_credential(
             "probe_user_credential: transaction failed for provider=%s: %s", provider, exc
         )
         raise HTTPException(status_code=503, detail="Probe transaction failed") from exc
+
+    # Audit — fire-and-forget outside the data transaction so audit failure
+    # never rolls back a committed probe result.
+    audit_action = "verified" if probe_ok else "failed"
+    probe_fail_msg = probe_message or "unknown error"
+    note = "Probe ok" if probe_ok else f"Probe failed: {probe_fail_msg}"
+    await _write_credential_audit(shared_pool, action=audit_action, provider=provider, note=note)
 
     result = TestResult(
         ok=probe_ok,
@@ -1880,8 +1807,7 @@ async def reauthorize_user_credential(
         # The label field stores the account email for OAuth credentials.
         params["account_hint"] = detail.label
 
-    query_string = "&".join(f"{k}={v}" for k, v in params.items())
-    redirect_url = f"/api/oauth/{provider}/start?{query_string}"
+    redirect_url = f"/api/oauth/{provider}/start?{urlencode(params)}"
 
     # Audit — attempted (dance initiated, not yet completed).
     await _write_credential_audit(
