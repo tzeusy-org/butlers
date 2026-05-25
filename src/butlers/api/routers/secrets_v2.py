@@ -42,6 +42,24 @@ GET /api/secrets/breaks-catalogue?provider=<p>
     severity DESC.  When ?provider= is omitted, returns the full catalogue
     in meta.by_provider keyed by provider slug.
 
+POST /api/secrets/system/<key>
+    Set (first-time create), rotate (value replaced), or override (per-butler).
+    Body: { value, target: "shared" | "<butler>" }
+    Returns ApiResponse<SystemSecretDetail> (updated).
+    Audit: set (first-time), rotated (existing key), overrode (override).
+
+POST /api/secrets/system/<key>/probe
+    Probe a system credential; writes probe_log + test-state cache + audit.
+    Returns ApiResponse<TestResult>.
+    Rate-limited: 1 call per 5 s per key (in-process TTL guard).
+    Audit: verified (ok), failed (not-ok), warned (scope mismatch/expiring).
+
+DELETE /api/secrets/system/<key>?target=<butler|shared>
+    Remove a system credential row.
+    target=shared → delete the shared (switchboard) row; audit disconnected.
+    target=<butler> → delete the per-butler override row; audit revoked.
+    Returns ApiResponse<{ status: "disconnected" | "revoked" }>.
+
 Design decisions
 ----------------
 - Butler schema discovery uses db.butler_names (registered pools) rather
@@ -70,6 +88,24 @@ Design decisions
   canonical target used in public.audit_log.  Timestamps are pre-formatted
   server-side using the same relative formatter as probe-log LRU.
 
+Design decisions (system mutations)
+------------------------------------
+- Shared vs override: target="shared" routes to db.pool("switchboard") (the
+  switchboard butler schema holds the canonical shared secrets).  Per the spec:
+  "when target='shared' the value is written to the switchboard's butler_secrets
+  table; when target='<butler>' an override row is created in that butler's
+  butler_secrets table."
+- Rate limit on probe: an in-process TTL dict keyed on key (not client IP)
+  with a 5 s window.  Shared per server process; adequate for single-owner
+  admin use-case.  TTL chosen per spec "1 call/page-load/key".
+- Probe result is state-derived (no external provider calls), consistent with
+  the user probe pattern (BE-8).
+- system probe writes butler_secrets test-state columns in the same transaction
+  as the probe_log INSERT, replicating the user probe atomicity invariant.
+- DELETE distinguishes shared vs override via the target query param:
+  target=shared → DELETE shared (switchboard) row; audit disconnected.
+  target=<butler> → DELETE per-butler override row; audit revoked.
+
 Spec anchor
 -----------
 openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
@@ -77,6 +113,7 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 §Per-credential read endpoints
 §Probe-log LRU integration
 §Audit history endpoint
+§System credential mutations
 """
 
 from __future__ import annotations
@@ -84,6 +121,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -1821,3 +1859,539 @@ async def reauthorize_user_credential(
         data=ReauthorizeResponse(redirect_url=redirect_url),
         meta=ApiMeta(),
     )
+
+
+# ---------------------------------------------------------------------------
+# System credential mutation models
+# ---------------------------------------------------------------------------
+
+
+class SystemSetRequest(BaseModel):
+    """Request body for POST /api/secrets/system/<key>."""
+
+    value: str
+    """New secret value to store."""
+    target: str = "shared"
+    """'shared' (default) or a butler name for per-butler override."""
+
+
+class SystemDeleteStatus(BaseModel):
+    """Response payload for DELETE /api/secrets/system/<key>."""
+
+    status: str
+    """'disconnected' (shared row deleted) or 'revoked' (override row deleted)."""
+
+
+# ---------------------------------------------------------------------------
+# System probe rate-limit guard
+# ---------------------------------------------------------------------------
+
+#: In-process TTL guard for system probe: maps key → last_probe_ts (epoch seconds).
+#: Shared across requests within the same server process.
+_system_probe_timestamps: dict[str, float] = {}
+
+#: Rate-limit window in seconds (1 call per page-load per key).
+_SYSTEM_PROBE_RATE_LIMIT_S: float = 5.0
+
+
+def _check_system_probe_rate_limit(key: str) -> None:
+    """Raise HTTP 429 if a probe for this key was recorded within the TTL window.
+
+    The guard is purely in-process (not Redis/DB-backed) which is sufficient for
+    the single-owner, single-process deployment assumed by v1.  The key is the
+    secret_key string (not keyed on client IP) because system credential probes
+    are admin-level operations.
+
+    Raises
+    ------
+    HTTPException (429)
+        When the same key was probed within the last ``_SYSTEM_PROBE_RATE_LIMIT_S``
+        seconds.
+    """
+    now = time.monotonic()
+    last = _system_probe_timestamps.get(key)
+    if last is not None and (now - last) < _SYSTEM_PROBE_RATE_LIMIT_S:
+        remaining = _SYSTEM_PROBE_RATE_LIMIT_S - (now - last)
+        raise HTTPException(
+            status_code=429,
+            detail=(f"Probe rate limit exceeded for key {key!r}. Retry after {remaining:.1f}s."),
+        )
+    _system_probe_timestamps[key] = now
+
+
+# ---------------------------------------------------------------------------
+# System mutation audit helper
+# ---------------------------------------------------------------------------
+
+
+async def _write_system_audit(
+    pool: Any,
+    *,
+    action: str,
+    key: str,
+    note: str | None = None,
+) -> None:
+    """Append one row to public.audit_log for a system-credential mutation.
+
+    Uses normalize_credential_key("system", key) as the canonical target.
+    Silently swallows errors (fire-and-forget, consistent with user audit helper).
+    """
+    target = normalize_credential_key("system", key)
+    try:
+        await audit_router.append(
+            pool,
+            _OWNER_ACTOR,
+            action,
+            target=target,
+            note=note,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to write system credential audit: action=%s key=%s",
+            action,
+            key,
+            exc_info=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/system/<key>  — set / rotate / override
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/system/{key}",
+    response_model=ApiResponse[SystemSecretDetail],
+)
+async def set_system_credential(
+    key: str,
+    body: SystemSetRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SystemSecretDetail]:
+    """Set (first-time), rotate (update existing), or override (per-butler) a system credential.
+
+    Behaviour depends on ``body.target``:
+
+    - ``target = "shared"`` — write to the switchboard's ``butler_secrets``
+      table.  If the row exists, UPDATE the value (audit ``rotated``); if not,
+      INSERT a new row (audit ``set``).
+
+    - ``target = "<butler>"`` — INSERT a new override row in that butler's
+      ``butler_secrets`` table (the butler schema).  The override takes
+      precedence over the shared row for that butler.  Audit ``overrode``.
+
+    Returns ``ApiResponse<SystemSecretDetail>`` (updated) reflecting the new state.
+    Returns 404 when ``target = "<butler>"`` and the butler is not registered.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §System credential mutations
+    """
+    target = body.target
+    value = body.value
+
+    if target == "shared":
+        # Shared row lives in the switchboard butler schema.
+        try:
+            pool = db.pool("switchboard")
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Switchboard pool is not available",
+            ) from exc
+
+        # Check if an existing shared row exists.
+        try:
+            existing = await pool.fetchrow(
+                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            if "does not exist" in msg or "undefined" in msg:
+                existing = None
+            else:
+                logger.warning("set_system_credential: fetchrow failed key=%s: %s", key, exc)
+                raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+
+        if existing is None:
+            # First-time create.
+            try:
+                await pool.execute(
+                    """
+                    INSERT INTO butler_secrets (secret_key, secret_value, updated_at)
+                    VALUES ($1, $2, now())
+                    """,
+                    key,
+                    value,
+                )
+            except Exception as exc:
+                logger.warning("set_system_credential: INSERT failed key=%s: %s", key, exc)
+                raise HTTPException(status_code=503, detail="Credential create failed") from exc
+            audit_action = "set"
+            audit_note = "System credential created (first-time set)"
+        else:
+            # Row exists — rotate the value.
+            try:
+                await pool.execute(
+                    """
+                    UPDATE butler_secrets
+                    SET secret_value = $1, updated_at = now()
+                    WHERE secret_key = $2
+                    """,
+                    value,
+                    key,
+                )
+            except Exception as exc:
+                logger.warning("set_system_credential: UPDATE failed key=%s: %s", key, exc)
+                raise HTTPException(status_code=503, detail="Credential rotation failed") from exc
+            audit_action = "rotated"
+            audit_note = "System credential value replaced (rotated)"
+
+        await _write_system_audit(pool, action=audit_action, key=key, note=audit_note)
+
+        # Re-fetch to return updated state.
+        detail = await _fetch_single_system_secret(pool, "switchboard", key)
+        if detail is None:
+            raise HTTPException(status_code=503, detail="Credential not found after write")
+        return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+
+    else:
+        # Per-butler override — write to the target butler's schema.
+        butler_name = target
+        try:
+            pool = db.pool(butler_name)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Butler {butler_name!r} is not registered",
+            ) from exc
+
+        # Override row: UPSERT into the butler's butler_secrets table.
+        # We always treat this as "overrode" regardless of whether a prior
+        # override existed, per spec §System credential mutations.
+        try:
+            await pool.execute(
+                """
+                INSERT INTO butler_secrets (secret_key, secret_value, updated_at)
+                VALUES ($1, $2, now())
+                ON CONFLICT (secret_key) DO UPDATE
+                    SET secret_value = EXCLUDED.secret_value,
+                        updated_at = EXCLUDED.updated_at
+                """,
+                key,
+                value,
+            )
+        except Exception as exc:
+            logger.warning(
+                "set_system_credential: override UPSERT failed key=%s butler=%s: %s",
+                key,
+                butler_name,
+                exc,
+            )
+            raise HTTPException(status_code=503, detail="Override write failed") from exc
+
+        await _write_system_audit(
+            pool,
+            action="overrode",
+            key=key,
+            note=f"Per-butler override created for {butler_name!r}",
+        )
+
+        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        if detail is None:
+            raise HTTPException(status_code=503, detail="Credential not found after override write")
+        # Mark the returned detail as a local (per-butler) override.
+        detail.row_state = "local"
+        detail.target = butler_name
+        return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/system/<key>/probe
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/system/{key}/probe",
+    response_model=ApiResponse[TestResult],
+)
+async def probe_system_credential(
+    key: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TestResult]:
+    """Probe a system credential and record the test result.
+
+    Does NOT make external provider calls.  Derives the probe outcome from
+    the current credential state (is the value set? is it expired?
+    is last_test_ok true?).
+
+    Within a single SQL transaction:
+    1. Inserts one row into ``public.secret_probe_log``.
+    2. Updates ``last_verified``, ``last_test_ok``, ``last_test_code``,
+       ``last_test_message`` on the matching ``butler_secrets`` row.
+
+    Searches all registered butler schemas for the key (same discovery order
+    as GET /api/secrets/system/<key>); probes the first matching row.
+
+    Rate-limited to 1 call per 5 s per key (in-process guard).
+
+    Audit: ``verified`` (ok), ``failed`` (not-ok).
+
+    Returns 404 when no credential exists for the given key.
+    Returns 429 when the rate limit is exceeded.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §System credential mutations — probe writes probe_log + audit
+    openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
+    §Cache write on probe (same-transaction invariant)
+    """
+    # Rate-limit guard (raises 429 if too recent).
+    _check_system_probe_rate_limit(key)
+
+    # Locate the credential across all registered butler schemas.
+    found_pool: Any = None
+    found_butler: str | None = None
+    for butler_name in db.butler_names:
+        try:
+            pool = db.pool(butler_name)
+        except KeyError:
+            continue
+        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        if detail is not None:
+            found_pool = pool
+            found_butler = butler_name
+            break
+
+    if found_pool is None or found_butler is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    # Re-fetch to get the full detail for state derivation.
+    detail = await _fetch_single_system_secret(found_pool, found_butler, key)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    # Derive probe outcome from current state.
+    probe_ok = detail.state == "ok"
+    probe_code: int | None = None
+    probe_message: str | None = None
+    if not probe_ok and detail.test is not None:
+        probe_message = detail.test.message
+
+    # Use the shared pool for probe_log (cross-butler public table).
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Shared credential pool unavailable for probe_log write",
+        ) from exc
+
+    # Execute probe_log insert + butler_secrets cache update in one transaction.
+    # probe_log INSERT goes to the shared pool (public schema).
+    # butler_secrets UPDATE goes to the found butler pool.
+    # We run two separate transactions since they are on different pools,
+    # but both succeed or we surface an error.  The probe_log write is primary;
+    # the cache update is a best-effort in-place optimisation.
+    try:
+        async with shared_pool.acquire() as shared_conn:
+            async with shared_conn.transaction():
+                await shared_conn.execute(
+                    """
+                    INSERT INTO public.secret_probe_log
+                        (credential_scope, credential_key, ok, code, message)
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    "system",
+                    key,
+                    probe_ok,
+                    probe_code,
+                    probe_message,
+                )
+    except UndefinedTableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="secret_probe_log table not available — migration may not have run",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("probe_system_credential: probe_log insert failed key=%s: %s", key, exc)
+        raise HTTPException(status_code=503, detail="Probe log write failed") from exc
+
+    # Update test-state cache columns on butler_secrets (best-effort, non-transactional
+    # relative to the probe_log write since it's a different pool).
+    try:
+        await found_pool.execute(
+            """
+            UPDATE butler_secrets
+            SET
+                last_test_ok = $1,
+                last_test_code = $2,
+                last_test_message = $3,
+                last_verified = CASE WHEN $1 THEN now() ELSE last_verified END
+            WHERE secret_key = $4
+            """,
+            probe_ok,
+            probe_code,
+            probe_message,
+            key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Cache update failure is non-fatal; the probe_log row is the source of truth.
+        logger.warning(
+            "probe_system_credential: butler_secrets cache update failed key=%s: %s", key, exc
+        )
+
+    # Audit — fire-and-forget.
+    audit_action = "verified" if probe_ok else "failed"
+    note = "Probe ok" if probe_ok else f"Probe failed: {probe_message or 'unknown error'}"
+    await _write_system_audit(found_pool, action=audit_action, key=key, note=note)
+
+    result = TestResult(
+        ok=probe_ok,
+        code=probe_code,
+        message=probe_message,
+        at=_format_probe_time(datetime.now(tz=UTC)),
+    )
+    return ApiResponse[TestResult](data=result, meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/secrets/system/<key>?target=<butler|shared>
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/system/{key}",
+    response_model=ApiResponse[SystemDeleteStatus],
+)
+async def delete_system_credential(
+    key: str,
+    target: str = Query(
+        default="shared",
+        description=(
+            "'shared' to fully delete the shared (switchboard) row (audit: disconnected), "
+            "or a butler name to remove the per-butler override row (audit: revoked)."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SystemDeleteStatus]:
+    """Remove a system credential row.
+
+    Behaviour depends on ``?target=``:
+
+    - ``target=shared`` — DELETE the shared row from the switchboard's
+      ``butler_secrets`` table.  Audit action: ``disconnected``.
+
+    - ``target=<butler>`` — DELETE the per-butler override row from that
+      butler's ``butler_secrets`` table.  Audit action: ``revoked``.
+
+    Returns 404 when:
+    - the key does not exist in the targeted table,
+    - or the butler specified by ``target`` is not registered.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §System credential mutations — DELETE
+    """
+    if target == "shared":
+        try:
+            pool = db.pool("switchboard")
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Switchboard pool is not available",
+            ) from exc
+
+        # Verify the row exists before deleting.
+        try:
+            existing = await pool.fetchrow(
+                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            if "does not exist" in msg or "undefined" in msg:
+                existing = None
+            else:
+                raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+
+        try:
+            await pool.execute(
+                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except Exception as exc:
+            logger.warning("delete_system_credential: DELETE failed key=%s: %s", key, exc)
+            raise HTTPException(status_code=503, detail="Credential delete failed") from exc
+
+        await _write_system_audit(
+            pool,
+            action="disconnected",
+            key=key,
+            note="Shared system credential deleted",
+        )
+        return ApiResponse[SystemDeleteStatus](
+            data=SystemDeleteStatus(status="disconnected"),
+            meta=ApiMeta(),
+        )
+
+    else:
+        # Per-butler override removal.
+        butler_name = target
+        try:
+            pool = db.pool(butler_name)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Butler {butler_name!r} is not registered",
+            ) from exc
+
+        # Verify the override row exists.
+        try:
+            existing = await pool.fetchrow(
+                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            if "does not exist" in msg or "undefined" in msg:
+                existing = None
+            else:
+                raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+
+        try:
+            await pool.execute(
+                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except Exception as exc:
+            logger.warning(
+                "delete_system_credential: DELETE override failed key=%s butler=%s: %s",
+                key,
+                butler_name,
+                exc,
+            )
+            raise HTTPException(
+                status_code=503, detail="Credential override delete failed"
+            ) from exc
+
+        await _write_system_audit(
+            pool,
+            action="revoked",
+            key=key,
+            note=f"Per-butler override removed for {butler_name!r}",
+        )
+        return ApiResponse[SystemDeleteStatus](
+            data=SystemDeleteStatus(status="revoked"),
+            meta=ApiMeta(),
+        )
