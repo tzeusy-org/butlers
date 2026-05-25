@@ -74,8 +74,18 @@ def test_upgrade_creates_audit_log_target_ts_index():
 def test_audit_credential_actions_documented():
     """Credential-lifecycle action vocabulary is documented in the migration."""
     source = _MIGRATION_PATH.read_text()
-    for action in ("verified", "failed", "rotated", "connected", "disconnected",
-                   "warned", "overrode", "revoked", "attempted", "set"):
+    for action in (
+        "verified",
+        "failed",
+        "rotated",
+        "connected",
+        "disconnected",
+        "warned",
+        "overrode",
+        "revoked",
+        "attempted",
+        "set",
+    ):
         assert action in source, f"Action '{action}' missing from migration source"
 
 
