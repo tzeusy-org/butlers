@@ -2991,8 +2991,11 @@ import type {
   ConnectorCrossSummaryResponse,
   ConnectorDaySummary,
   ConnectorDetail,
+  ConnectorEventsResponse,
   ConnectorFanout,
   ConnectorFanoutEntry,
+  ConnectorIncidentsResponse,
+  ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -3012,8 +3015,11 @@ export type {
   ConnectorCounters,
   ConnectorDaySummary,
   ConnectorDetail,
+  ConnectorEventsResponse,
   ConnectorFanout,
   ConnectorFanoutEntry,
+  ConnectorIncidentsResponse,
+  ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -3378,6 +3384,50 @@ export async function getConnectorFanout(
     ...resp,
     data: _toConnectorFanout(resp.data ?? [], period),
   };
+}
+
+/**
+ * GET /api/ingestion/connectors/{type}/{identity}/events?limit=N
+ * Returns recent events for a single connector. Default limit=20, max=100.
+ * [bu-5ywn2]
+ */
+export async function getConnectorEvents(
+  connectorType: string,
+  endpointIdentity: string,
+  limit = 20,
+): Promise<ConnectorEventsResponse> {
+  return apiFetch<ConnectorEventsResponse>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/events?limit=${limit}`,
+  );
+}
+
+/**
+ * GET /api/ingestion/connectors/{type}/{identity}/incidents?limit=N
+ * Returns incident events (failures, errors) for a single connector. Default limit=10, max=50.
+ * [bu-5ywn2]
+ */
+export async function getConnectorIncidents(
+  connectorType: string,
+  endpointIdentity: string,
+  limit = 10,
+): Promise<ConnectorIncidentsResponse> {
+  return apiFetch<ConnectorIncidentsResponse>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/incidents?limit=${limit}`,
+  );
+}
+
+/**
+ * GET /api/ingestion/connectors/{type}/{identity}/routing-rules
+ * Returns ingestion rules scoped to this connector (scope='connector:type:identity').
+ * [bu-5ywn2]
+ */
+export async function getConnectorRoutingRules(
+  connectorType: string,
+  endpointIdentity: string,
+): Promise<ConnectorRoutingRulesResponse> {
+  return apiFetch<ConnectorRoutingRulesResponse>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/routing-rules`,
+  );
 }
 
 /** Update a connector's checkpoint cursor (PATCH /connectors/{type}/{identity}/cursor). */
