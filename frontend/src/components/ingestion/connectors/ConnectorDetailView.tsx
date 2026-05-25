@@ -227,15 +227,12 @@ export function ConnectorDetailView({
               },
               {
                 label: 'last heartbeat',
-                value: connector.last_heartbeat_at
-                  ? ''
-                  : '—',
-                delta: connector.last_heartbeat_at ? (
-                  <Time value={connector.last_heartbeat_at} mode="relative" className="inline" />
-                ) : 'never',
-                rawValue: connector.last_heartbeat_at ? (
+                value: connector.last_heartbeat_at ? (
                   <Time value={connector.last_heartbeat_at} mode="relative" />
-                ) : null,
+                ) : '—',
+                delta: connector.last_heartbeat_at ? (
+                  <Time value={connector.last_heartbeat_at} mode="absolute" className="inline" />
+                ) : 'never',
               },
             ].map((kpi, i) => (
               <div key={i}>
@@ -246,10 +243,10 @@ export function ConnectorDetailView({
                   className="mt-1.5 font-mono tabular-nums font-medium tracking-[-0.02em]"
                   style={{ fontSize: 26 }}
                 >
-                  {kpi.rawValue ?? kpi.value}
+                  {kpi.value}
                 </div>
                 <div className="font-mono text-[10px] text-muted-foreground/60 mt-1 block">
-                  {typeof kpi.delta === 'string' ? kpi.delta : kpi.delta}
+                  {kpi.delta}
                 </div>
               </div>
             ))}
