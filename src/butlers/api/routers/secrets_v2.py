@@ -42,6 +42,19 @@ GET /api/secrets/breaks-catalogue?provider=<p>
     severity DESC.  When ?provider= is omitted, returns the full catalogue
     in meta.by_provider keyed by provider slug.
 
+POST /api/secrets/cli/<id>/rotate
+    Generate a new random secret for a CLI runtime token.
+    Returns ApiResponse<{fingerprint: str, value: str}> with the raw value
+    returned EXACTLY ONCE in the response body (not fetchable again via GET).
+    Writes audit action 'rotated'.
+    404 when no matching CLI token exists.
+
+POST /api/secrets/cli/<id>/revoke
+    Revoke (delete) a CLI runtime token.
+    Returns ApiResponse<{status: "revoked"}>.
+    Writes audit action 'disconnected'.
+    404 when no matching CLI token exists.
+
 POST /api/secrets/system/<key>
     Set (first-time create), rotate (value replaced), or override (per-butler).
     Body: { value, target: "shared" | "<butler>" }
@@ -121,6 +134,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import secrets as _secrets_mod
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -2396,3 +2410,213 @@ async def delete_system_credential(
             data=SystemDeleteStatus(status="revoked"),
             meta=ApiMeta(),
         )
+
+
+# ---------------------------------------------------------------------------
+# CLI runtime mutation helpers
+# ---------------------------------------------------------------------------
+
+
+async def _write_cli_audit(
+    pool: Any,
+    *,
+    action: str,
+    credential_id: str,
+    note: str | None = None,
+) -> None:
+    """Append one row to public.audit_log for a CLI-credential mutation.
+
+    Silently swallows errors so audit logging never blocks the primary
+    operation (fire-and-forget pattern consistent with audit_emit.py).
+    """
+    target = normalize_credential_key("cli", credential_id)
+    try:
+        await audit_router.append(
+            pool,
+            _OWNER_ACTOR,
+            action,
+            target=target,
+            note=note,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to write CLI credential audit: action=%s id=%s",
+            action,
+            credential_id,
+            exc_info=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# CLI rotate response model
+# ---------------------------------------------------------------------------
+
+
+class CliRotateResult(BaseModel):
+    """Response payload for POST /api/secrets/cli/<id>/rotate.
+
+    Per spec §CLI runtime mutations: the raw value is returned EXACTLY ONCE
+    in this response body.  GET endpoints never expose raw values, so this
+    single response is the only opportunity for the owner to copy the value
+    to their local config.
+    """
+
+    fingerprint: str
+    """SHA-256 first-8 hex fingerprint of the newly-generated value."""
+
+    value: str
+    """Raw secret value — returned ONCE; not retrievable via any GET endpoint."""
+
+
+class CliRevokeResult(BaseModel):
+    """Response payload for POST /api/secrets/cli/<id>/revoke."""
+
+    status: str = "revoked"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/cli/<id>/rotate
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/cli/{credential_id}/rotate",
+    response_model=ApiResponse[CliRotateResult],
+)
+async def rotate_cli_credential(
+    credential_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CliRotateResult]:
+    """Rotate (regenerate) the secret value for a CLI runtime token.
+
+    Generates a new cryptographically-random value using
+    ``secrets.token_urlsafe(32)``, persists it in-place via UPDATE on
+    ``butler_secrets WHERE secret_key = <id>``, and
+    returns ``ApiResponse<{fingerprint: str, value: str}>``.
+
+    The raw value is returned **exactly once** in this response body.
+    No GET endpoint exposes raw values (fingerprint-only), so this is the
+    sole opportunity for the owner to record the new value.
+
+    Appends a ``rotated`` audit row to ``public.audit_log``.
+
+    Returns 404 when no matching CLI token exists in the shared credential
+    pool.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §CLI runtime mutations — rotate returns value exactly once
+    """
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared credential database unavailable")
+
+    # Confirm the CLI token exists before generating a new value.
+    existing = await _fetch_single_cli_secret(shared_pool, credential_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="CLI credential not found")
+
+    # Generate new random secret (cryptographically secure).
+    new_value = _secrets_mod.token_urlsafe(32)
+
+    # Persist the new value in-place (scope to PK from pre-fetched row).
+    try:
+        await shared_pool.execute(
+            """
+            UPDATE butler_secrets
+            SET secret_value = $1, updated_at = now()
+            WHERE secret_key = $2
+            """,
+            new_value,
+            existing.id,
+        )
+    except Exception as exc:
+        logger.warning("rotate_cli_credential: update failed for id=%s: %s", credential_id, exc)
+        raise HTTPException(status_code=503, detail="CLI credential rotation failed") from exc
+
+    # Compute fingerprint of the newly-generated value.
+    fp = _fingerprint(new_value)
+
+    # Audit — fire-and-forget.
+    await _write_cli_audit(
+        shared_pool,
+        action="rotated",
+        credential_id=credential_id,
+        note="Value regenerated via rotate endpoint",
+    )
+
+    return ApiResponse[CliRotateResult](
+        data=CliRotateResult(fingerprint=fp or "", value=new_value),
+        meta=ApiMeta(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/cli/<id>/revoke
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/cli/{credential_id}/revoke",
+    response_model=ApiResponse[CliRevokeResult],
+)
+async def revoke_cli_credential(
+    credential_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CliRevokeResult]:
+    """Revoke (delete) a CLI runtime token.
+
+    Deletes the matching ``butler_secrets`` row (``category='cli'``) from the
+    shared credential pool and appends a ``disconnected`` audit row to
+    ``public.audit_log``.
+
+    Returns ``ApiResponse<{status: "revoked"}>`` on success.
+    Returns 404 when no matching CLI token exists.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §CLI runtime mutations — revoke writes 'disconnected' audit
+    """
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared credential database unavailable")
+
+    # Confirm the CLI token exists before deleting.
+    existing = await _fetch_single_cli_secret(shared_pool, credential_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="CLI credential not found")
+
+    # Hard-delete the row (scope to PK from pre-fetched row).
+    try:
+        await shared_pool.execute(
+            """
+            DELETE FROM butler_secrets
+            WHERE secret_key = $1
+            """,
+            existing.id,
+        )
+    except Exception as exc:
+        logger.warning("revoke_cli_credential: delete failed for id=%s: %s", credential_id, exc)
+        raise HTTPException(status_code=503, detail="CLI credential revoke failed") from exc
+
+    # Audit — fire-and-forget.
+    await _write_cli_audit(
+        shared_pool,
+        action="disconnected",
+        credential_id=credential_id,
+        note="CLI token revoked via revoke endpoint",
+    )
+
+    return ApiResponse[CliRevokeResult](data=CliRevokeResult(), meta=ApiMeta())
