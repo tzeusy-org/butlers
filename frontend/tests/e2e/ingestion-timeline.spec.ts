@@ -47,10 +47,85 @@ async function tryNavigate(
 /**
  * Install route intercepts so the Timeline renders deterministic fixture data
  * without a live backend.
+ *
+ * IMPORTANT: Playwright matches routes in LIFO order (last registered = first
+ * checked). Register the catch-all FIRST so that specific routes registered
+ * afterwards take precedence over it.
  */
 async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...args: infer P) => unknown ? P[0] : never) {
-  // GET /api/ingestion/events → return two fixture events in two hours
+  // Catch-all FIRST (lowest priority in LIFO matching) — absorbs sidebar
+  // requests for /api/butlers, /api/spend, etc. that are not explicitly mocked.
+  await page.route("**/api/**", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    });
+  });
+
+  // GET /api/ingestion/connectors/summaries → empty list
+  await page.route("**/api/ingestion/connectors/summaries*", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], aggregates_available: false }),
+    });
+  });
+
+  // GET /api/ingestion/events/*/sender-contact → unresolved
+  await page.route("**/api/ingestion/events/*/sender-contact", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { resolved: false, name: null, raw: null } }),
+    });
+  });
+
+  // GET /api/ingestion/events/*/replays → empty history
+  await page.route("**/api/ingestion/events/*/replays", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    });
+  });
+
+  // GET /api/ingestion/events/*/rollup → minimal rollup
+  await page.route("**/api/ingestion/events/*/rollup", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          request_id: "aabbccdd-0000-0000-0000-000000000001",
+          total_sessions: 0,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          total_cost: 0,
+          by_butler: {},
+        },
+      }),
+    });
+  });
+
+  // GET /api/ingestion/events/*/sessions → empty sessions
+  await page.route("**/api/ingestion/events/*/sessions", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    });
+  });
+
+  // GET /api/ingestion/events (list) — highest priority; registered LAST so
+  // it wins over the catch-all in Playwright's LIFO route matching.
+  // Returns two fixture events spanning two different hours so the hour-group
+  // headers and ledger rows are rendered.
   await page.route("**/api/ingestion/events*", (route) => {
+    // Do not intercept sub-resource routes like /events/*/sessions — those are
+    // handled by the more-specific registrations above. The `*` in this pattern
+    // does not cross `/` boundaries in Playwright globs, so /events?limit=50
+    // is matched but /events/abc/sessions is not.
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -99,69 +174,6 @@ async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...ar
       }),
     });
   });
-
-  // GET /api/ingestion/events/*/sessions → empty sessions
-  await page.route("**/api/ingestion/events/*/sessions", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
-  });
-
-  // GET /api/ingestion/events/*/rollup → minimal rollup
-  await page.route("**/api/ingestion/events/*/rollup", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          request_id: "aabbccdd-0000-0000-0000-000000000001",
-          total_sessions: 0,
-          total_input_tokens: 0,
-          total_output_tokens: 0,
-          total_cost: 0,
-          by_butler: {},
-        },
-      }),
-    });
-  });
-
-  // GET /api/ingestion/events/*/replays → empty history
-  await page.route("**/api/ingestion/events/*/replays", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
-  });
-
-  // GET /api/ingestion/events/*/sender-contact → unresolved
-  await page.route("**/api/ingestion/events/*/sender-contact", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: { resolved: false, name: null, raw: null } }),
-    });
-  });
-
-  // GET /api/ingestion/connectors/summaries → empty list
-  await page.route("**/api/ingestion/connectors/summaries*", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [], aggregates_available: false }),
-    });
-  });
-
-  // Catch-all for other API calls (pipeline, etc.)
-  await page.route("**/api/**", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +185,10 @@ test.describe("ingestion Timeline ledger and drawer", () => {
     page,
     baseURL,
   }) => {
+    // Install mocks before any navigation so that all API requests — including
+    // those fired during the initial reachability check — are intercepted.
+    await mockIngestionApis(page);
+
     const ok = await tryNavigate(page, "/ingestion");
     if (!ok) {
       test.skip(
@@ -182,7 +198,6 @@ test.describe("ingestion Timeline ledger and drawer", () => {
       return;
     }
 
-    await mockIngestionApis(page);
     await page.goto("/ingestion", { waitUntil: "networkidle" });
 
     // The timeline ledger container must be present
@@ -200,6 +215,8 @@ test.describe("ingestion Timeline ledger and drawer", () => {
     page,
     baseURL,
   }) => {
+    await mockIngestionApis(page);
+
     const ok = await tryNavigate(page, "/ingestion");
     if (!ok) {
       test.skip(
@@ -209,7 +226,6 @@ test.describe("ingestion Timeline ledger and drawer", () => {
       return;
     }
 
-    await mockIngestionApis(page);
     await page.goto("/ingestion", { waitUntil: "networkidle" });
 
     // Wait for ledger to render
@@ -236,6 +252,8 @@ test.describe("ingestion Timeline ledger and drawer", () => {
     page,
     baseURL,
   }) => {
+    await mockIngestionApis(page);
+
     const ok = await tryNavigate(page, "/ingestion");
     if (!ok) {
       test.skip(
@@ -244,8 +262,6 @@ test.describe("ingestion Timeline ledger and drawer", () => {
       );
       return;
     }
-
-    await mockIngestionApis(page);
 
     // Navigate with ?event=<id> to trigger drawer on page load
     const eventId = "aabbccdd-0000-0000-0000-000000000001";
@@ -258,6 +274,8 @@ test.describe("ingestion Timeline ledger and drawer", () => {
   });
 
   test("drawer close: removes ?event from URL", async ({ page, baseURL }) => {
+    await mockIngestionApis(page);
+
     const ok = await tryNavigate(page, "/ingestion");
     if (!ok) {
       test.skip(
@@ -266,8 +284,6 @@ test.describe("ingestion Timeline ledger and drawer", () => {
       );
       return;
     }
-
-    await mockIngestionApis(page);
 
     const eventId = "aabbccdd-0000-0000-0000-000000000001";
     await page.goto(`/ingestion?event=${eventId}`, { waitUntil: "networkidle" });
