@@ -785,6 +785,24 @@ export interface ContactMergeResponse {
   entity_merged: boolean;
 }
 
+/**
+ * Response for GET /contacts/{id}/entity.
+ *
+ * Used by the /contacts/:contactId redirect route to resolve the linked
+ * entity before redirecting to /entities/:entityId.  This is a minimal
+ * resolver payload — do NOT use it as a substitute for full entity detail.
+ *
+ * status:
+ *   "linked"   — contact exists and is linked to an entity.
+ *   "unlinked" — contact exists but has no entity link yet.
+ *
+ * HTTP 404 is returned (not this type) when the contact does not exist.
+ */
+export interface ContactEntityResolverResponse {
+  entity_id: string | null;
+  status: "linked" | "unlinked";
+}
+
 /** Response for GET /owner/setup-status. */
 export interface OwnerSetupStatus {
   entity_id: string | null;

@@ -253,6 +253,24 @@ class UnlinkedContactsResponse(BaseModel):
     total: int
 
 
+class ContactEntityResolverResponse(BaseModel):
+    """Response for GET /contacts/{id}/entity.
+
+    Returned by the contact-to-entity redirect resolver.  This is a minimal
+    payload used by the frontend redirect logic at /contacts/:contactId to
+    locate the linked entity so it can redirect to /entities/:entityId.
+
+    ``status`` values:
+    - ``"linked"``   — the contact exists and has an entity_id link.
+    - ``"unlinked"`` — the contact exists but has no entity_id.
+
+    A missing contact returns HTTP 404 (not this model).
+    """
+
+    entity_id: UUID | None
+    status: Literal["linked", "unlinked"]
+
+
 class LinkEntityRequest(BaseModel):
     """Request body for POST /contacts/{id}/link-entity."""
 
