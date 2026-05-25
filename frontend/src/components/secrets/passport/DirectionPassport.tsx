@@ -1,0 +1,376 @@
+// ---------------------------------------------------------------------------
+// DirectionPassport — top-level orchestrator for /secrets [bu-qu8v8]
+//
+// Spec: butler-secrets §Passport-Book Information Architecture
+//       §Deep-Link Focus Routing  (?focus=u:<p>|s:<K>|c:<id>)
+//       §Projection-Lens Identity Switcher  (?identity=<id>)
+//       §Tweaks-Panel State Persistence
+//
+// URL state:
+//   ?focus=<key>    — open credential detail
+//   ?identity=<id>  — project User group to this identity
+//   ?sort=<mode>    — default sort
+//
+// No LLM calls. All text is stored-prose, templated, verbatim, or literal.
+// ---------------------------------------------------------------------------
+
+import * as React from "react";
+import { useSearchParams } from "react-router";
+
+import { cn } from "@/lib/utils";
+import type { InventoryResponse, SpineSortMode } from "./types.ts";
+import { parseFocus } from "./constants.ts";
+import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
+import { Spine } from "./Spine.tsx";
+import { PageUser, PageSystem, PageCli, PassportEmptyState } from "./pages.tsx";
+import { TweaksPanel, useTweaks } from "./TweaksPanel.tsx";
+import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
+import { MOCK_INVENTORY } from "./mock-data.ts";
+
+// ── KPI cell ─────────────────────────────────────────────────────────────────
+
+function KpiCell({
+  label,
+  value,
+  caption,
+  captionTone = "dim",
+}: {
+  label: string;
+  value: string;
+  caption: string;
+  captionTone?: "dim" | "amber" | "red";
+}) {
+  const captionColor =
+    captionTone === "amber"
+      ? "var(--amber)"
+      : captionTone === "red"
+        ? "var(--red)"
+        : "var(--dim)";
+  return (
+    <div className="flex flex-col gap-0.5 items-end min-w-24">
+      <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+        {label}
+      </Mono>
+      <span
+        className="tabular-nums"
+        style={{
+          fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+          fontSize: 22,
+          fontWeight: 500,
+          letterSpacing: "-0.02em",
+          color: "var(--fg)",
+        }}
+      >
+        {value}
+      </span>
+      <Mono size={9} color={captionColor}>
+        {caption}
+      </Mono>
+    </div>
+  );
+}
+
+function KpiSep() {
+  return (
+    <span
+      aria-hidden="true"
+      className="self-center"
+      style={{ width: 1, height: 36, background: "var(--border)" }}
+    />
+  );
+}
+
+// ── DirectionPassport ─────────────────────────────────────────────────────────
+
+/**
+ * DirectionPassport — renders the full /secrets passport book:
+ * page header + spine + page body + tweaks trigger.
+ *
+ * Inventory is mocked in B3. Replace `inventory` prop with a TanStack Query
+ * fetch once BE endpoints are live.
+ */
+export function DirectionPassport({
+  inventory = MOCK_INVENTORY,
+}: {
+  inventory?: InventoryResponse;
+}) {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // ── URL state ───────────────────────────────────────────────────────────
+  const focusParam = searchParams.get("focus");
+  const identityParam = searchParams.get("identity");
+  const sortParam = searchParams.get("sort") as SpineSortMode | null;
+
+  // Active identity: URL param or first identity (owner).
+  const defaultIdentity = inventory.identities[0]?.id ?? "";
+  const identityId = identityParam ?? defaultIdentity;
+
+  // Spine entries for current identity.
+  const entries = React.useMemo(
+    () => buildSpineEntries(inventory, identityId),
+    [inventory, identityId],
+  );
+
+  // Focus key: URL param → pick default if missing/invalid.
+  const [activeKey, setActiveKey] = React.useState<string>(() => {
+    if (focusParam && entries.find((e) => e.key === focusParam)) return focusParam;
+    return pickDefaultKey(entries);
+  });
+
+  // When identity changes, re-resolve active key.
+  React.useEffect(() => {
+    const currentValid = entries.find((e) => e.key === activeKey);
+    if (!currentValid) {
+      setActiveKey(pickDefaultKey(entries));
+    }
+  }, [identityId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync URL → activeKey when focus param changes externally.
+  React.useEffect(() => {
+    if (focusParam && entries.find((e) => e.key === focusParam)) {
+      setActiveKey(focusParam);
+    }
+  }, [focusParam]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Tweaks ──────────────────────────────────────────────────────────────
+  const [tweaks, setTweak] = useTweaks();
+  const [tweaksPanelOpen, setTweaksPanelOpen] = React.useState(false);
+
+  // Effective sort: URL param overrides tweak default.
+  const sortMode: SpineSortMode = sortParam ?? tweaks.defaultSort;
+
+  // ── Search ──────────────────────────────────────────────────────────────
+  const [search, setSearch] = React.useState("");
+
+  // ── URL writers ─────────────────────────────────────────────────────────
+  function handleSelectKey(key: string) {
+    setActiveKey(key);
+    const params = new URLSearchParams(searchParams);
+    params.set("focus", key);
+    setSearchParams(params, { replace: true });
+  }
+
+  function handleIdentityChange(id: string) {
+    const params = new URLSearchParams(searchParams);
+    if (id === defaultIdentity) {
+      params.delete("identity");
+    } else {
+      params.set("identity", id);
+    }
+    setSearchParams(params, { replace: true });
+  }
+
+  function handleSortChange(m: SpineSortMode) {
+    setTweak("defaultSort", m);
+    const params = new URLSearchParams(searchParams);
+    params.set("sort", m);
+    setSearchParams(params, { replace: true });
+  }
+
+  // ── Resolved page ───────────────────────────────────────────────────────
+  const parsed = parseFocus(activeKey);
+
+  type ResolvedPage =
+    | { kind: "user"; credential: NonNullable<(typeof inventory.user)[number]> }
+    | { kind: "system"; credential: NonNullable<(typeof inventory.system)[number]> }
+    | { kind: "cli"; credential: NonNullable<(typeof inventory.cli)[number]> }
+    | { kind: null };
+
+  const resolved = React.useMemo((): ResolvedPage => {
+    if (!parsed) return { kind: null };
+    if (parsed.family === "u") {
+      const record = inventory.user.find(
+        (s) => s.provider === parsed.id && s.identity === identityId,
+      );
+      return record ? { kind: "user", credential: record } : { kind: null };
+    }
+    if (parsed.family === "s") {
+      const record = inventory.system.find((s) => s.key === parsed.id);
+      return record ? { kind: "system", credential: record } : { kind: null };
+    }
+    if (parsed.family === "c") {
+      const record = inventory.cli.find((r) => r.id === parsed.id);
+      return record ? { kind: "cli", credential: record } : { kind: null };
+    }
+    return { kind: null };
+  }, [activeKey, identityId, inventory]);
+
+  // ── KPIs ─────────────────────────────────────────────────────────────────
+  const userForIdentity = inventory.user.filter((s) => s.identity === identityId);
+  const kpis = {
+    integrations: {
+      total:    userForIdentity.length,
+      healthy:  userForIdentity.filter((x) => x.state === "ok").length,
+      needsHand:userForIdentity.filter((x) => ["expired","revoked","scope_mismatch","expiring","rotating","failed"].includes(x.state)).length,
+    },
+    system: {
+      total:      inventory.system.length,
+      configured: inventory.system.filter((x) => x.rowState !== "missing").length,
+      missing:    inventory.system.filter((x) => x.rowState === "missing").length,
+    },
+    cli: {
+      total:     inventory.cli.length,
+      ok:        inventory.cli.filter((x) => x.state === "ok").length,
+      attention: inventory.cli.filter((x) => ["expired","revoked","expiring"].includes(x.state)).length,
+    },
+  };
+  const needsAttention = kpis.integrations.needsHand + kpis.cli.attention;
+
+  // Hide identity chip when only one identity is present.
+  const showIdentityChip = inventory.identities.length > 1;
+  const activeIdentity = inventory.identities.find((i) => i.id === identityId);
+
+  return (
+    <div
+      className="flex min-h-full"
+      style={{ background: "var(--bg)", color: "var(--fg)" }}
+      data-direction-passport="true"
+    >
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Page header */}
+        <div
+          className="flex justify-between items-end gap-6 px-9 pt-7 pb-4.5"
+          style={{ borderBottom: "1px solid var(--border)" }}
+        >
+          <div className="min-w-0">
+            <Eyebrow sub={new Date().toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: "numeric" })}>
+              secrets
+            </Eyebrow>
+            <div className="mt-2.5">
+              <h1
+                className="m-0"
+                style={{
+                  fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+                  fontSize: 32,
+                  fontWeight: 500,
+                  letterSpacing: "-0.025em",
+                  lineHeight: 1.08,
+                  maxWidth: "28ch",
+                }}
+              >
+                {needsAttention === 0
+                  ? "Every credential, accounted for."
+                  : needsAttention === 1
+                    ? "One credential needs attention."
+                    : `${needsAttention} credentials need attention.`}
+              </h1>
+            </div>
+            {needsAttention > 0 && tweaks.voiceParagraph && (
+              <div className="mt-2.5">
+                <Voice maxWidth="60ch">
+                  {kpis.integrations.needsHand > 0 && (
+                    <>
+                      {kpis.integrations.needsHand} integration
+                      {kpis.integrations.needsHand === 1 ? "" : "s"} sick.{" "}
+                    </>
+                  )}
+                  {kpis.cli.attention > 0 && (
+                    <>
+                      {kpis.cli.attention} runtime token expiring.{" "}
+                    </>
+                  )}
+                  Everything else verified within the hour.
+                </Voice>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col items-end gap-3">
+            <div className="flex items-center gap-2">
+              {showIdentityChip && activeIdentity && (
+                <IdentityChip
+                  id={activeIdentity.id}
+                  label={activeIdentity.label}
+                  role={activeIdentity.role}
+                  hue={activeIdentity.hue}
+                  compact
+                  onClick={() => {/* handled via spine */}}
+                />
+              )}
+              <TweaksPanel
+                tweaks={tweaks}
+                onTweak={setTweak}
+                open={tweaksPanelOpen}
+                onOpenChange={setTweaksPanelOpen}
+              />
+            </div>
+            <div className="flex gap-3.5 items-baseline">
+              <KpiCell
+                label="integrations"
+                value={`${kpis.integrations.healthy}/${kpis.integrations.total}`}
+                caption={`${kpis.integrations.needsHand} need hand`}
+                captionTone={kpis.integrations.needsHand > 0 ? "amber" : "dim"}
+              />
+              <KpiSep />
+              <KpiCell
+                label="system"
+                value={`${kpis.system.configured}/${kpis.system.total}`}
+                caption={`${kpis.system.missing} unset`}
+              />
+              <KpiSep />
+              <KpiCell
+                label="cli"
+                value={`${kpis.cli.ok}/${kpis.cli.total}`}
+                caption={kpis.cli.attention > 0 ? `${kpis.cli.attention} expiring` : "all ok"}
+                captionTone={kpis.cli.attention > 0 ? "amber" : "dim"}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Book body: spine + page */}
+        <div
+          className="grid flex-1 min-h-0"
+          style={{ gridTemplateColumns: "296px 1fr" }}
+        >
+          <Spine
+            entries={entries}
+            activeKey={activeKey}
+            onSelect={handleSelectKey}
+            sortMode={sortMode}
+            onSortChange={handleSortChange}
+            search={search}
+            onSearchChange={setSearch}
+            identities={inventory.identities}
+            activeIdentityId={identityId}
+            onIdentityChange={handleIdentityChange}
+            providers={inventory.providers}
+          />
+
+          <div className="overflow-y-auto min-w-0">
+            {resolved.kind === "user" && (
+              <PageUser
+                credential={resolved.credential}
+                provider={inventory.providers[resolved.credential.provider]!}
+                identities={inventory.identities}
+                showVerifyCmd={tweaks.showVerifyCmd}
+                voiceParagraph={tweaks.voiceParagraph}
+              />
+            )}
+            {resolved.kind === "system" && (
+              <PageSystem
+                credential={resolved.credential}
+                showVerifyCmd={tweaks.showVerifyCmd}
+                voiceParagraph={tweaks.voiceParagraph}
+              />
+            )}
+            {resolved.kind === "cli" && (
+              <PageCli
+                credential={resolved.credential}
+                showVerifyCmd={tweaks.showVerifyCmd}
+              />
+            )}
+            {resolved.kind === null && <PassportEmptyState />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Re-export everything needed by the page route and tests.
+export { MOCK_INVENTORY } from "./mock-data.ts";
+export type { InventoryResponse, SecretsTweaks } from "./types.ts";
+
+// Default export for the page route integration.
+export default DirectionPassport;
