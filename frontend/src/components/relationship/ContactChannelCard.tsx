@@ -420,6 +420,12 @@ function AddChannelInfoForm({
       toast.error("Value cannot be empty.");
       return;
     }
+    // When there are multiple parent candidates (e.g. multiple Telegram chat
+    // IDs) the user must select one before submitting a child entry.
+    if (parentType !== null && parentCandidates.length > 1 && parentId === null) {
+      toast.error(`Select an account to attach this ${contactInfoTypeLabel(type)} entry to.`);
+      return;
+    }
     try {
       await createInfo.mutateAsync({
         contactId,
@@ -590,9 +596,10 @@ function ContactRow({
   const securedChannels = contact.contact_info.filter((ci) => ci.secured);
   const hasChannels = contact.contact_info.length > 0;
 
-  // Preferred channel chip text
+  // Preferred channel chip text — use contactInfoTypeLabel for consistent
+  // labelling between the collapsed badge and the expanded channel list.
   const preferredLabel = contact.preferred_channel
-    ? contact.preferred_channel.charAt(0).toUpperCase() + contact.preferred_channel.slice(1)
+    ? contactInfoTypeLabel(contact.preferred_channel)
     : null;
 
   return (
