@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// StateDot tests — bu-ec2wb
+// StateDot tests — bu-ec2wb, extended bu-rixan
 //
 // Coverage:
 //   - Each entity state renders the correct color token
+//   - Each Dispatch §4e system state renders the correct color token
 //   - Default size is 6px
 //   - Custom size prop is respected
 //   - ARIA: role="img" + aria-label per state
@@ -118,5 +119,45 @@ describe("StateDot: circular shape", () => {
   it("is a rounded element (rounded-full / 50% border-radius class)", () => {
     const html = renderToStaticMarkup(<StateDot state="healthy" />)
     expect(html).toContain("rounded-full")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dispatch §4e system states (bu-rixan extension)
+// ---------------------------------------------------------------------------
+
+describe("StateDot: Dispatch system states", () => {
+  const DISPATCH_CASES = [
+    { state: "ok" as const, token: "var(--green)" },
+    { state: "degraded" as const, token: "var(--amber)" },
+    { state: "error" as const, token: "var(--red)" },
+    { state: "waiting" as const, token: "var(--dim" },
+  ] as const
+
+  for (const { state, token } of DISPATCH_CASES) {
+    it(`state="${state}" uses color token containing ${token}`, () => {
+      const html = renderToStaticMarkup(<StateDot state={state} />)
+      expect(html).toContain(token)
+    })
+  }
+
+  it('state="ok" has aria-label="OK"', () => {
+    const html = renderToStaticMarkup(<StateDot state="ok" />)
+    expect(html).toContain('aria-label="OK"')
+  })
+
+  it('state="degraded" has aria-label="Degraded"', () => {
+    const html = renderToStaticMarkup(<StateDot state="degraded" />)
+    expect(html).toContain('aria-label="Degraded"')
+  })
+
+  it('state="error" has aria-label="Error"', () => {
+    const html = renderToStaticMarkup(<StateDot state="error" />)
+    expect(html).toContain('aria-label="Error"')
+  })
+
+  it('state="waiting" has aria-label="Waiting"', () => {
+    const html = renderToStaticMarkup(<StateDot state="waiting" />)
+    expect(html).toContain('aria-label="Waiting"')
   })
 })
