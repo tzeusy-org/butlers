@@ -72,6 +72,12 @@ vi.mock("@/hooks/use-entities", () => ({
 
 vi.mock("@/hooks/use-contacts", () => ({
   useContacts: vi.fn(() => ({ data: { contacts: [] } })),
+  // ContactChannelCard hooks (COMPAT-ONLY reads/writes via contact-keyed endpoints)
+  useRevealContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
+  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
