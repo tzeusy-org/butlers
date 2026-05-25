@@ -196,6 +196,10 @@ def _format_probe_time(recorded_at: datetime | None) -> str | None:
 
     Per spec §Probe-log LRU integration: format to "14:21 today" or
     "yesterday 09:08" before serialisation.
+
+    Uses calendar-day difference (not 24-hour elapsed time) so that a probe
+    recorded at 23:55 the previous calendar day is always "yesterday" even
+    when fewer than 24 hours have passed.
     """
     if recorded_at is None:
         return None
@@ -203,11 +207,11 @@ def _format_probe_time(recorded_at: datetime | None) -> str | None:
     # Ensure tz-aware
     if recorded_at.tzinfo is None:
         recorded_at = recorded_at.replace(tzinfo=UTC)
-    delta = now - recorded_at
     time_str = recorded_at.strftime("%H:%M")
-    if delta.days == 0:
+    days_diff = (now.date() - recorded_at.date()).days
+    if days_diff == 0:
         return f"{time_str} today"
-    if delta.days == 1:
+    if days_diff == 1:
         return f"yesterday {time_str}"
     return recorded_at.strftime("%Y-%m-%d ") + time_str
 
@@ -582,13 +586,12 @@ async def get_inventory(
 
     # --- Build response ---
     all_items: list[Any] = [*cli_secrets, *system_secrets, *user_secrets]
-    needs_hand = _needs_hand_count(all_items)
 
-    # Build severity breakdown across all families
-    severity: dict[str, int] = {}
-    for key, val in _count_severity(all_items).items():
-        if val > 0:
-            severity[key] = val
+    # Single pass: derive both severity breakdown and needs_hand_count from the
+    # same _count_severity call to avoid iterating all_items twice.
+    counts = _count_severity(all_items)
+    needs_hand = sum(v for k, v in counts.items() if k != "ok")
+    severity = {k: v for k, v in counts.items() if v > 0}
 
     data = InventoryData(
         cli=cli_secrets,

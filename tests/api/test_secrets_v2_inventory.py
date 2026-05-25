@@ -246,6 +246,32 @@ def test_format_probe_time_yesterday():
     assert "yesterday" in result
 
 
+def test_format_probe_time_yesterday_midnight_boundary():
+    """A probe at 23:55 the previous calendar day should be 'yesterday', not 'today'.
+
+    This test guards the calendar-day comparison fix: delta.days-based calculation
+    would return 0 (< 24h elapsed) and wrongly say 'today'.
+    """
+    now = datetime.now(tz=UTC)
+    # Construct a datetime that is on the previous calendar day but < 24h ago.
+    # Use noon of the previous calendar day (guaranteed < 24h at any time of day).
+    from datetime import date
+
+    prev_day = date(now.year, now.month, now.day) - timedelta(days=1)
+    # 23:55 previous calendar day = < 25 minutes ago if it is currently 00:00-00:05
+    # or up to 24h05m ago otherwise — always previous calendar day.
+    prev_day_late = datetime(prev_day.year, prev_day.month, prev_day.day, 23, 55, tzinfo=UTC)
+    elapsed = (now - prev_day_late).total_seconds()
+    if elapsed > 0 and elapsed < 86400:
+        # Only assert when the probe really is < 24h ago (proves delta.days == 0 path)
+        result = _format_probe_time(prev_day_late)
+        assert result is not None
+        assert "yesterday" in result, (
+            f"Expected 'yesterday' for probe at {prev_day_late} "
+            f"(now={now}, elapsed={elapsed:.0f}s), got {result!r}"
+        )
+
+
 def test_format_probe_time_older():
     old = datetime.now(tz=UTC) - timedelta(days=5)
     result = _format_probe_time(old)
