@@ -1,11 +1,11 @@
 /**
  * IngestionConnectorsPage — route component for /ingestion/connectors.
  *
- * Thin page wrapper around ConnectorsListPage, which is the extracted
- * first-class component for the connector roster list sub-route.
+ * Thin page wrapper around ConnectorsRoster, the dense hairline-divided
+ * connector register for the first-class /ingestion/connectors sub-route.
  *
  * Uses Dispatch primitives and IngestionSubNav for consistent navigation.
- * No legacy TabsTrigger shell.
+ * No legacy TabsTrigger shell. No card chrome — hairlines and rhythm only.
  *
  * NOTE: useConnectorDetail MUST NOT be mounted from this list view (§6.2).
  * Only summary-level data is shown here (per spec "Connector roster list
@@ -17,19 +17,19 @@
 
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
-import { ConnectorsListPage } from '@/components/ingestion/ConnectorsListPage'
+import { ConnectorsRoster } from '@/components/ingestion/connectors/ConnectorsRoster'
 
 export default function IngestionConnectorsPage() {
   return (
     <DispatchLayout>
       <DispatchHeader
         eyebrow="Ingestion · connectors"
-        headline="Connectors"
-        description="Active ingestion connectors — status, health, and configuration."
+        headline="Where signals come from."
+        description="Every channel the house listens on — status, health, and credential state."
       />
       <IngestionSubNav />
       <DispatchSurface>
-        <ConnectorsListPage />
+        <ConnectorsRoster />
       </DispatchSurface>
     </DispatchLayout>
   )
