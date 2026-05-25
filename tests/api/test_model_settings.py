@@ -634,3 +634,132 @@ async def test_model_attempts_suppressed_row_shape(app):
     assert rows[0]["error_code"] == "RuntimeError"
     assert rows[0]["failure_reason"] == "tool_calls_present:2 captured"
     assert rows[0]["session_id"] == str(session_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/dispatch/attempts — session-scoped failover provenance
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_attempts_422_when_no_filter(app):
+    """GET /api/dispatch/attempts returns 422 when neither session_id nor logical_session_id given."""
+    _, _mock_pool = _app_with_pool(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/dispatch/attempts")
+    assert resp.status_code == 422
+
+
+async def test_dispatch_attempts_empty_on_missing_table(app):
+    """GET /api/dispatch/attempts returns empty list if table absent."""
+    import asyncpg.exceptions
+
+    session_id = uuid.uuid4()
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(
+        side_effect=asyncpg.exceptions.UndefinedTableError("model_dispatch_attempts")
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/dispatch/attempts?session_id={session_id}")
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_dispatch_attempts_by_session_id(app):
+    """GET /api/dispatch/attempts?session_id=... returns attempt rows ordered by attempt_index."""
+    from datetime import UTC, datetime
+
+    session_id = uuid.uuid4()
+    attempt_ts = datetime(2026, 5, 25, 9, 0, 0, tzinfo=UTC)
+
+    rows_data = [
+        {
+            "ts": attempt_ts,
+            "butler": "general",
+            "outcome": "runtime_failure",
+            "attempt_index": 0,
+            "failure_reason": "cli_missing",
+            "error_code": "RuntimeError",
+            "error_message": "binary not found",
+            "tool_call_count": 0,
+            "session_id": session_id,
+            "logical_session_id": "req-abc-001",
+        },
+        {
+            "ts": attempt_ts,
+            "butler": "general",
+            "outcome": "success",
+            "attempt_index": 1,
+            "failure_reason": None,
+            "error_code": None,
+            "error_message": None,
+            "tool_call_count": 3,
+            "session_id": session_id,
+            "logical_session_id": "req-abc-001",
+        },
+    ]
+
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in rows_data])
+    mock_pool.fetchval = AsyncMock(return_value=2)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/dispatch/attempts?session_id={session_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["total"] == 2
+    data = body["data"]
+    assert len(data) == 2
+    assert data[0]["outcome"] == "runtime_failure"
+    assert data[0]["attempt_index"] == 0
+    assert data[1]["outcome"] == "success"
+    assert data[1]["attempt_index"] == 1
+    assert data[0]["logical_session_id"] == "req-abc-001"
+
+
+async def test_dispatch_attempts_by_logical_session_id(app):
+    """GET /api/dispatch/attempts?logical_session_id=... returns rows across all models."""
+    from datetime import UTC, datetime
+
+    logical_id = "req-xyz-999"
+    attempt_ts = datetime(2026, 5, 25, 10, 0, 0, tzinfo=UTC)
+
+    rows_data = [
+        {
+            "ts": attempt_ts,
+            "butler": "general",
+            "outcome": "quota_skip",
+            "attempt_index": 0,
+            "failure_reason": "Token quota exhausted: 24h",
+            "error_code": None,
+            "error_message": None,
+            "tool_call_count": 0,
+            "session_id": None,
+            "logical_session_id": logical_id,
+        },
+    ]
+
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in rows_data])
+    mock_pool.fetchval = AsyncMock(return_value=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/dispatch/attempts?logical_session_id={logical_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    data = body["data"]
+    assert len(data) == 1
+    assert data[0]["outcome"] == "quota_skip"
+    assert data[0]["session_id"] is None
+    assert data[0]["logical_session_id"] == logical_id
+    assert "quota" in (data[0]["failure_reason"] or "").lower()
