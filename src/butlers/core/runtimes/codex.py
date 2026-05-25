@@ -97,6 +97,23 @@ class MCPToolDiscoveryError(RuntimeError):
     failure-path log shape stable; when the spawner recovers via runtime
     capture it should swap in this snapshot so PID/stderr/exit_code align with
     the result source.
+
+    Failover classification metadata
+    ---------------------------------
+    ``is_pre_tool_call``:
+        Always ``True`` for MCP discovery failures — the failure occurred during
+        MCP tool discovery, before any butler MCP tool could be executed. The
+        failover classifier can use this field to confirm pre-invocation status
+        without re-parsing the exception message.
+
+    ``internal_retry_count``:
+        Number of Codex-internal MCP-discovery retry attempts that were
+        exhausted before this error was raised. The classifier and spawner
+        MUST NOT count these retries as cross-model failover events — they are
+        adapter-internal and handled before the spawner's failover loop is
+        reached. This field lets the spawner accurately attribute provenance:
+        ``attempt_count - internal_retry_count`` is the effective first-attempt
+        count for cross-model failover bookkeeping.
     """
 
     def __init__(
@@ -107,6 +124,7 @@ class MCPToolDiscoveryError(RuntimeError):
         tool_calls: list[dict[str, Any]],
         usage: dict[str, Any] | None,
         last_attempt_process_info: dict[str, Any] | None = None,
+        internal_retry_count: int = 0,
     ) -> None:
         super().__init__(message)
         self.result_text = result_text
@@ -115,6 +133,9 @@ class MCPToolDiscoveryError(RuntimeError):
         self.last_attempt_process_info = (
             dict(last_attempt_process_info) if isinstance(last_attempt_process_info, dict) else None
         )
+        # Failover classification metadata — see class docstring.
+        self.is_pre_tool_call: bool = True
+        self.internal_retry_count: int = max(0, int(internal_retry_count))
 
 
 def _infer_mcp_transport_from_url(url: str) -> str | None:
@@ -1717,6 +1738,11 @@ class CodexAdapter(RuntimeAdapter):
                         tool_calls=tool_calls,
                         usage=usage,
                         last_attempt_process_info=last_attempt_info,
+                        # ``attempt_count`` includes the initial attempt, so the
+                        # number of *internal* retry attempts is attempt_count - 1.
+                        # The spawner subtracts this from its own attempt bookkeeping
+                        # so adapter-internal retries are never counted as failover.
+                        internal_retry_count=attempt_count - 1,
                     )
             else:
                 if self._last_process_info:
@@ -1795,9 +1821,16 @@ class CodexAdapter(RuntimeAdapter):
                     )
                     self._last_process_info["nonzero_exit_recovered"] = True
                     self._last_process_info["result_source"] = "nonzero_exit_stdout"
+                    # Pre-parse to determine is_pre_tool_call for recovered paths.
+                    _recovered_tool_calls = recovered[1] if recovered else []
+                    self._last_process_info["is_pre_tool_call"] = not bool(_recovered_tool_calls)
                     return recovered
                 error_detail = _select_error_detail(stderr, stdout, returncode)
                 self._last_process_info["error_detail"] = error_detail
+                # On non-zero exit the adapter raises immediately — no tool calls
+                # were captured by the adapter itself, so this is pre-tool-call.
+                # The spawner may later layer in daemon-side tool-call capture.
+                self._last_process_info["is_pre_tool_call"] = True
                 error_detail = _augment_transport_error_detail(error_detail, mcp_servers)
                 log = (
                     logger.warning
@@ -1817,6 +1850,10 @@ class CodexAdapter(RuntimeAdapter):
                 "command": cmd_for_log,
                 "stderr": "(timeout — process killed)",
                 "runtime_type": "codex",
+                # Timeout fired before the adapter could confirm any tool calls —
+                # the failover classifier treats this as pre-tool-call eligible.
+                # The spawner will layer in daemon-side tool-call capture.
+                "is_pre_tool_call": True,
             }
             if proc:
                 proc.kill()

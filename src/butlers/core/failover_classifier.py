@@ -87,6 +87,9 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "service unavailable",
     "backend unavailable",
     "no such model",
+    # OpenCode-specific structured errors (exit 0 with stderr)
+    "providermodelnotfounderror",
+    "model not found:",
     # Connection-level failures before work starts
     "connection refused",
     "connection reset",
