@@ -462,3 +462,140 @@ def test_get_audit_log_entry_table_missing_returns_503():
     client = TestClient(app)
     resp = client.get("/api/audit-log/1")
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/audit-log?key= — credential-key filter (bu-2rdyc)
+# ---------------------------------------------------------------------------
+# The ?key= param normalises the input via normalize_key_param() before
+# filtering on the `target` column using ix_audit_log_target_ts.
+# ---------------------------------------------------------------------------
+
+
+def test_filter_by_canonical_key_returns_matching_rows():
+    """?key=u:google returns rows whose target equals the normalised key."""
+    row = _sample_row(target="u:google")
+    app, mock_pool, _ = _make_audit_app([row])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?key=u:google&limit=50")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["target"] == "u:google"
+
+
+def test_filter_by_canonical_key_sql_uses_target_condition():
+    """SQL generated for ?key= contains a target= filter condition."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?key=u:google")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " in sql
+
+
+def test_filter_by_canonical_key_normalised_value_passed_to_sql():
+    """The normalised key value is forwarded as a SQL parameter."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?key=u:google")
+    fetch_call = mock_pool.fetch.call_args[0]
+    args = fetch_call[1:]
+    # normalised key must appear somewhere in the positional args
+    assert "u:google" in args
+
+
+def test_filter_by_long_scope_form_normalised():
+    """?key=user:google is equivalent to ?key=u:google after normalisation."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?key=user:google")
+    fetch_call = mock_pool.fetch.call_args[0]
+    args = fetch_call[1:]
+    assert "u:google" in args
+
+
+def test_unknown_key_returns_empty_page():
+    """?key=u:does-not-exist returns empty PaginatedResponse with total=0."""
+    app, mock_pool, _ = _make_audit_app([], total=0)
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?key=u:does-not-exist")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+    assert body["meta"]["has_more"] is False
+
+
+def test_key_param_combined_with_since():
+    """?key= and ?since= are both applied (AND semantics)."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?key=u:google&since=2026-01-01T00:00:00")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " in sql
+    assert "ts >= " in sql
+
+
+def test_key_param_combined_with_actor():
+    """?key= and ?actor= are both applied (AND semantics)."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?key=u:google&actor=owner")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " in sql
+    assert "actor = " in sql
+
+
+def test_key_param_combined_with_action():
+    """?key= and ?action= are both applied (AND semantics)."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?key=u:google&action=verified")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " in sql
+    assert "action = " in sql
+
+
+def test_key_param_combined_with_all_filters():
+    """?key=, ?since=, ?actor=, and ?action= all applied together."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get(
+        "/api/audit-log?key=s:MY_SECRET&since=2026-01-01T00:00:00&actor=owner&action=updated"
+    )
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " in sql
+    assert "ts >= " in sql
+    assert "actor = " in sql
+    assert "action = " in sql
+
+
+def test_key_param_malformed_returns_422():
+    """?key= without a colon separator returns HTTP 422."""
+    app, _, _ = _make_audit_app([])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?key=invalid-no-colon")
+    assert resp.status_code == 422
+
+
+def test_key_param_unknown_scope_returns_422():
+    """?key= with an unrecognised scope prefix returns HTTP 422."""
+    app, _, _ = _make_audit_app([])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?key=admin:foo")
+    assert resp.status_code == 422
+
+
+def test_no_key_param_no_target_condition_in_sql():
+    """Without ?key=, the SQL must NOT contain a target= filter."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " not in sql
