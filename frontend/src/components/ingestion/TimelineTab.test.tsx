@@ -52,6 +52,8 @@ vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEventLineage: vi.fn(),
   useIngestionEventRollup: vi.fn(),
   useIngestionEventSenderContact: vi.fn(),
+  useIngestionEventReplays: vi.fn(),
+  useIngestionEventPayload: vi.fn(),
 }));
 
 // Mock the connector summaries hook (§2.9 — ConnectorAttentionStrip)
@@ -67,6 +69,8 @@ import {
   useIngestionEventRollup,
   useIngestionEventSenderContact,
   useIngestionEventSessions,
+  useIngestionEventReplays,
+  useIngestionEventPayload,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 
@@ -137,6 +141,25 @@ function setupDefaultMocks() {
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
+
+  // Default: no replays, no payload (drawer stubs)
+  vi.mocked(useIngestionEventReplays).mockReturnValue({
+    data: { data: [] },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useIngestionEventReplays>);
+
+  vi.mocked(useIngestionEventPayload).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useIngestionEventPayload>);
+
+  // Default: no sessions (drawer stubs)
+  vi.mocked(useIngestionEventLineage).mockReturnValue({
+    sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>,
+    rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
+  });
 
   // Default: no connector issues (strip hidden)
   vi.mocked(useConnectorSummaries).mockReturnValue({
@@ -238,18 +261,18 @@ describe("TimelineTab — StatusBadge rendering", () => {
     expect(spinner).not.toBeNull();
   });
 
-  it("shows Replay button for ingested events", () => {
+  it("does not show Replay button for ingested events (already processed)", () => {
+    // ingested events are already processed — no replay needed
     render([makeEvent({ status: "ingested" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
-    expect(btn).not.toBeNull();
-    expect(btn!.getAttribute("title")).toBe("Replay");
+    expect(btn).toBeNull();
   });
 
-  it("shows Replay button for replay_complete events", () => {
+  it("does not show Replay button for replay_complete events (already replayed)", () => {
+    // replay_complete events have already been successfully replayed
     render([makeEvent({ status: "replay_complete" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
-    expect(btn).not.toBeNull();
-    expect(btn!.getAttribute("title")).toBe("Replay");
+    expect(btn).toBeNull();
   });
 });
 
@@ -427,10 +450,10 @@ describe("TimelineTab — Status filter", () => {
 
     const filterEl = container.querySelector("[data-testid='status-filter']");
     expect(filterEl).not.toBeNull();
-    // Should have checkbox labels for each status
-    expect(filterEl!.textContent).toContain("Ingested");
-    expect(filterEl!.textContent).toContain("Filtered");
-    expect(filterEl!.textContent).toContain("Error");
+    // Status filter buttons use short Dispatch-language labels
+    expect(filterEl!.textContent).toContain("ok");
+    expect(filterEl!.textContent).toContain("filtered");
+    expect(filterEl!.textContent).toContain("error");
   });
 });
 
@@ -577,7 +600,7 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+          <MemoryRouter initialEntries={[`/?event=${SESSION_ID}`]}>
             <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
           </MemoryRouter>
         </QueryClientProvider>,
@@ -607,18 +630,18 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+          <MemoryRouter initialEntries={[`/?event=${SESSION_ID}`]}>
             <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
     });
 
-    const sessionIndex = container.querySelector("[data-testid='session-index']");
+    const sessionIndex = container.querySelector("[data-testid='drawer-session-index']");
     expect(sessionIndex).not.toBeNull();
   });
 
-  it("session index does not render when only one session exists", () => {
+  it("session index renders even when only one session exists (drawer shows all sessions)", () => {
     const sessions = makeSessions(1);
     vi.mocked(useIngestionEventLineage).mockReturnValue({
       sessions: {
@@ -636,15 +659,16 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+          <MemoryRouter initialEntries={[`/?event=${SESSION_ID}`]}>
             <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
     });
 
-    const sessionIndex = container.querySelector("[data-testid='session-index']");
-    expect(sessionIndex).toBeNull();
+    // Drawer renders session index even for single session (right rail navigation)
+    const sessionIndex = container.querySelector("[data-testid='drawer-session-index']");
+    expect(sessionIndex).not.toBeNull();
   });
 
   it("copy-session-id button is present for each session row", () => {
@@ -665,14 +689,15 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/?expanded=${SESSION_ID}`]}>
+          <MemoryRouter initialEntries={[`/?event=${SESSION_ID}`]}>
             <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
     });
 
-    const copyBtn = container.querySelector("[data-testid='copy-session-id']");
+    // copy-button testid is used in the EventDrawer session blocks
+    const copyBtn = container.querySelector("[data-testid='copy-button']");
     expect(copyBtn).not.toBeNull();
   });
 });
@@ -714,7 +739,7 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
     vi.clearAllMocks();
   });
 
-  it("shows resolved contact name when contact is resolved", () => {
+  it("shows resolved contact name in the ledger row when contact is resolved", () => {
     vi.mocked(useIngestionEventSenderContact).mockReturnValue({
       data: { data: { resolved: true, name: "Alice Smith", raw: "alice@example.com" } },
       isLoading: false,
@@ -728,20 +753,18 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/?expanded=${EVENT_ID}`]}>
+          <MemoryRouter initialEntries={[`/?event=${EVENT_ID}`]}>
             <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
     });
 
+    // Resolved name appears in the ledger row sender column
     expect(container.textContent).toContain("Alice Smith");
-    // Unresolved indicator should NOT appear
-    const unresolvedEl = container.querySelector("[data-testid='sender-unresolved']");
-    expect(unresolvedEl).toBeNull();
   });
 
-  it("shows unresolved indicator when contact is not found", () => {
+  it("shows raw sender identity in ledger row when contact is not resolved", () => {
     vi.mocked(useIngestionEventSenderContact).mockReturnValue({
       data: { data: { resolved: false, name: null, raw: "unknown@example.com" } },
       isLoading: false,
@@ -755,17 +778,15 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/?expanded=${EVENT_ID}`]}>
+          <MemoryRouter>
             <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
     });
 
-    const unresolvedEl = container.querySelector("[data-testid='sender-unresolved']");
-    expect(unresolvedEl).not.toBeNull();
-    expect(unresolvedEl!.textContent).toContain("unknown@example.com");
-    expect(unresolvedEl!.textContent).toContain("unresolved");
+    // Raw sender identity appears in the ledger row (resolver returned resolved=false)
+    expect(container.textContent).toContain("unknown@example.com");
   });
 });
 

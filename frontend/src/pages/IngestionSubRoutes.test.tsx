@@ -252,7 +252,8 @@ describe('IngestionTimelinePage', () => {
         </MemoryRouter>,
       )
     })
-    expect(container.querySelector('h1')?.textContent).toBe('Ingestion')
+    // Headline updated to Dispatch-language range-aware copy
+    expect(container.querySelector('h1')?.textContent).toBe('Today, in order of arrival.')
     expect(container.querySelector('[data-testid="timeline-tab-stub"]')).not.toBeNull()
   })
 })

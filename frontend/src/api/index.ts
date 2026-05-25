@@ -511,6 +511,7 @@ export {
   replayIngestionEvent,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
+  getIngestionEventPayload,
 } from "./client.ts";
 
 export type {
@@ -521,6 +522,7 @@ export type {
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
   IngestionEventSenderContact,
+  IngestionEventPayload,
   IngestionEventsParams,
   ButlerRollupEntry,
 } from "./types.ts";
