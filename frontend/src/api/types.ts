@@ -2306,6 +2306,22 @@ export interface IngestionEventSenderContact {
   raw: string | null;
 }
 
+/**
+ * Raw payload response for an ingestion event.
+ * GET /api/ingestion/events/{id}/payload — gated by audit log.
+ * May be 403 when requester lacks payload-access grant.
+ */
+export interface IngestionEventPayload {
+  /** Pretty-printed JSON or raw text of the original inbound payload. */
+  content: string;
+  /** Byte size of the full payload (may exceed the truncated content). */
+  bytes: number;
+  /** Whether the content was truncated due to size limits. */
+  truncated: boolean;
+  /** Channel/connector that produced this payload. */
+  channel: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Education
 // ---------------------------------------------------------------------------

@@ -145,6 +145,7 @@ import type {
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
   IngestionEventSenderContact,
+  IngestionEventPayload,
   IngestionEventsParams,
   IngestionRule,
   IngestionRuleCreate,
@@ -3575,6 +3576,22 @@ export async function getIngestionEventSenderContact(
 ): Promise<ApiResponse<IngestionEventSenderContact>> {
   return apiFetch<ApiResponse<IngestionEventSenderContact>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sender-contact`,
+  );
+}
+
+/**
+ * Get the raw inbound payload for an ingestion event.
+ * GET /api/ingestion/events/{id}/payload
+ *
+ * Gated by audit log: the backend records an audit entry on every access.
+ * Returns 403 when the caller lacks payload-access grant.
+ * Callers MUST handle ApiError with status 403 and render a gated state.
+ */
+export async function getIngestionEventPayload(
+  requestId: string,
+): Promise<ApiResponse<IngestionEventPayload>> {
+  return apiFetch<ApiResponse<IngestionEventPayload>>(
+    `/ingestion/events/${encodeURIComponent(requestId)}/payload`,
   );
 }
 
