@@ -325,6 +325,15 @@ class _StateEntry:
     force_consent: bool = False
     """When True, prompt=consent was added to the authorization URL."""
 
+    page_of_origin: str | None = None
+    """Optional page that initiated the OAuth flow.
+
+    Known values: ``"secrets"`` and ``"ingestion"``.  Missing/empty is treated
+    as ``"secrets"`` at callback time — the routing default.  This field is
+    intentionally permissive on inbound: unknown values are stored as-is and the
+    callback routing step (BE-12 / bu-i21fc) is responsible for the fallback logic.
+    """
+
 
 # Maps state token → _StateEntry
 # NOTE: This store is process-local. Do not run multiple worker processes
@@ -342,12 +351,14 @@ def _store_state(
     *,
     account_hint: str | None = None,
     force_consent: bool = False,
+    page_of_origin: str | None = None,
 ) -> None:
     """Store a state token with an expiry timestamp and optional account context."""
     _state_store[state] = _StateEntry(
         expiry=time.monotonic() + _STATE_TTL_SECONDS,
         account_hint=account_hint,
         force_consent=force_consent,
+        page_of_origin=page_of_origin,
     )
     _evict_expired_states()
 
@@ -526,6 +537,14 @@ async def oauth_google_start(
         "default scope composition (base+gmail+calendar+contacts+drive) for "
         "backward compatibility with callers that do not use the selector.",
     ),
+    page_of_origin: str | None = Query(
+        default=None,
+        description="Optional page that initiated the OAuth flow. "
+        "Known values: 'secrets' and 'ingestion'. "
+        "When present, the value is carried in the CSRF state token so the callback "
+        "can route the user back to the originating page. "
+        "Missing or empty is treated as the 'secrets' default at callback time.",
+    ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Begin the Google OAuth authorization flow.
@@ -623,7 +642,13 @@ async def oauth_google_start(
     redirect_uri = _get_redirect_uri()
 
     state = _generate_state()
-    _store_state(state, account_hint=account_hint, force_consent=force_consent)
+    page_of_origin = (page_of_origin or "").strip() or None
+    _store_state(
+        state,
+        account_hint=account_hint,
+        force_consent=force_consent,
+        page_of_origin=page_of_origin,
+    )
 
     params: dict[str, str] = {
         "client_id": client_id,
@@ -646,11 +671,13 @@ async def oauth_google_start(
     authorization_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
     logger.info(
-        "Google OAuth flow started (state=%s..., account_hint=%s, force_consent=%s, scope_set=%s)",
+        "Google OAuth flow started (state=%s..., account_hint=%s, force_consent=%s, "
+        "scope_set=%s, page_of_origin=%s)",
         state[:8],
         account_hint,
         force_consent,
         requested_sets,
+        page_of_origin,
     )
 
     if redirect:
