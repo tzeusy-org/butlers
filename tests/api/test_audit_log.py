@@ -599,3 +599,25 @@ def test_no_key_param_no_target_condition_in_sql():
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
     assert "target = " not in sql
+
+
+def test_empty_key_param_treated_as_no_filter():
+    """?key= (empty string) is treated as if the parameter was not provided."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?key=")
+    assert resp.status_code == 200
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " not in sql
+
+
+def test_whitespace_key_param_treated_as_no_filter():
+    """?key=   (whitespace-only) is treated as if the parameter was not provided."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?key=   ")
+    assert resp.status_code == 200
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "target = " not in sql

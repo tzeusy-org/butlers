@@ -241,9 +241,11 @@ async def list_audit_log(
     """
     pool = db.credential_shared_pool()
 
-    # Normalise the ?key= param before building the WHERE clause so that
-    # both short-prefix ('u:google') and long-scope ('user:google') inputs
-    # produce the same canonical filter value.
+    # Treat empty / whitespace-only ?key= as "no filter" so that blank inputs
+    # behave consistently with omitting the parameter entirely.  Then normalise
+    # the non-empty value so that both short-prefix ('u:google') and long-scope
+    # ('user:google') inputs produce the same canonical filter value.
+    key = (key or "").strip() or None
     normalised_key: str | None = None
     if key is not None:
         try:
