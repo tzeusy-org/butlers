@@ -5333,3 +5333,30 @@ export interface EntityFactsParams {
   offset?: number;
   limit?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — breaks catalogue (GET /api/secrets/breaks-catalogue)
+// bu-qo3sf
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry from the provider_feature_catalogue table.
+ *
+ * Returned by GET /api/secrets/breaks-catalogue?provider=<p>
+ */
+export interface BreakEntry {
+  /** Butler slug that depends on this credential. */
+  butler: string;
+  /** Human-readable feature name (e.g. "calendar sync"). */
+  feature: string;
+  /** Severity of breakage if the credential is sick. */
+  severity: "high" | "medium" | "low";
+  /** OAuth scopes required by this feature (empty for non-OAuth credentials). */
+  required_scopes: string[];
+}
+
+/** Query parameters for the breaks-catalogue endpoint. */
+export interface BreaksCatalogueParams {
+  /** Provider slug to filter by. When omitted, full catalogue is returned. */
+  provider?: string;
+}
