@@ -1389,8 +1389,8 @@ async def list_connector_routing_rules(
                 name=r["name"],
                 description=r["description"],
                 created_by=r["created_by"],
-                created_at=str(r["created_at"]),
-                updated_at=str(r["updated_at"]),
+                created_at=r["created_at"].isoformat(),
+                updated_at=r["updated_at"].isoformat(),
             )
         )
 

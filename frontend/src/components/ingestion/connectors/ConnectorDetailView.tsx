@@ -469,7 +469,7 @@ function RecentEventsList({ events, connectorKind }: RecentEventsListProps) {
           view all
         </Link>
       </div>
-      {!events || events.events.length === 0 ? (
+      {!events || !events.events || events.events.length === 0 ? (
         <p
           className="font-mono text-[11px] text-muted-foreground/50 italic"
           data-testid="recent-events-empty"
@@ -481,9 +481,9 @@ function RecentEventsList({ events, connectorKind }: RecentEventsListProps) {
           {events.events.map((evt) => (
             <div
               key={evt.id}
-              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0"
+              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 min-w-0"
             >
-              <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[9ch] truncate">
+              <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[12ch] truncate">
                 {evt.received_at ? (
                   <Time value={evt.received_at} mode="relative" className="inline" />
                 ) : (
@@ -518,7 +518,7 @@ function IncidentList({ incidents }: IncidentListProps) {
       <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2.5">
         incidents
       </div>
-      {!incidents || incidents.incidents.length === 0 ? (
+      {!incidents || !incidents.incidents || incidents.incidents.length === 0 ? (
         <p
           className="font-mono text-[11px] text-muted-foreground/50 italic"
           data-testid="incident-list-empty"
@@ -530,9 +530,9 @@ function IncidentList({ incidents }: IncidentListProps) {
           {incidents.incidents.map((inc) => (
             <div
               key={inc.id}
-              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0"
+              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 min-w-0"
             >
-              <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[9ch] truncate">
+              <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[12ch] truncate">
                 {inc.received_at ? (
                   <Time value={inc.received_at} mode="relative" className="inline" />
                 ) : (
@@ -567,7 +567,7 @@ function RoutingRulesList({ rules }: RoutingRulesListProps) {
       <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2.5">
         routing rules
       </div>
-      {!rules || rules.rules.length === 0 ? (
+      {!rules || !rules.rules || rules.rules.length === 0 ? (
         <p
           className="font-mono text-[11px] text-muted-foreground/50 italic"
           data-testid="routing-rules-empty"

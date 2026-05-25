@@ -239,6 +239,60 @@ async function installCommonMocks(page: Page) {
     });
   });
 
+  // 6b. Connector-scoped sub-sections: events, incidents, routing-rules [bu-5ywn2]
+  //     These must be registered before the generic connectors catch-all so
+  //     they win under LIFO matching. The catch-all (**/api/**) would return
+  //     { data: [] } which does not match ConnectorEventsResponse shape and
+  //     causes a TypeError when components read .events/.incidents/.rules.
+  await page.route(
+    "**/api/ingestion/connectors/*/routing-rules*",
+    (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          rules: [],
+          connector_type: "gmail",
+          endpoint_identity: "alice@example.com",
+          total_returned: 0,
+          filter_note: null,
+        }),
+      });
+    },
+  );
+
+  await page.route(
+    "**/api/ingestion/connectors/*/incidents*",
+    (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          incidents: [],
+          connector_type: "gmail",
+          endpoint_identity: "alice@example.com",
+          total_returned: 0,
+        }),
+      });
+    },
+  );
+
+  await page.route(
+    "**/api/ingestion/connectors/*/events*",
+    (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          events: [],
+          connector_type: "gmail",
+          endpoint_identity: "alice@example.com",
+          total_returned: 0,
+        }),
+      });
+    },
+  );
+
   // 7. Pipeline stats
   await page.route("**/api/ingestion/pipeline*", (route) => {
     route.fulfill({
