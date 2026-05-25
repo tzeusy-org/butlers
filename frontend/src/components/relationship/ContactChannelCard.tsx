@@ -24,7 +24,7 @@
  * See: docs/reports/contact-detail-parity-inventory-2026-05-25.md
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
@@ -123,9 +123,24 @@ function SecuredChannelEntry({
 }) {
   const [revealed, setRevealed] = useState<string | null>(null);
   const [isRevealing, setIsRevealing] = useState(false);
+  const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // COMPAT-ONLY: revealContactSecret used for secured=true contact_info entries.
   // After bu-pl8fy migrates these to entity_info, switch to revealEntitySecret.
   const revealMutation = useRevealContactSecret();
+
+  // Auto-hide the revealed secret 30s after it becomes visible.
+  // useEffect ensures the timer is reset whenever `revealed` changes and is
+  // cleaned up on unmount (no stale-closure leak, no overlapping timers).
+  useEffect(() => {
+    if (revealed === null) return;
+    const id = setTimeout(() => setRevealed(null), REVEAL_AUTO_HIDE_MS);
+    autoHideTimerRef.current = id;
+    return () => {
+      clearTimeout(id);
+      autoHideTimerRef.current = null;
+    };
+  }, [revealed]);
 
   function handleReveal() {
     if (isRevealing || revealed !== null) return;
@@ -137,8 +152,7 @@ function SecuredChannelEntry({
           // IMPORTANT: never log the secret value
           setRevealed(data.value ?? "");
           setIsRevealing(false);
-          // Auto-hide after timeout
-          setTimeout(() => setRevealed(null), REVEAL_AUTO_HIDE_MS);
+          // Auto-hide is managed by the useEffect above.
         },
         onError: () => {
           setIsRevealing(false);
@@ -148,6 +162,12 @@ function SecuredChannelEntry({
   }
 
   function handleHide() {
+    // Clearing the timer here is redundant (useEffect cleanup handles it on
+    // the next render), but makes the intent explicit.
+    if (autoHideTimerRef.current !== null) {
+      clearTimeout(autoHideTimerRef.current);
+      autoHideTimerRef.current = null;
+    }
     setRevealed(null);
   }
 
