@@ -36,6 +36,12 @@ GET /api/secrets/audit/<scope>/<key>?limit=50
     Returns ApiResponse<AuditEvent[]> with pre-formatted timestamps and
     a meta.deep_link pointing to /audit-log?key=<canonical-key>.
 
+GET /api/secrets/breaks-catalogue?provider=<p>
+    Provider feature catalogue for the WhatBreaks affordance.
+    Returns ApiResponse<BreakEntry[]> filtered to provider, sorted
+    severity DESC.  When ?provider= is omitted, returns the full catalogue
+    in meta.by_provider keyed by provider slug.
+
 Design decisions
 ----------------
 - Butler schema discovery uses db.butler_names (registered pools) rather
@@ -76,6 +82,7 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -1234,3 +1241,149 @@ async def get_audit_history(
 
     meta = ApiMeta(deep_link=f"/audit-log?key={canonical_key}")
     return ApiResponse[list[AuditEvent]](data=events, meta=meta)
+
+
+# ---------------------------------------------------------------------------
+# Breaks-catalogue models
+# ---------------------------------------------------------------------------
+
+
+class BreakEntry(BaseModel):
+    """A single feature entry from public.provider_feature_catalogue.
+
+    Per spec §Breaks-catalogue endpoint:
+    - butler: butler name or '*' for ecosystem-wide
+    - feature: user-facing feature label
+    - severity: one of 'high' / 'medium' / 'low'
+    - required_scopes: JSONB array of OAuth scope strings
+    """
+
+    butler: str
+    feature: str
+    severity: str  # 'high' | 'medium' | 'low'
+    required_scopes: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Breaks-catalogue route
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/breaks-catalogue",
+    response_model=ApiResponse[list[BreakEntry]],
+)
+async def get_breaks_catalogue(
+    provider: str | None = Query(
+        default=None,
+        description=(
+            "Provider slug to filter by (e.g. 'google', 'telegram', 'spotify'). "
+            "When omitted, returns the full catalogue; per-provider grouping is "
+            "available in meta.by_provider."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[BreakEntry]]:
+    """Return feature catalogue rows for the WhatBreaks affordance.
+
+    Reads from ``public.provider_feature_catalogue`` seeded by migration
+    core_107 and refreshed idempotently on every butler boot.
+
+    When ``?provider=`` is supplied:
+    - Returns only rows matching that provider.
+    - Rows are sorted ``severity DESC`` (high → medium → low).
+
+    When ``?provider=`` is omitted:
+    - Returns the full catalogue (all providers) sorted severity DESC.
+    - ``meta.by_provider`` contains a dict mapping each provider slug to its
+      list of BreakEntry items (also sorted severity DESC within each group).
+
+    Returns an empty list (HTTP 200) when the provider has no catalogue rows
+    or the catalogue table does not yet exist.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §Breaks-catalogue endpoint
+    openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
+    §public.provider_feature_catalogue WhatBreaks Source-of-Truth Table
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError:
+        # Shared pool unavailable — return an empty catalogue rather than 503.
+        logger.debug("breaks-catalogue: shared pool unavailable, returning empty response")
+        return ApiResponse[list[BreakEntry]](data=[], meta=ApiMeta())
+
+    # Build the SQL query.  When provider is supplied, add a WHERE clause.
+    if provider is not None:
+        query = """
+            SELECT butler, feature, severity, required_scopes
+            FROM public.provider_feature_catalogue
+            WHERE provider = $1
+            ORDER BY
+                CASE severity
+                    WHEN 'high'   THEN 2
+                    WHEN 'medium' THEN 1
+                    ELSE 0
+                END DESC,
+                butler ASC,
+                feature ASC
+        """
+        params: tuple = (provider,)
+    else:
+        query = """
+            SELECT provider, butler, feature, severity, required_scopes
+            FROM public.provider_feature_catalogue
+            ORDER BY
+                CASE severity
+                    WHEN 'high'   THEN 2
+                    WHEN 'medium' THEN 1
+                    ELSE 0
+                END DESC,
+                provider ASC,
+                butler ASC,
+                feature ASC
+        """
+        params = ()
+
+    try:
+        if params:
+            rows = await pool.fetch(query, *params)
+        else:
+            rows = await pool.fetch(query)
+    except UndefinedTableError:
+        # Migration core_107 not yet run — graceful empty response.
+        logger.debug(
+            "breaks-catalogue: provider_feature_catalogue not found "
+            "(migration core_107 may not have run)"
+        )
+        return ApiResponse[list[BreakEntry]](data=[], meta=ApiMeta())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("breaks-catalogue: query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Catalogue query failed") from exc
+
+    entries: list[BreakEntry] = []
+    by_provider: dict[str, list[dict]] = {}
+
+    for row in rows:
+        scopes = row["required_scopes"]
+        # asyncpg may return JSONB as a list already or as a JSON string.
+        if isinstance(scopes, str):
+            scopes = json.loads(scopes)
+        entry = BreakEntry(
+            butler=row["butler"],
+            feature=row["feature"],
+            severity=row["severity"],
+            required_scopes=scopes or [],
+        )
+        entries.append(entry)
+        if provider is None:
+            by_provider.setdefault(row["provider"], []).append(entry.model_dump())
+
+    if provider is not None:
+        # Single-provider path — no meta.by_provider needed.
+        return ApiResponse[list[BreakEntry]](data=entries, meta=ApiMeta())
+
+    meta = ApiMeta(by_provider=by_provider)
+    return ApiResponse[list[BreakEntry]](data=entries, meta=meta)
