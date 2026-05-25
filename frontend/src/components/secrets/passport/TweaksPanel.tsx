@@ -42,6 +42,7 @@ function writeStringSetting(key: string, value: string): void {
 // ── Hook: useTweaks ──────────────────────────────────────────────────────────
 
 /** Read and persist tweak state via localStorage. */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useTweaks(): [SecretsTweaks, <K extends keyof SecretsTweaks>(key: K, value: SecretsTweaks[K]) => void] {
   const [tweaks, setTweaksState] = React.useState<SecretsTweaks>(() => ({
     revealMode:    readStringSetting(TWEAKS_KEYS.revealMode, TWEAKS_DEFAULTS.revealMode) as RevealMode,
@@ -51,10 +52,11 @@ export function useTweaks(): [SecretsTweaks, <K extends keyof SecretsTweaks>(key
   }));
 
   function setTweak<K extends keyof SecretsTweaks>(key: K, value: SecretsTweaks[K]) {
+    const storageKey = TWEAKS_KEYS[key];
     if (typeof value === "boolean") {
-      writeBooleanSetting(TWEAKS_KEYS[key as "showVerifyCmd" | "voiceParagraph"], value);
+      writeBooleanSetting(storageKey, value);
     } else {
-      writeStringSetting(TWEAKS_KEYS[key as "revealMode" | "defaultSort"], String(value));
+      writeStringSetting(storageKey, String(value));
     }
     setTweaksState((prev) => ({ ...prev, [key]: value }));
   }

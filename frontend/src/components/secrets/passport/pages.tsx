@@ -25,7 +25,6 @@ import {
   Mono,
   Voice,
   ProviderMark,
-  Fingerprint,
   FingerprintRow,
   StampRow,
   BlockHead,
@@ -843,7 +842,7 @@ export function PageCli({
                 background: "var(--bg-elev)",
               }}
             >
-              <Mono size={11}>{`$ ${credential.id} --token $\{${envVar}\}`}</Mono>
+              <Mono size={11}>{`$ ${credential.id} --token \${${envVar}}`}</Mono>
             </div>
           </div>
         </div>

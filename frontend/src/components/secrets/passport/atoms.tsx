@@ -14,6 +14,7 @@ import { STATE_CATALOG, STAMP_GLYPHS, SEVERITY_META } from "./constants.ts";
 // ── Token helpers ──────────────────────────────────────────────────────────
 
 /** Map a state tone to a CSS color token. */
+// eslint-disable-next-line react-refresh/only-export-components
 export function toneColor(tone: string): string {
   switch (tone) {
     case "ok":    return "var(--green, oklch(0.790 0.195 148))";
@@ -25,6 +26,7 @@ export function toneColor(tone: string): string {
 }
 
 /** Color for a credential state. */
+// eslint-disable-next-line react-refresh/only-export-components
 export function stateColor(state: CredentialState): string {
   const meta = STATE_CATALOG[state];
   if (!meta) return "var(--mfg)";
@@ -304,23 +306,18 @@ export function IdentityChip({
   onClick?: () => void;
   className?: string;
 }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-identity-id={id}
-      data-active={active}
-      className={cn(
-        "inline-flex items-center gap-2",
-        compact ? "px-2 py-1" : "px-2.5 py-1",
-        "border rounded-sm bg-transparent transition-colors",
-        active
-          ? "border-[var(--border-strong)] bg-[var(--bg-elev)]"
-          : "border-[var(--border-soft)] hover:border-[var(--border)]",
-        onClick ? "cursor-pointer" : "cursor-default",
-        className,
-      )}
-    >
+  const chipClass = cn(
+    "inline-flex items-center gap-2",
+    compact ? "px-2 py-1" : "px-2.5 py-1",
+    "border rounded-sm bg-transparent transition-colors",
+    active
+      ? "border-[var(--border-strong)] bg-[var(--bg-elev)]"
+      : "border-[var(--border-soft)] hover:border-[var(--border)]",
+    onClick ? "cursor-pointer" : "cursor-default",
+    className,
+  );
+  const chipContent = (
+    <>
       <span
         aria-hidden="true"
         className="w-2 h-2 rounded-full shrink-0"
@@ -340,7 +337,25 @@ export function IdentityChip({
           ▾
         </Mono>
       )}
-    </button>
+    </>
+  );
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        data-identity-id={id}
+        data-active={active}
+        className={chipClass}
+      >
+        {chipContent}
+      </button>
+    );
+  }
+  return (
+    <div data-identity-id={id} data-active={active} className={chipClass}>
+      {chipContent}
+    </div>
   );
 }
 

@@ -14,12 +14,12 @@
 //   - Identity switcher shows only when multiple identities present
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
 
-import { SpineRow, SpineGroup, Spine } from "./Spine.tsx";
+import { SpineRow, Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli } from "./pages.tsx";
 import { TweaksPanel } from "./TweaksPanel.tsx";
 import { DirectionPassport } from "./DirectionPassport.tsx";
@@ -39,7 +39,7 @@ import {
 } from "./mock-data.ts";
 import type { SpineEntry } from "./types.ts";
 import { buildSpineEntries } from "./spine-builder.ts";
-import { TWEAKS_DEFAULTS, TWEAKS_KEYS } from "./constants.ts";
+import { TWEAKS_DEFAULTS } from "./constants.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

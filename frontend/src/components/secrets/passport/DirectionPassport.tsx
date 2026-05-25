@@ -17,7 +17,6 @@
 import * as React from "react";
 import { useSearchParams } from "react-router";
 
-import { cn } from "@/lib/utils";
 import type { InventoryResponse, SpineSortMode } from "./types.ts";
 import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
@@ -111,26 +110,10 @@ export function DirectionPassport({
     [inventory, identityId],
   );
 
-  // Focus key: URL param → pick default if missing/invalid.
-  const [activeKey, setActiveKey] = React.useState<string>(() => {
-    if (focusParam && entries.find((e) => e.key === focusParam)) return focusParam;
-    return pickDefaultKey(entries);
-  });
-
-  // When identity changes, re-resolve active key.
-  React.useEffect(() => {
-    const currentValid = entries.find((e) => e.key === activeKey);
-    if (!currentValid) {
-      setActiveKey(pickDefaultKey(entries));
-    }
-  }, [identityId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Sync URL → activeKey when focus param changes externally.
-  React.useEffect(() => {
-    if (focusParam && entries.find((e) => e.key === focusParam)) {
-      setActiveKey(focusParam);
-    }
-  }, [focusParam]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Focus key: derived from URL param — URL is the single source of truth.
+  const activeKey = (focusParam && entries.some((e) => e.key === focusParam))
+    ? focusParam
+    : pickDefaultKey(entries);
 
   // ── Tweaks ──────────────────────────────────────────────────────────────
   const [tweaks, setTweak] = useTweaks();
@@ -144,7 +127,6 @@ export function DirectionPassport({
 
   // ── URL writers ─────────────────────────────────────────────────────────
   function handleSelectKey(key: string) {
-    setActiveKey(key);
     const params = new URLSearchParams(searchParams);
     params.set("focus", key);
     setSearchParams(params, { replace: true });
@@ -193,7 +175,7 @@ export function DirectionPassport({
       return record ? { kind: "cli", credential: record } : { kind: null };
     }
     return { kind: null };
-  }, [activeKey, identityId, inventory]);
+  }, [parsed, identityId, inventory]);
 
   // ── KPIs ─────────────────────────────────────────────────────────────────
   const userForIdentity = inventory.user.filter((s) => s.identity === identityId);

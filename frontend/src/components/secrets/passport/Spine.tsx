@@ -335,17 +335,12 @@ export function Spine({
     [filtered, cmp],
   );
 
-  // Running counter for global §N numbering.
-  let n = 0;
-  const cumulate = (arr: SpineEntry[]) => {
-    const start = n;
-    n += arr.length;
-    return start;
-  };
-  const n0NeedsHand = cumulate(needsHandGroup);
-  const n0Cli = cumulate(restCli);
-  const n0Sys = cumulate(restSys);
-  const n0Usr = cumulate(restUsr);
+  // Running counter for global §N numbering — computed declaratively to
+  // avoid React Compiler immutability complaints about render-time mutation.
+  const n0NeedsHand = 0;
+  const n0Cli = needsHandGroup.length;
+  const n0Sys = n0Cli + restCli.length;
+  const n0Usr = n0Sys + restSys.length;
 
   const activeIdentity = identities.find((i) => i.id === activeIdentityId);
   const showSwitcher = identities.length > 1;
