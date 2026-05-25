@@ -278,6 +278,27 @@ def test_audit_history_limit_zero_rejected():
 
 
 # ---------------------------------------------------------------------------
+# Error-handling: pool unavailable → 503
+# ---------------------------------------------------------------------------
+
+
+def test_audit_history_pool_unavailable_returns_503():
+    """If credential_shared_pool() raises KeyError, the endpoint returns 503."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.credential_shared_pool = MagicMock(
+        side_effect=KeyError("Shared credential pool is not configured")
+    )
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app)
+
+    resp = client.get("/api/secrets/audit/system/SOME_KEY")
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
 # Scenario 4: deep_link contains canonical key
 # ---------------------------------------------------------------------------
 
