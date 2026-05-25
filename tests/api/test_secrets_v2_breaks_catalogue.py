@@ -34,8 +34,6 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
-_SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
-
 
 def _make_catalogue_row(
     *,
@@ -302,9 +300,13 @@ def test_breaks_catalogue_no_shared_pool_returns_empty():
 
 def test_breaks_catalogue_table_not_found_returns_empty():
     """When the table does not exist, returns empty list (no 503)."""
+    from asyncpg.exceptions import UndefinedTableError
+
     shared_pool = AsyncMock()
     shared_pool.fetch = AsyncMock(
-        side_effect=Exception("relation 'public.provider_feature_catalogue' does not exist")
+        side_effect=UndefinedTableError(
+            "relation 'public.provider_feature_catalogue' does not exist"
+        )
     )
 
     mock_db = MagicMock(spec=DatabaseManager)

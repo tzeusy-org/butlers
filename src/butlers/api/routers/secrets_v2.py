@@ -82,6 +82,7 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -1263,10 +1264,6 @@ class BreakEntry(BaseModel):
     required_scopes: list[str] = Field(default_factory=list)
 
 
-# Severity ordering for DESC sort: high → medium → low.
-_SEVERITY_ORDER: dict[str, int] = {"high": 2, "medium": 1, "low": 0}
-
-
 # ---------------------------------------------------------------------------
 # Breaks-catalogue route
 # ---------------------------------------------------------------------------
@@ -1355,44 +1352,38 @@ async def get_breaks_catalogue(
             rows = await pool.fetch(query, *params)
         else:
             rows = await pool.fetch(query)
+    except UndefinedTableError:
+        # Migration core_107 not yet run — graceful empty response.
+        logger.debug(
+            "breaks-catalogue: provider_feature_catalogue not found "
+            "(migration core_107 may not have run)"
+        )
+        return ApiResponse[list[BreakEntry]](data=[], meta=ApiMeta())
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg:
-            # Migration core_107 not yet run — graceful empty response.
-            logger.debug(
-                "breaks-catalogue: provider_feature_catalogue not found "
-                "(migration core_107 may not have run)"
-            )
-            return ApiResponse[list[BreakEntry]](data=[], meta=ApiMeta())
         logger.warning("breaks-catalogue: query failed: %s", exc)
         raise HTTPException(status_code=503, detail="Catalogue query failed") from exc
 
-    def _row_to_entry(row: Any) -> BreakEntry:
+    entries: list[BreakEntry] = []
+    by_provider: dict[str, list[dict]] = {}
+
+    for row in rows:
         scopes = row["required_scopes"]
         # asyncpg may return JSONB as a list already or as a JSON string.
         if isinstance(scopes, str):
-            import json
-
             scopes = json.loads(scopes)
-        return BreakEntry(
+        entry = BreakEntry(
             butler=row["butler"],
             feature=row["feature"],
             severity=row["severity"],
             required_scopes=scopes or [],
         )
-
-    entries = [_row_to_entry(row) for row in rows]
+        entries.append(entry)
+        if provider is None:
+            by_provider.setdefault(row["provider"], []).append(entry.model_dump())
 
     if provider is not None:
         # Single-provider path — no meta.by_provider needed.
         return ApiResponse[list[BreakEntry]](data=entries, meta=ApiMeta())
-
-    # Full-catalogue path — build meta.by_provider grouping.
-    by_provider: dict[str, list[dict]] = {}
-    for row in rows:
-        p = row["provider"]
-        entry = _row_to_entry(row)
-        by_provider.setdefault(p, []).append(entry.model_dump())
 
     meta = ApiMeta(by_provider=by_provider)
     return ApiResponse[list[BreakEntry]](data=entries, meta=meta)
