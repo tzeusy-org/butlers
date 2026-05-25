@@ -2621,9 +2621,10 @@ async def oauth_provider_callback(
         )
 
     logger.info(
-        "OAuth COMPLETE (provider=%s, account=%s, persisted=true)",
+        "OAuth COMPLETE (provider=%s, account=%s, scope=%s, persisted=true)",
         provider,
         account_email,
+        scope,
     )
 
     # --- Audit: connected ---
@@ -2639,23 +2640,13 @@ async def oauth_provider_callback(
     )
 
     # --- Redirect ---
+    # Always redirect based on page_of_origin (default → /secrets).
+    # _build_success_redirect_url resolves None to "secrets" so the
+    # missing/default case is handled identically to an explicit "secrets" value.
     success_url = _build_success_redirect_url(provider, page_of_origin)
     if dashboard_url:
         return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
-    if page_of_origin is not None:
-        return RedirectResponse(url=success_url, status_code=302)
-
-    return JSONResponse(
-        content=ApiResponse(
-            data={
-                "success": True,
-                "message": "OAuth complete. Credentials persisted.",
-                "provider": provider,
-                "scope": scope,
-                "account_email": account_email,
-            }
-        ).model_dump()
-    )
+    return RedirectResponse(url=success_url, status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -2873,21 +2864,10 @@ async def _google_callback_from_state(
         ),
     )
 
+    # Always redirect based on page_of_origin (default → /secrets).
+    # _build_success_redirect_url resolves None to "secrets" so the
+    # missing/default case is handled identically to an explicit "secrets" value.
     success_url = _build_success_redirect_url("google", page_of_origin)
     if dashboard_url:
         return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
-    if page_of_origin is not None:
-        return RedirectResponse(url=success_url, status_code=302)
-
-    return JSONResponse(
-        content=ApiResponse(
-            data={
-                "success": True,
-                "message": "OAuth bootstrap complete. Credentials persisted to database.",
-                "provider": "google",
-                "scope": scope,
-                "account_email": account_email,
-                "is_new_account": is_new_account,
-            }
-        ).model_dump()
-    )
+    return RedirectResponse(url=success_url, status_code=302)
