@@ -29,6 +29,8 @@ async def approvals_pool(provisioned_postgres_pool):
                 decided_by TEXT,
                 decided_at TIMESTAMPTZ,
                 execution_result JSONB,
+                why TEXT,
+                evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
                 approval_rule_id UUID,
                 CONSTRAINT pending_actions_status_check
                     CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'))
