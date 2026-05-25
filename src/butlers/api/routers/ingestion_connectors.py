@@ -14,6 +14,9 @@ POST /api/ingestion/connectors/{type}/{identity}/disconnect — Approvals-gated;
 POST /api/ingestion/connectors/{type}/{identity}/rotate-token — Approvals-gated; masked (§4.5)
 POST /api/ingestion/connectors/{type}/{identity}/reauth      — BLOCKED HTTP 503 (§4.6)
 GET  /api/ingestion/connectors/available                     — enumerable connector profiles
+GET  /api/ingestion/connectors/{type}/{identity}/events      — recent events [bu-5ywn2]
+GET  /api/ingestion/connectors/{type}/{identity}/incidents   — incident events [bu-5ywn2]
+GET  /api/ingestion/connectors/{type}/{identity}/routing-rules — scoped rules [bu-5ywn2]
 
 The ``summaries`` and ``cross-summary`` endpoints proxy the existing
 ``/api/switchboard/connectors`` and ``/api/switchboard/connectors/summary``
@@ -34,7 +37,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
@@ -948,3 +951,452 @@ async def list_available_connectors() -> ConnectorAvailableResponse:
     """
     profiles = [ConnectorProfile(**p) for p in _CONNECTOR_CATALOG]
     return ConnectorAvailableResponse(data=profiles)
+
+
+# ---------------------------------------------------------------------------
+# Connector-scoped event and rule endpoints [bu-5ywn2]
+# ---------------------------------------------------------------------------
+
+_MAX_CONNECTOR_EVENTS = 100
+_MAX_CONNECTOR_INCIDENTS = 50
+_DEFAULT_CONNECTOR_EVENTS = 20
+_DEFAULT_CONNECTOR_INCIDENTS = 10
+
+#: Status values that classify an ingestion event as an incident
+_INCIDENT_STATUSES: frozenset[str] = frozenset({"failed", "error", "replay_failed"})
+
+
+class ConnectorEventSummary(BaseModel):
+    """A single event row returned from the connector-scoped events endpoint."""
+
+    id: str
+    received_at: str | None
+    source_channel: str | None
+    source_sender_identity: str | None
+    status: str
+    filter_reason: str | None
+    error_detail: str | None
+
+
+class ConnectorEventsResponse(BaseModel):
+    """Response envelope for GET …/{type}/{identity}/events."""
+
+    events: list[ConnectorEventSummary]
+    connector_type: str
+    endpoint_identity: str
+    total_returned: int
+
+
+class ConnectorIncidentSummary(BaseModel):
+    """A single incident row returned from the connector-scoped incidents endpoint."""
+
+    id: str
+    received_at: str | None
+    source_channel: str | None
+    status: str
+    error_detail: str | None
+    filter_reason: str | None
+
+
+class ConnectorIncidentsResponse(BaseModel):
+    """Response envelope for GET …/{type}/{identity}/incidents."""
+
+    incidents: list[ConnectorIncidentSummary]
+    connector_type: str
+    endpoint_identity: str
+    total_returned: int
+
+
+class ConnectorRoutingRule(BaseModel):
+    """A single ingestion rule referencing this connector."""
+
+    id: str
+    scope: str
+    rule_type: str
+    condition: dict[str, Any]
+    action: str
+    priority: int
+    enabled: bool
+    name: str | None
+    description: str | None
+    created_by: str
+    created_at: str
+    updated_at: str
+
+
+class ConnectorRoutingRulesResponse(BaseModel):
+    """Response envelope for GET …/{type}/{identity}/routing-rules."""
+
+    rules: list[ConnectorRoutingRule]
+    connector_type: str
+    endpoint_identity: str
+    total_returned: int
+    filter_note: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/connectors/{type}/{identity}/events
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{connector_type}/{endpoint_identity}/events",
+    response_model=ConnectorEventsResponse,
+)
+async def list_connector_events(
+    connector_type: str,
+    endpoint_identity: str,
+    limit: int = Query(
+        _DEFAULT_CONNECTOR_EVENTS,
+        ge=1,
+        le=_MAX_CONNECTOR_EVENTS,
+        description="Max events to return (default 20, max 100)",
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConnectorEventsResponse:
+    """Return the most recent events for a specific connector.
+
+    Queries the unified ingestion timeline (public.ingestion_events UNION ALL
+    connectors.filtered_events) scoped to this connector's (connector_type,
+    endpoint_identity) pair.  Results are ordered newest first.
+
+    public.ingestion_events is matched via source_channel (connector_type) AND
+    source_endpoint_identity (endpoint_identity).
+    connectors.filtered_events is matched via connector_type AND endpoint_identity.
+
+    Returns HTTP 404 if the connector is not in the registry.
+    Returns HTTP 503 if the connector registry is unavailable.
+    """
+    pool = _pool(db)
+
+    # Verify connector exists in registry before querying events
+    try:
+        existing = await pool.fetchrow(
+            "SELECT connector_type, endpoint_identity FROM connector_registry"
+            " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "connector-events: registry lookup failed for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    # Query unified event timeline scoped to this connector.
+    # Two sources:
+    #   1. public.ingestion_events — matched via source_endpoint_identity
+    #   2. connectors.filtered_events — matched via connector_type + endpoint_identity
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT
+                id::text AS id,
+                received_at,
+                source_channel,
+                source_sender_identity,
+                status,
+                NULL::text AS filter_reason,
+                error_detail
+            FROM public.ingestion_events
+            WHERE source_endpoint_identity = $2
+              AND source_channel = $1
+            UNION ALL
+            SELECT
+                id::text AS id,
+                received_at,
+                source_channel,
+                sender_identity AS source_sender_identity,
+                status,
+                filter_reason,
+                error_detail
+            FROM connectors.filtered_events
+            WHERE connector_type = $1
+              AND endpoint_identity = $2
+            ORDER BY received_at DESC NULLS LAST
+            LIMIT $3
+            """,
+            connector_type,
+            endpoint_identity,
+            limit,
+        )
+    except Exception:
+        logger.warning(
+            "connector-events: failed to query events for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Event query failed")
+
+    events = [
+        ConnectorEventSummary(
+            id=str(r["id"]),
+            received_at=r["received_at"].isoformat() if r["received_at"] else None,
+            source_channel=r["source_channel"],
+            source_sender_identity=r["source_sender_identity"],
+            status=r["status"],
+            filter_reason=r["filter_reason"],
+            error_detail=r["error_detail"],
+        )
+        for r in rows
+    ]
+
+    return ConnectorEventsResponse(
+        events=events,
+        connector_type=connector_type,
+        endpoint_identity=endpoint_identity,
+        total_returned=len(events),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/connectors/{type}/{identity}/incidents
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{connector_type}/{endpoint_identity}/incidents",
+    response_model=ConnectorIncidentsResponse,
+)
+async def list_connector_incidents(
+    connector_type: str,
+    endpoint_identity: str,
+    limit: int = Query(
+        _DEFAULT_CONNECTOR_INCIDENTS,
+        ge=1,
+        le=_MAX_CONNECTOR_INCIDENTS,
+        description="Max incidents to return (default 10, max 50)",
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConnectorIncidentsResponse:
+    """Return recent incident events (failures and errors) for a specific connector.
+
+    An incident is any event with status in ('failed', 'error', 'replay_failed').
+    This represents degraded or failed processing — distinct from the full event
+    stream which includes successfully ingested events.
+
+    Queries both public.ingestion_events and connectors.filtered_events, each
+    filtered by the incident status set and scoped to this connector.  Results
+    are ordered newest first.
+
+    Returns HTTP 404 if the connector is not in the registry.
+    Returns HTTP 503 if the connector registry is unavailable.
+    """
+    pool = _pool(db)
+
+    # Verify connector exists in registry before querying incidents
+    try:
+        existing = await pool.fetchrow(
+            "SELECT connector_type, endpoint_identity FROM connector_registry"
+            " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "connector-incidents: registry lookup failed for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    # Build ordered incident status tuple for parameterised ANY() check
+    incident_statuses = list(_INCIDENT_STATUSES)
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT
+                id::text AS id,
+                received_at,
+                source_channel,
+                status,
+                error_detail,
+                NULL::text AS filter_reason
+            FROM public.ingestion_events
+            WHERE source_endpoint_identity = $2
+              AND source_channel = $1
+              AND status = ANY($3::text[])
+            UNION ALL
+            SELECT
+                id::text AS id,
+                received_at,
+                source_channel,
+                status,
+                error_detail,
+                filter_reason
+            FROM connectors.filtered_events
+            WHERE connector_type = $1
+              AND endpoint_identity = $2
+              AND status = ANY($3::text[])
+            ORDER BY received_at DESC NULLS LAST
+            LIMIT $4
+            """,
+            connector_type,
+            endpoint_identity,
+            incident_statuses,
+            limit,
+        )
+    except Exception:
+        logger.warning(
+            "connector-incidents: failed to query incidents for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Incident query failed")
+
+    incidents = [
+        ConnectorIncidentSummary(
+            id=str(r["id"]),
+            received_at=r["received_at"].isoformat() if r["received_at"] else None,
+            source_channel=r["source_channel"],
+            status=r["status"],
+            error_detail=r["error_detail"],
+            filter_reason=r["filter_reason"],
+        )
+        for r in rows
+    ]
+
+    return ConnectorIncidentsResponse(
+        incidents=incidents,
+        connector_type=connector_type,
+        endpoint_identity=endpoint_identity,
+        total_returned=len(incidents),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/connectors/{type}/{identity}/routing-rules
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{connector_type}/{endpoint_identity}/routing-rules",
+    response_model=ConnectorRoutingRulesResponse,
+)
+async def list_connector_routing_rules(
+    connector_type: str,
+    endpoint_identity: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConnectorRoutingRulesResponse:
+    """Return ingestion rules referencing this connector.
+
+    Queries the ``ingestion_rules`` table for rules whose ``scope`` matches
+    the structured connector scope: ``'connector:<connector_type>:<endpoint_identity>'``.
+
+    This is a precise structured match — no text search is needed because the
+    scope column encodes connector identity explicitly in the format defined
+    by design.md D2.
+
+    Results are ordered by priority ASC, created_at ASC, id ASC (same as
+    the global rule list endpoint).
+
+    Returns HTTP 404 if the connector is not in the registry.
+    Returns HTTP 503 if the connector registry or rules table is unavailable.
+    """
+    pool = _pool(db)
+
+    # Verify connector exists in registry
+    try:
+        existing = await pool.fetchrow(
+            "SELECT connector_type, endpoint_identity FROM connector_registry"
+            " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "connector-routing-rules: registry lookup failed for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    # Structured scope match: design.md D2 format is 'connector:<type>:<identity>'
+    connector_scope = f"connector:{connector_type}:{endpoint_identity}"
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT
+                id::text AS id,
+                scope,
+                rule_type,
+                condition,
+                action,
+                priority,
+                enabled,
+                name,
+                description,
+                created_by,
+                created_at,
+                updated_at
+            FROM ingestion_rules
+            WHERE scope = $1
+              AND deleted_at IS NULL
+            ORDER BY priority ASC, created_at ASC, id ASC
+            """,
+            connector_scope,
+        )
+    except Exception:
+        logger.warning(
+            "connector-routing-rules: failed to query rules for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Routing rules query failed")
+
+    rules = []
+    for r in rows:
+        condition = r["condition"]
+        if isinstance(condition, str):
+            condition = json.loads(condition)
+        rules.append(
+            ConnectorRoutingRule(
+                id=str(r["id"]),
+                scope=r["scope"],
+                rule_type=r["rule_type"],
+                condition=condition,
+                action=r["action"],
+                priority=r["priority"],
+                enabled=r["enabled"],
+                name=r["name"],
+                description=r["description"],
+                created_by=r["created_by"],
+                created_at=str(r["created_at"]),
+                updated_at=str(r["updated_at"]),
+            )
+        )
+
+    return ConnectorRoutingRulesResponse(
+        rules=rules,
+        connector_type=connector_type,
+        endpoint_identity=endpoint_identity,
+        total_returned=len(rules),
+    )

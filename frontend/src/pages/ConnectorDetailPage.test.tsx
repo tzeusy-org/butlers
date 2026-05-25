@@ -19,7 +19,10 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ConnectorDetailPage from "@/pages/ConnectorDetailPage";
-import { useConnectorDetail, useConnectorStats } from "@/hooks/use-ingestion";
+import {
+  useConnectorDetail,
+  useConnectorStats,
+} from "@/hooks/use-ingestion";
 import type { ConnectorDetail } from "@/api/types";
 
 vi.mock("react-router", async (importOriginal) => {
@@ -37,6 +40,9 @@ vi.mock("react-router", async (importOriginal) => {
 vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorDetail: vi.fn(),
   useConnectorStats: vi.fn(),
+  useConnectorEvents: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useConnectorIncidents: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useConnectorRoutingRules: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
 }));
 
 type UseConnectorDetailResult = ReturnType<typeof useConnectorDetail>;

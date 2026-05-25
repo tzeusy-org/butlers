@@ -21,7 +21,12 @@ import { MemoryRouter } from 'react-router'
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
 
-import type { ConnectorDetail } from '@/api/types'
+import type {
+  ConnectorDetail,
+  ConnectorEventsResponse,
+  ConnectorIncidentsResponse,
+  ConnectorRoutingRulesResponse,
+} from '@/api/types'
 import { ConnectorDetailView } from './ConnectorDetailView'
 import type { OAuthScope } from './ScopeList'
 
@@ -87,7 +92,13 @@ function cleanup(root: Root, container: HTMLDivElement) {
 function renderDetail(
   root: Root,
   connector: ConnectorDetail,
-  opts: { scopes?: OAuthScope[] | null; onReauth?: () => void } = {},
+  opts: {
+    scopes?: OAuthScope[] | null
+    onReauth?: () => void
+    recentEvents?: ConnectorEventsResponse | null
+    incidents?: ConnectorIncidentsResponse | null
+    routingRules?: ConnectorRoutingRulesResponse | null
+  } = {},
 ) {
   act(() => {
     root.render(
@@ -97,10 +108,82 @@ function renderDetail(
           stats={undefined}
           oauthScopes={opts.scopes}
           onReauth={opts.onReauth}
+          recentEvents={opts.recentEvents}
+          incidents={opts.incidents}
+          routingRules={opts.routingRules}
         />
       </MemoryRouter>,
     )
   })
+}
+
+// ---------------------------------------------------------------------------
+// Test data for new sections [bu-5ywn2]
+// ---------------------------------------------------------------------------
+
+const MOCK_EVENTS: ConnectorEventsResponse = {
+  events: [
+    {
+      id: 'evt-001',
+      received_at: new Date(Date.now() - 120_000).toISOString(),
+      source_channel: 'spotify',
+      source_sender_identity: null,
+      status: 'ingested',
+      filter_reason: null,
+      error_detail: null,
+    },
+    {
+      id: 'evt-002',
+      received_at: new Date(Date.now() - 300_000).toISOString(),
+      source_channel: 'spotify',
+      source_sender_identity: null,
+      status: 'failed',
+      filter_reason: null,
+      error_detail: 'Connection timeout',
+    },
+  ],
+  connector_type: 'spotify',
+  endpoint_identity: 'me',
+  total_returned: 2,
+}
+
+const MOCK_INCIDENTS: ConnectorIncidentsResponse = {
+  incidents: [
+    {
+      id: 'inc-001',
+      received_at: new Date(Date.now() - 600_000).toISOString(),
+      source_channel: 'spotify',
+      status: 'failed',
+      error_detail: 'Rate limit exceeded',
+      filter_reason: null,
+    },
+  ],
+  connector_type: 'spotify',
+  endpoint_identity: 'me',
+  total_returned: 1,
+}
+
+const MOCK_RULES: ConnectorRoutingRulesResponse = {
+  rules: [
+    {
+      id: 'rule-001',
+      scope: 'connector:spotify:me',
+      rule_type: 'substring',
+      condition: { pattern: 'spam' },
+      action: 'block',
+      priority: 1,
+      enabled: true,
+      name: 'Block spam',
+      description: null,
+      created_by: 'dashboard',
+      created_at: '2025-01-01T00:00:00Z',
+      updated_at: '2025-01-01T00:00:00Z',
+    },
+  ],
+  connector_type: 'spotify',
+  endpoint_identity: 'me',
+  total_returned: 1,
+  filter_note: null,
 }
 
 // ---------------------------------------------------------------------------
@@ -274,5 +357,181 @@ describe('AC3: Scope list renders unavailable state when data is missing', () =>
     const unavailable = container.querySelector('[data-testid="scopes-unavailable"]')
     // When reauth is needed, the unavailable note should mention reauthorization
     expect(unavailable?.textContent?.toLowerCase()).toContain('reauthorize')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// [bu-5ywn2] Recent events section
+// ---------------------------------------------------------------------------
+
+describe('[bu-5ywn2] Recent events section', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders the section container regardless of data', () => {
+    renderDetail(root, BASE_CONNECTOR)
+    const section = container.querySelector('[data-testid="recent-events-section"]')
+    expect(section).not.toBeNull()
+  })
+
+  it('shows empty state when recentEvents is null', () => {
+    renderDetail(root, BASE_CONNECTOR, { recentEvents: null })
+    const empty = container.querySelector('[data-testid="recent-events-empty"]')
+    expect(empty).not.toBeNull()
+    expect(container.querySelector('[data-testid="recent-events-list"]')).toBeNull()
+  })
+
+  it('shows empty state when recentEvents has no events', () => {
+    const emptyEvents: ConnectorEventsResponse = {
+      events: [],
+      connector_type: 'spotify',
+      endpoint_identity: 'me',
+      total_returned: 0,
+    }
+    renderDetail(root, BASE_CONNECTOR, { recentEvents: emptyEvents })
+    const empty = container.querySelector('[data-testid="recent-events-empty"]')
+    expect(empty).not.toBeNull()
+  })
+
+  it('renders event rows when populated', () => {
+    renderDetail(root, BASE_CONNECTOR, { recentEvents: MOCK_EVENTS })
+    const list = container.querySelector('[data-testid="recent-events-list"]')
+    expect(list).not.toBeNull()
+    expect(container.querySelector('[data-testid="recent-events-empty"]')).toBeNull()
+  })
+
+  it('renders event count matching the data', () => {
+    renderDetail(root, BASE_CONNECTOR, { recentEvents: MOCK_EVENTS })
+    // MOCK_EVENTS has 2 events — each renders a row inside the list
+    const list = container.querySelector('[data-testid="recent-events-list"]')
+    // rows are direct children of the list div
+    const rows = list?.querySelectorAll('div') ?? []
+    expect(rows.length).toBeGreaterThanOrEqual(MOCK_EVENTS.events.length)
+  })
+
+  it('renders view-all link when events present', () => {
+    renderDetail(root, BASE_CONNECTOR, { recentEvents: MOCK_EVENTS })
+    const section = container.querySelector('[data-testid="recent-events-section"]')
+    const link = section?.querySelector('a')
+    expect(link).not.toBeNull()
+    expect(link?.getAttribute('href')).toContain('/ingestion')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// [bu-5ywn2] Incident list section
+// ---------------------------------------------------------------------------
+
+describe('[bu-5ywn2] Incident list section', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders the section container regardless of data', () => {
+    renderDetail(root, BASE_CONNECTOR)
+    const section = container.querySelector('[data-testid="incident-list-section"]')
+    expect(section).not.toBeNull()
+  })
+
+  it('shows empty state when incidents is null', () => {
+    renderDetail(root, BASE_CONNECTOR, { incidents: null })
+    const empty = container.querySelector('[data-testid="incident-list-empty"]')
+    expect(empty).not.toBeNull()
+    expect(container.querySelector('[data-testid="incident-list"]')).toBeNull()
+  })
+
+  it('shows empty state when incidents has no entries', () => {
+    const emptyIncidents: ConnectorIncidentsResponse = {
+      incidents: [],
+      connector_type: 'spotify',
+      endpoint_identity: 'me',
+      total_returned: 0,
+    }
+    renderDetail(root, BASE_CONNECTOR, { incidents: emptyIncidents })
+    const empty = container.querySelector('[data-testid="incident-list-empty"]')
+    expect(empty).not.toBeNull()
+  })
+
+  it('renders incident rows when populated', () => {
+    renderDetail(root, BASE_CONNECTOR, { incidents: MOCK_INCIDENTS })
+    const list = container.querySelector('[data-testid="incident-list"]')
+    expect(list).not.toBeNull()
+    expect(container.querySelector('[data-testid="incident-list-empty"]')).toBeNull()
+  })
+
+  it('shows error detail text for populated incidents', () => {
+    renderDetail(root, BASE_CONNECTOR, { incidents: MOCK_INCIDENTS })
+    expect(container.textContent).toContain('Rate limit exceeded')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// [bu-5ywn2] Routing rules section
+// ---------------------------------------------------------------------------
+
+describe('[bu-5ywn2] Routing rules section', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders the section container regardless of data', () => {
+    renderDetail(root, BASE_CONNECTOR)
+    const section = container.querySelector('[data-testid="routing-rules-section"]')
+    expect(section).not.toBeNull()
+  })
+
+  it('shows empty state when routingRules is null', () => {
+    renderDetail(root, BASE_CONNECTOR, { routingRules: null })
+    const empty = container.querySelector('[data-testid="routing-rules-empty"]')
+    expect(empty).not.toBeNull()
+    expect(container.querySelector('[data-testid="routing-rules-list"]')).toBeNull()
+  })
+
+  it('shows empty state when routing rules list is empty', () => {
+    const emptyRules: ConnectorRoutingRulesResponse = {
+      rules: [],
+      connector_type: 'spotify',
+      endpoint_identity: 'me',
+      total_returned: 0,
+      filter_note: null,
+    }
+    renderDetail(root, BASE_CONNECTOR, { routingRules: emptyRules })
+    const empty = container.querySelector('[data-testid="routing-rules-empty"]')
+    expect(empty).not.toBeNull()
+    expect(empty?.textContent).toContain('No routing rules reference this connector')
+  })
+
+  it('renders rule rows when populated', () => {
+    renderDetail(root, BASE_CONNECTOR, { routingRules: MOCK_RULES })
+    const list = container.querySelector('[data-testid="routing-rules-list"]')
+    expect(list).not.toBeNull()
+    expect(container.querySelector('[data-testid="routing-rules-empty"]')).toBeNull()
+  })
+
+  it('renders rule name and action for populated rules', () => {
+    renderDetail(root, BASE_CONNECTOR, { routingRules: MOCK_RULES })
+    expect(container.textContent).toContain('Block spam')
+    expect(container.textContent).toContain('block')
+  })
+
+  it('rule rows link to /ingestion/filters', () => {
+    renderDetail(root, BASE_CONNECTOR, { routingRules: MOCK_RULES })
+    const list = container.querySelector('[data-testid="routing-rules-list"]')
+    const link = list?.querySelector('a')
+    expect(link).not.toBeNull()
+    expect(link?.getAttribute('href')).toBe('/ingestion/filters')
   })
 })

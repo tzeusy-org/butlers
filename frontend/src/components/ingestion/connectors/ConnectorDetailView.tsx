@@ -12,11 +12,14 @@
  *   - 4-cell KPI strip (events, error rate, avg/hr, last heartbeat)
  *   - 24h histogram using ConnectorStats timeseries
  *   - Lifetime counters table
+ *   - Recent events list [bu-5ywn2]
+ *   - Incident list [bu-5ywn2]
  *
  * Right (1fr):
  *   - ScopeList (from connector-oauth-scope-surface when available)
  *   - Schedule / config KV block
  *   - Config actions (cursor edit, settings)
+ *   - Routing rules [bu-5ywn2]
  *
  * This component is purely presentational — data is wired in ConnectorDetailPage.
  * It replaces the old card-based ConnectorDetailPage layout.
@@ -31,7 +34,13 @@
 
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
-import type { ConnectorDetail, ConnectorStats } from '@/api/types'
+import type {
+  ConnectorDetail,
+  ConnectorEventsResponse,
+  ConnectorIncidentsResponse,
+  ConnectorRoutingRulesResponse,
+  ConnectorStats,
+} from '@/api/types'
 import { ReauthCallout } from './ReauthCallout'
 import { ScopeList, type OAuthScope } from './ScopeList'
 import { ConnectorHistogram } from './ConnectorHistogram'
@@ -104,6 +113,12 @@ export interface ConnectorDetailViewProps {
   stats: ConnectorStats | undefined
   /** OAuth scopes from connector-oauth-scope-surface. Null = unavailable. */
   oauthScopes?: OAuthScope[] | null
+  /** Recent events response from /connectors/{type}/{identity}/events. [bu-5ywn2] */
+  recentEvents?: ConnectorEventsResponse | null
+  /** Incident events response from /connectors/{type}/{identity}/incidents. [bu-5ywn2] */
+  incidents?: ConnectorIncidentsResponse | null
+  /** Routing rules response from /connectors/{type}/{identity}/routing-rules. [bu-5ywn2] */
+  routingRules?: ConnectorRoutingRulesResponse | null
   /** Called when user clicks re-authorize. */
   onReauth?: () => void
   /** Called when user clicks "pause poll". */
@@ -123,6 +138,9 @@ export function ConnectorDetailView({
   connector,
   stats,
   oauthScopes,
+  recentEvents,
+  incidents,
+  routingRules,
   onReauth,
   onPause,
   onRunNow,
@@ -294,6 +312,15 @@ export function ConnectorDetailView({
               </div>
             </div>
           )}
+
+          {/* Recent events list [bu-5ywn2] */}
+          <RecentEventsList
+            events={recentEvents}
+            connectorKind={connector.connector_type}
+          />
+
+          {/* Incident list [bu-5ywn2] */}
+          <IncidentList incidents={incidents} />
         </div>
 
         {/* RIGHT — scopes + schedule + config */}
@@ -395,8 +422,184 @@ export function ConnectorDetailView({
               }
             />
           </div>
+
+          {/* Routing rules [bu-5ywn2] */}
+          <RoutingRulesList rules={routingRules} />
         </div>
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// RecentEventsList [bu-5ywn2]
+// ---------------------------------------------------------------------------
+
+/** Status pill for event rows (inline mono variant, no Badge dep). */
+function EventStatusPill({ status }: { status: string }) {
+  const color =
+    status === 'ingested'
+      ? 'text-[color:var(--green,oklch(0.72_0.17_150))]'
+      : status === 'failed' || status === 'error' || status === 'replay_failed'
+        ? 'text-[color:var(--red,oklch(0.62_0.20_25))]'
+        : status === 'filtered'
+          ? 'text-muted-foreground'
+          : 'text-foreground'
+  return (
+    <span className={`font-mono text-[10px] ${color}`}>{status}</span>
+  )
+}
+
+interface RecentEventsListProps {
+  events: ConnectorEventsResponse | null | undefined
+  connectorKind: string
+}
+
+function RecentEventsList({ events, connectorKind }: RecentEventsListProps) {
+  return (
+    <div data-testid="recent-events-section">
+      <div className="flex items-baseline gap-3 mb-2.5">
+        <span className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground">
+          recent events
+        </span>
+        <Link
+          to={`/ingestion?channels=${encodeURIComponent(connectorKind)}`}
+          className="font-mono text-[9px] text-muted-foreground/60 underline underline-offset-2 decoration-border hover:text-muted-foreground transition-colors"
+        >
+          view all
+        </Link>
+      </div>
+      {!events || events.events.length === 0 ? (
+        <p
+          className="font-mono text-[11px] text-muted-foreground/50 italic"
+          data-testid="recent-events-empty"
+        >
+          No recent events.
+        </p>
+      ) : (
+        <div className="space-y-0" data-testid="recent-events-list">
+          {events.events.map((evt) => (
+            <div
+              key={evt.id}
+              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0"
+            >
+              <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[9ch] truncate">
+                {evt.received_at ? (
+                  <Time value={evt.received_at} mode="relative" className="inline" />
+                ) : (
+                  '—'
+                )}
+              </span>
+              <EventStatusPill status={evt.status} />
+              {(evt.error_detail || evt.filter_reason) && (
+                <span className="font-mono text-[10px] text-muted-foreground/50 truncate min-w-0">
+                  {(evt.error_detail ?? evt.filter_reason ?? '').slice(0, 60)}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// IncidentList [bu-5ywn2]
+// ---------------------------------------------------------------------------
+
+interface IncidentListProps {
+  incidents: ConnectorIncidentsResponse | null | undefined
+}
+
+function IncidentList({ incidents }: IncidentListProps) {
+  return (
+    <div data-testid="incident-list-section">
+      <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2.5">
+        incidents
+      </div>
+      {!incidents || incidents.incidents.length === 0 ? (
+        <p
+          className="font-mono text-[11px] text-muted-foreground/50 italic"
+          data-testid="incident-list-empty"
+        >
+          No incidents recorded.
+        </p>
+      ) : (
+        <div className="space-y-0" data-testid="incident-list">
+          {incidents.incidents.map((inc) => (
+            <div
+              key={inc.id}
+              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0"
+            >
+              <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[9ch] truncate">
+                {inc.received_at ? (
+                  <Time value={inc.received_at} mode="relative" className="inline" />
+                ) : (
+                  '—'
+                )}
+              </span>
+              <EventStatusPill status={inc.status} />
+              {(inc.error_detail || inc.filter_reason) && (
+                <span className="font-mono text-[10px] text-muted-foreground/50 truncate min-w-0">
+                  {(inc.error_detail ?? inc.filter_reason ?? '').slice(0, 60)}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// RoutingRulesList [bu-5ywn2]
+// ---------------------------------------------------------------------------
+
+interface RoutingRulesListProps {
+  rules: ConnectorRoutingRulesResponse | null | undefined
+}
+
+function RoutingRulesList({ rules }: RoutingRulesListProps) {
+  return (
+    <div data-testid="routing-rules-section">
+      <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2.5">
+        routing rules
+      </div>
+      {!rules || rules.rules.length === 0 ? (
+        <p
+          className="font-mono text-[11px] text-muted-foreground/50 italic"
+          data-testid="routing-rules-empty"
+        >
+          No routing rules reference this connector.
+        </p>
+      ) : (
+        <div className="space-y-0" data-testid="routing-rules-list">
+          {rules.rules.map((rule) => (
+            <Link
+              key={rule.id}
+              to="/ingestion/filters"
+              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 hover:bg-foreground/[0.03] transition-colors -mx-1 px-1"
+            >
+              <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+                #{rule.priority}
+              </span>
+              <span className="font-mono text-[10px] text-foreground/80 shrink-0">
+                {rule.action}
+              </span>
+              <span className="font-mono text-[9.5px] text-muted-foreground/60 truncate min-w-0">
+                {rule.name ?? rule.rule_type}
+              </span>
+              {!rule.enabled && (
+                <span className="font-mono text-[9px] text-muted-foreground/40 ml-auto shrink-0">
+                  disabled
+                </span>
+              )}
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

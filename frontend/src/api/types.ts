@@ -2627,6 +2627,72 @@ export interface IngestionRuleListParams {
 }
 
 // ---------------------------------------------------------------------------
+// Connector detail sections — events, incidents, routing rules [bu-5ywn2]
+// ---------------------------------------------------------------------------
+
+/** One event row from GET /api/ingestion/connectors/{type}/{identity}/events. */
+export interface ConnectorEventSummary {
+  id: string;
+  received_at: string | null;
+  source_channel: string | null;
+  source_sender_identity: string | null;
+  status: string;
+  filter_reason: string | null;
+  error_detail: string | null;
+}
+
+/** Response from GET /api/ingestion/connectors/{type}/{identity}/events. */
+export interface ConnectorEventsResponse {
+  events: ConnectorEventSummary[];
+  connector_type: string;
+  endpoint_identity: string;
+  total_returned: number;
+}
+
+/** One incident row from GET /api/ingestion/connectors/{type}/{identity}/incidents. */
+export interface ConnectorIncidentSummary {
+  id: string;
+  received_at: string | null;
+  source_channel: string | null;
+  status: string;
+  error_detail: string | null;
+  filter_reason: string | null;
+}
+
+/** Response from GET /api/ingestion/connectors/{type}/{identity}/incidents. */
+export interface ConnectorIncidentsResponse {
+  incidents: ConnectorIncidentSummary[];
+  connector_type: string;
+  endpoint_identity: string;
+  total_returned: number;
+}
+
+/** One routing rule from GET /api/ingestion/connectors/{type}/{identity}/routing-rules. */
+export interface ConnectorRoutingRule {
+  id: string;
+  scope: string;
+  rule_type: string;
+  condition: Record<string, unknown>;
+  action: string;
+  priority: number;
+  enabled: boolean;
+  name: string | null;
+  description: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Response from GET /api/ingestion/connectors/{type}/{identity}/routing-rules. */
+export interface ConnectorRoutingRulesResponse {
+  rules: ConnectorRoutingRule[];
+  connector_type: string;
+  endpoint_identity: string;
+  total_returned: number;
+  filter_note: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Model catalog
 // ---------------------------------------------------------------------------
 

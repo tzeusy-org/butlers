@@ -28,6 +28,9 @@ import { DispatchLayout, DispatchSurface } from '@/components/ingestion/dispatch
 import { ConnectorDetailView } from '@/components/ingestion/connectors/ConnectorDetailView'
 import {
   useConnectorDetail,
+  useConnectorEvents,
+  useConnectorIncidents,
+  useConnectorRoutingRules,
   useConnectorStats,
 } from '@/hooks/use-ingestion'
 
@@ -53,6 +56,22 @@ export default function ConnectorDetailPage() {
     '24h',
   )
 
+  // Connector-scoped event, incident, and routing rule data [bu-5ywn2]
+  const { data: eventsResp } = useConnectorEvents(
+    connectorType ?? null,
+    endpointIdentity ?? null,
+    20,
+  )
+  const { data: incidentsResp } = useConnectorIncidents(
+    connectorType ?? null,
+    endpointIdentity ?? null,
+    10,
+  )
+  const { data: routingRulesResp } = useConnectorRoutingRules(
+    connectorType ?? null,
+    endpointIdentity ?? null,
+  )
+
   const connector = detailResp?.data
   const stats = statsResp?.data
 
@@ -72,6 +91,9 @@ export default function ConnectorDetailPage() {
             // backend capability is not yet implemented. ScopeList renders the
             // explicit "unavailable" state (spec AC3 compliance).
             oauthScopes={null}
+            recentEvents={eventsResp ?? null}
+            incidents={incidentsResp ?? null}
+            routingRules={routingRulesResp ?? null}
           />
         ) : (
           <NotFoundState connectorType={connectorType} endpointIdentity={endpointIdentity} />
