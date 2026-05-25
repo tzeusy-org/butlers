@@ -14,7 +14,7 @@
 
 import type { ReactNode } from 'react'
 
-interface DispatchLayoutProps {
+export interface DispatchLayoutProps {
   children: ReactNode
   className?: string
 }

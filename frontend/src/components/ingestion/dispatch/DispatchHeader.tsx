@@ -17,7 +17,7 @@
 
 import type { ReactNode } from 'react'
 
-interface DispatchHeaderProps {
+export interface DispatchHeaderProps {
   /** Section eyebrow — mono uppercase label (e.g. "Ingestion · timeline"). */
   eyebrow?: string
   /** Display headline — the page's main title. */
@@ -45,7 +45,7 @@ export function DispatchHeader({ eyebrow, headline, description, aside }: Dispat
         )}
         <h1 className="text-2xl font-medium tracking-tight">{headline}</h1>
         {description && (
-          <p className="text-sm text-muted-foreground mt-1">{description}</p>
+          <p className="text-base font-serif leading-[1.55] text-muted-foreground mt-1">{description}</p>
         )}
       </div>
       {aside && (

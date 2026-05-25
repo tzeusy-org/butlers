@@ -13,5 +13,8 @@
  */
 
 export { DispatchLayout } from './DispatchLayout'
+export type { DispatchLayoutProps } from './DispatchLayout'
 export { DispatchHeader } from './DispatchHeader'
+export type { DispatchHeaderProps } from './DispatchHeader'
 export { DispatchSurface } from './DispatchSurface'
+export type { DispatchSurfaceProps } from './DispatchSurface'

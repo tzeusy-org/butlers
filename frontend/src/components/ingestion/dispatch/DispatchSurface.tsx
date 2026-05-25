@@ -15,7 +15,7 @@
 
 import type { ReactNode } from 'react'
 
-interface DispatchSurfaceProps {
+export interface DispatchSurfaceProps {
   children: ReactNode
   /** Additional Tailwind classes. */
   className?: string
