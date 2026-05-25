@@ -15,6 +15,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
 
+import SecretsPage from "./SecretsPage";
 import { DirectionPassport } from "@/components/secrets/passport";
 import { MOCK_INVENTORY } from "@/components/secrets/passport/mock-data";
 import { buildSpineEntries } from "@/components/secrets/passport/spine-builder";
@@ -37,18 +38,18 @@ function renderInRouter(
 // ---------------------------------------------------------------------------
 
 describe("SecretsPage: mounts DirectionPassport", () => {
-  it("renders DirectionPassport data-direction-passport attribute", () => {
-    const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
+  it("renders SecretsPage and mounts DirectionPassport", () => {
+    const html = renderInRouter(<SecretsPage />);
     expect(html).toContain('data-direction-passport="true"');
   });
 
   it("renders spine rows", () => {
-    const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
+    const html = renderInRouter(<SecretsPage />);
     expect(html).toContain("data-spine-row");
   });
 
   it("does NOT render the legacy tab strip", () => {
-    const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
+    const html = renderInRouter(<SecretsPage />);
     // Legacy tabs had role="tablist" or Tabs component
     expect(html).not.toContain('role="tablist"');
   });

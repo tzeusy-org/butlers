@@ -24,12 +24,13 @@ import { DirectionPassport } from "@/components/secrets/passport";
 export default function SecretsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
+  // Derive stable primitives to keep the effect dep array honest.
+  const toastParam = searchParams.get("toast");
+  const errorParam = searchParams.get("oauth_error");
+
   // Cross-page reauth bookkeeping: surface ?toast= / ?oauth_error= once then
   // strip the params so a refresh does not re-show the same toast.
   React.useEffect(() => {
-    const toastParam = searchParams.get("toast");
-    const errorParam = searchParams.get("oauth_error");
-
     if (!toastParam && !errorParam) return;
 
     const params = new URLSearchParams(searchParams);
@@ -50,8 +51,7 @@ export default function SecretsPage() {
     params.delete("toast");
     params.delete("oauth_error");
     setSearchParams(params, { replace: true });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [toastParam, errorParam, searchParams, setSearchParams]);
 
   return <DirectionPassport />;
 }
