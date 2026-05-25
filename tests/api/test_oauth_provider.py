@@ -463,7 +463,7 @@ async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(app):
 
     assert resp.status_code in (302, 307)
     location = resp.headers.get("location", "")
-    assert "/ingestion/connectors" in location
+    assert location == "/ingestion/connectors"
 
 
 async def test_callback_page_of_origin_secrets_redirects_to_secrets(app):
@@ -490,9 +490,7 @@ async def test_callback_page_of_origin_secrets_redirects_to_secrets(app):
 
     assert resp.status_code in (302, 307)
     location = resp.headers.get("location", "")
-    assert "/secrets" in location
-    assert "u:spotify" in location
-    assert "toast=connected" in location
+    assert location == "/secrets?focus=u:spotify&toast=connected"
 
 
 async def test_callback_no_page_of_origin_redirects_to_secrets(app):
@@ -518,94 +516,6 @@ async def test_callback_no_page_of_origin_redirects_to_secrets(app):
             )
 
     # Spec: missing/default page_of_origin → /secrets?focus=u:<provider>&toast=connected
-    assert resp.status_code in (302, 307)
-    location = resp.headers.get("location", "")
-    assert "/secrets" in location
-    assert "u:spotify" in location
-    assert "toast=connected" in location
-
-
-# ===========================================================================
-# 8b. Spec-required routing branches: secrets / ingestion / missing
-# ===========================================================================
-
-
-async def test_callback_secrets_page_of_origin(app):
-    """Spec: page_of_origin=secrets → /secrets?focus=u:<provider>&toast=connected."""
-    _make_app(app)
-    state = _generate_state()
-    _store_state(state, page_of_origin="secrets", provider="spotify")
-
-    mock_cred_store = AsyncMock()
-    mock_cred_store.store = AsyncMock()
-
-    with (
-        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
-        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
-        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
-    ):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
-        ) as client:
-            resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
-            )
-
-    assert resp.status_code in (302, 307)
-    location = resp.headers.get("location", "")
-    assert location == "/secrets?focus=u:spotify&toast=connected"
-
-
-async def test_callback_ingestion_page_of_origin(app):
-    """Spec: page_of_origin=ingestion → /ingestion/connectors."""
-    _make_app(app)
-    state = _generate_state()
-    _store_state(state, page_of_origin="ingestion", provider="spotify")
-
-    mock_cred_store = AsyncMock()
-    mock_cred_store.store = AsyncMock()
-
-    with (
-        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
-        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
-        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
-    ):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
-        ) as client:
-            resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
-            )
-
-    assert resp.status_code in (302, 307)
-    location = resp.headers.get("location", "")
-    assert location == "/ingestion/connectors"
-
-
-async def test_callback_missing_page_of_origin(app):
-    """Spec: missing/None page_of_origin defaults to /secrets?focus=u:<provider>&toast=connected."""
-    _make_app(app)
-    state = _generate_state()
-    _store_state(state, provider="spotify")  # no page_of_origin → None
-
-    mock_cred_store = AsyncMock()
-    mock_cred_store.store = AsyncMock()
-
-    with (
-        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
-        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
-        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
-    ):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
-        ) as client:
-            resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
-            )
-
     assert resp.status_code in (302, 307)
     location = resp.headers.get("location", "")
     assert location == "/secrets?focus=u:spotify&toast=connected"
