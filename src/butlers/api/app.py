@@ -59,6 +59,7 @@ from butlers.api.routers.memory import router as memory_router
 from butlers.api.routers.model_settings import (
     butler_model_router,
     catalog_router,
+    dispatch_router,
     pricing_router,
 )
 from butlers.api.routers.modules import router as modules_router
@@ -293,6 +294,7 @@ def create_app(
     app.include_router(catalog_router)
     app.include_router(pricing_router)
     app.include_router(butler_model_router)
+    app.include_router(dispatch_router)
     app.include_router(healing_router)
     app.include_router(qa_router)
     app.include_router(provider_settings_router)
