@@ -127,6 +127,7 @@ export function FiltersPipeline() {
 
   function handleToggleRule(id: string, enabled: boolean) {
     setToggleError(null)
+    setDeleteError(null)
     updateRule.mutate(
       { id, body: { enabled } },
       {
@@ -140,6 +141,7 @@ export function FiltersPipeline() {
   }
 
   function handleDeleteRule(id: string) {
+    setToggleError(null)
     setDeleteError(null)
     deleteRule.mutate(id, {
       onError: (err) => {
@@ -163,8 +165,8 @@ export function FiltersPipeline() {
 
   function handleEditChannelDefault(id: string) {
     // Edit is a future concern; wire the handler once a form exists.
-    // For now, surface a gentle note.
-    setChannelMutationError(null)
+    // Surface a note so the button is not silently a no-op.
+    setChannelMutationError('Editing channel defaults is not yet available.')
     void id
   }
 

@@ -21,10 +21,12 @@ import type { IngestionRule } from '@/api/types'
 function conditionSummary(condition: Record<string, unknown>): string {
   const entries = Object.entries(condition)
   if (entries.length === 0) return 'always'
-  return entries
+  const summary = entries
     .slice(0, 2)
-    .map(([k, v]) => `${k}: ${String(v)}`)
+    .map(([k, v]) => (k && v != null ? `${k}: ${String(v)}` : null))
+    .filter(Boolean)
     .join(' · ')
+  return entries.length > 2 ? `${summary} …` : summary
 }
 
 /** Map action string to a color token. */
