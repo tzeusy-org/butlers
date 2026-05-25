@@ -290,6 +290,12 @@ class _ProviderConfig:
     redirect_uri_env_var: str
     """Environment variable name that overrides the default redirect URI."""
 
+    client_id_key: str = "GOOGLE_OAUTH_CLIENT_ID"
+    """butler_secrets key for the OAuth app client ID."""
+
+    client_secret_key: str = "GOOGLE_OAUTH_CLIENT_SECRET"
+    """butler_secrets key for the OAuth app client secret."""
+
     userinfo_url: str | None = None
     """Userinfo endpoint; None for providers that do not expose one (e.g. Spotify)."""
 
@@ -353,6 +359,8 @@ _PROVIDER_REGISTRY: dict[str, _ProviderConfig] = {
         default_scope_sets=("base",),
         default_redirect_uri=_DEFAULT_SPOTIFY_REDIRECT_URI,
         redirect_uri_env_var="SPOTIFY_OAUTH_REDIRECT_URI",
+        client_id_key="SPOTIFY_OAUTH_CLIENT_ID",
+        client_secret_key="SPOTIFY_OAUTH_CLIENT_SECRET",
         userinfo_url=None,
         profile_url=_SPOTIFY_PROFILE_URL,
     ),
@@ -369,6 +377,40 @@ def _get_provider_redirect_uri(provider_cfg: _ProviderConfig) -> str:
     return os.environ.get(
         provider_cfg.redirect_uri_env_var, provider_cfg.default_redirect_uri
     ).strip()
+
+
+async def _resolve_provider_credentials(
+    provider_cfg: _ProviderConfig,
+    db_manager: Any,
+) -> tuple[str, str]:
+    """Resolve client_id and client_secret for *provider_cfg* from DB-backed storage.
+
+    Uses the provider's ``client_id_key`` and ``client_secret_key`` fields so
+    that each provider reads its own credentials rather than Google's.
+
+    Raises HTTPException(503) when the credential store is unavailable or the
+    provider's credentials are not configured.
+    """
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Shared credential database is unavailable.",
+        )
+
+    client_id = await cred_store.load(provider_cfg.client_id_key)
+    client_secret = await cred_store.load(provider_cfg.client_secret_key)
+
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"OAuth app credentials for this provider are not configured in DB. "
+                f"Configure {provider_cfg.client_id_key} and {provider_cfg.client_secret_key} "
+                f"on the Secrets page."
+            ),
+        )
+    return client_id, client_secret
 
 
 def _compose_provider_default_scopes(provider_cfg: _ProviderConfig) -> str:
@@ -2304,7 +2346,7 @@ async def oauth_provider_start(
             scopes = _widen_scopes(scopes, _hinted_account_granted_scopes)
 
     # --- Resolve app credentials ---
-    client_id, _ = await _resolve_app_credentials(db_manager)
+    client_id, _ = await _resolve_provider_credentials(provider_cfg, db_manager)
     redirect_uri = _get_provider_redirect_uri(provider_cfg)
 
     # --- Build authorization URL ---
@@ -2506,7 +2548,7 @@ async def oauth_provider_callback(
         )
 
     # --- Generic provider path ---
-    client_id, client_secret = await _resolve_app_credentials(db_manager)
+    client_id, client_secret = await _resolve_provider_credentials(provider_cfg, db_manager)
     redirect_uri = _get_provider_redirect_uri(provider_cfg)
 
     try:

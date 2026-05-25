@@ -44,6 +44,7 @@ _CREATE_ACCOUNT_PATCH = "butlers.api.routers.oauth.create_google_account"
 _GET_ACCOUNT_PATCH = "butlers.api.routers.oauth.get_google_account"
 _EMIT_AUDIT_PATCH = "butlers.api.routers.oauth._emit_oauth_audit"
 _RESOLVE_APP_CREDS_PATCH = "butlers.api.routers.oauth._resolve_app_credentials"
+_RESOLVE_PROVIDER_CREDS_PATCH = "butlers.api.routers.oauth._resolve_provider_credentials"
 
 _FAKE_TOKEN = {
     "access_token": "ya29.fake",
@@ -79,6 +80,9 @@ def _make_app(app, *, client_id="test-client-id", client_secret="test-secret"):
     secrets = {
         "GOOGLE_OAUTH_CLIENT_ID": client_id,
         "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
+        # Provider-specific credential keys used by _resolve_provider_credentials.
+        "SPOTIFY_OAUTH_CLIENT_ID": client_id,
+        "SPOTIFY_OAUTH_CLIENT_SECRET": client_secret,
     }
     conn = AsyncMock()
 
@@ -377,7 +381,7 @@ async def test_spotify_callback_happy_path(app):
     mock_cred_store.store = AsyncMock()
 
     with (
-        patch(_RESOLVE_APP_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
         patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()) as mock_audit,
@@ -408,7 +412,7 @@ async def test_spotify_callback_token_exchange_failure_writes_failed_audit(app):
     _store_state(state, provider="spotify")
 
     with (
-        patch(_RESOLVE_APP_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
         patch(
             _EXCHANGE_PATCH,
             side_effect=oauth_module._TokenExchangeError("boom"),
@@ -443,7 +447,7 @@ async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(app):
     mock_cred_store.store = AsyncMock()
 
     with (
-        patch(_RESOLVE_APP_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
         patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
@@ -470,7 +474,7 @@ async def test_callback_page_of_origin_secrets_redirects_to_secrets(app):
     mock_cred_store.store = AsyncMock()
 
     with (
-        patch(_RESOLVE_APP_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
         patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
@@ -499,7 +503,7 @@ async def test_callback_no_page_of_origin_returns_json_success(app):
     mock_cred_store.store = AsyncMock()
 
     with (
-        patch(_RESOLVE_APP_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
         patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
