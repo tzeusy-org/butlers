@@ -2007,13 +2007,11 @@ async def set_system_credential(
                 "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
                 key,
             )
+        except UndefinedTableError:
+            existing = None
         except Exception as exc:  # noqa: BLE001
-            msg = str(exc).lower()
-            if "does not exist" in msg or "undefined" in msg:
-                existing = None
-            else:
-                logger.warning("set_system_credential: fetchrow failed key=%s: %s", key, exc)
-                raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+            logger.warning("set_system_credential: fetchrow failed key=%s: %s", key, exc)
+            raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
 
         if existing is None:
             # First-time create.
@@ -2083,6 +2081,11 @@ async def set_system_credential(
                 key,
                 value,
             )
+        except UndefinedTableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="butler_secrets table not available — migration may not have run",
+            ) from exc
         except Exception as exc:
             logger.warning(
                 "set_system_credential: override UPSERT failed key=%s butler=%s: %s",
@@ -2155,6 +2158,7 @@ async def probe_system_credential(
     # Locate the credential across all registered butler schemas.
     found_pool: Any = None
     found_butler: str | None = None
+    detail: SystemSecretDetail | None = None
     for butler_name in db.butler_names:
         try:
             pool = db.pool(butler_name)
@@ -2166,12 +2170,7 @@ async def probe_system_credential(
             found_butler = butler_name
             break
 
-    if found_pool is None or found_butler is None:
-        raise HTTPException(status_code=404, detail="Credential not found")
-
-    # Re-fetch to get the full detail for state derivation.
-    detail = await _fetch_single_system_secret(found_pool, found_butler, key)
-    if detail is None:
+    if found_pool is None or found_butler is None or detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
     # Derive probe outcome from current state.
@@ -2312,12 +2311,13 @@ async def delete_system_credential(
                 "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
                 key,
             )
+        except UndefinedTableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="butler_secrets table not available — migration may not have run",
+            ) from exc
         except Exception as exc:  # noqa: BLE001
-            msg = str(exc).lower()
-            if "does not exist" in msg or "undefined" in msg:
-                existing = None
-            else:
-                raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+            raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
 
         if existing is None:
             raise HTTPException(status_code=404, detail="Credential not found")
@@ -2359,12 +2359,13 @@ async def delete_system_credential(
                 "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
                 key,
             )
+        except UndefinedTableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="butler_secrets table not available — migration may not have run",
+            ) from exc
         except Exception as exc:  # noqa: BLE001
-            msg = str(exc).lower()
-            if "does not exist" in msg or "undefined" in msg:
-                existing = None
-            else:
-                raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+            raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
 
         if existing is None:
             raise HTTPException(status_code=404, detail="Credential not found")
