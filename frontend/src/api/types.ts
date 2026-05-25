@@ -740,6 +740,7 @@ export interface ContactInfoEntry {
   is_primary: boolean;
   secured: boolean;
   parent_id: string | null;
+  context: string | null; // personal | work | other | null (unclassified)
 }
 
 /** Full contact detail with all fields including identity fields. */

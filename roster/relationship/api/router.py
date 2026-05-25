@@ -4351,7 +4351,7 @@ async def list_entity_linked_contacts(
         """
         SELECT
             c.id,
-            c.full_name,
+            c.name AS full_name,
             c.preferred_channel,
             (
                 SELECT ci.value
@@ -4374,7 +4374,7 @@ async def list_entity_linked_contacts(
         FROM public.contacts c
         WHERE c.entity_id = $1
           AND c.archived_at IS NULL
-        ORDER BY c.full_name
+        ORDER BY c.name
         """,
         entity_id,
     )
