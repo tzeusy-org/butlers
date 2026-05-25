@@ -131,7 +131,7 @@ describe("StateDot: Dispatch system states", () => {
     { state: "ok" as const, token: "var(--green)" },
     { state: "degraded" as const, token: "var(--amber)" },
     { state: "error" as const, token: "var(--red)" },
-    { state: "waiting" as const, token: "var(--dim" },
+    { state: "waiting" as const, token: "var(--dim,oklch(0.55_0_0))" },
   ] as const
 
   for (const { state, token } of DISPATCH_CASES) {

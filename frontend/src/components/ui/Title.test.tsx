@@ -78,6 +78,11 @@ describe("Title: typography", () => {
     expect(html).not.toContain("font-bold")
   })
 
+  it("applies exact 24px font size (not text-2xl which is 1.728rem in this scale)", () => {
+    const html = renderToStaticMarkup(<Title>title</Title>)
+    expect(html).toContain("text-[24px]")
+  })
+
   it("applies negative tracking (tight per spec)", () => {
     const html = renderToStaticMarkup(<Title>title</Title>)
     expect(html).toContain("tracking-[-0.015em]")

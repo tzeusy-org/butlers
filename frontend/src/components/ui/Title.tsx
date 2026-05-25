@@ -35,8 +35,8 @@ export function Title({ as: Tag = "h2", children, className, ...props }: TitlePr
       className={cn(
         // Font family — Inter Tight via --font-sans
         "font-sans font-medium",
-        // Size and leading per spec
-        "text-2xl leading-[1.2]",
+        // Size and leading per spec (24px per §2b — not text-2xl which is 1.728rem in this scale)
+        "text-[24px] leading-[1.2]",
         // Tracking — tight per spec (-0.015em)
         "tracking-[-0.015em]",
         // Color — primary foreground
