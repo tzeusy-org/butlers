@@ -1,9 +1,9 @@
 """Passport-book secrets namespace — /api/secrets/*.
 
-Provides the aggregated inventory endpoint and per-credential read endpoints
-that back the redesigned /secrets page.  This router owns the new
-/api/secrets/* namespace defined in the redesign-secrets-passport OpenSpec
-change.
+Provides the aggregated inventory endpoint, per-credential read endpoints, and
+the audit-history endpoint that back the redesigned /secrets page.  This router
+owns the new /api/secrets/* namespace defined in the redesign-secrets-passport
+OpenSpec change.
 
 The existing /api/butlers/{name}/secrets/* CRUD surface in secrets.py is
 preserved unchanged per the compatibility requirement.
@@ -31,6 +31,11 @@ GET /api/secrets/cli/<id>
     Returns ApiResponse<CliRuntimeDetail>.
     404 when no matching row exists.
 
+GET /api/secrets/audit/<scope>/<key>?limit=50
+    Recent audit events for a single credential.
+    Returns ApiResponse<AuditEvent[]> with pre-formatted timestamps and
+    a meta.deep_link pointing to /audit-log?key=<canonical-key>.
+
 Design decisions
 ----------------
 - Butler schema discovery uses db.butler_names (registered pools) rather
@@ -54,6 +59,10 @@ Design decisions
   '<provider>_oauth_refresh' (e.g. 'google_oauth_refresh').  The user
   endpoint matches WHERE type LIKE '<provider>_%' AND secured = true to
   accommodate any provider-specific suffix.
+- Audit endpoint: scope ∈ {user, system, cli} is validated and rejected with
+  422 for unknown values.  normalize_credential_key() maps scope+key to the
+  canonical target used in public.audit_log.  Timestamps are pre-formatted
+  server-side using the same relative formatter as probe-log LRU.
 
 Spec anchor
 -----------
@@ -61,6 +70,7 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 §Inventory endpoint shape
 §Per-credential read endpoints
 §Probe-log LRU integration
+§Audit history endpoint
 """
 
 from __future__ import annotations
@@ -71,11 +81,13 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse
+from butlers.core.credential_keys import normalize_credential_key
 
 logger = logging.getLogger(__name__)
 
@@ -1075,3 +1087,150 @@ async def get_cli_credential(
         raise HTTPException(status_code=404, detail="Credential not found")
 
     return ApiResponse[CliRuntimeDetail](data=detail, meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# Audit history models
+# ---------------------------------------------------------------------------
+
+#: Valid scope values for the audit endpoint path parameter.
+_VALID_SCOPES: frozenset[str] = frozenset({"user", "system", "cli"})
+
+#: Default and maximum limit values for the audit endpoint.
+_AUDIT_DEFAULT_LIMIT = 10
+_AUDIT_MAX_LIMIT = 50
+
+
+class AuditEvent(BaseModel):
+    """A single audit event for a credential.
+
+    Per spec §Audit history endpoint:
+    - ts: server pre-formatted relative timestamp (e.g. "5 minutes ago",
+      "14:21 today", "yesterday 09:08")
+    - actor: identity of the actor that triggered the change
+    - action: short, machine-readable verb (e.g. "rotated", "connected")
+    - note: verbatim stored note; never LLM-generated (serif-italic in UI)
+    """
+
+    ts: str  # pre-formatted relative timestamp
+    actor: str
+    action: str
+    note: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Audit history route
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/audit/{scope}/{key}",
+    response_model=ApiResponse[list[AuditEvent]],
+)
+async def get_audit_history(
+    scope: str,
+    key: str,
+    limit: int = Query(
+        default=_AUDIT_DEFAULT_LIMIT,
+        ge=1,
+        le=_AUDIT_MAX_LIMIT,
+        description=(
+            f"Maximum number of audit events to return "
+            f"(default {_AUDIT_DEFAULT_LIMIT}, max {_AUDIT_MAX_LIMIT})."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[AuditEvent]]:
+    """Return recent audit events for a single credential.
+
+    Path parameters
+    ---------------
+    scope:
+        Credential scope — one of ``user``, ``system``, or ``cli``.
+    key:
+        Credential name within the scope (e.g. ``google``,
+        ``BUTLER_TELEGRAM_TOKEN``, ``claude``).
+
+    Query parameters
+    ----------------
+    limit:
+        Maximum events to return.  Default is 10; max is 50.
+        The spec says "default limit is 10; max is 50".
+
+    Response
+    --------
+    ``ApiResponse<AuditEvent[]>`` with:
+
+    - ``data``: list of the most recent audit events ordered newest-first.
+    - ``meta.deep_link``: ``/audit-log?key=<canonical-key>`` for the full reel.
+
+    Timestamps (``ts``) are pre-formatted server-side using the same
+    calendar-day relative format as probe-log LRU
+    (``"HH:MM today"`` / ``"yesterday HH:MM"`` / ``"YYYY-MM-DD HH:MM"``).
+
+    Raises HTTP 422 when ``scope`` is not one of ``user``, ``system``, ``cli``.
+    Returns an empty ``data`` list (HTTP 200) when no audit rows exist.
+
+    Query uses the ``ix_audit_log_target_ts (target, ts DESC)`` index.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §Audit history endpoint
+    """
+    if scope not in _VALID_SCOPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Invalid scope {scope!r}. Expected one of: {sorted(_VALID_SCOPES)}"),
+        )
+
+    canonical_key = normalize_credential_key(scope, key)
+
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Shared credential pool is not available: {exc}",
+        ) from exc
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT ts, actor, action, note
+            FROM public.audit_log
+            WHERE target = $1
+            ORDER BY ts DESC
+            LIMIT $2
+            """,
+            canonical_key,
+            limit,
+        )
+    except UndefinedTableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Audit log is not available — migration core_092 may not have run",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to fetch audit history for %s: %s",
+            canonical_key,
+            exc,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Audit log query failed",
+        ) from exc
+
+    events = [
+        AuditEvent(
+            ts=_format_probe_time(row["ts"]) or str(row["ts"]),
+            actor=row["actor"],
+            action=row["action"],
+            note=row["note"],
+        )
+        for row in rows
+    ]
+
+    meta = ApiMeta(deep_link=f"/audit-log?key={canonical_key}")
+    return ApiResponse[list[AuditEvent]](data=events, meta=meta)
