@@ -775,9 +775,13 @@ async def ingestion_window_rollup(
         event_count = 0
 
     # Session count: fan-out to all registered butler schemas.
+    # We fetch only the event IDs (not full rows) and cap the array to avoid
+    # transferring unbounded data to the application layer.
+    # A cap of 10,000 IDs is sufficient for rollup accuracy in typical windows;
+    # very large windows return an approximate count.
+    _SESSION_COUNT_ID_CAP = 10_000
     session_count = 0
     if db is not None and event_count > 0:
-        # Collect event IDs matching the window filter, then count sessions for them.
         id_sql = (
             f"SELECT id FROM ("
             f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
@@ -785,6 +789,7 @@ async def ingestion_window_rollup(
             f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
             f") AS combined"
             f"{where_clause}"
+            f" LIMIT {_SESSION_COUNT_ID_CAP}"
         )
         try:
             id_rows = await pool.fetch(id_sql, *args)
@@ -801,7 +806,7 @@ async def ingestion_window_rollup(
                     FROM sessions
                     WHERE request_id = ANY($1::text[])
                     """,
-                    event_ids,
+                    (event_ids,),
                 )
                 for rows in fan_results.values():
                     for row in rows:

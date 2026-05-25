@@ -898,6 +898,17 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     [activeChannels, setSearchParams],
   );
 
+  // Compute ISO-8601 bounds from the range picker selection.
+  // The rollup band uses these to scope its aggregate; the events list is
+  // not time-bounded (it fetches newest-first and the user loads more pages).
+  const rangeWindow = useMemo((): { from: string; to: string } => {
+    const now = new Date();
+    const to = now.toISOString();
+    const hoursBack = range === "1h" ? 1 : range === "7d" ? 7 * 24 : 24;
+    const from = new Date(now.getTime() - hoursBack * 60 * 60 * 1000).toISOString();
+    return { from, to };
+  }, [range]);
+
   // Events query — pass q and source_channel from URL state
   const eventsFilters = useMemo(() => ({
     limit: PAGE_SIZE,
@@ -914,7 +925,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     fetchNextPage,
   } = useIngestionEvents(eventsFilters, { enabled: isActive });
 
-  // Window rollup — fires with the same filter shape
+  // Window rollup — fires with the same filter shape plus the active range window.
   const rollupStatuses = useMemo(() => [...enabledStatuses].join(","), [enabledStatuses]);
   const rollupChannels = useMemo(() => activeChannels.join(","), [activeChannels]);
 
@@ -923,6 +934,8 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     isLoading: rollupLoading,
   } = useIngestionWindowRollup(
     {
+      from: rangeWindow.from,
+      to: rangeWindow.to,
       ...(debouncedQ ? { q: debouncedQ } : {}),
       ...(rollupChannels ? { channels: rollupChannels } : {}),
       ...(rollupStatuses ? { statuses: rollupStatuses } : {}),
