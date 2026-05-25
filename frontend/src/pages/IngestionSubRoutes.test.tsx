@@ -54,6 +54,16 @@ vi.mock('@/components/ingestion/connectors/ConnectorsRoster', () => ({
 vi.mock('@/components/switchboard/FiltersTab', () => ({
   FiltersTab: () => <div data-testid="filters-tab-stub">Filters tab</div>,
 }))
+vi.mock('@/components/ingestion/filters', () => ({
+  FiltersPipeline: () => <div data-testid="filters-pipeline-stub">Filters pipeline</div>,
+}))
+vi.mock('@/hooks/use-ingestion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/use-ingestion')>()
+  return {
+    ...actual,
+    usePipelineStats: () => ({ data: undefined, isLoading: false }),
+  }
+})
 vi.mock('@/components/switchboard/BackfillHistoryTab', () => ({
   BackfillHistoryTab: () => <div data-testid="history-tab-stub">History tab</div>,
 }))
@@ -309,7 +319,7 @@ describe('IngestionFiltersPage', () => {
     document.body.innerHTML = ''
   })
 
-  it('renders the Filters heading and filters tab stub', async () => {
+  it('renders the Filters headline and filters pipeline', async () => {
     const { default: IngestionFiltersPage } = await import('@/pages/IngestionFiltersPage')
     act(() => {
       root.render(
@@ -318,8 +328,11 @@ describe('IngestionFiltersPage', () => {
         </MemoryRouter>,
       )
     })
-    expect(container.querySelector('h1')?.textContent).toBe('Filters')
-    expect(container.querySelector('[data-testid="filters-tab-stub"]')).not.toBeNull()
+    // New Dispatch-language headline per spec §"Filters Pipeline"
+    expect(container.querySelector('h1')?.textContent).toBe('How signals earn dispatch.')
+    // Old card stub is gone; new pipeline is rendered instead
+    expect(container.querySelector('[data-testid="filters-tab-stub"]')).toBeNull()
+    expect(container.querySelector('[data-testid="filters-pipeline-stub"]')).not.toBeNull()
   })
 })
 
