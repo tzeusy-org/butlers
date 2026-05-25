@@ -740,6 +740,7 @@ export interface ContactInfoEntry {
   is_primary: boolean;
   secured: boolean;
   parent_id: string | null;
+  context: string | null; // personal | work | other | null (unclassified)
 }
 
 /** Full contact detail with all fields including identity fields. */
@@ -4017,12 +4018,20 @@ export interface EntityTimelineItem {
   metadata: Record<string, unknown> | null;
 }
 
-/** A contact linked to an entity, for the entity detail page. */
+/** A contact linked to an entity, for the entity detail page.
+ *
+ * Enriched with contact_info[], labels[], and preferred_channel so the
+ * entity-card can render channel chips without N+1 getContact() calls.
+ * contact_info only contains non-secured rows (secured=true rows are excluded).
+ */
 export interface LinkedContactSummary {
   id: string;
   full_name: string;
   email: string | null;
   phone: string | null;
+  contact_info: ContactInfoEntry[];
+  labels: Label[];
+  preferred_channel: string | null;
 }
 
 /** One row of message activity for an entity, grouped by channel + thread. */

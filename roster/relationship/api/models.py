@@ -560,12 +560,25 @@ class EntityTimelineItem(BaseModel):
 
 
 class LinkedContactSummary(BaseModel):
-    """A contact linked to an entity, for the entity detail page linked-contacts section."""
+    """A contact linked to an entity, for the entity detail page linked-contacts section.
+
+    ``contact_info`` contains all non-secured contact_info rows for this contact
+    (secured=True rows are excluded).  The entity-card renders channel chips from
+    this list without needing a secondary ``getContact`` call per contact.
+
+    ``labels`` mirrors the ``labels`` field on ``ContactDetail`` — the full list
+    of label objects assigned to the contact.
+
+    ``preferred_channel`` mirrors the same field on ``ContactDetail``.
+    """
 
     id: UUID
     full_name: str
     email: str | None = None
     phone: str | None = None
+    contact_info: list[ContactInfoEntry] = Field(default_factory=list)
+    labels: list[Label] = Field(default_factory=list)
+    preferred_channel: str | None = None
 
 
 class EntityImportantDate(BaseModel):
