@@ -25,8 +25,8 @@ interface DormantListProps {
 /**
  * Collapsible list of available-but-unconnected connector profiles.
  *
- * Each "connect →" link goes to /secrets where per-connector credential setup
- * cards (GoogleOAuthSection, SpotifySection, etc.) live.
+ * Each "connect →" link goes to /secrets?focus=u:<provider> where the
+ * DirectionPassport credential page for that provider lives.
  * Collapsed by default; toggled by clicking the eyebrow row.
  */
 export function DormantList({ profiles }: DormantListProps) {

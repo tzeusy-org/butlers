@@ -2460,16 +2460,24 @@ export function getOAuthStartUrl(): string {
  * ``"calendar,drive"``). Omitting ``scopeSet`` reproduces the pre-existing
  * default scope composition — callers that only needed Calendar/Drive/
  * Gmail continue to work without modification.
+ *
+ * ``pageOfOrigin`` is threaded through the OAuth state token so the callback
+ * can redirect back to the originating page. Supported values:
+ *   - ``"secrets"``     → /secrets?focus=u:google&toast=connected
+ *   - ``"ingestion"``   → /ingestion/connectors (handled by ingestion spec)
+ *   - omitted / null    → defaults to /secrets (backend default)
  */
 export function getGoogleOAuthStartUrl(opts?: {
   accountHint?: string;
   forceConsent?: boolean;
   scopeSet?: string;
+  pageOfOrigin?: "secrets" | "ingestion";
 }): string {
   const params = new URLSearchParams();
   if (opts?.accountHint) params.set("account_hint", opts.accountHint);
   if (opts?.forceConsent) params.set("force_consent", "true");
   if (opts?.scopeSet) params.set("scope_set", opts.scopeSet);
+  if (opts?.pageOfOrigin) params.set("page_of_origin", opts.pageOfOrigin);
   const qs = params.toString();
   return `${API_BASE_URL}/oauth/google/start${qs ? `?${qs}` : ""}`;
 }
