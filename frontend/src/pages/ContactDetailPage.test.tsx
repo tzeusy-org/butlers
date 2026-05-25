@@ -139,6 +139,7 @@ describe("ContactDetailPage — token-leak guard", () => {
           is_primary: true,
           secured: false,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -175,7 +176,7 @@ describe("ContactDetailPage — rendering", () => {
       ...BASE_CONTACT,
       email: "fallback@example.com",
       contact_info: [
-        { id: "ci-addr", type: "address", value: "123 Main St", is_primary: true, secured: false, parent_id: null },
+        { id: "ci-addr", type: "address", value: "123 Main St", is_primary: true, secured: false, parent_id: null, context: null },
       ],
     });
     const html = renderPage();
@@ -221,6 +222,7 @@ describe("ContactDetailPage — secured credential reveal", () => {
           is_primary: false,
           secured: true,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -240,6 +242,7 @@ describe("ContactDetailPage — secured credential reveal", () => {
           is_primary: false,
           secured: true,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -259,6 +262,7 @@ describe("ContactDetailPage — secured credential reveal", () => {
           is_primary: false,
           secured: true,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -279,6 +283,7 @@ describe("ContactDetailPage — secured credential reveal", () => {
           is_primary: true,
           secured: false,
           parent_id: null,
+          context: null,
         },
       ],
     });

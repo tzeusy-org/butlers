@@ -129,6 +129,7 @@ describe("ContactDetailPage — secured credential reveal on click", () => {
           is_primary: false,
           secured: true,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -161,6 +162,7 @@ describe("ContactDetailPage — secured credential reveal on click", () => {
           is_primary: false,
           secured: true,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -188,6 +190,7 @@ describe("ContactDetailPage — secured credential reveal on click", () => {
           is_primary: false,
           secured: true,
           parent_id: null,
+          context: null,
         },
       ],
     });
