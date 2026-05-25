@@ -9,7 +9,7 @@ Per brief §3 "Proposed backend epic" the dependency order is `1, 2 → 3 → 4 
 ### A1 — DB foundations
 - [ ] Alembic migration: create `public.secret_probe_log` with columns and index per `core-credentials §public.secret_probe_log Cross-Butler Probe History Table`. (brief §3 bead 1)
 - [ ] Alembic migration: extend `public.audit_log` action enum with `verified`, `failed`, `rotated`, `connected`, `disconnected`, `warned`, `overrode`, `attempted`, `set` per `core-credentials §Audit Action Enum Extension`. (brief §3 bead 1)
-- [ ] Alembic migration: add `ix_audit_log_target_recorded` index on `public.audit_log (target, recorded_at DESC)` per `core-credentials §public.audit_log Index for Credential-Key Filtering`. (brief §3 bead 1)
+- [ ] Alembic migration: add `ix_audit_log_target_ts` index on `public.audit_log (target, ts DESC)` per `core-credentials §public.audit_log Index for Credential-Key Filtering`. (`public.audit_log` timestamp column is `ts`, per `redesign-settings-dispatch-console`'s `dashboard-audit-log` spec.) (brief §3 bead 1)
 - [ ] Alembic migration: add `last_verified`, `last_test_ok`, `last_test_code`, `last_test_message` columns to `butler_secrets` (per-butler-schema-aware) and `public.entity_info` per `core-credentials §Test-State Columns on Credential Tables`. Backfill: NULL. (brief §3 bead 2)
 - [ ] Alembic migration: create `public.provider_feature_catalogue` with columns and indexes per `core-credentials §public.provider_feature_catalogue WhatBreaks Source-of-Truth Table`. (brief §3 bead 6)
 - [ ] Alembic seed: bootstrap `public.provider_feature_catalogue` with the providers known at change-implementation time (Google, Telegram, Spotify, Home Assistant, WhatsApp, OwnTracks, Steam, plus any others discovered in the roster).

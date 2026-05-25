@@ -93,9 +93,10 @@ The audit action enum used by `public.audit_log` (originally specified by `redes
 | `failed` | Probe failure |
 | `rotated` | Value replaced (User rotate, System set on existing key, CLI rotate) |
 | `connected` | OAuth dance completed successfully |
-| `disconnected` | Credential explicitly disconnected (User disconnect, System delete, CLI revoke) |
+| `disconnected` | Credential explicitly disconnected (User disconnect, CLI revoke) |
 | `warned` | Scope mismatch or expiring-soon detected during probe |
 | `overrode` | System override created (per-butler `butler_secrets` row added) |
+| `revoked` | System override removed (per-butler `butler_secrets` row removed via `DELETE /api/secrets/system/<key>?target=<butler>`) |
 | `attempted` | OAuth dance initiated (begin endpoint called) but not yet completed |
 | `set` | New System secret created (first-time `POST /api/secrets/system/<key>`) |
 
@@ -106,11 +107,11 @@ These values SHALL be added to whichever enum or check constraint enforces the a
 - **THEN** an `audit_log` row is appended with `actor = "owner"` (single-owner system), `action = <appropriate enum value above>`, `target = <canonical credential key>`, and `note = <stored prose; never LLM-generated>`
 
 ### Requirement: `public.audit_log` Index for Credential-Key Filtering
-The Switchboard's migration chain SHALL add an index `ix_audit_log_target_recorded` on `public.audit_log (target, recorded_at DESC)` to support `GET /api/audit-log?key=<key>` filtering in O(log N) time even at high audit-log row counts.
+The Switchboard's migration chain SHALL add an index `ix_audit_log_target_ts` on `public.audit_log (target, ts DESC)` to support `GET /api/audit-log?key=<key>` filtering in O(log N) time even at high audit-log row counts. (The `public.audit_log` timestamp column is `ts`, declared by `redesign-settings-dispatch-console`'s `dashboard-audit-log` spec; this index reuses that column unchanged.)
 
 #### Scenario: Audit filter performance
 - **WHEN** `GET /api/audit-log?key=u:google&limit=50` is called against an audit log with > 1 million rows
-- **THEN** the query uses `ix_audit_log_target_recorded` and returns in < 50 ms
+- **THEN** the query uses `ix_audit_log_target_ts` and returns in < 50 ms
 
 ### Requirement: Credential-Key Normalisation Function
 The `core-credentials` capability SHALL expose a Python utility `normalize_credential_key(scope: str, key: str) -> str` returning the canonical form `<scope>:<key>` used by `audit_log.target`, the `/secrets` focus-key URL parameter, and `secret_probe_log.credential_key`. The function SHALL be used by every audit-write callsite and by the `/api/audit-log?key=` filter to ensure a consistent key vocabulary.
