@@ -53,15 +53,24 @@ Two semaphores must be acquired in order:
 
 Metrics track queue depth at both levels (`butlers.spawner.queued_triggers` and `butlers.spawner.global_queue_depth`).
 
-### 2. Model Resolution
+### 2. Model Resolution and Same-Tier Failover Setup
 
-The spawner resolves the model dynamically via the catalog:
+The spawner resolves the model dynamically via the catalog using `resolve_model_with_effective_tier()`:
 
 1. Query `public.model_catalog` with optional `public.butler_model_overrides` for the butler's name and the requested complexity tier.
-2. If the catalog returns a result: use that model's `runtime_type`, `model_id`, and `extra_args`. Check token quota before proceeding.
-3. If the catalog returns nothing: fall back to the TOML-configured `runtime.model`.
+2. If the catalog returns a result: use that model's `runtime_type`, `model_id`, and `extra_args`. Pin the **effective tier** for the logical session — all same-tier failover candidates must match this tier.
+3. If the catalog returns nothing: fall back to the hard-coded `_FALLBACK_MODEL_ID` (no same-tier failover in this path).
 
-The resolution source (`"catalog"` or `"toml_fallback"`) is recorded on the session.
+The resolution source (`"catalog"` or `"static_fallback"`) is recorded on the session row.
+
+**Quota-skip loop:** After initial resolution, the spawner enters a quota-skip loop before invoking the adapter:
+
+- Call `check_token_quota()` for the current candidate.
+- If quota is exhausted: write a `quota_skip` row to `public.model_dispatch_attempts`, then call `next_same_tier_candidate()` to find the next eligible model in the same effective tier.
+- If no next candidate exists: emit `model_dispatch_failovers_exhausted_total` metric and return failure.
+- Repeat until a candidate with remaining quota is found.
+
+All quota-skip rows share the same `logical_session_id` as later attempt rows (minted before the loop, non-null even for internal triggers without a `request_id`).
 
 ### 3. Session Creation
 
@@ -79,9 +88,65 @@ The system prompt is composed from three layers (in stable order for token-cache
 2. **Owner routing instructions** --- fetched from the `routing_instructions` table, sorted by priority
 3. **Memory context** --- retrieved from the memory module based on the prompt content
 
-### 6. Runtime Invocation
+### 6. Runtime Invocation and Same-Tier Failover Loop
 
 The appropriate `RuntimeAdapter` is selected based on the resolved `runtime_type`. The adapter spawns the LLM CLI as a subprocess with the MCP config, system prompt, user prompt, environment, and model parameters. Trace context is propagated via the `TRACEPARENT` environment variable.
+
+**Same-tier failover loop:** When an adapter raises an exception, the spawner enters the failover decision path before propagating the error:
+
+1. **Collect evidence:** Consume any tool calls captured in the runtime session buffer (via `consume_runtime_session_tool_calls()`). These represent MCP side effects that have already occurred.
+
+2. **Consult the classifier:** Call `classify_failover_eligibility(FailoverContext(exception=..., tool_calls=..., process_info=...))`. The classifier returns a `FailoverDecision(eligible, reason)`.
+
+3. **Suppressed path** (`eligible=False`): Emit `model_dispatch_failovers_suppressed_total` metric. Write a `suppressed` row to `public.model_dispatch_attempts`. Re-raise the original exception — the session fails.
+
+4. **Eligible path** (`eligible=True`):
+   - Write a `runtime_failure` row to `public.model_dispatch_attempts` for the current candidate.
+   - Append the current `catalog_entry_id` to `_attempted_ids`.
+   - Call `next_same_tier_candidate(pool, butler_name, effective_tier, _attempted_ids)`.
+   - If a next candidate exists: emit `model_dispatch_failovers_attempted_total`, swap `model`/`runtime_type`/`catalog_entry_id`, re-create the adapter, and loop back to **Runtime Invocation**.
+   - If no candidate remains: emit `model_dispatch_failovers_exhausted_total`, re-raise the last exception.
+
+5. **On success after failover:** Write a `success` row to `public.model_dispatch_attempts` for the winning candidate. Update the session row's `model` field to reflect the fallback model that actually ran.
+
+A hard cap of 10 attempts prevents unbounded looping regardless of catalog size.
+
+#### Classifier Inputs (adapter signals from bu-ojiij.5)
+
+Every `RuntimeAdapter` populates `last_process_info` after each invocation attempt. Key fields:
+
+- **`is_pre_tool_call`** — `True` when the failure happened before any MCP tool was executed. All adapters set this on non-zero exit or timeout.
+- **`error_detail`** — Adapter-extracted error string (stderr, structured error code) for classifier pattern matching.
+
+`MCPToolDiscoveryError` (raised by the Codex adapter after exhausting MCP-discovery retries) additionally exposes:
+
+- **`is_pre_tool_call`** — always `True`.
+- **`internal_retry_count`** — number of adapter-internal retries. The spawner treats the whole `MCPToolDiscoveryError` as ONE logical failover-eligible attempt regardless of this count.
+
+#### Classifier Outcomes
+
+| Decision | Trigger | Spawner Action |
+|---|---|---|
+| `eligible=True` | Systemic pre-tool-call error (rate-limit, auth, model-unavailable, timeout, MCP discovery) with no captured tool calls | Retry next same-tier candidate |
+| `eligible=False` | Any captured tool call, guardrail termination, business/unknown error | No retry; propagate original error |
+
+The classifier is **default-closed**: unknown exception classes always suppress failover.
+
+#### Querying Provenance
+
+Attempt provenance is written to `public.model_dispatch_attempts`. Each row records:
+
+- `catalog_entry_id` — which model was attempted
+- `butler` — which butler triggered the session
+- `outcome` — `quota_skip`, `runtime_failure`, `suppressed`, `exhausted`, or `success`
+- `failure_reason` — classifier decision string or quota detail
+- `error_code` — exception class name
+- `error_message` — truncated error string (max 4096 chars)
+- `tool_call_count` — captured tool calls at time of decision
+- `attempt_index` — 0-based position in the attempt sequence
+- `logical_session_id` — shared across all rows for the same trigger
+
+Use the API endpoint `GET /api/dispatch/attempts?session_id=<uuid>` to retrieve attempt provenance for a completed session.
 
 ### 7. Tool Call Capture and Merge
 
@@ -107,6 +172,6 @@ The spawner maintains a cache of `RuntimeAdapter` instances keyed by `runtime_ty
 
 - [Trigger Flow](../concepts/trigger-flow.md) --- the two trigger sources that invoke the spawner
 - [Session Lifecycle](session-lifecycle.md) --- session creation and completion details
-- [Model Routing](model-routing.md) --- how models are resolved from the catalog
-- [Tool Call Capture](tool-call-capture.md) --- how tool execution is tracked
+- [Model Routing](model-routing.md) --- catalog structure, quota system, same-tier failover candidate selection, and adapter signal details
+- [Tool Call Capture](tool-call-capture.md) --- how tool execution is tracked (feeds the side-effect gate)
 - [Observability](../architecture/observability.md) --- trace context propagation through the spawner
