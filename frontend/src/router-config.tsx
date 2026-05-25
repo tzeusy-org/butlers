@@ -133,23 +133,41 @@ export const router = createBrowserRouter(
         // Ingestion routes — behaviour depends on INGESTION_DISPATCH_CONSOLE flag.
         //
         // Flag ON (default in dev): first-class sub-routes + 301-equivalent redirects
-        //   from legacy ?tab= URLs per ingestion-ui-information-architecture spec.
+        //   from legacy ?tab= URLs per dashboard-ingestion-dispatch-console spec.
         // Flag OFF (default in prod): legacy single-route IngestionPage with ?tab= param.
         //
-        // Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
-        //       ingestion-ui-information-architecture/spec.md
+        // Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
+        //       dashboard-ingestion-dispatch-console/spec.md
+        //       dashboard-shell/spec.md
+        //
+        // Route hierarchy (flag ON):
+        //   /ingestion                                    Timeline ledger (default)
+        //   /ingestion/connectors                         Connectors roster
+        //   /ingestion/connectors/:connectorType/:id      Connector detail
+        //   /ingestion/filters                            Filters pipeline
+        //
+        // Legacy compat (flag ON):
+        //   ?tab=connectors  → /ingestion/connectors
+        //   ?tab=filters     → /ingestion/filters
+        //   ?tab=history     → /ingestion (Timeline; no /ingestion/history primary route)
+        //   ?tab=timeline    → /ingestion (strips param)
+        //   /ingestion/history → /ingestion (redirect; route retained for bookmark compat)
         ...(INGESTION_DISPATCH_CONSOLE
           ? [
               // Root /ingestion: redirect ?tab= params → sub-routes; else Timeline.
               { path: '/ingestion', element: <IngestionTabRedirect /> },
-              // First-class sub-routes (§2.1)
+              // First-class sub-routes
               { path: '/ingestion/connectors', element: <IngestionConnectorsPage /> },
               { path: '/ingestion/filters', element: <IngestionFiltersPage /> },
-              { path: '/ingestion/history', element: <IngestionHistoryPage /> },
+              // /ingestion/history: bookmark compat redirect → Timeline
+              // There is no primary redesigned /ingestion/history route.
+              { path: '/ingestion/history', element: <Navigate to="/ingestion" replace /> },
             ]
           : [
               // Legacy single-route with ?tab= param (prod-safe fallback)
               { path: '/ingestion', element: <IngestionPage /> },
+              // Retain history sub-route in legacy mode
+              { path: '/ingestion/history', element: <IngestionHistoryPage /> },
             ]),
         {
           path: '/ingestion/connectors/:connectorType/:endpointIdentity',

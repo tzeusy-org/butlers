@@ -5,22 +5,30 @@
  * feature flag is on. The Timeline is the default landing view for the
  * ingestion surface.
  *
- * Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
- *       ingestion-ui-information-architecture/spec.md §"Sub-route hierarchy"
+ * Uses Dispatch primitives (DispatchLayout, DispatchHeader) and the shared
+ * IngestionSubNav for consistent navigation across all ingestion routes.
+ * No legacy TabsTrigger shell — sub-nav replaces the old ?tab= switcher.
+ *
+ * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
+ *       dashboard-ingestion-dispatch-console/spec.md §"Timeline route replaces legacy tab landing"
  */
 
+import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
+import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
 import { TimelineTab } from '@/components/ingestion/TimelineTab'
 
 export default function IngestionTimelinePage() {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Ingestion</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Unified ingestion control surface: source visibility, routing policy, and historical replay.
-        </p>
-      </div>
-      <TimelineTab isActive={true} />
-    </div>
+    <DispatchLayout>
+      <DispatchHeader
+        eyebrow="Ingestion · timeline"
+        headline="Ingestion"
+        description="Unified ingestion control surface: source visibility, routing policy, and historical replay."
+      />
+      <IngestionSubNav />
+      <DispatchSurface>
+        <TimelineTab isActive={true} />
+      </DispatchSurface>
+    </DispatchLayout>
   )
 }

@@ -49,7 +49,10 @@ export function RelationshipContactRedirect() {
 // a permanent client-side replace() navigation, which is functionally identical
 // for bookmark resolution and browser history.
 //
-// Spec: ingestion-ui-information-architecture §"301 redirects from legacy tab parameters"
+// Spec: dashboard-ingestion-dispatch-console §"Legacy connectors tab normalizes to roster route"
+//       "History tab normalizes to Timeline state"
+// Note: ?tab=history normalises to /ingestion (Timeline), NOT /ingestion/history.
+//       There is no primary redesigned /ingestion/history route per the new spec.
 // Exported so tests can import the component directly without duplicating its logic.
 export function IngestionTabRedirect() {
   const [searchParams] = useSearchParams()
@@ -66,8 +69,10 @@ export function IngestionTabRedirect() {
   if (tab === 'filters') {
     return <Navigate to={`/ingestion/filters${qs ? `?${qs}` : ''}`} replace />
   }
-  if (tab === 'history') {
-    return <Navigate to={`/ingestion/history${qs ? `?${qs}` : ''}`} replace />
+  // history normalises to Timeline (no separate /ingestion/history route in the redesign)
+  // Spec: "history SHALL map to the Timeline route … it SHALL NOT remain a fourth redesigned tab"
+  if (tab === 'history' || tab === 'timeline') {
+    return <Navigate to={`/ingestion${qs ? `?${qs}` : ''}`} replace />
   }
 
   // Unrecognized ?tab= value: redirect to Timeline root, stripping the unknown

@@ -127,9 +127,14 @@ describe('IngestionTabRedirect', () => {
     expect(container.querySelector('[data-testid="filters-page"]')).not.toBeNull()
   })
 
-  it('redirects ?tab=history to /ingestion/history', () => {
+  it('redirects ?tab=history to /ingestion (Timeline), not to /ingestion/history', () => {
+    // Spec (complete-ingestion-redesign-parity): "history SHALL map to the Timeline route …
+    // it SHALL NOT remain a fourth redesigned tab." No primary /ingestion/history route.
     render('/ingestion?tab=history')
-    expect(container.querySelector('[data-testid="history-page"]')).not.toBeNull()
+    // Must NOT land on /ingestion/history
+    expect(container.querySelector('[data-testid="history-page"]')).toBeNull()
+    // Must render Timeline (IngestionTabRedirect with no tab → renders IngestionTimelinePage stub)
+    expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
   })
 
   // --- Filter param preservation ---
