@@ -94,6 +94,7 @@ from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse
+from butlers.api.routers import audit as audit_router
 from butlers.core.credential_keys import normalize_credential_key
 
 logger = logging.getLogger(__name__)
@@ -1387,3 +1388,510 @@ async def get_breaks_catalogue(
 
     meta = ApiMeta(by_provider=by_provider)
     return ApiResponse[list[BreakEntry]](data=entries, meta=meta)
+
+
+# ---------------------------------------------------------------------------
+# User credential mutation models
+# ---------------------------------------------------------------------------
+
+
+class RotateRequest(BaseModel):
+    """Request body for POST /api/secrets/user/<provider>/rotate."""
+
+    value: str
+    """New secret value to store."""
+
+
+class DisconnectStatus(BaseModel):
+    """Response payload for POST /api/secrets/user/<provider>/disconnect."""
+
+    status: str = "disconnected"
+
+
+class ReauthorizeResponse(BaseModel):
+    """Response payload for POST /api/secrets/user/<provider>/reauthorize."""
+
+    redirect_url: str
+    """URL the caller should redirect to, beginning the OAuth dance."""
+
+
+# ---------------------------------------------------------------------------
+# Mutation audit helper
+# ---------------------------------------------------------------------------
+
+_OWNER_ACTOR = "owner"
+
+
+async def _write_credential_audit(
+    pool: Any,
+    *,
+    action: str,
+    provider: str,
+    note: str | None = None,
+) -> None:
+    """Append one row to public.audit_log for a user-credential mutation.
+
+    Silently swallows errors so audit logging never blocks the primary
+    operation (fire-and-forget pattern consistent with audit_emit.py).
+    """
+    target = normalize_credential_key("user", provider)
+    try:
+        await audit_router.append(
+            pool,
+            _OWNER_ACTOR,
+            action,
+            target=target,
+            note=note,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to write credential audit: action=%s provider=%s",
+            action,
+            provider,
+            exc_info=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/user/<provider>/rotate
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/user/{provider}/rotate",
+    response_model=ApiResponse[UserSecretDetail],
+)
+async def rotate_user_credential(
+    provider: str,
+    body: RotateRequest,
+    identity: UUID | None = Query(
+        default=None,
+        description=(
+            "Entity UUID for the credential to rotate. When omitted, defaults to the owner entity."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[UserSecretDetail]:
+    """Rotate (replace) the stored value for a user-scoped credential.
+
+    Writes the new value to the matching ``public.entity_info`` row and
+    appends a ``rotated`` audit row to ``public.audit_log``.
+
+    The spec requires this endpoint to return ``ApiResponse<UserSecret>``
+    (updated).  The rotation is a direct in-place update of the
+    ``entity_info.value`` column; no external provider call is made.
+
+    Note: for OAuth providers (e.g. Google), rotating the stored refresh
+    token does NOT revoke the old token at the provider — it only replaces
+    the locally-stored value.  Full OAuth re-issuance is handled by the
+    ``/reauthorize`` endpoint.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §User credential mutations — ``rotated`` audit action
+    """
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared credential database unavailable")
+
+    # Locate the existing row so we can confirm it exists and get its entity_id.
+    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    # Update the value in-place.
+    try:
+        if identity is not None:
+            await shared_pool.execute(
+                """
+                UPDATE public.entity_info
+                SET value = $1, updated_at = now()
+                WHERE entity_id = $2
+                  AND type LIKE $3
+                  AND secured = true
+                """,
+                body.value,
+                identity,
+                f"{provider}_%",
+            )
+        else:
+            await shared_pool.execute(
+                """
+                UPDATE public.entity_info
+                SET value = $1, updated_at = now()
+                WHERE id IN (
+                    SELECT ei.id
+                    FROM public.entity_info ei
+                    JOIN public.entities e ON e.id = ei.entity_id
+                    WHERE 'owner' = ANY(e.roles)
+                      AND ei.type LIKE $2
+                      AND ei.secured = true
+                )
+                """,
+                body.value,
+                f"{provider}_%",
+            )
+    except Exception as exc:
+        logger.warning("rotate_user_credential: update failed for provider=%s: %s", provider, exc)
+        raise HTTPException(status_code=503, detail="Credential rotation failed") from exc
+
+    # Audit — fire-and-forget.
+    await _write_credential_audit(
+        shared_pool,
+        action="rotated",
+        provider=provider,
+        note="Value replaced via rotate endpoint",
+    )
+
+    # Re-fetch to return the updated state with freshly computed fingerprint.
+    updated = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    if updated is None:
+        # Should not happen; the row was just updated.
+        raise HTTPException(status_code=503, detail="Credential not found after rotation")
+
+    return ApiResponse[UserSecretDetail](data=updated, meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/user/<provider>/disconnect
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/user/{provider}/disconnect",
+    response_model=ApiResponse[DisconnectStatus],
+)
+async def disconnect_user_credential(
+    provider: str,
+    identity: UUID | None = Query(
+        default=None,
+        description=(
+            "Entity UUID for the credential to disconnect. "
+            "When omitted, defaults to the owner entity."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[DisconnectStatus]:
+    """Disconnect (remove) a user-scoped credential.
+
+    Deletes the matching ``public.entity_info`` row(s) for the provider and
+    appends a ``disconnected`` audit row to ``public.audit_log``.
+
+    This is a hard delete.  The credential value is removed from the DB.
+    OAuth tokens are NOT revoked at the provider — the caller should
+    separately revoke the token if needed (or use the provider's dashboard).
+
+    Returns ``ApiResponse<{status: "disconnected"}>`` on success.
+    Returns 404 when no matching credential exists.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §User credential mutations — ``disconnected`` audit action
+    """
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared credential database unavailable")
+
+    # Confirm the credential exists before deleting.
+    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    # Delete the row(s).
+    try:
+        if identity is not None:
+            await shared_pool.execute(
+                """
+                DELETE FROM public.entity_info
+                WHERE entity_id = $1
+                  AND type LIKE $2
+                  AND secured = true
+                """,
+                identity,
+                f"{provider}_%",
+            )
+        else:
+            await shared_pool.execute(
+                """
+                DELETE FROM public.entity_info
+                WHERE id IN (
+                    SELECT ei.id
+                    FROM public.entity_info ei
+                    JOIN public.entities e ON e.id = ei.entity_id
+                    WHERE 'owner' = ANY(e.roles)
+                      AND ei.type LIKE $1
+                      AND ei.secured = true
+                )
+                """,
+                f"{provider}_%",
+            )
+    except Exception as exc:
+        logger.warning(
+            "disconnect_user_credential: delete failed for provider=%s: %s", provider, exc
+        )
+        raise HTTPException(status_code=503, detail="Credential disconnect failed") from exc
+
+    # Audit — fire-and-forget.
+    await _write_credential_audit(
+        shared_pool,
+        action="disconnected",
+        provider=provider,
+        note="Credential removed via disconnect endpoint",
+    )
+
+    return ApiResponse[DisconnectStatus](data=DisconnectStatus(), meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/user/<provider>/probe
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/user/{provider}/probe",
+    response_model=ApiResponse[TestResult],
+)
+async def probe_user_credential(
+    provider: str,
+    identity: UUID | None = Query(
+        default=None,
+        description=(
+            "Entity UUID for the credential to probe. When omitted, defaults to the owner entity."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TestResult]:
+    """Probe a user-scoped credential and record the test result.
+
+    This endpoint does NOT call the external provider.  It derives the
+    probe outcome from the current credential state (is the value set, is
+    the credential expired, is the last_test_ok field true?).
+
+    In the same SQL transaction it:
+    1. Inserts one row into ``public.secret_probe_log``.
+    2. Updates ``last_verified``, ``last_test_ok``, ``last_test_code``,
+       ``last_test_message`` on the matching ``public.entity_info`` row.
+
+    Appends a ``verified`` (ok) or ``failed`` (not-ok) audit row.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §User credential mutations — probe writes probe_log + audit
+    openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
+    §Cache write on probe (same-transaction invariant)
+    """
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared credential database unavailable")
+
+    # Fetch the credential to derive current state.
+    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    # Derive probe outcome from current state: ok if state == 'ok', else not ok.
+    probe_ok = detail.state == "ok"
+    probe_code: int | None = None
+    probe_message: str | None = detail.failure_tail if not probe_ok else None
+    credential_key = detail.type  # e.g. 'google_oauth_refresh'
+
+    # Execute probe_log insert + entity_info cache update in one transaction.
+    try:
+        async with shared_pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. Insert probe log row.
+                await conn.execute(
+                    """
+                    INSERT INTO public.secret_probe_log
+                        (credential_scope, credential_key, ok, code, message)
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    "user",
+                    credential_key,
+                    probe_ok,
+                    probe_code,
+                    probe_message,
+                )
+
+                # 2. Update test-state cache columns on entity_info.
+                # last_verified is set only on success (per spec §Cache write on probe).
+                if identity is not None:
+                    await conn.execute(
+                        """
+                        UPDATE public.entity_info
+                        SET
+                            last_test_ok = $1,
+                            last_test_code = $2,
+                            last_test_message = $3,
+                            last_verified = CASE WHEN $1 THEN now() ELSE last_verified END
+                        WHERE entity_id = $4
+                          AND type LIKE $5
+                          AND secured = true
+                        """,
+                        probe_ok,
+                        probe_code,
+                        probe_message,
+                        identity,
+                        f"{provider}_%",
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE public.entity_info
+                        SET
+                            last_test_ok = $1,
+                            last_test_code = $2,
+                            last_test_message = $3,
+                            last_verified = CASE WHEN $1 THEN now() ELSE last_verified END
+                        WHERE id IN (
+                            SELECT ei.id
+                            FROM public.entity_info ei
+                            JOIN public.entities e ON e.id = ei.entity_id
+                            WHERE 'owner' = ANY(e.roles)
+                              AND ei.type LIKE $4
+                              AND ei.secured = true
+                        )
+                        """,
+                        probe_ok,
+                        probe_code,
+                        probe_message,
+                        f"{provider}_%",
+                    )
+
+                # 3. Audit inside the same transaction.
+                audit_action = "verified" if probe_ok else "failed"
+                target = normalize_credential_key("user", provider)
+                probe_fail_msg = probe_message or "unknown error"
+                note = "Probe ok" if probe_ok else f"Probe failed: {probe_fail_msg}"
+                try:
+                    await audit_router.append(
+                        conn,
+                        _OWNER_ACTOR,
+                        audit_action,
+                        target=target,
+                        note=note,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "probe audit write failed for provider=%s; probe result committed",
+                        provider,
+                        exc_info=True,
+                    )
+
+    except UndefinedTableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="secret_probe_log table not available — migration may not have run",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "probe_user_credential: transaction failed for provider=%s: %s", provider, exc
+        )
+        raise HTTPException(status_code=503, detail="Probe transaction failed") from exc
+
+    result = TestResult(
+        ok=probe_ok,
+        code=probe_code,
+        message=probe_message,
+        at=_format_probe_time(datetime.now(tz=UTC)),
+    )
+    return ApiResponse[TestResult](data=result, meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/user/<provider>/reauthorize
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/user/{provider}/reauthorize",
+    response_model=ApiResponse[ReauthorizeResponse],
+)
+async def reauthorize_user_credential(
+    provider: str,
+    identity: UUID | None = Query(
+        default=None,
+        description=(
+            "Entity UUID for the credential to reauthorize. "
+            "When omitted, defaults to the owner entity."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ReauthorizeResponse]:
+    """Initiate an OAuth reauthorization dance for a user-scoped credential.
+
+    Builds and returns a ``redirect_url`` pointing to
+    ``/api/oauth/<provider>/start?page_of_origin=secrets`` (plus any
+    account hint derived from the credential's stored label/email).  The
+    caller is expected to redirect the browser to this URL, which begins
+    the OAuth dance.  The OAuth callback will redirect back to
+    ``/secrets?focus=u:<provider>&toast=connected`` on success.
+
+    Appends an ``attempted`` audit row (because the reauth dance has been
+    initiated but not yet completed).
+
+    Multi-account note: when the stored entity_info label contains an email
+    address, it is passed as ``account_hint=<email>`` so the OAuth dance
+    pre-selects the correct Google account.
+
+    Spec anchor
+    -----------
+    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    §User credential mutations — reauthorize returns redirect_url
+    openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md
+    §Cross-Page Reauth Bookkeeping
+    """
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if shared_pool is None:
+        raise HTTPException(status_code=503, detail="Shared credential database unavailable")
+
+    # Look up the credential to derive account hint (label may hold email).
+    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    # Build the OAuth start URL.  page_of_origin=secrets so the callback
+    # routes the user back to the /secrets page on completion.
+    params: dict[str, str] = {"page_of_origin": "secrets"}
+    if detail.label:
+        # The label field stores the account email for OAuth credentials.
+        params["account_hint"] = detail.label
+
+    query_string = "&".join(f"{k}={v}" for k, v in params.items())
+    redirect_url = f"/api/oauth/{provider}/start?{query_string}"
+
+    # Audit — attempted (dance initiated, not yet completed).
+    await _write_credential_audit(
+        shared_pool,
+        action="attempted",
+        provider=provider,
+        note="Reauthorize initiated from /secrets (page_of_origin=secrets)",
+    )
+
+    return ApiResponse[ReauthorizeResponse](
+        data=ReauthorizeResponse(redirect_url=redirect_url),
+        meta=ApiMeta(),
+    )
