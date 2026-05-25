@@ -208,6 +208,23 @@ def _index_exists(db_url: str, index_name: str) -> bool:
     return bool(exists)
 
 
+def _column_exists(db_url: str, table_name: str, column_name: str) -> bool:
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+                " WHERE table_schema='public' AND table_name=:t AND column_name=:c)"
+            ),
+            {"t": table_name, "c": column_name},
+        )
+        exists = result.scalar()
+    engine.dispose()
+    return bool(exists)
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 class TestApprovalsMigration:
@@ -224,6 +241,10 @@ class TestApprovalsMigration:
 
         for tbl in ["pending_actions", "approval_rules", "approval_events"]:
             assert _table_exists(db_url, tbl), f"{tbl} should exist"
+        for col in ["why", "evidence"]:
+            assert _column_exists(db_url, "pending_actions", col), (
+                f"pending_actions.{col} should exist"
+            )
         for idx in [
             "idx_pending_actions_status_requested",
             "idx_pending_actions_session_id",
@@ -254,7 +275,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_001" in versions
+        assert "approvals_002" in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
