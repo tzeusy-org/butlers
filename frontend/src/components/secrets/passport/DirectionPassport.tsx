@@ -340,6 +340,7 @@ export function DirectionPassport({
               <PageCli
                 credential={resolved.credential}
                 showVerifyCmd={tweaks.showVerifyCmd}
+                revealMode={tweaks.revealMode}
               />
             )}
             {resolved.kind === null && <PassportEmptyState />}

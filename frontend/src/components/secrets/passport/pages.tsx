@@ -18,6 +18,7 @@ import type {
   SystemCredential,
   CliCredential,
   ProviderInfo,
+  RevealMode,
 } from "./types.ts";
 import { STATE_CATALOG } from "./constants.ts";
 import {
@@ -735,9 +736,12 @@ export function PageSystem({
 export function PageCli({
   credential,
   showVerifyCmd = false,
+  revealMode = "eye",
 }: {
   credential: CliCredential;
   showVerifyCmd?: boolean;
+  /** Controls the reveal-token eye button. "never" hides it. */
+  revealMode?: RevealMode;
 }) {
   const meta = STATE_CATALOG[credential.state] ?? STATE_CATALOG.never_set;
   const color = toneColor(meta.tone);
@@ -900,7 +904,7 @@ export function PageCli({
         }
         right={
           <>
-            {credential.fingerprint && <PillBtn>reveal token</PillBtn>}
+            {credential.fingerprint && revealMode !== "never" && <PillBtn>reveal token</PillBtn>}
             {!isMissing && <PillBtn variant="danger">revoke</PillBtn>}
           </>
         }
