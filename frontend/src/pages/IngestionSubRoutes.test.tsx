@@ -48,6 +48,9 @@ vi.mock('@/components/ingestion/ConnectorsTab', () => ({
 vi.mock('@/components/ingestion/ConnectorsListPage', () => ({
   ConnectorsListPage: () => <div data-testid="connectors-tab-stub">Connectors tab</div>,
 }))
+vi.mock('@/components/ingestion/connectors/ConnectorsRoster', () => ({
+  ConnectorsRoster: () => <div data-testid="connectors-tab-stub">Connectors roster</div>,
+}))
 vi.mock('@/components/switchboard/FiltersTab', () => ({
   FiltersTab: () => <div data-testid="filters-tab-stub">Filters tab</div>,
 }))
@@ -272,7 +275,7 @@ describe('IngestionConnectorsPage', () => {
     document.body.innerHTML = ''
   })
 
-  it('renders the Connectors heading and connectors tab', async () => {
+  it('renders the Connectors heading and connectors roster', async () => {
     const { default: IngestionConnectorsPage } = await import('@/pages/IngestionConnectorsPage')
     act(() => {
       root.render(
@@ -281,7 +284,8 @@ describe('IngestionConnectorsPage', () => {
         </MemoryRouter>,
       )
     })
-    expect(container.querySelector('h1')?.textContent).toBe('Connectors')
+    // The new Dispatch-language design uses "Where signals come from." as the display headline
+    expect(container.querySelector('h1')?.textContent).toBe('Where signals come from.')
     expect(container.querySelector('[data-testid="connectors-tab-stub"]')).not.toBeNull()
   })
 })
