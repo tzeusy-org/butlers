@@ -135,8 +135,10 @@ def test_normalize_credential_key_cli():
     assert normalize_credential_key("cli", "claude") == "c:claude"
 
 
-def test_normalize_credential_key_unknown_scope_passes_through():
-    assert normalize_credential_key("custom", "foo") == "custom:foo"
+def test_normalize_credential_key_unknown_scope_raises():
+    # credential_keys.py (from main) raises ValueError for unrecognised scopes.
+    with pytest.raises(ValueError, match="Unknown credential scope"):
+        normalize_credential_key("custom", "foo")
 
 
 # ===========================================================================

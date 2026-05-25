@@ -579,6 +579,7 @@ class _StateEntry:
     provider: str = field(default="google")
     """OAuth provider identifier (e.g. ``"google"``, ``"spotify"``)."""
 
+
 # Maps state token → _StateEntry
 # NOTE: This store is process-local. Do not run multiple worker processes
 # (e.g. gunicorn -w N) — CSRF state validation will silently fail across workers.
