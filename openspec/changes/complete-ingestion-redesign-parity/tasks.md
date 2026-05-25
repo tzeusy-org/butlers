@@ -12,7 +12,7 @@ this task list must not close without live visual evidence.
 - [x] 1.3 Add a `dashboard-shell` route-map delta for ingestion sub-routes.
 - [x] 1.4 Run `openspec validate complete-ingestion-redesign-parity --strict`
       and fix structural issues.
-- [ ] 1.5 Obtain operator signoff on the change before implementation begins.
+- [x] 1.5 Obtain operator signoff on the change before implementation begins.
 
 ## 2. Frontend Foundation Bead
 
