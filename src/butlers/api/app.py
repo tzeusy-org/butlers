@@ -81,6 +81,7 @@ from butlers.api.routers.runtime_config import router as runtime_config_router
 from butlers.api.routers.schedules import router as schedules_router
 from butlers.api.routers.search import router as search_router
 from butlers.api.routers.secrets import router as secrets_router
+from butlers.api.routers.secrets_v2 import router as secrets_v2_router
 from butlers.api.routers.sessions import (
     butler_sessions_router,
 )
@@ -276,6 +277,7 @@ def create_app(
     app.include_router(schedules_router)
     app.include_router(modules_router)
     app.include_router(secrets_router)
+    app.include_router(secrets_v2_router)
     app.include_router(state_router)
     app.include_router(ingestion_events_router)
     app.include_router(ingestion_rollup_router)

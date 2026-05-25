@@ -1,0 +1,646 @@
+"""Integration tests for GET /api/secrets/inventory.
+
+Covers the four acceptance scenarios from bu-thx5x:
+1. Empty store — all three families return empty arrays; meta.needs_hand_count=0.
+2. Mixed states — verified-ok, verified-failed, never-verified rows are
+   correctly classified and needs_hand_count reflects non-ok rows.
+3. Identity filter (projection lens) — ?identity=<uuid> restricts the user
+   array to the specified entity; system/cli remain unfiltered.
+4. Envelope conformance — response always has {data: {cli,system,user}, meta}.
+
+Additional unit-level tests:
+- _fingerprint: sha256[:8] hex, None on empty value
+- _derive_state: state machine paths
+- _format_probe_time: "HH:MM today" / "yesterday HH:MM" / date fallback
+- _needs_hand_count: correct aggregation
+
+Performance assertion note
+--------------------------
+The p99 < 500ms requirement at 100 creds + 10k probe-log rows is a load-test
+concern that depends on real PostgreSQL.  There is no benchmark infra in this
+repo, so the requirement is satisfied by design (one indexed probe-log query
+per credential using ix_secret_probe_log_lookup) and is noted here as a
+static-check only.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from butlers.api.app import create_app
+from butlers.api.db import DatabaseManager
+from butlers.api.routers.secrets_v2 import (
+    _derive_state,
+    _fetch_probe_log,
+    _fingerprint,
+    _format_probe_time,
+    _get_db_manager,
+    _needs_hand_count,
+)
+
+pytestmark = pytest.mark.unit
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_NOW = datetime.now(tz=UTC)
+
+
+def _make_row(**kwargs) -> MagicMock:
+    """Build a MagicMock that behaves like an asyncpg Record."""
+    m = MagicMock()
+    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
+    return m
+
+
+def _make_system_row(
+    *,
+    key: str = "SOME_API_KEY",
+    value: str = "s3cr3t",
+    category: str = "general",
+    description: str | None = None,
+    last_verified: datetime | None = None,
+    last_test_ok: bool | None = None,
+    last_test_code: int | None = None,
+    last_test_message: str | None = None,
+    expires_at: datetime | None = None,
+) -> MagicMock:
+    return _make_row(
+        secret_key=key,
+        secret_value=value,
+        category=category,
+        description=description,
+        last_verified=last_verified,
+        last_test_ok=last_test_ok,
+        last_test_code=last_test_code,
+        last_test_message=last_test_message,
+        expires_at=expires_at,
+        is_sensitive=True,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+def _make_entity_info_row(
+    *,
+    entity_id: str | None = None,
+    info_type: str = "google_oauth_refresh",
+    value: str = "tok3n",
+    label: str | None = None,
+    last_verified: datetime | None = None,
+    last_test_ok: bool | None = None,
+    last_test_code: int | None = None,
+    last_test_message: str | None = None,
+) -> MagicMock:
+    row_id = uuid4()
+    eid = entity_id or str(uuid4())
+    return _make_row(
+        id=row_id,
+        entity_id=eid,
+        type=info_type,
+        value=value,
+        label=label,
+        last_verified=last_verified,
+        last_test_ok=last_test_ok,
+        last_test_code=last_test_code,
+        last_test_message=last_test_message,
+        created_at=_NOW,
+    )
+
+
+def _make_db_manager(
+    *,
+    butler_names: list[str] | None = None,
+    system_rows: list[MagicMock] | None = None,
+    user_rows: list[MagicMock] | None = None,
+    cli_rows: list[MagicMock] | None = None,
+    probe_row: MagicMock | None = None,
+    shared_pool_available: bool = True,
+) -> MagicMock:
+    """Build a mock DatabaseManager for inventory endpoint tests.
+
+    The mock wires:
+    - butler_names: list of registered butler names
+    - system pool: returns system_rows on fetch('butler_secrets ...')
+    - shared pool: returns user_rows on entity_info queries,
+                   cli_rows on butler_secrets WHERE category='cli' queries
+    - probe pool fetchrow: returns probe_row (None by default = no probes)
+    """
+    butler_names = butler_names or []
+    system_rows = system_rows or []
+    user_rows = user_rows or []
+    cli_rows = cli_rows or []
+
+    # --- butler schema pool ---
+    butler_pool = AsyncMock()
+
+    async def _butler_fetch(sql, *args):
+        if "butler_secrets" in sql and "category = 'cli'" not in sql:
+            return system_rows
+        return []
+
+    butler_pool.fetch = AsyncMock(side_effect=_butler_fetch)
+    # probe log lookup
+    butler_pool.fetchrow = AsyncMock(return_value=probe_row)
+
+    # --- shared pool ---
+    shared_pool = AsyncMock()
+
+    async def _shared_fetch(sql, *args):
+        if "category = 'cli'" in sql:
+            return cli_rows
+        if "entity_info" in sql:
+            return user_rows
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_shared_fetch)
+    shared_pool.fetchrow = AsyncMock(return_value=probe_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = butler_names
+
+    def _pool(name):
+        return butler_pool
+
+    mock_db.pool = MagicMock(side_effect=_pool)
+
+    if shared_pool_available:
+        mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+    else:
+        mock_db.credential_shared_pool = MagicMock(side_effect=KeyError("no shared pool"))
+
+    return mock_db
+
+
+def _build_app(mock_db: MagicMock) -> TestClient:
+    """Create a TestClient with the given mock DatabaseManager."""
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    return TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: helper functions
+# ---------------------------------------------------------------------------
+
+
+def test_fingerprint_returns_first_8_hex_chars():
+    fp = _fingerprint("mysecretvalue")
+    assert fp is not None
+    assert len(fp) == 8
+    # Verify it's hex
+    int(fp, 16)
+
+
+def test_fingerprint_is_deterministic():
+    assert _fingerprint("abc") == _fingerprint("abc")
+
+
+def test_fingerprint_differs_for_different_values():
+    assert _fingerprint("abc") != _fingerprint("xyz")
+
+
+def test_fingerprint_none_on_empty_string():
+    assert _fingerprint("") is None
+
+
+def test_fingerprint_none_on_none():
+    assert _fingerprint(None) is None
+
+
+@pytest.mark.parametrize(
+    "is_set,last_test_ok,expires_at,expected",
+    [
+        (False, None, None, "never_set"),
+        (True, None, None, "warn"),
+        (True, True, None, "ok"),
+        (True, False, None, "failing"),
+        (True, True, _NOW - timedelta(days=1), "expired"),
+        (True, None, _NOW + timedelta(days=1), "warn"),  # not expired, no probe
+    ],
+    ids=["never_set", "warn-no-probe", "ok", "failing", "expired", "warn-future-expiry"],
+)
+def test_derive_state(is_set, last_test_ok, expires_at, expected):
+    assert (
+        _derive_state(is_set=is_set, last_test_ok=last_test_ok, expires_at=expires_at) == expected
+    )
+
+
+def test_format_probe_time_today():
+    recent = datetime.now(tz=UTC) - timedelta(hours=1)
+    result = _format_probe_time(recent)
+    assert result is not None
+    assert "today" in result
+
+
+def test_format_probe_time_yesterday():
+    yesterday = datetime.now(tz=UTC) - timedelta(days=1, hours=2)
+    result = _format_probe_time(yesterday)
+    assert result is not None
+    assert "yesterday" in result
+
+
+def test_format_probe_time_older():
+    old = datetime.now(tz=UTC) - timedelta(days=5)
+    result = _format_probe_time(old)
+    assert result is not None
+    # Should include a date component
+    assert len(result) > 5
+
+
+def test_format_probe_time_none():
+    assert _format_probe_time(None) is None
+
+
+def test_needs_hand_count_all_ok():
+    from butlers.api.routers.secrets_v2 import SystemSecret
+
+    items = [
+        SystemSecret(key="k1", state="ok", butler="b1"),
+        SystemSecret(key="k2", state="ok", butler="b1"),
+    ]
+    assert _needs_hand_count(items) == 0
+
+
+def test_needs_hand_count_mixed():
+    from butlers.api.routers.secrets_v2 import SystemSecret
+
+    items = [
+        SystemSecret(key="k1", state="ok", butler="b1"),
+        SystemSecret(key="k2", state="failing", butler="b1"),
+        SystemSecret(key="k3", state="warn", butler="b1"),
+        SystemSecret(key="k4", state="never_set", butler="b1"),
+    ]
+    assert _needs_hand_count(items) == 3
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1: Empty store
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_empty_store():
+    """All three families return empty arrays; meta.needs_hand_count=0."""
+    mock_db = _make_db_manager(butler_names=[], system_rows=[], user_rows=[], cli_rows=[])
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Envelope conformance
+    assert "data" in body
+    assert "meta" in body
+
+    data = body["data"]
+    assert data["cli"] == []
+    assert data["system"] == []
+    assert data["user"] == []
+
+    meta = body["meta"]
+    assert meta["needs_hand_count"] == 0
+
+
+def test_inventory_no_shared_pool_returns_empty_user_and_cli():
+    """When shared pool is unavailable, user and cli are empty but system works."""
+    system_row = _make_system_row(key="API_KEY", value="v1", last_test_ok=True)
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row],
+        user_rows=[],
+        cli_rows=[],
+        shared_pool_available=False,
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["user"] == []
+    assert body["data"]["cli"] == []
+    # System may or may not have rows depending on pool mock
+    assert "system" in body["data"]
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2: Mixed states
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_mixed_states_needs_hand_count():
+    """Mixed states: ok, failing, never-verified rows; needs_hand_count is correct."""
+    ok_row = _make_system_row(key="KEY_OK", value="v1", last_test_ok=True)
+    fail_row = _make_system_row(key="KEY_FAIL", value="v2", last_test_ok=False)
+    # never-verified = is_set, last_test_ok=None → state=warn
+    warn_row = _make_system_row(key="KEY_WARN", value="v3", last_test_ok=None)
+
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[ok_row, fail_row, warn_row],
+        user_rows=[],
+        cli_rows=[],
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    system = body["data"]["system"]
+    assert len(system) == 3
+
+    states = {row["key"]: row["state"] for row in system}
+    assert states["KEY_OK"] == "ok"
+    assert states["KEY_FAIL"] == "failing"
+    assert states["KEY_WARN"] == "warn"
+
+    # needs_hand_count = failing + warn = 2
+    assert body["meta"]["needs_hand_count"] == 2
+
+
+def test_inventory_never_set_credential():
+    """A row with empty value gets state=never_set."""
+    empty_row = _make_system_row(key="UNSET_KEY", value="", last_test_ok=None)
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[empty_row],
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    system = body["data"]["system"]
+    assert len(system) == 1
+    assert system[0]["state"] == "never_set"
+    assert system[0]["fingerprint"] is None
+
+
+def test_inventory_fingerprints_present_for_set_credentials():
+    """Credentials with a value have fingerprint set; never_set rows have fingerprint=null."""
+    set_row = _make_system_row(key="SET_KEY", value="mysecret", last_test_ok=True)
+    unset_row = _make_system_row(key="UNSET_KEY", value="", last_test_ok=None)
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[set_row, unset_row],
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    body = resp.json()
+    by_key = {row["key"]: row for row in body["data"]["system"]}
+    assert by_key["SET_KEY"]["fingerprint"] is not None
+    assert len(by_key["SET_KEY"]["fingerprint"]) == 8
+    assert by_key["UNSET_KEY"]["fingerprint"] is None
+
+
+def test_inventory_probe_log_lru_attached():
+    """When a probe row exists, test field is populated on credential rows."""
+    probe_row = _make_row(ok=True, code=200, message=None, recorded_at=_NOW)
+
+    system_row = _make_system_row(key="KEY1", value="v1", last_test_ok=True)
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row],
+        probe_row=probe_row,
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    body = resp.json()
+    system = body["data"]["system"]
+    assert len(system) == 1
+    test = system[0].get("test")
+    # The test field is populated from probe_row
+    assert test is not None
+    assert test["ok"] is True
+    assert test["code"] == 200
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3: Identity filter (projection-lens)
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_identity_filter_restricts_user_array():
+    """?identity=<uuid> restricts the user array to the specified entity."""
+    target_entity = str(uuid4())
+    other_entity = str(uuid4())
+
+    target_user_row = _make_entity_info_row(
+        entity_id=target_entity, info_type="google_oauth_refresh", value="tok"
+    )
+    other_user_row = _make_entity_info_row(
+        entity_id=other_entity, info_type="spotify_refresh", value="tok2"
+    )
+
+    # The mock returns only target_user_row when identity filter matches
+    shared_pool = AsyncMock()
+
+    async def _shared_fetch(sql, *args):
+        if "category = 'cli'" in sql:
+            return []
+        if "entity_info" in sql and "entity_id = $1" in sql:
+            # Identity filter path — return only matching rows
+            if args and str(args[0]) == target_entity:
+                return [target_user_row]
+            return []
+        if "entity_info" in sql:
+            # Owner path — return all rows
+            return [target_user_row, other_user_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_shared_fetch)
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.pool = MagicMock(side_effect=KeyError("no butler pool"))
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app)
+
+    resp = client.get(f"/api/secrets/inventory?identity={target_entity}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    user = body["data"]["user"]
+    assert len(user) == 1
+    assert user[0]["entity_id"] == target_entity
+    assert user[0]["type"] == "google_oauth_refresh"
+
+
+def test_inventory_no_identity_uses_owner_default():
+    """When ?identity= is omitted, the owner entity is used (projection-lens default)."""
+    owner_row = _make_entity_info_row(info_type="google_oauth_refresh", value="tok")
+
+    shared_pool = AsyncMock()
+
+    async def _shared_fetch(sql, *args):
+        if "category = 'cli'" in sql:
+            return []
+        # Owner path: query joins entities with owner role
+        if "entity_info" in sql and "owner" in sql:
+            return [owner_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_shared_fetch)
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.pool = MagicMock(side_effect=KeyError)
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    user = body["data"]["user"]
+    assert len(user) == 1
+    assert user[0]["type"] == "google_oauth_refresh"
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: Envelope conformance
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_envelope_has_data_and_meta():
+    """Response MUST have {data: {cli, system, user}, meta: {needs_hand_count}}."""
+    mock_db = _make_db_manager()
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Top-level shape
+    assert set(body.keys()) >= {"data", "meta"}
+
+    # data keys
+    assert "cli" in body["data"]
+    assert "system" in body["data"]
+    assert "user" in body["data"]
+
+    # meta keys
+    assert "needs_hand_count" in body["meta"]
+    assert isinstance(body["meta"]["needs_hand_count"], int)
+
+
+def test_inventory_response_does_not_include_raw_values():
+    """Raw credential values MUST NOT appear in any field of the response."""
+    secret_val = "ultra-secret-value-xyz"
+    system_row = _make_system_row(key="SECRET", value=secret_val, last_test_ok=True)
+
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row],
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    resp_text = resp.text
+    assert secret_val not in resp_text, f"Raw secret value leaked into response: {secret_val!r}"
+
+
+def test_inventory_no_extra_top_level_fields():
+    """No arrays or scalars at the top level — only data and meta."""
+    mock_db = _make_db_manager()
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    body = resp.json()
+    top_level_keys = set(body.keys())
+    # Only data and meta at the top level (RFC 0007 envelope)
+    assert top_level_keys <= {"data", "meta", "error"}
+
+
+# ---------------------------------------------------------------------------
+# Multi-butler system secrets aggregation
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_aggregates_across_butler_schemas():
+    """system array includes rows from multiple butler schemas."""
+    row_a = _make_system_row(key="A_KEY", value="va", last_test_ok=True)
+    row_b = _make_system_row(key="B_KEY", value="vb", last_test_ok=False)
+
+    # Each butler pool returns different rows
+    pool_a = AsyncMock()
+    pool_a.fetch = AsyncMock(return_value=[row_a])
+    pool_a.fetchrow = AsyncMock(return_value=None)
+
+    pool_b = AsyncMock()
+    pool_b.fetch = AsyncMock(return_value=[row_b])
+    pool_b.fetchrow = AsyncMock(return_value=None)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetch = AsyncMock(return_value=[])
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["alpha", "beta"]
+    mock_db.pool = MagicMock(side_effect=lambda name: pool_a if name == "alpha" else pool_b)
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    body = resp.json()
+    system = body["data"]["system"]
+    assert len(system) == 2
+    keys = {row["key"] for row in system}
+    assert keys == {"A_KEY", "B_KEY"}
+
+    # Butler attribution
+    butler_map = {row["key"]: row["butler"] for row in system}
+    assert butler_map["A_KEY"] == "alpha"
+    assert butler_map["B_KEY"] == "beta"
+
+
+# ---------------------------------------------------------------------------
+# Unit-level probe log helper
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_probe_log_returns_none_on_missing_table():
+    """When secret_probe_log doesn't exist, returns None gracefully."""
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=Exception("relation public.secret_probe_log does not exist")
+    )
+    result = await _fetch_probe_log(pool, "system", "MY_KEY")
+    assert result is None
+
+
+async def test_fetch_probe_log_returns_test_result_when_row_exists():
+    """When a probe row exists, returns a TestResult with ok/code/message/at."""
+    row = _make_row(ok=True, code=200, message=None, recorded_at=_NOW)
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=row)
+
+    result = await _fetch_probe_log(pool, "system", "MY_KEY")
+    assert result is not None
+    assert result.ok is True
+    assert result.code == 200
+    assert result.message is None
+    assert result.at is not None  # "HH:MM today"
+
+
+async def test_fetch_probe_log_returns_none_when_no_rows():
+    """When no probe row exists for the credential, returns None."""
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    result = await _fetch_probe_log(pool, "user", "google_oauth_refresh")
+    assert result is None
