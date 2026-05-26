@@ -379,6 +379,7 @@ export type {
   GoogleAccount,
   GoogleAccountStatus,
   GoogleCredentialStatusResponse,
+  GoogleHealthAccountStatus,
   GoogleHealthConnectorState,
   GoogleHealthDisconnectResponse,
   GoogleHealthStatusResponse,
