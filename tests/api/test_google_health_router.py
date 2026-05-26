@@ -468,3 +468,123 @@ async def test_status_rate_limit_remaining_is_minimum_across_accounts():
     body = resp.json()
     # Most constrained account wins.
     assert body["rate_limit_remaining"] == 42
+
+
+async def test_status_two_accounts_vs_one_account_shape():
+    """Two-account response shape compared against the single-account (back-compat) shape.
+
+    Asserts that the two-account response adds per-account entries while
+    preserving all top-level fields present in the single-account response.
+    This is a direct shape-comparison test: run the endpoint with 2 accounts,
+    then again with only 1, and assert structural invariants hold for both.
+
+    Acceptance test [bu-91zdb.7] §7.4.
+    """
+    now = datetime.now(UTC)
+    email_primary = "primary@example.com"
+    email_secondary = "secondary@example.com"
+
+    row_primary = _make_ga_row(
+        email=email_primary,
+        is_primary=True,
+        last_token_refresh_at=now - timedelta(hours=1),
+    )
+    row_secondary = _make_ga_row(email=email_secondary, is_primary=False)
+
+    hb_primary = _make_heartbeat_row(
+        email=email_primary, state="healthy", last_heartbeat_at=now, rate_limit=300
+    )
+    hb_secondary = _make_heartbeat_row(
+        email=email_secondary, state="healthy", last_heartbeat_at=now, rate_limit=100
+    )
+
+    ha_primary = _make_health_scoped_account(email_primary, acct_id=row_primary["id"])
+    ha_secondary = _make_health_scoped_account(email_secondary, acct_id=row_secondary["id"])
+
+    counts_two = {"sleep_sessions_7d": 8, "daily_summaries_7d": 20}
+
+    # ---- Two-account response ----
+    db_two = _make_db(
+        primary_row=row_primary,
+        heartbeat_rows=[hb_primary, hb_secondary],
+        ga_rows=[row_primary, row_secondary],
+        ingest_counts=counts_two,
+        last_ingest_at=now - timedelta(minutes=3),
+    )
+    with patch(
+        "butlers.api.routers.google_health.list_health_scoped_accounts",
+        AsyncMock(return_value=[ha_primary, ha_secondary]),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_make_app(db_two)), base_url="http://test"
+        ) as client:
+            resp_two = await client.get("/api/connectors/google-health/status")
+
+    body_two = resp_two.json()
+    assert resp_two.status_code == 200
+
+    # Two-account shape: accounts list has two entries.
+    assert len(body_two["accounts"]) == 2
+    emails_two = {a["email"] for a in body_two["accounts"]}
+    assert emails_two == {email_primary, email_secondary}
+
+    # Each account entry has required per-account fields.
+    for acct in body_two["accounts"]:
+        assert "email" in acct
+        assert "state" in acct
+        assert "scopes_granted" in acct
+        assert "sleep_sessions_7d" in acct
+        assert "daily_summaries_7d" in acct
+
+    # ---- Single-account response ----
+    counts_one = {"sleep_sessions_7d": 3, "daily_summaries_7d": 9}
+    db_one = _make_db(
+        primary_row=row_primary,
+        heartbeat_rows=[hb_primary],
+        ga_rows=[row_primary],
+        ingest_counts=counts_one,
+        last_ingest_at=now - timedelta(minutes=5),
+    )
+    with patch(
+        "butlers.api.routers.google_health.list_health_scoped_accounts",
+        AsyncMock(return_value=[ha_primary]),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_make_app(db_one)), base_url="http://test"
+        ) as client:
+            resp_one = await client.get("/api/connectors/google-health/status")
+
+    body_one = resp_one.json()
+    assert resp_one.status_code == 200
+
+    # Single-account shape: accounts list has exactly one entry.
+    assert len(body_one["accounts"]) == 1
+    assert body_one["accounts"][0]["email"] == email_primary
+
+    # ---- Shape invariants hold for both ----
+    _required_top_level = {
+        "state",
+        "connected",
+        "primary_account_email",
+        "accounts",
+        "sleep_sessions_7d",
+        "daily_summaries_7d",
+        "scopes_granted",
+    }
+    for key in _required_top_level:
+        assert key in body_two, f"Missing top-level key {key!r} in two-account response"
+        assert key in body_one, f"Missing top-level key {key!r} in one-account response"
+
+    # Both responses have state=healthy (all accounts are healthy).
+    assert body_two["state"] == "healthy"
+    assert body_one["state"] == "healthy"
+
+    # primary_account_email is consistent.
+    assert body_two["primary_account_email"] == email_primary
+    assert body_one["primary_account_email"] == email_primary
+
+    # counts are correctly reflected.
+    assert body_two["sleep_sessions_7d"] == counts_two["sleep_sessions_7d"]
+    assert body_two["daily_summaries_7d"] == counts_two["daily_summaries_7d"]
+    assert body_one["sleep_sessions_7d"] == counts_one["sleep_sessions_7d"]
+    assert body_one["daily_summaries_7d"] == counts_one["daily_summaries_7d"]
