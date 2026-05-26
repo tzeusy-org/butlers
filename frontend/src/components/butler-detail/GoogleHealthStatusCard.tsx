@@ -23,6 +23,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
+import { StateDot } from "@/components/ui/StateDot";
 import type {
   GoogleHealthAccountStatus,
   GoogleHealthConnectorState,
@@ -47,31 +48,21 @@ function stateTextClass(state: GoogleHealthConnectorState): string {
   }
 }
 
-/** Aria-friendly label for the state dot. */
-function stateLabel(state: GoogleHealthConnectorState): string {
+/**
+ * Maps GoogleHealthConnectorState to a StateDot-compatible state.
+ * `not_configured` falls back to `archived` (muted) since StateDot does not
+ * have a direct equivalent.
+ */
+function toDotState(state: GoogleHealthConnectorState) {
   switch (state) {
     case "healthy":
-      return "Healthy";
+      return "healthy" as const;
     case "degraded":
-      return "Degraded";
+      return "degraded" as const;
     case "error":
-      return "Error";
-    case "not_configured":
-      return "Not configured";
-  }
-}
-
-/** 6px dot colour (inline style) matching StateDot token conventions. */
-function stateDotColor(state: GoogleHealthConnectorState): string {
-  switch (state) {
-    case "healthy":
-      return "var(--green,oklch(0.72_0.17_150))";
-    case "degraded":
-      return "var(--amber,oklch(0.72_0.12_70))";
-    case "error":
-      return "var(--red,oklch(0.62_0.20_25))";
+      return "error" as const;
     default:
-      return "var(--muted-foreground)";
+      return "archived" as const;
   }
 }
 
@@ -87,13 +78,11 @@ const GOOGLE_HEALTH_SCOPES = [
 
 /**
  * Returns a short human-readable summary of which Google Health scopes are
- * granted, e.g. "3 / 3 scopes" or "1 / 3 scopes (sleep)".
+ * granted, e.g. "3 / 3 scopes" or "1 / 3 scopes".
+ * Uses exact URL matching against the known scope list.
  */
 function formatScopeSummary(scopesGranted: string[]): string {
-  const healthScopes = scopesGranted.filter((s) =>
-    GOOGLE_HEALTH_SCOPES.some((hs) => s.includes(hs.split("/").pop()!)),
-  );
-  const count = healthScopes.length;
+  const count = GOOGLE_HEALTH_SCOPES.filter((scope) => scopesGranted.includes(scope)).length;
   const total = GOOGLE_HEALTH_SCOPES.length;
   return `${count} / ${total} scopes`;
 }
@@ -113,17 +102,8 @@ function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            {/* State dot */}
-            <span
-              role="img"
-              aria-label={stateLabel(account.state)}
-              className="inline-block shrink-0 rounded-full"
-              style={{
-                width: 8,
-                height: 8,
-                backgroundColor: stateDotColor(account.state),
-              }}
-            />
+            {/* State dot — uses StateDot primitive for consistent token-based colour */}
+            <StateDot state={toDotState(account.state)} size={8} />
             <span className="font-mono text-xs truncate" data-testid="account-email">
               {account.email}
             </span>
