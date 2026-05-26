@@ -233,7 +233,12 @@ def _filter_health_scopes(granted: list[str] | None) -> list[str]:
 
 
 async def _fetch_last_ingest_at(shared_pool: Any) -> datetime | None:
-    """Return the most-recent ``public.ingestion_events.received_at`` for Google Health."""
+    """Return the most-recent ``public.ingestion_events.received_at`` for Google Health.
+
+    Matches both the new email-prefixed key shape (``google_health:<email>:...``)
+    and the legacy 3-segment shape (``google_health:<resource>:<date>``) so the
+    dashboard remains correct during the migration window.
+    """
     if shared_pool is None:
         return None
     try:
@@ -261,9 +266,18 @@ async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
     to avoid N+1 queries.
 
     Pattern rules (validated against ``src/butlers/connectors/google_health.py``):
-    - Sleep sessions:   ``external_event_id LIKE 'google_health:sleep_session:%'``
-    - Daily summaries:  ``external_event_id LIKE 'google_health:%:%'``
-                        AND NOT ``LIKE 'google_health:sleep_session:%'``
+
+    After the email-prefix migration (core_109), keys follow the 4-segment shape:
+    - Sleep sessions:   ``google_health:<email>:sleep_session:<id>``
+      matched by segment 3 = 'sleep_session' AND exactly 4 segments
+    - Daily summaries:  ``google_health:<email>:<resource>:<date>``
+      matched by exactly 4 segments AND segment 3 != 'sleep_session'
+
+    The predicates use ``split_part`` with a 4-segment guard to match ONLY the
+    new email-prefixed shape and exclude any legacy 3-segment rows still present
+    before the migration runs.  The Alembic backfill (core_109) rewrites the 3
+    historical rows, so both the migration window and the steady-state case are
+    handled correctly.
     """
     default: dict[str, int] = {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
     if shared_pool is None:
@@ -274,11 +288,15 @@ async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
                 """
                 SELECT
                     count(*) FILTER (
-                        WHERE external_event_id LIKE 'google_health:sleep_session:%'
+                        WHERE external_event_id LIKE 'google_health:%:sleep_session:%'
+                          AND split_part(external_event_id, ':', 3) = 'sleep_session'
+                          AND split_part(external_event_id, ':', 5) = ''
                     ) AS sleep_sessions_7d,
                     count(*) FILTER (
-                        WHERE external_event_id LIKE 'google_health:%:%'
-                          AND external_event_id NOT LIKE 'google_health:sleep_session:%'
+                        WHERE external_event_id LIKE 'google_health:%:%:%'
+                          AND split_part(external_event_id, ':', 4) != ''
+                          AND split_part(external_event_id, ':', 5) = ''
+                          AND split_part(external_event_id, ':', 3) != 'sleep_session'
                     ) AS daily_summaries_7d
                 FROM public.ingestion_events
                 WHERE source_channel = 'wellness'
