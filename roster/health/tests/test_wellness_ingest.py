@@ -980,3 +980,31 @@ class TestOwnerIdentityValidation:
             f"list_health_scoped_accounts called {mock_registry.await_count} times; "
             "expected exactly 1 (cached after first call)"
         )
+
+    async def test_transient_db_failure_does_not_poison_cache(self) -> None:
+        """A transient DB error must NOT cache an empty identity set.
+
+        If list_health_scoped_accounts raises on the first call, the cache
+        must remain None so that subsequent calls retry the query.  Without
+        this invariant a single transient failure would permanently disable
+        wellness ingestion until the daemon restarts.
+        """
+        import butlers.tools.health.wellness_ingest as _wi
+        from butlers.tools.health.wellness_ingest import _get_recognised_owner_identities
+
+        _wi._recognised_owner_identities = None
+        pool = AsyncMock()
+
+        with patch(
+            "butlers.tools.health.wellness_ingest.list_health_scoped_accounts",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("transient connection error"),
+        ) as mock_registry:
+            result = await _get_recognised_owner_identities(pool)
+
+        # Transient failure returns empty frozenset without caching.
+        assert result == frozenset()
+        assert _wi._recognised_owner_identities is None, (
+            "cache must remain None after a transient failure so subsequent calls retry"
+        )
+        assert mock_registry.await_count == 1

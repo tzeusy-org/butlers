@@ -344,7 +344,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         envelope from the google_health connector. Translates the ingest.v1 envelope
         into a temporal fact stored in the health butler's memory store.
 
-        Returns a dict with 'status' (ok | rejected_non_primary_sender |
+        Returns a dict with 'status' (ok | rejected_non_owner_sender |
         skipped_unknown_predicate | skipped_malformed_payload | error), and on
         success, 'fact_id' and 'predicate'.
         """

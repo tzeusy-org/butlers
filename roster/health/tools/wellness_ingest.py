@@ -283,12 +283,11 @@ async def _get_recognised_owner_identities(pool: Any) -> frozenset[str]:
     try:
         accounts = await list_health_scoped_accounts(pool)
         emails = frozenset(a.email for a in accounts if a.email)
+        _recognised_owner_identities = emails
+        return emails
     except Exception as exc:  # noqa: BLE001
         logger.warning("wellness_ingest: failed to query health-scoped owner accounts: %s", exc)
-        emails = frozenset()
-
-    _recognised_owner_identities = emails
-    return emails
+        return frozenset()
 
 
 # ---------------------------------------------------------------------------
