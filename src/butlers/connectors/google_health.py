@@ -119,8 +119,10 @@ from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.google_account_registry import (
     GoogleAccount,
+    HealthScopedAccount,
     MissingGoogleCredentialsError,
     get_google_account,
+    list_health_scoped_accounts,
 )
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
@@ -652,6 +654,62 @@ class ResourceState:
 
 
 # ---------------------------------------------------------------------------
+# Per-account owner context
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class OwnerContext:
+    """Per-account state for the multi-account poll engine.
+
+    Holds the identity and credential metadata resolved from the account
+    registry for one health-scoped Google account.  Per design.md ADR-4,
+    the refresh token is NOT stored here — callers resolve it on-demand via
+    ``google_credentials._resolve_entity_refresh_token``.
+
+    Attributes
+    ----------
+    account_id:
+        UUID primary key of the ``public.google_accounts`` row.
+    email:
+        Authenticated Google email address — used as the stable
+        ``google_user_id`` in envelopes and endpoint identities.
+    entity_id:
+        UUID of the companion entity (anchor for refresh-token lookup).
+    refresh_token_present:
+        Snapshot of whether a refresh token existed at the last registry
+        query.  Informational; not a live credential check.
+    endpoint_identity:
+        3-segment canonical identity string, e.g.
+        ``"google_health:user:foo@gmail.com"``.
+    """
+
+    account_id: uuid.UUID
+    email: str
+    entity_id: uuid.UUID
+    refresh_token_present: bool
+    endpoint_identity: str
+
+    @classmethod
+    def from_registry(cls, account: HealthScopedAccount) -> OwnerContext:
+        """Construct an OwnerContext from a registry account row."""
+        return cls(
+            account_id=account.id,
+            email=account.email,
+            entity_id=account.entity_id,
+            refresh_token_present=account.refresh_token_present,
+            endpoint_identity=_endpoint_identity_for_user(account.email),
+        )
+
+    def refresh_from(self, account: HealthScopedAccount) -> None:
+        """Update mutable fields in-place from a fresh registry row."""
+        self.email = account.email
+        self.entity_id = account.entity_id
+        self.refresh_token_present = account.refresh_token_present
+        self.endpoint_identity = _endpoint_identity_for_user(account.email)
+
+
+# ---------------------------------------------------------------------------
 # Main connector class
 # ---------------------------------------------------------------------------
 
@@ -682,6 +740,14 @@ class GoogleHealthConnector:
         self._google_account: GoogleAccount | None = None
         self._google_user_id: str = ""  # email (stable primary-account identifier)
         self._endpoint_identity: str = ""
+
+        # Multi-account registry: keyed by account UUID, populated by
+        # _resolve_owner_and_scopes from list_health_scoped_accounts.
+        # Callers (next bead) read _accounts_added / _accounts_removed to spin
+        # up or tear down per-account poll sets on each scope-recheck cycle.
+        self._accounts: dict[uuid.UUID, OwnerContext] = {}
+        self._accounts_added: list[uuid.UUID] = []  # newly discovered in last cycle
+        self._accounts_removed: list[uuid.UUID] = []  # lost scopes/removed in last cycle
 
         # Cached refresh-token material resolved from the shared pipeline.
         self._client_id: str | None = None
@@ -832,12 +898,29 @@ class GoogleHealthConnector:
     # ------------------------------------------------------------------
 
     async def _resolve_owner_and_scopes(self, *, initial: bool = False) -> None:
-        """Re-query the primary Google account and verify scopes.
+        """Re-query all health-scoped Google accounts and diff against the previous cycle.
 
-        Sets ``_google_account``, ``_google_user_id``, ``_endpoint_identity``,
-        and the ``_scope_missing`` / ``_account_missing`` flags.  Non-fatal —
-        if scopes are missing the connector simply stays degraded.
+        Populates ``_accounts`` (keyed by account UUID → :class:`OwnerContext`) from
+        :func:`list_health_scoped_accounts`.  On each cycle:
+
+        - **Adds** (newly discovered accounts) are recorded in ``_accounts_added``.
+        - **Removals** (scope revocation or account deletion) are recorded in
+          ``_accounts_removed`` and the heartbeat row is closed via
+          :meth:`_teardown_account` with ``state='unknown',
+          error_message='account_removed'``.
+        - **Existing** accounts have their mutable fields refreshed in-place.
+
+        The legacy single-account fields (``_google_account``, ``_google_user_id``,
+        ``_endpoint_identity``) are kept in sync with the *primary* health-scoped
+        account for backward compatibility with callers that have not yet been
+        updated to the multi-account model.  When no accounts qualify, the
+        connector stays in degraded mode.
+
+        Non-fatal — missing accounts simply leave the connector in degraded mode.
         """
+        self._accounts_added = []
+        self._accounts_removed = []
+
         if self._shared_pool is None:
             self._account_missing = True
             self._scope_missing = True
@@ -848,46 +931,149 @@ class GoogleHealthConnector:
             return
 
         try:
-            account = await get_google_account(self._shared_pool, account=None)
-        except MissingGoogleCredentialsError:
-            self._account_missing = True
-            self._scope_missing = True
-            self._google_account = None
-            if initial:
-                logger.warning(
-                    "GoogleHealthConnector: no primary Google account — starting in degraded mode"
-                )
-            return
+            health_accounts = await list_health_scoped_accounts(self._shared_pool)
         except Exception as exc:  # noqa: BLE001
             self._account_missing = True
             self._scope_missing = True
             logger.warning("GoogleHealthConnector: account discovery failed (non-fatal): %s", exc)
             return
 
-        self._google_account = account
-        self._account_missing = False
+        new_ids = {a.id for a in health_accounts}
+        cur_ids = set(self._accounts)
 
-        granted = frozenset(account.granted_scopes or [])
-        missing_scopes = GOOGLE_HEALTH_SCOPES - granted
-        self._scope_missing = bool(missing_scopes)
+        # ----------------------------------------------------------------
+        # Tear down accounts that lost scopes or were deleted.
+        # ----------------------------------------------------------------
+        for gone_id in cur_ids - new_ids:
+            self._accounts_removed.append(gone_id)
+            ctx = self._accounts.pop(gone_id)
+            logger.info(
+                "GoogleHealthConnector: account removed (scope revoked or deleted): %s (%s)",
+                ctx.email,
+                gone_id,
+            )
+            await self._teardown_account(ctx)
 
-        if self._scope_missing:
-            google_health_scope_missing_total.labels(
-                endpoint_identity=_endpoint_identity_for_user(account.email or "unknown")
-            ).inc()
-            if initial:
-                logger.warning(
-                    "GoogleHealthConnector: primary account %s missing Google Health scopes: %s",
-                    account.email,
-                    sorted(missing_scopes),
+        # ----------------------------------------------------------------
+        # Spin up new accounts.
+        # ----------------------------------------------------------------
+        for added in health_accounts:
+            if added.id not in cur_ids:
+                self._accounts_added.append(added.id)
+                ctx = OwnerContext.from_registry(added)
+                self._accounts[added.id] = ctx
+                logger.info(
+                    "GoogleHealthConnector: new health-scoped account discovered: %s (%s)",
+                    added.email,
+                    added.id,
                 )
+                if not added.refresh_token_present:
+                    logger.warning(
+                        "GoogleHealthConnector: account %s has health scopes but no refresh token",
+                        added.email,
+                    )
 
-        # Derive user identity from the account's email.  Per design this is
-        # the stable user identifier recorded in `public.google_accounts` and
-        # in the OAuth-callback-registered `public.contact_info` row.
-        user_id = account.email or str(account.id)
-        self._google_user_id = user_id
-        self._endpoint_identity = _endpoint_identity_for_user(user_id)
+        # ----------------------------------------------------------------
+        # Refresh existing accounts (email / entity_id may have changed).
+        # ----------------------------------------------------------------
+        for existing in health_accounts:
+            if existing.id in cur_ids:
+                self._accounts[existing.id].refresh_from(existing)
+
+        # ----------------------------------------------------------------
+        # Update legacy single-account fields + scope/account missing flags.
+        # ----------------------------------------------------------------
+        if not self._accounts:
+            self._account_missing = True
+            self._scope_missing = True
+
+            # Try to provide a more specific degraded reason: check whether any
+            # active account exists at all (even without the required scopes).
+            try:
+                primary_account = await get_google_account(self._shared_pool, account=None)
+                # A primary account exists but lacks health scopes.
+                self._google_account = primary_account
+                self._account_missing = False
+                granted = frozenset(primary_account.granted_scopes or [])
+                missing_scopes = GOOGLE_HEALTH_SCOPES - granted
+                self._scope_missing = bool(missing_scopes)
+                if self._scope_missing:
+                    google_health_scope_missing_total.labels(
+                        endpoint_identity=_endpoint_identity_for_user(
+                            primary_account.email or "unknown"
+                        )
+                    ).inc()
+                    if initial:
+                        logger.warning(
+                            "GoogleHealthConnector: primary account %s missing health scopes: %s",
+                            primary_account.email,
+                            sorted(missing_scopes),
+                        )
+                user_id = primary_account.email or str(primary_account.id)
+                self._google_user_id = user_id
+                self._endpoint_identity = _endpoint_identity_for_user(user_id)
+            except MissingGoogleCredentialsError:
+                self._google_account = None
+                self._account_missing = True
+                self._scope_missing = True
+                if initial:
+                    logger.warning(
+                        "GoogleHealthConnector: no primary Google account — degraded mode"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self._account_missing = True
+                self._scope_missing = True
+                logger.warning(
+                    "GoogleHealthConnector: fallback account check failed (non-fatal): %s", exc
+                )
+        else:
+            # At least one health-scoped account is present — connector is healthy.
+            self._account_missing = False
+            self._scope_missing = False
+
+            # Keep legacy single-account fields pointing at the first account
+            # (primary if present, otherwise oldest by connected_at which is the
+            # registry's ordering guarantee).
+            first_ctx = next(iter(self._accounts.values()))
+            self._google_user_id = first_ctx.email
+            self._endpoint_identity = first_ctx.endpoint_identity
+
+    async def _teardown_account(self, ctx: OwnerContext) -> None:
+        """Close the heartbeat row for a removed account.
+
+        Submits a final heartbeat envelope with ``state='unknown'`` and
+        ``error_message='account_removed'`` so the dashboard reflects the
+        account's departure and the connector_registry row transitions out of
+        the ``healthy`` state.  Non-fatal — failure is logged and swallowed.
+        """
+        envelope = {
+            "schema_version": "connector.heartbeat.v1",
+            "connector": {
+                "connector_type": _CONNECTOR_TYPE,
+                "endpoint_identity": ctx.endpoint_identity,
+                "instance_id": str(uuid.uuid4()),
+                "version": "1",
+            },
+            "status": {
+                "state": "unknown",
+                "error_message": "account_removed",
+                "uptime_s": 0,
+            },
+            "counters": {},
+            "sent_at": datetime.now(UTC).isoformat(),
+        }
+        try:
+            await self._mcp_client.call_tool("connector.heartbeat", envelope)
+            logger.info(
+                "GoogleHealthConnector: closed heartbeat row for removed account %s",
+                ctx.email,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GoogleHealthConnector: failed to close heartbeat row for %s (non-fatal): %s",
+                ctx.email,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Post-identity initialization
