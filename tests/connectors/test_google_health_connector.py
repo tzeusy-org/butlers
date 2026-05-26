@@ -22,8 +22,9 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -33,6 +34,7 @@ from butlers.connectors.google_health import (
     RESOURCE_BUNDLES,
     GoogleHealthConnector,
     GoogleHealthConnectorConfig,
+    OwnerContext,
     _build_activity_records,
     _cursor_endpoint_identity,
     _endpoint_identity_for_user,
@@ -50,6 +52,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthSourcePreconditionError,
     exponential_backoff_delay,
 )
+from butlers.google_account_registry import HealthScopedAccount
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)
@@ -754,3 +757,175 @@ async def test_poll_activity_resource_uses_daily_rollup_post(
     assert envelope["event"]["external_event_id"] == "google_health:activity:2026-04-24"
     assert envelope["payload"]["raw"]["steps"] == 1234
     assert envelope["payload"]["raw"]["activeMinutes"] == 12
+
+
+# ---------------------------------------------------------------------------
+# Multi-account acceptance tests [bu-91zdb.1]
+# ---------------------------------------------------------------------------
+
+
+_HEALTH_SCOPE_LIST = list(GOOGLE_HEALTH_SCOPES)
+_NON_HEALTH_SCOPE = "https://www.googleapis.com/auth/calendar"
+_UUID_A = uuid.uuid4()
+_UUID_B = uuid.uuid4()
+_UUID_C = uuid.uuid4()
+_ENTITY_A = uuid.uuid4()
+_ENTITY_B = uuid.uuid4()
+_ENTITY_C = uuid.uuid4()
+
+
+def _make_fake_row(
+    account_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    email: str,
+    granted_scopes: list[str],
+    status: str = "active",
+    refresh_token_present: bool = True,
+) -> dict[str, Any]:
+    """Build a fake asyncpg-style row dict for list_health_scoped_accounts tests."""
+    return {
+        "id": account_id,
+        "entity_id": entity_id,
+        "email": email,
+        "granted_scopes": granted_scopes,
+        "status": status,
+        "refresh_token_present": refresh_token_present,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_health_scoped_accounts_filters_by_status_and_scope_superset() -> None:
+    """list_health_scoped_accounts returns only status='active' rows with all three health scopes.
+
+    The SQL WHERE clause handles the status='active' filter; the Python post-filter
+    handles the scope-superset check.  The test stubs only the active rows that the
+    SQL would return, then asserts that the scope-superset filter excludes the
+    partial-scope row.
+
+    Acceptance test [bu-91zdb.1] AC-1.
+    """
+    from butlers.google_account_registry import list_health_scoped_accounts
+
+    # Row A: active, all three health scopes — should be included.
+    row_a = _make_fake_row(_UUID_A, _ENTITY_A, "a@example.com", _HEALTH_SCOPE_LIST)
+    # Row B: active, only two health scopes (missing one) — excluded by Python scope filter.
+    row_b = _make_fake_row(
+        _UUID_B,
+        _ENTITY_B,
+        "b@example.com",
+        _HEALTH_SCOPE_LIST[:2],
+    )
+    # Simulate the SQL WHERE status='active': the mock returns only active rows.
+    # Row C (revoked) would not appear in the DB result set because the SQL filters it.
+    active_rows = [row_a, row_b]
+
+    fake_conn = MagicMock()
+    fake_conn.fetch = AsyncMock(return_value=active_rows)
+    fake_conn.__aenter__ = AsyncMock(return_value=fake_conn)
+    fake_conn.__aexit__ = AsyncMock(return_value=False)
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=fake_conn)
+
+    results = await list_health_scoped_accounts(pool, health_scopes=GOOGLE_HEALTH_SCOPES)
+
+    # Only row A qualifies (B is excluded by Python scope-superset filter).
+    assert len(results) == 1
+    assert results[0].id == _UUID_A
+    assert results[0].email == "a@example.com"
+    assert results[0].entity_id == _ENTITY_A
+    assert results[0].refresh_token_present is True
+
+    # Confirm the SQL WHERE clause filters on status='active'.
+    assert fake_conn.fetch.await_count == 1
+    sql_called = fake_conn.fetch.await_args.args[0]
+    assert "status = 'active'" in sql_called
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_and_scopes_diffs_account_set_across_cycles() -> None:
+    """_resolve_owner_and_scopes detects adds and removals across back-to-back calls.
+
+    Cycle 1: two accounts present → both added.
+    Cycle 2: one account removed (scope revoked) → removal recorded, teardown called.
+    Cycle 3: first account still present → no adds or removals; context refreshed.
+    Acceptance test [bu-91zdb.1] AC-2.
+    """
+    connector = _make_connector()
+
+    # Build two fake HealthScopedAccount rows.
+    acct_x = HealthScopedAccount(
+        id=_UUID_A,
+        email="x@example.com",
+        entity_id=_ENTITY_A,
+        refresh_token_present=True,
+    )
+    acct_y = HealthScopedAccount(
+        id=_UUID_B,
+        email="y@example.com",
+        entity_id=_ENTITY_B,
+        refresh_token_present=True,
+    )
+
+    teardown_calls: list[str] = []
+
+    async def _fake_teardown(ctx: OwnerContext) -> None:
+        teardown_calls.append(ctx.email)
+
+    connector._teardown_account = _fake_teardown  # type: ignore[method-assign]
+
+    # ------------------------------------------------------------------
+    # Cycle 1: shared pool returns both accounts.
+    # ------------------------------------------------------------------
+    shared_pool = MagicMock()
+    connector._shared_pool = shared_pool
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "butlers.connectors.google_health.list_health_scoped_accounts",
+            AsyncMock(return_value=[acct_x, acct_y]),
+        )
+        await connector._resolve_owner_and_scopes(initial=True)
+
+    assert len(connector._accounts) == 2
+    assert _UUID_A in connector._accounts
+    assert _UUID_B in connector._accounts
+    assert set(connector._accounts_added) == {_UUID_A, _UUID_B}
+    assert connector._accounts_removed == []
+    assert connector._scope_missing is False
+    assert connector._account_missing is False
+    assert len(teardown_calls) == 0
+
+    # ------------------------------------------------------------------
+    # Cycle 2: account Y removed (scope revoked / deleted).
+    # ------------------------------------------------------------------
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "butlers.connectors.google_health.list_health_scoped_accounts",
+            AsyncMock(return_value=[acct_x]),
+        )
+        await connector._resolve_owner_and_scopes()
+
+    assert len(connector._accounts) == 1
+    assert _UUID_A in connector._accounts
+    assert _UUID_B not in connector._accounts
+    assert connector._accounts_added == []
+    assert connector._accounts_removed == [_UUID_B]
+    # Teardown must have been called once for the removed account.
+    assert teardown_calls == ["y@example.com"]
+
+    # ------------------------------------------------------------------
+    # Cycle 3: only account X still present — no diff.
+    # ------------------------------------------------------------------
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "butlers.connectors.google_health.list_health_scoped_accounts",
+            AsyncMock(return_value=[acct_x]),
+        )
+        await connector._resolve_owner_and_scopes()
+
+    assert len(connector._accounts) == 1
+    assert connector._accounts_added == []
+    assert connector._accounts_removed == []
+    # teardown not called again.
+    assert teardown_calls == ["y@example.com"]
