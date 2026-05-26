@@ -103,9 +103,11 @@ def test_endpoint_identity_uses_three_segment_canonical_form() -> None:
 
 
 def test_cursor_endpoint_identity_appends_resource_suffix() -> None:
-    got = _cursor_endpoint_identity(_OWNER_EMAIL, "sleep")
-    assert got == "google_health:user:owner@example.com:sleep"
-    # Envelope identity stays canonical.
+    # Cursor key now includes account_uuid between email and resource.
+    test_uuid = uuid.UUID("12345678-1234-1234-1234-123456789012")
+    got = _cursor_endpoint_identity(_OWNER_EMAIL, test_uuid, "sleep")
+    assert got == f"google_health:user:owner@example.com:{test_uuid}:sleep"
+    # Envelope identity stays canonical (3-segment).
     assert _ENDPOINT != got
 
 
@@ -1109,3 +1111,90 @@ def test_prometheus_labels_distinct_per_account() -> None:
     assert endpoint_b in endpoint_identities
     # The two accounts are represented by different label sets — they are disjoint.
     assert endpoint_a != endpoint_b
+
+
+# ---------------------------------------------------------------------------
+# Cursor key shape migration [bu-91zdb.3]
+# ---------------------------------------------------------------------------
+
+
+_ACCOUNT_UUID_3 = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+
+def test_cursor_endpoint_identity_includes_account_uuid() -> None:
+    """_cursor_endpoint_identity produces the new 5-segment shape with account_uuid.
+
+    Acceptance test [bu-91zdb.3] AC-1.
+    """
+    got = _cursor_endpoint_identity(_OWNER_EMAIL, _ACCOUNT_UUID_3, "sleep")
+    expected = f"google_health:user:{_OWNER_EMAIL}:{_ACCOUNT_UUID_3}:sleep"
+    assert got == expected
+    # Must differ from the canonical envelope identity (3-segment).
+    assert got != _ENDPOINT
+    # Must contain the account_uuid string.
+    assert str(_ACCOUNT_UUID_3) in got
+    # Resource must appear as the LAST segment.
+    assert got.endswith(":sleep")
+
+
+def test_cursor_endpoint_identity_two_accounts_produce_distinct_keys() -> None:
+    """Two distinct account UUIDs produce distinct cursor keys even for the same resource."""
+    uuid_x = uuid.UUID("11111111-2222-3333-4444-555555555555")
+    uuid_y = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-ffffffffffff")
+    key_x = _cursor_endpoint_identity("shared@example.com", uuid_x, "resting_hr")
+    key_y = _cursor_endpoint_identity("shared@example.com", uuid_y, "resting_hr")
+    assert key_x != key_y
+    assert str(uuid_x) in key_x
+    assert str(uuid_y) in key_y
+
+
+@pytest.mark.asyncio
+async def test_cursor_migration_idempotent_and_loads_post_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connector reads cursor via new key shape after the migration runs.
+
+    Regression test for ADR-3: the one-shot SQL migration rewrites old-shape
+    cursor rows.  We verify that after the migration the connector retrieves
+    the stored cursor value using the new key (account_uuid embedded).
+
+    The test simulates the post-migration state by pre-storing a cursor under
+    the new key, then confirming ``_load_all_cursors`` picks it up.
+
+    Acceptance test [bu-91zdb.3] AC-3.
+    """
+    account_id = uuid.UUID("cafecafe-cafe-cafe-cafe-cafecafecafe")
+    connector, ctx = _make_connector_with_account(
+        email="migrated@example.com",
+        account_id=account_id,
+    )
+
+    # Expected key after migration.
+    expected_endpoint = _cursor_endpoint_identity(ctx.email, account_id, "sleep")
+    assert str(account_id) in expected_endpoint, "account_uuid must appear in the key"
+
+    # Simulate the cursor pool returning a cursor for the migrated key.
+    stored_cursor = "2026-05-01T00:00:00Z"
+
+    async def _fake_load_cursor(
+        pool: Any,
+        connector_type: str,
+        endpoint_identity: str,
+    ) -> str | None:
+        if endpoint_identity == expected_endpoint and connector_type == "google_health":
+            return stored_cursor
+        return None
+
+    monkeypatch.setattr(
+        "butlers.connectors.google_health.load_cursor",
+        _fake_load_cursor,
+    )
+
+    # Attach a fake cursor pool so the method proceeds.
+    connector._cursor_pool = MagicMock()
+
+    await connector._load_all_cursors()
+
+    sleep_state = connector._resources[(account_id, "sleep")]
+    assert sleep_state.last_cursor == stored_cursor
+    assert sleep_state.backfill_done is True

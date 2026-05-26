@@ -412,17 +412,24 @@ def _endpoint_identity_for_user(google_user_id: str) -> str:
     return f"google_health:user:{google_user_id}"
 
 
-def _cursor_endpoint_identity(google_user_id: str, resource: str) -> str:
-    """Per-resource cursor key — appends `:<resource>` to the canonical identity.
+def _cursor_endpoint_identity(google_user_id: str, account_uuid: uuid.UUID, resource: str) -> str:
+    """Per-resource cursor key — embeds ``account_uuid`` between email and resource.
 
     The ``cursor_store`` primitive uses a 2-tuple
     ``(connector_type, endpoint_identity)`` so per-resource dimension is
-    encoded into the endpoint_identity SUFFIX. The envelope's
+    encoded into the endpoint_identity suffix.  The envelope's
     ``source.endpoint_identity`` (returned by
-    :func:`_endpoint_identity_for_user`) remains the canonical form — only
-    cursors carry the resource suffix.
+    :func:`_endpoint_identity_for_user`) remains the canonical 3-segment form —
+    only cursors carry the ``account_uuid`` and resource suffixes.
+
+    Key shape: ``google_health:user:<email>:<account_uuid>:<resource>``
+
+    The ``account_uuid`` segment is required even when the email is unique
+    because an owner can re-add the same Google account (rotation, force_consent)
+    and receive a new ``google_accounts.id``.  The cursor must follow the DB row,
+    not the email address.
     """
-    return f"google_health:user:{google_user_id}:{resource}"
+    return f"google_health:user:{google_user_id}:{account_uuid}:{resource}"
 
 
 def _format_daily_summary_value(resource: str, record: dict[str, Any]) -> str:
@@ -1468,7 +1475,7 @@ class GoogleHealthConnector:
             ctx = self._accounts.get(acct_id)
             if ctx is None:
                 continue
-            endpoint = _cursor_endpoint_identity(ctx.email, state.bundle.resource)
+            endpoint = _cursor_endpoint_identity(ctx.email, acct_id, state.bundle.resource)
             try:
                 cursor = await load_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint)
                 if cursor is not None:
@@ -1497,7 +1504,7 @@ class GoogleHealthConnector:
         ctx = self._accounts.get(account_uuid)
         if ctx is None:
             return
-        endpoint = _cursor_endpoint_identity(ctx.email, state.bundle.resource)
+        endpoint = _cursor_endpoint_identity(ctx.email, account_uuid, state.bundle.resource)
         try:
             await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint, cursor_value)
             state.last_cursor = cursor_value
