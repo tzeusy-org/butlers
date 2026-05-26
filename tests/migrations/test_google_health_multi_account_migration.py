@@ -202,8 +202,8 @@ async def test_cursor_and_ingestion_event_migrations_preserve_counters() -> None
     expected_sleep = sum(
         1
         for r in post_migration_rows
-        if r["external_event_id"].split(":")[2] == "sleep_session"
-        and len(r["external_event_id"].split(":")) == 4
+        if len(r["external_event_id"].split(":")) == 4
+        and r["external_event_id"].split(":")[2] == "sleep_session"
     )
     # Daily predicate: split_part(..., ':', 4) != '' AND split_part(..., ':', 5) = ''
     #                   AND split_part(..., ':', 3) != 'sleep_session'
@@ -255,9 +255,8 @@ async def test_cursor_and_ingestion_event_migrations_preserve_counters() -> None
     old_sleep_matches = sum(
         1
         for r in pre_migration_rows
-        if len(r["external_event_id"].split(":")) >= 3
+        if len(r["external_event_id"].split(":")) == 4
         and r["external_event_id"].split(":")[2] == "sleep_session"
-        and len(r["external_event_id"].split(":")) == 4
     )
     # Daily predicate applied to old-shape rows: exactly 4 segments AND segment 3 != 'sleep_session'.
     old_daily_matches = sum(

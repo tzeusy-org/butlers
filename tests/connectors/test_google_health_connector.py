@@ -1374,9 +1374,7 @@ async def test_ingest_counts_predicate_post_migration_returns_same_totals() -> N
 
 
 @pytest.mark.asyncio
-async def test_list_health_scoped_accounts_filters(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_list_health_scoped_accounts_filters() -> None:
     """list_health_scoped_accounts returns only active + scope-superset accounts.
 
     Covers:
@@ -1505,12 +1503,11 @@ async def test_per_account_teardown_does_not_affect_other_accounts(
         entity_id=entity_b,
         refresh_token_present=True,
     )
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "butlers.connectors.google_health.list_health_scoped_accounts",
-            AsyncMock(return_value=[acct_b]),
-        )
-        await connector._resolve_owner_and_scopes()
+    monkeypatch.setattr(
+        "butlers.connectors.google_health.list_health_scoped_accounts",
+        AsyncMock(return_value=[acct_b]),
+    )
+    await connector._resolve_owner_and_scopes()
 
     # Account A was torn down; account B remains.
     assert uuid_a not in connector._accounts
@@ -1568,12 +1565,11 @@ async def test_two_account_integration_distinct_heartbeats_and_mints(
     connector._teardown_account = AsyncMock()  # type: ignore[method-assign]
     connector._shared_pool = MagicMock()
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "butlers.connectors.google_health.list_health_scoped_accounts",
-            AsyncMock(return_value=[acct_alice, acct_bob]),
-        )
-        await connector._resolve_owner_and_scopes(initial=True)
+    monkeypatch.setattr(
+        "butlers.connectors.google_health.list_health_scoped_accounts",
+        AsyncMock(return_value=[acct_alice, acct_bob]),
+    )
+    await connector._resolve_owner_and_scopes(initial=True)
 
     # ---- Assert: two heartbeat rows with distinct endpoint identities ----
     assert len(connector._heartbeats) == 2
