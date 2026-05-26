@@ -234,6 +234,9 @@ export function PageUser({
     try {
       const resp = await reauthorizeUserCredential(credential.provider, credential.identity);
       // Follow the returned redirect_url to begin the OAuth dance.
+      if (!resp?.data?.redirect_url) {
+        throw new Error("No redirect URL returned from the server.");
+      }
       window.location.href = resp.data.redirect_url;
     } catch (err) {
       setReauthError(err instanceof Error ? err.message : "Reauthorization failed.");

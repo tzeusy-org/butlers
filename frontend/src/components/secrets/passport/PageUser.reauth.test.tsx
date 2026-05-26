@@ -137,6 +137,28 @@ describe("PageUser: re-authorize button (expired credential)", () => {
     expect(reenabled.disabled).toBe(false)
   })
 
+  it("shows error and re-enables button when API returns no redirect_url", async () => {
+    // Arrange: server returns 200 but with no redirect_url in the payload
+    mockReauth.mockResolvedValue({ data: {} as never, meta: {} })
+    renderPageUser()
+
+    const [btn] = screen.getAllByText("re-authorize")
+    fireEvent.click(btn)
+
+    await waitFor(() => {
+      expect(screen.getByText("No redirect URL returned from the server.")).toBeTruthy()
+    })
+
+    // Button should be re-enabled
+    await waitFor(() => {
+      expect(screen.getAllByText("re-authorize").length).toBeGreaterThan(0)
+    })
+    const [reenabled] = screen
+      .getAllByText("re-authorize")
+      .map((el) => el.closest("button")!) as HTMLButtonElement[]
+    expect(reenabled.disabled).toBe(false)
+  })
+
   it("prevents double-submit: clicking again while pending does not call API twice", async () => {
     // Never-resolving promise keeps us in pending state
     mockReauth.mockReturnValue(new Promise(() => {}))
