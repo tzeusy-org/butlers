@@ -31,9 +31,19 @@ from typing import Any
 
 from butlers.connectors.metrics import health_wellness_ingest_total
 from butlers.credential_store import resolve_owner_entity_info
+from butlers.google_account_registry import list_health_scoped_accounts
 from butlers.modules.memory.tools.writing import memory_store_fact
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Per-session cache — recognised owner identity set
+#
+# Queried once at first invocation per butler-session and cached for the
+# lifetime of the process.  Re-query on every daemon restart.
+# ---------------------------------------------------------------------------
+
+_recognised_owner_identities: frozenset[str] | None = None
 
 # ---------------------------------------------------------------------------
 # Predicate routing table
@@ -251,22 +261,34 @@ def _extract_valid_at(predicate: str, raw: dict[str, Any], observed_at: str) -> 
 
 
 # ---------------------------------------------------------------------------
-# Primary sender validation
+# Owner identity set — queried once per butler-session and cached
 # ---------------------------------------------------------------------------
 
 
-async def _get_primary_google_identity(pool: Any) -> str | None:
-    """Return the primary Google account's email from the DB, or None."""
+async def _get_recognised_owner_identities(pool: Any) -> frozenset[str]:
+    """Return the set of email addresses for all active, health-scoped owner accounts.
+
+    Results are cached for the lifetime of the butler session (process-level
+    singleton).  This means a newly-added or revoked account is only reflected
+    after a daemon restart, which is acceptable given the spec's "queried once
+    per butler-session" requirement.
+
+    Returns an empty frozenset when no qualifying accounts are found.  Callers
+    should treat an empty set as a configuration problem and reject ingest.
+    """
+    global _recognised_owner_identities  # noqa: PLW0603
+    if _recognised_owner_identities is not None:
+        return _recognised_owner_identities
+
     try:
-        row = await pool.fetchrow(
-            "SELECT email FROM public.google_accounts WHERE is_primary = true LIMIT 1"
-        )
-        if row is None:
-            return None
-        return row["email"]
+        accounts = await list_health_scoped_accounts(pool)
+        emails = frozenset(a.email for a in accounts if a.email)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("wellness_ingest: failed to query primary google account: %s", exc)
-        return None
+        logger.warning("wellness_ingest: failed to query health-scoped owner accounts: %s", exc)
+        emails = frozenset()
+
+    _recognised_owner_identities = emails
+    return emails
 
 
 # ---------------------------------------------------------------------------
@@ -296,34 +318,37 @@ async def translate_wellness_envelope(
     (list of per-predicate result dicts).  Single-predicate resources also include
     top-level ``fact_id`` and ``predicate`` for backwards compatibility.
 
-    Possible statuses: ``ok``, ``rejected_non_primary_sender``,
+    Possible statuses: ``ok``, ``rejected_non_owner_sender``,
     ``skipped_unknown_predicate``, ``skipped_malformed_payload``, ``error``.
     """
     # ------------------------------------------------------------------
-    # Step 1: Validate primary sender
+    # Step 1: Validate sender against recognised owner identity set
+    #
+    # Accept any active, health-scoped account owned by the butler's owner
+    # entity.  The identity set is queried once per butler-session and cached.
     # ------------------------------------------------------------------
     sender_identity: str = envelope.get("sender", {}).get("identity", "")
-    primary_email = await _get_primary_google_identity(pool)
-    if primary_email is None:
+    recognised = await _get_recognised_owner_identities(pool)
+    if not recognised:
         logger.warning(
-            "wellness_ingest: no primary Google account found; dropping envelope sender=%r",
+            "wellness_ingest: no health-scoped owner accounts found; dropping envelope sender=%r",
             sender_identity,
         )
         health_wellness_ingest_total.labels(
-            predicate="unknown", outcome="rejected_non_primary_sender"
+            predicate="unknown", outcome="rejected_non_owner_sender"
         ).inc()
-        return {"status": "rejected_non_primary_sender"}
+        return {"status": "rejected_non_owner_sender"}
 
-    if sender_identity and sender_identity != primary_email:
+    if sender_identity and sender_identity not in recognised:
         logger.warning(
-            "wellness_ingest: sender %r is not the primary Google account %r; dropping",
+            "wellness_ingest: sender %r is not a recognised owner identity %r; dropping",
             sender_identity,
-            primary_email,
+            sorted(recognised),
         )
         health_wellness_ingest_total.labels(
-            predicate="unknown", outcome="rejected_non_primary_sender"
+            predicate="unknown", outcome="rejected_non_owner_sender"
         ).inc()
-        return {"status": "rejected_non_primary_sender"}
+        return {"status": "rejected_non_owner_sender"}
 
     # ------------------------------------------------------------------
     # Step 2: Resolve owner entity UUID
