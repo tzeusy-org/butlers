@@ -100,7 +100,7 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
   return {
     key:          raw.key,
     category:     raw.category,
-    rowState:     "shared",   // inventory returns system rows as shared by default
+    rowState:     raw.state as "shared" | "local" | "missing",
     fingerprint:  raw.fingerprint ?? null,
     description:  raw.description ?? null,
     source:       raw.butler,
