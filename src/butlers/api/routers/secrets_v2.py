@@ -760,12 +760,11 @@ async def _fetch_identity_info(
             """,
             entity_ids,
         )
+    except UndefinedTableError as exc:
+        logger.debug("public.entities not available for identity enrichment: %s", exc)
+        return []
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg:
-            logger.debug("public.entities not available for identity enrichment: %s", exc)
-            return []
-        logger.warning("Failed to fetch identity info for entity_ids: %s", exc)
+        logger.warning("Transient error fetching identity info: %s", exc)
         return []
 
     # Build a lookup keyed on entity_id string for ordered output.

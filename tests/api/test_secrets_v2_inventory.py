@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
@@ -736,9 +737,20 @@ async def test_fetch_identity_info_empty_input():
 
 
 async def test_fetch_identity_info_graceful_on_missing_table():
-    """Silently returns empty list when public.entities does not exist."""
+    """Silently returns empty list when public.entities does not exist (UndefinedTableError)."""
     pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=Exception("relation public.entities does not exist"))
+    pool.fetch = AsyncMock(
+        side_effect=UndefinedTableError("relation public.entities does not exist")
+    )
+
+    result = await _fetch_identity_info(pool, [str(uuid4())])
+    assert result == []
+
+
+async def test_fetch_identity_info_returns_empty_on_transient_error():
+    """Returns empty list (with warning) on transient database errors."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=Exception("connection timeout"))
 
     result = await _fetch_identity_info(pool, [str(uuid4())])
     assert result == []
