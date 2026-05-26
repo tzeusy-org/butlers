@@ -464,7 +464,15 @@ def build_sleep_session_envelope(
     session_record: dict[str, Any],
     observed_at: str,
 ) -> dict[str, Any]:
-    """Build an ingest.v1 envelope for a Google Health sleep session."""
+    """Build an ingest.v1 envelope for a Google Health sleep session.
+
+    ``external_event_id`` and ``control.idempotency_key`` are prefixed with the
+    account email so that two Google accounts can have overlapping sleep-session
+    IDs without the ingest pipeline deduplicating across accounts.
+
+    Key shape: ``google_health:<email>:sleep_session:<session_id>``
+    Idempotency key shape: ``google_health:<email>:sleep:<session_id>``
+    """
     duration_ms = int(
         session_record.get("durationMillis") or session_record.get("duration_ms") or 0
     )
@@ -472,8 +480,8 @@ def build_sleep_session_envelope(
     duration_label = _format_sleep_duration_label(duration_ms)
     normalized_text = f"Slept {duration_label} ({efficiency}% efficiency)"
 
-    external_event_id = f"google_health:sleep_session:{session_id}"
-    idempotency_key = f"google_health:sleep:{session_id}"
+    external_event_id = f"google_health:{google_user_id}:sleep_session:{session_id}"
+    idempotency_key = f"google_health:{google_user_id}:sleep:{session_id}"
 
     return {
         "schema_version": "ingest.v1",
@@ -516,12 +524,18 @@ def build_daily_summary_envelope(
 
     ``record_date`` is the YYYY-MM-DD date the summary applies to (the
     ``valid_at`` axis in downstream Health butler facts).
+
+    ``external_event_id`` and ``control.idempotency_key`` are prefixed with the
+    account email so that two Google accounts can have overlapping date-keyed
+    summaries without the ingest pipeline deduplicating across accounts.
+
+    Key shape: ``google_health:<email>:<resource>:<record_date>``
     """
     value_str = _format_daily_summary_value(resource, record)
     normalized_text = normalized_summary_template.format(value=value_str)
 
-    external_event_id = f"google_health:{resource}:{record_date}"
-    idempotency_key = f"google_health:{resource}:{record_date}"
+    external_event_id = f"google_health:{google_user_id}:{resource}:{record_date}"
+    idempotency_key = f"google_health:{google_user_id}:{resource}:{record_date}"
 
     return {
         "schema_version": "ingest.v1",
