@@ -39,6 +39,7 @@ import {
   IdentityChip,
 } from "./atoms.tsx";
 import type { Identity } from "./types.ts";
+import { reauthorizeUserCredential } from "@/api/client.ts";
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
@@ -221,6 +222,27 @@ export function PageUser({
   const isWebhook = provider.kind === "webhook";
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
+
+  // ── Reauthorize ─────────────────────────────────────────────────────────────
+  const [reauthPending, setReauthPending] = React.useState(false);
+  const [reauthError, setReauthError] = React.useState<string | null>(null);
+
+  async function handleReauthorize() {
+    if (reauthPending) return;
+    setReauthPending(true);
+    setReauthError(null);
+    try {
+      const resp = await reauthorizeUserCredential(credential.provider, credential.identity);
+      // Follow the returned redirect_url to begin the OAuth dance.
+      if (!resp?.data?.redirect_url) {
+        throw new Error("No redirect URL returned from the server.");
+      }
+      window.location.href = resp.data.redirect_url;
+    } catch (err) {
+      setReauthError(err instanceof Error ? err.message : "Reauthorization failed.");
+      setReauthPending(false);
+    }
+  }
 
   const stateLines: string[] = [];
   if (credential.state === "expired" && credential.failureTail) stateLines.push(credential.failureTail);
@@ -471,11 +493,22 @@ export function PageUser({
       />
 
       {/* Footer */}
+      {reauthError && (
+        <Mono size={11} color="var(--red)" className="mt-1">
+          {reauthError}
+        </Mono>
+      )}
       <CommitFooter
         left={
           <>
             {(credential.state === "expired" || credential.state === "revoked" || credential.state === "scope_mismatch") && (
-              <PillBtn variant="commit">re-authorize</PillBtn>
+              <PillBtn
+                variant="commit"
+                onClick={handleReauthorize}
+                disabled={reauthPending}
+              >
+                {reauthPending ? "redirecting…" : "re-authorize"}
+              </PillBtn>
             )}
             {credential.state === "expiring" && <PillBtn variant="commit">rotate</PillBtn>}
             {isMissing && <PillBtn variant="commit">connect</PillBtn>}

@@ -5049,3 +5049,33 @@ export function getBreaksCatalogue(
     : "";
   return apiFetch<ApiResponse<BreakEntry[]>>(`/secrets/breaks-catalogue${qs}`);
 }
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — user credential mutations [bu-f1loa]
+// ---------------------------------------------------------------------------
+
+/** Response payload for POST /api/secrets/user/<provider>/reauthorize. */
+export interface UserReauthorizeResponse {
+  redirect_url: string;
+}
+
+/**
+ * POST /api/secrets/user/<provider>/reauthorize?identity=<uuid>
+ *
+ * Initiates an OAuth reauthorization dance for a user-scoped credential.
+ * Returns a redirect_url that the caller should navigate to; the OAuth
+ * callback will redirect back to /secrets?focus=u:<provider>&toast=connected
+ * on success.
+ *
+ * Spec: redesign-secrets-passport §User credential mutations
+ */
+export function reauthorizeUserCredential(
+  provider: string,
+  identity: string,
+): Promise<ApiResponse<UserReauthorizeResponse>> {
+  const qs = `?identity=${encodeURIComponent(identity)}`;
+  return apiFetch<ApiResponse<UserReauthorizeResponse>>(
+    `/secrets/user/${encodeURIComponent(provider)}/reauthorize${qs}`,
+    { method: "POST" },
+  );
+}
