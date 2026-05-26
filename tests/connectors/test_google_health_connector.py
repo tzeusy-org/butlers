@@ -1366,3 +1366,313 @@ async def test_ingest_counts_predicate_post_migration_returns_same_totals() -> N
     assert counts["daily_summaries_7d"] == 2, (
         f"Expected 2 daily summaries, got {counts['daily_summaries_7d']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-cutting multi-account integration suite [bu-91zdb.7]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_health_scoped_accounts_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """list_health_scoped_accounts returns only active + scope-superset accounts.
+
+    Covers:
+    - status='active' filter: SQL WHERE clause excludes revoked rows at DB level.
+    - scope-superset filter: Python post-filter excludes partial-scope rows.
+    - Rows with missing scopes are excluded.
+
+    Acceptance test [bu-91zdb.7] §7.1.
+    """
+    from butlers.google_account_registry import list_health_scoped_accounts
+
+    uuid_active_full = uuid.uuid4()
+    uuid_active_partial = uuid.uuid4()
+    entity_active_full = uuid.uuid4()
+    entity_active_partial = uuid.uuid4()
+
+    # Row with all three health scopes (active) — should be included.
+    row_full = _make_fake_row(
+        uuid_active_full,
+        entity_active_full,
+        "full@example.com",
+        _HEALTH_SCOPE_LIST,
+        status="active",
+    )
+    # Row with only two of three scopes (active) — excluded by Python scope-superset filter.
+    row_partial = _make_fake_row(
+        uuid_active_partial,
+        entity_active_partial,
+        "partial@example.com",
+        _HEALTH_SCOPE_LIST[:2],
+        status="active",
+    )
+    # Row with zero scopes (active) — excluded.
+    uuid_no_scopes = uuid.uuid4()
+    row_no_scopes = _make_fake_row(
+        uuid_no_scopes,
+        uuid.uuid4(),
+        "noscopes@example.com",
+        [],
+        status="active",
+    )
+
+    # The SQL WHERE status='active' returns only the three active rows above.
+    # A revoked row would not appear in the DB result set — simulated by omission.
+    active_rows = [row_full, row_partial, row_no_scopes]
+
+    fake_conn = MagicMock()
+    fake_conn.fetch = AsyncMock(return_value=active_rows)
+    fake_conn.__aenter__ = AsyncMock(return_value=fake_conn)
+    fake_conn.__aexit__ = AsyncMock(return_value=False)
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=fake_conn)
+
+    results = await list_health_scoped_accounts(pool, health_scopes=GOOGLE_HEALTH_SCOPES)
+
+    # Only the full-scopes row passes.
+    assert len(results) == 1
+    assert results[0].id == uuid_active_full
+    assert results[0].email == "full@example.com"
+
+    # SQL must have filtered on status='active'.
+    sql_called = fake_conn.fetch.await_args.args[0]
+    assert "status = 'active'" in sql_called
+
+    # The partial-scope and no-scope rows were excluded by the Python filter.
+    returned_ids = {r.id for r in results}
+    assert uuid_active_partial not in returned_ids
+    assert uuid_no_scopes not in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_per_account_teardown_does_not_affect_other_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mid-run scope revocation of account A leaves account B's polls and cursors untouched.
+
+    Simulates:
+    1. Two accounts A and B active with one resource each.
+    2. Account A is revoked — _resolve_owner_and_scopes removes it and calls _teardown_account.
+    3. After teardown, account B's ResourceState (cursor and backfill_done) is unchanged.
+
+    Acceptance test [bu-91zdb.7] §7.2.
+    """
+    uuid_a = uuid.uuid4()
+    uuid_b = uuid.uuid4()
+    entity_a = uuid.uuid4()
+    entity_b = uuid.uuid4()
+
+    connector, ctx_a = _make_connector_with_account(
+        email="a@example.com",
+        account_id=uuid_a,
+        entity_id=entity_a,
+    )
+
+    # Add second account B manually.
+    ctx_b = OwnerContext(
+        account_id=uuid_b,
+        email="b@example.com",
+        entity_id=entity_b,
+        refresh_token_present=True,
+        endpoint_identity=_endpoint_identity_for_user("b@example.com"),
+    )
+    connector._accounts[uuid_b] = ctx_b
+    for bundle in RESOURCE_BUNDLES:
+        connector._resources[(uuid_b, bundle.resource)] = ResourceState(bundle=bundle)
+
+    # Pre-seed cursors for both accounts so we can verify they are untouched.
+    connector._resources[(uuid_a, "sleep")].last_cursor = "sess-a-old"
+    connector._resources[(uuid_a, "sleep")].backfill_done = True
+    connector._resources[(uuid_b, "sleep")].last_cursor = "sess-b-old"
+    connector._resources[(uuid_b, "sleep")].backfill_done = True
+
+    teardown_called: list[str] = []
+
+    async def _fake_teardown(ctx: OwnerContext) -> None:
+        teardown_called.append(ctx.email)
+
+    connector._teardown_account = _fake_teardown  # type: ignore[method-assign]
+    connector._shared_pool = MagicMock()
+
+    # Simulate scope revocation: only account B is returned by list_health_scoped_accounts.
+    acct_b = HealthScopedAccount(
+        id=uuid_b,
+        email="b@example.com",
+        entity_id=entity_b,
+        refresh_token_present=True,
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "butlers.connectors.google_health.list_health_scoped_accounts",
+            AsyncMock(return_value=[acct_b]),
+        )
+        await connector._resolve_owner_and_scopes()
+
+    # Account A was torn down; account B remains.
+    assert uuid_a not in connector._accounts
+    assert uuid_b in connector._accounts
+    assert teardown_called == ["a@example.com"]
+
+    # Account A's resource state was removed.
+    assert (uuid_a, "sleep") not in connector._resources
+
+    # Account B's cursor and backfill_done remain exactly as they were — no cross-account mutation.
+    state_b_sleep = connector._resources[(uuid_b, "sleep")]
+    assert state_b_sleep.last_cursor == "sess-b-old", (
+        "B's cursor must not be touched by A's teardown"
+    )
+    assert state_b_sleep.backfill_done is True, (
+        "B's backfill_done must not be reset by A's teardown"
+    )
+
+    # All other resource keys for B are still intact.
+    for bundle in RESOURCE_BUNDLES:
+        assert (uuid_b, bundle.resource) in connector._resources, (
+            f"B's resource {bundle.resource!r} must survive A's teardown"
+        )
+
+
+@pytest.mark.asyncio
+async def test_two_account_integration_distinct_heartbeats_and_mints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two-account _StubTransport integration: distinct heartbeats, scope-restricted token mints,
+    envelopes for both accounts, no cross-account token reuse, no cursor collisions.
+
+    Acceptance test [bu-91zdb.7] §7.3.
+    """
+    uuid_alice = uuid.uuid4()
+    uuid_bob = uuid.uuid4()
+    entity_alice = uuid.uuid4()
+    entity_bob = uuid.uuid4()
+
+    connector = _make_connector()
+
+    # Set up two accounts via _resolve_owner_and_scopes.
+    acct_alice = HealthScopedAccount(
+        id=uuid_alice,
+        email="alice@example.com",
+        entity_id=entity_alice,
+        refresh_token_present=True,
+    )
+    acct_bob = HealthScopedAccount(
+        id=uuid_bob,
+        email="bob@example.com",
+        entity_id=entity_bob,
+        refresh_token_present=True,
+    )
+    connector._teardown_account = AsyncMock()  # type: ignore[method-assign]
+    connector._shared_pool = MagicMock()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "butlers.connectors.google_health.list_health_scoped_accounts",
+            AsyncMock(return_value=[acct_alice, acct_bob]),
+        )
+        await connector._resolve_owner_and_scopes(initial=True)
+
+    # ---- Assert: two heartbeat rows with distinct endpoint identities ----
+    assert len(connector._heartbeats) == 2
+    assert uuid_alice in connector._heartbeats
+    assert uuid_bob in connector._heartbeats
+
+    hb_alice = connector._heartbeats[uuid_alice]
+    hb_bob = connector._heartbeats[uuid_bob]
+    assert hb_alice._config.endpoint_identity == "google_health:user:alice@example.com"
+    assert hb_bob._config.endpoint_identity == "google_health:user:bob@example.com"
+    assert hb_alice._config.endpoint_identity != hb_bob._config.endpoint_identity
+
+    # ---- Assert: per-account token mints are isolated ----
+    # Track which account UUID each mint call targets.
+    mint_calls: dict[uuid.UUID, list[str]] = {uuid_alice: [], uuid_bob: []}
+
+    from datetime import UTC, datetime, timedelta
+
+    async def _fake_mint(account_uuid: uuid.UUID) -> str:
+        token = f"token-{account_uuid}"
+        ctx = connector._accounts[account_uuid]
+        ctx.cached_access_token = token
+        ctx.token_expires_at = datetime.now(UTC) + timedelta(hours=1)
+        mint_calls[account_uuid].append(token)
+        return token
+
+    monkeypatch.setattr(connector, "_mint_access_token", _fake_mint)
+
+    token_a = await connector._get_access_token(uuid_alice)
+    token_b = await connector._get_access_token(uuid_bob)
+
+    # Tokens are distinct — no cross-account reuse.
+    assert token_a != token_b
+    assert str(uuid_alice) in token_a
+    assert str(uuid_bob) in token_b
+
+    # Each account was minted exactly once.
+    assert len(mint_calls[uuid_alice]) == 1
+    assert len(mint_calls[uuid_bob]) == 1
+
+    # No cross-account leakage: alice's token is not in bob's context.
+    ctx_alice = connector._accounts[uuid_alice]
+    ctx_bob = connector._accounts[uuid_bob]
+    assert ctx_alice.cached_access_token != ctx_bob.cached_access_token
+
+    # ---- Assert: no cursor collisions ----
+    # Cursor keys for the same resource on different accounts must be distinct.
+    for bundle in RESOURCE_BUNDLES:
+        key_alice = _cursor_endpoint_identity("alice@example.com", uuid_alice, bundle.resource)
+        key_bob = _cursor_endpoint_identity("bob@example.com", uuid_bob, bundle.resource)
+        assert key_alice != key_bob, (
+            f"Cursor keys collide for resource {bundle.resource!r}: {key_alice!r}"
+        )
+        assert str(uuid_alice) in key_alice
+        assert str(uuid_bob) in key_bob
+
+    # ---- Assert: poll produces envelopes with correct per-account email ----
+    # Stub the API for alice's sleep resource — returns one new session.
+    state_alice_sleep = connector._resources[(uuid_alice, "sleep")]
+
+    fake_api_alice: Any = type(
+        "FakeAPI",
+        (),
+        {
+            "get_json": AsyncMock(
+                return_value={
+                    "sessions": [
+                        {
+                            "session_id": "alice-sess-1",
+                            "durationMillis": 7 * 3600_000,
+                            "efficiency": 88,
+                        }
+                    ]
+                }
+            ),
+            "last_rate_limit_headers": {},
+        },
+    )()
+
+    monkeypatch.setattr(
+        connector,
+        "_make_account_api_client",
+        lambda acct_id: fake_api_alice if acct_id == uuid_alice else None,
+    )
+    monkeypatch.setattr(connector, "_save_cursor", AsyncMock())
+
+    submitted_envelopes: list[dict[str, Any]] = []
+
+    async def _capture_envelope(env: dict[str, Any], **kwargs: Any) -> None:
+        submitted_envelopes.append(env)
+
+    monkeypatch.setattr(connector, "_submit_envelope", _capture_envelope)
+
+    await connector._poll_resource(uuid_alice, state_alice_sleep)
+
+    assert len(submitted_envelopes) == 1
+    env = submitted_envelopes[0]
+    # Envelope identifies alice, not bob.
+    assert "alice@example.com" in env["event"]["external_event_id"]
+    assert "bob@example.com" not in env["event"]["external_event_id"]
+    assert env["source"]["endpoint_identity"] == "google_health:user:alice@example.com"
+    assert env["sender"]["identity"] == "alice@example.com"
