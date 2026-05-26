@@ -20,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getSecretsInventory } from "@/api/client.ts";
 import type {
   SecretsCliRaw,
+  SecretsIdentityInfo,
   SecretsSystemRaw,
   SecretsUserRaw,
 } from "@/api/types.ts";
@@ -129,30 +130,19 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
 }
 
 /**
- * Derive a minimal Identity list from the unique entity_ids in the user array.
+ * Map backend identity records to the Identity shape expected by DirectionPassport.
  *
- * The inventory endpoint does not return identity metadata (label, role, hue).
- * We construct placeholder entries keyed on entity_id. The identity switcher
- * in DirectionPassport needs at least an id and label to render.
- *
- * The owner identity is assumed to be the first entity_id seen (API orders
- * owner first when no ?identity= param is provided, and filters to a single
- * entity when one is supplied).
+ * The inventory endpoint returns an ``identities`` array with real names and
+ * roles sourced from ``public.entities``.  We map each entry directly to the
+ * frontend Identity shape, falling back to the entity_id when the backend
+ * name is absent (should not happen in practice).
  */
-function deriveIdentities(userRaw: SecretsUserRaw[]): Identity[] {
-  const seen = new Set<string>();
-  const identities: Identity[] = [];
-  for (const u of userRaw) {
-    if (!seen.has(u.entity_id)) {
-      seen.add(u.entity_id);
-      identities.push({
-        id:    u.entity_id,
-        label: u.label ?? u.entity_id.slice(0, 8),
-        role:  identities.length === 0 ? "owner" : "member",
-      });
-    }
-  }
-  return identities;
+function mapIdentities(identitiesRaw: SecretsIdentityInfo[]): Identity[] {
+  return identitiesRaw.map((raw) => ({
+    id:    raw.entity_id,
+    label: raw.name,
+    role:  raw.role,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -163,12 +153,13 @@ export function adaptInventoryResponse(data: {
   cli: SecretsCliRaw[];
   system: SecretsSystemRaw[];
   user: SecretsUserRaw[];
+  identities: SecretsIdentityInfo[];
 }): InventoryResponse {
   return {
     user:       data.user.map(adaptUserCredential),
     system:     data.system.map(adaptSystemCredential),
     cli:        data.cli.map(adaptCliCredential),
-    identities: deriveIdentities(data.user),
+    identities: mapIdentities(data.identities),
     providers:  PROVIDER_CATALOG,
   };
 }

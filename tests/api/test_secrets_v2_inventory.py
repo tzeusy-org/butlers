@@ -36,6 +36,7 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
     _derive_state,
+    _fetch_identity_info,
     _fetch_probe_log,
     _fingerprint,
     _format_probe_time,
@@ -670,3 +671,148 @@ async def test_fetch_probe_log_returns_none_when_no_rows():
 
     result = await _fetch_probe_log(pool, "user", "google_oauth_refresh")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Unit-level identity enrichment helper
+# ---------------------------------------------------------------------------
+
+
+def _make_entity_row(
+    *,
+    entity_id: str | None = None,
+    canonical_name: str = "Alice",
+    roles: list[str] | None = None,
+) -> MagicMock:
+    from uuid import UUID
+
+    eid = UUID(entity_id) if entity_id else uuid4()
+    row = MagicMock()
+    row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "id": eid,
+            "canonical_name": canonical_name,
+            "roles": roles or [],
+        }[k]
+    )
+    return row
+
+
+async def test_fetch_identity_info_returns_owner_role():
+    """Entity with 'owner' in roles gets role='owner'."""
+    eid = str(uuid4())
+    entity_row = _make_entity_row(entity_id=eid, canonical_name="Alice Owner", roles=["owner"])
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[entity_row])
+
+    result = await _fetch_identity_info(pool, [eid])
+    assert len(result) == 1
+    assert result[0].entity_id == eid
+    assert result[0].name == "Alice Owner"
+    assert result[0].role == "owner"
+
+
+async def test_fetch_identity_info_returns_member_role_for_non_owner():
+    """Entity without 'owner' in roles gets role='member'."""
+    eid = str(uuid4())
+    entity_row = _make_entity_row(entity_id=eid, canonical_name="Bob", roles=["google_account"])
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[entity_row])
+
+    result = await _fetch_identity_info(pool, [eid])
+    assert len(result) == 1
+    assert result[0].role == "member"
+    assert result[0].name == "Bob"
+
+
+async def test_fetch_identity_info_empty_input():
+    """Empty entity_ids list returns empty result without querying the DB."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    result = await _fetch_identity_info(pool, [])
+    assert result == []
+    pool.fetch.assert_not_called()
+
+
+async def test_fetch_identity_info_graceful_on_missing_table():
+    """Silently returns empty list when public.entities does not exist."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=Exception("relation public.entities does not exist"))
+
+    result = await _fetch_identity_info(pool, [str(uuid4())])
+    assert result == []
+
+
+async def test_fetch_identity_info_preserves_input_order():
+    """Result order matches entity_ids input order (owner first)."""
+    eid_a = str(uuid4())
+    eid_b = str(uuid4())
+    row_a = _make_entity_row(entity_id=eid_a, canonical_name="Owner A", roles=["owner"])
+    row_b = _make_entity_row(entity_id=eid_b, canonical_name="Member B", roles=[])
+    pool = AsyncMock()
+    # asyncpg may return rows in any order; we return b before a.
+    pool.fetch = AsyncMock(return_value=[row_b, row_a])
+
+    result = await _fetch_identity_info(pool, [eid_a, eid_b])
+    assert len(result) == 2
+    # Must follow the entity_ids input order, not the fetch order.
+    assert result[0].entity_id == eid_a
+    assert result[1].entity_id == eid_b
+
+
+# ---------------------------------------------------------------------------
+# Inventory endpoint: identities[] enrichment integration
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_includes_identity_info_with_real_names():
+    """GET /api/secrets/inventory returns identities[] with real entity names."""
+    eid = str(uuid4())
+    user_row = _make_entity_info_row(entity_id=eid, info_type="google_oauth_refresh", value="tok")
+
+    entity_row = _make_entity_row(entity_id=eid, canonical_name="Alice Owner", roles=["owner"])
+
+    shared_pool = AsyncMock()
+
+    async def _shared_fetch(sql, *args):
+        if "category = 'cli'" in sql:
+            return []
+        if "entity_info" in sql:
+            return [user_row]
+        if "public.entities" in sql:
+            return [entity_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_shared_fetch)
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.pool = MagicMock(side_effect=KeyError)
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    identities = body["data"]["identities"]
+    assert len(identities) == 1
+    assert identities[0]["entity_id"] == eid
+    assert identities[0]["name"] == "Alice Owner"
+    assert identities[0]["role"] == "owner"
+
+
+def test_inventory_identities_empty_when_no_user_secrets():
+    """identities[] is empty when there are no user secrets."""
+    mock_db = _make_db_manager(butler_names=[], user_rows=[], cli_rows=[])
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["identities"] == []

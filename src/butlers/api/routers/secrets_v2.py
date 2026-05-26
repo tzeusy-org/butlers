@@ -221,12 +221,30 @@ class CliRuntime(BaseModel):
     test: TestResult | None = None
 
 
+class IdentityInfo(BaseModel):
+    """Identity metadata for one entity referenced by the inventory.
+
+    Returned as a top-level ``identities`` array alongside the credential
+    families so the frontend switcher can show real names and roles without
+    N round-trips per entity_id.
+
+    ``name`` comes from ``public.entities.canonical_name``.
+    ``role`` is 'owner' when the entity has 'owner' in its roles array,
+    otherwise 'member'.
+    """
+
+    entity_id: str
+    name: str
+    role: str  # 'owner' | 'member'
+
+
 class InventoryData(BaseModel):
     """Payload returned by GET /api/secrets/inventory."""
 
     cli: list[CliRuntime] = Field(default_factory=list)
     system: list[SystemSecret] = Field(default_factory=list)
     user: list[UserSecret] = Field(default_factory=list)
+    identities: list[IdentityInfo] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -710,6 +728,70 @@ async def _fetch_cli_secrets(
 
 
 # ---------------------------------------------------------------------------
+# Identity enrichment helper
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_identity_info(
+    pool: Any,
+    entity_ids: list[str],
+) -> list[IdentityInfo]:
+    """Fetch identity metadata for a list of entity UUIDs.
+
+    Joins ``public.entities`` to retrieve ``canonical_name`` and ``roles``
+    for each entity referenced in the user credentials array.
+
+    Returns an ``IdentityInfo`` per unique entity_id.  Entities with
+    ``'owner' = ANY(roles)`` get role='owner'; all others get role='member'.
+    Silently returns an empty list when ``public.entities`` does not exist
+    (migration not yet run).
+
+    Order: owner first, then members in the order they appear in entity_ids.
+    """
+    if not entity_ids:
+        return []
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT id, canonical_name, roles
+            FROM public.entities
+            WHERE id = ANY($1::uuid[])
+            """,
+            entity_ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if "does not exist" in msg or "undefined" in msg:
+            logger.debug("public.entities not available for identity enrichment: %s", exc)
+            return []
+        logger.warning("Failed to fetch identity info for entity_ids: %s", exc)
+        return []
+
+    # Build a lookup keyed on entity_id string for ordered output.
+    lookup: dict[str, IdentityInfo] = {}
+    for row in rows:
+        eid = str(row["id"])
+        roles: list[str] = row["roles"] or []
+        role = "owner" if "owner" in roles else "member"
+        lookup[eid] = IdentityInfo(
+            entity_id=eid,
+            name=row["canonical_name"] or eid,
+            role=role,
+        )
+
+    # Return in entity_ids order (preserves API ordering: owner first when
+    # the endpoint uses the default projection-lens path).
+    result: list[IdentityInfo] = []
+    seen: set[str] = set()
+    for eid in entity_ids:
+        if eid in lookup and eid not in seen:
+            result.append(lookup[eid])
+            seen.add(eid)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Severity counting
 # ---------------------------------------------------------------------------
 
@@ -792,6 +874,18 @@ async def get_inventory(
     if shared_pool is not None:
         cli_secrets = await _fetch_cli_secrets(shared_pool)
 
+    # --- Enrich identities: join public.entities for name + role ---
+    # Collect unique entity_ids in encounter order (owner first in default path).
+    identities: list[IdentityInfo] = []
+    if shared_pool is not None and user_secrets:
+        seen_eids: list[str] = []
+        seen_set: set[str] = set()
+        for us in user_secrets:
+            if us.entity_id not in seen_set:
+                seen_eids.append(us.entity_id)
+                seen_set.add(us.entity_id)
+        identities = await _fetch_identity_info(shared_pool, seen_eids)
+
     # --- Build response ---
     all_items: list[Any] = [*cli_secrets, *system_secrets, *user_secrets]
 
@@ -805,6 +899,7 @@ async def get_inventory(
         cli=cli_secrets,
         system=system_secrets,
         user=user_secrets,
+        identities=identities,
     )
 
     # ApiMeta has extra="allow" so extra kwargs are serialised.
