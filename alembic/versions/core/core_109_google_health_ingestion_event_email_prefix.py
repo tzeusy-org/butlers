@@ -92,6 +92,8 @@ def upgrade() -> None:
           -- Only target old-shape rows: exactly 3 segments.
           AND split_part(ie.external_event_id, ':', 3) != ''
           AND split_part(ie.external_event_id, ':', 4) = ''
+          AND split_part(ie.idempotency_key, ':', 3) != ''
+          AND split_part(ie.idempotency_key, ':', 4) = ''
           -- Join on active primary account.
           AND ga.is_primary = true
           AND ga.status = 'active'
@@ -128,6 +130,8 @@ def downgrade() -> None:
           -- Only target new-shape rows: exactly 4 segments.
           AND split_part(ie.external_event_id, ':', 4) != ''
           AND split_part(ie.external_event_id, ':', 5) = ''
+          AND split_part(ie.idempotency_key, ':', 4) != ''
+          AND split_part(ie.idempotency_key, ':', 5) = ''
           -- Segment 2 must be the email of the active primary account.
           AND ga.is_primary = true
           AND ga.status = 'active'
