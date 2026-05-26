@@ -157,6 +157,8 @@ class EntityInfoRow:
         Optional human-readable label for multi-account display.
     is_primary:
         Whether this is the primary entry for ``(entity_id, type)``.
+        The DB column has no ``NOT NULL`` constraint so this may be ``None``
+        for legacy rows inserted before a default was enforced.
     secured:
         When ``True``, the value must be masked in UI and log output.
     created_at:
@@ -177,7 +179,7 @@ class EntityInfoRow:
     type: str
     value: str | None
     label: str | None
-    is_primary: bool
+    is_primary: bool | None
     secured: bool
     created_at: datetime
     last_verified: datetime | None = None

@@ -373,3 +373,18 @@ def test_entity_info_row_nullable_test_state_fields() -> None:
     assert row.last_test_ok is None
     assert row.last_test_code is None
     assert row.last_test_message is None
+
+
+def test_entity_info_row_is_primary_nullable() -> None:
+    """EntityInfoRow accepts None for is_primary (DB column has no NOT NULL constraint)."""
+    row = EntityInfoRow(
+        id="abc",
+        entity_id="def",
+        type="email",
+        value="user@example.com",
+        label=None,
+        is_primary=None,
+        secured=False,
+        created_at=_NOW,
+    )
+    assert row.is_primary is None
