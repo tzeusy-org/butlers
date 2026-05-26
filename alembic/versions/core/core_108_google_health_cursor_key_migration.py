@@ -74,10 +74,16 @@ def upgrade() -> None:
         FROM public.google_accounts ga
         WHERE cr.connector_type = 'google_health'
           AND cr.endpoint_identity LIKE 'google_health:user:%'
+          -- Only target old-shape rows: segment 4 is non-empty (has a resource)
+          -- and segment 5 is empty (exactly 4 colon-separated segments).
+          AND split_part(cr.endpoint_identity, ':', 4) != ''
+          AND split_part(cr.endpoint_identity, ':', 5) = ''
           -- Exclude already-migrated rows: new shape has a UUID at position 4.
           AND split_part(cr.endpoint_identity, ':', 4) !~ '{_UUID_PATTERN}'
-          -- Match on email (3rd segment of old key).
+          -- Match on email (3rd segment of old key); only join active accounts
+          -- to avoid non-deterministic results from rotation or re-add.
           AND ga.email = split_part(cr.endpoint_identity, ':', 3)
+          AND ga.status = 'active'
     """)
 
 
@@ -101,6 +107,10 @@ def downgrade() -> None:
             || ':' || split_part(endpoint_identity, ':', 5)
         WHERE connector_type = 'google_health'
           AND endpoint_identity LIKE 'google_health:user:%'
-          -- Only touch new-shape rows: segment 4 is a UUID.
+          -- Only touch new-shape rows: segment 4 is a UUID, segment 5 is
+          -- non-empty (has a resource), and segment 6 is empty (exactly
+          -- 5 colon-separated segments).
           AND split_part(endpoint_identity, ':', 4) ~ '{_UUID_PATTERN}'
+          AND split_part(endpoint_identity, ':', 5) != ''
+          AND split_part(endpoint_identity, ':', 6) = ''
     """)
