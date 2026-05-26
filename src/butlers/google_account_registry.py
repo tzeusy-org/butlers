@@ -592,7 +592,7 @@ async def list_health_scoped_accounts(
 
         health_scopes = GOOGLE_HEALTH_SCOPES
 
-    required = list(health_scopes)
+    required = health_scopes
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -618,7 +618,7 @@ async def list_health_scoped_accounts(
     results: list[HealthScopedAccount] = []
     for row in rows:
         granted = frozenset(row["granted_scopes"] or [])
-        if not frozenset(required).issubset(granted):
+        if not required.issubset(granted):
             continue
         email = row["email"]
         if not email:

@@ -1037,6 +1037,17 @@ class GoogleHealthConnector:
             first_ctx = next(iter(self._accounts.values()))
             self._google_user_id = first_ctx.email
             self._endpoint_identity = first_ctx.endpoint_identity
+            self._google_account = GoogleAccount(
+                id=first_ctx.account_id,
+                entity_id=first_ctx.entity_id,
+                email=first_ctx.email,
+                display_name=None,
+                is_primary=False,
+                granted_scopes=list(GOOGLE_HEALTH_SCOPES),
+                status="active",
+                connected_at=datetime.now(UTC),
+                last_token_refresh_at=None,
+            )
 
     async def _teardown_account(self, ctx: OwnerContext) -> None:
         """Close the heartbeat row for a removed account.
