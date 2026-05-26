@@ -5460,12 +5460,31 @@ export interface SecretsUserRaw {
 }
 
 /**
+ * Identity metadata for one entity referenced by the inventory.
+ *
+ * Returned in the top-level ``identities`` array alongside credential
+ * families so the identity switcher can show real names and roles without
+ * N round-trips per entity_id.
+ *
+ * Maps to IdentityInfo in the backend secrets_v2 router.
+ */
+export interface SecretsIdentityInfo {
+  entity_id: string;
+  /** Human-readable name from public.entities.canonical_name. */
+  name: string;
+  /** 'owner' when the entity has 'owner' in its roles; 'member' otherwise. */
+  role: "owner" | "member";
+}
+
+/**
  * Payload shape of ApiResponse<InventoryData> from GET /api/secrets/inventory.
  */
 export interface SecretsInventoryData {
   cli: SecretsCliRaw[];
   system: SecretsSystemRaw[];
   user: SecretsUserRaw[];
+  /** Identity metadata for each unique entity referenced in the user array. */
+  identities: SecretsIdentityInfo[];
 }
 
 /** Meta fields returned alongside the inventory payload. */
