@@ -373,9 +373,10 @@ async def translate_wellness_envelope(
     # Step 3: Derive predicates from external_event_id
     # ------------------------------------------------------------------
     external_event_id: str = envelope.get("event", {}).get("external_event_id", "")
-    # Format: "google_health:<resource>:<date_or_id>"
-    parts = external_event_id.split(":", 2)
-    resource_segment = parts[1] if len(parts) >= 2 else ""
+    # Format: "google_health:<account_email>:<resource>:<date_or_id>"
+    # (bu-91zdb.4 added the account_email segment, making this 4-segment)
+    parts = external_event_id.split(":", 3)
+    resource_segment = parts[2] if len(parts) >= 3 else ""
 
     predicates = _RESOURCE_TO_PREDICATES.get(resource_segment)
     if predicates is None:

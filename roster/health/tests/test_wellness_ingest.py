@@ -37,7 +37,7 @@ def _make_sleep_envelope(
     """Build a minimal sleep session ingest.v1 envelope.
 
     Uses ``sleep_session`` as the resource segment — matching what the connector
-    emits (``google_health:sleep_session:<session_id>``).
+    emits (``google_health:<account_email>:sleep_session:<session_id>``).
     """
     return {
         "schema_version": "ingest.v1",
@@ -47,7 +47,7 @@ def _make_sleep_envelope(
             "endpoint_identity": f"google_health:user:{sender_identity}",
         },
         "event": {
-            "external_event_id": f"google_health:sleep_session:{session_id}",
+            "external_event_id": f"google_health:{sender_identity}:sleep_session:{session_id}",
             "external_thread_id": None,
             "observed_at": "2026-04-25T06:00:00Z",
         },
@@ -85,7 +85,7 @@ def _make_daily_envelope(
             "endpoint_identity": f"google_health:user:{sender_identity}",
         },
         "event": {
-            "external_event_id": f"google_health:{resource}:{record_date}",
+            "external_event_id": f"google_health:{sender_identity}:{resource}:{record_date}",
             "external_thread_id": None,
             "observed_at": "2026-04-25T06:00:00Z",
         },
@@ -128,7 +128,7 @@ def _make_sleep_with_stages_envelope(
             "endpoint_identity": f"google_health:user:{sender_identity}",
         },
         "event": {
-            "external_event_id": f"google_health:sleep_session:{session_id}",
+            "external_event_id": f"google_health:{sender_identity}:sleep_session:{session_id}",
             "external_thread_id": None,
             "observed_at": "2026-04-25T06:00:00Z",
         },
@@ -160,7 +160,7 @@ def _make_activity_envelope(
             "endpoint_identity": f"google_health:user:{sender_identity}",
         },
         "event": {
-            "external_event_id": f"google_health:activity:{record_date}",
+            "external_event_id": f"google_health:{sender_identity}:activity:{record_date}",
             "external_thread_id": None,
             "observed_at": "2026-04-25T06:00:00Z",
         },
@@ -1008,3 +1008,84 @@ class TestOwnerIdentityValidation:
             "cache must remain None after a transient failure so subsequent calls retry"
         )
         assert mock_registry.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. Regression: 4-segment external_event_id parsing (bu-rmwyi)
+# ---------------------------------------------------------------------------
+
+
+class TestFourSegmentExternalEventId:
+    """Regression tests for 4-segment external_event_id format.
+
+    After bu-91zdb.4 the connector emits:
+        google_health:<account_email>:<resource>:<date_or_id>
+
+    These tests lock down that the resource segment is correctly extracted from
+    position [2] (not [1]) so wellness data is never silently discarded.
+    """
+
+    async def test_wellness_ingest_parses_4_segment_external_event_id_for_sleep_session(
+        self,
+    ) -> None:
+        """4-segment sleep_session event ID is parsed correctly.
+
+        envelope external_event_id = 'google_health:uniquosity@gmail.com:sleep_session:sess-4seg'
+        Must yield status=ok with predicate='sleep_session', NOT skipped_unknown_predicate.
+        """
+        envelope = _make_sleep_envelope(
+            session_id="sess-4seg",
+            sender_identity="uniquosity@gmail.com",
+        )
+        # Confirm the fixture actually uses the 4-segment format.
+        eid = envelope["event"]["external_event_id"]
+        assert eid == "google_health:uniquosity@gmail.com:sleep_session:sess-4seg", (
+            f"Fixture did not produce the expected 4-segment id; got: {eid!r}"
+        )
+
+        result, mock_store, _ = await _call_translate(
+            envelope,
+            recognised_emails=["uniquosity@gmail.com"],
+        )
+
+        assert result["status"] == "ok", (
+            f"Expected ok but got {result['status']!r} — "
+            "resource segment is probably being read from the wrong position"
+        )
+        assert result["predicate"] == "sleep_session"
+        assert result["facts_written"] >= 1
+        mock_store.assert_awaited()
+
+    async def test_wellness_ingest_parses_4_segment_external_event_id_for_daily_summary(
+        self,
+    ) -> None:
+        """4-segment daily-summary event ID (activity) is parsed correctly.
+
+        envelope external_event_id = 'google_health:uniquosity@gmail.com:activity:2026-04-24'
+        Must yield status=ok with facts for measurement_steps and measurement_active_minutes,
+        NOT skipped_unknown_predicate.
+        """
+        envelope = _make_activity_envelope(
+            record_date="2026-04-24",
+            sender_identity="uniquosity@gmail.com",
+        )
+        # Confirm the fixture actually uses the 4-segment format.
+        eid = envelope["event"]["external_event_id"]
+        assert eid == "google_health:uniquosity@gmail.com:activity:2026-04-24", (
+            f"Fixture did not produce the expected 4-segment id; got: {eid!r}"
+        )
+
+        result, mock_store, _ = await _call_translate(
+            envelope,
+            recognised_emails=["uniquosity@gmail.com"],
+        )
+
+        assert result["status"] == "ok", (
+            f"Expected ok but got {result['status']!r} — "
+            "resource segment is probably being read from the wrong position"
+        )
+        # activity fans out to two facts
+        assert result["facts_written"] == 2
+        predicates = [f["predicate"] for f in result["facts"]]
+        assert "measurement_steps" in predicates
+        assert "measurement_active_minutes" in predicates
