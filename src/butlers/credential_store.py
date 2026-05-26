@@ -93,6 +93,15 @@ class SecretMetadata:
         Optional expiry; ``None`` means the secret never expires.
     source:
         Where the value was resolved from: ``"database"`` or ``"environment"``.
+    last_verified:
+        Timestamp of most recent successful probe.  ``None`` = never probed.
+    last_test_ok:
+        Outcome of most recent probe.  ``None`` = never probed.
+    last_test_code:
+        HTTP / provider response code from most recent probe.  ``None`` = never probed.
+    last_test_message:
+        Verbatim error tail from most recent probe (truncated to 512 chars by the
+        application).  ``None`` = never probed or no error message.
     """
 
     key: str
@@ -104,6 +113,10 @@ class SecretMetadata:
     updated_at: datetime
     expires_at: datetime | None
     source: str  # 'database' or 'environment'
+    last_verified: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_code: int | None = None
+    last_test_message: str | None = None
 
     def __repr__(self) -> str:
         return (
@@ -112,6 +125,73 @@ class SecretMetadata:
             f"category={self.category!r}, "
             f"is_set={self.is_set!r}, "
             f"source={self.source!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EntityInfoRow dataclass
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EntityInfoRow:
+    """A row from ``public.entity_info`` including test-state columns.
+
+    Provides a typed Python representation of the full entity_info row
+    so application code can read and write test-state columns without raw SQL
+    casts.
+
+    Attributes
+    ----------
+    id:
+        Primary key (UUID).
+    entity_id:
+        FK to ``public.entities.id``.
+    type:
+        Credential / identifier type (e.g. ``"google_oauth_refresh"``,
+        ``"telegram"``).
+    value:
+        Stored credential value.  ``None`` when the row has ``secured=True``
+        and the caller does not hold value-read permission.
+    label:
+        Optional human-readable label for multi-account display.
+    is_primary:
+        Whether this is the primary entry for ``(entity_id, type)``.
+    secured:
+        When ``True``, the value must be masked in UI and log output.
+    created_at:
+        When the row was first inserted.
+    last_verified:
+        Timestamp of most recent successful probe.  ``None`` = never probed.
+    last_test_ok:
+        Outcome of most recent probe.  ``None`` = never probed.
+    last_test_code:
+        HTTP / provider response code from most recent probe.  ``None`` = never probed.
+    last_test_message:
+        Verbatim error tail from most recent probe (truncated to 512 chars by the
+        application).  ``None`` = never probed or no error message.
+    """
+
+    id: str
+    entity_id: str
+    type: str
+    value: str | None
+    label: str | None
+    is_primary: bool
+    secured: bool
+    created_at: datetime
+    last_verified: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_code: int | None = None
+    last_test_message: str | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"EntityInfoRow("
+            f"id={self.id!r}, "
+            f"entity_id={self.entity_id!r}, "
+            f"type={self.type!r}, "
+            f"secured={self.secured!r})"
         )
 
 
@@ -443,7 +523,8 @@ class CredentialStore:
         """
         base_query = f"""
             SELECT secret_key, category, description, is_sensitive,
-                   created_at, updated_at, expires_at
+                   created_at, updated_at, expires_at,
+                   last_verified, last_test_ok, last_test_code, last_test_message
             FROM {_TABLE}
         """
         if category is not None:
@@ -467,6 +548,10 @@ class CredentialStore:
                 updated_at=_ensure_utc(row["updated_at"]),
                 expires_at=_ensure_utc(row["expires_at"]) if row["expires_at"] else None,
                 source="database",
+                last_verified=_ensure_utc(row["last_verified"]) if row["last_verified"] else None,
+                last_test_ok=row["last_test_ok"],
+                last_test_code=row["last_test_code"],
+                last_test_message=row["last_test_message"],
             )
             for row in rows
         ]

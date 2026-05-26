@@ -13,6 +13,7 @@ import pytest
 
 from butlers.credential_store import (
     CredentialStore,
+    EntityInfoRow,
     SecretMetadata,
     _ensure_utc,
     _is_missing_table_error,
@@ -140,6 +141,10 @@ async def test_list_secrets() -> None:
             "created_at": _NOW,
             "updated_at": _NOW,
             "expires_at": None,
+            "last_verified": None,
+            "last_test_ok": None,
+            "last_test_code": None,
+            "last_test_message": None,
         }[k]
         return r
 
@@ -149,6 +154,68 @@ async def test_list_secrets() -> None:
     assert len(result) == 2 and all(isinstance(m, SecretMetadata) for m in result)
     assert result[0].is_set is True and result[0].source == "database"
     assert not hasattr(result[0], "secret_value")
+    # Test-state columns default to None when never probed
+    assert result[0].last_verified is None
+    assert result[0].last_test_ok is None
+    assert result[0].last_test_code is None
+    assert result[0].last_test_message is None
+
+
+async def test_list_secrets_test_state_columns() -> None:
+    """list_secrets populates test-state columns from DB rows when present."""
+    verified_at = datetime(2026, 5, 1, 9, 0, 0, tzinfo=UTC)
+
+    def _db_row_probed(key: str) -> MagicMock:
+        r = MagicMock()
+        r.__getitem__ = lambda self, k: {
+            "secret_key": key,
+            "category": "general",
+            "description": None,
+            "is_sensitive": True,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+            "expires_at": None,
+            "last_verified": verified_at,
+            "last_test_ok": True,
+            "last_test_code": 200,
+            "last_test_message": None,
+        }[k]
+        return r
+
+    def _db_row_failing(key: str) -> MagicMock:
+        r = MagicMock()
+        r.__getitem__ = lambda self, k: {
+            "secret_key": key,
+            "category": "general",
+            "description": None,
+            "is_sensitive": True,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+            "expires_at": None,
+            "last_verified": None,
+            "last_test_ok": False,
+            "last_test_code": 401,
+            "last_test_message": "Unauthorized",
+        }[k]
+        return r
+
+    rows = [_db_row_probed("OK_KEY"), _db_row_failing("FAIL_KEY")]
+    pool = _make_pool(fetch_return=rows)
+    result = await CredentialStore(pool).list_secrets()
+
+    assert len(result) == 2
+
+    ok_meta = result[0]
+    assert ok_meta.last_verified == verified_at
+    assert ok_meta.last_test_ok is True
+    assert ok_meta.last_test_code == 200
+    assert ok_meta.last_test_message is None
+
+    fail_meta = result[1]
+    assert fail_meta.last_verified is None
+    assert fail_meta.last_test_ok is False
+    assert fail_meta.last_test_code == 401
+    assert fail_meta.last_test_message == "Unauthorized"
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +250,126 @@ def test_helpers_and_repr() -> None:
         source="database",
     )
     assert "MY_KEY" in repr(meta) and "general" in repr(meta)
+
+
+# ---------------------------------------------------------------------------
+# SecretMetadata test-state columns
+# ---------------------------------------------------------------------------
+
+
+def test_secret_metadata_test_state_defaults() -> None:
+    """SecretMetadata test-state columns default to None (never probed)."""
+    meta = SecretMetadata(
+        key="K",
+        category="general",
+        description=None,
+        is_sensitive=True,
+        is_set=True,
+        created_at=_NOW,
+        updated_at=_NOW,
+        expires_at=None,
+        source="database",
+    )
+    assert meta.last_verified is None
+    assert meta.last_test_ok is None
+    assert meta.last_test_code is None
+    assert meta.last_test_message is None
+
+
+def test_secret_metadata_test_state_roundtrip() -> None:
+    """SecretMetadata stores and returns test-state column values unchanged."""
+    verified_at = datetime(2026, 5, 15, 10, 30, 0, tzinfo=UTC)
+    meta = SecretMetadata(
+        key="K",
+        category="general",
+        description=None,
+        is_sensitive=True,
+        is_set=True,
+        created_at=_NOW,
+        updated_at=_NOW,
+        expires_at=None,
+        source="database",
+        last_verified=verified_at,
+        last_test_ok=False,
+        last_test_code=403,
+        last_test_message="Permission denied",
+    )
+    assert meta.last_verified == verified_at
+    assert meta.last_test_ok is False
+    assert meta.last_test_code == 403
+    assert meta.last_test_message == "Permission denied"
+
+
+# ---------------------------------------------------------------------------
+# EntityInfoRow dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_entity_info_row_test_state_defaults() -> None:
+    """EntityInfoRow test-state columns default to None (never probed)."""
+    row = EntityInfoRow(
+        id="00000000-0000-0000-0000-000000000001",
+        entity_id="00000000-0000-0000-0000-000000000002",
+        type="google_oauth_refresh",
+        value="tok3n",
+        label=None,
+        is_primary=True,
+        secured=True,
+        created_at=_NOW,
+    )
+    assert row.last_verified is None
+    assert row.last_test_ok is None
+    assert row.last_test_code is None
+    assert row.last_test_message is None
+
+
+def test_entity_info_row_test_state_roundtrip() -> None:
+    """EntityInfoRow stores and returns test-state column values unchanged."""
+    verified_at = datetime(2026, 5, 20, 14, 0, 0, tzinfo=UTC)
+    row = EntityInfoRow(
+        id="00000000-0000-0000-0000-000000000001",
+        entity_id="00000000-0000-0000-0000-000000000002",
+        type="google_oauth_refresh",
+        value=None,
+        label="Personal account",
+        is_primary=True,
+        secured=True,
+        created_at=_NOW,
+        last_verified=verified_at,
+        last_test_ok=True,
+        last_test_code=200,
+        last_test_message=None,
+    )
+    assert row.last_verified == verified_at
+    assert row.last_test_ok is True
+    assert row.last_test_code == 200
+    assert row.last_test_message is None
+    # Repr should not expose value
+    r = repr(row)
+    assert "EntityInfoRow" in r
+    assert "google_oauth_refresh" in r
+    assert "secured=True" in r
+    assert "tok3n" not in r  # value not in repr
+
+
+def test_entity_info_row_nullable_test_state_fields() -> None:
+    """EntityInfoRow accepts None for all four test-state columns (never-probed state)."""
+    row = EntityInfoRow(
+        id="abc",
+        entity_id="def",
+        type="telegram",
+        value="chat_id_123",
+        label=None,
+        is_primary=False,
+        secured=False,
+        created_at=_NOW,
+        last_verified=None,
+        last_test_ok=None,
+        last_test_code=None,
+        last_test_message=None,
+    )
+    # All nullable — verify no TypeError raised and values are None
+    assert row.last_verified is None
+    assert row.last_test_ok is None
+    assert row.last_test_code is None
+    assert row.last_test_message is None
