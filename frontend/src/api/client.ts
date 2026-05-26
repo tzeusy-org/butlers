@@ -5079,3 +5079,40 @@ export function reauthorizeUserCredential(
     { method: "POST" },
   );
 }
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — inventory (bu-nrgk9)
+// ---------------------------------------------------------------------------
+
+import type {
+  SecretsInventoryData,
+  SecretsInventoryMeta,
+  SecretsInventoryParams,
+} from "./types.ts";
+
+/** Full inventory response envelope from GET /api/secrets/inventory. */
+export interface SecretsInventoryResponse {
+  data: SecretsInventoryData;
+  meta: SecretsInventoryMeta;
+}
+
+/**
+ * GET /api/secrets/inventory?identity=<uuid>
+ *
+ * Returns the aggregated credential inventory for the /secrets passport page:
+ * CLI runtime tokens, system secrets, and user (OAuth/token/key) credentials.
+ *
+ * When `identity` is provided, the `user` array is filtered to that entity.
+ * When omitted, the owner entity is used (projection-lens semantics).
+ *
+ * Response shape: ApiResponse<InventoryData>
+ */
+export function getSecretsInventory(
+  params?: SecretsInventoryParams,
+): Promise<SecretsInventoryResponse> {
+  const qs =
+    params?.identity
+      ? `?identity=${encodeURIComponent(params.identity)}`
+      : "";
+  return apiFetch<SecretsInventoryResponse>(`/secrets/inventory${qs}`);
+}
