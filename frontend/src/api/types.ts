@@ -5360,3 +5360,94 @@ export interface BreaksCatalogueParams {
   /** Provider slug to filter by. When omitted, full catalogue is returned. */
   provider?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — inventory endpoint (GET /api/secrets/inventory)
+// bu-nrgk9
+// ---------------------------------------------------------------------------
+
+/**
+ * Most recent probe result for a credential, as returned by the inventory
+ * endpoint. Note: latencyMs is NOT included in the inventory response (only
+ * in per-credential detail). The FE TestResult type includes latencyMs as
+ * optional to allow both shapes to coexist.
+ */
+export interface SecretsProbeResult {
+  ok: boolean;
+  code: number | null;
+  message: string | null;
+  at: string | null;
+}
+
+/**
+ * A CLI runtime token row as returned by GET /api/secrets/inventory.
+ *
+ * Maps to CliRuntime in the backend secrets_v2 router.
+ */
+export interface SecretsCliRaw {
+  key: string;
+  category: string;
+  description: string | null;
+  state: string;
+  fingerprint: string | null;
+  last_verified: string | null;
+  test: SecretsProbeResult | null;
+}
+
+/**
+ * A system credential row as returned by GET /api/secrets/inventory.
+ *
+ * Maps to SystemSecret in the backend secrets_v2 router.
+ */
+export interface SecretsSystemRaw {
+  key: string;
+  category: string;
+  description: string | null;
+  state: string;
+  fingerprint: string | null;
+  last_verified: string | null;
+  butler: string;
+  test: SecretsProbeResult | null;
+}
+
+/**
+ * A user credential row as returned by GET /api/secrets/inventory.
+ *
+ * Maps to UserSecret in the backend secrets_v2 router.
+ * The `type` field follows the convention `<provider>_oauth_refresh` (or
+ * similar); the provider slug is derived by stripping the suffix.
+ */
+export interface SecretsUserRaw {
+  id: string;
+  entity_id: string;
+  type: string;
+  label: string | null;
+  state: string;
+  fingerprint: string | null;
+  last_verified: string | null;
+  test: SecretsProbeResult | null;
+}
+
+/**
+ * Payload shape of ApiResponse<InventoryData> from GET /api/secrets/inventory.
+ */
+export interface SecretsInventoryData {
+  cli: SecretsCliRaw[];
+  system: SecretsSystemRaw[];
+  user: SecretsUserRaw[];
+}
+
+/** Meta fields returned alongside the inventory payload. */
+export interface SecretsInventoryMeta {
+  needs_hand_count: number;
+  severity?: Record<string, number>;
+}
+
+/** Query parameters for GET /api/secrets/inventory. */
+export interface SecretsInventoryParams {
+  /**
+   * Entity UUID to filter user credentials by.
+   * When omitted, the owner identity is used (projection-lens semantics).
+   */
+  identity?: string;
+}

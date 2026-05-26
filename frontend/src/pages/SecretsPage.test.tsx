@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// SecretsPage tests [bu-q77du]
+// SecretsPage tests [bu-q77du, bu-nrgk9]
 //
 // Coverage:
 //   - Page mounts DirectionPassport without crashing
@@ -8,17 +8,38 @@
 //   - Identity-switch: ?identity=<id> updates URL and re-projects User group
 //   - OAuth re-entry: ?toast=connected shows toast (sonner spy) and strips param
 //   - OAuth re-entry: ?oauth_error=<e> shows warning toast and strips param
+//
+// SecretsPage now fetches inventory via useSecretsInventory (bu-nrgk9).
+// Tests that render <SecretsPage /> mock the hook so they receive MOCK_INVENTORY
+// synchronously without a real network call.
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SecretsPage from "./SecretsPage";
 import { DirectionPassport } from "@/components/secrets/passport";
 import { MOCK_INVENTORY } from "@/components/secrets/passport/mock-data";
 import { buildSpineEntries } from "@/components/secrets/passport/spine-builder";
+
+// ---------------------------------------------------------------------------
+// Mock useSecretsInventory so <SecretsPage /> receives MOCK_INVENTORY
+// synchronously without hitting the network.
+// ---------------------------------------------------------------------------
+
+vi.mock("@/hooks/use-secrets-inventory.ts", () => ({
+  useSecretsInventory: () => ({
+    data: MOCK_INVENTORY,
+    isLoading: false,
+    isError: false,
+  }),
+  PROVIDER_CATALOG: {},
+  secretsInventoryKeys: { all: [], byIdentity: () => [] },
+  adaptInventoryResponse: (d: unknown) => d,
+}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,8 +49,13 @@ function renderInRouter(
   element: React.ReactElement,
   initialEntries: string[] = ["/secrets"],
 ): string {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return renderToStaticMarkup(
-    <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
