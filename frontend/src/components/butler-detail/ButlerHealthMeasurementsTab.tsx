@@ -52,6 +52,8 @@ import {
   useConditions,
 } from "@/hooks/use-health";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import { useGoogleHealthStatus } from "@/hooks/use-google-health";
+import { GoogleHealthStatusCard } from "./GoogleHealthStatusCard";
 
 // ---------------------------------------------------------------------------
 // Shared UI helpers — loading / empty
@@ -646,6 +648,9 @@ function RecentConditionsPanel({
 // ---------------------------------------------------------------------------
 
 export default function ButlerHealthMeasurementsTab() {
+  // Google Health connector status (for the per-account status card)
+  const { data: googleHealthStatus } = useGoogleHealthStatus();
+
   // Row 1: KPI quartet
   const { data: latestData, isLoading: latestLoading } = useMeasurementsLatest([
     "glucose",
@@ -672,6 +677,16 @@ export default function ButlerHealthMeasurementsTab() {
 
   return (
     <div className="space-y-4 pt-4" data-testid="health-measurements-tab">
+      {/* Google Health connector status card — per-account widget(s) */}
+      {googleHealthStatus && (
+        <div data-testid="google-health-section">
+          <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">
+            Google Health Connector
+          </p>
+          <GoogleHealthStatusCard status={googleHealthStatus} />
+        </div>
+      )}
+
       {/* Row 1: KPI quartet */}
       <KpiQuartet
         measurements={measurements}

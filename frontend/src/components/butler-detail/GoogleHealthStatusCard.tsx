@@ -1,0 +1,242 @@
+/**
+ * GoogleHealthStatusCard — per-account Google Health connector status.
+ *
+ * Renders one widget per entry in the API's `accounts[]` list. When only
+ * one account is present the single-card layout is visually identical to
+ * the pre-multi-account shape (back-compat requirement, ADR-1).
+ *
+ * When `accounts` is empty or the API returns `state = "not_configured"`,
+ * a single "not configured" card is shown instead.
+ *
+ * State → colour mapping follows the StateDot / Dispatch §4e convention:
+ *   healthy   → green
+ *   degraded  → amber
+ *   error     → red
+ *   not_configured → muted
+ *
+ * Spec: openspec/changes/connector-google-health-multi-account/specs/
+ *       connector-google-health/spec.md §"Health Status Reporting"
+ *
+ * bead: bu-91zdb.8
+ */
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
+import type {
+  GoogleHealthAccountStatus,
+  GoogleHealthConnectorState,
+  GoogleHealthStatusResponse,
+} from "@/api/types";
+
+// ---------------------------------------------------------------------------
+// State-colour helpers
+// ---------------------------------------------------------------------------
+
+/** CSS class for state text colour, matching Dispatch §4e tokens. */
+function stateTextClass(state: GoogleHealthConnectorState): string {
+  switch (state) {
+    case "healthy":
+      return "text-[color:var(--green,oklch(0.72_0.17_150))]";
+    case "degraded":
+      return "text-[color:var(--amber,oklch(0.72_0.12_70))]";
+    case "error":
+      return "text-[color:var(--red,oklch(0.62_0.20_25))]";
+    default:
+      return "text-muted-foreground";
+  }
+}
+
+/** Aria-friendly label for the state dot. */
+function stateLabel(state: GoogleHealthConnectorState): string {
+  switch (state) {
+    case "healthy":
+      return "Healthy";
+    case "degraded":
+      return "Degraded";
+    case "error":
+      return "Error";
+    case "not_configured":
+      return "Not configured";
+  }
+}
+
+/** 6px dot colour (inline style) matching StateDot token conventions. */
+function stateDotColor(state: GoogleHealthConnectorState): string {
+  switch (state) {
+    case "healthy":
+      return "var(--green,oklch(0.72_0.17_150))";
+    case "degraded":
+      return "var(--amber,oklch(0.72_0.12_70))";
+    case "error":
+      return "var(--red,oklch(0.62_0.20_25))";
+    default:
+      return "var(--muted-foreground)";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scope-count summary helper
+// ---------------------------------------------------------------------------
+
+const GOOGLE_HEALTH_SCOPES = [
+  "https://www.googleapis.com/auth/fitness.sleep.read",
+  "https://www.googleapis.com/auth/fitness.activity.read",
+  "https://www.googleapis.com/auth/fitness.heart_rate.read",
+];
+
+/**
+ * Returns a short human-readable summary of which Google Health scopes are
+ * granted, e.g. "3 / 3 scopes" or "1 / 3 scopes (sleep)".
+ */
+function formatScopeSummary(scopesGranted: string[]): string {
+  const healthScopes = scopesGranted.filter((s) =>
+    GOOGLE_HEALTH_SCOPES.some((hs) => s.includes(hs.split("/").pop()!)),
+  );
+  const count = healthScopes.length;
+  const total = GOOGLE_HEALTH_SCOPES.length;
+  return `${count} / ${total} scopes`;
+}
+
+// ---------------------------------------------------------------------------
+// AccountWidget — renders a single account's status
+// ---------------------------------------------------------------------------
+
+interface AccountWidgetProps {
+  account: GoogleHealthAccountStatus;
+  isPrimary: boolean;
+}
+
+function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
+  return (
+    <Card data-testid="google-health-account-widget">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* State dot */}
+            <span
+              role="img"
+              aria-label={stateLabel(account.state)}
+              className="inline-block shrink-0 rounded-full"
+              style={{
+                width: 8,
+                height: 8,
+                backgroundColor: stateDotColor(account.state),
+              }}
+            />
+            <span className="font-mono text-xs truncate" data-testid="account-email">
+              {account.email}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {isPrimary && (
+              <Badge variant="outline" className="text-[10px] py-0 px-1.5">
+                primary
+              </Badge>
+            )}
+            <span
+              className={`text-xs font-mono ${stateTextClass(account.state)}`}
+              data-testid="account-state"
+            >
+              {account.state}
+            </span>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+          <dt className="text-muted-foreground">Scopes</dt>
+          <dd className="text-right font-mono text-xs tabular-nums">
+            {formatScopeSummary(account.scopes_granted)}
+          </dd>
+
+          <dt className="text-muted-foreground">Last ingest</dt>
+          <dd className="text-right text-xs text-muted-foreground">
+            {account.last_ingest_at ? (
+              <Time value={account.last_ingest_at} mode="relative" />
+            ) : (
+              "—"
+            )}
+          </dd>
+
+          <dt className="text-muted-foreground">Sleep sessions · 7d</dt>
+          <dd className="text-right font-mono tabular-nums" data-testid="sleep-sessions-7d">
+            {account.sleep_sessions_7d}
+          </dd>
+
+          <dt className="text-muted-foreground">Daily summaries · 7d</dt>
+          <dd className="text-right font-mono tabular-nums" data-testid="daily-summaries-7d">
+            {account.daily_summaries_7d}
+          </dd>
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NotConfiguredCard — shown when state = "not_configured" or accounts is empty
+// ---------------------------------------------------------------------------
+
+function NotConfiguredCard() {
+  return (
+    <Card data-testid="google-health-not-configured">
+      <CardContent className="pt-4">
+        <p className="text-sm text-muted-foreground italic">
+          Google Health is not configured. Grant the Google Health scopes in
+          Settings to enable data ingestion.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// GoogleHealthStatusCard — public entry point
+// ---------------------------------------------------------------------------
+
+export interface GoogleHealthStatusCardProps {
+  /** Live data from GET /api/connectors/google-health/status. */
+  status: GoogleHealthStatusResponse;
+}
+
+/**
+ * Renders one AccountWidget per `status.accounts[]` entry.
+ * Falls back to a single not-configured card when accounts is empty.
+ *
+ * Single-account back-compat: when `accounts.length === 1` the output is
+ * visually identical to the pre-multi-account shape — one card with the same
+ * fields and the same state colour.
+ */
+export function GoogleHealthStatusCard({ status }: GoogleHealthStatusCardProps) {
+  const accounts = status.accounts ?? [];
+  const primaryEmail = status.primary_account_email ?? null;
+
+  if (accounts.length === 0) {
+    return (
+      <div data-testid="google-health-status-card">
+        <NotConfiguredCard />
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="google-health-status-card">
+      <div
+        className={
+          accounts.length === 1
+            ? "space-y-3"
+            : "grid grid-cols-1 gap-3 sm:grid-cols-2"
+        }
+      >
+        {accounts.map((account) => (
+          <AccountWidget
+            key={account.email}
+            account={account}
+            isPrimary={account.email === primaryEmail}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}

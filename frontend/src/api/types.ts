@@ -3828,6 +3828,26 @@ export type GoogleHealthConnectorState =
   | "error"
   | "not_configured";
 
+/** Per-account connector state — one entry per health-scoped Google account. */
+export interface GoogleHealthAccountStatus {
+  /** Authenticated Google email address — stable identifier for the account. */
+  email: string;
+  /** Per-account operational state derived from connector_registry heartbeat. */
+  state: GoogleHealthConnectorState;
+  /** Full Google Health scope URLs granted for this account. */
+  scopes_granted: string[];
+  /** Most recent ingest timestamp for events from this account, or null. */
+  last_ingest_at: string | null;
+  /** Value of public.google_accounts.last_token_refresh_at for this account. */
+  last_token_refresh_at: string | null;
+  /** Most recently observed X-RateLimit-Remaining, or null (distinct from 0). */
+  rate_limit_remaining: number | null;
+  /** Count of sleep-session ingestion events in the last 7 days for this account. */
+  sleep_sessions_7d: number;
+  /** Count of daily-summary ingestion events in the last 7 days for this account. */
+  daily_summaries_7d: number;
+}
+
 /** Response from GET /api/connectors/google-health/status. */
 export interface GoogleHealthStatusResponse {
   connected: boolean;
@@ -3846,6 +3866,17 @@ export interface GoogleHealthStatusResponse {
   sleep_sessions_7d: number;
   /** Count of daily-summary ingestion events in the last 7 days. */
   daily_summaries_7d: number;
+  /**
+   * Per-account status entries — one per health-scoped Google account.
+   * Empty when no primary account exists (state = not_configured).
+   * Single-account installs contain exactly one entry.
+   */
+  accounts: GoogleHealthAccountStatus[];
+  /**
+   * Email of the is_primary=true Google account, or null when none is configured.
+   * Single-account consumers can use this without inspecting the accounts list.
+   */
+  primary_account_email: string | null;
 }
 
 /** Response from DELETE /api/connectors/google-health/disconnect. */
