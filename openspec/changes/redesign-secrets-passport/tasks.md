@@ -13,7 +13,7 @@ Per brief §3 "Proposed backend epic" the dependency order is `1, 2 → 3 → 4 
 - [ ] Alembic migration: add `last_verified`, `last_test_ok`, `last_test_code`, `last_test_message` columns to `butler_secrets` (per-butler-schema-aware) and `public.entity_info` per `core-credentials §Test-State Columns on Credential Tables`. Backfill: NULL. (brief §3 bead 2)
 - [ ] Alembic migration: create `public.provider_feature_catalogue` with columns and indexes per `core-credentials §public.provider_feature_catalogue WhatBreaks Source-of-Truth Table`. (brief §3 bead 6)
 - [ ] Alembic seed: bootstrap `public.provider_feature_catalogue` with the providers known at change-implementation time (Google, Telegram, Spotify, Home Assistant, WhatsApp, OwnTracks, Steam, plus any others discovered in the roster).
-- [ ] Python utility: implement `normalize_credential_key(scope: str, key: str) -> str` in `src/butlers/credential_store.py` (or a new `src/butlers/credentials/keys.py`) per `core-credentials §Credential-Key Normalisation Function`.
+- [x] Python utility: implement `normalize_credential_key(scope: str, key: str) -> str` — **implemented** at `src/butlers/core/credential_keys.py` (`butlers.core.credential_keys`); also exposes `normalize_key_param()` for the `?key=` query-param path. All audit-write callsites in `secrets_v2.py` and `oauth.py` use this helper. (bu-h6x8q)
 
 ### A2 — Backend reads
 - [ ] Create `src/butlers/api/routers/secrets_v2.py` (decision: see design.md "Decision: Separate /api/secrets/* Namespace").
@@ -34,12 +34,12 @@ Per brief §3 "Proposed backend epic" the dependency order is `1, 2 → 3 → 4 
 - [ ] Implement `POST /api/secrets/user/<provider>/reauthorize` per `dashboard-api §User credential mutations` — returns `redirect_url` with `page_of_origin=secrets` in the state token.
 
 ### A4 — Backend tests
-- [ ] Unit tests for `normalize_credential_key()` covering all three scopes.
+- [x] Unit tests for `normalize_credential_key()` covering all three scopes — `tests/core/test_credential_keys.py` (bu-h6x8q)
 - [ ] Integration tests for `GET /api/secrets/inventory` covering: empty store, mixed states, projection-lens identity filtering, envelope conformance.
 - [ ] Integration tests for each per-credential read endpoint covering: hit, miss (404), envelope conformance.
 - [ ] Integration tests for probe-log writes: one row per probe call; test-state cache updates inside the same transaction.
 - [ ] Integration tests for OAuth generalisation: `provider=google` regression; `provider=spotify` happy path (mocked OAuth); `page_of_origin` round-trip.
-- [ ] Integration tests for `/api/audit-log?key=` filter: matches normalised target; ignores rows with non-matching target.
+- [x] Integration tests for `/api/audit-log?key=` filter: matches normalised target; ignores rows with non-matching target — `tests/api/test_audit_log.py` (bu-2rdyc). Regression test for write→read round-trip via normalised callsite added at `tests/api/test_audit_log.py` (bu-h6x8q)
 - [ ] Performance test: `/api/secrets/inventory` returns in < 500 ms at p99 with 100 credentials + 10k probe-log rows.
 
 ## Track B — Frontend (epic `secrets redesign — passport book frontend`)

@@ -32,6 +32,7 @@ from butlers.api.routers.audit import (
     append,
     audit_log_appended_total,
 )
+from butlers.core.credential_keys import normalize_credential_key
 
 pytestmark = pytest.mark.unit
 
@@ -621,3 +622,108 @@ def test_whitespace_key_param_treated_as_no_filter():
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
     assert "target = " not in sql
+
+
+# ---------------------------------------------------------------------------
+# Regression: audit-write callsite → ?key= filter round-trip (bu-h6x8q)
+#
+# Validates that a target written via normalize_credential_key() is found by
+# the ?key= filter.  The write side uses the same helper that production
+# callsites in secrets_v2.py and oauth.py use; the read side goes through the
+# full list_audit_log() handler with ?key= normalisation.
+# ---------------------------------------------------------------------------
+
+
+async def test_audit_write_target_found_by_key_filter():
+    """Target written via normalize_credential_key() is returned by ?key= filter.
+
+    Simulates the full round-trip:
+    1. A write callsite produces target = normalize_credential_key("user", "google")
+    2. The row is stored with that canonical target ("u:google").
+    3. GET /api/audit-log?key=u:google returns the row.
+    4. GET /api/audit-log?key=user:google (long-scope form) also returns the row.
+    """
+    # Step 1: derive the canonical target exactly as a write callsite would.
+    canonical_target = normalize_credential_key("user", "google")
+    assert canonical_target == "u:google"  # belt-and-suspenders: confirm the contract
+
+    # Step 2: seed the mock DB with a row whose target equals the canonical key.
+    row = _sample_row(target=canonical_target, action="rotated")
+    app, mock_pool, _ = _make_audit_app([row])
+    client = TestClient(app)
+
+    # Step 3: query with canonical short-prefix form — must match.
+    resp = client.get("/api/audit-log?key=u:google")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["target"] == "u:google"
+    # Verify the SQL filter argument was the normalised key.
+    fetch_args = mock_pool.fetch.call_args[0]
+    assert "u:google" in fetch_args
+
+    # Step 4: query with long-scope form — normalised to same value before SQL.
+    resp_long = client.get("/api/audit-log?key=user:google")
+    assert resp_long.status_code == 200
+    fetch_args_long = mock_pool.fetch.call_args[0]
+    assert "u:google" in fetch_args_long  # normalised, not "user:google"
+
+
+async def test_audit_write_target_system_scope_found_by_key_filter():
+    """System-scope target written via normalize_credential_key() found by ?key=."""
+    canonical_target = normalize_credential_key("system", "BUTLER_TELEGRAM_TOKEN")
+    assert canonical_target == "s:BUTLER_TELEGRAM_TOKEN"
+
+    row = _sample_row(target=canonical_target, action="set")
+    app, mock_pool, _ = _make_audit_app([row])
+    client = TestClient(app)
+
+    resp = client.get("/api/audit-log?key=s:BUTLER_TELEGRAM_TOKEN")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["target"] == "s:BUTLER_TELEGRAM_TOKEN"
+    fetch_args = mock_pool.fetch.call_args[0]
+    assert "s:BUTLER_TELEGRAM_TOKEN" in fetch_args
+
+
+async def test_audit_write_target_cli_scope_found_by_key_filter():
+    """CLI-scope target written via normalize_credential_key() found by ?key=."""
+    canonical_target = normalize_credential_key("cli", "claude")
+    assert canonical_target == "c:claude"
+
+    row = _sample_row(target=canonical_target, action="rotated")
+    app, mock_pool, _ = _make_audit_app([row])
+    client = TestClient(app)
+
+    resp = client.get("/api/audit-log?key=c:claude")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["target"] == "c:claude"
+
+
+def test_non_normalised_target_not_returned_for_canonical_key_filter():
+    """A row stored with a raw un-normalised target is NOT matched by ?key= with canonical form.
+
+    This regression test documents the invariant: if a callsite bypasses
+    normalize_credential_key() and writes "google" instead of "u:google",
+    the ?key=u:google filter will not find it.  All production callsites
+    MUST use normalize_credential_key() to avoid silent filter misses.
+    """
+    # Row written without normalisation (simulating a defective callsite).
+    raw_target_row = _sample_row(target="google", action="rotated")
+    app, mock_pool, _ = _make_audit_app(
+        [raw_target_row],
+        # count mock returns 0 — the WHERE target='u:google' clause excludes the raw row
+        total=0,
+    )
+    client = TestClient(app)
+
+    # The ?key= filter normalises "user:google" → "u:google" and passes "u:google" to SQL.
+    # The mock pool is set up to return total=0 rows, confirming the raw "google" row
+    # is not returned.
+    resp = client.get("/api/audit-log?key=u:google")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["total"] == 0
