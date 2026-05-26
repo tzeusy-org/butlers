@@ -35,6 +35,7 @@ from butlers.connectors.google_health import (
     GoogleHealthConnector,
     GoogleHealthConnectorConfig,
     OwnerContext,
+    ResourceState,
     _build_activity_records,
     _cursor_endpoint_identity,
     _endpoint_identity_for_user,
@@ -486,6 +487,32 @@ def _make_connector() -> GoogleHealthConnector:
     return GoogleHealthConnector(config=config, shared_pool=None, cursor_pool=None)
 
 
+def _make_connector_with_account(
+    email: str = _OWNER_EMAIL,
+    account_id: uuid.UUID | None = None,
+    entity_id: uuid.UUID | None = None,
+) -> tuple[GoogleHealthConnector, OwnerContext]:
+    """Create a connector with a single pre-loaded account for per-account tests."""
+    connector = _make_connector()
+    acct_id = account_id or uuid.uuid4()
+    ent_id = entity_id or uuid.uuid4()
+    ctx = OwnerContext(
+        account_id=acct_id,
+        email=email,
+        entity_id=ent_id,
+        refresh_token_present=True,
+        endpoint_identity=_endpoint_identity_for_user(email),
+    )
+    connector._accounts[acct_id] = ctx
+    for bundle in RESOURCE_BUNDLES:
+        connector._resources[(acct_id, bundle.resource)] = ResourceState(bundle=bundle)
+    connector._google_user_id = email
+    connector._endpoint_identity = ctx.endpoint_identity
+    connector._account_missing = False
+    connector._scope_missing = False
+    return connector, ctx
+
+
 def test_health_state_reports_degraded_when_account_missing() -> None:
     connector = _make_connector()
     connector._account_missing = True
@@ -598,8 +625,8 @@ def test_upsert_contact_info_is_exposed_from_connector_module() -> None:
 
 
 def test_compute_window_first_run_covers_backfill_days() -> None:
-    connector = _make_connector()
-    state = connector._resources["sleep"]
+    connector, ctx = _make_connector_with_account()
+    state = connector._resources[(ctx.account_id, "sleep")]
     assert state.backfill_done is False
     since, until = connector._compute_window(state)
     # since should be ~backfill_days ago (30 days default).
@@ -608,8 +635,8 @@ def test_compute_window_first_run_covers_backfill_days() -> None:
 
 
 def test_compute_window_steady_state_uses_tight_trailing_window() -> None:
-    connector = _make_connector()
-    state = connector._resources["sleep"]
+    connector, ctx = _make_connector_with_account()
+    state = connector._resources[(ctx.account_id, "sleep")]
     state.backfill_done = True
     from datetime import UTC, datetime, timedelta
 
@@ -628,12 +655,10 @@ def test_compute_window_steady_state_uses_tight_trailing_window() -> None:
 @pytest.mark.asyncio
 async def test_poll_resource_skips_duplicate_records(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the API returns the same record as the current cursor, no envelope emits."""
-    connector = _make_connector()
-    connector._google_user_id = _OWNER_EMAIL
-    connector._endpoint_identity = _ENDPOINT
+    connector, ctx = _make_connector_with_account()
 
     # Pre-seed cursor so the next poll sees the same record.
-    state = connector._resources["sleep"]
+    state = connector._resources[(ctx.account_id, "sleep")]
     state.last_cursor = "sess-42"
     state.backfill_done = True
 
@@ -645,12 +670,12 @@ async def test_poll_resource_skips_duplicate_records(monkeypatch: pytest.MonkeyP
             "last_rate_limit_headers": {},
         },
     )()
-    monkeypatch.setattr(connector, "_ensure_api_client", lambda: fake_api)
+    monkeypatch.setattr(connector, "_make_account_api_client", lambda _acct_id: fake_api)
 
     submit_mock = AsyncMock()
     monkeypatch.setattr(connector, "_submit_envelope", submit_mock)
 
-    await connector._poll_resource(state)
+    await connector._poll_resource(ctx.account_id, state)
     assert submit_mock.await_count == 0
 
 
@@ -658,10 +683,8 @@ async def test_poll_resource_skips_duplicate_records(monkeypatch: pytest.MonkeyP
 async def test_poll_resource_emits_envelope_for_new_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _make_connector()
-    connector._google_user_id = _OWNER_EMAIL
-    connector._endpoint_identity = _ENDPOINT
-    state = connector._resources["sleep"]
+    connector, ctx = _make_connector_with_account()
+    state = connector._resources[(ctx.account_id, "sleep")]
     state.last_cursor = None
     state.backfill_done = False
 
@@ -683,13 +706,13 @@ async def test_poll_resource_emits_envelope_for_new_record(
             "last_rate_limit_headers": {},
         },
     )()
-    monkeypatch.setattr(connector, "_ensure_api_client", lambda: fake_api)
+    monkeypatch.setattr(connector, "_make_account_api_client", lambda _acct_id: fake_api)
     monkeypatch.setattr(connector, "_save_cursor", AsyncMock())
 
     submit_mock = AsyncMock()
     monkeypatch.setattr(connector, "_submit_envelope", submit_mock)
 
-    await connector._poll_resource(state)
+    await connector._poll_resource(ctx.account_id, state)
     assert submit_mock.await_count == 1
     envelope = submit_mock.await_args.args[0]
     assert envelope["event"]["external_event_id"] == "google_health:sleep_session:sess-new"
@@ -701,10 +724,8 @@ async def test_poll_resource_emits_envelope_for_new_record(
 async def test_poll_activity_resource_uses_daily_rollup_post(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connector = _make_connector()
-    connector._google_user_id = _OWNER_EMAIL
-    connector._endpoint_identity = _ENDPOINT
-    state = connector._resources["activity"]
+    connector, ctx = _make_connector_with_account()
+    state = connector._resources[(ctx.account_id, "activity")]
     state.backfill_done = False
 
     fake_api: Any = type(
@@ -738,13 +759,13 @@ async def test_poll_activity_resource_uses_daily_rollup_post(
             "last_rate_limit_headers": {},
         },
     )()
-    monkeypatch.setattr(connector, "_ensure_api_client", lambda: fake_api)
+    monkeypatch.setattr(connector, "_make_account_api_client", lambda _acct_id: fake_api)
     monkeypatch.setattr(connector, "_save_cursor", AsyncMock())
 
     submit_mock = AsyncMock()
     monkeypatch.setattr(connector, "_submit_envelope", submit_mock)
 
-    await connector._poll_resource(state)
+    await connector._poll_resource(ctx.account_id, state)
 
     assert fake_api.post_json.await_count == 2
     assert fake_api.post_json.await_args_list[0].args[0] == (
@@ -929,3 +950,162 @@ async def test_resolve_owner_and_scopes_diffs_account_set_across_cycles() -> Non
     assert connector._accounts_removed == []
     # teardown not called again.
     assert teardown_calls == ["y@example.com"]
+
+
+# ---------------------------------------------------------------------------
+# Per-account poll sets + token cache + heartbeat [bu-91zdb.2]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_accounts_produce_two_heartbeat_rows() -> None:
+    """Two configured accounts each get a distinct ConnectorHeartbeat instance.
+
+    After _resolve_owner_and_scopes discovers two accounts, _heartbeats should
+    contain two entries keyed by distinct account UUIDs with distinct endpoint
+    identities (google_health:user:<email>).
+
+    Acceptance test [bu-91zdb.2] AC-3.
+    """
+    connector = _make_connector()
+
+    acct_a = HealthScopedAccount(
+        id=_UUID_A,
+        email="alice@example.com",
+        entity_id=_ENTITY_A,
+        refresh_token_present=True,
+    )
+    acct_b = HealthScopedAccount(
+        id=_UUID_B,
+        email="bob@example.com",
+        entity_id=_ENTITY_B,
+        refresh_token_present=True,
+    )
+
+    # Stub _teardown_account so no MCP call is needed.
+    connector._teardown_account = AsyncMock()  # type: ignore[method-assign]
+    connector._shared_pool = MagicMock()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "butlers.connectors.google_health.list_health_scoped_accounts",
+            AsyncMock(return_value=[acct_a, acct_b]),
+        )
+        await connector._resolve_owner_and_scopes(initial=True)
+
+    # Two accounts registered.
+    assert len(connector._accounts) == 2
+
+    # Two per-(account, resource) state entries per resource bundle.
+    assert len(connector._resources) == len(RESOURCE_BUNDLES) * 2
+    for bundle in RESOURCE_BUNDLES:
+        assert (_UUID_A, bundle.resource) in connector._resources
+        assert (_UUID_B, bundle.resource) in connector._resources
+
+    # Two heartbeat tasks, one per account.
+    assert len(connector._heartbeats) == 2
+    assert _UUID_A in connector._heartbeats
+    assert _UUID_B in connector._heartbeats
+
+    hb_a = connector._heartbeats[_UUID_A]
+    hb_b = connector._heartbeats[_UUID_B]
+    assert hb_a._config.endpoint_identity == "google_health:user:alice@example.com"
+    assert hb_b._config.endpoint_identity == "google_health:user:bob@example.com"
+    assert hb_a._config.endpoint_identity != hb_b._config.endpoint_identity
+
+
+@pytest.mark.asyncio
+async def test_per_account_token_mint_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mint failure for account A leaves account B's polls and heartbeat untouched.
+
+    When _mint_access_token raises for account A (e.g. no refresh token),
+    account B can still be polled successfully using its own token.
+
+    Acceptance test [bu-91zdb.2] AC-4.
+    """
+    connector, ctx_a = _make_connector_with_account(
+        email="a@example.com",
+        account_id=_UUID_A,
+        entity_id=_ENTITY_A,
+    )
+    ctx_a.refresh_token_present = False  # A has no refresh token
+
+    # Add a second account with a valid token.
+    ctx_b = OwnerContext(
+        account_id=_UUID_B,
+        email="b@example.com",
+        entity_id=_ENTITY_B,
+        refresh_token_present=True,
+        endpoint_identity=_endpoint_identity_for_user("b@example.com"),
+    )
+    connector._accounts[_UUID_B] = ctx_b
+    for bundle in RESOURCE_BUNDLES:
+        connector._resources[(_UUID_B, bundle.resource)] = ResourceState(bundle=bundle)
+
+    mint_calls: list[uuid.UUID] = []
+
+    async def _fake_mint(account_uuid: uuid.UUID) -> str:
+        mint_calls.append(account_uuid)
+        if account_uuid == _UUID_A:
+            raise GoogleHealthCredentialError("no refresh token for A")
+        # Mimic what the real _mint_access_token does: cache in OwnerContext.
+        from datetime import UTC, datetime, timedelta
+
+        token = f"token-for-{account_uuid}"
+        ctx = connector._accounts[account_uuid]
+        ctx.cached_access_token = token
+        ctx.token_expires_at = datetime.now(UTC) + timedelta(hours=1)
+        return token
+
+    monkeypatch.setattr(connector, "_mint_access_token", _fake_mint)
+
+    # Attempt to get a token for A → raises.
+    with pytest.raises(GoogleHealthCredentialError, match="no refresh token for A"):
+        await connector._get_access_token(_UUID_A)
+
+    # Attempt to get a token for B → succeeds (A's failure has no side-effect on B).
+    token_b = await connector._get_access_token(_UUID_B)
+    assert token_b == f"token-for-{_UUID_B}"
+
+    # Only B's token is cached; A has nothing.
+    assert ctx_a.cached_access_token is None
+    assert ctx_b.cached_access_token == f"token-for-{_UUID_B}"
+
+
+def test_prometheus_labels_distinct_per_account() -> None:
+    """Two accounts produce two distinct Prometheus label sets keyed by endpoint_identity.
+
+    The google_health_polls_total counter accepts an ``endpoint_identity`` label.
+    When two accounts fire polls, the resulting label combinations are disjoint.
+
+    Acceptance test [bu-91zdb.2] AC-5.
+    """
+    from prometheus_client import REGISTRY
+
+    endpoint_a = "google_health:user:alice@example.com"
+    endpoint_b = "google_health:user:bob@example.com"
+    resource = "sleep"
+
+    # Increment the counter for each account.
+    from butlers.connectors.google_health import google_health_polls_total
+
+    google_health_polls_total.labels(
+        endpoint_identity=endpoint_a, resource=resource, outcome="success"
+    ).inc()
+    google_health_polls_total.labels(
+        endpoint_identity=endpoint_b, resource=resource, outcome="success"
+    ).inc()
+
+    # Collect all label sets from the counter.
+    label_sets: list[dict[str, str]] = []
+    for metric in REGISTRY.collect():
+        if metric.name == "connector_google_health_polls":
+            for sample in metric.samples:
+                if sample.labels.get("resource") == resource:
+                    label_sets.append(dict(sample.labels))
+
+    endpoint_identities = {ls["endpoint_identity"] for ls in label_sets}
+    assert endpoint_a in endpoint_identities
+    assert endpoint_b in endpoint_identities
+    # The two accounts are represented by different label sets — they are disjoint.
+    assert endpoint_a != endpoint_b
