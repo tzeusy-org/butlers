@@ -682,6 +682,10 @@ class OwnerContext:
     endpoint_identity:
         3-segment canonical identity string, e.g.
         ``"google_health:user:foo@gmail.com"``.
+    cached_access_token:
+        Per-account in-memory access token (never persisted).
+    token_expires_at:
+        Expiry timestamp for ``cached_access_token``.
     """
 
     account_id: uuid.UUID
@@ -689,6 +693,8 @@ class OwnerContext:
     entity_id: uuid.UUID
     refresh_token_present: bool
     endpoint_identity: str
+    cached_access_token: str | None = None
+    token_expires_at: datetime | None = None
 
     @classmethod
     def from_registry(cls, account: HealthScopedAccount) -> OwnerContext:
@@ -743,20 +749,17 @@ class GoogleHealthConnector:
 
         # Multi-account registry: keyed by account UUID, populated by
         # _resolve_owner_and_scopes from list_health_scoped_accounts.
-        # Callers (next bead) read _accounts_added / _accounts_removed to spin
-        # up or tear down per-account poll sets on each scope-recheck cycle.
+        # _accounts_added / _accounts_removed track diff across scope-recheck cycles.
         self._accounts: dict[uuid.UUID, OwnerContext] = {}
         self._accounts_added: list[uuid.UUID] = []  # newly discovered in last cycle
         self._accounts_removed: list[uuid.UUID] = []  # lost scopes/removed in last cycle
 
-        # Cached refresh-token material resolved from the shared pipeline.
+        # Cached OAuth app credentials (client_id / client_secret) from shared pipeline.
+        # The refresh token is per-account; resolved on-demand via _resolve_entity_refresh_token.
         self._client_id: str | None = None
         self._client_secret: str | None = None
+        # Legacy single-account refresh token — kept for _resolve_credentials compat only.
         self._refresh_token: str | None = None
-
-        # Cached in-memory access token (never persisted).
-        self._access_token: str | None = None
-        self._token_expires_at: datetime | None = None
 
         # HTTP clients
         self._http_client: httpx.AsyncClient | None = None
@@ -768,10 +771,12 @@ class GoogleHealthConnector:
             client_name="google-health-connector",
         )
 
-        # Per-resource state
-        self._resources: dict[str, ResourceState] = {
-            bundle.resource: ResourceState(bundle=bundle) for bundle in RESOURCE_BUNDLES
-        }
+        # Per-(account, resource) state: keyed by (account_uuid, resource_name).
+        # Initialised when an account is added; torn down when an account is removed.
+        self._resources: dict[tuple[uuid.UUID, str], ResourceState] = {}
+
+        # Per-account heartbeat tasks: keyed by account UUID.
+        self._heartbeats: dict[uuid.UUID, ConnectorHeartbeat] = {}
 
         # Degraded / error flags
         self._scope_missing: bool = True  # start degraded until verified
@@ -786,7 +791,9 @@ class GoogleHealthConnector:
             connector_type=_CONNECTOR_TYPE,
             endpoint_identity="",
         )
-        self._heartbeat: ConnectorHeartbeat | None = None
+        # Connector-level degraded heartbeat (emitted before any account is resolved).
+        # Once accounts are discovered, per-account heartbeats in _heartbeats take over.
+        self._degraded_heartbeat: ConnectorHeartbeat | None = None
         self._ingestion_policy: IngestionPolicyEvaluator | None = None
         self._filtered_event_buffer: FilteredEventBuffer | None = None
 
@@ -847,13 +854,24 @@ class GoogleHealthConnector:
             # Phase 5: Health server.
             self._start_health_server()
 
-            # Phase 6: Heartbeat.
-            assert self._heartbeat is not None
-            self._heartbeat.start()
-            try:
-                await self._heartbeat._send_heartbeat()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("GoogleHealthConnector: initial heartbeat failed: %s", exc)
+            # Phase 6: Heartbeat — start the degraded-state heartbeat and any
+            # per-account heartbeats that _post_identity_init may have spawned.
+            if self._degraded_heartbeat is not None:
+                self._degraded_heartbeat.start()
+                try:
+                    await self._degraded_heartbeat._send_heartbeat()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "GoogleHealthConnector: initial degraded heartbeat failed: %s", exc
+                    )
+            for hb in self._heartbeats.values():
+                hb.start()
+                try:
+                    await hb._send_heartbeat()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "GoogleHealthConnector: initial per-account heartbeat failed: %s", exc
+                    )
 
             # Phase 7: Main loop.
             await self._main_loop()
@@ -874,13 +892,21 @@ class GoogleHealthConnector:
         logger.info("GoogleHealthConnector: shutting down")
         self._running = False
 
-        # Final heartbeat + stop.
-        if self._heartbeat is not None:
+        # Final per-account heartbeats + stop.
+        for hb in list(self._heartbeats.values()):
             try:
-                await self._heartbeat._send_heartbeat()
+                await hb._send_heartbeat()
             except Exception as exc:  # noqa: BLE001
-                logger.debug("GoogleHealthConnector: final heartbeat failed: %s", exc)
-            await self._heartbeat.stop()
+                logger.debug("GoogleHealthConnector: final per-account heartbeat failed: %s", exc)
+            await hb.stop()
+
+        # Degraded-state heartbeat.
+        if self._degraded_heartbeat is not None:
+            try:
+                await self._degraded_heartbeat._send_heartbeat()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("GoogleHealthConnector: final degraded heartbeat failed: %s", exc)
+            await self._degraded_heartbeat.stop()
 
         if self._health_server is not None:
             self._health_server.should_exit = True
@@ -952,6 +978,9 @@ class GoogleHealthConnector:
                 ctx.email,
                 gone_id,
             )
+            # Remove per-(account, resource) poll state.
+            for bundle in RESOURCE_BUNDLES:
+                self._resources.pop((gone_id, bundle.resource), None)
             await self._teardown_account(ctx)
 
         # ----------------------------------------------------------------
@@ -972,6 +1001,11 @@ class GoogleHealthConnector:
                         "GoogleHealthConnector: account %s has health scopes but no refresh token",
                         added.email,
                     )
+                # Initialise per-(account, resource) poll state.
+                for bundle in RESOURCE_BUNDLES:
+                    self._resources[(added.id, bundle.resource)] = ResourceState(bundle=bundle)
+                # Spawn a per-account heartbeat task.
+                self._spinup_account_heartbeat(ctx)
 
         # ----------------------------------------------------------------
         # Refresh existing accounts (email / entity_id may have changed).
@@ -1057,6 +1091,19 @@ class GoogleHealthConnector:
         account's departure and the connector_registry row transitions out of
         the ``healthy`` state.  Non-fatal — failure is logged and swallowed.
         """
+        # Stop the per-account heartbeat task if running.
+        hb = self._heartbeats.pop(ctx.account_id, None)
+        if hb is not None:
+            try:
+                await hb.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "GoogleHealthConnector: error stopping heartbeat for %s (non-fatal): %s",
+                    ctx.email,
+                    exc,
+                )
+
+        # Send a final "unknown" heartbeat to close the connector_registry row.
         envelope = {
             "schema_version": "connector.heartbeat.v1",
             "connector": {
@@ -1086,16 +1133,49 @@ class GoogleHealthConnector:
                 exc,
             )
 
+    def _spinup_account_heartbeat(self, ctx: OwnerContext) -> None:
+        """Create and register a per-account heartbeat task.
+
+        The heartbeat's ``get_health_state`` callback is scoped to the specific
+        account: it returns the account's auth-error state if present, or falls
+        back to the connector-level aggregate.  The task is started immediately
+        if the connector is already running (i.e. start() has been called),
+        otherwise it will be started by start() during Phase 6.
+        """
+        hb_config = HeartbeatConfig.from_env(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=ctx.endpoint_identity,
+        )
+        # Capture account_id in a closure so the lambda stays bound to this account.
+        acct_id = ctx.account_id
+
+        def _account_health_state() -> tuple[str, str | None]:
+            return self._get_account_health_state(acct_id)
+
+        hb = ConnectorHeartbeat(
+            config=hb_config,
+            mcp_client=self._mcp_client,
+            metrics=ConnectorMetrics(
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=ctx.endpoint_identity,
+            ),
+            get_health_state=_account_health_state,
+        )
+        self._heartbeats[ctx.account_id] = hb
+
+        # If the connector is already past Phase 6 (running), start immediately.
+        if self._running:
+            hb.start()
+
     # ------------------------------------------------------------------
     # Post-identity initialization
     # ------------------------------------------------------------------
 
     def _post_identity_init(self) -> None:
-        """Initialise metrics/heartbeat/policy/filter-buffer using the best-known identity.
+        """Initialise metrics/policy/filter-buffer and spawn per-account heartbeats.
 
-        The connector still starts heartbeating even when the identity is
-        not yet resolved (degraded state) so operators can observe the
-        degraded signal from Prometheus / dashboard.
+        Also maintains a connector-level degraded heartbeat (used before any
+        account is resolved) so operators can observe the degraded signal.
         """
         identity_label = self._endpoint_identity or "google_health:degraded"
 
@@ -1114,16 +1194,28 @@ class GoogleHealthConnector:
             endpoint_identity=identity_label,
         )
 
-        hb_config = HeartbeatConfig.from_env(
-            connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=identity_label,
-        )
-        self._heartbeat = ConnectorHeartbeat(
-            config=hb_config,
-            mcp_client=self._mcp_client,
-            metrics=self._metrics,
-            get_health_state=self._get_health_state,
-        )
+        # If no accounts are known yet, maintain a degraded connector-level heartbeat.
+        # Once accounts are resolved, per-account heartbeats take precedence.
+        if not self._accounts:
+            hb_config = HeartbeatConfig.from_env(
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=identity_label,
+            )
+            self._degraded_heartbeat = ConnectorHeartbeat(
+                config=hb_config,
+                mcp_client=self._mcp_client,
+                metrics=self._metrics,
+                get_health_state=self._get_health_state,
+            )
+        else:
+            # Accounts already known — stop any degraded heartbeat and ensure
+            # per-account heartbeats exist.
+            if self._degraded_heartbeat is not None:
+                asyncio.create_task(self._degraded_heartbeat.stop())
+                self._degraded_heartbeat = None
+            for ctx in self._accounts.values():
+                if ctx.account_id not in self._heartbeats:
+                    self._spinup_account_heartbeat(ctx)
 
     # ------------------------------------------------------------------
     # Credential resolution — shared Google pipeline
@@ -1161,21 +1253,83 @@ class GoogleHealthConnector:
         self._refresh_token = creds.refresh_token
         return True
 
-    async def _mint_access_token(self) -> str:
-        """Mint a fresh access token via Google's OAuth token endpoint.
+    async def _resolve_app_credentials(self) -> bool:
+        """Resolve OAuth app credentials (client_id, client_secret) from the shared pipeline.
 
-        Tokens live in memory only — never written to disk, logs, or DB.
-        The refresh token is sourced from the shared Google credential
-        pipeline (``load_google_credentials``), not from ``CredentialStore.resolve``
-        or ``os.environ``.  Per ``about/heart-and-soul/security.md`` Tier-2
-        contract for Google integrations.
+        The per-account refresh tokens are fetched separately by
+        :meth:`_mint_access_token` via ``_resolve_entity_refresh_token``.
+        This method only populates ``_client_id`` and ``_client_secret``.
+
+        Returns ``True`` if credentials are now available, ``False`` otherwise.
         """
-        if not (self._client_id and self._client_secret and self._refresh_token):
-            if not await self._resolve_credentials():
+        if self._client_id and self._client_secret:
+            return True
+
+        # Fall back to the legacy single-account credential resolver to get
+        # client_id and client_secret (they are shared across accounts).
+        if self._shared_pool is None:
+            return False
+
+        try:
+            store = CredentialStore(self._shared_pool)
+            account_email = self._google_user_id or None
+            creds = await load_google_credentials(
+                store, pool=self._shared_pool, account=account_email
+            )
+        except InvalidGoogleCredentialsError as exc:
+            logger.warning("GoogleHealthConnector: stored app credentials invalid: %s", exc)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GoogleHealthConnector: app credential resolution failed (non-fatal): %s", exc
+            )
+            return False
+
+        if creds is None:
+            return False
+
+        self._client_id = creds.client_id
+        self._client_secret = creds.client_secret
+        return True
+
+    async def _mint_access_token(self, account_uuid: uuid.UUID) -> str:
+        """Mint a fresh access token for the given account.
+
+        Per design.md ADR-4: uses ``_resolve_entity_refresh_token`` to fetch
+        the per-account refresh token directly, keyed by ``companion_entity_id``.
+        Tokens live in ``OwnerContext.cached_access_token`` — never written to
+        disk, logs, or DB.  Per ``about/heart-and-soul/security.md`` Tier-2
+        contract for Google integrations.
+
+        Mint failure for one account leaves other accounts' polls untouched.
+        """
+        from butlers.google_credentials import _resolve_entity_refresh_token
+
+        ctx = self._accounts.get(account_uuid)
+        if ctx is None:
+            raise GoogleHealthCredentialError(
+                f"Account {account_uuid} not in _accounts — cannot mint token"
+            )
+
+        # Resolve OAuth app credentials (client_id, client_secret) once.
+        if not (self._client_id and self._client_secret):
+            if not await self._resolve_app_credentials():
                 raise GoogleHealthCredentialError(
-                    "Google Health credentials are not configured. "
+                    "Google Health app credentials (client_id/client_secret) are not configured. "
                     "Run OAuth with scope_set=health to authorize."
                 )
+
+        # Fetch the per-account refresh token via the entity_info anchor.
+        if self._shared_pool is None:
+            raise GoogleHealthCredentialError(
+                f"No shared DB pool — cannot resolve refresh token for account {ctx.email}"
+            )
+        refresh_token = await _resolve_entity_refresh_token(self._shared_pool, ctx.entity_id)
+        if not refresh_token:
+            raise GoogleHealthCredentialError(
+                f"No refresh token found for account {ctx.email} (entity {ctx.entity_id}). "
+                "Run OAuth with scope_set=health to authorize."
+            )
 
         assert self._http_client is not None
         try:
@@ -1183,7 +1337,7 @@ class GoogleHealthConnector:
                 _GOOGLE_TOKEN_URL,
                 data={
                     "grant_type": "refresh_token",
-                    "refresh_token": self._refresh_token,
+                    "refresh_token": refresh_token,
                     "client_id": self._client_id,
                     "client_secret": self._client_secret,
                 },
@@ -1194,41 +1348,44 @@ class GoogleHealthConnector:
 
         if resp.status_code != 200:
             body = resp.text[:200]
-            # Treat any non-200 as terminal — invalidates the refresh token
-            # from the connector's perspective. The connector will mark the
-            # account revoked and transition degraded.
+            # Treat any non-200 as terminal for this account.
             raise GoogleHealthCredentialError(
-                f"Google token refresh failed: HTTP {resp.status_code}: {body}"
+                f"Google token refresh failed for {ctx.email}: HTTP {resp.status_code}: {body}"
             )
 
         data = resp.json()
         access_token = data.get("access_token")
         if not access_token:
-            raise GoogleHealthCredentialError("Token response missing access_token")
+            raise GoogleHealthCredentialError(
+                f"Token response missing access_token for account {ctx.email}"
+            )
 
         expires_in = int(data.get("expires_in", 3600))
-        self._access_token = access_token
-        self._token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+        ctx.cached_access_token = access_token
+        ctx.token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
         return access_token
 
-    async def _get_access_token(self) -> str:
-        """Return a usable access token, refreshing if near expiry."""
-        now = datetime.now(UTC)
-        if (
-            self._access_token
-            and self._token_expires_at
-            and now < self._token_expires_at - timedelta(seconds=_TOKEN_REFRESH_BUFFER_S)
-        ):
-            return self._access_token
-        return await self._mint_access_token()
+    async def _get_access_token(self, account_uuid: uuid.UUID) -> str:
+        """Return a usable access token for the given account, refreshing if near expiry."""
+        ctx = self._accounts.get(account_uuid)
+        if ctx is not None:
+            now = datetime.now(UTC)
+            if (
+                ctx.cached_access_token
+                and ctx.token_expires_at
+                and now < ctx.token_expires_at - timedelta(seconds=_TOKEN_REFRESH_BUFFER_S)
+            ):
+                return ctx.cached_access_token
+        return await self._mint_access_token(account_uuid)
 
-    async def _mark_account_revoked(self) -> None:
-        """Mark the google account row as revoked — single-owner v1 guard.
+    async def _mark_account_revoked(self, account_uuid: uuid.UUID) -> None:
+        """Mark a google account row as revoked.
 
-        Called when the connector observes a persistent 401 after refresh.
-        The dashboard picks up the new status and surfaces a re-consent CTA.
+        Called when the connector observes a persistent 401 after token refresh
+        for a specific account.  The dashboard picks up the new status and
+        surfaces a re-consent CTA.  Non-fatal — failure is logged and swallowed.
         """
-        if self._shared_pool is None or self._google_account is None:
+        if self._shared_pool is None:
             return
         try:
             async with self._shared_pool.acquire() as conn:
@@ -1238,30 +1395,65 @@ class GoogleHealthConnector:
                     SET status = 'revoked'
                     WHERE id = $1
                     """,
-                    self._google_account.id,
+                    account_uuid,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "GoogleHealthConnector: failed to mark account revoked (non-fatal): %s", exc
+                "GoogleHealthConnector: failed to mark account %s revoked (non-fatal): %s",
+                account_uuid,
+                exc,
             )
 
     # ------------------------------------------------------------------
     # API client
     # ------------------------------------------------------------------
 
-    def _ensure_api_client(self) -> GoogleHealthClient:
-        """Lazily instantiate the Google Health API client.
+    def _make_account_api_client(self, account_uuid: uuid.UUID) -> GoogleHealthClient:
+        """Create a per-account Google Health API client.
 
-        The client delegates token acquisition to :meth:`_get_access_token`
-        via the callable contract on
-        :class:`GoogleHealthClient`.
+        Each account gets its own ``token_fetcher`` bound to its UUID so token
+        mints are isolated — a failure for account A does not affect account B.
+        """
+        assert self._http_client is not None
+
+        async def _token_fetcher() -> str:
+            return await self._get_access_token(account_uuid)
+
+        return GoogleHealthClient(
+            token_fetcher=_token_fetcher,
+            client=self._http_client,
+        )
+
+    def _ensure_api_client(self) -> GoogleHealthClient:
+        """Lazily instantiate a legacy fallback API client (single-account compat).
+
+        Prefer :meth:`_make_account_api_client` when iterating across accounts.
+        This method exists for test fixtures and callers that predate the
+        per-account model.
         """
         if self._api_client is None:
             assert self._http_client is not None
-            self._api_client = GoogleHealthClient(
-                token_fetcher=self._get_access_token,
-                client=self._http_client,
-            )
+            # Use the first available account's token fetcher, or a no-op if
+            # no accounts are resolved yet.
+            first_uuid = next(iter(self._accounts), None)
+            if first_uuid is not None:
+
+                async def _token_fetcher() -> str:
+                    return await self._get_access_token(first_uuid)
+
+                self._api_client = GoogleHealthClient(
+                    token_fetcher=_token_fetcher,
+                    client=self._http_client,
+                )
+            else:
+                # Fallback: no accounts yet — build a client that will always error.
+                async def _no_account_fetcher() -> str:
+                    raise GoogleHealthCredentialError("No accounts resolved yet")
+
+                self._api_client = GoogleHealthClient(
+                    token_fetcher=_no_account_fetcher,
+                    client=self._http_client,
+                )
         return self._api_client
 
     # ------------------------------------------------------------------
@@ -1269,33 +1461,43 @@ class GoogleHealthConnector:
     # ------------------------------------------------------------------
 
     async def _load_all_cursors(self) -> None:
-        """Load per-resource cursors from the switchboard registry."""
-        if self._cursor_pool is None or not self._google_user_id:
+        """Load per-(account, resource) cursors from the switchboard registry."""
+        if self._cursor_pool is None:
             return
-        for state in self._resources.values():
-            endpoint = _cursor_endpoint_identity(self._google_user_id, state.bundle.resource)
+        for (acct_id, _resource), state in self._resources.items():
+            ctx = self._accounts.get(acct_id)
+            if ctx is None:
+                continue
+            endpoint = _cursor_endpoint_identity(ctx.email, state.bundle.resource)
             try:
                 cursor = await load_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint)
                 if cursor is not None:
                     state.last_cursor = cursor
                     state.backfill_done = True
                     logger.info(
-                        "GoogleHealthConnector: loaded cursor resource=%s cursor=%s",
+                        "GoogleHealthConnector: loaded cursor account=%s resource=%s cursor=%s",
+                        ctx.email,
                         state.bundle.resource,
                         cursor,
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "GoogleHealthConnector: failed to load cursor %s: %s",
+                    "GoogleHealthConnector: failed to load cursor account=%s resource=%s: %s",
+                    ctx.email,
                     state.bundle.resource,
                     exc,
                 )
 
-    async def _save_cursor(self, state: ResourceState, cursor_value: str) -> None:
-        """Persist the cursor for one resource after a successful poll."""
-        if self._cursor_pool is None or not self._google_user_id:
+    async def _save_cursor(
+        self, account_uuid: uuid.UUID, state: ResourceState, cursor_value: str
+    ) -> None:
+        """Persist the cursor for one (account, resource) pair after a successful poll."""
+        if self._cursor_pool is None:
             return
-        endpoint = _cursor_endpoint_identity(self._google_user_id, state.bundle.resource)
+        ctx = self._accounts.get(account_uuid)
+        if ctx is None:
+            return
+        endpoint = _cursor_endpoint_identity(ctx.email, state.bundle.resource)
         try:
             await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint, cursor_value)
             state.last_cursor = cursor_value
@@ -1304,7 +1506,8 @@ class GoogleHealthConnector:
         except Exception as exc:  # noqa: BLE001
             self._metrics.record_checkpoint_save("error")
             logger.warning(
-                "GoogleHealthConnector: failed to save cursor %s: %s",
+                "GoogleHealthConnector: failed to save cursor account=%s resource=%s: %s",
+                ctx.email,
                 state.bundle.resource,
                 exc,
             )
@@ -1353,31 +1556,49 @@ class GoogleHealthConnector:
             now = time.monotonic()
             next_due: float = now + self._shortest_interval()
 
-            for state in self._resources.values():
+            for (acct_id, _resource), state in list(self._resources.items()):
+                ctx = self._accounts.get(acct_id)
+                if ctx is None:
+                    # Account was removed mid-loop; skip.
+                    continue
                 if state.next_poll_monotonic > now:
                     next_due = min(next_due, state.next_poll_monotonic)
                     continue
                 try:
-                    await self._poll_resource(state)
+                    await self._poll_resource(acct_id, state)
                 except GoogleHealthCredentialError as exc:
                     logger.error(
-                        "GoogleHealthConnector: credential error — transitioning degraded: %s",
+                        "GoogleHealthConnector: credential error account=%s — "
+                        "marking revoked and skipping: %s",
+                        ctx.email,
                         exc,
                     )
-                    self._auth_error = True
-                    self._auth_error_message = str(exc)
-                    await self._mark_account_revoked()
-                    break
+                    # Isolate: only this account's polls stop; others continue.
+                    ctx.cached_access_token = None
+                    ctx.token_expires_at = None
+                    ctx.refresh_token_present = False
+                    await self._mark_account_revoked(acct_id)
+                    # Reschedule after one full recheck cycle so we don't tight-loop.
+                    state.next_poll_monotonic = time.monotonic() + self._config.scope_recheck_s
+                    next_due = min(next_due, state.next_poll_monotonic)
+                    hb = self._heartbeats.get(acct_id)
+                    if hb is not None:
+                        try:
+                            await hb._send_heartbeat()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    continue
                 except GoogleHealthRateLimitError as exc:
                     delay = exc.retry_after
                     if delay is None:
                         delay = exponential_backoff_delay(1)
                     google_health_rate_limit_events_total.labels(
-                        endpoint_identity=self._endpoint_identity,
+                        endpoint_identity=ctx.endpoint_identity,
                         resource=state.bundle.resource,
                     ).inc()
                     logger.warning(
-                        "GoogleHealthConnector: 429 on %s — retry after %.1fs",
+                        "GoogleHealthConnector: 429 account=%s resource=%s — retry after %.1fs",
+                        ctx.email,
                         state.bundle.resource,
                         delay,
                     )
@@ -1390,13 +1611,14 @@ class GoogleHealthConnector:
                     self._source_api_error_message = exc.reason.lower()
                     logger.warning(
                         "GoogleHealthConnector: source precondition failed "
-                        "resource=%s reason=%s redirect_uri=%s",
+                        "account=%s resource=%s reason=%s redirect_uri=%s",
+                        ctx.email,
                         state.bundle.resource,
                         exc.reason,
                         exc.redirect_uri,
                     )
                     google_health_polls_total.labels(
-                        endpoint_identity=self._endpoint_identity,
+                        endpoint_identity=ctx.endpoint_identity,
                         resource=state.bundle.resource,
                         outcome="error",
                     ).inc()
@@ -1405,19 +1627,24 @@ class GoogleHealthConnector:
                     )
                     state.next_poll_monotonic = time.monotonic() + interval
                     next_due = min(next_due, state.next_poll_monotonic)
-                    if self._heartbeat is not None:
-                        await self._heartbeat._send_heartbeat()
+                    hb = self._heartbeats.get(acct_id)
+                    if hb is not None:
+                        try:
+                            await hb._send_heartbeat()
+                        except Exception:  # noqa: BLE001
+                            pass
                     continue
                 except Exception as exc:  # noqa: BLE001
                     self._last_source_api_ok = False
                     self._source_api_error_message = "source_api_unreachable"
                     logger.warning(
-                        "GoogleHealthConnector: poll error resource=%s (non-fatal): %s",
+                        "GoogleHealthConnector: poll error account=%s resource=%s (non-fatal): %s",
+                        ctx.email,
                         state.bundle.resource,
                         exc,
                     )
                     google_health_polls_total.labels(
-                        endpoint_identity=self._endpoint_identity,
+                        endpoint_identity=ctx.endpoint_identity,
                         resource=state.bundle.resource,
                         outcome="error",
                     ).inc()
@@ -1455,10 +1682,20 @@ class GoogleHealthConnector:
     # Per-resource poll
     # ------------------------------------------------------------------
 
-    async def _poll_resource(self, state: ResourceState) -> None:
-        """Poll a single resource, emit envelopes, advance cursor."""
-        client = self._ensure_api_client()
+    async def _poll_resource(self, account_uuid: uuid.UUID, state: ResourceState) -> None:
+        """Poll a single (account, resource), emit envelopes, advance cursor.
+
+        Args:
+            account_uuid: The account whose refresh token and endpoint identity to use.
+            state: Per-(account, resource) poll state (cursor, backfill flag, etc.).
+        """
+        ctx = self._accounts.get(account_uuid)
+        if ctx is None:
+            raise GoogleHealthCredentialError(f"Account {account_uuid} not found — skipping poll")
+
+        client = self._make_account_api_client(account_uuid)
         bundle = state.bundle
+        endpoint_identity = ctx.endpoint_identity
 
         since, until = self._compute_window(state)
         if bundle.request_method == "POST":
@@ -1482,13 +1719,13 @@ class GoogleHealthConnector:
                 _normalize_google_health_record(bundle, record) for record in _extract_records(data)
             ]
 
-        # Observe rate-limit headers per resource for metrics visibility.
+        # Observe rate-limit headers per (account, resource) for metrics visibility.
         headers = client.last_rate_limit_headers
         remaining_raw = headers.get("X-RateLimit-Remaining")
         if remaining_raw is not None:
             try:
                 google_health_rate_limit_remaining.labels(
-                    endpoint_identity=self._endpoint_identity,
+                    endpoint_identity=endpoint_identity,
                     resource=bundle.resource,
                 ).set(float(remaining_raw))
             except ValueError:
@@ -1510,16 +1747,16 @@ class GoogleHealthConnector:
 
             if bundle.category == "sleep":
                 envelope = build_sleep_session_envelope(
-                    endpoint_identity=self._endpoint_identity,
-                    google_user_id=self._google_user_id,
+                    endpoint_identity=endpoint_identity,
+                    google_user_id=ctx.email,
                     session_id=record_id,
                     session_record=record,
                     observed_at=observed_at,
                 )
             else:
                 envelope = build_daily_summary_envelope(
-                    endpoint_identity=self._endpoint_identity,
-                    google_user_id=self._google_user_id,
+                    endpoint_identity=endpoint_identity,
+                    google_user_id=ctx.email,
                     resource=bundle.resource,
                     record_date=record_id,
                     record=record,
@@ -1531,18 +1768,18 @@ class GoogleHealthConnector:
             latest_cursor = record_id
 
         google_health_envelopes_total.labels(
-            endpoint_identity=self._endpoint_identity,
+            endpoint_identity=endpoint_identity,
             resource=bundle.resource,
         ).inc(emitted)
 
         if latest_cursor and latest_cursor != state.last_cursor:
-            await self._save_cursor(state, latest_cursor)
+            await self._save_cursor(account_uuid, state, latest_cursor)
 
         state.last_poll_at = now
         state.backfill_done = True
 
         google_health_polls_total.labels(
-            endpoint_identity=self._endpoint_identity,
+            endpoint_identity=endpoint_identity,
             resource=bundle.resource,
             outcome="success",
         ).inc()
@@ -1733,17 +1970,54 @@ class GoogleHealthConnector:
     # Health / heartbeat callbacks
     # ------------------------------------------------------------------
 
-    def _get_health_state(self) -> tuple[str, str | None]:
-        """Return (state, error_message) for heartbeat — only healthy|degraded|error."""
-        if self._auth_error:
-            return "error", self._auth_error_message or "token_invalid"
-        if self._account_missing:
-            return "degraded", "no_primary_account"
+    def _get_account_health_state(self, account_uuid: uuid.UUID) -> tuple[str, str | None]:
+        """Return (state, error_message) for a specific account's heartbeat.
+
+        Per AC-3 / spec §Aggregate state computation: error > degraded > healthy.
+        A revoked/missing token for this account yields ``error``; missing scopes
+        or source API failures yield ``degraded``; otherwise ``healthy``.
+        """
+        ctx = self._accounts.get(account_uuid)
+        if ctx is None:
+            return "error", "account_not_found"
+        # If this account's token was explicitly cleared (revoked), mark error.
+        if ctx.cached_access_token is None and not ctx.refresh_token_present:
+            return "error", "token_invalid"
+        # Connector-level degraded signals still apply.
         if self._scope_missing:
             return "degraded", "scope_missing"
         if self._last_source_api_ok is False:
             return "degraded", self._source_api_error_message or "source_api_unreachable"
         return "healthy", None
+
+    def _get_health_state(self) -> tuple[str, str | None]:
+        """Return worst-of (state, error_message) across all per-account heartbeats.
+
+        Aggregate order: error > degraded > healthy (spec §Aggregate state computation).
+        Falls back to connector-level flags when no accounts are resolved.
+        """
+        if not self._accounts:
+            # Degraded: no accounts resolved yet.
+            if self._auth_error:
+                return "error", self._auth_error_message or "token_invalid"
+            if self._account_missing:
+                return "degraded", "no_primary_account"
+            if self._scope_missing:
+                return "degraded", "scope_missing"
+            if self._last_source_api_ok is False:
+                return "degraded", self._source_api_error_message or "source_api_unreachable"
+            return "healthy", None
+
+        # Worst-of across all accounts.
+        worst_state = "healthy"
+        worst_error: str | None = None
+        _priority = {"error": 2, "degraded": 1, "healthy": 0}
+        for acct_id in self._accounts:
+            acct_state, acct_error = self._get_account_health_state(acct_id)
+            if _priority.get(acct_state, 0) > _priority.get(worst_state, 0):
+                worst_state = acct_state
+                worst_error = acct_error
+        return worst_state, worst_error
 
     # ------------------------------------------------------------------
     # Health HTTP server
@@ -1756,6 +2030,21 @@ class GoogleHealthConnector:
         async def health() -> dict[str, Any]:
             state, error = self._get_health_state()
             uptime_s = int(time.time() - self._start_time)
+            # Snapshot mutable state once to avoid cross-thread dict-size races.
+            resources_snapshot = list(self._resources.items())
+            accounts_snapshot = dict(self._accounts)
+            # Per-account resource state for observability.
+            resources_by_account: dict[str, dict[str, Any]] = {}
+            for (acct_id, resource_name), state_ in resources_snapshot:
+                ctx = accounts_snapshot.get(acct_id)
+                acct_label = ctx.email if ctx else str(acct_id)
+                resources_by_account.setdefault(acct_label, {})[resource_name] = {
+                    "last_poll_at": state_.last_poll_at.isoformat()
+                    if state_.last_poll_at
+                    else None,
+                    "last_cursor": state_.last_cursor,
+                    "backfill_done": state_.backfill_done,
+                }
             return {
                 "status": state,
                 "connector_type": _CONNECTOR_TYPE,
@@ -1764,16 +2053,8 @@ class GoogleHealthConnector:
                 "scope_missing": self._scope_missing,
                 "account_missing": self._account_missing,
                 "auth_error": self._auth_error,
-                "resources": {
-                    name: {
-                        "last_poll_at": state_.last_poll_at.isoformat()
-                        if state_.last_poll_at
-                        else None,
-                        "last_cursor": state_.last_cursor,
-                        "backfill_done": state_.backfill_done,
-                    }
-                    for name, state_ in self._resources.items()
-                },
+                "accounts": list(accounts_snapshot.keys()),
+                "resources_by_account": resources_by_account,
                 "error": error,
             }
 
