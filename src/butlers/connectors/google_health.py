@@ -1208,7 +1208,11 @@ class GoogleHealthConnector:
                 get_health_state=self._get_health_state,
             )
         else:
-            # Accounts already known — ensure per-account heartbeats exist.
+            # Accounts already known — stop any degraded heartbeat and ensure
+            # per-account heartbeats exist.
+            if self._degraded_heartbeat is not None:
+                asyncio.create_task(self._degraded_heartbeat.stop())
+                self._degraded_heartbeat = None
             for ctx in self._accounts.values():
                 if ctx.account_id not in self._heartbeats:
                     self._spinup_account_heartbeat(ctx)
@@ -1572,6 +1576,7 @@ class GoogleHealthConnector:
                     # Isolate: only this account's polls stop; others continue.
                     ctx.cached_access_token = None
                     ctx.token_expires_at = None
+                    ctx.refresh_token_present = False
                     await self._mark_account_revoked(acct_id)
                     # Reschedule after one full recheck cycle so we don't tight-loop.
                     state.next_poll_monotonic = time.monotonic() + self._config.scope_recheck_s
@@ -2025,10 +2030,13 @@ class GoogleHealthConnector:
         async def health() -> dict[str, Any]:
             state, error = self._get_health_state()
             uptime_s = int(time.time() - self._start_time)
+            # Snapshot mutable state once to avoid cross-thread dict-size races.
+            resources_snapshot = list(self._resources.items())
+            accounts_snapshot = dict(self._accounts)
             # Per-account resource state for observability.
             resources_by_account: dict[str, dict[str, Any]] = {}
-            for (acct_id, resource_name), state_ in self._resources.items():
-                ctx = self._accounts.get(acct_id)
+            for (acct_id, resource_name), state_ in resources_snapshot:
+                ctx = accounts_snapshot.get(acct_id)
                 acct_label = ctx.email if ctx else str(acct_id)
                 resources_by_account.setdefault(acct_label, {})[resource_name] = {
                     "last_poll_at": state_.last_poll_at.isoformat()
@@ -2045,7 +2053,7 @@ class GoogleHealthConnector:
                 "scope_missing": self._scope_missing,
                 "account_missing": self._account_missing,
                 "auth_error": self._auth_error,
-                "accounts": list(self._accounts.keys()),
+                "accounts": list(accounts_snapshot.keys()),
                 "resources_by_account": resources_by_account,
                 "error": error,
             }
