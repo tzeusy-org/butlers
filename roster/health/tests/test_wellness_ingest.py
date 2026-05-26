@@ -2,12 +2,13 @@
 
 Covers:
 1. Predicate derivation for all connector-emitted resources (happy path + unknown resource)
-2. Non-primary sender rejection
+2. Owner identity validation (multi-account aware)
 3. Replay-idempotency (same idempotency_key → no duplicate)
 4. Malformed payload (missing required field) → skipped_malformed_payload
 5. Prometheus counter increments with correct labels
 6. Activity fan-out → two facts (measurement_steps + measurement_active_minutes)
 7. Sleep stage fan-out → up to two facts (sleep_session + sleep_stage_summary)
+8. Owner identity validation — multi-account acceptance and rejection
 
 All tests are unit tests (no DB required) — DB calls are mocked.
 """
@@ -185,22 +186,30 @@ def _make_activity_envelope(
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def reset_owner_identity_cache():
+    """Reset the per-session owner identity cache before each test.
+
+    The cache is a module-level singleton; without this reset, one test's
+    mocked identity set would leak into the next test.
+    """
+    import butlers.tools.health.wellness_ingest as _wi
+
+    _wi._recognised_owner_identities = None
+    yield
+    _wi._recognised_owner_identities = None
+
+
 @pytest.fixture
 def mock_pool():
-    """Mock asyncpg pool that returns a primary account row and owner entity row."""
+    """Mock asyncpg pool that returns an owner entity row (google_accounts now via registry)."""
     pool = AsyncMock()
     pool.fetchrow.side_effect = _default_fetchrow
     return pool
 
 
 async def _default_fetchrow(query: str, *args, **kwargs):
-    """Default fetchrow that returns primary account or owner entity based on query."""
-    if "google_accounts" in query:
-        row = MagicMock()
-        row.__getitem__ = MagicMock(
-            side_effect=lambda k: "user@example.com" if k == "email" else None
-        )
-        return row
+    """Default fetchrow for owner entity lookup."""
     if "public.entities" in query:
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: str(uuid.uuid4()) if k == "id" else None)
@@ -219,6 +228,18 @@ def store_fact_result():
 
 
 # ---------------------------------------------------------------------------
+# Helper to build a HealthScopedAccount mock
+# ---------------------------------------------------------------------------
+
+
+def _make_health_scoped_account(email: str) -> MagicMock:
+    """Return a mock HealthScopedAccount-like object with the given email."""
+    acct = MagicMock()
+    acct.email = email
+    return acct
+
+
+# ---------------------------------------------------------------------------
 # Helper to call translate_wellness_envelope with standard mocks
 # ---------------------------------------------------------------------------
 
@@ -228,20 +249,19 @@ async def _call_translate(
     pool=None,
     embedding_engine=None,
     store_fact_return=None,
+    recognised_emails: list[str] | None = None,
 ) -> dict:
-    """Call translate_wellness_envelope with mocked dependencies."""
+    """Call translate_wellness_envelope with mocked dependencies.
+
+    ``recognised_emails`` controls what ``list_health_scoped_accounts`` returns.
+    Defaults to ``["user@example.com"]`` — the default sender in all envelope helpers.
+    """
     from butlers.tools.health.wellness_ingest import translate_wellness_envelope
 
     if pool is None:
         pool = AsyncMock()
 
         async def _fetchrow(query, *args, **kwargs):
-            if "google_accounts" in query:
-                row = MagicMock()
-                row.__getitem__ = MagicMock(
-                    side_effect=lambda k: "user@example.com" if k == "email" else None
-                )
-                return row
             if "public.entities" in query:
                 row = MagicMock()
                 row.__getitem__ = MagicMock(
@@ -255,9 +275,19 @@ async def _call_translate(
     if embedding_engine is None:
         embedding_engine = MagicMock()
 
+    if recognised_emails is None:
+        recognised_emails = ["user@example.com"]
+
     sf_result = store_fact_return or {"id": str(uuid.uuid4()), "superseded_id": None}
 
+    accounts = [_make_health_scoped_account(e) for e in recognised_emails]
+
     with (
+        patch(
+            "butlers.tools.health.wellness_ingest.list_health_scoped_accounts",
+            new_callable=AsyncMock,
+            return_value=accounts,
+        ),
         patch(
             "butlers.tools.health.wellness_ingest.resolve_owner_entity_info",
             new_callable=AsyncMock,
@@ -423,52 +453,29 @@ class TestActivityFanOut:
 
 
 # ---------------------------------------------------------------------------
-# 3. Non-primary sender rejection
+# 3. Owner-identity sender rejection
 # ---------------------------------------------------------------------------
 
 
 class TestSenderRejection:
-    async def test_non_primary_sender_rejected(self) -> None:
-        """Sender that doesn't match primary account is rejected."""
+    async def test_foreign_sender_rejected(self) -> None:
+        """Sender not in the recognised owner identity set is rejected."""
         envelope = _make_sleep_envelope(sender_identity="other@example.com")
-        # Pool returns "user@example.com" as primary; envelope sender is different
+        # Recognised set contains only "user@example.com"; sender is different.
+        result, _, mock_counter = await _call_translate(
+            envelope, recognised_emails=["user@example.com"]
+        )
 
-        from butlers.tools.health.wellness_ingest import translate_wellness_envelope
-
-        pool = AsyncMock()
-
-        async def _fetchrow(query, *args, **kwargs):
-            if "google_accounts" in query:
-                row = MagicMock()
-                row.__getitem__ = MagicMock(
-                    side_effect=lambda k: "user@example.com" if k == "email" else None
-                )
-                return row
-            return None
-
-        pool.fetchrow.side_effect = _fetchrow
-
-        with patch(
-            "butlers.tools.health.wellness_ingest.health_wellness_ingest_total"
-        ) as mock_counter:
-            result = await translate_wellness_envelope(pool, MagicMock(), envelope)
-
-        assert result["status"] == "rejected_non_primary_sender"
+        assert result["status"] == "rejected_non_owner_sender"
         mock_counter.labels.assert_called_once()
         label_call = mock_counter.labels.call_args
-        assert label_call.kwargs.get("outcome") == "rejected_non_primary_sender"
+        assert label_call.kwargs.get("outcome") == "rejected_non_owner_sender"
 
-    async def test_no_primary_account_rejects(self) -> None:
-        """When primary account is not found, envelope is rejected."""
-        from butlers.tools.health.wellness_ingest import translate_wellness_envelope
+    async def test_no_health_scoped_accounts_rejects(self) -> None:
+        """When no health-scoped owner accounts are found, envelope is rejected."""
+        result, _, _ = await _call_translate(_make_sleep_envelope(), recognised_emails=[])
 
-        pool = AsyncMock()
-        pool.fetchrow.return_value = None  # no primary account
-
-        with patch("butlers.tools.health.wellness_ingest.health_wellness_ingest_total"):
-            result = await translate_wellness_envelope(pool, MagicMock(), _make_sleep_envelope())
-
-        assert result["status"] == "rejected_non_primary_sender"
+        assert result["status"] == "rejected_non_owner_sender"
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +516,14 @@ class TestReplayIdempotency:
         ikey = "google_health:sleep:sess-replay"
         envelope = _make_sleep_envelope(session_id="sess-replay", idempotency_key=ikey)
 
+        account = _make_health_scoped_account("user@example.com")
+
         with (
+            patch(
+                "butlers.tools.health.wellness_ingest.list_health_scoped_accounts",
+                new_callable=AsyncMock,
+                return_value=[account],
+            ),
             patch(
                 "butlers.tools.health.wellness_ingest.resolve_owner_entity_info",
                 new_callable=AsyncMock,
@@ -525,12 +539,6 @@ class TestReplayIdempotency:
             pool = AsyncMock()
 
             async def _fetchrow(query, *args, **kwargs):
-                if "google_accounts" in query:
-                    row = MagicMock()
-                    row.__getitem__ = MagicMock(
-                        side_effect=lambda k: "user@example.com" if k == "email" else None
-                    )
-                    return row
                 if "public.entities" in query:
                     row = MagicMock()
                     row.__getitem__ = MagicMock(
@@ -626,32 +634,16 @@ class TestPrometheusCounter:
         assert label_call.kwargs.get("outcome") == "skipped_unknown_predicate"
         mock_counter.labels.return_value.inc.assert_called_once()
 
-    async def test_non_primary_rejection_increments_counter(self) -> None:
-        """Non-primary sender increments counter with rejected_non_primary_sender."""
-        from butlers.tools.health.wellness_ingest import translate_wellness_envelope
-
+    async def test_foreign_sender_rejection_increments_counter(self) -> None:
+        """Foreign sender increments counter with rejected_non_owner_sender."""
         envelope = _make_sleep_envelope(sender_identity="stranger@example.com")
-        pool = AsyncMock()
+        result, _, mock_counter = await _call_translate(
+            envelope, recognised_emails=["primary@example.com"]
+        )
 
-        async def _fetchrow(query, *args, **kwargs):
-            if "google_accounts" in query:
-                row = MagicMock()
-                row.__getitem__ = MagicMock(
-                    side_effect=lambda k: "primary@example.com" if k == "email" else None
-                )
-                return row
-            return None
-
-        pool.fetchrow.side_effect = _fetchrow
-
-        with patch(
-            "butlers.tools.health.wellness_ingest.health_wellness_ingest_total"
-        ) as mock_counter:
-            result = await translate_wellness_envelope(pool, MagicMock(), envelope)
-
-        assert result["status"] == "rejected_non_primary_sender"
+        assert result["status"] == "rejected_non_owner_sender"
         mock_counter.labels.assert_called_once_with(
-            predicate="unknown", outcome="rejected_non_primary_sender"
+            predicate="unknown", outcome="rejected_non_owner_sender"
         )
         mock_counter.labels.return_value.inc.assert_called_once()
 
@@ -864,3 +856,155 @@ class TestSleepSessionMetadataEdgeCases:
         meta = _extract_sleep_session_metadata(raw)
 
         assert meta.get("session_id") is None
+
+
+# ---------------------------------------------------------------------------
+# 9. Owner identity validation — multi-account acceptance and rejection
+# ---------------------------------------------------------------------------
+
+
+class TestOwnerIdentityValidation:
+    """Acceptance tests for the multi-account owner identity check.
+
+    Covers the scenarios from bu-91zdb.6:
+    - Accept envelopes whose sender matches any active, health-scoped account.
+    - Reject when the sender's account is missing scopes or is revoked.
+    - Reject when the sender is not in the recognised identity set at all.
+    - The recognised-identity set is cached after the first query.
+    """
+
+    async def test_owner_identity_validation_accepts_secondary_health_scoped_account(
+        self,
+    ) -> None:
+        """Envelope from a secondary health-scoped account is accepted.
+
+        Both uniquosity@ (primary) and tzeuse@ (secondary) are active and
+        health-scoped.  An envelope with sender.identity=tzeuse@ must be
+        accepted and the result must carry the owner entity_id.
+        """
+        envelope = _make_sleep_envelope(sender_identity="tzeuse@gmail.com")
+
+        # Both accounts are active and health-scoped — recognised set contains both.
+        result, mock_store, _ = await _call_translate(
+            envelope,
+            recognised_emails=["uniquosity@gmail.com", "tzeuse@gmail.com"],
+        )
+
+        assert result["status"] == "ok"
+        assert result["facts_written"] >= 1
+        # entity_id passed to store_fact is the owner entity (resolved via
+        # resolve_owner_entity_info, which is mocked to return a UUID string).
+        store_call = mock_store.call_args_list[0]
+        entity_id_kwarg = store_call.kwargs.get("entity_id")
+        assert entity_id_kwarg is not None, "entity_id must be forwarded to memory_store_fact"
+
+    async def test_owner_identity_validation_rejects_account_without_health_scopes(
+        self,
+    ) -> None:
+        """Envelope from an account missing health scopes is rejected.
+
+        tzeuse@ exists in google_accounts but its granted_scopes does not
+        contain all three required Google Health scopes, so list_health_scoped_accounts
+        will not include it.  The ingest must be rejected.
+        """
+        envelope = _make_sleep_envelope(sender_identity="tzeuse@gmail.com")
+
+        # Recognised set only contains uniquosity@; tzeuse@ has insufficient scopes.
+        result, _, mock_counter = await _call_translate(
+            envelope, recognised_emails=["uniquosity@gmail.com"]
+        )
+
+        assert result["status"] == "rejected_non_owner_sender"
+        label_call = mock_counter.labels.call_args
+        assert label_call.kwargs.get("outcome") == "rejected_non_owner_sender"
+
+    async def test_owner_identity_validation_rejects_revoked_account(self) -> None:
+        """Envelope from a revoked account is rejected.
+
+        tzeuse@ row exists in google_accounts but has status='revoked'.
+        list_health_scoped_accounts excludes non-active rows, so the ingest
+        must be rejected.
+        """
+        envelope = _make_sleep_envelope(sender_identity="tzeuse@gmail.com")
+
+        # Recognised set is empty (revoked accounts are excluded by the registry helper).
+        result, _, _ = await _call_translate(envelope, recognised_emails=[])
+
+        assert result["status"] == "rejected_non_owner_sender"
+
+    async def test_owner_identity_set_queried_once_per_session(self) -> None:
+        """The recognised-identity set is fetched once and cached for subsequent calls.
+
+        Two successive translate_wellness_envelope calls with the same pool must
+        result in only one call to list_health_scoped_accounts — the second call
+        hits the cache.
+        """
+        import butlers.tools.health.wellness_ingest as _wi
+        from butlers.tools.health.wellness_ingest import translate_wellness_envelope
+
+        # Ensure cache is clear (autouse fixture already does this, but be explicit).
+        _wi._recognised_owner_identities = None
+
+        envelope = _make_sleep_envelope(sender_identity="user@example.com")
+        account = _make_health_scoped_account("user@example.com")
+
+        with (
+            patch(
+                "butlers.tools.health.wellness_ingest.list_health_scoped_accounts",
+                new_callable=AsyncMock,
+                return_value=[account],
+            ) as mock_registry,
+            patch(
+                "butlers.tools.health.wellness_ingest.resolve_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value=str(uuid.uuid4()),
+            ),
+            patch(
+                "butlers.tools.health.wellness_ingest.memory_store_fact",
+                new_callable=AsyncMock,
+                return_value={"id": str(uuid.uuid4()), "superseded_id": None},
+            ),
+            patch("butlers.tools.health.wellness_ingest.health_wellness_ingest_total"),
+        ):
+            pool = AsyncMock()
+            pool.fetchrow.return_value = None
+            embedding_engine = MagicMock()
+
+            r1 = await translate_wellness_envelope(pool, embedding_engine, envelope)
+            r2 = await translate_wellness_envelope(pool, embedding_engine, envelope)
+
+        assert r1["status"] == "ok"
+        assert r2["status"] == "ok"
+        # Registry must be called exactly once — second call uses the cache.
+        assert mock_registry.await_count == 1, (
+            f"list_health_scoped_accounts called {mock_registry.await_count} times; "
+            "expected exactly 1 (cached after first call)"
+        )
+
+    async def test_transient_db_failure_does_not_poison_cache(self) -> None:
+        """A transient DB error must NOT cache an empty identity set.
+
+        If list_health_scoped_accounts raises on the first call, the cache
+        must remain None so that subsequent calls retry the query.  Without
+        this invariant a single transient failure would permanently disable
+        wellness ingestion until the daemon restarts.
+        """
+        import butlers.tools.health.wellness_ingest as _wi
+        from butlers.tools.health.wellness_ingest import _get_recognised_owner_identities
+
+        _wi._recognised_owner_identities = None
+        pool = AsyncMock()
+
+        with patch(
+            "butlers.tools.health.wellness_ingest.list_health_scoped_accounts",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("transient connection error"),
+        ) as mock_registry:
+            result = await _get_recognised_owner_identities(pool)
+
+        # Transient failure returns empty frozenset without caching.
+        assert result == frozenset()
+        assert _wi._recognised_owner_identities is None, (
+            "cache must remain None after a transient failure so subsequent calls retry"
+        )
+        assert mock_registry.await_count == 1
