@@ -32,6 +32,7 @@ from butlers.api.routers.audit import (
     append,
     audit_log_appended_total,
 )
+from butlers.core.credential_keys import normalize_credential_key
 
 pytestmark = pytest.mark.unit
 
@@ -631,9 +632,6 @@ def test_whitespace_key_param_treated_as_no_filter():
 # callsites in secrets_v2.py and oauth.py use; the read side goes through the
 # full list_audit_log() handler with ?key= normalisation.
 # ---------------------------------------------------------------------------
-
-
-from butlers.core.credential_keys import normalize_credential_key  # noqa: E402
 
 
 async def test_audit_write_target_found_by_key_filter():
