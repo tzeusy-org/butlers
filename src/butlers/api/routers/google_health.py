@@ -54,6 +54,7 @@ can track status-card poll load.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -667,15 +668,19 @@ async def get_google_health_status(
         if health_accounts:
             heartbeat_by_email = await _fetch_heartbeat_rows_by_email(switchboard_pool)
 
-            # Fetch all account rows from google_accounts for granted_scopes and token metadata.
+            # Fetch account rows from google_accounts for granted_scopes and token metadata.
+            # Filter to the health-scoped set so the query scales with accounts, not total DB rows.
             try:
+                emails = [ha.email for ha in health_accounts if ha.email]
                 async with shared_pool.acquire() as conn:
                     ga_rows = await conn.fetch(
                         """
                         SELECT id, email, granted_scopes, last_token_refresh_at, status
                         FROM public.google_accounts
                         WHERE status = 'active'
-                        """
+                          AND email = ANY($1::text[])
+                        """,
+                        emails,
                     )
                 ga_by_email: dict[str, dict[str, Any]] = {
                     row["email"]: dict(row) for row in ga_rows if row.get("email")
@@ -686,17 +691,17 @@ async def get_google_health_status(
                 )
                 ga_by_email = {}
 
-            for ha in health_accounts:
-                email = ha.email
-                hb = heartbeat_by_email.get(email)
-                acct_row = ga_by_email.get(email) or {"email": email, "granted_scopes": None}
-                entry = await _build_account_status(
-                    email=email,
-                    account_row=acct_row,
-                    heartbeat=hb,
+            tasks = [
+                _build_account_status(
+                    email=ha.email,
+                    account_row=ga_by_email.get(ha.email)
+                    or {"email": ha.email, "granted_scopes": None},
+                    heartbeat=heartbeat_by_email.get(ha.email),
                     shared_pool=shared_pool,
                 )
-                account_entries.append(entry)
+                for ha in health_accounts
+            ]
+            account_entries = list(await asyncio.gather(*tasks))
 
     # Derive worst-of top-level state from per-account entries.
     if account_entries:
