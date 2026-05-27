@@ -58,7 +58,7 @@ export function NeighbourRow({
     <li
       className="flex items-center justify-between py-2 border-b last:border-0 hover:bg-muted/40 px-2 rounded-sm"
       data-testid={testId}
-      {...(columnIndex !== undefined ? { "data-column-index": columnIndex } : {})}
+      data-column-index={columnIndex}
     >
       <button
         type="button"
@@ -66,9 +66,9 @@ export function NeighbourRow({
         onClick={() => onClick(entityId)}
         aria-label={label}
         data-entity-id={entityId}
-        {...(columnIndex !== undefined ? { "data-column-index": columnIndex } : {})}
+        data-column-index={columnIndex}
       >
-        <NetworkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden />
+        <NetworkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
         <span>{displayName}</span>
       </button>
 
