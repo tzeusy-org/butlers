@@ -1097,6 +1097,13 @@ class GoogleHealthConnector:
             self._account_missing = False
             self._scope_missing = False
 
+            # Recompute global auth_error so the degraded-mode wait loop can escape
+            # when a previously-errored account is re-authorized or a new healthy
+            # account is added.  Rule: True only when ALL known accounts have auth_error.
+            self._auth_error = bool(self._accounts) and all(
+                c.auth_error for c in self._accounts.values()
+            )
+
             # Keep legacy single-account fields pointing at the first account
             # (primary if present, otherwise oldest by connected_at which is the
             # registry's ordering guarantee).

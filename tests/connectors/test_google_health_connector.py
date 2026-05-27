@@ -1773,8 +1773,8 @@ def test_account_health_state_reflects_per_account_auth_error() -> None:
     assert err_b is None
 
 
-def test_global_health_state_not_error_when_one_account_fails() -> None:
-    """Connector-level _get_health_state reports degraded (not error) when one of two accounts fails."""
+def test_global_health_state_is_error_when_one_account_fails() -> None:
+    """Connector-level _get_health_state reports error (worst-of) when one of two accounts fails."""
     connector, ctx_a, ctx_b = _make_two_account_connector()
 
     ctx_a.auth_error = True
