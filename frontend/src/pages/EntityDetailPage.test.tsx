@@ -874,3 +874,37 @@ describe("EntityDetailPage — BreadcrumbStrip", () => {
     expect(html).toContain("Index");
   });
 });
+
+// ---------------------------------------------------------------------------
+// LinkedContactSection — direct /entities/:id link (bu-rah6u)
+// ---------------------------------------------------------------------------
+
+describe("EntityDetailPage — LinkedContactSection direct entity link", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("linked contact name links to /entities/:entityId directly (not /contacts/:contactId)", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      linked_contact_id: "contact-xyz",
+      linked_contact_name: "Linked Contact Name",
+    });
+    const html = renderPage();
+    // Must link to the entity page directly
+    expect(html).toContain('href="/entities/entity-001"');
+    // Must NOT use the /contacts/ redirect path
+    expect(html).not.toContain('href="/contacts/contact-xyz"');
+  });
+
+  it("linked contact section is not rendered when linked_contact_id is null", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      linked_contact_id: null,
+      linked_contact_name: null,
+    });
+    const html = renderPage();
+    // No link to a contact page should appear
+    expect(html).not.toContain("/contacts/");
+  });
+});
