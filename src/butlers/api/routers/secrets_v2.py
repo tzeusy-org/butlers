@@ -145,6 +145,7 @@ from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.routers import audit as audit_router
@@ -373,16 +374,6 @@ def _fingerprint(value: str | None) -> str | None:
         return None
     digest = hashlib.sha256(value.encode()).hexdigest()
     return digest[:8]
-
-
-def _escape_like_pattern(value: str) -> str:
-    """Escape PostgreSQL LIKE metacharacters (%, _, and backslash).
-
-    PostgreSQL's default LIKE escape character is backslash, so no
-    explicit ESCAPE clause is needed.  Call this on any user-controlled
-    substring before interpolating it into a LIKE pattern parameter.
-    """
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 # ---------------------------------------------------------------------------
@@ -961,7 +952,7 @@ async def _fetch_single_user_secret(
                 LIMIT 1
                 """,
                 identity,
-                f"{_escape_like_pattern(provider)}_%",
+                f"{escape_like_pattern(provider)}_%",
             )
         else:
             row = await pool.fetchrow(
@@ -985,7 +976,7 @@ async def _fetch_single_user_secret(
                 ORDER BY ei.created_at DESC
                 LIMIT 1
                 """,
-                f"{_escape_like_pattern(provider)}_%",
+                f"{escape_like_pattern(provider)}_%",
             )
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()

@@ -25,10 +25,10 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from butlers._sql_utils import escape_like_pattern as _escape_like_pattern
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
-    _escape_like_pattern,
     _get_db_manager,
 )
 

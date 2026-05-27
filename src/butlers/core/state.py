@@ -11,6 +11,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers._sql_utils import escape_like_pattern
+
 logger = logging.getLogger(__name__)  # retained for potential future use
 
 
@@ -167,7 +169,7 @@ async def state_list(
     if prefix is not None:
         rows = await pool.fetch(
             "SELECT key, value FROM state WHERE key LIKE $1 ORDER BY key",
-            f"{prefix}%",
+            f"{escape_like_pattern(prefix)}%",
         )
     else:
         rows = await pool.fetch("SELECT key, value FROM state ORDER BY key")
