@@ -7,7 +7,7 @@ Create Date: 2026-05-18 00:00:00.000000
 Phase: entity-redesign (bu-297lj — POST /entities/queue/dismiss).
 
 Adds ``queue.dismissed`` to ``relationship.entity_predicate_registry``.  This
-predicate is written by ``POST /api/butlers/relationship/entities/queue/dismiss``
+predicate is written by ``POST /api/relationship/entities/queue/dismiss``
 via the central writer ``relationship_assert_fact()`` to mark that an operator
 has explicitly dismissed an entity from the curation queue.
 

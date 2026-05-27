@@ -2,7 +2,7 @@
 
 > **FRONTEND-ONLY CHANGE.** This change modifies frontend route prose, navigation
 > contracts, and component-level requirements only. The
-> `/api/butlers/relationship/entities/*` API namespace is NOT affected by this
+> `/api/relationship/entities/*` API namespace is NOT affected by this
 > change; all existing backend endpoints under that namespace remain in effect and
 > MUST NOT be altered as part of this change.
 
