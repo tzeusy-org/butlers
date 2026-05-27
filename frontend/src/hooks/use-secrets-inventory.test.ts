@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { adaptInventoryResponse } from "@/hooks/use-secrets-inventory.ts";
-import type { SecretsIdentityInfo, SecretsSystemRaw, SecretsUserRaw, SecretsCliRaw } from "@/api/types.ts";
+import type { SecretsIdentityInfo, SecretsSystemRaw, SecretsUserRaw } from "@/api/types.ts";
 
 function makeSystem(overrides: Partial<SecretsSystemRaw> & Pick<SecretsSystemRaw, "key" | "state">): SecretsSystemRaw {
   return {
@@ -31,17 +31,6 @@ function makeUser(overrides: Partial<SecretsUserRaw> & Pick<SecretsUserRaw, "ent
     fingerprint: null,
     last_verified: null,
     label: null,
-    test: null,
-    ...overrides,
-  };
-}
-
-function makeCli(overrides: Partial<SecretsCliRaw> & Pick<SecretsCliRaw, "key" | "state">): SecretsCliRaw {
-  return {
-    category: "runtime",
-    description: null,
-    fingerprint: null,
-    last_verified: null,
     test: null,
     ...overrides,
   };
