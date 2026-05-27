@@ -22,14 +22,13 @@ import { useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeftIcon } from "lucide-react";
 
-import type { NeighbourEntry } from "@/api/types";
 import { getOwnerSetupStatus, getRelationshipEntity } from "@/api/index";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { NeighbourRow } from "@/components/ui/NeighbourRow";
 import { Page } from "@/components/ui/page";
+import { PredicateGroup } from "@/components/ui/PredicateGroup";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityNeighbours } from "@/hooks/use-entities";
@@ -124,39 +123,6 @@ function AnchorCard({ entityId }: AnchorCardProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Predicate group
-// ---------------------------------------------------------------------------
-
-interface PredicateGroupProps {
-  predicate: string;
-  entries: NeighbourEntry[];
-  onRecentre: (entityId: string) => void;
-}
-
-function PredicateGroup({ predicate, entries, onRecentre }: PredicateGroupProps) {
-  const label = predicate.replace(/-/g, " ");
-  return (
-    <section data-testid={`predicate-group-${predicate}`}>
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1 px-2">
-        {label}
-        <span className="ml-2 font-normal tabular-nums">({entries.length})</span>
-      </h3>
-      <ul>
-        {entries.map((entry) => (
-          <NeighbourRow
-            key={entry.entity_id}
-            entry={entry}
-            onClick={onRecentre}
-            ariaLabel={`Re-centre on entity ${entry.canonical_name || entry.entity_id}`}
-            testId="neighbour-row"
-          />
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Neighbour fan-out panel
 // ---------------------------------------------------------------------------
 
@@ -214,7 +180,10 @@ function NeighbourFanOut({ entityId, onRecentre }: NeighbourFanOutProps) {
           key={predicate}
           predicate={predicate}
           entries={neighbours[predicate]}
-          onRecentre={onRecentre}
+          onSelect={onRecentre}
+          getRowAriaLabel={(entry) =>
+            `Re-centre on entity ${entry.canonical_name || entry.entity_id}`
+          }
         />
       ))}
     </div>
