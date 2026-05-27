@@ -141,6 +141,7 @@ from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
+import httpx
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -1564,6 +1565,79 @@ class ReauthorizeResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# OAuth provider token revocation
+# ---------------------------------------------------------------------------
+
+# Credential types that carry an OAuth token eligible for provider-side revocation.
+# Keys are provider slugs; values are the URL to POST to (or None = not implemented).
+# Only providers with a working implementation are listed.  Unlisted providers are
+# treated as "skipped" (log a warning, rotation still succeeds).
+_OAUTH_REVOKE_PROVIDERS: dict[str, str | None] = {
+    "google": "https://oauth2.googleapis.com/revoke",
+    # GitHub revoke requires app credentials (client_id, client_secret) which are
+    # not stored server-side.  Tracked as a follow-up (file a beads issue).
+    # Spotify and others: add as follow-up issues.
+}
+
+# Credential type suffixes that indicate an OAuth token (access or refresh).
+# Non-OAuth types (plain API keys, etc.) skip revocation entirely.
+_OAUTH_TYPE_SUFFIXES = ("_oauth_refresh", "_oauth_access")
+
+_REVOKE_TIMEOUT_S = 5.0
+
+
+async def _revoke_oauth_token(provider: str, credential_type: str, old_value: str) -> str:
+    """Attempt to revoke an OAuth token at the provider after a successful local rotation.
+
+    Returns a revoke_status string: ``"succeeded"``, ``"failed:<reason>"``, or ``"skipped"``.
+
+    Rules:
+    - If the credential type is not an OAuth type, return ``"skipped"`` immediately.
+    - If the provider has no revoke handler, log a warning and return ``"skipped"``.
+    - On HTTP 200, return ``"succeeded"``.
+    - On any error (HTTP non-200, timeout, network failure), log at WARN level and return
+      ``"failed:<reason>"``.  Caller must NOT propagate this as a rotation failure.
+    """
+    # Only OAuth credential types trigger revoke.
+    if not any(credential_type.endswith(suffix) for suffix in _OAUTH_TYPE_SUFFIXES):
+        return "skipped"
+
+    revoke_url = _OAUTH_REVOKE_PROVIDERS.get(provider)
+    if revoke_url is None:
+        if provider in _OAUTH_REVOKE_PROVIDERS:
+            # Explicitly listed but not implemented (value is None).
+            logger.warning(
+                "_revoke_oauth_token: no revoke handler for provider=%s (follow-up required)",
+                provider,
+            )
+        else:
+            logger.warning(
+                "_revoke_oauth_token: unknown provider=%s; skipping revoke",
+                provider,
+            )
+        return "skipped"
+
+    try:
+        async with httpx.AsyncClient(timeout=_REVOKE_TIMEOUT_S) as client:
+            # Send the token in the POST body (application/x-www-form-urlencoded)
+            # rather than as a query parameter.  Query params are routinely logged by
+            # reverse proxies and web servers — sending in the body avoids token leakage.
+            resp = await client.post(revoke_url, data={"token": old_value})
+        if resp.status_code == 200:
+            logger.debug("_revoke_oauth_token: revoked provider=%s (HTTP 200)", provider)
+            return "succeeded"
+        reason = f"HTTP {resp.status_code}"
+        logger.warning("_revoke_oauth_token: provider=%s revoke failed: %s", provider, reason)
+        return f"failed:{reason}"
+    except Exception as exc:  # noqa: BLE001
+        reason = type(exc).__name__
+        logger.warning(
+            "_revoke_oauth_token: provider=%s revoke error: %s", provider, exc, exc_info=True
+        )
+        return f"failed:{reason}"
+
+
+# ---------------------------------------------------------------------------
 # Mutation audit helper
 # ---------------------------------------------------------------------------
 
@@ -1622,17 +1696,18 @@ async def rotate_user_credential(
 ) -> ApiResponse[UserSecretDetail]:
     """Rotate (replace) the stored value for a user-scoped credential.
 
-    Writes the new value to the matching ``public.entity_info`` row and
-    appends a ``rotated`` audit row to ``public.audit_log``.
+    Writes the new value to the matching ``public.entity_info`` row,
+    attempts to revoke the old OAuth token at the provider (fire-and-forget),
+    and appends a ``rotated`` audit row to ``public.audit_log``.
 
     The spec requires this endpoint to return ``ApiResponse<UserSecret>``
     (updated).  The rotation is a direct in-place update of the
-    ``entity_info.value`` column; no external provider call is made.
+    ``entity_info.value`` column.
 
-    Note: for OAuth providers (e.g. Google), rotating the stored refresh
-    token does NOT revoke the old token at the provider — it only replaces
-    the locally-stored value.  Full OAuth re-issuance is handled by the
-    ``/reauthorize`` endpoint.
+    For OAuth providers (e.g. Google), the OLD token is revoked at the
+    provider AFTER the local DB update succeeds.  If the provider revoke call
+    fails, the rotation still succeeds — revoke failure is logged at WARN level
+    and recorded in the audit note under ``revoke_status``.
 
     Spec anchor
     -----------
@@ -1648,10 +1723,28 @@ async def rotate_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Locate the existing row so we can confirm it exists and get its entity_id.
+    # Locate the existing row so we can confirm it exists and capture the old token value.
     detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
+
+    # Capture the old raw value before we overwrite it.  We need it for provider revocation.
+    # _fetch_single_user_secret returns a UserSecretDetail which does NOT expose the raw value
+    # (fingerprint only), so we re-read it directly here.
+    old_raw_value: str | None = None
+    try:
+        _old_row = await shared_pool.fetchrow(
+            "SELECT value FROM public.entity_info WHERE id = $1",
+            UUID(detail.id),
+        )
+        if _old_row is not None:
+            old_raw_value = _old_row["value"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "rotate_user_credential: could not read old value for revoke (provider=%s): %s",
+            provider,
+            exc,
+        )
 
     # Update the value in-place using the primary key from the fetched row.
     # Using id (PK) is safer than entity_id+LIKE which could match multiple rows
@@ -1670,12 +1763,19 @@ async def rotate_user_credential(
         logger.warning("rotate_user_credential: update failed for provider=%s: %s", provider, exc)
         raise HTTPException(status_code=503, detail="Credential rotation failed") from exc
 
+    # Revoke the old OAuth token at the provider — fire-and-forget.
+    # Only triggered when: (a) we have the old value, (b) it differs from the new value,
+    # and (c) the credential type is an OAuth type.
+    revoke_status = "skipped"
+    if old_raw_value is not None and old_raw_value != body.value:
+        revoke_status = await _revoke_oauth_token(provider, detail.type, old_raw_value)
+
     # Audit — fire-and-forget.
     await _write_credential_audit(
         shared_pool,
         action="rotated",
         provider=provider,
-        note="Value replaced via rotate endpoint",
+        note=f"Value replaced via rotate endpoint; revoke_status={revoke_status}",
     )
 
     # Re-fetch to return the updated state with freshly computed fingerprint.

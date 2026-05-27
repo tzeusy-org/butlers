@@ -526,3 +526,277 @@ def test_reauthorize_404_on_missing_credential():
 
     resp = client.post("/api/secrets/user/spotify/reauthorize")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: OAuth token revocation during rotate (bu-ohwbh)
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_google_calls_revoke_url(monkeypatch):
+    """Google rotation calls the OAuth revoke endpoint with the old token."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-token-xyz")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url), **kwargs})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    # Patch AsyncClient.post — the revoke helper uses `async with httpx.AsyncClient() as c`.
+    # We patch the class-level __aenter__ / __aexit__ via AsyncMock so the async context manager
+    # yields a fake client with a mocked post().
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-token-abc"})
+
+    assert resp.status_code == 200
+    assert revoke_calls, "Expected at least one call to the Google revoke URL"
+    assert "oauth2.googleapis.com/revoke" in revoke_calls[0]["url"]
+    # The old token value must be in the POST body (data=), NOT in query params.
+    # Sending in query params risks token leakage via proxy/server logs.
+    data = revoke_calls[0].get("data", {})
+    assert data.get("token") == "old-token-xyz", (
+        f"Expected old token in revoke body data, got: {data}"
+    )
+
+
+def test_rotate_google_revoke_failure_does_not_fail_rotation(monkeypatch):
+    """Google revoke HTTP failure does NOT cause the rotate endpoint to return non-200."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-token")
+    mock_db = _make_db(user_row=row)
+
+    async def _fake_post(url, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-token"})
+
+    # Rotation MUST succeed even when revoke fails.
+    assert resp.status_code == 200
+    assert "data" in resp.json()
+
+
+def test_rotate_google_revoke_http_non_200_does_not_fail_rotation(monkeypatch):
+    """Google revoke HTTP 400 response does NOT cause the rotate endpoint to return non-200."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-tok")
+    mock_db = _make_db(user_row=row)
+
+    async def _fake_post(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 400
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-tok"})
+
+    assert resp.status_code == 200
+
+
+def test_rotate_non_oauth_provider_does_not_call_revoke(monkeypatch):
+    """Rotation of a non-OAuth credential (e.g. a plain API key) does NOT call the revoke URL.
+
+    Spotify type 'spotify_api_key' does not match the _OAUTH_TYPE_SUFFIXES, so
+    revoke is skipped entirely.
+    """
+    import httpx
+
+    row = _make_entity_info_row(info_type="spotify_api_key", value="old-api-key")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url)})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/spotify/rotate", json={"value": "new-api-key"})
+
+    assert resp.status_code == 200
+    assert not revoke_calls, (
+        f"Expected no revoke calls for non-OAuth credential, got: {revoke_calls}"
+    )
+
+
+def test_rotate_unlisted_provider_does_not_call_revoke(monkeypatch):
+    """Rotation of an OAuth credential for an unlisted provider logs a warning and skips revoke.
+
+    'github' with type 'github_oauth_refresh' would match the OAuth type suffix, but
+    'github' is not in _OAUTH_REVOKE_PROVIDERS (implementation pending), so revoke is skipped.
+    """
+    import httpx
+
+    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-github-tok")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url)})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-github-tok"})
+
+    assert resp.status_code == 200
+    assert not revoke_calls, (
+        f"Expected no revoke HTTP calls for unlisted provider, got: {revoke_calls}"
+    )
+
+
+def test_rotate_audit_note_contains_revoke_status(monkeypatch):
+    """Audit note for rotate contains revoke_status= field."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-tok")
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
+    async def _fake_post(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-tok"})
+    assert resp.status_code == 200
+
+    rotated = [c for c in audit_calls if c["action"] == "rotated"]
+    assert rotated, "Expected 'rotated' audit row"
+    note = rotated[0].get("note", "")
+    assert "revoke_status=" in note, f"Expected 'revoke_status=' in audit note, got: {note!r}"
+
+
+def test_rotate_no_revoke_when_new_value_equals_old(monkeypatch):
+    """No-op rotation (new value == old value) must NOT call the revoke endpoint.
+
+    Revoking the current token when value is unchanged would invalidate it.
+    """
+    import httpx
+
+    old_value = "same-token"
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value=old_value)
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url)})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    # Same value as stored — no-op rotation.
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": old_value})
+
+    assert resp.status_code == 200
+    assert not revoke_calls, (
+        f"Expected no revoke when new value equals old value, got: {revoke_calls}"
+    )
