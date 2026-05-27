@@ -47,14 +47,14 @@ export function RelationshipContactRedirect() {
 // Spec: openspec/changes/decommission-contact-detail-page/tasks.md §4
 export function ContactEntityRedirect() {
   const { contactId } = useParams<{ contactId: string }>()
-  const { data, isLoading, isError } = useQuery({
+  const { data, isPending, isError } = useQuery({
     queryKey: ['contact-entity-resolve', contactId],
     queryFn: () => resolveContactEntity(contactId!),
     enabled: !!contactId,
     retry: false,
   })
 
-  if (isLoading) return null
+  if (isPending) return null
 
   if (!isError && data?.entity_id) {
     return <Navigate to={`/entities/${data.entity_id}`} replace />
