@@ -11,7 +11,6 @@
 
 import { describe, expect, it, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, waitFor } from "@testing-library/react"
-import * as React from "react"
 
 // ---------------------------------------------------------------------------
 // Mock the API client — must appear before component import
