@@ -620,13 +620,15 @@ async def bulk_retry_ingestion_events(
             results.append({"event_id": event_id, "status": "replay_pending"})
             succeeded += 1
             # Record each accepted retry in public.audit_log (best-effort, non-fatal).
+            # Use the same action string and note shape as the single-event replay
+            # endpoint so these entries appear in replay history timelines.
             try:
                 await _audit_append(
                     pool,
                     actor="dashboard",
-                    action="ingestion.event.retry",
+                    action="ingestion.event.replay",
                     target=event_id,
-                    note=json.dumps({"source": result.get("source")}),
+                    note=json.dumps({"result": "pending", "source": result.get("source")}),
                     ip=client_host,
                 )
             except Exception:

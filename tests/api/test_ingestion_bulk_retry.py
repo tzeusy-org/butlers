@@ -99,6 +99,18 @@ async def test_bulk_retry_all_succeed(app):
     # Audit entry emitted for each accepted event
     assert mock_audit.await_count == 3
     assert mock_replay.await_count == 3
+    # Audit action must match the single-event replay endpoint so bulk-retried events
+    # show up in GET /api/ingestion/events/{id}/replays history timelines.
+    import json as _json
+
+    for call in mock_audit.call_args_list:
+        assert call.kwargs["action"] == "ingestion.event.replay", (
+            f"Audit action must be 'ingestion.event.replay', got {call.kwargs['action']!r}"
+        )
+        note = _json.loads(call.kwargs["note"])
+        assert note.get("result") == "pending", (
+            f"Audit note must include 'result': 'pending', got {note!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
