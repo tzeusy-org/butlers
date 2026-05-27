@@ -144,6 +144,7 @@ import type {
   IngestionEventRollup,
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
+  BulkRetryEventsResponse,
   IngestionEventSenderContact,
   IngestionEventPayload,
   IngestionEventsParams,
@@ -3357,6 +3358,21 @@ export async function bulkReplayEvents(
       body: JSON.stringify({ event_ids: eventIds, reason: reason ?? "bulk replay" }),
     },
   );
+}
+
+/**
+ * POST /api/ingestion/events/retry/bulk
+ * Bulk-retry/replay up to 100 events from both ingestion and filtered tables.
+ * Each event is attempted independently — partial failures do not abort the batch.
+ */
+export async function bulkRetryEvents(
+  eventIds: string[],
+): Promise<BulkRetryEventsResponse> {
+  return apiFetch<BulkRetryEventsResponse>(`/ingestion/events/retry/bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event_ids: eventIds }),
+  });
 }
 
 /** Get period-scoped ingestion overview statistics (message_inbox-based). */

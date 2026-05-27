@@ -469,6 +469,7 @@ export type {
 
 export {
   bulkReplayEvents,
+  bulkRetryEvents,
   deleteConnector,
   getCrossConnectorSummary,
   getCrossConnectorSummaryWithAggregates,
@@ -535,6 +536,8 @@ export type {
   ButlerRollupEntry,
   IngestionWindowRollup,
   IngestionWindowRollupParams,
+  BulkRetryEventResult,
+  BulkRetryEventsResponse,
 } from "./types.ts";
 
 export {
