@@ -2038,7 +2038,10 @@ export default function EntityDetailPage() {
       columns:       { label: "Columns",       href: "/entities/columns" },
       concentration: { label: "Concentration", href: "/entities/concentration" },
     };
-    const originCrumb = originFrom ? (ORIGIN_CRUMBS[originFrom] ?? null) : null;
+    const originCrumb =
+      originFrom && Object.prototype.hasOwnProperty.call(ORIGIN_CRUMBS, originFrom)
+        ? ORIGIN_CRUMBS[originFrom]
+        : null;
     return [
       { label: "Index", href: "/entities" },
       ...(originCrumb ? [originCrumb] : []),
