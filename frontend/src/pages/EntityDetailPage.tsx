@@ -639,7 +639,7 @@ function LinkedContactSection({
         {entity.linked_contact_id ? (
           <div className="flex items-center gap-3">
             <Link
-              to={`/contacts/${entity.linked_contact_id}`}
+              to={`/entities/${entityId}`}
               className="text-primary hover:underline"
             >
               {entity.linked_contact_name ?? entity.linked_contact_id}
