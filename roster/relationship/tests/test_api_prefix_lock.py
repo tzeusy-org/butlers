@@ -58,7 +58,7 @@ def _wire_app_for_list() -> FastAPI:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
 
-    app = create_app()
+    app = create_app(api_key="test-key")
     for butler_name, router_module in app.state.butler_routers:
         if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
             app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
@@ -84,7 +84,10 @@ class TestApiPrefixLock:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/relationship/entities")
+            resp = await client.get(
+                "/api/relationship/entities",
+                headers={"X-API-Key": "test-key"},
+            )
         assert resp.status_code != 404, (
             f"Expected /api/relationship/entities to be routed, got 404. "
             f"Prefix may have regressed. Response: {resp.text}"
@@ -102,7 +105,10 @@ class TestApiPrefixLock:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/butlers/relationship/entities")
+            resp = await client.get(
+                "/api/butlers/relationship/entities",
+                headers={"X-API-Key": "test-key"},
+            )
         assert resp.status_code == 404, (
             f"Expected /api/butlers/relationship/entities to return 404, "
             f"got {resp.status_code}. The legacy /api/butlers/ prefix must NOT be mounted. "
