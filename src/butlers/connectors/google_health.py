@@ -707,6 +707,14 @@ class OwnerContext:
         Per-account in-memory access token (never persisted).
     token_expires_at:
         Expiry timestamp for ``cached_access_token``.
+    auth_error:
+        True when this account's credential refresh has permanently failed (e.g.
+        revoked refresh token).  Cleared when the account successfully completes
+        a poll.
+    auth_error_message:
+        Human-readable error message set alongside ``auth_error``.
+    auth_error_at:
+        Timestamp of when ``auth_error`` was last set — for observability only.
     """
 
     account_id: uuid.UUID
@@ -716,6 +724,9 @@ class OwnerContext:
     endpoint_identity: str
     cached_access_token: str | None = None
     token_expires_at: datetime | None = None
+    auth_error: bool = False
+    auth_error_message: str | None = None
+    auth_error_at: datetime | None = None  # when the error was last set, for observability
 
     @classmethod
     def from_registry(cls, account: HealthScopedAccount) -> OwnerContext:
@@ -1085,6 +1096,13 @@ class GoogleHealthConnector:
             # At least one health-scoped account is present — connector is healthy.
             self._account_missing = False
             self._scope_missing = False
+
+            # Recompute global auth_error so the degraded-mode wait loop can escape
+            # when a previously-errored account is re-authorized or a new healthy
+            # account is added.  Rule: True only when ALL known accounts have auth_error.
+            self._auth_error = bool(self._accounts) and all(
+                c.auth_error for c in self._accounts.values()
+            )
 
             # Keep legacy single-account fields pointing at the first account
             # (primary if present, otherwise oldest by connected_at which is the
@@ -1598,6 +1616,14 @@ class GoogleHealthConnector:
                     ctx.cached_access_token = None
                     ctx.token_expires_at = None
                     ctx.refresh_token_present = False
+                    # Set per-account auth_error flag for observability.
+                    ctx.auth_error = True
+                    ctx.auth_error_message = str(exc) or "token_invalid"
+                    ctx.auth_error_at = datetime.now(UTC)
+                    # Recompute global: True only when ALL accounts have auth_error.
+                    self._auth_error = bool(self._accounts) and all(
+                        c.auth_error for c in self._accounts.values()
+                    )
                     await self._mark_account_revoked(acct_id)
                     # Reschedule after one full recheck cycle so we don't tight-loop.
                     state.next_poll_monotonic = time.monotonic() + self._config.scope_recheck_s
@@ -1681,6 +1707,14 @@ class GoogleHealthConnector:
                     )
                     state.next_poll_monotonic = time.monotonic() + interval
                     next_due = min(next_due, state.next_poll_monotonic)
+                    # Successful poll: clear any prior per-account auth_error and recompute global.
+                    if ctx.auth_error:
+                        ctx.auth_error = False
+                        ctx.auth_error_message = None
+                        ctx.auth_error_at = None
+                        self._auth_error = bool(self._accounts) and all(
+                            c.auth_error for c in self._accounts.values()
+                        )
 
             # Base-spec obligation — flush filtered events every cycle.
             await self._flush_filtered_events()
@@ -2001,7 +2035,11 @@ class GoogleHealthConnector:
         ctx = self._accounts.get(account_uuid)
         if ctx is None:
             return "error", "account_not_found"
-        # If this account's token was explicitly cleared (revoked), mark error.
+        # Per-account auth_error flag takes priority (explicitly set on credential failure).
+        if ctx.auth_error:
+            return "error", ctx.auth_error_message or "token_invalid"
+        # If this account's token was explicitly cleared (revoked) without auth_error being set,
+        # also mark error (legacy path / direct manipulation).
         if ctx.cached_access_token is None and not ctx.refresh_token_present:
             return "error", "token_invalid"
         # Connector-level degraded signals still apply.
@@ -2066,6 +2104,16 @@ class GoogleHealthConnector:
                     "last_cursor": state_.last_cursor,
                     "backfill_done": state_.backfill_done,
                 }
+            # Per-account auth_error summary for observability.
+            accounts_auth_errors: dict[str, Any] = {
+                ctx.email: {
+                    "auth_error": ctx.auth_error,
+                    "auth_error_message": ctx.auth_error_message,
+                    "auth_error_at": ctx.auth_error_at.isoformat() if ctx.auth_error_at else None,
+                }
+                for ctx in accounts_snapshot.values()
+                if ctx.auth_error
+            }
             return {
                 "status": state,
                 "connector_type": _CONNECTOR_TYPE,
@@ -2075,6 +2123,7 @@ class GoogleHealthConnector:
                 "account_missing": self._account_missing,
                 "auth_error": self._auth_error,
                 "accounts": list(accounts_snapshot.keys()),
+                "accounts_auth_errors": accounts_auth_errors,
                 "resources_by_account": resources_by_account,
                 "error": error,
             }
