@@ -578,7 +578,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     ),
                 )
                 # Write owner row into episode_entities join table (bu-4c1ks).
-                await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+                ep_id = episode.id if episode is not None else None
+                await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
             episodes_upserted += 1
 
             # The last segment may be open (continues into the next batch).

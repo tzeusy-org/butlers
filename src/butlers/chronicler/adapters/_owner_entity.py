@@ -63,8 +63,7 @@ async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
 
     if row is None:
         logger.debug(
-            "resolve_owner_entity_id: no contact with role 'owner' found "
-            "— entity_id will be NULL"
+            "resolve_owner_entity_id: no contact with role 'owner' found — entity_id will be NULL"
         )
         return None
 
@@ -89,8 +88,7 @@ async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
             return None
 
     logger.debug(
-        "resolve_owner_entity_id: unexpected entity_id type %r "
-        "— entity_id will be NULL",
+        "resolve_owner_entity_id: unexpected entity_id type %r — entity_id will be NULL",
         type(raw).__name__,
     )
     return None
