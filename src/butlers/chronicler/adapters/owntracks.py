@@ -50,9 +50,14 @@ import logging
 import math
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import (
+    resolve_owner_entity_id,
+    upsert_owner_episode_entity,
+)
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import (
@@ -152,9 +157,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         # Build movement episodes from the sorted point sequence.
         # Load prior-batch carryover for cross-batch stitching.
         if valid_rows:
+            # Resolve owner entity_id once per adapter run (not per row).
+            entity_id = await resolve_owner_entity_id(pool)
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
             episodes_closed, new_carryover = await self._project_movement_episodes(
-                chronicler_pool, valid_rows, prior_carryover
+                chronicler_pool, valid_rows, prior_carryover, entity_id=entity_id
             )
             result.episodes_closed += episodes_closed
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
@@ -384,6 +391,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         rows: list[dict[str, Any]],
         prior_carryover: dict,
+        *,
+        entity_id: UUID | None = None,
     ) -> tuple[int, dict]:
         """Collapse point sequences into movement episodes.
 
@@ -553,7 +562,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             }
 
             async with chronicler_pool.acquire() as conn:
-                await upsert_episode(
+                episode = await upsert_episode(
                     conn,
                     Episode(
                         source_name=self.source_name,
@@ -565,8 +574,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         title=title,
                         payload=payload,
                         privacy=Privacy.NORMAL,
+                        entity_id=entity_id,
                     ),
                 )
+                # Write owner row into episode_entities join table (bu-4c1ks).
+                await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
             episodes_upserted += 1
 
             # The last segment may be open (continues into the next batch).

@@ -38,6 +38,10 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import (
+    resolve_owner_entity_id,
+    upsert_owner_episode_entity,
+)
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import (
     Episode,
@@ -116,6 +120,9 @@ class CoreSessionsAdapter(ProjectionAdapter):
         result = AdapterResult(source_name=self.source_name)
         schema_watermarks: list[datetime] = []
 
+        # Resolve owner entity_id once per adapter run (not per schema or row).
+        entity_id = await resolve_owner_entity_id(pool)
+
         for schema in self.butler_schemas:
             schema_since = await self._get_schema_watermark(chronicler_pool, schema, fallback=since)
             schema_rows, schema_watermark = await self._fetch_sessions(pool, schema, schema_since)
@@ -132,7 +139,11 @@ class CoreSessionsAdapter(ProjectionAdapter):
             for row in schema_rows:
                 contact_info = contact_map.get(row["id"], (None, None))
                 projected = await self._project_row(
-                    chronicler_pool, schema, row, contact_info=contact_info
+                    chronicler_pool,
+                    schema,
+                    row,
+                    contact_info=contact_info,
+                    entity_id=entity_id,
                 )
                 result.point_events += projected["point_events"]
                 if projected["opened_episode"]:
@@ -380,6 +391,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
         row: asyncpg.Record,
         *,
         contact_info: tuple[str | None, str | None] = (None, None),
+        entity_id: UUID | None = None,
     ) -> dict[str, int | bool]:
         """Upsert the point events + work episode for one session row."""
         session_id = row["id"]
@@ -451,12 +463,15 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         title=episode_title,
                         payload=payload_common,
                         privacy=Privacy.NORMAL,
+                        entity_id=entity_id,
                     ),
                 )
 
+                # Write owner row into episode_entities join table (bu-4c1ks).
+                await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+
                 # Link boundary events.
                 assert started_event.id is not None
-                assert episode.id is not None
                 await link_event_to_episode(
                     conn,
                     episode_id=episode.id,
