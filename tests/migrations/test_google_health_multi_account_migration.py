@@ -130,6 +130,100 @@ def test_cursor_migration_joins_on_active_accounts() -> None:
     assert "ga.status = 'active'" in source
 
 
+def test_cursor_migration_uses_exec_driver_sql_not_op_execute() -> None:
+    """Regression test for bu-qcl9g.
+
+    core_108 SQL contains colon-prefixed tokens in comments (e.g. ':resource',
+    ':user') and a LIKE clause containing 'google_health:user:%%'.  When passed
+    through SQLAlchemy's op.execute() / text() parser these are misinterpreted
+    as named bind parameters, raising:
+        sqlalchemy.exc.InvalidRequestError: A value is required for bind
+        parameter 'resource'
+
+    The fix is to use op.get_bind().exec_driver_sql() which bypasses
+    SQLAlchemy text() parsing and sends the SQL directly to the driver.
+    psycopg2 requires literal '%' in SQL to be escaped as '%%' when no
+    parameter substitution is used.
+
+    This test verifies the migration uses exec_driver_sql and does NOT use
+    op.execute() for the UPDATE statements, and that LIKE patterns escape '%'.
+    """
+    source = _CURSOR_MIGRATION_PATH.read_text()
+    # Must use exec_driver_sql (bypasses SQLAlchemy text() bind-param parsing).
+    assert "exec_driver_sql" in source, (
+        "core_108 must use op.get_bind().exec_driver_sql() to avoid SQLAlchemy "
+        "bind-parameter parsing of colon-prefixed tokens in SQL comments and LIKE clauses."
+    )
+    # LIKE patterns must escape '%' as '%%' for psycopg2 (exec_driver_sql path).
+    assert "LIKE 'google_health:user:%%'" in source, (
+        "core_108 LIKE clause must use '%%' (psycopg2 escape for literal '%') "
+        "when SQL is sent via exec_driver_sql."
+    )
+    # Must NOT use op.execute() for the UPDATE statements (would re-introduce the bug).
+    # Allow op.execute in comments but not as a call for the UPDATE SQL.
+    # Look for op.execute( calls (not in comments).
+    non_comment_lines = [line for line in source.splitlines() if not line.lstrip().startswith("#")]
+    for line in non_comment_lines:
+        assert "op.execute(" not in line, (
+            f"core_108 must not use op.execute() — found on line: {line!r}. "
+            "Use op.get_bind().exec_driver_sql() instead to avoid bind-param parsing."
+        )
+
+
+def test_cursor_migration_upgrade_and_downgrade_callable_without_sqlalchemy_parse_error() -> None:
+    """Regression test for bu-qcl9g: upgrade/downgrade must not fail at SQL parse time.
+
+    Calls upgrade() and downgrade() with a mock bind that records exec_driver_sql
+    calls.  If the migration mistakenly uses op.execute() with colon-prefixed tokens,
+    the SQLAlchemy text() parser raises InvalidRequestError before the mock is reached.
+    Passing this test proves the SQL is sent via exec_driver_sql (driver-level) and
+    never passed through SQLAlchemy's text() bind-parameter parser.
+
+    The mock simulates the table-exists guard returning True so the UPDATE
+    exec_driver_sql call is also exercised.
+    """
+    from unittest.mock import MagicMock, patch
+
+    mod = _load_core_108()
+
+    # table_exists_result: .scalar() returns True (table present) so the UPDATE runs.
+    table_exists_result = MagicMock()
+    table_exists_result.scalar.return_value = True
+    # update_result: rowcount for the UPDATE.
+    update_result = MagicMock(rowcount=0)
+
+    mock_bind = MagicMock()
+    # exec_driver_sql is called twice per function: once for to_regclass guard,
+    # once for the UPDATE.  Return table_exists for the first call, update_result
+    # for the second.
+    mock_bind.exec_driver_sql.side_effect = [
+        table_exists_result,  # upgrade: to_regclass guard
+        update_result,  # upgrade: UPDATE statement
+        table_exists_result,  # downgrade: to_regclass guard
+        update_result,  # downgrade: UPDATE statement
+    ]
+
+    with patch("alembic.op.get_bind", return_value=mock_bind):
+        # Neither of these should raise InvalidRequestError.
+        mod.upgrade()
+        mod.downgrade()
+
+    # Confirm exec_driver_sql was called 4 times (guard + UPDATE per function).
+    assert mock_bind.exec_driver_sql.call_count == 4, (
+        f"Expected 4 exec_driver_sql calls (guard + UPDATE for upgrade and downgrade), "
+        f"got {mock_bind.exec_driver_sql.call_count}"
+    )
+
+    # Verify the first call (upgrade guard) uses to_regclass pattern.
+    first_call_sql = mock_bind.exec_driver_sql.call_args_list[0][0][0]
+    assert "to_regclass" in first_call_sql, (
+        "First exec_driver_sql call in upgrade() must be the to_regclass guard."
+    )
+    assert "switchboard.connector_registry" in str(mock_bind.exec_driver_sql.call_args_list[0]), (
+        "Guard must check switchboard.connector_registry"
+    )
+
+
 # ---------------------------------------------------------------------------
 # SQL content: ingestion-event migration (core_109)
 # ---------------------------------------------------------------------------
@@ -141,10 +235,33 @@ def test_email_migration_upgrade_targets_old_3_segment_rows() -> None:
     assert "split_part(ie.external_event_id, ':', 4) = ''" in source
 
 
-def test_email_migration_upgrade_rewrites_both_columns() -> None:
+def test_email_migration_upgrade_rewrites_external_event_id() -> None:
+    """core_109 must rewrite external_event_id; idempotency_key is NOT a column.
+
+    An earlier version of core_109 tried to update a non-existent
+    'idempotency_key' column on public.ingestion_events (the column does not
+    exist; the pipeline stores the envelope idempotency key in request_context
+    JSONB and as part of dedupe_key).  The fix removes that update.
+    """
     source = _EMAIL_MIGRATION_PATH.read_text()
     assert "external_event_id" in source
-    assert "idempotency_key" in source
+    # The SQL SET clause must NOT update idempotency_key (column does not exist).
+    # idempotency_key may appear in comments explaining why it is excluded.
+    # Ensure the SET clause only updates external_event_id.
+    import re
+
+    # Extract the SET clause of the upgrade UPDATE.
+    # A SET clause with idempotency_key = ... would indicate the bug is back.
+    set_clause_match = re.search(r"SET\s+(.*?)FROM", source, re.DOTALL)
+    if set_clause_match:
+        set_clause = set_clause_match.group(1)
+        # Strip SQL comment lines from the set clause.
+        set_lines = [line for line in set_clause.splitlines() if not line.lstrip().startswith("--")]
+        set_text = " ".join(set_lines)
+        assert "idempotency_key =" not in set_text, (
+            "core_109 SET clause must not update idempotency_key "
+            "(column does not exist on public.ingestion_events)"
+        )
 
 
 def test_email_migration_upgrade_joins_primary_account() -> None:

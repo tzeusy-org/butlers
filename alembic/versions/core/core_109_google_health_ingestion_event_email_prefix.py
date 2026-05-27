@@ -72,6 +72,15 @@ def upgrade() -> None:
     #
     # The UPDATE joins public.google_accounts on is_primary=true to obtain the
     # email.  Rows with no matching active primary account are left unchanged.
+    #
+    # NOTE: Only external_event_id is rewritten here.  An earlier version of
+    # this migration also tried to update an `idempotency_key` column on
+    # public.ingestion_events, but that column does not exist — the ingest
+    # pipeline stores the envelope's idempotency_key inside the JSONB
+    # request_context column, and the table-level dedup key is `dedupe_key`
+    # (format: "idem:<channel>:<endpoint_identity>:<idempotency_key>").
+    # Updating dedupe_key in this migration would break dedup lookups for
+    # already-processed events, so we leave it unchanged.
     # ------------------------------------------------------------------
     op.execute("""
         UPDATE public.ingestion_events ie
@@ -80,20 +89,13 @@ def upgrade() -> None:
                 'google_health'
                 || ':' || ga.email
                 || ':' || split_part(ie.external_event_id, ':', 2)
-                || ':' || split_part(ie.external_event_id, ':', 3),
-            idempotency_key =
-                'google_health'
-                || ':' || ga.email
-                || ':' || split_part(ie.idempotency_key, ':', 2)
-                || ':' || split_part(ie.idempotency_key, ':', 3)
+                || ':' || split_part(ie.external_event_id, ':', 3)
         FROM public.google_accounts ga
         WHERE ie.source_provider = 'google_health'
           AND ie.external_event_id LIKE 'google_health:%'
           -- Only target old-shape rows: exactly 3 segments.
           AND split_part(ie.external_event_id, ':', 3) != ''
           AND split_part(ie.external_event_id, ':', 4) = ''
-          AND split_part(ie.idempotency_key, ':', 3) != ''
-          AND split_part(ie.idempotency_key, ':', 4) = ''
           -- Join on active primary account.
           AND ga.is_primary = true
           AND ga.status = 'active'
@@ -112,6 +114,9 @@ def downgrade() -> None:
     #   2. external_event_id starts with 'google_health:'
     #   3. Exactly 4 colon-delimited segments (segment 4 non-empty, segment 5 empty)
     #   4. Segment 2 matches the email of the active primary google account
+    #
+    # NOTE: Only external_event_id is reverted.  idempotency_key is not updated
+    # because the column does not exist on public.ingestion_events (see upgrade()).
     # ------------------------------------------------------------------
     op.execute("""
         UPDATE public.ingestion_events ie
@@ -119,19 +124,13 @@ def downgrade() -> None:
             external_event_id =
                 'google_health'
                 || ':' || split_part(ie.external_event_id, ':', 3)
-                || ':' || split_part(ie.external_event_id, ':', 4),
-            idempotency_key =
-                'google_health'
-                || ':' || split_part(ie.idempotency_key, ':', 3)
-                || ':' || split_part(ie.idempotency_key, ':', 4)
+                || ':' || split_part(ie.external_event_id, ':', 4)
         FROM public.google_accounts ga
         WHERE ie.source_provider = 'google_health'
           AND ie.external_event_id LIKE 'google_health:%'
           -- Only target new-shape rows: exactly 4 segments.
           AND split_part(ie.external_event_id, ':', 4) != ''
           AND split_part(ie.external_event_id, ':', 5) = ''
-          AND split_part(ie.idempotency_key, ':', 4) != ''
-          AND split_part(ie.idempotency_key, ':', 5) = ''
           -- Segment 2 must be the email of the active primary account.
           AND ga.is_primary = true
           AND ga.status = 'active'
