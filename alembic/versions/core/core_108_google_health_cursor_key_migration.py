@@ -71,12 +71,14 @@ def upgrade() -> None:
     #
     # Guard: switchboard.connector_registry is created by the switchboard butler
     # migration chain.  When the core chain runs alone (e.g. in unit tests or a
-    # minimal deployment), the table may not yet exist.  Skip gracefully.
+    # minimal deployment), the switchboard schema (and table) may not yet exist.
+    # Use pg_tables rather than to_regclass: to_regclass raises InvalidSchemaName
+    # when the schema itself is absent, whereas pg_tables returns zero rows.
     # ------------------------------------------------------------------
     bind = op.get_bind()
     table_exists = bind.exec_driver_sql(
-        "SELECT to_regclass(%s) IS NOT NULL",
-        ("switchboard.connector_registry",),
+        "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = %s AND tablename = %s)",
+        ("switchboard", "connector_registry"),
     ).scalar()
     if not table_exists:
         return
@@ -122,12 +124,13 @@ def downgrade() -> None:
     # The '%%' in LIKE clauses is the psycopg2 escape for a literal '%'.
     #
     # Guard: same as upgrade() — skip if switchboard.connector_registry
-    # does not exist.
+    # does not exist.  Use pg_tables (not to_regclass) to avoid
+    # InvalidSchemaName when the switchboard schema is absent entirely.
     # ------------------------------------------------------------------
     bind = op.get_bind()
     table_exists = bind.exec_driver_sql(
-        "SELECT to_regclass(%s) IS NOT NULL",
-        ("switchboard.connector_registry",),
+        "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = %s AND tablename = %s)",
+        ("switchboard", "connector_registry"),
     ).scalar()
     if not table_exists:
         return

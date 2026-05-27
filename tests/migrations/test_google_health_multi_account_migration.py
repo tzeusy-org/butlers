@@ -214,12 +214,16 @@ def test_cursor_migration_upgrade_and_downgrade_callable_without_sqlalchemy_pars
         f"got {mock_bind.exec_driver_sql.call_count}"
     )
 
-    # Verify the first call (upgrade guard) uses to_regclass pattern.
+    # Verify the first call (upgrade guard) uses the pg_tables pattern.
+    # to_regclass raises InvalidSchemaName when the switchboard schema is absent;
+    # pg_tables safely returns zero rows instead.
     first_call_sql = mock_bind.exec_driver_sql.call_args_list[0][0][0]
-    assert "to_regclass" in first_call_sql, (
-        "First exec_driver_sql call in upgrade() must be the to_regclass guard."
+    assert "pg_tables" in first_call_sql, (
+        "First exec_driver_sql call in upgrade() must be the pg_tables guard "
+        "(not to_regclass, which raises InvalidSchemaName when the schema is absent)."
     )
-    assert "switchboard.connector_registry" in str(mock_bind.exec_driver_sql.call_args_list[0]), (
+    first_call_args = str(mock_bind.exec_driver_sql.call_args_list[0])
+    assert "switchboard" in first_call_args and "connector_registry" in first_call_args, (
         "Guard must check switchboard.connector_registry"
     )
 
