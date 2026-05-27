@@ -177,35 +177,34 @@ async def backfill_source(
       - ``found``   — episodes with entity_id IS NULL
       - ``updated`` — episodes actually updated (0 in dry-run)
       - ``ee_inserted`` — episode_entities rows inserted (0 in dry-run)
-    """
-    rows = await chronicler_pool.fetch(
-        """
-        SELECT id
-        FROM chronicler.episodes
-        WHERE source_name = $1
-          AND entity_id IS NULL
-          AND tombstone_at IS NULL
-        ORDER BY created_at ASC
-        """,
-        source_name,
-    )
-    ep_ids: list[UUID] = [r["id"] for r in rows]
-    found = len(ep_ids)
 
-    if found == 0:
-        logger.info(
-            "source_name=%r — no NULL entity_id episodes found; nothing to do.",
+    In dry-run mode, uses ``COUNT(*)`` so no IDs are loaded into memory.
+    In apply mode, fetches and processes rows in batches of ``_BATCH_SIZE``
+    so memory usage is bounded regardless of how many NULL rows exist.
+    """
+    if dry_run:
+        count_row = await chronicler_pool.fetchrow(
+            """
+            SELECT COUNT(*) AS count
+            FROM chronicler.episodes
+            WHERE source_name = $1
+              AND entity_id IS NULL
+              AND tombstone_at IS NULL
+            """,
             source_name,
         )
-        return {"found": 0, "updated": 0, "ee_inserted": 0}
-
-    logger.info(
-        "source_name=%r — found %d episode(s) with entity_id IS NULL.",
-        source_name,
-        found,
-    )
-
-    if dry_run:
+        found = count_row["count"] if count_row else 0
+        if found == 0:
+            logger.info(
+                "source_name=%r — no NULL entity_id episodes found; nothing to do.",
+                source_name,
+            )
+            return {"found": 0, "updated": 0, "ee_inserted": 0}
+        logger.info(
+            "source_name=%r — found %d episode(s) with entity_id IS NULL.",
+            source_name,
+            found,
+        )
         logger.info(
             "source_name=%r — dry run; skipping %d UPDATE(s).",
             source_name,
@@ -215,9 +214,27 @@ async def backfill_source(
 
     updated_count = 0
     ee_inserted_count = 0
+    batch_num = 0
 
-    for i in range(0, len(ep_ids), _BATCH_SIZE):
-        chunk = ep_ids[i : i + _BATCH_SIZE]
+    while True:
+        rows = await chronicler_pool.fetch(
+            """
+            SELECT id
+            FROM chronicler.episodes
+            WHERE source_name = $1
+              AND entity_id IS NULL
+              AND tombstone_at IS NULL
+            ORDER BY created_at ASC
+            LIMIT $2
+            """,
+            source_name,
+            _BATCH_SIZE,
+        )
+        if not rows:
+            break
+
+        batch_num += 1
+        chunk: list[UUID] = [r["id"] for r in rows]
 
         # Update episodes.entity_id.
         result = await chronicler_pool.execute(
@@ -234,11 +251,10 @@ async def backfill_source(
         n = int(result.split()[-1])
         updated_count += n
         logger.info(
-            "  source_name=%r — updated %d episode(s) entity_id (batch %d/%d).",
+            "  source_name=%r — updated %d episode(s) entity_id (batch %d).",
             source_name,
             n,
-            i // _BATCH_SIZE + 1,
-            (len(ep_ids) + _BATCH_SIZE - 1) // _BATCH_SIZE,
+            batch_num,
         )
 
         # Insert episode_entities rows for each episode (owner role).
@@ -259,7 +275,13 @@ async def backfill_source(
             len(ee_rows),
         )
 
-    return {"found": found, "updated": updated_count, "ee_inserted": ee_inserted_count}
+    if updated_count == 0 and batch_num == 0:
+        logger.info(
+            "source_name=%r — no NULL entity_id episodes found; nothing to do.",
+            source_name,
+        )
+
+    return {"found": updated_count, "updated": updated_count, "ee_inserted": ee_inserted_count}
 
 
 async def run_backfill(
@@ -316,8 +338,7 @@ async def run_backfill(
 async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Backfill entity_id and episode_entities for owner-only Chronicler adapters "
-            "(bu-4c1ks)"
+            "Backfill entity_id and episode_entities for owner-only Chronicler adapters (bu-4c1ks)"
         )
     )
     parser.add_argument(
