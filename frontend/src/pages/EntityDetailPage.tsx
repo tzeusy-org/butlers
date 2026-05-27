@@ -2025,14 +2025,29 @@ export default function EntityDetailPage() {
       (f) => f.predicate === "dunbar_tier_override" && f.validity === "active",
     ) ?? false;
 
-  const breadcrumbs = useMemo(
-    () => [
-      { label: "Home", href: "/" },
-      { label: "Entities", href: "/entities" },
+  // Build breadcrumbs based on origin page.
+  // The optional `?from=` query param signals which entities sub-page the user
+  // arrived from (hop | columns | concentration). Links in those pages that
+  // navigate to an entity detail page may include e.g. `?from=hop` so that
+  // the crumb trail reflects the real navigation path.
+  // Direct URL access (no ?from=) shows only: Index → Entity name.
+  const originFrom = searchParams.get("from");
+  const breadcrumbs = useMemo(() => {
+    const ORIGIN_CRUMBS: Record<string, { label: string; href: string }> = {
+      hop:           { label: "Hop",           href: "/entities/hop" },
+      columns:       { label: "Columns",       href: "/entities/columns" },
+      concentration: { label: "Concentration", href: "/entities/concentration" },
+    };
+    const originCrumb =
+      originFrom && Object.prototype.hasOwnProperty.call(ORIGIN_CRUMBS, originFrom)
+        ? ORIGIN_CRUMBS[originFrom]
+        : null;
+    return [
+      { label: "Index", href: "/entities" },
+      ...(originCrumb ? [originCrumb] : []),
       { label: entity?.canonical_name ?? entityId ?? "Entity" },
-    ],
-    [entity?.canonical_name, entityId],
-  );
+    ];
+  }, [entity?.canonical_name, entityId, originFrom]);
 
   // Editorial mode uses archetype="editorial" for the Display 44px headline
   // (Brief §6b Amendment 7). Workbench uses archetype="overview" (interim,
