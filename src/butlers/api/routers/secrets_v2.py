@@ -375,6 +375,16 @@ def _fingerprint(value: str | None) -> str | None:
     return digest[:8]
 
 
+def _escape_like_pattern(value: str) -> str:
+    """Escape PostgreSQL LIKE metacharacters (%, _, and backslash).
+
+    PostgreSQL's default LIKE escape character is backslash, so no
+    explicit ESCAPE clause is needed.  Call this on any user-controlled
+    substring before interpolating it into a LIKE pattern parameter.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 # ---------------------------------------------------------------------------
 # State derivation
 # ---------------------------------------------------------------------------
@@ -951,7 +961,7 @@ async def _fetch_single_user_secret(
                 LIMIT 1
                 """,
                 identity,
-                f"{provider}_%",
+                f"{_escape_like_pattern(provider)}_%",
             )
         else:
             row = await pool.fetchrow(
@@ -975,7 +985,7 @@ async def _fetch_single_user_secret(
                 ORDER BY ei.created_at DESC
                 LIMIT 1
                 """,
-                f"{provider}_%",
+                f"{_escape_like_pattern(provider)}_%",
             )
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()

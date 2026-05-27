@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
+    _escape_like_pattern,
     _get_db_manager,
 )
 
@@ -738,3 +739,125 @@ def test_system_credential_searches_all_butlers():
     resp = client.get("/api/secrets/system/FOUND_IN_SECOND_BUTLER")
     assert resp.status_code == 200
     assert resp.json()["data"]["key"] == "FOUND_IN_SECOND_BUTLER"
+
+
+# ---------------------------------------------------------------------------
+# Tests: LIKE wildcard escaping for provider path param (bu-vcv7c)
+# ---------------------------------------------------------------------------
+
+
+def test_escape_like_pattern_percent():
+    """% in provider value is escaped to \\% so it is treated as a literal."""
+    assert _escape_like_pattern("goog%") == "goog\\%"
+
+
+def test_escape_like_pattern_underscore():
+    """_ in provider value is escaped to \\_ so it is treated as a literal."""
+    assert _escape_like_pattern("g_ogle") == "g\\_ogle"
+
+
+def test_escape_like_pattern_backslash():
+    """Backslash in provider value is doubled before other escapes are applied."""
+    assert _escape_like_pattern("go\\ogle") == "go\\\\ogle"
+
+
+def test_escape_like_pattern_clean_value():
+    """A normal provider value is returned unchanged."""
+    assert _escape_like_pattern("google") == "google"
+
+
+def test_escape_like_pattern_multiple_metacharacters():
+    """Multiple metacharacters in one value are all escaped."""
+    assert _escape_like_pattern("%_foo%") == "\\%\\_foo\\%"
+
+
+def _make_capturing_db_manager(
+    *,
+    user_row: MagicMock | None,
+    shared_pool_available: bool = True,
+) -> tuple[MagicMock, list]:
+    """Like _make_db_manager_for_per_credential but also captures fetchrow call args."""
+    captured: list = []
+
+    shared_pool = AsyncMock()
+
+    async def _shared_fetchrow(sql, *args):
+        captured.append(args)
+        if "entity_info" in sql:
+            return user_row
+        return None
+
+    shared_pool.fetchrow = AsyncMock(side_effect=_shared_fetchrow)
+    shared_pool.fetch = AsyncMock(return_value=[])
+
+    butler_pool = AsyncMock()
+    butler_pool.fetchrow = AsyncMock(return_value=None)
+    butler_pool.fetch = AsyncMock(return_value=[])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=butler_pool)
+
+    if shared_pool_available:
+        mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+    else:
+        mock_db.credential_shared_pool = MagicMock(side_effect=KeyError("no shared pool"))
+
+    return mock_db, captured
+
+
+def test_user_credential_provider_percent_does_not_match_google_oauth_refresh():
+    """Provider 'goog%' with escaping must produce 'goog\\%_%' as the LIKE parameter.
+
+    Without escaping, 'goog%_%' would be sent to PostgreSQL and would match
+    any type starting with 'goog' followed by any character and then anything.
+    With escaping, 'goog\\%_%' only matches the literal string 'goog%_<anything>'.
+    We verify the SQL parameter contains the escaped backslash-percent sequence.
+    """
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db, captured = _make_capturing_db_manager(user_row=row)
+    client = _build_app(mock_db)
+
+    # %25 is URL-encoded % — FastAPI decodes it back to 'goog%' before routing.
+    client.get("/api/secrets/user/goog%25")
+
+    # Verify the LIKE pattern arg was escaped: must be 'goog\%_%' (literal backslash)
+    # not 'goog%_%'.  Check the actual string values in the captured args tuples.
+    all_params = [arg for args_tuple in captured for arg in args_tuple]
+    assert r"goog\%_%" in all_params, (
+        f"Expected escaped LIKE pattern 'goog\\%_%' in SQL params, got: {all_params}"
+    )
+
+
+def test_user_credential_provider_underscore_does_not_match_google_oauth_refresh():
+    """Provider 'g_ogle' with escaping must produce 'g\\_ogle_%' as the LIKE parameter.
+
+    Without escaping, 'g_ogle_%' would be sent and would match 'google_oauth_refresh'
+    (the _ matches 'o').  With escaping, 'g\\_ogle_%' only matches literal 'g_ogle_<anything>'.
+    We verify the SQL parameter contains the escaped backslash-underscore sequence.
+    """
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db, captured = _make_capturing_db_manager(user_row=row)
+    client = _build_app(mock_db)
+
+    client.get("/api/secrets/user/g_ogle")
+
+    all_params = [arg for args_tuple in captured for arg in args_tuple]
+    assert r"g\_ogle_%" in all_params, (
+        f"Expected escaped LIKE pattern 'g\\_ogle_%' in SQL params, got: {all_params}"
+    )
+
+
+def test_user_credential_clean_provider_passes_unmodified():
+    """Provider 'google' (no metacharacters) produces 'google_%' LIKE pattern unchanged."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db, captured = _make_capturing_db_manager(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/user/google")
+    assert resp.status_code == 200
+
+    all_params = [arg for args_tuple in captured for arg in args_tuple]
+    assert "google_%" in all_params, (
+        f"Expected LIKE pattern 'google_%' in SQL params, got: {all_params}"
+    )
