@@ -378,9 +378,10 @@ interface BulkActionBarProps {
   selectedCount: number;
   selectedIds: string[];
   onClearSelection: () => void;
+  onDeselectIds: (ids: string[]) => void;
 }
 
-function BulkActionBar({ selectedCount, selectedIds, onClearSelection }: BulkActionBarProps) {
+function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselectIds }: BulkActionBarProps) {
   const [isRetrying, setIsRetrying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -395,10 +396,23 @@ function BulkActionBar({ selectedCount, selectedIds, onClearSelection }: BulkAct
     setErrorMsg(null);
     try {
       const result = await bulkRetryEvents(selectedIds);
-      toast.success(
-        `${result.succeeded} event${result.succeeded !== 1 ? "s" : ""} queued for replay`,
-      );
-      onClearSelection();
+
+      const succeededIds = result.results
+        .filter((r) => r.status === "replay_pending")
+        .map((r) => r.event_id);
+
+      if (succeededIds.length > 0) {
+        onDeselectIds(succeededIds);
+        toast.success(
+          `${succeededIds.length} event${succeededIds.length !== 1 ? "s" : ""} queued for replay`,
+        );
+      }
+
+      if (result.failed > 0) {
+        const failedMsg = `${result.failed} event${result.failed !== 1 ? "s" : ""} failed to queue`;
+        setErrorMsg(failedMsg);
+        toast.error(failedMsg);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Bulk replay failed";
       setErrorMsg(msg);
@@ -881,6 +895,16 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
 
   const handleClearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
+  const handleDeselectIds = useCallback((ids: string[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
   const selectedIdsArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
 
   // Optimistic overrides
@@ -1064,6 +1088,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
         selectedCount={selectedIds.size}
         selectedIds={selectedIdsArray}
         onClearSelection={handleClearSelection}
+        onDeselectIds={handleDeselectIds}
       />
 
       {/* Connector attention strip */}

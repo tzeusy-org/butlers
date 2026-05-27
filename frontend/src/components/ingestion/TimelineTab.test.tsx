@@ -1279,4 +1279,33 @@ describe("TimelineTab — BulkActionBar", () => {
     expect(errMsg).not.toBeNull();
     expect(errMsg!.textContent).toContain("Server error: 503");
   });
+
+  it("partial failure deselects only succeeded events and shows both success toast and error", async () => {
+    vi.mocked(bulkRetryEvents).mockResolvedValueOnce({
+      results: [
+        { event_id: EVENT_ID_1, status: "replay_pending" },
+        { event_id: EVENT_ID_2, status: "conflict", error: "Event is not retryable" },
+      ],
+      succeeded: 1,
+      failed: 1,
+    });
+
+    renderAndSelectEvents(
+      [makeEvent({ id: EVENT_ID_1 }), makeEvent({ id: EVENT_ID_2 })],
+      2,
+    );
+
+    const btn = container.querySelector("[data-testid='bulk-retry-button']") as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+
+    // Bar still visible — the failed event (EVENT_ID_2) remains selected
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).not.toBeNull();
+    // Success toast for the succeeded event
+    expect(toast.success).toHaveBeenCalledWith("1 event queued for replay");
+    // Error shown inline and via toast for the failed event
+    const errMsg = container.querySelector("[data-testid='bulk-error-msg']");
+    expect(errMsg).not.toBeNull();
+    expect(errMsg!.textContent).toContain("1 event failed to queue");
+    expect(toast.error).toHaveBeenCalledWith("1 event failed to queue");
+  });
 });
