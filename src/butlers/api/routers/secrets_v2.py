@@ -142,7 +142,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from asyncpg.exceptions import UndefinedTableError
+from asyncpg.exceptions import PostgresError, UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -492,10 +492,9 @@ async def _fetch_probe_log(
             credential_scope,
             credential_key,
         )
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg.lower():
-            return None
+    except UndefinedTableError:
+        return None
+    except PostgresError as exc:
         logger.debug(
             "probe_log lookup failed for scope=%s key=%s: %s",
             credential_scope,
@@ -543,10 +542,9 @@ async def _fetch_probe_logs_bulk(
             scope,
             keys,
         )
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg.lower():
-            return {}
+    except UndefinedTableError:
+        return {}
+    except PostgresError as exc:
         logger.debug(
             "probe_log bulk lookup failed for scope=%s keys=%s: %s",
             scope,

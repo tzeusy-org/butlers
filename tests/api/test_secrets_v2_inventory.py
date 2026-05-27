@@ -686,7 +686,7 @@ async def test_fetch_probe_log_returns_none_on_missing_table():
     """When secret_probe_log doesn't exist, returns None gracefully."""
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(
-        side_effect=Exception("relation public.secret_probe_log does not exist")
+        side_effect=UndefinedTableError("relation public.secret_probe_log does not exist")
     )
     result = await _fetch_probe_log(pool, "system", "MY_KEY")
     assert result is None
@@ -1021,7 +1021,7 @@ async def test_fetch_probe_logs_bulk_returns_empty_dict_for_empty_keys():
 async def test_fetch_probe_logs_bulk_returns_empty_dict_on_missing_table():
     """Silently returns empty dict when secret_probe_log does not exist."""
     pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=Exception("relation public.secret_probe_log does not exist"))
+    pool.fetch = AsyncMock(side_effect=UndefinedTableError("relation public.secret_probe_log does not exist"))
 
     result = await _fetch_probe_logs_bulk(pool, "system", ["KEY_A"])
 
