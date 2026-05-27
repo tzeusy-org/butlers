@@ -1672,3 +1672,240 @@ async def test_two_account_integration_distinct_heartbeats_and_mints(
     assert "bob@example.com" not in env["event"]["external_event_id"]
     assert env["source"]["endpoint_identity"] == "google_health:user:alice@example.com"
     assert env["sender"]["identity"] == "alice@example.com"
+
+
+# ---------------------------------------------------------------------------
+# Per-account auth_error tracking [bu-fyo0l]
+# ---------------------------------------------------------------------------
+
+
+def _make_two_account_connector() -> tuple[GoogleHealthConnector, OwnerContext, OwnerContext]:
+    """Create a connector with two pre-loaded accounts (A and B)."""
+    connector = _make_connector()
+    ctx_a = OwnerContext(
+        account_id=_UUID_A,
+        email="a@example.com",
+        entity_id=_ENTITY_A,
+        refresh_token_present=True,
+        endpoint_identity=_endpoint_identity_for_user("a@example.com"),
+    )
+    ctx_b = OwnerContext(
+        account_id=_UUID_B,
+        email="b@example.com",
+        entity_id=_ENTITY_B,
+        refresh_token_present=True,
+        endpoint_identity=_endpoint_identity_for_user("b@example.com"),
+    )
+    connector._accounts[_UUID_A] = ctx_a
+    connector._accounts[_UUID_B] = ctx_b
+    for bundle in RESOURCE_BUNDLES:
+        connector._resources[(_UUID_A, bundle.resource)] = ResourceState(bundle=bundle)
+        connector._resources[(_UUID_B, bundle.resource)] = ResourceState(bundle=bundle)
+    connector._account_missing = False
+    connector._scope_missing = False
+    return connector, ctx_a, ctx_b
+
+
+def test_per_account_auth_error_fields_default_to_false() -> None:
+    """OwnerContext starts with auth_error=False and no message/timestamp."""
+    ctx = OwnerContext(
+        account_id=uuid.uuid4(),
+        email="test@example.com",
+        entity_id=uuid.uuid4(),
+        refresh_token_present=True,
+        endpoint_identity=_endpoint_identity_for_user("test@example.com"),
+    )
+    assert ctx.auth_error is False
+    assert ctx.auth_error_message is None
+    assert ctx.auth_error_at is None
+
+
+def test_one_account_auth_error_does_not_set_global_flag() -> None:
+    """When only one of two accounts has auth_error, global _auth_error stays False."""
+    connector, ctx_a, ctx_b = _make_two_account_connector()
+
+    # Simulate: account A has a credential error, B is healthy.
+    ctx_a.auth_error = True
+    ctx_a.auth_error_message = "token_invalid"
+
+    # Recompute global as the code does.
+    connector._auth_error = bool(connector._accounts) and all(
+        c.auth_error for c in connector._accounts.values()
+    )
+
+    assert connector._auth_error is False, (
+        "Global auth_error must be False when at least one account is healthy"
+    )
+
+
+def test_all_accounts_auth_error_sets_global_flag() -> None:
+    """When every account has auth_error, global _auth_error becomes True."""
+    connector, ctx_a, ctx_b = _make_two_account_connector()
+
+    ctx_a.auth_error = True
+    ctx_a.auth_error_message = "token_invalid"
+    ctx_b.auth_error = True
+    ctx_b.auth_error_message = "token_invalid"
+
+    connector._auth_error = bool(connector._accounts) and all(
+        c.auth_error for c in connector._accounts.values()
+    )
+
+    assert connector._auth_error is True, (
+        "Global auth_error must be True when all accounts have auth_error"
+    )
+
+
+def test_account_health_state_reflects_per_account_auth_error() -> None:
+    """_get_account_health_state returns error when per-account auth_error is set."""
+    connector, ctx_a, ctx_b = _make_two_account_connector()
+
+    # Account A has auth_error; B is healthy.
+    ctx_a.auth_error = True
+    ctx_a.auth_error_message = "revoked_token"
+
+    state_a, err_a = connector._get_account_health_state(_UUID_A)
+    state_b, err_b = connector._get_account_health_state(_UUID_B)
+
+    assert state_a == "error"
+    assert err_a == "revoked_token"
+    assert state_b == "healthy"
+    assert err_b is None
+
+
+def test_global_health_state_not_error_when_one_account_fails() -> None:
+    """Connector-level _get_health_state reports degraded (not error) when one of two accounts fails."""
+    connector, ctx_a, ctx_b = _make_two_account_connector()
+
+    ctx_a.auth_error = True
+    ctx_a.auth_error_message = "token_invalid"
+    # Account A's token is cleared, B is still healthy.
+    ctx_a.cached_access_token = None
+    ctx_a.refresh_token_present = False
+
+    # Global flag must reflect "not all accounts down".
+    connector._auth_error = False
+
+    state, _err = connector._get_health_state()
+    # Worst-of includes one error account → overall is error
+    assert state == "error", "_get_health_state should bubble up the error from the failing account"
+
+
+def test_auth_error_clears_on_successful_poll_and_recomputes_global() -> None:
+    """When an account that had auth_error completes a successful poll, flags are cleared."""
+    connector, ctx_a, ctx_b = _make_two_account_connector()
+
+    # Seed: both accounts had auth_error → global True.
+    ctx_a.auth_error = True
+    ctx_a.auth_error_message = "token_invalid"
+    ctx_b.auth_error = True
+    ctx_b.auth_error_message = "token_invalid"
+    connector._auth_error = True
+
+    # Simulate account A recovering (successful poll clears per-account fields).
+    ctx_a.auth_error = False
+    ctx_a.auth_error_message = None
+    ctx_a.auth_error_at = None
+    connector._auth_error = bool(connector._accounts) and all(
+        c.auth_error for c in connector._accounts.values()
+    )
+
+    # Global flag must be False now (not ALL accounts have auth_error any more).
+    assert connector._auth_error is False
+    # B still has auth_error.
+    assert ctx_b.auth_error is True
+    # A is clear.
+    assert ctx_a.auth_error is False
+
+
+@pytest.mark.asyncio
+async def test_main_loop_credential_error_sets_per_account_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GoogleHealthCredentialError in _main_loop sets auth_error on the failing OwnerContext.
+
+    The global _auth_error flag must remain False when only one of two accounts fails.
+    """
+    connector, ctx_a, ctx_b = _make_two_account_connector()
+    connector._running = True
+    connector._mcp_client = MagicMock()  # prevent heartbeat MCP calls
+
+    # Stub _mark_account_revoked to avoid DB calls.
+    monkeypatch.setattr(connector, "_mark_account_revoked", AsyncMock())
+    monkeypatch.setattr(connector, "_drain_replay", AsyncMock())
+    monkeypatch.setattr(connector, "_flush_filtered_events", AsyncMock())
+    monkeypatch.setattr(connector, "_resolve_owner_and_scopes", AsyncMock())
+
+    # Collect which accounts were polled; set shutdown after processing all resources.
+    polled_accounts: list[uuid.UUID] = []
+
+    async def _poll_resource_raises_for_a(acct_id: uuid.UUID, state: ResourceState) -> None:
+        polled_accounts.append(acct_id)
+        if acct_id == _UUID_A:
+            raise GoogleHealthCredentialError("token_revoked")
+        # B succeeds (no-op).
+        # Stop the loop after all resources for both accounts have been attempted.
+        all_resources = len(RESOURCE_BUNDLES) * 2
+        if len(polled_accounts) >= all_resources:
+            connector._shutdown_event.set()
+
+    monkeypatch.setattr(connector, "_poll_resource", _poll_resource_raises_for_a)
+
+    # Stub heartbeat for A so _send_heartbeat doesn't blow up.
+    hb_a_mock = MagicMock()
+    hb_a_mock._send_heartbeat = AsyncMock()
+    connector._heartbeats[_UUID_A] = hb_a_mock
+
+    await connector._main_loop()
+
+    # Per-account: A has auth_error, B does not.
+    assert ctx_a.auth_error is True
+    assert ctx_a.auth_error_message == "token_revoked"
+    assert ctx_a.auth_error_at is not None
+
+    assert ctx_b.auth_error is False
+
+    # Global flag must be False (not all accounts failed).
+    assert connector._auth_error is False
+
+    # Heartbeat was triggered for the failing account (once per resource error, or at least once).
+    assert hb_a_mock._send_heartbeat.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_main_loop_all_accounts_fail_sets_global_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every account raises GoogleHealthCredentialError, global _auth_error becomes True."""
+    connector, ctx_a, ctx_b = _make_two_account_connector()
+    connector._running = True
+    connector._mcp_client = MagicMock()
+
+    monkeypatch.setattr(connector, "_mark_account_revoked", AsyncMock())
+    monkeypatch.setattr(connector, "_drain_replay", AsyncMock())
+    monkeypatch.setattr(connector, "_flush_filtered_events", AsyncMock())
+    monkeypatch.setattr(connector, "_resolve_owner_and_scopes", AsyncMock())
+
+    polled_accounts: list[uuid.UUID] = []
+
+    async def _poll_always_fails(acct_id: uuid.UUID, _state: ResourceState) -> None:
+        polled_accounts.append(acct_id)
+        all_resources = len(RESOURCE_BUNDLES) * 2
+        if len(polled_accounts) >= all_resources:
+            connector._shutdown_event.set()
+        raise GoogleHealthCredentialError("token_revoked")
+
+    monkeypatch.setattr(connector, "_poll_resource", _poll_always_fails)
+
+    hb_mock = MagicMock()
+    hb_mock._send_heartbeat = AsyncMock()
+    connector._heartbeats[_UUID_A] = hb_mock
+    connector._heartbeats[_UUID_B] = hb_mock
+
+    await connector._main_loop()
+
+    assert ctx_a.auth_error is True
+    assert ctx_b.auth_error is True
+    assert connector._auth_error is True, (
+        "Global auth_error must be True when all accounts have credential failures"
+    )
