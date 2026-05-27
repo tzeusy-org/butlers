@@ -99,7 +99,17 @@ async def list_ingestion_events(
             "Omit to fetch the first page."
         ),
     ),
-    source_channel: str | None = Query(None, description="Filter by source channel"),
+    channels: str | None = Query(
+        None,
+        description=(
+            "Comma-separated source_channel values (e.g. 'email,telegram'). "
+            "When set, overrides source_channel."
+        ),
+    ),
+    source_channel: str | None = Query(
+        None,
+        description="DEPRECATED: use channels instead. Filter by single source channel.",
+    ),
     status: Literal[
         "ingested",
         "failed",
@@ -137,7 +147,10 @@ async def list_ingestion_events(
 
     Merges ``public.ingestion_events`` (status=ingested, filter_reason=null) with
     ``connectors.filtered_events`` (status/filter_reason from their own columns).
-    Supports optional filtering by ``source_channel``, ``status``, and freetext ``q``.
+    Supports optional filtering by ``channels`` (CSV), ``source_channel`` (deprecated),
+    ``status``, and freetext ``q``.
+
+    Channel filter precedence: ``channels`` wins over ``source_channel``.
     """
     try:
         pool = db.credential_shared_pool()
@@ -152,8 +165,17 @@ async def list_ingestion_events(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
+    # Resolve channel filter: channels CSV wins; fall back to legacy source_channel.
+    if channels is not None:
+        channel_list: list[str] | None = [c.strip() for c in channels.split(",") if c.strip()]
+        channel_list = channel_list or None  # treat empty string as no filter
+    elif source_channel is not None:
+        channel_list = [source_channel]
+    else:
+        channel_list = None
+
     result = await ingestion_events_list(
-        pool, limit=limit, cursor=cursor, source_channel=source_channel, status=status, q=q
+        pool, limit=limit, cursor=cursor, channels=channel_list, status=status, q=q
     )
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]

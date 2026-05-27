@@ -99,6 +99,126 @@ async def test_list_returns_cursor_paginated_and_503_fallback(app):
 
 
 # ---------------------------------------------------------------------------
+# Channel filter — channels CSV, source_channel compat, precedence
+# ---------------------------------------------------------------------------
+
+
+async def test_channels_param_forwarded_to_core(app):
+    """GET /api/ingestion/events?channels=email,telegram passes list to ingestion_events_list."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?channels=email,telegram")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("channels") == ["email", "telegram"]
+
+
+async def test_source_channel_compat_forwarded_as_list(app):
+    """GET /api/ingestion/events?source_channel=email passes single-element list (compat)."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?source_channel=email")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("channels") == ["email"]
+
+
+async def test_channels_wins_over_source_channel(app):
+    """channels param takes precedence over deprecated source_channel when both are set."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?channels=email&source_channel=telegram")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    # channels wins — source_channel=telegram is ignored
+    assert call_kwargs.get("channels") == ["email"]
+
+
+async def test_empty_channels_param_means_no_filter(app):
+    """channels= (empty string) is treated as no filter (no channel restriction)."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?channels=")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("channels") is None
+
+
+async def test_unknown_channel_returns_200_no_error(app):
+    """An unknown/invalid channel value returns 200 with an empty result, not an error."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?channels=nonexistent_channel")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("channels") == ["nonexistent_channel"]
+
+
+async def test_no_channel_param_passes_none(app):
+    """When neither channels nor source_channel is provided, None is passed to core."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("channels") is None
+
+
+# ---------------------------------------------------------------------------
 # Event detail — 200 found, 404 not found
 # ---------------------------------------------------------------------------
 
