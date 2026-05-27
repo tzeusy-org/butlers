@@ -1756,7 +1756,13 @@ async def _verify_oauth_credential(
         )
         return f"live_failed:{token_resp.status_code}", token_resp.status_code, reason
 
-    token_data = token_resp.json()
+    try:
+        token_data = token_resp.json()
+    except Exception as exc:  # noqa: BLE001
+        reason = f"token_exchange: invalid JSON response: {exc}"
+        logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
+        return "live_failed:invalid_json", None, reason
+
     access_token = token_data.get("access_token")
     if not access_token:
         reason = "token_exchange: no access_token in response"
