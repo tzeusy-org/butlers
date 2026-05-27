@@ -12,6 +12,7 @@ GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
 POST /api/ingestion/events/replay/bulk   — bulk replay handler (max 50 events, email blocked)
+POST /api/ingestion/events/retry/bulk    — bulk retry for both ingestion + filtered tables (max 100)
 POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 GET  /api/ingestion/events/{id}/replays  — replay attempt history from public.audit_log
 GET  /api/ingestion/events/{id}/sender-contact  — resolve sender_identity to contact name
@@ -519,6 +520,144 @@ async def bulk_replay_ingestion_events(
         "capped": capped,
         "skipped_locked": [str(e) for e in event_ids if e not in locked_ids],
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/events/retry/bulk
+# ---------------------------------------------------------------------------
+
+_MAX_BULK_RETRY_BATCH = 100
+
+
+@router.post("/retry/bulk")
+async def bulk_retry_ingestion_events(
+    request: Request,
+    body: Annotated[dict, Body(...)],
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict:
+    """Bulk retry/replay up to 100 events across both ingestion and filtered tables.
+
+    Unlike ``POST /api/ingestion/events/replay/bulk`` (which targets only
+    ``connectors.filtered_events`` and uses SELECT … FOR UPDATE SKIP LOCKED),
+    this endpoint calls the same per-event replay logic as
+    ``POST /api/ingestion/events/{id}/replay`` for each event.  This allows
+    retrying events from both ``public.ingestion_events`` and
+    ``connectors.filtered_events`` in a single request.
+
+    Each event is attempted independently — partial failures do NOT abort the
+    batch.  The caller receives per-event results so it can identify exactly
+    which events need follow-up.
+
+    Accepts ``{"event_ids": [...]}`` where ``event_ids`` is a list of UUID
+    strings (max 100).
+
+    Returns:
+        200 — ``{"results": [{event_id, status, error?}], "succeeded": N, "failed": N}``
+        400 — missing/empty ``event_ids``, or batch exceeds max size
+        503 — shared database pool unavailable
+    """
+    event_ids_raw: list = body.get("event_ids", [])
+
+    if not isinstance(event_ids_raw, list) or not event_ids_raw:
+        raise HTTPException(status_code=400, detail="event_ids must be a non-empty list")
+
+    if len(event_ids_raw) > _MAX_BULK_RETRY_BATCH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size {len(event_ids_raw)} exceeds maximum of {_MAX_BULK_RETRY_BATCH}",
+        )
+
+    from uuid import UUID
+
+    # Validate all UUIDs up front — fail fast with a clear error rather than
+    # silently skipping invalid entries mid-batch.
+    try:
+        event_ids: list[str] = [str(UUID(str(e))) for e in event_ids_raw]
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid UUID in event_ids: {exc}") from exc
+
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    # Obtain the switchboard pool for resetting message_inbox on replay.
+    switchboard_pool = None
+    try:
+        switchboard_pool = db.pool("switchboard")
+    except (KeyError, Exception):
+        pass  # Non-fatal: replay of ingested events will log a warning.
+
+    client_host = getattr(request.client, "host", None) if request.client else None
+
+    results: list[dict] = []
+    succeeded = 0
+    failed = 0
+
+    for event_id in event_ids:
+        try:
+            result = await ingestion_event_replay_request(
+                pool, event_id, switchboard_pool=switchboard_pool
+            )
+        except Exception as exc:
+            # Unexpected error (e.g. DB connectivity mid-batch) — record as failure
+            # and continue processing remaining events.
+            logger.warning(
+                "bulk_retry: unexpected error processing event %s", event_id, exc_info=True
+            )
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "error",
+                    "error": f"Unexpected error: {exc}",
+                }
+            )
+            failed += 1
+            continue
+
+        outcome = result["outcome"]
+        if outcome == "ok":
+            results.append({"event_id": event_id, "status": "replay_pending"})
+            succeeded += 1
+            # Record each accepted retry in public.audit_log (best-effort, non-fatal).
+            try:
+                await _audit_append(
+                    pool,
+                    actor="dashboard",
+                    action="ingestion.event.retry",
+                    target=event_id,
+                    note=json.dumps({"source": result.get("source")}),
+                    ip=client_host,
+                )
+            except Exception:
+                logger.warning(
+                    "bulk_retry: failed to append audit_log entry for event %s",
+                    event_id,
+                    exc_info=True,
+                )
+        elif outcome == "not_found":
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "not_found",
+                    "error": "Event not found in any table",
+                }
+            )
+            failed += 1
+        else:
+            # outcome == "conflict" — event exists but is not in a retryable state
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "conflict",
+                    "error": (
+                        f"Event is not retryable (current status: {result.get('current_status')})"
+                    ),
+                }
+            )
+            failed += 1
+
+    return {"results": results, "succeeded": succeeded, "failed": failed}
 
 
 # ---------------------------------------------------------------------------
