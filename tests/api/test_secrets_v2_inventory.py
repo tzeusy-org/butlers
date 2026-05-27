@@ -13,14 +13,15 @@ Additional unit-level tests:
 - _derive_state: state machine paths
 - _format_probe_time: "HH:MM today" / "yesterday HH:MM" / date fallback
 - _needs_hand_count: correct aggregation
+- _fetch_probe_logs_bulk: bulk query returns dict keyed by credential_key
 
 Performance assertion note
 --------------------------
 The p99 < 500ms requirement at 100 creds + 10k probe-log rows is a load-test
 concern that depends on real PostgreSQL.  There is no benchmark infra in this
-repo, so the requirement is satisfied by design (one indexed probe-log query
-per credential using ix_secret_probe_log_lookup) and is noted here as a
-static-check only.
+repo, so the requirement is satisfied by design (one bulk probe-log query per
+scope — 3 total for system/user/cli — using
+ix_secret_probe_log_lookup) and is noted here as a static-check only.
 """
 
 from __future__ import annotations
@@ -39,10 +40,12 @@ from butlers.api.routers.secrets_v2 import (
     _derive_state,
     _fetch_identity_info,
     _fetch_probe_log,
+    _fetch_probe_logs_bulk,
     _fingerprint,
     _format_probe_time,
     _get_db_manager,
     _needs_hand_count,
+    _row_to_test_result,
 )
 
 pytestmark = pytest.mark.unit
@@ -123,6 +126,7 @@ def _make_db_manager(
     user_rows: list[MagicMock] | None = None,
     cli_rows: list[MagicMock] | None = None,
     probe_row: MagicMock | None = None,
+    probe_rows: list[MagicMock] | None = None,
     shared_pool_available: bool = True,
 ) -> MagicMock:
     """Build a mock DatabaseManager for inventory endpoint tests.
@@ -132,29 +136,45 @@ def _make_db_manager(
     - system pool: returns system_rows on fetch('butler_secrets ...')
     - shared pool: returns user_rows on entity_info queries,
                    cli_rows on butler_secrets WHERE category='cli' queries
-    - probe pool fetchrow: returns probe_row (None by default = no probes)
+    - probe_rows: list of probe rows returned by bulk probe-log queries.
+                  Each row must have credential_key, ok, code, message, recorded_at.
+                  Takes precedence over probe_row when set.
+    - probe_row: DEPRECATED legacy single-probe row (now used only for
+                 singular fetchrow callers such as per-credential detail
+                 endpoints).  For inventory tests, use probe_rows instead.
     """
     butler_names = butler_names or []
     system_rows = system_rows or []
     user_rows = user_rows or []
     cli_rows = cli_rows or []
+    # probe_rows drives the bulk fetch path; fall back to wrapping probe_row
+    # in a list so existing tests continue to work.
+    if probe_rows is None and probe_row is not None:
+        probe_rows = [probe_row]
+    bulk_probe_rows: list[MagicMock] = probe_rows or []
 
     # --- butler schema pool ---
     butler_pool = AsyncMock()
 
     async def _butler_fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            # Bulk probe-log query for system credentials.
+            return bulk_probe_rows
         if "butler_secrets" in sql and "category = 'cli'" not in sql:
             return system_rows
         return []
 
     butler_pool.fetch = AsyncMock(side_effect=_butler_fetch)
-    # probe log lookup
+    # probe log lookup (singular — used by per-credential detail endpoints)
     butler_pool.fetchrow = AsyncMock(return_value=probe_row)
 
     # --- shared pool ---
     shared_pool = AsyncMock()
 
     async def _shared_fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            # Bulk probe-log query for user/cli credentials.
+            return bulk_probe_rows
         if "category = 'cli'" in sql:
             return cli_rows
         if "entity_info" in sql:
@@ -425,14 +445,22 @@ def test_inventory_fingerprints_present_for_set_credentials():
 
 
 def test_inventory_probe_log_lru_attached():
-    """When a probe row exists, test field is populated on credential rows."""
-    probe_row = _make_row(ok=True, code=200, message=None, recorded_at=_NOW)
+    """When a probe row exists, test field is populated on credential rows.
 
+    The inventory helpers now issue a single bulk probe-log query per scope
+    (DISTINCT ON credential_key ... ANY($2)).  The mock returns a probe row
+    with the matching credential_key so the in-memory join can attach it.
+    """
     system_row = _make_system_row(key="KEY1", value="v1", last_test_ok=True)
+    # Bulk probe rows must include credential_key so _row_to_test_result can
+    # build the dict {credential_key: TestResult}.
+    probe_row_bulk = _make_row(
+        credential_key="KEY1", ok=True, code=200, message=None, recorded_at=_NOW
+    )
     mock_db = _make_db_manager(
         butler_names=["switchboard"],
         system_rows=[system_row],
-        probe_row=probe_row,
+        probe_rows=[probe_row_bulk],
     )
     client = _build_app(mock_db)
     resp = client.get("/api/secrets/inventory")
@@ -441,7 +469,7 @@ def test_inventory_probe_log_lru_attached():
     system = body["data"]["system"]
     assert len(system) == 1
     test = system[0].get("test")
-    # The test field is populated from probe_row
+    # The test field is populated from the bulk probe query result
     assert test is not None
     assert test["ok"] is True
     assert test["code"] == 200
@@ -600,13 +628,26 @@ def test_inventory_aggregates_across_butler_schemas():
     row_a = _make_system_row(key="A_KEY", value="va", last_test_ok=True)
     row_b = _make_system_row(key="B_KEY", value="vb", last_test_ok=False)
 
-    # Each butler pool returns different rows
+    # Each butler pool returns different rows.  The bulk probe-log query goes
+    # through pool.fetch too, so we need a side_effect to route by SQL keyword.
     pool_a = AsyncMock()
-    pool_a.fetch = AsyncMock(return_value=[row_a])
+
+    async def _pool_a_fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            return []  # no probes
+        return [row_a]
+
+    pool_a.fetch = AsyncMock(side_effect=_pool_a_fetch)
     pool_a.fetchrow = AsyncMock(return_value=None)
 
     pool_b = AsyncMock()
-    pool_b.fetch = AsyncMock(return_value=[row_b])
+
+    async def _pool_b_fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            return []  # no probes
+        return [row_b]
+
+    pool_b.fetch = AsyncMock(side_effect=_pool_b_fetch)
     pool_b.fetchrow = AsyncMock(return_value=None)
 
     shared_pool = AsyncMock()
@@ -645,7 +686,7 @@ async def test_fetch_probe_log_returns_none_on_missing_table():
     """When secret_probe_log doesn't exist, returns None gracefully."""
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(
-        side_effect=Exception("relation public.secret_probe_log does not exist")
+        side_effect=UndefinedTableError("relation public.secret_probe_log does not exist")
     )
     result = await _fetch_probe_log(pool, "system", "MY_KEY")
     assert result is None
@@ -899,3 +940,175 @@ def test_inventory_providers_is_additive():
     # All previously existing fields must still be present.
     for field in ("cli", "system", "user", "identities"):
         assert field in data, f"existing field {field!r} missing from inventory response"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: _row_to_test_result (bu-5vb5m)
+# ---------------------------------------------------------------------------
+
+
+def test_row_to_test_result_maps_fields_correctly():
+    """_row_to_test_result maps ok/code/message/recorded_at to TestResult."""
+    _now = datetime.now(tz=UTC)
+    row = _make_row(ok=True, code=200, message="all good", recorded_at=_now)
+    result = _row_to_test_result(row)
+    assert result.ok is True
+    assert result.code == 200
+    assert result.message == "all good"
+    assert result.at is not None
+    assert "today" in result.at  # recent timestamp → "HH:MM today"
+
+
+def test_row_to_test_result_none_message():
+    """_row_to_test_result handles None message without error."""
+    _now = datetime.now(tz=UTC)
+    row = _make_row(ok=True, code=200, message=None, recorded_at=_now)
+    result = _row_to_test_result(row)
+    assert result.message is None
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: _fetch_probe_logs_bulk (bu-5vb5m)
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_probe_logs_bulk_returns_dict_for_all_keys():
+    """Bulk query returns a dict with one TestResult entry per key that has a probe."""
+    _now = datetime.now(tz=UTC)
+    row_a = _make_row(credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now)
+    row_b = _make_row(credential_key="KEY_B", ok=False, code=500, message="fail", recorded_at=_now)
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[row_a, row_b])
+
+    result = await _fetch_probe_logs_bulk(pool, "system", ["KEY_A", "KEY_B"])
+
+    assert set(result.keys()) == {"KEY_A", "KEY_B"}
+    assert result["KEY_A"].ok is True
+    assert result["KEY_A"].code == 200
+    assert result["KEY_B"].ok is False
+    assert result["KEY_B"].code == 500
+    assert result["KEY_B"].message == "fail"
+
+
+async def test_fetch_probe_logs_bulk_omits_keys_with_no_probe():
+    """Keys with no probe row are absent from the result dict (caller treats as None)."""
+    _now = datetime.now(tz=UTC)
+    row_a = _make_row(credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now)
+
+    pool = AsyncMock()
+    # DB returns only KEY_A (KEY_B has no probe row)
+    pool.fetch = AsyncMock(return_value=[row_a])
+
+    result = await _fetch_probe_logs_bulk(pool, "system", ["KEY_A", "KEY_B"])
+
+    assert "KEY_A" in result
+    assert "KEY_B" not in result
+    assert result["KEY_A"].ok is True
+
+
+async def test_fetch_probe_logs_bulk_returns_empty_dict_for_empty_keys():
+    """Empty keys list returns empty dict without issuing a DB query."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock()
+
+    result = await _fetch_probe_logs_bulk(pool, "system", [])
+
+    assert result == {}
+    pool.fetch.assert_not_called()
+
+
+async def test_fetch_probe_logs_bulk_returns_empty_dict_on_missing_table():
+    """Silently returns empty dict when secret_probe_log does not exist."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=UndefinedTableError("relation public.secret_probe_log does not exist"))
+
+    result = await _fetch_probe_logs_bulk(pool, "system", ["KEY_A"])
+
+    assert result == {}
+
+
+async def test_fetch_probe_logs_bulk_issues_single_query():
+    """Bulk variant calls pool.fetch exactly once regardless of the number of keys."""
+    _now = datetime.now(tz=UTC)
+    keys = [f"KEY_{i}" for i in range(10)]
+    rows = [
+        _make_row(credential_key=k, ok=True, code=200, message=None, recorded_at=_now) for k in keys
+    ]
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=rows)
+
+    result = await _fetch_probe_logs_bulk(pool, "system", keys)
+
+    # Exactly one DB call — not 10 (one per key).
+    assert pool.fetch.call_count == 1
+    assert len(result) == 10
+
+
+# ---------------------------------------------------------------------------
+# Regression: inventory endpoint test results match per-row behavior
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_probe_results_match_per_row_expectations():
+    """Inventory credential rows carry the correct probe result from the bulk query.
+
+    Regression guard: after the N+1 → bulk refactor, the data shape returned
+    for each credential must match what a per-row fetchrow would have produced.
+    """
+    _now = datetime.now(tz=UTC)
+    system_row_ok = _make_system_row(key="API_KEY", value="v1", last_test_ok=True)
+    system_row_fail = _make_system_row(key="FAIL_KEY", value="v2", last_test_ok=False)
+
+    # Bulk probe rows keyed by credential_key
+    probe_row_ok = _make_row(
+        credential_key="API_KEY", ok=True, code=200, message=None, recorded_at=_now
+    )
+    probe_row_fail = _make_row(
+        credential_key="FAIL_KEY", ok=False, code=401, message="auth error", recorded_at=_now
+    )
+
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row_ok, system_row_fail],
+        probe_rows=[probe_row_ok, probe_row_fail],
+    )
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    system = resp.json()["data"]["system"]
+    assert len(system) == 2
+
+    by_key = {row["key"]: row for row in system}
+
+    # API_KEY probe attached correctly
+    assert by_key["API_KEY"]["test"] is not None
+    assert by_key["API_KEY"]["test"]["ok"] is True
+    assert by_key["API_KEY"]["test"]["code"] == 200
+
+    # FAIL_KEY probe attached correctly
+    assert by_key["FAIL_KEY"]["test"] is not None
+    assert by_key["FAIL_KEY"]["test"]["ok"] is False
+    assert by_key["FAIL_KEY"]["test"]["code"] == 401
+    assert by_key["FAIL_KEY"]["test"]["message"] == "auth error"
+
+
+def test_inventory_credential_with_no_probe_has_null_test():
+    """Credentials with no probe row in the bulk result have test=null in the response."""
+    system_row = _make_system_row(key="NO_PROBE_KEY", value="v1", last_test_ok=None)
+
+    # No probe_rows — bulk query returns empty list
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row],
+        probe_rows=[],  # no probes
+    )
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    system = resp.json()["data"]["system"]
+    assert len(system) == 1
+    assert system[0]["test"] is None

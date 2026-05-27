@@ -142,7 +142,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from asyncpg.exceptions import UndefinedTableError
+from asyncpg.exceptions import PostgresError, UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -454,6 +454,19 @@ def _format_probe_time(recorded_at: datetime | None) -> str | None:
     return recorded_at.strftime("%Y-%m-%d ") + time_str
 
 
+def _row_to_test_result(row: Any) -> TestResult:
+    """Convert an asyncpg probe-log row to a TestResult.
+
+    Expects row to have columns: ok, code, message, recorded_at.
+    """
+    return TestResult(
+        ok=row["ok"],
+        code=row["code"],
+        message=row["message"],
+        at=_format_probe_time(row["recorded_at"]),
+    )
+
+
 async def _fetch_probe_log(
     pool: Any,
     credential_scope: str,
@@ -463,6 +476,9 @@ async def _fetch_probe_log(
 
     Returns a TestResult or None if no probe has been recorded.
     Silently returns None when the table does not exist (migration not yet run).
+
+    Use _fetch_probe_logs_bulk for multi-credential inventory paths to avoid
+    N+1 query patterns.
     """
     try:
         row = await pool.fetchrow(
@@ -476,10 +492,9 @@ async def _fetch_probe_log(
             credential_scope,
             credential_key,
         )
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg.lower():
-            return None
+    except UndefinedTableError:
+        return None
+    except PostgresError as exc:
         logger.debug(
             "probe_log lookup failed for scope=%s key=%s: %s",
             credential_scope,
@@ -491,12 +506,53 @@ async def _fetch_probe_log(
     if row is None:
         return None
 
-    return TestResult(
-        ok=row["ok"],
-        code=row["code"],
-        message=row["message"],
-        at=_format_probe_time(row["recorded_at"]),
-    )
+    return _row_to_test_result(row)
+
+
+async def _fetch_probe_logs_bulk(
+    pool: Any,
+    scope: str,
+    keys: list[str],
+) -> dict[str, TestResult]:
+    """Fetch the most recent probe row for each key in a single query.
+
+    Issues ONE query using DISTINCT ON (credential_key) + ANY($2) instead of
+    one fetchrow per credential key.  Eliminates the N+1 pattern in the three
+    inventory helpers (_fetch_system_secrets, _fetch_user_secrets,
+    _fetch_cli_secrets).
+
+    Returns a dict mapping credential_key → TestResult for keys that have a
+    probe row.  Keys with no probe row are absent from the dict (callers treat
+    a missing key as None / no probe recorded).
+
+    Silently returns an empty dict when the table does not exist (migration not
+    yet run) or when keys is empty.
+    """
+    if not keys:
+        return {}
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT DISTINCT ON (credential_key)
+                   credential_key, ok, code, message, recorded_at
+            FROM public.secret_probe_log
+            WHERE credential_scope = $1 AND credential_key = ANY($2)
+            ORDER BY credential_key, recorded_at DESC
+            """,
+            scope,
+            keys,
+        )
+    except UndefinedTableError:
+        return {}
+    except PostgresError as exc:
+        logger.debug(
+            "probe_log bulk lookup failed for scope=%s keys=%s: %s",
+            scope,
+            keys,
+            exc,
+        )
+        return {}
+    return {row["credential_key"]: _row_to_test_result(row) for row in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +596,10 @@ async def _fetch_system_secrets(
         logger.warning("Failed to fetch system secrets for butler %s: %s", butler_name, exc)
         return []
 
+    # Bulk-fetch probe logs for all keys in a single query (eliminates N+1).
+    credential_keys = [row["secret_key"] for row in rows]
+    probe_map = await _fetch_probe_logs_bulk(pool, "system", credential_keys)
+
     results: list[SystemSecret] = []
     for row in rows:
         secret_value: str | None = row["secret_value"]
@@ -553,9 +613,6 @@ async def _fetch_system_secrets(
         )
         fp = _fingerprint(secret_value)
 
-        # Fetch probe log for this credential
-        test = await _fetch_probe_log(pool, "system", row["secret_key"])
-
         results.append(
             SystemSecret(
                 key=row["secret_key"],
@@ -568,7 +625,7 @@ async def _fetch_system_secrets(
                 last_test_code=row["last_test_code"],
                 last_test_message=row["last_test_message"],
                 butler=butler_name,
-                test=test,
+                test=probe_map.get(row["secret_key"]),
             )
         )
 
@@ -637,6 +694,11 @@ async def _fetch_user_secrets(
         logger.warning("Failed to fetch user secrets: %s", exc)
         return []
 
+    # Bulk-fetch probe logs for all credential types in a single query (eliminates N+1).
+    # For user credentials the probe key is the entity_info.type value.
+    credential_keys = [row["type"] for row in rows]
+    probe_map = await _fetch_probe_logs_bulk(pool, "user", credential_keys)
+
     results: list[UserSecret] = []
     for row in rows:
         value: str | None = row["value"]
@@ -647,9 +709,6 @@ async def _fetch_user_secrets(
             last_test_ok=last_test_ok,
         )
         fp = _fingerprint(value)
-
-        # Fetch probe log for this credential
-        test = await _fetch_probe_log(pool, "user", row["type"])
 
         results.append(
             UserSecret(
@@ -663,7 +722,7 @@ async def _fetch_user_secrets(
                 last_test_ok=last_test_ok,
                 last_test_code=row["last_test_code"],
                 last_test_message=row["last_test_message"],
-                test=test,
+                test=probe_map.get(row["type"]),
             )
         )
 
@@ -706,6 +765,10 @@ async def _fetch_cli_secrets(
         logger.warning("Failed to fetch CLI secrets: %s", exc)
         return []
 
+    # Bulk-fetch probe logs for all CLI keys in a single query (eliminates N+1).
+    credential_keys = [row["secret_key"] for row in rows]
+    probe_map = await _fetch_probe_logs_bulk(pool, "cli", credential_keys)
+
     results: list[CliRuntime] = []
     for row in rows:
         value: str | None = row["secret_value"]
@@ -719,8 +782,6 @@ async def _fetch_cli_secrets(
         )
         fp = _fingerprint(value)
 
-        test = await _fetch_probe_log(pool, "cli", row["secret_key"])
-
         results.append(
             CliRuntime(
                 key=row["secret_key"],
@@ -732,7 +793,7 @@ async def _fetch_cli_secrets(
                 last_test_ok=last_test_ok,
                 last_test_code=row["last_test_code"],
                 last_test_message=row["last_test_message"],
-                test=test,
+                test=probe_map.get(row["secret_key"]),
             )
         )
 
