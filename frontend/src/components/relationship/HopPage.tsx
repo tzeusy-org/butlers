@@ -20,7 +20,7 @@
 import { useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftIcon, NetworkIcon } from "lucide-react";
+import { ArrowLeftIcon } from "lucide-react";
 
 import type { NeighbourEntry } from "@/api/types";
 import { getOwnerSetupStatus, getRelationshipEntity } from "@/api/index";
@@ -28,9 +28,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { NeighbourRow } from "@/components/ui/NeighbourRow";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityNeighbours } from "@/hooks/use-entities";
 
@@ -124,50 +124,6 @@ function AnchorCard({ entityId }: AnchorCardProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Neighbour row
-// ---------------------------------------------------------------------------
-
-interface NeighbourRowProps {
-  entry: NeighbourEntry;
-  onRecentre: (entityId: string) => void;
-}
-
-function NeighbourRow({ entry, onRecentre }: NeighbourRowProps) {
-  const entityId = entry.entity_id;
-  return (
-    <li
-      className="flex items-center justify-between py-2 border-b last:border-0 hover:bg-muted/40 px-2 rounded-sm"
-      data-testid="neighbour-row"
-    >
-      <button
-        type="button"
-        className="flex items-center gap-2 text-left text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-        onClick={() => onRecentre(entityId)}
-        aria-label={`Re-centre on entity ${entry.canonical_name || entityId}`}
-        data-entity-id={entityId}
-      >
-        <NetworkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden />
-        <span>{entry.canonical_name || entityId}</span>
-      </button>
-
-      <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0 ml-4">
-        {entry.weight != null && (
-          <span className="tabular-nums" title="Edge weight">
-            w={entry.weight}
-          </span>
-        )}
-        {entry.last_seen != null && (
-          <Time value={entry.last_seen} mode="relative" />
-        )}
-        <Badge variant="outline" className="text-xs">
-          {entry.direction === "forward" ? "→" : "←"}
-        </Badge>
-      </div>
-    </li>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Predicate group
 // ---------------------------------------------------------------------------
 
@@ -187,7 +143,13 @@ function PredicateGroup({ predicate, entries, onRecentre }: PredicateGroupProps)
       </h3>
       <ul>
         {entries.map((entry) => (
-          <NeighbourRow key={entry.entity_id} entry={entry} onRecentre={onRecentre} />
+          <NeighbourRow
+            key={entry.entity_id}
+            entry={entry}
+            onClick={onRecentre}
+            ariaLabel={`Re-centre on entity ${entry.canonical_name || entry.entity_id}`}
+            testId="neighbour-row"
+          />
         ))}
       </ul>
     </section>
