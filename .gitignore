@@ -39,8 +39,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
-secrets/
-secrets/connectors/*
+/secrets/
+/secrets/connectors/*
 !secrets/connectors/.gitkeep
 
 # Docker
