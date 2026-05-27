@@ -21,6 +21,7 @@ import { getSecretsInventory } from "@/api/client.ts";
 import type {
   SecretsCliRaw,
   SecretsIdentityInfo,
+  SecretsProviderInfo,
   SecretsSystemRaw,
   SecretsUserRaw,
 } from "@/api/types.ts";
@@ -35,14 +36,17 @@ import type {
 } from "@/components/secrets/passport/types.ts";
 
 // ---------------------------------------------------------------------------
-// Static provider catalog
+// Static provider catalog (fallback)
 //
-// The inventory endpoint does not return provider metadata (labels, glyphs,
-// authority, etc.). This catalog maps provider slugs to their display info.
-// Providers not in the catalog fall back to the raw slug as label.
+// The inventory endpoint now returns provider metadata in response.providers
+// (added in bu-ej5dr). This static copy is kept as a one-release fallback
+// for rolling deploys where the backend may not yet include the field.
+//
+// TODO(post-deploy): remove this fallback once all backends are on the
+// version that includes providers in the inventory response.
 // ---------------------------------------------------------------------------
 
-export const PROVIDER_CATALOG: InventoryResponse["providers"] = {
+export const PROVIDER_CATALOG: Record<string, SecretsProviderInfo> = {
   google:        { id: "google",        label: "Google",         glyph: "G", kind: "oauth",   authority: "accounts.google.com",  brief: "Calendar, Gmail, Drive read.",    cadence: "on demand · refreshes hourly" },
   spotify:       { id: "spotify",       label: "Spotify",        glyph: "S", kind: "oauth",   authority: "accounts.spotify.com", brief: "Recent listens.",                  cadence: "poll · 15m" },
   homeassistant: { id: "homeassistant", label: "Home Assistant", glyph: "H", kind: "token",   authority: "home.lim.local",       brief: "Smart-home state, sensors.",       cadence: "poll · 30s" },
@@ -154,13 +158,18 @@ export function adaptInventoryResponse(data: {
   system: SecretsSystemRaw[];
   user: SecretsUserRaw[];
   identities: SecretsIdentityInfo[];
+  providers?: Record<string, SecretsProviderInfo>;
 }): InventoryResponse {
+  // Prefer the backend-supplied catalog; fall back to the static FE copy
+  // for rolling deploys where the backend has not yet been updated.
+  // TODO(post-deploy): remove fallback once all backends include providers.
+  const providers = data.providers ?? PROVIDER_CATALOG;
   return {
     user:       data.user.map(adaptUserCredential),
     system:     data.system.map(adaptSystemCredential),
     cli:        data.cli.map(adaptCliCredential),
     identities: mapIdentities(data.identities),
-    providers:  PROVIDER_CATALOG,
+    providers,
   };
 }
 

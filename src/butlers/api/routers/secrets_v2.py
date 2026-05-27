@@ -151,6 +151,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.routers import audit as audit_router
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.secrets_provider_catalog import PROVIDER_CATALOG, ProviderMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,13 @@ class InventoryData(BaseModel):
     system: list[SystemSecret] = Field(default_factory=list)
     user: list[UserSecret] = Field(default_factory=list)
     identities: list[IdentityInfo] = Field(default_factory=list)
+    providers: dict[str, ProviderMetadata] = Field(default_factory=dict)
+    """Provider display metadata catalog keyed by provider slug.
+
+    Included so the frontend never needs a separate round-trip and the
+    static FE copy stays in sync with this authoritative backend source.
+    Shape mirrors ProviderInfo in frontend/src/components/secrets/passport/types.ts.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +909,7 @@ async def get_inventory(
         system=system_secrets,
         user=user_secrets,
         identities=identities,
+        providers=PROVIDER_CATALOG,
     )
 
     # ApiMeta has extra="allow" so extra kwargs are serialised.
