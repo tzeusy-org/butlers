@@ -183,6 +183,86 @@ function setupDefaultMocks() {
 import { TimelineTab } from "./TimelineTab";
 
 // ---------------------------------------------------------------------------
+// TimelineTab — channel chip filter (bu-p5kdx)
+//
+// Verifies that the eventsFilters passed to useIngestionEvents reflect the
+// active channel chips correctly:
+//   - single channel  → channels="email"
+//   - multi channel   → channels="email,telegram"
+//   - no channels     → no channels param
+//   - source_channel is NOT sent (old code path removed)
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — channel chip filter passes channels= CSV to useIngestionEvents", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderWithChannels(channelsParam: string) {
+    const initialUrl = channelsParam ? `/?channels=${encodeURIComponent(channelsParam)}` : "/";
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[initialUrl]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("passes channels=email when one channel chip is active", () => {
+    renderWithChannels("email");
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).toMatchObject({ channels: "email" });
+    expect(lastFilters).not.toHaveProperty("source_channel");
+  });
+
+  it("passes channels=email,telegram when two channel chips are active", () => {
+    renderWithChannels("email,telegram");
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).toMatchObject({ channels: "email,telegram" });
+    expect(lastFilters).not.toHaveProperty("source_channel");
+  });
+
+  it("omits channels param when no channel chips are active", () => {
+    renderWithChannels("");
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).not.toHaveProperty("channels");
+    expect(lastFilters).not.toHaveProperty("source_channel");
+  });
+
+  it("never sends source_channel even for a single channel (old code path removed)", () => {
+    renderWithChannels("email");
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    for (const [filters] of calls) {
+      expect(filters).not.toHaveProperty("source_channel");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TimelineTab — StatusBadge rendering
 // ---------------------------------------------------------------------------
 

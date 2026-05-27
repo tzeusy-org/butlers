@@ -982,11 +982,11 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     return { from, to };
   }, [range]);
 
-  // Events query — pass q and source_channel from URL state
+  // Events query — pass q and channels (CSV) from URL state
   const eventsFilters = useMemo(() => ({
     limit: PAGE_SIZE,
     ...(debouncedQ ? { q: debouncedQ } : {}),
-    ...(activeChannels.length === 1 ? { source_channel: activeChannels[0] } : {}),
+    ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
   }), [debouncedQ, activeChannels]);
 
   const {

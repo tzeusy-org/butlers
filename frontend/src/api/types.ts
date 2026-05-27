@@ -2302,7 +2302,10 @@ export interface IngestionEventsParams {
   limit?: number;
   /** Opaque cursor from the previous page's next_cursor. Omit for first page. */
   cursor?: string;
+  /** @deprecated Use `channels` instead. Kept for backward compat; ignored when `channels` is set server-side. */
   source_channel?: string;
+  /** Comma-separated channel values (e.g. "email,telegram"). Preferred over source_channel. */
+  channels?: string;
   /** Filter by event status. Omit to return all events. */
   status?: IngestionEventStatus;
   /**
