@@ -24,12 +24,11 @@
 import { useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import type { NeighbourEntry } from "@/api/types";
 import { getOwnerSetupStatus } from "@/api/index";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { NeighbourRow } from "@/components/ui/NeighbourRow";
 import { Page } from "@/components/ui/page";
+import { PredicateGroup } from "@/components/ui/PredicateGroup";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityNeighbours } from "@/hooks/use-entities";
@@ -50,40 +49,6 @@ function parsePath(raw: string | null): string[] {
 /** Serialise an entity ID list back to a ?path= CSV. */
 function serialisePath(ids: string[]): string {
   return ids.join(",");
-}
-
-// ---------------------------------------------------------------------------
-// PredicateGroup — grouped list of neighbours within a column
-// ---------------------------------------------------------------------------
-
-interface PredicateGroupProps {
-  predicate: string;
-  entries: NeighbourEntry[];
-  columnIndex: number;
-  onSelect: (entityId: string, columnIndex: number) => void;
-}
-
-function PredicateGroup({ predicate, entries, columnIndex, onSelect }: PredicateGroupProps) {
-  const label = predicate.replace(/-/g, " ");
-  return (
-    <section data-testid={`column-predicate-group-${columnIndex}-${predicate}`}>
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1 px-2">
-        {label}
-        <span className="ml-2 font-normal tabular-nums">({entries.length})</span>
-      </h3>
-      <ul>
-        {entries.map((entry) => (
-          <NeighbourRow
-            key={entry.entity_id}
-            entry={entry}
-            onClick={(entityId) => onSelect(entityId, columnIndex)}
-            testId={`column-neighbour-row-${columnIndex}`}
-            data-column-index={columnIndex}
-          />
-        ))}
-      </ul>
-    </section>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +128,7 @@ function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelP
                 predicate={predicate}
                 entries={neighbours[predicate]}
                 columnIndex={columnIndex}
-                onSelect={onSelect}
+                onSelect={(entityId) => onSelect(entityId, columnIndex)}
               />
             ))}
           </div>
