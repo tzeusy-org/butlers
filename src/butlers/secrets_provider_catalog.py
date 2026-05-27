@@ -125,4 +125,13 @@ PROVIDER_CATALOG: dict[str, ProviderMetadata] = {
         brief="Claude model calls.",
         cadence="on demand",
     ),
+    "github": ProviderMetadata(
+        id="github",
+        label="GitHub",
+        glyph="G",
+        kind="token",
+        authority="api.github.com",
+        brief="Repo access via Personal Access Token.",
+        cadence="on demand",
+    ),
 }

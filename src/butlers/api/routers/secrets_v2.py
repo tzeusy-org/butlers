@@ -1710,21 +1710,77 @@ async def _revoke_oauth_token(provider: str, credential_type: str, old_value: st
 
 
 # ---------------------------------------------------------------------------
-# OAuth credential verification (live provider call)
+# OAuth / PAT credential verification (live provider call)
 # ---------------------------------------------------------------------------
 
-# Mapping of provider slug → Google userinfo URL.
-# Only providers with a working live-verify implementation are listed.
-# Unlisted providers fall back to local-state check (skipped).
-_OAUTH_VERIFY_PROVIDERS: dict[str, str | None] = {
-    "google": "https://www.googleapis.com/oauth2/v1/userinfo",
-    # Other providers (GitHub, Spotify, etc.) to be added as follow-up issues.
-}
+_VERIFY_TIMEOUT_S = 10.0
 
 # The Google token endpoint for exchanging a refresh token for an access token.
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
-_VERIFY_TIMEOUT_S = 10.0
+# GitHub user endpoint — works for both classic PATs and fine-grained PATs.
+_GITHUB_USER_URL = "https://api.github.com/user"
+
+
+class _ProviderVerifyConfig:
+    """Per-provider live-verify configuration.
+
+    Attributes
+    ----------
+    verify_url:
+        The URL to call to confirm the credential is valid.
+    needs_token_exchange:
+        True if the stored credential is a refresh token that must be exchanged
+        for a short-lived access token before calling *verify_url* (Google
+        flow).  False when the stored value itself is the bearer credential
+        (GitHub PATs).
+    auth_scheme:
+        HTTP Authorization scheme to use in the verify call.  ``"Bearer"`` for
+        standard OAuth; ``"token"`` for GitHub classic PATs.
+    accepted_type_suffixes:
+        Tuple of ``entity_info.type`` suffixes that this provider config
+        matches.  A credential type is accepted when it ends with one of
+        these suffixes.  E.g. Google accepts ``_oauth_refresh``; GitHub
+        accepts ``_oauth_refresh`` (future OAuth flow) and ``_pat`` (PATs).
+    """
+
+    def __init__(
+        self,
+        *,
+        verify_url: str,
+        needs_token_exchange: bool,
+        auth_scheme: str,
+        accepted_type_suffixes: tuple[str, ...],
+    ) -> None:
+        self.verify_url = verify_url
+        self.needs_token_exchange = needs_token_exchange
+        self.auth_scheme = auth_scheme
+        self.accepted_type_suffixes = accepted_type_suffixes
+
+    def accepts_type(self, credential_type: str) -> bool:
+        """Return True when *credential_type* is handled by this config."""
+        return any(credential_type.endswith(suffix) for suffix in self.accepted_type_suffixes)
+
+
+# Mapping of provider slug → verify config.
+# Only providers with a working live-verify implementation are listed.
+# Unlisted providers fall back to local-state check (skipped).
+_OAUTH_VERIFY_PROVIDERS: dict[str, _ProviderVerifyConfig] = {
+    "google": _ProviderVerifyConfig(
+        verify_url="https://www.googleapis.com/oauth2/v1/userinfo",
+        needs_token_exchange=True,
+        auth_scheme="Bearer",
+        accepted_type_suffixes=("_oauth_refresh",),
+    ),
+    "github": _ProviderVerifyConfig(
+        verify_url=_GITHUB_USER_URL,
+        needs_token_exchange=False,
+        auth_scheme="token",
+        # Classic PATs use _pat; fine-grained PATs share the same endpoint.
+        # _oauth_refresh is included for future GitHub OAuth app support.
+        accepted_type_suffixes=("_pat", "_oauth_refresh"),
+    ),
+}
 
 
 async def _verify_oauth_credential(
@@ -1738,109 +1794,132 @@ async def _verify_oauth_credential(
     Returns ``(probe_status, http_code, message)`` where ``probe_status`` is one of:
     - ``"live_ok"`` — provider confirmed the credential is valid.
     - ``"live_failed:<code>"`` — provider rejected the credential (HTTP 401/403 etc.).
-    - ``"skipped_local_check"`` — live verify was not attempted (non-OAuth type,
-      unsupported provider, missing app credentials, or network error).
+    - ``"skipped_local_check"`` — live verify was not attempted (unsupported
+      provider, unsupported credential type, missing app credentials, or network error).
 
     Rules:
-    - If the credential type is not an OAuth refresh type, return ``"skipped_local_check"``.
     - If the provider has no verify handler, return ``"skipped_local_check"``.
-    - Loads app credentials (client_id, client_secret) from butler_secrets via CredentialStore.
-      If those are missing, returns ``"skipped_local_check"`` (can't mint access token).
-    - Exchanges the refresh token for an access token via Google's token endpoint.
-      If the exchange fails (non-200), returns ``"live_failed:<code>"``.
-    - Calls the userinfo endpoint with the access token.
-      200 → ``"live_ok"``; non-200 → ``"live_failed:<code>"``.
+    - If the credential type is not accepted by the provider config, return
+      ``"skipped_local_check"``.
+    - For providers that need token exchange (Google):
+      - Loads app credentials (client_id, client_secret) from butler_secrets via
+        CredentialStore.  If those are missing, returns ``"skipped_local_check"``.
+      - Exchanges the refresh token for an access token.
+        If the exchange fails (non-200), returns ``"live_failed:<code>"``.
+      - Calls the verify URL with the minted access token.
+    - For PAT providers (GitHub):
+      - Calls the verify URL directly with the stored value as the auth header.
+      - No token exchange, no app credentials required.
     - Network errors → ``"skipped_local_check"`` (cannot distinguish bad cred from bad network).
     - Token-exchange non-200 → ``"live_failed:<code>"`` (this IS a credential failure).
     """
-    # Only OAuth refresh credential types trigger live verify.
-    if not credential_type.endswith("_oauth_refresh"):
+    provider_config = _OAUTH_VERIFY_PROVIDERS.get(provider)
+    if provider_config is None:
+        logger.debug(
+            "_verify_oauth_credential: no verify handler for provider=%s; skipping",
+            provider,
+        )
         return "skipped_local_check", None, None
 
-    verify_url = _OAUTH_VERIFY_PROVIDERS.get(provider)
-    if verify_url is None:
-        if provider not in _OAUTH_VERIFY_PROVIDERS:
+    if not provider_config.accepts_type(credential_type):
+        logger.debug(
+            "_verify_oauth_credential: credential type %s not accepted for provider=%s; skipping",
+            credential_type,
+            provider,
+        )
+        return "skipped_local_check", None, None
+
+    # ------------------------------------------------------------------
+    # Branch A: providers that require a refresh → access token exchange
+    # ------------------------------------------------------------------
+    if provider_config.needs_token_exchange:
+        # Load app credentials (client_id, client_secret) from butler_secrets.
+        cred_store = CredentialStore(shared_pool)
+        try:
+            client_id = await cred_store.load(KEY_CLIENT_ID)
+            client_secret = await cred_store.load(KEY_CLIENT_SECRET)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "_verify_oauth_credential: failed to load app credentials for provider=%s: %s",
+                provider,
+                exc,
+            )
+            return "skipped_local_check", None, None
+
+        if not client_id or not client_secret:
             logger.debug(
-                "_verify_oauth_credential: no verify handler for provider=%s; skipping",
+                "_verify_oauth_credential: app credentials not configured for provider=%s;"
+                " skipping",
                 provider,
             )
-        return "skipped_local_check", None, None
+            return "skipped_local_check", None, None
 
-    # Load app credentials (client_id, client_secret) from butler_secrets.
-    cred_store = CredentialStore(shared_pool)
-    try:
-        client_id = await cred_store.load(KEY_CLIENT_ID)
-        client_secret = await cred_store.load(KEY_CLIENT_SECRET)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "_verify_oauth_credential: failed to load app credentials for provider=%s: %s",
-            provider,
-            exc,
-        )
-        return "skipped_local_check", None, None
-
-    if not client_id or not client_secret:
-        logger.debug(
-            "_verify_oauth_credential: app credentials not configured for provider=%s; skipping",
-            provider,
-        )
-        return "skipped_local_check", None, None
-
-    try:
-        async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-            # Step 1: Exchange refresh token for an access token.
-            token_resp = await client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                },
+        try:
+            async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+                # Step 1: Exchange refresh token for an access token.
+                token_resp = await client.post(
+                    _GOOGLE_TOKEN_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            # Network error — cannot distinguish bad credential from bad network.
+            logger.warning(
+                "_verify_oauth_credential: network error during token exchange for provider=%s: %s",
+                provider,
+                exc,
             )
-    except Exception as exc:  # noqa: BLE001
-        # Network error — cannot distinguish bad credential from bad network.
-        logger.warning(
-            "_verify_oauth_credential: network error during token exchange for provider=%s: %s",
-            provider,
-            exc,
-        )
-        return "skipped_local_check", None, None
+            return "skipped_local_check", None, None
 
-    if token_resp.status_code != 200:
-        # Token exchange failure IS a credential failure (expired / revoked refresh token).
-        reason = f"token_exchange HTTP {token_resp.status_code}"
-        logger.debug(
-            "_verify_oauth_credential: token exchange failed for provider=%s: %s",
-            provider,
-            reason,
-        )
-        return f"live_failed:{token_resp.status_code}", token_resp.status_code, reason
+        if token_resp.status_code != 200:
+            # Token exchange failure IS a credential failure (expired / revoked refresh token).
+            reason = f"token_exchange HTTP {token_resp.status_code}"
+            logger.debug(
+                "_verify_oauth_credential: token exchange failed for provider=%s: %s",
+                provider,
+                reason,
+            )
+            return f"live_failed:{token_resp.status_code}", token_resp.status_code, reason
 
-    try:
-        token_data = token_resp.json()
-    except Exception as exc:  # noqa: BLE001
-        reason = f"token_exchange: invalid JSON response: {exc}"
-        logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
-        return "live_failed:invalid_json", None, reason
+        try:
+            token_data = token_resp.json()
+        except Exception as exc:  # noqa: BLE001
+            reason = f"token_exchange: invalid JSON response: {exc}"
+            logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
+            return "live_failed:invalid_json", None, reason
 
-    access_token = token_data.get("access_token")
-    if not access_token:
-        reason = "token_exchange: no access_token in response"
-        logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
-        return "live_failed:no_access_token", None, reason
+        access_token = token_data.get("access_token")
+        if not access_token:
+            reason = "token_exchange: no access_token in response"
+            logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
+            return "live_failed:no_access_token", None, reason
 
+        bearer_value = access_token
+
+    # ------------------------------------------------------------------
+    # Branch B: PAT / direct-bearer providers (no token exchange)
+    # ------------------------------------------------------------------
+    else:
+        # The stored credential is used directly as the auth header value.
+        bearer_value = refresh_token
+
+    # ------------------------------------------------------------------
+    # Final step: call the provider's verify URL
+    # ------------------------------------------------------------------
     try:
         async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-            # Step 2: Call the userinfo endpoint to verify the token.
             info_resp = await client.get(
-                verify_url,
-                headers={"Authorization": f"Bearer {access_token}"},
+                provider_config.verify_url,
+                headers={"Authorization": f"{provider_config.auth_scheme} {bearer_value}"},
             )
     except Exception as exc:  # noqa: BLE001
-        # Network error on userinfo call — fall back to local check.
+        # Network error on verify call — fall back to local check.
         logger.warning(
-            "_verify_oauth_credential: network error during userinfo call for provider=%s: %s",
+            "_verify_oauth_credential: network error during verify call for provider=%s: %s",
             provider,
             exc,
         )
@@ -2105,8 +2184,8 @@ async def probe_user_credential(
 ) -> ApiResponse[TestResult]:
     """Probe a user-scoped credential and record the test result.
 
-    For OAuth credentials of supported providers (currently Google), this makes a
-    LIVE call to the provider's userinfo endpoint to verify the credential actually
+    For supported providers (currently Google OAuth and GitHub PAT), this makes a
+    LIVE call to the provider's verify endpoint to confirm the credential actually
     works.  For other providers or credential types, it falls back to deriving the
     probe outcome from the current local state (is the value set, is the credential
     expired, is the last_test_ok field true?).

@@ -615,3 +615,255 @@ def test_google_probe_missing_app_credentials_falls_back_to_local_check(monkeypa
     # Falls back to local state: last_test_ok=True + value → ok → True.
     assert data["ok"] is True
     assert not http_calls, f"No HTTP calls expected; got: {http_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: GitHub PAT live probe (bu-ppe9v)
+# ---------------------------------------------------------------------------
+
+_GITHUB_PAT = "ghp_fakePersonalAccessToken12345"
+
+
+def _make_github_pat_row(
+    *,
+    last_test_ok: bool | None = True,
+    value: str = _GITHUB_PAT,
+) -> MagicMock:
+    """Build a mock entity_info row for a GitHub PAT credential."""
+    return _make_entity_info_row(
+        info_type="github_pat",
+        value=value,
+        label="tzeusy",
+        last_test_ok=last_test_ok,
+    )
+
+
+def _make_github_db(
+    *,
+    last_test_ok: bool | None = True,
+    raw_token_value: str | None = _GITHUB_PAT,
+) -> MagicMock:
+    """Build a mock DatabaseManager for a GitHub PAT probe."""
+    row = _make_github_pat_row(last_test_ok=last_test_ok)
+    return _make_db(
+        user_row=row,
+        raw_token_value=raw_token_value,
+        # GitHub PAT probe does not need app credentials.
+        client_id=None,
+        client_secret=None,
+    )
+
+
+def test_github_pat_probe_calls_api_github_user_directly(monkeypatch):
+    """GitHub PAT probe calls GET https://api.github.com/user with 'token <pat>' header."""
+    mock_db = _make_github_db()
+
+    calls: list[dict] = []
+
+    async def _fake_get(url, **kwargs):
+        calls.append({"method": "GET", "url": str(url), **kwargs})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        fake_resp.json = MagicMock(return_value={"login": "tzeusy"})
+        return fake_resp
+
+    async def _fake_post(url, **kwargs):
+        raise AssertionError("GitHub PAT probe must NOT call token exchange")
+
+    fake_client = AsyncMock()
+    fake_client.get = AsyncMock(side_effect=_fake_get)
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/probe")
+
+    assert resp.status_code == 200
+
+    assert len(calls) == 1, f"Expected exactly one GET call; got: {calls}"
+    assert "api.github.com/user" in calls[0]["url"]
+    auth = calls[0].get("headers", {}).get("Authorization", "")
+    assert auth == f"token {_GITHUB_PAT}", f"Expected 'token <pat>' header; got: {auth!r}"
+
+
+def test_github_pat_probe_200_returns_probe_ok_true(monkeypatch):
+    """GitHub PAT probe with api.github.com/user HTTP 200 → probe_ok=True."""
+    mock_db = _make_github_db()
+
+    async def _fake_get(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        fake_resp.json = MagicMock(return_value={"login": "tzeusy"})
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.get = AsyncMock(side_effect=_fake_get)
+    fake_client.post = AsyncMock(side_effect=AssertionError("No POST for PAT"))
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/probe")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["ok"] is True
+
+
+def test_github_pat_probe_401_returns_probe_ok_false_with_code(monkeypatch):
+    """GitHub PAT probe with api.github.com/user HTTP 401 → probe_ok=False, code=401."""
+    mock_db = _make_github_db()
+
+    async def _fake_get(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 401
+        fake_resp.json = MagicMock(return_value={"message": "Bad credentials"})
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.get = AsyncMock(side_effect=_fake_get)
+    fake_client.post = AsyncMock(side_effect=AssertionError("No POST for PAT"))
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/probe")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["ok"] is False
+    assert data["code"] == 401
+
+
+def test_github_pat_probe_network_error_falls_back_to_local_check(monkeypatch):
+    """Network error when calling api.github.com/user → fallback to local check (NOT False)."""
+    mock_db = _make_github_db(last_test_ok=True)
+
+    async def _fake_get(url, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    fake_client = AsyncMock()
+    fake_client.get = AsyncMock(side_effect=_fake_get)
+    fake_client.post = AsyncMock(side_effect=AssertionError("No POST for PAT"))
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/probe")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # Network error → skipped_local_check → local state wins.
+    # last_test_ok=True + value set → state='ok' → probe_ok=True.
+    assert data["ok"] is True
+
+
+def test_github_pat_probe_no_token_exchange_called(monkeypatch):
+    """Verify that GitHub PAT probe never triggers a token exchange POST."""
+    mock_db = _make_github_db()
+
+    post_calls: list[str] = []
+
+    async def _fake_post(url, **kwargs):
+        post_calls.append(str(url))
+        raise AssertionError(f"Unexpected POST to {url}")
+
+    async def _fake_get(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        fake_resp.json = MagicMock(return_value={"login": "tzeusy"})
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+    fake_client.get = AsyncMock(side_effect=_fake_get)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/probe")
+
+    assert resp.status_code == 200
+    assert not post_calls, f"No POST calls expected for GitHub PAT probe; got: {post_calls}"
+
+
+def test_github_pat_type_not_accepted_for_google(monkeypatch):
+    """A github_pat credential type is NOT accepted by the Google provider config."""
+    # Create a row as if someone registered a 'github_pat' type but is probing under 'google'.
+    # This should fall back to local check, not trigger any live verify.
+    row = _make_entity_info_row(
+        info_type="github_pat",
+        last_test_ok=True,
+        value="ghp_fake",
+    )
+    mock_db = _make_db(user_row=row, raw_token_value="ghp_fake")
+
+    http_calls: list[dict] = []
+
+    async def _fake_get(url, **kwargs):
+        http_calls.append({"method": "GET", "url": str(url)})
+        raise AssertionError(f"Should not call HTTP; got GET {url}")
+
+    async def _fake_post(url, **kwargs):
+        http_calls.append({"method": "POST", "url": str(url)})
+        raise AssertionError(f"Should not call HTTP; got POST {url}")
+
+    fake_client = AsyncMock()
+    fake_client.get = AsyncMock(side_effect=_fake_get)
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    # Probe under 'google' even though the entity_info type is github_pat.
+    # The Google config only accepts _oauth_refresh → should skip live verify.
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/probe")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # Falls back to local state: last_test_ok=True → probe_ok=True.
+    assert data["ok"] is True
+    assert not http_calls, f"No HTTP calls expected; got: {http_calls}"
