@@ -236,7 +236,7 @@ async def ingestion_events_list(
     pool: asyncpg.Pool,
     limit: int = 20,
     cursor: str | None = None,
-    source_channel: str | None = None,
+    channels: list[str] | None = None,
     status: str | None = None,
     q: str | None = None,
 ) -> dict[str, Any]:
@@ -248,14 +248,15 @@ async def ingestion_events_list(
 
     Always UNION ALLs ``public.ingestion_events`` and
     ``connectors.filtered_events``, applying optional ``status``,
-    ``source_channel``, and ``q`` (text search) filters in the outer query.
+    ``channels``, and ``q`` (text search) filters in the outer query.
 
     Args:
         pool: asyncpg connection pool.
         limit: Maximum number of rows to return (default 20).
         cursor: Opaque cursor from the previous page's ``next_cursor`` field.
             When ``None``, returns the first page.
-        source_channel: Optional filter by ``source_channel``.
+        channels: Optional list of source_channel values to include.
+            Generates a ``source_channel = ANY($N::text[])`` clause.
         status: Optional filter by ``status``.
         q: Optional freetext search (ILIKE %q%) against source_channel,
             source_sender_identity, and error_detail.
@@ -272,9 +273,9 @@ async def ingestion_events_list(
     if status is not None:
         args.append(status)
         where_parts.append(f"status = ${len(args)}")
-    if source_channel is not None:
-        args.append(source_channel)
-        where_parts.append(f"source_channel = ${len(args)}")
+    if channels:
+        args.append(channels)
+        where_parts.append(f"source_channel = ANY(${len(args)}::text[])")
     if q is not None:
         q_pattern = f"%{q}%"
         args.append(q_pattern)
