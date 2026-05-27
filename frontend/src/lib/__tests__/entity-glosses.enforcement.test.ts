@@ -62,7 +62,6 @@ import path from "node:path"
 
 // __dirname is: frontend/src/lib/__tests__
 const FRONTEND_SRC = path.resolve(__dirname, "..", "..")  // frontend/src/
-const FRONTEND_ROOT = path.resolve(FRONTEND_SRC, "..")    // frontend/
 
 // ---------------------------------------------------------------------------
 // Scan targets
@@ -232,7 +231,7 @@ function collectViolations(label: string, content: string): Violation[] {
       const lineText = lines[i] ?? ""
       // Use a per-line match — the flag pattern is multiline but the critical
       // part (function name + backtick) fits on one line in practice.
-      if (/(?:^|[.\s(,;])(?:complete|chat|generate)\s*\(\s*`/.test(lineText)) {
+      if (COMPLETION_TEMPLATE_LITERAL_PATTERN.test(lineText)) {
         violations.push({
           file: label,
           line: i + 1,
