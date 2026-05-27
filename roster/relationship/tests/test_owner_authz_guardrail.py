@@ -5,10 +5,10 @@ Source: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/
 Task:   tasks.md §12.8
 
 Three-part spec:
-  12a — Mutation endpoints (POST/DELETE) under /api/butlers/relationship/entities/*
+  12a — Mutation endpoints (POST/DELETE) under /api/relationship/entities/*
          must return HTTP 403 + { "code": "owner_required" } when the caller is not
          resolved to an owner-role entity.
-  12b — PII-bearing GET endpoints under /api/butlers/relationship/entities/* must
+  12b — PII-bearing GET endpoints under /api/relationship/entities/* must
          apply the same owner-only gate.
   12c — Daemon startup must fail fatally when DASHBOARD_API_KEY is unset and
          BUTLERS_ENV != 'dev'.
