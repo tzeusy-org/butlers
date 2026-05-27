@@ -6,7 +6,7 @@
  *
  * Layout:
  * - Toolbar: range picker, search input, saved views, channel chips, status filter
- * - Bulk action bar (placeholder — no backend support yet)
+ * - Bulk action bar
  * - Connector attention strip
  * - Ledger: hour-group headers + event rows
  * - Footer rollup band: events / sessions / cost for the active filter window
@@ -20,6 +20,7 @@
  * - GET /api/ingestion/events/{id}/replays   (drawer replays tab)
  * - GET /api/ingestion/events/{id}/payload   (drawer raw tab, audit-gated)
  * - POST /api/ingestion/events/{id}/replay   (replay action)
+ * - POST /api/ingestion/events/retry/bulk    (bulk replay action)
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline Ledger"
@@ -47,7 +48,7 @@ import type {
   IngestionEventSummary,
   IngestionEventStatus,
 } from "@/api/index.ts";
-import { replayIngestionEvent } from "@/api/index.ts";
+import { bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
 import { StatusBadge } from "./StatusBadge";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { deriveMinuteCounts } from "./timeline/deriveMinuteCounts";
@@ -368,16 +369,58 @@ function Toolbar({
 }
 
 // ---------------------------------------------------------------------------
-// Bulk action bar placeholder
+// Bulk action bar
 // ---------------------------------------------------------------------------
+
+const MAX_BULK_RETRY_BATCH = 100;
 
 interface BulkActionBarProps {
   selectedCount: number;
+  selectedIds: string[];
   onClearSelection: () => void;
+  onDeselectIds: (ids: string[]) => void;
 }
 
-function BulkActionBar({ selectedCount, onClearSelection }: BulkActionBarProps) {
+function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselectIds }: BulkActionBarProps) {
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
   if (selectedCount === 0) return null;
+
+  const overLimit = selectedCount > MAX_BULK_RETRY_BATCH;
+  const disabled = overLimit || isRetrying;
+
+  async function handleReplayAll() {
+    if (disabled) return;
+    setIsRetrying(true);
+    setErrorMsg(null);
+    try {
+      const result = await bulkRetryEvents(selectedIds);
+
+      const succeededIds = result.results
+        .filter((r) => r.status === "replay_pending")
+        .map((r) => r.event_id);
+
+      if (succeededIds.length > 0) {
+        onDeselectIds(succeededIds);
+        toast.success(
+          `${succeededIds.length} event${succeededIds.length !== 1 ? "s" : ""} queued for replay`,
+        );
+      }
+
+      if (result.failed > 0) {
+        const failedMsg = `${result.failed} event${result.failed !== 1 ? "s" : ""} failed to queue`;
+        setErrorMsg(failedMsg);
+        toast.error(failedMsg);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Bulk replay failed";
+      setErrorMsg(msg);
+    } finally {
+      setIsRetrying(false);
+    }
+  }
+
   return (
     <div
       className="flex items-center gap-3 py-2 px-3 bg-muted/30 border border-border rounded text-sm"
@@ -387,12 +430,23 @@ function BulkActionBar({ selectedCount, onClearSelection }: BulkActionBarProps) 
       <Button
         variant="outline"
         size="sm"
-        disabled
-        title="Bulk retry requires backend support (filed as follow-up)"
+        disabled={disabled}
+        title={
+          overLimit
+            ? `Select at most ${MAX_BULK_RETRY_BATCH} events at once`
+            : isRetrying
+              ? "Replaying…"
+              : "Replay selected events"
+        }
         className="font-mono text-[11px] h-7"
         data-testid="bulk-retry-button"
+        onClick={handleReplayAll}
       >
-        <RotateCw className="size-3 mr-1" />
+        {isRetrying ? (
+          <Loader2 className="size-3 mr-1 animate-spin" />
+        ) : (
+          <RotateCw className="size-3 mr-1" />
+        )}
         Replay all
       </Button>
       <Button
@@ -404,9 +458,16 @@ function BulkActionBar({ selectedCount, onClearSelection }: BulkActionBarProps) 
       >
         Clear
       </Button>
-      <p className="font-mono text-[10px] text-muted-foreground ml-auto">
-        Bulk retry: no backend endpoint yet — filed as follow-up bead.
-      </p>
+      {overLimit && (
+        <p className="font-mono text-[10px] text-amber-600 ml-auto" data-testid="bulk-overlimit-msg">
+          Max {MAX_BULK_RETRY_BATCH} events per batch
+        </p>
+      )}
+      {errorMsg && (
+        <p className="font-mono text-[10px] text-destructive ml-auto" data-testid="bulk-error-msg">
+          {errorMsg}
+        </p>
+      )}
     </div>
   );
 }
@@ -834,6 +895,18 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
 
   const handleClearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
+  const handleDeselectIds = useCallback((ids: string[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const selectedIdsArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
+
   // Optimistic overrides
   const [optimisticOverrides, setOptimisticOverrides] = useState<Map<string, IngestionEventStatus>>(
     new Map(),
@@ -1013,7 +1086,9 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
       {/* Bulk action bar */}
       <BulkActionBar
         selectedCount={selectedIds.size}
+        selectedIds={selectedIdsArray}
         onClearSelection={handleClearSelection}
+        onDeselectIds={handleDeselectIds}
       />
 
       {/* Connector attention strip */}

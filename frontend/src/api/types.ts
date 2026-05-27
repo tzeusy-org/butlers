@@ -2236,6 +2236,22 @@ export interface IngestionEventReplayResponse {
   status: IngestionEventStatus;
 }
 
+/** Per-event result from POST /api/ingestion/events/retry/bulk. */
+export interface BulkRetryEventResult {
+  event_id: string;
+  /** "replay_pending" on success; "not_found" | "conflict" | "error" on failure. */
+  status: "replay_pending" | "not_found" | "conflict" | "error";
+  /** Present on failure statuses. */
+  error?: string;
+}
+
+/** Response from POST /api/ingestion/events/retry/bulk. */
+export interface BulkRetryEventsResponse {
+  results: BulkRetryEventResult[];
+  succeeded: number;
+  failed: number;
+}
+
 /** One butler session spawned in response to an ingestion event. */
 export interface IngestionEventSession {
   id: string; // session UUID
