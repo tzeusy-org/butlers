@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import resolve_owner_entity_id
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import PointEvent, Precision, Privacy
 from butlers.chronicler.storage import upsert_point_event
@@ -69,10 +71,16 @@ class MealsAdapter(ProjectionAdapter):
             result.watermark_id = since_id
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        # Note: the current PointEvent model and upsert_point_event do not carry
+        # entity_id or write to episode_entities. entity_id is resolved here so
+        # it is available when that infrastructure is added (bu-4c1ks follow-up).
+        entity_id = await resolve_owner_entity_id(pool)
+
         latest_watermark = since
         latest_watermark_id: int | None = since_id
         for row in rows:
-            await self._project_row(chronicler_pool, row)
+            await self._project_row(chronicler_pool, row, entity_id=entity_id)
             result.rows_projected += 1
             result.point_events += 1
 
@@ -193,6 +201,8 @@ class MealsAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,  # reserved for future point_events.entity_id support
     ) -> PointEvent:
         row_id = str(row["id"])
         source_ref = f"{_EVIDENCE_TABLE}:{row_id}"
