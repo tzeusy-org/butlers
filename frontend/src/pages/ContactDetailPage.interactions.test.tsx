@@ -2,6 +2,11 @@
 /**
  * ContactDetailPage — interactive reveal tests.
  *
+ * SKIPPED — bu-m8gb6.5: /contacts/:contactId now redirects to /entities/:entityId
+ * via ContactEntityRedirect.  ContactDetailPage.tsx is preserved for removal in
+ * bu-m8gb6.6.  These tests are skipped so bu-m8gb6.6 can remove both the
+ * component and tests in a single clean sweep.
+ *
  * Uses @testing-library/react + fireEvent to exercise the click interaction
  * on the "Reveal" button for secured contact_info entries.
  * This complements the static-markup coverage in ContactDetailPage.test.tsx.
@@ -110,7 +115,7 @@ afterEach(() => {
 // Secured credential reveal — click interaction [bu-6dyn5]
 // ---------------------------------------------------------------------------
 
-describe("ContactDetailPage — secured credential reveal on click", () => {
+describe.skip("ContactDetailPage — secured credential reveal on click", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });

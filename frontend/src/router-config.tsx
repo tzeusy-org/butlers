@@ -30,7 +30,6 @@ import SettingsSpendPage from './pages/SettingsSpendPage.tsx'
 import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import SettingsModelsPage from './pages/SettingsModelsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
-import ContactDetailPage from './pages/ContactDetailPage.tsx'
 import GroupsPage from './pages/GroupsPage.tsx'
 import MeasurementsPage from './pages/MeasurementsPage.tsx'
 import MedicationsPage from './pages/MedicationsPage.tsx'
@@ -62,6 +61,7 @@ import ChroniclesPage from './pages/ChroniclesPage.tsx'
 import SystemPage from './pages/SystemPage.tsx'
 import {
   ConnectorDetailRedirect,
+  ContactEntityRedirect,
   IngestionTabRedirect,
   RelationshipContactRedirect,
   RelationshipEntityRedirect,
@@ -89,7 +89,10 @@ export const router = createBrowserRouter(
         { path: '/calendar', element: <CalendarWorkspacePage /> },
         // /contacts → /entities?has=contact (§8.10 entity-redesign redirect)
         { path: '/contacts', element: <Navigate to="/entities?has=contact" replace /> },
-        { path: '/contacts/:contactId', element: <ContactDetailPage /> },
+        // /contacts/:contactId → /entities/:entityId via entity-id lookup.
+        // Renders a recovery state for unlinked or missing contacts.
+        // Spec: openspec/changes/decommission-contact-detail-page/tasks.md §4
+        { path: '/contacts/:contactId', element: <ContactEntityRedirect /> },
         { path: '/groups', element: <GroupsPage /> },
         { path: '/health/measurements', element: <MeasurementsPage /> },
         { path: '/health/medications', element: <MedicationsPage /> },

@@ -1,3 +1,7 @@
+// SKIPPED — bu-m8gb6.5: /contacts/:contactId now redirects to /entities/:entityId
+// via ContactEntityRedirect.  ContactDetailPage.tsx is preserved for removal in
+// bu-m8gb6.6.  These tests are skipped rather than deleted so that bu-m8gb6.6
+// can remove both the component and the tests in a single clean sweep.
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
@@ -88,7 +92,7 @@ function renderPage(): string {
 // Single-H1 contract — ContactDetailPage
 // ---------------------------------------------------------------------------
 
-describe("ContactDetailPage — single-H1 contract", () => {
+describe.skip("ContactDetailPage — single-H1 contract", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
@@ -122,7 +126,7 @@ describe("ContactDetailPage — single-H1 contract", () => {
 // Token-leak check — no raw hex color values [bu-rqfil.1]
 // ---------------------------------------------------------------------------
 
-describe("ContactDetailPage — token-leak guard", () => {
+describe.skip("ContactDetailPage — token-leak guard", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
@@ -154,7 +158,7 @@ describe("ContactDetailPage — token-leak guard", () => {
 // Basic rendering
 // ---------------------------------------------------------------------------
 
-describe("ContactDetailPage — rendering", () => {
+describe.skip("ContactDetailPage — rendering", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
@@ -206,7 +210,7 @@ describe("ContactDetailPage — rendering", () => {
 // These tests cover the static initial state; click interaction is covered in
 // ContactDetailPage.interactions.test.tsx.
 
-describe("ContactDetailPage — secured credential reveal", () => {
+describe.skip("ContactDetailPage — secured credential reveal", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
@@ -300,7 +304,7 @@ describe("ContactDetailPage — secured credential reveal", () => {
 // passes the error to DetailPage which renders an error card. The page must
 // not crash.
 
-describe("ContactDetailPage — error / 404 path", () => {
+describe.skip("ContactDetailPage — error / 404 path", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
