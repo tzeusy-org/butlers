@@ -5493,6 +5493,22 @@ export interface SecretsIdentityInfo {
 }
 
 /**
+ * Provider display metadata as returned by the backend catalog.
+ *
+ * Maps to ProviderMetadata in src/butlers/secrets_provider_catalog.py and
+ * ProviderInfo in frontend/src/components/secrets/passport/types.ts.
+ */
+export interface SecretsProviderInfo {
+  id: string;
+  label: string;
+  glyph: string;
+  kind: "oauth" | "token" | "apikey" | "webhook";
+  authority: string;
+  brief: string;
+  cadence: string;
+}
+
+/**
  * Payload shape of ApiResponse<InventoryData> from GET /api/secrets/inventory.
  */
 export interface SecretsInventoryData {
@@ -5501,6 +5517,11 @@ export interface SecretsInventoryData {
   user: SecretsUserRaw[];
   /** Identity metadata for each unique entity referenced in the user array. */
   identities: SecretsIdentityInfo[];
+  /**
+   * Provider display metadata catalog keyed by provider slug.
+   * Present since bu-ej5dr; may be absent in older backend responses (use FE fallback).
+   */
+  providers?: Record<string, SecretsProviderInfo>;
 }
 
 /** Meta fields returned alongside the inventory payload. */

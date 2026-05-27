@@ -1,16 +1,18 @@
 // ---------------------------------------------------------------------------
-// use-secrets-inventory adapter unit tests [bu-nrgk9, bu-ey1hr, bu-1ehn0]
+// use-secrets-inventory adapter unit tests [bu-nrgk9, bu-ey1hr, bu-1ehn0, bu-ej5dr]
 //
 // Coverage:
 //   - adaptInventoryResponse maps system credential raw.state to rowState
 //   - adaptInventoryResponse maps user credential raw.state to state
 //   - adaptInventoryResponse maps backend identities[] (name, role) directly
+//   - adaptInventoryResponse uses backend providers when present [bu-ej5dr]
+//   - adaptInventoryResponse falls back to PROVIDER_CATALOG when providers absent [bu-ej5dr]
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
 
-import { adaptInventoryResponse } from "@/hooks/use-secrets-inventory.ts";
-import type { SecretsIdentityInfo, SecretsSystemRaw, SecretsUserRaw } from "@/api/types.ts";
+import { adaptInventoryResponse, PROVIDER_CATALOG } from "@/hooks/use-secrets-inventory.ts";
+import type { SecretsIdentityInfo, SecretsProviderInfo, SecretsSystemRaw, SecretsUserRaw } from "@/api/types.ts";
 
 function makeSystem(overrides: Partial<SecretsSystemRaw> & Pick<SecretsSystemRaw, "key" | "state">): SecretsSystemRaw {
   return {
@@ -115,5 +117,57 @@ describe("adaptInventoryResponse: identity mapping from backend", () => {
       identities: [],
     });
     expect(result.identities).toHaveLength(0);
+  });
+});
+
+describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr]", () => {
+  const backendProviders: Record<string, SecretsProviderInfo> = {
+    google: {
+      id: "google",
+      label: "Google (from backend)",
+      glyph: "G",
+      kind: "oauth",
+      authority: "accounts.google.com",
+      brief: "Backend-sourced brief.",
+      cadence: "on demand",
+    },
+  };
+
+  it("uses backend providers when present in the response", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+      providers: backendProviders,
+    });
+    expect(result.providers).toEqual(backendProviders);
+    expect(result.providers["google"].label).toBe("Google (from backend)");
+  });
+
+  it("falls back to static PROVIDER_CATALOG when providers field is absent", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+      // providers field intentionally omitted
+    });
+    expect(result.providers).toEqual(PROVIDER_CATALOG);
+    // Should contain the canonical set of known providers.
+    expect(Object.keys(result.providers)).toContain("google");
+    expect(Object.keys(result.providers)).toContain("spotify");
+    expect(Object.keys(result.providers)).toContain("anthropic");
+  });
+
+  it("falls back to static PROVIDER_CATALOG when providers is undefined", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+      providers: undefined,
+    });
+    expect(result.providers).toEqual(PROVIDER_CATALOG);
   });
 });

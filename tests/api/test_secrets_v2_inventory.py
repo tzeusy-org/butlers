@@ -828,3 +828,74 @@ def test_inventory_identities_empty_when_no_user_secrets():
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["identities"] == []
+
+
+# ---------------------------------------------------------------------------
+# Provider catalog in inventory response [bu-ej5dr]
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_includes_providers_field():
+    """GET /api/secrets/inventory response.data includes a non-empty providers dict."""
+    mock_db = _make_db_manager()
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert "providers" in body["data"], "data.providers must be present in inventory response"
+    providers = body["data"]["providers"]
+    assert isinstance(providers, dict)
+    assert len(providers) > 0, "providers catalog must be non-empty"
+
+
+def test_inventory_providers_contains_expected_keys():
+    """providers catalog contains at least the canonical provider slugs."""
+    from butlers.secrets_provider_catalog import PROVIDER_CATALOG
+
+    mock_db = _make_db_manager()
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    providers = resp.json()["data"]["providers"]
+
+    # Every key in the Python catalog must appear in the response.
+    missing = set(PROVIDER_CATALOG.keys()) - set(providers.keys())
+    assert not missing, f"providers catalog missing keys: {missing}"
+
+
+def test_inventory_provider_entry_shape():
+    """Each provider entry has the required display fields."""
+    mock_db = _make_db_manager()
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    providers = resp.json()["data"]["providers"]
+
+    required_fields = {"id", "label", "glyph", "kind", "authority", "brief", "cadence"}
+    for slug, entry in providers.items():
+        missing = required_fields - set(entry.keys())
+        assert not missing, f"provider '{slug}' missing fields: {missing}"
+        # id must match the dict key
+        assert entry["id"] == slug, f"provider '{slug}' has id={entry['id']!r} (mismatch)"
+        # kind must be a known value
+        assert entry["kind"] in {"oauth", "token", "apikey", "webhook"}, (
+            f"provider '{slug}' has unexpected kind={entry['kind']!r}"
+        )
+
+
+def test_inventory_providers_is_additive():
+    """Adding providers does not remove any previously existing data.data fields."""
+    mock_db = _make_db_manager()
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+
+    # All previously existing fields must still be present.
+    for field in ("cli", "system", "user", "identities"):
+        assert field in data, f"existing field {field!r} missing from inventory response"
