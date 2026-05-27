@@ -178,6 +178,31 @@ describe("PredicateGroup: testId — Columns view (columnIndex provided)", () =>
 });
 
 // ---------------------------------------------------------------------------
+// Accessible labels — getRowAriaLabel
+// ---------------------------------------------------------------------------
+
+describe("PredicateGroup: getRowAriaLabel", () => {
+  it("forwards the per-entry aria label to each NeighbourRow button", () => {
+    const html = renderToStaticMarkup(
+      <PredicateGroup
+        predicate="knows"
+        entries={[ALICE]}
+        onSelect={() => {}}
+        getRowAriaLabel={(entry) => `Re-centre on entity ${entry.canonical_name || entry.entity_id}`}
+      />,
+    );
+    expect(html).toContain('aria-label="Re-centre on entity Alice"');
+  });
+
+  it("falls back to NeighbourRow default when getRowAriaLabel is absent", () => {
+    const html = renderToStaticMarkup(
+      <PredicateGroup predicate="knows" entries={[ALICE]} onSelect={() => {}} />,
+    );
+    expect(html).toContain('aria-label="Select entity Alice"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Click propagation
 // ---------------------------------------------------------------------------
 

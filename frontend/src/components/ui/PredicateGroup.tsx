@@ -42,13 +42,27 @@ export interface PredicateGroupProps {
    *  - NeighbourRow testId is `neighbour-row`
    */
   columnIndex?: number;
+  /**
+   * Optional per-entry accessible label factory for each NeighbourRow button.
+   *
+   * Call sites that need a context-specific aria-label (e.g. HopPage uses
+   * "Re-centre on entity <name>" rather than the default "Select entity <name>")
+   * should provide this callback. When absent, NeighbourRow falls back to its
+   * own default: `Select entity <displayName>`.
+   */
+  getRowAriaLabel?: (entry: NeighbourEntry) => string;
 }
 
 /**
  * A labelled section of neighbour rows grouped under one predicate.
  *
- * @example HopPage usage
- *   <PredicateGroup predicate="knows" entries={entries} onSelect={onRecentre} />
+ * @example HopPage usage (re-centre label)
+ *   <PredicateGroup
+ *     predicate="knows"
+ *     entries={entries}
+ *     onSelect={onRecentre}
+ *     getRowAriaLabel={(entry) => `Re-centre on entity ${entry.canonical_name || entry.entity_id}`}
+ *   />
  *
  * @example ColumnsPage usage (closure adapter)
  *   <PredicateGroup
@@ -58,7 +72,13 @@ export interface PredicateGroupProps {
  *     onSelect={(id) => onSelect(id, columnIndex)}
  *   />
  */
-export function PredicateGroup({ predicate, entries, onSelect, columnIndex }: PredicateGroupProps) {
+export function PredicateGroup({
+  predicate,
+  entries,
+  onSelect,
+  columnIndex,
+  getRowAriaLabel,
+}: PredicateGroupProps) {
   const label = predicate.replace(/-/g, " ");
   const isColumns = columnIndex !== undefined;
 
@@ -80,6 +100,7 @@ export function PredicateGroup({ predicate, entries, onSelect, columnIndex }: Pr
             key={entry.entity_id}
             entry={entry}
             onClick={onSelect}
+            ariaLabel={getRowAriaLabel?.(entry)}
             testId={rowTestId}
             {...(isColumns ? { "data-column-index": columnIndex } : {})}
           />

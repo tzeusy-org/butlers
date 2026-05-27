@@ -181,6 +181,9 @@ function NeighbourFanOut({ entityId, onRecentre }: NeighbourFanOutProps) {
           predicate={predicate}
           entries={neighbours[predicate]}
           onSelect={onRecentre}
+          getRowAriaLabel={(entry) =>
+            `Re-centre on entity ${entry.canonical_name || entry.entity_id}`
+          }
         />
       ))}
     </div>
