@@ -5612,3 +5612,28 @@ export interface DeleteEntityContactResponse {
   deleted: boolean;
   fact_id: string;
 }
+
+/** Request body for PUT /entities/{id}/contacts/{predicate}/{value_hash}. */
+export interface UpdateEntityContactRequest {
+  new_value: string;
+  src?: string;
+  verified?: boolean;
+  primary?: boolean | null;
+  conf?: number;
+}
+
+/**
+ * Response for PUT /entities/{id}/contacts/{predicate}/{value_hash}.
+ *
+ * `outcome` is one of "inserted", "unchanged", "superseded", or
+ * "pending_approval". When outcome == "pending_approval", `fact` is null
+ * and `action_id` carries the pending-actions UUID; HTTP status is 202.
+ * `retracted_fact_id` is the UUID of the old (retracted) row (null when
+ * same-value update or pending_approval).
+ */
+export interface UpdateEntityContactResponse {
+  outcome: string;
+  retracted_fact_id: string | null;
+  fact: ContactFact | null;
+  action_id: string | null;
+}

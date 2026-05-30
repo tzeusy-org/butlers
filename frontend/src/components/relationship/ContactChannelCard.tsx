@@ -12,16 +12,16 @@
  *             is needed for the collapsed view.
  *
  * Migration status (bu-k9ylx write-path cut-over is COMPLETE as of PR #2021,
- * display-layer unification is COMPLETE as of PR #2025):
+ * display-layer unification is COMPLETE as of PR #2025,
+ * edit-in-place is COMPLETE as of bu-690xu):
  *
  *   deleteContactInfo — REMOVED. Replaced by useDeleteEntityContact for
  *     entries with source="entity_facts". Legacy entries (source=null) are
  *     shown read-only (see ExpandedContactInfoRow).
  *
- *   patchContactInfo — REMOVED. No entity-keyed update-in-place endpoint
- *     exists for entity_facts triples. Edit is disabled for entity_facts
- *     entries (no backend update endpoint; delete+add is tracked in bu-rxptt
- *     follow-up). Legacy entries are read-only.
+ *   patchContactInfo — REMOVED. Replaced by useUpdateEntityContact for
+ *     entity_facts entries. Routes through entity-keyed
+ *     PUT /entities/{id}/contacts/{pred}/{hash}. Legacy entries are read-only.
  *
  *   createContactInfo (add new channel) — MIGRATED to useAddEntityContact.
  *     Routes through entity-keyed POST /entities/{id}/contacts.
@@ -44,7 +44,7 @@ import { Check, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucid
 import { toast } from "sonner";
 
 import type { ContactInfoEntry, Label, LinkedContactSummary } from "@/api/types";
-import type { AddEntityContactRequest } from "@/api/types";
+import type { AddEntityContactRequest, UpdateEntityContactRequest } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -58,7 +58,7 @@ import {
 } from "@/components/ui/select";
 import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
-import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact } from "@/hooks/use-entities";
+import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact } from "@/hooks/use-entities";
 import {
   usePatchContact,
   useRevealContactSecret,
@@ -261,12 +261,11 @@ function ChannelValue({ entry }: { entry: ContactInfoEntry }) {
 }
 
 // ---------------------------------------------------------------------------
-// ExpandedContactInfoRow — channel row with entity-keyed delete.
+// ExpandedContactInfoRow — channel row with entity-keyed edit and delete.
 //
 // Mutation routing:
-//   source="entity_facts"  → Delete via useDeleteEntityContact (entity-keyed).
-//                            Edit disabled — no update-in-place endpoint exists
-//                            for entity_facts triples (follow-up: bu-rxptt-edit).
+//   source="entity_facts"  → Edit via useUpdateEntityContact (entity-keyed PUT).
+//                            Delete via useDeleteEntityContact (entity-keyed).
 //   source=null/absent     → Legacy public.contact_info row. Read-only.
 //                            Write-blocked (409) since PR #2021. Shown with a
 //                            tooltip so users understand why no edit/delete
@@ -283,9 +282,48 @@ export function ExpandedContactInfoRow({
   entityId: string;
 }) {
   const deleteEntityContact = useDeleteEntityContact();
+  const updateEntityContact = useUpdateEntityContact();
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
 
   const isEntityFacts = entry.source === "entity_facts";
+  const canEdit = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.secured;
   const canDelete = isEntityFacts && entry.predicate != null && entry.value_hash != null;
+
+  function handleEditStart() {
+    if (!canEdit) return;
+    setEditValue(entry.value ?? "");
+    setEditing(true);
+  }
+
+  function handleEditCancel() {
+    setEditing(false);
+    setEditValue("");
+  }
+
+  async function handleEditSave() {
+    const trimmed = editValue.trim();
+    if (!trimmed) {
+      toast.error("Value cannot be empty.");
+      return;
+    }
+    const request: UpdateEntityContactRequest = { new_value: trimmed };
+    try {
+      await updateEntityContact.mutateAsync({
+        entityId,
+        predicate: entry.predicate!,
+        valueHash: entry.value_hash!,
+        request,
+      });
+      toast.success(`Updated ${contactInfoTypeLabel(entry.type)} entry.`);
+      setEditing(false);
+      setEditValue("");
+    } catch (err) {
+      toast.error(
+        `Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`,
+      );
+    }
+  }
 
   function handleDelete() {
     if (!canDelete || deleteEntityContact.isPending) return;
@@ -308,6 +346,52 @@ export function ExpandedContactInfoRow({
     );
   }
 
+  // Inline edit form shown when editing is active.
+  if (editing) {
+    return (
+      <div className="flex items-center gap-2 py-1">
+        <span className="text-muted-foreground text-xs w-32 shrink-0">
+          {contactInfoTypeLabel(entry.type)}
+          {entry.is_primary && (
+            <span className="ml-1 text-blue-500">(primary)</span>
+          )}
+        </span>
+        <Input
+          className="h-6 text-sm flex-1"
+          type="text"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          disabled={updateEntityContact.isPending}
+          autoFocus
+          placeholder={inputPlaceholder(entry.type)}
+          data-testid="edit-contact-input"
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 shrink-0"
+          title="Save"
+          onClick={handleEditSave}
+          disabled={updateEntityContact.isPending}
+          data-testid="edit-contact-save"
+        >
+          <Check className="h-3 w-3" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 shrink-0"
+          title="Cancel"
+          onClick={handleEditCancel}
+          disabled={updateEntityContact.isPending}
+          data-testid="edit-contact-cancel"
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center gap-2 py-1">
       <span className="text-muted-foreground text-xs w-32 shrink-0">
@@ -323,17 +407,17 @@ export function ExpandedContactInfoRow({
           <ChannelValue entry={entry} />
         )}
       </span>
-      {/* Edit/Delete affordances — entity_facts rows only */}
+      {/* Edit/Delete affordances — entity_facts rows only (non-secured) */}
       {isEntityFacts && (
         <span className="flex items-center gap-1 shrink-0">
-          {/* Edit disabled: no update-in-place endpoint for entity_facts triples.
-              Follow-up: delete+add workflow tracked in bu-rxptt-edit. */}
           <Button
             variant="ghost"
             size="sm"
             className="h-6 w-6 p-0 text-muted-foreground"
-            title="Edit (not yet supported for entity-facts channels)"
-            disabled
+            title={canEdit ? "Edit" : "Edit (secured values cannot be edited inline)"}
+            disabled={!canEdit || deleteEntityContact.isPending}
+            onClick={handleEditStart}
+            data-testid="edit-contact-btn"
           >
             <Pencil className="h-3 w-3" />
           </Button>
@@ -707,6 +791,8 @@ function ContactRow({
  *   preferred_channel.
  * - Mutations are entity-keyed:
  *   - Add: useAddEntityContact (POST /entities/{id}/contacts)
+ *   - Edit of entity_facts rows: useUpdateEntityContact
+ *     (PUT /entities/{id}/contacts/{predicate}/{value_hash})
  *   - Delete of entity_facts rows: useDeleteEntityContact
  *     (DELETE /entities/{id}/contacts/{predicate}/{value_hash})
  *   - Legacy contact_info rows: read-only (write-blocked since PR #2021)

@@ -14,6 +14,7 @@ import {
   addEntityContact,
   archiveRelationshipEntity,
   deleteEntityContact,
+  updateEntityContact,
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
   getEntityConcentration,
@@ -36,6 +37,7 @@ import {
 } from "@/api/index.ts";
 import type {
   AddEntityContactRequest,
+  UpdateEntityContactRequest,
   EntityFactsParams,
   MergeRelationshipEntitiesRequest,
   PromoteRelationshipEntityRequest,
@@ -382,6 +384,37 @@ export function useDeleteEntityContact() {
       predicate: string;
       valueHash: string;
     }) => deleteEntityContact(entityId, predicate, valueHash),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+    },
+  });
+}
+
+/**
+ * Edit-in-place a contact-fact triple for an entity.
+ *
+ * Used by ContactChannelCard.ExpandedContactInfoRow to replace an existing
+ * contact value (retract old triple + assert new triple atomically on the
+ * backend). `predicate` must start with "has-". `valueHash` is SHA-256[:16]
+ * of the current value (matches ContactFact.value_hash). Invalidates
+ * entity-linked-contacts, entity-facts, and relationship-entities on success.
+ */
+export function useUpdateEntityContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      predicate,
+      valueHash,
+      request,
+    }: {
+      entityId: string;
+      predicate: string;
+      valueHash: string;
+      request: UpdateEntityContactRequest;
+    }) => updateEntityContact(entityId, predicate, valueHash, request),
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
