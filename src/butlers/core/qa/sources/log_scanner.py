@@ -250,6 +250,20 @@ def _should_include_entry(
     ):
         return False
 
+    # Adapter-managed session timeouts are persisted on the session row and
+    # are therefore better sourced from session_records, which carries session
+    # identifiers and avoids duplicate investigations from both adapter and
+    # spawner ERROR log lines.
+    if entry.logger == "butlers.core.runtimes.opencode" and entry.event.startswith(
+        "OpenCode CLI timed out after "
+    ):
+        return False
+
+    if entry.logger == "butlers.core.spawner" and entry.event.startswith(
+        "Runtime invocation failed: TimeoutError: OpenCode CLI timed out after "
+    ):
+        return False
+
     if entry.level in _ERROR_LEVELS:
         return True
     if entry.level in _WARNING_LEVELS:

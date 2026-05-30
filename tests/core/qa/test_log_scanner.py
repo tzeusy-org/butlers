@@ -254,6 +254,77 @@ def test_codex_refresh_lock_contention_excluded_from_log_scanner(event):
     assert _should_include_entry(entry) is False
 
 
+@pytest.mark.parametrize(
+    "logger_name,event",
+    [
+        (
+            "butlers.core.runtimes.opencode",
+            "OpenCode CLI timed out after 1800s",
+        ),
+        (
+            "butlers.core.spawner",
+            "Runtime invocation failed: TimeoutError: OpenCode CLI timed out after 1800 seconds",
+        ),
+    ],
+)
+def test_runtime_session_timeout_logs_excluded_from_log_scanner(logger_name, event):
+    """Handled runtime session timeouts should be discovered from session_records."""
+    entry = LogEntry(
+        level="error",
+        event=event,
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger=logger_name,
+        exception="TimeoutError",
+    )
+    assert _should_include_entry(entry) is False
+
+
+def test_generic_spawner_timeout_log_still_included():
+    """Only adapter-managed OpenCode timeout duplicates are excluded."""
+    entry = LogEntry(
+        level="error",
+        event="Runtime invocation failed: TimeoutError: adapter timed out before startup",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+        exception="TimeoutError",
+    )
+    assert _should_include_entry(entry) is True
+
+
+@pytest.mark.asyncio
+async def test_discover_excludes_runtime_session_timeout_logs(tmp_path):
+    """OpenCode timeout ERROR lines do not create duplicate log_scanner findings."""
+    now = datetime.now(UTC)
+    _write(
+        tmp_path / "butlers" / "switchboard.log",
+        [
+            _line(
+                event="OpenCode CLI timed out after 1800s",
+                ts=now,
+                logger_name="butlers.core.runtimes.opencode",
+                exception="TimeoutError",
+                butler_name="switchboard",
+            ),
+            _line(
+                event=(
+                    "Runtime invocation failed: TimeoutError: "
+                    "OpenCode CLI timed out after 1800 seconds"
+                ),
+                ts=now,
+                logger_name="butlers.core.spawner",
+                exception="TimeoutError",
+                butler_name="switchboard",
+            ),
+        ],
+    )
+
+    findings = await LogScannerSource(log_root=tmp_path).discover(lookback_minutes=15)
+
+    assert findings == []
+
+
 @pytest.mark.asyncio
 async def test_finding_structure_and_pii(tmp_path):
     """QaFinding fields populated; PII stripped from event_summary."""
