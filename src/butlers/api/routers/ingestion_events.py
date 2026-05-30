@@ -3,23 +3,29 @@
 Provides:
 
 - ``router`` — endpoints under ``/api/ingestion/events``
+- ``rollup_router`` — endpoints under ``/api/ingestion/rollup``
 
 Endpoints
 ---------
-GET  /api/ingestion/events               — cursor-paginated unified timeline
+GET  /api/ingestion/events               — cursor-paginated unified timeline (supports ?q=)
 GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
 POST /api/ingestion/events/replay/bulk   — bulk replay handler (max 50 events, email blocked)
+POST /api/ingestion/events/retry/bulk    — bulk retry for both ingestion + filtered tables (max 100)
 POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 GET  /api/ingestion/events/{id}/replays  — replay attempt history from public.audit_log
 GET  /api/ingestion/events/{id}/sender-contact  — resolve sender_identity to contact name
+
+GET  /api/ingestion/rollup               — aggregate event/session/cost for a filter window
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC
+from datetime import datetime as _datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -34,6 +40,7 @@ from butlers.api.models.ingestion_event import (
     IngestionEventRollup,
     IngestionEventSession,
     IngestionEventSummary,
+    IngestionWindowRollup,
     ReplayHistoryEntry,
     SenderContactResolution,
 )
@@ -47,12 +54,14 @@ from butlers.core.ingestion_events import (
     ingestion_event_rollup,
     ingestion_event_sessions,
     ingestion_events_list,
+    ingestion_window_rollup,
 )
 from butlers.identity import resolve_contact_by_channel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/events", tags=["ingestion"])
+rollup_router = APIRouter(prefix="/api/ingestion/rollup", tags=["ingestion"])
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +99,17 @@ async def list_ingestion_events(
             "Omit to fetch the first page."
         ),
     ),
-    source_channel: str | None = Query(None, description="Filter by source channel"),
+    channels: str | None = Query(
+        None,
+        description=(
+            "Comma-separated source_channel values (e.g. 'email,telegram'). "
+            "When set, overrides source_channel."
+        ),
+    ),
+    source_channel: str | None = Query(
+        None,
+        description="DEPRECATED: use channels instead. Filter by single source channel.",
+    ),
     status: Literal[
         "ingested",
         "failed",
@@ -109,6 +128,15 @@ async def list_ingestion_events(
             "appear in both tables. Omit for unified stream."
         ),
     ),
+    q: str | None = Query(
+        None,
+        max_length=200,
+        description=(
+            "Freetext search (ILIKE %%q%%) against source_channel, "
+            "source_sender_identity, and error_detail. "
+            "Parameterized — safe against SQL injection."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CursorPaginatedResponse[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
@@ -119,7 +147,10 @@ async def list_ingestion_events(
 
     Merges ``public.ingestion_events`` (status=ingested, filter_reason=null) with
     ``connectors.filtered_events`` (status/filter_reason from their own columns).
-    Supports optional filtering by ``source_channel`` and ``status``.
+    Supports optional filtering by ``channels`` (CSV), ``source_channel`` (deprecated),
+    ``status``, and freetext ``q``.
+
+    Channel filter precedence: ``channels`` wins over ``source_channel``.
     """
     try:
         pool = db.credential_shared_pool()
@@ -134,8 +165,17 @@ async def list_ingestion_events(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
+    # Resolve channel filter: channels CSV wins; fall back to legacy source_channel.
+    if channels is not None:
+        channel_list: list[str] | None = [c.strip() for c in channels.split(",") if c.strip()]
+        channel_list = channel_list or None  # treat empty string as no filter
+    elif source_channel is not None:
+        channel_list = [source_channel]
+    else:
+        channel_list = None
+
     result = await ingestion_events_list(
-        pool, limit=limit, cursor=cursor, source_channel=source_channel, status=status
+        pool, limit=limit, cursor=cursor, channels=channel_list, status=status, q=q
     )
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]
@@ -505,6 +545,146 @@ async def bulk_replay_ingestion_events(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/ingestion/events/retry/bulk
+# ---------------------------------------------------------------------------
+
+_MAX_BULK_RETRY_BATCH = 100
+
+
+@router.post("/retry/bulk")
+async def bulk_retry_ingestion_events(
+    request: Request,
+    body: Annotated[dict, Body(...)],
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict:
+    """Bulk retry/replay up to 100 events across both ingestion and filtered tables.
+
+    Unlike ``POST /api/ingestion/events/replay/bulk`` (which targets only
+    ``connectors.filtered_events`` and uses SELECT … FOR UPDATE SKIP LOCKED),
+    this endpoint calls the same per-event replay logic as
+    ``POST /api/ingestion/events/{id}/replay`` for each event.  This allows
+    retrying events from both ``public.ingestion_events`` and
+    ``connectors.filtered_events`` in a single request.
+
+    Each event is attempted independently — partial failures do NOT abort the
+    batch.  The caller receives per-event results so it can identify exactly
+    which events need follow-up.
+
+    Accepts ``{"event_ids": [...]}`` where ``event_ids`` is a list of UUID
+    strings (max 100).
+
+    Returns:
+        200 — ``{"results": [{event_id, status, error?}], "succeeded": N, "failed": N}``
+        400 — missing/empty ``event_ids``, or batch exceeds max size
+        503 — shared database pool unavailable
+    """
+    event_ids_raw: list = body.get("event_ids", [])
+
+    if not isinstance(event_ids_raw, list) or not event_ids_raw:
+        raise HTTPException(status_code=400, detail="event_ids must be a non-empty list")
+
+    if len(event_ids_raw) > _MAX_BULK_RETRY_BATCH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size {len(event_ids_raw)} exceeds maximum of {_MAX_BULK_RETRY_BATCH}",
+        )
+
+    from uuid import UUID
+
+    # Validate all UUIDs up front — fail fast with a clear error rather than
+    # silently skipping invalid entries mid-batch.
+    try:
+        event_ids: list[str] = [str(UUID(str(e))) for e in event_ids_raw]
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid UUID in event_ids: {exc}") from exc
+
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    # Obtain the switchboard pool for resetting message_inbox on replay.
+    switchboard_pool = None
+    try:
+        switchboard_pool = db.pool("switchboard")
+    except (KeyError, Exception):
+        pass  # Non-fatal: replay of ingested events will log a warning.
+
+    client_host = getattr(request.client, "host", None) if request.client else None
+
+    results: list[dict] = []
+    succeeded = 0
+    failed = 0
+
+    for event_id in event_ids:
+        try:
+            result = await ingestion_event_replay_request(
+                pool, event_id, switchboard_pool=switchboard_pool
+            )
+        except Exception as exc:
+            # Unexpected error (e.g. DB connectivity mid-batch) — record as failure
+            # and continue processing remaining events.
+            logger.warning(
+                "bulk_retry: unexpected error processing event %s", event_id, exc_info=True
+            )
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "error",
+                    "error": f"Unexpected error: {exc}",
+                }
+            )
+            failed += 1
+            continue
+
+        outcome = result["outcome"]
+        if outcome == "ok":
+            results.append({"event_id": event_id, "status": "replay_pending"})
+            succeeded += 1
+            # Record each accepted retry in public.audit_log (best-effort, non-fatal).
+            # Use the same action string and note shape as the single-event replay
+            # endpoint so these entries appear in replay history timelines.
+            try:
+                await _audit_append(
+                    pool,
+                    actor="dashboard",
+                    action="ingestion.event.replay",
+                    target=event_id,
+                    note=json.dumps({"result": "pending", "source": result.get("source")}),
+                    ip=client_host,
+                )
+            except Exception:
+                logger.warning(
+                    "bulk_retry: failed to append audit_log entry for event %s",
+                    event_id,
+                    exc_info=True,
+                )
+        elif outcome == "not_found":
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "not_found",
+                    "error": "Event not found in any table",
+                }
+            )
+            failed += 1
+        else:
+            # outcome == "conflict" — event exists but is not in a retryable state
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "conflict",
+                    "error": (
+                        f"Event is not retryable (current status: {result.get('current_status')})"
+                    ),
+                }
+            )
+            failed += 1
+
+    return {"results": results, "succeeded": succeeded, "failed": failed}
+
+
+# ---------------------------------------------------------------------------
 # POST /api/ingestion/events/{id}/replay
 # ---------------------------------------------------------------------------
 
@@ -677,4 +857,85 @@ async def get_ingestion_event_sender_contact(
 
     return ApiResponse[SenderContactResolution](
         data=SenderContactResolution(resolved=True, name=contact.name, raw=raw_sender)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rollup router dependency stub — wired at app startup same as the events router
+# ---------------------------------------------------------------------------
+
+
+def _get_rollup_db_manager() -> DatabaseManager:
+    """Dependency stub — overridden at app startup or in tests."""
+    raise RuntimeError("DatabaseManager not initialized")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/rollup
+# ---------------------------------------------------------------------------
+
+
+@rollup_router.get("", response_model=IngestionWindowRollup)
+async def get_ingestion_window_rollup(
+    from_: str | None = Query(None, alias="from", description="ISO-8601 lower bound (inclusive)"),
+    to: str | None = Query(None, description="ISO-8601 upper bound (exclusive)"),
+    channels: str | None = Query(
+        None, description="Comma-separated source_channel values (e.g. email,telegram)"
+    ),
+    statuses: str | None = Query(
+        None, description="Comma-separated status values (e.g. ingested,error)"
+    ),
+    q: str | None = Query(
+        None,
+        max_length=200,
+        description="Freetext search (ILIKE %%q%%) against channel, sender, error_detail",
+    ),
+    db: DatabaseManager = Depends(_get_rollup_db_manager),
+) -> IngestionWindowRollup:
+    """Return aggregate event/session/cost counts for the active filter window.
+
+    Accepts the same filter shape as GET /api/ingestion/events.  The ``cost``
+    field is always ``null`` — cost-per-event aggregation is not yet available
+    at the window level (see follow-up bead for cost-per-event backend).
+
+    Returns:
+        200 — ``{events, sessions, cost, window: {from, to}}``
+        503 — shared database unavailable
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    from_dt = None
+    to_dt = None
+    if from_ is not None:
+        try:
+            from_dt = _datetime.fromisoformat(from_).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'from' timestamp: {exc}") from exc
+    if to is not None:
+        try:
+            to_dt = _datetime.fromisoformat(to).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'to' timestamp: {exc}") from exc
+
+    channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
+    status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
+
+    result = await ingestion_window_rollup(
+        pool,
+        from_dt=from_dt,
+        to_dt=to_dt,
+        channels=channel_list,
+        statuses=status_list,
+        q=q,
+        db=db,
+    )
+
+    return IngestionWindowRollup(
+        events=result["events"],
+        sessions=result["sessions"],
+        cost=result["cost"],
+        window=result["window"],
     )

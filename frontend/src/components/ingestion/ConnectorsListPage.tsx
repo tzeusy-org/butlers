@@ -13,8 +13,8 @@
  * Only summary-level data is shown here (per spec §6.2 "no useConnectorDetail on roster").
  * Detail data loads only on the connector detail page.
  *
- * The "connect →" link deep-links to /secrets, where per-connector setup
- * cards (GoogleOAuthSection, SpotifySection, HomeAssistantSection, etc.) live.
+ * The "connect →" link deep-links to /secrets?focus=u:<provider>, where the
+ * DirectionPassport credential page for that provider lives.
  *
  * Extracted from ConnectorsTab.tsx for use on the first-class /ingestion/connectors
  * sub-route. ConnectorsTab.tsx retains its isActive-gated version for the legacy
@@ -163,9 +163,8 @@ export function ConnectorsListPage() {
 
       {/* Dormant / available connectors section (§3.5)
           Shown when catalog profiles exist that are not yet registered.
-          Each card includes a "connect →" deep-link to /secrets where
-          per-connector setup cards (GoogleOAuthSection, SpotifySection,
-          HomeAssistantSection, OwnTracksSection, etc.) are located. */}
+          Each card includes a "connect →" deep-link to /secrets?focus=u:<provider>
+          where the DirectionPassport credential page for that provider lives. */}
       {dormantConnectors.length > 0 && (
         <div data-testid="dormant-available-section">
           <h3 className="text-sm font-semibold text-muted-foreground mb-3">

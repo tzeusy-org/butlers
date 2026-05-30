@@ -33,6 +33,7 @@ from prometheus_client import Counter
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.audit import AuditEntry, AuditLogEntry
+from butlers.core.credential_keys import normalize_key_param
 
 if TYPE_CHECKING:
     import asyncpg
@@ -216,14 +217,41 @@ async def list_audit_log(
     since: datetime | None = Query(None, description="ISO 8601 timestamp lower bound"),
     actor: str | None = Query(None, description="Filter by actor (exact match)"),
     action: str | None = Query(None, description="Filter by action (exact match)"),
+    key: str | None = Query(
+        None,
+        description=(
+            "Filter by credential key (exact match on normalised target). "
+            "Accepts canonical short-prefix form (e.g. 'u:google') or "
+            "long-scope form (e.g. 'user:google'). "
+            "Uses ix_audit_log_target_ts index for efficient lookup."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[AuditLogEntry]:
     """Return paginated audit log entries from ``public.audit_log``.
 
-    Supports filtering by actor, action, and a lower-bound timestamp.
-    Results are ordered by ``ts DESC`` (newest first).
+    Supports filtering by actor, action, a lower-bound timestamp, and
+    credential key (``?key=``).  Results are ordered by ``ts DESC`` (newest
+    first).
+
+    The ``?key=`` parameter filters rows whose ``target`` column equals the
+    normalised credential key, using the ``ix_audit_log_target_ts`` index
+    on ``(target, ts DESC)`` for efficient lookup.  Combinable with all
+    other filter parameters.
     """
     pool = db.credential_shared_pool()
+
+    # Treat empty / whitespace-only ?key= as "no filter" so that blank inputs
+    # behave consistently with omitting the parameter entirely.  Then normalise
+    # the non-empty value so that both short-prefix ('u:google') and long-scope
+    # ('user:google') inputs produce the same canonical filter value.
+    key = (key or "").strip() or None
+    normalised_key: str | None = None
+    if key is not None:
+        try:
+            normalised_key = normalize_key_param(key)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Build dynamic WHERE clause
     conditions: list[str] = []
@@ -243,6 +271,11 @@ async def list_audit_log(
     if action is not None:
         conditions.append(f"action = ${idx}")
         args.append(action)
+        idx += 1
+
+    if normalised_key is not None:
+        conditions.append(f"target = ${idx}")
+        args.append(normalised_key)
         idx += 1
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""

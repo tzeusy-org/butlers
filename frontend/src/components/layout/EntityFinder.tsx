@@ -122,7 +122,7 @@ export default function EntityFinder() {
   const openEntity = useCallback(
     (entityId: string) => {
       setOpen(false);
-      navigate(`/butlers/relationship/entities/${encodeURIComponent(entityId)}`);
+      navigate(`/entities/${encodeURIComponent(entityId)}`);
     },
     [navigate],
   );

@@ -7,6 +7,7 @@
  * - ingestionEventKeys.rollup(requestId)       → cost/token rollup for a request_id
  * - ingestionEventKeys.replays(requestId)      → replay history from public.audit_log
  * - ingestionEventKeys.senderContact(requestId) → resolved contact name for sender_identity
+ * - ingestionEventKeys.payload(requestId)      → raw inbound payload (audit-gated)
  *
  * Stale time of 30s matches the spec for Timeline tab data freshness.
  *
@@ -21,10 +22,18 @@ import {
   listIngestionEvents,
   getIngestionEventSessions,
   getIngestionEventRollup,
+  getIngestionWindowRollup,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
+  getIngestionEventPayload,
 } from "@/api/index.ts";
-import type { CursorPaginatedResponse, IngestionEventsParams, IngestionEventSummary } from "@/api/index.ts";
+import type {
+  CursorPaginatedResponse,
+  IngestionEventsParams,
+  IngestionEventSummary,
+  IngestionWindowRollup,
+  IngestionWindowRollupParams,
+} from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -45,6 +54,10 @@ export const ingestionEventKeys = {
     [...ingestionEventKeys.all, requestId, "replays"] as const,
   senderContact: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "sender-contact"] as const,
+  payload: (requestId: string) =>
+    [...ingestionEventKeys.all, requestId, "payload"] as const,
+  windowRollup: (params: IngestionWindowRollupParams) =>
+    ["ingestion", "window-rollup", params] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -174,5 +187,50 @@ export function useIngestionEventSenderContact(
     queryFn: () => getIngestionEventSenderContact(requestId),
     staleTime: 60_000,
     enabled: !!requestId && options?.enabled !== false,
+  });
+}
+
+/**
+ * Raw inbound payload for an ingestion event.
+ *
+ * Fetches from GET /api/ingestion/events/{requestId}/payload.
+ * Gated by audit log — access is recorded server-side.
+ * Returns 403 when the caller lacks payload-access grant; callers must
+ * handle that via the error object and render the gated/unavailable state.
+ *
+ * Only enabled when a non-empty requestId is provided and `enabled` is true
+ * (callers should not fetch until the user explicitly requests the payload tab).
+ */
+export function useIngestionEventPayload(
+  requestId: string,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionEventKeys.payload(requestId),
+    queryFn: () => getIngestionEventPayload(requestId),
+    staleTime: 120_000, // payload rarely changes; longer stale time acceptable
+    retry: false,       // don't retry 403 — the gated state is expected
+    enabled: !!requestId && options?.enabled !== false,
+  });
+}
+
+/**
+ * Aggregate event/session/cost counts for the active filter window.
+ *
+ * Fetches from GET /api/ingestion/rollup with the same filter params as
+ * GET /api/ingestion/events.  The ``cost`` field is always null until
+ * cost-per-event data is available (see follow-up bead).
+ *
+ * The query is disabled by default — pass `enabled: true` to activate.
+ */
+export function useIngestionWindowRollup(
+  params: IngestionWindowRollupParams = {},
+  options?: { enabled?: boolean },
+) {
+  return useQuery<IngestionWindowRollup>({
+    queryKey: ingestionEventKeys.windowRollup(params),
+    queryFn: () => getIngestionWindowRollup(params),
+    staleTime: 30_000,
+    enabled: options?.enabled !== false,
   });
 }

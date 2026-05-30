@@ -1,0 +1,230 @@
+// ---------------------------------------------------------------------------
+// use-secrets-inventory adapter unit tests [bu-nrgk9, bu-ey1hr, bu-1ehn0, bu-ej5dr]
+//
+// Coverage:
+//   - adaptInventoryResponse maps system credential raw.state to rowState
+//   - adaptInventoryResponse maps user credential raw.state to state
+//   - adaptInventoryResponse maps backend identities[] (name, role) directly
+//   - adaptInventoryResponse uses backend providers when present [bu-ej5dr]
+//   - adaptInventoryResponse falls back to PROVIDER_CATALOG when providers absent [bu-ej5dr]
+// ---------------------------------------------------------------------------
+
+import { describe, expect, it } from "vitest";
+
+import { adaptInventoryResponse, PROVIDER_CATALOG } from "@/hooks/use-secrets-inventory.ts";
+import type { SecretsIdentityInfo, SecretsProviderInfo, SecretsSystemRaw, SecretsUserRaw } from "@/api/types.ts";
+
+function makeSystem(overrides: Partial<SecretsSystemRaw> & Pick<SecretsSystemRaw, "key" | "state">): SecretsSystemRaw {
+  return {
+    category: "core",
+    description: null,
+    fingerprint: null,
+    last_verified: null,
+    butler: "shared",
+    test: null,
+    ...overrides,
+  };
+}
+
+function makeUser(overrides: Partial<SecretsUserRaw> & Pick<SecretsUserRaw, "entity_id" | "state">): SecretsUserRaw {
+  return {
+    id: "u1",
+    type: "google_oauth_refresh",
+    fingerprint: null,
+    last_verified: null,
+    label: null,
+    test: null,
+    ...overrides,
+  };
+}
+
+function makeIdentity(overrides: Pick<SecretsIdentityInfo, "entity_id" | "name" | "role">): SecretsIdentityInfo {
+  return { ...overrides };
+}
+
+describe("adaptInventoryResponse: system credential rowState", () => {
+  it("maps 'shared' state to rowState 'shared'", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [makeSystem({ key: "ANTHROPIC_API_KEY", state: "shared" })],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].rowState).toBe("shared");
+  });
+
+  it("maps 'missing' state to rowState 'missing' (regression guard)", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [makeSystem({ key: "OWNTRACKS_TOKEN", state: "missing" })],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].rowState).toBe("missing");
+  });
+
+  it("maps 'local' state to rowState 'local'", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [makeSystem({ key: "SOME_KEY", state: "local" })],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].rowState).toBe("local");
+  });
+});
+
+describe("adaptInventoryResponse: user credential state", () => {
+  it("passes user raw.state through as state", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [makeUser({ entity_id: "tze", state: "ok" })],
+      identities: [],
+    });
+    expect(result.user[0].state).toBe("ok");
+  });
+});
+
+describe("adaptInventoryResponse: user provider derivation", () => {
+  const backendProviders: Record<string, SecretsProviderInfo> = {
+    ...PROVIDER_CATALOG,
+    github: {
+      id: "github",
+      label: "GitHub",
+      glyph: "G",
+      kind: "token",
+      authority: "api.github.com",
+      brief: "Repo access via Personal Access Token.",
+      cadence: "on demand",
+    },
+  };
+
+  it("maps live backend credential types to provider catalog slugs", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({ id: "u-ha", entity_id: "tze", state: "warn", type: "home_assistant_token" }),
+        makeUser({ id: "u-tg", entity_id: "tze", state: "warn", type: "telegram_user_session" }),
+        makeUser({ id: "u-gh", entity_id: "tze", state: "warn", type: "github_token" }),
+        makeUser({ id: "u-go", entity_id: "tze", state: "ok", type: "google_oauth_refresh" }),
+      ],
+      identities: [],
+      providers: backendProviders,
+    });
+
+    expect(result.user.map((credential) => credential.provider)).toEqual([
+      "homeassistant",
+      "telegram_bot",
+      "github",
+      "google",
+    ]);
+    for (const credential of result.user) {
+      expect(result.providers[credential.provider]?.kind).toBeDefined();
+    }
+  });
+
+  it("adds generic provider metadata for unknown credential families", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [makeUser({ entity_id: "tze", state: "warn", type: "custom_service_token" })],
+      identities: [],
+      providers: {},
+    });
+
+    expect(result.user[0].provider).toBe("custom");
+    expect(result.providers.custom).toMatchObject({
+      id: "custom",
+      label: "Custom",
+      kind: "token",
+    });
+  });
+});
+
+describe("adaptInventoryResponse: identity mapping from backend", () => {
+  it("maps backend identities[] to frontend Identity[] with real names and roles", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({ id: "u1", entity_id: "tze-uuid", state: "ok" }),
+        makeUser({ id: "u2", entity_id: "wei-uuid", state: "ok" }),
+      ],
+      identities: [
+        makeIdentity({ entity_id: "tze-uuid", name: "Tze", role: "owner" }),
+        makeIdentity({ entity_id: "wei-uuid", name: "Wei", role: "member" }),
+      ],
+    });
+    expect(result.identities).toHaveLength(2);
+    expect(result.identities[0].id).toBe("tze-uuid");
+    expect(result.identities[0].label).toBe("Tze");
+    expect(result.identities[0].role).toBe("owner");
+    expect(result.identities[1].id).toBe("wei-uuid");
+    expect(result.identities[1].label).toBe("Wei");
+    expect(result.identities[1].role).toBe("member");
+  });
+
+  it("returns empty identities when backend sends empty array", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+    });
+    expect(result.identities).toHaveLength(0);
+  });
+});
+
+describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr]", () => {
+  const backendProviders: Record<string, SecretsProviderInfo> = {
+    google: {
+      id: "google",
+      label: "Google (from backend)",
+      glyph: "G",
+      kind: "oauth",
+      authority: "accounts.google.com",
+      brief: "Backend-sourced brief.",
+      cadence: "on demand",
+    },
+  };
+
+  it("uses backend providers when present in the response", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+      providers: backendProviders,
+    });
+    expect(result.providers).toEqual(backendProviders);
+    expect(result.providers["google"].label).toBe("Google (from backend)");
+  });
+
+  it("falls back to static PROVIDER_CATALOG when providers field is absent", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+      // providers field intentionally omitted
+    });
+    expect(result.providers).toEqual(PROVIDER_CATALOG);
+    // Should contain the canonical set of known providers.
+    expect(Object.keys(result.providers)).toContain("google");
+    expect(Object.keys(result.providers)).toContain("spotify");
+    expect(Object.keys(result.providers)).toContain("anthropic");
+  });
+
+  it("falls back to static PROVIDER_CATALOG when providers is undefined", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+      providers: undefined,
+    });
+    expect(result.providers).toEqual(PROVIDER_CATALOG);
+  });
+});

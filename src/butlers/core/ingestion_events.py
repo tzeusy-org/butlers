@@ -4,6 +4,10 @@ Each ingestion event is a first-class record of an accepted ingest envelope.
 The UUID7 primary key (``id``) matches the ``request_id`` returned to connectors
 and propagated to all downstream butler sessions.
 
+Additional functions
+---------------------
+ingestion_window_rollup         — aggregate event/session counts for a filter window
+
 Functions
 ---------
 ingestion_event_get             — fetch a single event by id
@@ -232,8 +236,9 @@ async def ingestion_events_list(
     pool: asyncpg.Pool,
     limit: int = 20,
     cursor: str | None = None,
-    source_channel: str | None = None,
+    channels: list[str] | None = None,
     status: str | None = None,
+    q: str | None = None,
 ) -> dict[str, Any]:
     """Return a keyset-paginated list of ingestion events (unified stream), newest first.
 
@@ -242,16 +247,19 @@ async def ingestion_events_list(
     position of the last row returned on the previous page.
 
     Always UNION ALLs ``public.ingestion_events`` and
-    ``connectors.filtered_events``, applying optional ``status`` and
-    ``source_channel`` filters in the outer query.
+    ``connectors.filtered_events``, applying optional ``status``,
+    ``channels``, and ``q`` (text search) filters in the outer query.
 
     Args:
         pool: asyncpg connection pool.
         limit: Maximum number of rows to return (default 20).
         cursor: Opaque cursor from the previous page's ``next_cursor`` field.
             When ``None``, returns the first page.
-        source_channel: Optional filter by ``source_channel``.
+        channels: Optional list of source_channel values to include.
+            Generates a ``source_channel = ANY($N::text[])`` clause.
         status: Optional filter by ``status``.
+        q: Optional freetext search (ILIKE %q%) against source_channel,
+            source_sender_identity, and error_detail.
 
     Returns:
         A dict with:
@@ -265,9 +273,17 @@ async def ingestion_events_list(
     if status is not None:
         args.append(status)
         where_parts.append(f"status = ${len(args)}")
-    if source_channel is not None:
-        args.append(source_channel)
-        where_parts.append(f"source_channel = ${len(args)}")
+    if channels:
+        args.append(channels)
+        where_parts.append(f"source_channel = ANY(${len(args)}::text[])")
+    if q is not None:
+        q_pattern = f"%{q}%"
+        args.append(q_pattern)
+        n = len(args)
+        where_parts.append(
+            f"(source_channel ILIKE ${n} OR source_sender_identity ILIKE ${n}"
+            f" OR error_detail ILIKE ${n})"
+        )
 
     if cursor is not None:
         cursor_received_at, cursor_id = decode_cursor(cursor)
@@ -677,6 +693,136 @@ def ingestion_event_rollup(
         "total_output_tokens": total_output_tokens,
         "total_cost": total_cost,
         "by_butler": by_butler,
+    }
+
+
+async def ingestion_window_rollup(
+    pool: asyncpg.Pool,
+    *,
+    from_dt: datetime | None = None,
+    to_dt: datetime | None = None,
+    channels: list[str] | None = None,
+    statuses: list[str] | None = None,
+    q: str | None = None,
+    db: DatabaseManager | None = None,
+) -> dict[str, Any]:
+    """Return aggregate event/session counts for the active filter window.
+
+    Counts events from the unified timeline (public.ingestion_events UNION ALL
+    connectors.filtered_events) filtered by the same parameters as
+    ingestion_events_list.  Session count is derived by summing sessions across
+    all registered butler schemas (fan-out via db.fan_out).
+
+    The ``cost`` field is always ``None`` — cost aggregation requires per-event
+    pricing data that is not yet available at the window level.
+
+    Args:
+        pool:      asyncpg pool for the shared credentials database.
+        from_dt:   Inclusive lower bound on ``received_at``. ``None`` = no lower bound.
+        to_dt:     Exclusive upper bound on ``received_at``. ``None`` = no upper bound.
+        channels:  Optional list of source_channel values to include.
+        statuses:  Optional list of status values to include.
+        q:         Optional freetext search against source_channel + source_sender_identity +
+                   error_detail (ILIKE %q%).  ``None`` = no text filter.
+        db:        DatabaseManager for the cross-butler session fan-out.
+                   When ``None``, session count is omitted (returns 0).
+
+    Returns:
+        Dict with:
+        - ``events``:   int — total matching events
+        - ``sessions``: int — total sessions linked to matching events
+        - ``cost``:     None — reserved; always null until cost-per-event is implemented
+        - ``window``:   dict with ``from`` (ISO str | None) and ``to`` (ISO str | None)
+    """
+    args: list[Any] = []
+    where_parts: list[str] = []
+
+    if from_dt is not None:
+        args.append(from_dt)
+        where_parts.append(f"received_at >= ${len(args)}")
+    if to_dt is not None:
+        args.append(to_dt)
+        where_parts.append(f"received_at < ${len(args)}")
+    if channels:
+        args.append(channels)
+        where_parts.append(f"source_channel = ANY(${len(args)}::text[])")
+    if statuses:
+        args.append(statuses)
+        where_parts.append(f"status = ANY(${len(args)}::text[])")
+    if q:
+        q_pattern = f"%{q}%"
+        args.append(q_pattern)
+        n = len(args)
+        where_parts.append(
+            f"(source_channel ILIKE ${n} OR source_sender_identity ILIKE ${n}"
+            f" OR error_detail ILIKE ${n})"
+        )
+
+    where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+    event_count_sql = (
+        f"SELECT COUNT(*) FROM ("
+        f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
+        f"UNION ALL "
+        f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
+        f") AS combined"
+        f"{where_clause}"
+    )
+
+    try:
+        event_count: int = await pool.fetchval(event_count_sql, *args)
+    except Exception:
+        logger.debug("ingestion_window_rollup: event count query failed", exc_info=True)
+        event_count = 0
+
+    # Session count: fan-out to all registered butler schemas.
+    # We fetch only the event IDs (not full rows) and cap the array to avoid
+    # transferring unbounded data to the application layer.
+    # A cap of 10,000 IDs is sufficient for rollup accuracy in typical windows;
+    # very large windows return an approximate count.
+    _SESSION_COUNT_ID_CAP = 10_000
+    session_count = 0
+    if db is not None and event_count > 0:
+        id_sql = (
+            f"SELECT id FROM ("
+            f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
+            f"UNION ALL "
+            f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
+            f") AS combined"
+            f"{where_clause}"
+            f" LIMIT {_SESSION_COUNT_ID_CAP}"
+        )
+        try:
+            id_rows = await pool.fetch(id_sql, *args)
+            event_ids = [str(row["id"]) for row in id_rows]
+        except Exception:
+            logger.debug("ingestion_window_rollup: event ID fetch failed", exc_info=True)
+            event_ids = []
+
+        if event_ids:
+            try:
+                fan_results: dict[str, list] = await db.fan_out(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM sessions
+                    WHERE request_id = ANY($1::text[])
+                    """,
+                    (event_ids,),
+                )
+                for rows in fan_results.values():
+                    for row in rows:
+                        session_count += int(row.get("cnt") or 0)
+            except Exception:
+                logger.debug("ingestion_window_rollup: session fan-out failed", exc_info=True)
+
+    return {
+        "events": event_count,
+        "sessions": session_count,
+        "cost": None,
+        "window": {
+            "from": from_dt.isoformat() if from_dt is not None else None,
+            "to": to_dt.isoformat() if to_dt is not None else None,
+        },
     }
 
 

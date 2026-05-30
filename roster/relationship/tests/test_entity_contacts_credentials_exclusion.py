@@ -4,7 +4,7 @@ Covers Requirement: Credentials carve-out § Scenario:
 "Credentials are not surfaced on entity contacts endpoint" from
 ``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/relationship-facts/spec.md``.
 
-When GET /api/butlers/relationship/entities/{id}/contacts is called for an entity
+When GET /api/relationship/entities/{id}/contacts is called for an entity
 that has both:
   - a non-secured `has-email` triple in `relationship.entity_facts`, AND
   - a secured credential row in `relationship.credentials`,

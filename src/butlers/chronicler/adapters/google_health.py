@@ -38,9 +38,14 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import (
+    resolve_owner_entity_id,
+    upsert_owner_episode_entity,
+)
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import (
@@ -120,6 +125,9 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
             )
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        entity_id = await resolve_owner_entity_id(pool)
+
         # Load prior-batch carryover state for cross-batch stitching.
         prior_carryover = await get_carryover(chronicler_pool, self.source_name)
 
@@ -128,7 +136,9 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
 
         for row in rows:
             prior_source_ref = self._match_carryover(prior_carryover, row)
-            episode = await self._project_row(chronicler_pool, row, prior_source_ref)
+            episode = await self._project_row(
+                chronicler_pool, row, prior_source_ref, entity_id=entity_id
+            )
             if episode is None:
                 continue
             result.rows_projected += 1
@@ -283,6 +293,8 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
         prior_source_ref: str | None = None,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode | None:
         idempotency_key: str | None = row["idempotency_key"]
         fact_id = str(row["id"])
@@ -354,8 +366,11 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
+                    entity_id=entity_id,
                 ),
             )
+            # Write owner row into episode_entities join table (bu-4c1ks).
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
 
@@ -518,9 +533,12 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
             )
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        entity_id = await resolve_owner_entity_id(pool)
+
         latest_watermark = since
         for row in rows:
-            episode = await self._project_row(chronicler_pool, row)
+            episode = await self._project_row(chronicler_pool, row, entity_id=entity_id)
             if episode is None:
                 continue
             result.rows_projected += 1
@@ -593,6 +611,8 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode | None:
         idempotency_key: str | None = row["idempotency_key"]
         fact_id = str(row["id"])
@@ -657,8 +677,11 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=privacy,
+                    entity_id=entity_id,
                 ),
             )
+            # Write owner row into episode_entities join table (bu-4c1ks).
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
 

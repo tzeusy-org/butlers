@@ -6,7 +6,7 @@ Defines the dashboard surfaces for the Relationship butler: the contact detail A
 ## Requirements
 ### Requirement: Contact detail API
 
-The dashboard API SHALL expose `GET /api/butlers/relationship/contacts/:id` which returns a single contact's full record with joined data from related tables via a direct database read. The query MUST read from `public.contacts` (not `relationship.contacts`).
+The dashboard API SHALL expose `GET /api/relationship/contacts/:id` which returns a single contact's full record with joined data from related tables via a direct database read. The query MUST read from `public.contacts` (not `relationship.contacts`).
 
 The response MUST include:
 - All columns from the `public.contacts` table (`id`, `first_name`, `last_name`, `nickname`, `company`, `job_title`, `gender`, `pronouns`, `avatar_url`, `listed`, `metadata`, `roles`, `entity_id`, `created_at`, `updated_at`)
@@ -19,7 +19,7 @@ The response MUST include:
 
 #### Scenario: Fetch an existing contact with full detail
 
-- **WHEN** `GET /api/butlers/relationship/contacts/abc-123-uuid` is called and the contact exists
+- **WHEN** `GET /api/relationship/contacts/abc-123-uuid` is called and the contact exists
 - **THEN** the API MUST return the complete contact record including `roles` and `entity_id` fields
 - **AND** the `info` array MUST contain all `contact_info` rows with secured values masked
 - **AND** the response status MUST be 200
@@ -31,12 +31,12 @@ The response MUST include:
 
 #### Scenario: Contact does not exist
 
-- **WHEN** `GET /api/butlers/relationship/contacts/nonexistent-uuid` is called and no contact with that ID exists
+- **WHEN** `GET /api/relationship/contacts/nonexistent-uuid` is called and no contact with that ID exists
 - **THEN** the API MUST return a 404 response with an error message indicating the contact was not found
 
 #### Scenario: Contact with no related data
 
-- **WHEN** `GET /api/butlers/relationship/contacts/abc-123-uuid` is called for a contact that has no contact_info, addresses, important_dates, quick_facts, relationships, or labels
+- **WHEN** `GET /api/relationship/contacts/abc-123-uuid` is called for a contact that has no contact_info, addresses, important_dates, quick_facts, relationships, or labels
 - **THEN** the API MUST return the contact record with all joined arrays as empty arrays (`[]`)
 - **AND** the response status MUST be 200
 
@@ -63,7 +63,7 @@ The page MUST contain the following sections:
 
 5. **Relationships section** — displaying all relationships as a list. Each entry SHALL show the `type` label (e.g., "Parent", "Friend"), the related contact's name as a clickable link to their detail page, and the `group_type`. The `relationships` array on the contact detail API response is preserved unchanged from the prior spec; re-anchoring typed contact-to-contact relationships to entity edge facts is explicitly out of scope for this change.
 
-The page MUST NOT contain a tabbed content area for notes, interactions, gifts, or loans, and MUST NOT contain an activity feed sidebar or section. These sections — previously bullets 6 ("Tabbed content area") and 7 ("Activity feed sidebar or section") of this requirement — are removed in this change. They are replaced by the entity detail page and its tab APIs (see "Entity detail page" and "Entity-level tab APIs" below). The contact detail API response SHALL no longer include any of `notes`, `interactions`, `gifts`, `loans`, `activity_feed` arrays as embedded sub-resources, and the five sub-resource endpoints `GET /api/butlers/relationship/contacts/{id}/{notes,interactions,gifts,loans,feed}` SHALL be removed.
+The page MUST NOT contain a tabbed content area for notes, interactions, gifts, or loans, and MUST NOT contain an activity feed sidebar or section. These sections — previously bullets 6 ("Tabbed content area") and 7 ("Activity feed sidebar or section") of this requirement — are removed in this change. They are replaced by the entity detail page and its tab APIs (see "Entity detail page" and "Entity-level tab APIs" below). The contact detail API response SHALL no longer include any of `notes`, `interactions`, `gifts`, `loans`, `activity_feed` arrays as embedded sub-resources, and the five sub-resource endpoints `GET /api/relationship/contacts/{id}/{notes,interactions,gifts,loans,feed}` SHALL be removed.
 
 #### Scenario: Contact detail page loads with roles, entity link, and secured info
 
@@ -107,7 +107,7 @@ The page MUST NOT contain a tabbed content area for notes, interactions, gifts, 
 
 #### Scenario: Legacy tab endpoints removed
 
-- **WHEN** any of `GET /api/butlers/relationship/contacts/{id}/{notes,interactions,gifts,loans,feed}` is called
+- **WHEN** any of `GET /api/relationship/contacts/{id}/{notes,interactions,gifts,loans,feed}` is called
 - **THEN** the response MUST be a 404 (route not found)
 - **AND** the legacy tables `relationship.{notes, interactions, gifts, loans, activity_feed}` MUST NOT exist in the database after this change is applied
 
@@ -195,7 +195,7 @@ defined in the `detail-page-archetype` spec.
 
 #### Scenario: Contact detail uses shell loading state
 
-- **WHEN** `GET /api/butlers/relationship/contacts/:id` is in flight
+- **WHEN** `GET /api/relationship/contacts/:id` is in flight
 - **THEN** the `<Page>` shell MUST show `DetailSkeleton`
 - **AND** no inline `<Skeleton>` blocks MUST be rendered by the page at the page layer
 
@@ -430,7 +430,7 @@ The page MUST contain:
 
 2. **Linked contacts section** — listing all rows in `public.contacts` where `entity_id` matches, with each row showing `first_name + last_name`, primary `contact_info` entries (one email/phone), and a link to the contact detail page.
 
-3. **Unified ActivityTimeline** — a single vertically-scrolling event stream sourced from the entity timeline endpoint (`GET /api/butlers/relationship/entities/{id}/timeline`). The stream MUST display all supported event kinds: interactions, notes, gifts, loans, and life events. Filter pills at the top of the stream allow the user to narrow the view to a single event kind. The active filter is single-select: pills are: **All**, **Interactions**, **Notes**, **Gifts**, **Loans**, **Life events**. Selecting a pill hides all other kinds in the stream (client-side filtering; no additional API call). Empty stream state MUST display an appropriate message (e.g., "No activity recorded yet." when All is active, or "No interactions yet." when a specific kind pill is active). The stream MUST be sorted `valid_at DESC` with `created_at DESC` as a tie-break, consistent with the timeline endpoint sort contract.
+3. **Unified ActivityTimeline** — a single vertically-scrolling event stream sourced from the entity timeline endpoint (`GET /api/relationship/entities/{id}/timeline`). The stream MUST display all supported event kinds: interactions, notes, gifts, loans, and life events. Filter pills at the top of the stream allow the user to narrow the view to a single event kind. The active filter is single-select: pills are: **All**, **Interactions**, **Notes**, **Gifts**, **Loans**, **Life events**. Selecting a pill hides all other kinds in the stream (client-side filtering; no additional API call). Empty stream state MUST display an appropriate message (e.g., "No activity recorded yet." when All is active, or "No interactions yet." when a specific kind pill is active). The stream MUST be sorted `valid_at DESC` with `created_at DESC` as a tie-break, consistent with the timeline endpoint sort contract.
 
 4. **Gifts panel** — a structured display of gift-scoped facts (gifts with occasion, status, and description). This panel MAY be hidden when empty. This is a separate surface complementing the unified ActivityTimeline above; the timeline includes gifts mixed with other event kinds, whereas this panel dedicates focus to gifts alone.
 
@@ -481,11 +481,11 @@ The endpoints are:
 
 | Endpoint | Predicate filter | Sort order |
 |---|---|---|
-| `GET /api/butlers/relationship/entities/{id}/notes` | `predicate = 'contact_note'` | `valid_at DESC` |
-| `GET /api/butlers/relationship/entities/{id}/interactions` | `predicate LIKE 'interaction_%'` | `valid_at DESC` |
-| `GET /api/butlers/relationship/entities/{id}/gifts` | `predicate = 'gift'` | `created_at DESC` |
-| `GET /api/butlers/relationship/entities/{id}/loans` | `predicate = 'loan'` | `created_at DESC` |
-| `GET /api/butlers/relationship/entities/{id}/timeline` | `predicate IN ('contact_note','life_event','gift','loan','dunbar_tier_override') OR predicate LIKE 'interaction_%'` | `valid_at DESC NULLS LAST, created_at DESC` |
+| `GET /api/relationship/entities/{id}/notes` | `predicate = 'contact_note'` | `valid_at DESC` |
+| `GET /api/relationship/entities/{id}/interactions` | `predicate LIKE 'interaction_%'` | `valid_at DESC` |
+| `GET /api/relationship/entities/{id}/gifts` | `predicate = 'gift'` | `created_at DESC` |
+| `GET /api/relationship/entities/{id}/loans` | `predicate = 'loan'` | `created_at DESC` |
+| `GET /api/relationship/entities/{id}/timeline` | `predicate IN ('contact_note','life_event','gift','loan','dunbar_tier_override') OR predicate LIKE 'interaction_%'` | `valid_at DESC NULLS LAST, created_at DESC` |
 
 The Timeline endpoint excludes the legacy `activity` predicate. The `_log_activity()` write path is removed in this change; historical `activity` facts (if any survive) are not surfaced on Timeline (they are duplicates of primary facts already included via their own predicates) but remain queryable via the `feed_get` MCP tool.
 
@@ -501,33 +501,33 @@ When a metadata field referenced above is absent from a fact's JSONB, the respon
 
 #### Scenario: Notes endpoint returns facts for entity
 
-- **WHEN** `GET /api/butlers/relationship/entities/ent-456/notes` is called and three `contact_note` facts exist with `entity_id = ent-456`, `validity = 'active'`, `scope = 'relationship'`
+- **WHEN** `GET /api/relationship/entities/ent-456/notes` is called and three `contact_note` facts exist with `entity_id = ent-456`, `validity = 'active'`, `scope = 'relationship'`
 - **THEN** the response status MUST be 200
 - **AND** the response body MUST be a list of three entries shaped per the notes mapping
 - **AND** entries MUST be ordered by `valid_at DESC`
 
 #### Scenario: Interactions endpoint merges interaction subtypes
 
-- **WHEN** `GET /api/butlers/relationship/entities/ent-456/interactions` is called and the entity has interaction facts with predicates `interaction_meeting`, `interaction_message`, and `interaction_call`
+- **WHEN** `GET /api/relationship/entities/ent-456/interactions` is called and the entity has interaction facts with predicates `interaction_meeting`, `interaction_message`, and `interaction_call`
 - **THEN** the response MUST include all three with `type` field set to `"meeting"`, `"message"`, and `"call"` respectively (the predicate suffix)
 - **AND** entries MUST be ordered by `valid_at DESC` regardless of subtype
 
 #### Scenario: Mixed-channel interactions are merged across linked contacts
 
 - **WHEN** an entity has two contacts (one Telegram, one email) and interaction facts exist via both channels
-- **THEN** `GET /api/butlers/relationship/entities/{id}/interactions` MUST return all facts where `entity_id = $1` regardless of which contact's tools created them
+- **THEN** `GET /api/relationship/entities/{id}/interactions` MUST return all facts where `entity_id = $1` regardless of which contact's tools created them
 - **AND** the response MUST NOT deduplicate by `(predicate, valid_at)` — facts from different channels are surfaced separately
 
 #### Scenario: Timeline orders by valid_at across all six predicate families
 
-- **WHEN** `GET /api/butlers/relationship/entities/{id}/timeline` is called and the entity has facts of every supported predicate family
+- **WHEN** `GET /api/relationship/entities/{id}/timeline` is called and the entity has facts of every supported predicate family
 - **THEN** the response MUST include facts from `interaction_*`, `contact_note`, `life_event`, `gift`, `loan`, and `dunbar_tier_override`
 - **AND** entries MUST be ordered by `valid_at DESC` with `NULLS LAST` semantics, falling back to `created_at DESC` for property facts (gift, loan, dunbar_tier_override)
 - **AND** each entry MUST include a `kind` field identifying the predicate family
 
 #### Scenario: Timeline excludes legacy activity facts
 
-- **WHEN** `GET /api/butlers/relationship/entities/{id}/timeline` is called and the entity has facts with `predicate = 'activity'`
+- **WHEN** `GET /api/relationship/entities/{id}/timeline` is called and the entity has facts with `predicate = 'activity'`
 - **THEN** those facts MUST NOT appear in the response
 
 #### Scenario: Empty entity returns empty arrays
@@ -594,31 +594,31 @@ and `rfcs/0007:309` (`'owner' = ANY(e.roles)`) MUST apply to both write and PII-
 read surfaces; one without the other leaves a leak hole.
 
 **Clause 12a — Writes (mutations).** Every `POST/PATCH/DELETE` under
-`/api/butlers/relationship/entities/*` MUST resolve the caller to an owner-role entity
+`/api/relationship/entities/*` MUST resolve the caller to an owner-role entity
 per the `'owner' = ANY(e.roles)` pattern and return HTTP 403 with the envelope
 `{ code: 'owner_required' }` otherwise. The gate applies to the exact endpoint set:
 
-- `POST /api/butlers/relationship/entities`
-- `POST /api/butlers/relationship/entities/{id}/merge`
-- `POST /api/butlers/relationship/entities/{id}/archive`
-- `POST /api/butlers/relationship/entities/{id}/promote-tier`
-- `DELETE /api/butlers/relationship/entities/{id}`
-- `POST /api/butlers/relationship/entities/queue/dismiss`
-- `POST /api/butlers/relationship/entities/{id}/contacts`
-- `DELETE /api/butlers/relationship/entities/{id}/contacts/{pred}/{valueHash}`
+- `POST /api/relationship/entities`
+- `POST /api/relationship/entities/{id}/merge`
+- `POST /api/relationship/entities/{id}/archive`
+- `POST /api/relationship/entities/{id}/promote-tier`
+- `DELETE /api/relationship/entities/{id}`
+- `POST /api/relationship/entities/queue/dismiss`
+- `POST /api/relationship/entities/{id}/contacts`
+- `DELETE /api/relationship/entities/{id}/contacts/{pred}/{valueHash}`
 
 **Clause 12b — Reads (PII-bearing).** The same owner-only gate MUST apply to the following
 GET endpoints because they return raw contact-fact `object` values (emails / phones /
 handles / addresses) or aliased identity links whose exposure through the shared
 `DASHBOARD_API_KEY` would leak PII to any caller reaching the API surface:
 
-- `GET /api/butlers/relationship/entities/queue`
-- `GET /api/butlers/relationship/entities/search`
-- `GET /api/butlers/relationship/entities/{id}/contacts`
-- `GET /api/butlers/relationship/entities/{id}/neighbours`
-- `GET /api/butlers/relationship/entities/{id}/activity`
+- `GET /api/relationship/entities/queue`
+- `GET /api/relationship/entities/search`
+- `GET /api/relationship/entities/{id}/contacts`
+- `GET /api/relationship/entities/{id}/neighbours`
+- `GET /api/relationship/entities/{id}/activity`
 
-The list-only `GET /api/butlers/relationship/entities` and per-entity timeline / notes /
+The list-only `GET /api/relationship/entities` and per-entity timeline / notes /
 interactions / gifts / loans endpoints (which do NOT surface raw contact-fact `object`
 values) inherit the existing dashboard session boundary and are not within scope of this
 gate. Any future change that adds raw contact-fact values to those responses MUST extend
@@ -631,7 +631,7 @@ A guardrail test (tasks.md §12.8) MUST exercise this invariant.
 
 #### Scenario: Owner request to mutate entity succeeds
 - **WHEN** an authenticated request resolves to an entity with `'owner' = ANY(e.roles)` and
-  calls `POST /api/butlers/relationship/entities/{id}/promote-tier`
+  calls `POST /api/relationship/entities/{id}/promote-tier`
 - **THEN** the response status MUST be 2xx (per the endpoint's own contract)
 - **AND** the gate MUST NOT reject the request
 
@@ -710,7 +710,7 @@ neighbour fan-out. The page MUST:
    and remain on `/entities/hop` (NOT navigate away to a different product surface).
 4. Render inside `<Page archetype="overview">` with SubpageTabs strip marking Hop active.
 
-Data source: `GET /api/butlers/relationship/entities/{id}/neighbours` (Requirement: Entity
+Data source: `GET /api/relationship/entities/{id}/neighbours` (Requirement: Entity
 neighbours endpoint below).
 
 #### Scenario: Re-centre keeps user on /entities/hop
@@ -724,8 +724,8 @@ The frontend SHALL render a Finder-style cascading column drill at `/entities/co
 Each column shows one entity's predicate-grouped neighbours; clicking a neighbour pushes
 a new column to the right. Column 0 is the owner unless `?path=` overrides it. Each column
 MUST be reachable via either (a) chained client-side calls to
-`GET /api/butlers/relationship/entities/{id}/neighbours` or (b) a server-side
-`GET /api/butlers/relationship/entities/{id}/columns?path=<csv>` helper. Phase 2 picks
+`GET /api/relationship/entities/{id}/neighbours` or (b) a server-side
+`GET /api/relationship/entities/{id}/columns?path=<csv>` helper. Phase 2 picks
 **option (a)**: client-side chaining is sufficient for v1; no new server endpoint required
 (resolves Phase 1 Open Question 15).
 
@@ -738,7 +738,7 @@ Render inside `<Page archetype="overview">` with SubpageTabs Columns active.
   predicate-grouped neighbours
 - **AND** the URL MUST reflect the new path (e.g. `?path=ent-1,ent-2`)
 - **AND** no new server endpoint MUST be called (per option (a)); only chained calls to
-  `/api/butlers/relationship/entities/{id}/neighbours`
+  `/api/relationship/entities/{id}/neighbours`
 
 #### Scenario: Column 0 defaults to owner
 - **WHEN** the user navigates to `/entities/columns` without a `?path=` query
@@ -758,7 +758,7 @@ The frontend SHALL render a balance-sheet view of weight aggregation per predica
    `predicate_registry` filtered to relational predicates (resolves Phase 1 Open Question 8).
 5. Render inside `<Page archetype="overview">` with SubpageTabs Concentration active.
 
-Data source: `GET /api/butlers/relationship/entities/concentration?pred=<predicate>`.
+Data source: `GET /api/relationship/entities/concentration?pred=<predicate>`.
 
 #### Scenario: Predicate tabs are enumerated from registry
 - **WHEN** the page loads with `relationship.entity_predicate_registry` containing five relational
@@ -867,14 +867,14 @@ also changes how the header and contact facts are rendered.
 
 The Index page (`/entities`) right rail SHALL render the curation queue — a single
 union view of entities needing operator attention. The queue MUST source from
-`GET /api/butlers/relationship/entities/queue` and render three sections:
+`GET /api/relationship/entities/queue` and render three sections:
 
 1. **Unidentified** — entities with `metadata->>'unidentified' = 'true'`. Actions
    per row: promote (give canonical_name), dismiss, merge.
 2. **Duplicate candidate** — entity pairs detected via shared triples (e.g. same
    `has-email` value across two entities). Each row shows both entities, the reason
    ("shared email: alice@x" — deterministic string, no LLM), a similarity score.
-   Action: merge (`POST /api/butlers/relationship/entities/{id}/merge`).
+   Action: merge (`POST /api/relationship/entities/{id}/merge`).
 3. **Stale** — entities whose most-recent triple `last_seen` is older than 365 days.
    Action: refresh (re-add a triple) or archive.
 
@@ -904,7 +904,7 @@ Section ordering: Unidentified → Duplicate-candidate → Stale.
 The dashboard SHALL expose an app-wide command palette opened via `⌘K` (macOS) /
 `Ctrl-K` (other platforms) on any page. The Finder MUST:
 
-1. Hit exactly one endpoint per keystroke: `GET /api/butlers/relationship/entities/search?q=<query>`.
+1. Hit exactly one endpoint per keystroke: `GET /api/relationship/entities/search?q=<query>`.
    No other surface MUST call this endpoint; conversely the Finder MUST NOT call any other
    relationship endpoint to assemble results.
 2. Resolve entities first, then other record kinds (per Phase 1 Open Question 14).
@@ -933,7 +933,7 @@ that fans out to this endpoint, but that is out of scope here.
 
 #### Scenario: Finder returns ranked entities within 300ms
 - **WHEN** a user presses ⌘K from any page and types "alice"
-- **THEN** the Finder MUST call `GET /api/butlers/relationship/entities/search?q=alice` exactly once per keystroke
+- **THEN** the Finder MUST call `GET /api/relationship/entities/search?q=alice` exactly once per keystroke
 - **AND** results MUST render in <300ms for a local dataset of <10000 entities
 - **AND** entities MUST appear before other result kinds
 
@@ -988,12 +988,12 @@ design language with the following token rules (per Phase 1 Amendment 9 + Brief 
 ### Requirement: Provenance contract — every fact carries its origin
 
 Every triple returned by any entity-scoped endpoint
-(`/api/butlers/relationship/entities/{id}/contacts`,
-`/api/butlers/relationship/entities/{id}/neighbours`,
-`/api/butlers/relationship/entities/concentration`,
-`/api/butlers/relationship/entities/queue`,
-`/api/butlers/relationship/entities/{id}/{notes,interactions,gifts,loans,timeline}`,
-`/api/butlers/relationship/entities/search`) MUST include the provenance fields
+(`/api/relationship/entities/{id}/contacts`,
+`/api/relationship/entities/{id}/neighbours`,
+`/api/relationship/entities/concentration`,
+`/api/relationship/entities/queue`,
+`/api/relationship/entities/{id}/{notes,interactions,gifts,loans,timeline}`,
+`/api/relationship/entities/search`) MUST include the provenance fields
 defined in the `relationship-facts` capability spec:
 
 - `src` (TEXT, NOT NULL): butler that wrote the fact.
@@ -1029,7 +1029,7 @@ clients regardless of which endpoint raised the error.
 
 ### Requirement: Entity activity aggregator (cross-butler read surface)
 
-The dashboard API SHALL expose `GET /api/butlers/relationship/entities/{id}/activity` as
+The dashboard API SHALL expose `GET /api/relationship/entities/{id}/activity` as
 a relationship-owned aggregator that returns a unified activity stream merging:
 
 1. Relationship-domain rows from `relationship.entity_facts` (notes, interactions, life events,
@@ -1052,7 +1052,7 @@ The Timeline tab (defined above) and the activity aggregator coexist; the Timeli
 renders the aggregator output as the merged stream.
 
 #### Scenario: Activity aggregator merges via MCP only
-- **WHEN** `GET /api/butlers/relationship/entities/<id>/activity` is called and chronicler
+- **WHEN** `GET /api/relationship/entities/<id>/activity` is called and chronicler
   episodes mention the entity
 - **THEN** the aggregator MUST call `chronicler_list_episodes` via MCP with an entity filter
 - **AND** chronicler rows MUST appear in the response with `src: 'chronicler'`
@@ -1082,11 +1082,11 @@ MUST fail if any combination is missing.
 
 ### Requirement: Finder is deterministic — no LLM ranking
 
-`GET /api/butlers/relationship/entities/search` ranking is **rule-based per
+`GET /api/relationship/entities/search` ranking is **rule-based per
 `pr/overview/entity-redesign/prompts/07-finder.md §7.5`** (the rule set is also reproduced in
 Requirement: App-wide Cmd-K Finder above). **No embedding service, no reranker LLM in v1.**
 No model call MAY appear in the request handler path of
-`/api/butlers/relationship/entities/search`.
+`/api/relationship/entities/search`.
 
 #### Scenario: Finder handler issues zero LLM calls
 - **WHEN** a Finder query is processed

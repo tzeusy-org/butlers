@@ -1,0 +1,802 @@
+"""Tests for user-credential mutation endpoints.
+
+Covers bu-e9gge: POST /api/secrets/user/<provider>/{rotate,disconnect,probe,reauthorize}
+
+Test matrix per endpoint:
+- Success path: 200 with correct envelope and payload shape.
+- Audit row written: audit_append_spy called with correct action.
+- 404 on unknown provider (no credential found).
+- probe: same-transaction commit (probe_log row + entity_info update).
+- reauthorize: redirect_url contains page_of_origin=secrets.
+- disconnect: 404 on provider without a credential.
+
+Spec anchor
+-----------
+openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+§User credential mutations
+openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md
+§Cross-Page Reauth Bookkeeping
+openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
+§Cache write on probe
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from butlers.api.app import create_app
+from butlers.api.db import DatabaseManager
+from butlers.api.routers.secrets_v2 import _get_db_manager
+
+pytestmark = pytest.mark.unit
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_NOW = datetime.now(tz=UTC)
+
+
+def _make_row(**kwargs) -> MagicMock:
+    """Build a MagicMock that behaves like an asyncpg Record."""
+    m = MagicMock()
+    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
+    return m
+
+
+def _make_entity_info_row(
+    *,
+    entity_id: str | None = None,
+    info_type: str = "google_oauth_refresh",
+    value: str = "tok3n",
+    label: str | None = "user@example.com",
+    last_verified: datetime | None = None,
+    last_test_ok: bool | None = True,
+    last_test_code: int | None = None,
+    last_test_message: str | None = None,
+) -> MagicMock:
+    row_id = uuid4()
+    eid = entity_id or str(uuid4())
+    return _make_row(
+        id=row_id,
+        entity_id=eid,
+        type=info_type,
+        value=value,
+        label=label,
+        last_verified=last_verified,
+        last_test_ok=last_test_ok,
+        last_test_code=last_test_code,
+        last_test_message=last_test_message,
+        created_at=_NOW,
+    )
+
+
+def _make_shared_pool(
+    *,
+    user_row: MagicMock | None = None,
+    probe_row: MagicMock | None = None,
+    execute_ok: bool = True,
+) -> AsyncMock:
+    """Build a mock shared-pool that supports fetchrow, execute, and transaction."""
+    shared_pool = AsyncMock()
+
+    async def _fetchrow(sql, *args):
+        if "secret_probe_log" in sql:
+            return probe_row
+        if "entity_info" in sql or "entities" in sql:
+            return user_row
+        return None
+
+    shared_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    shared_pool.fetch = AsyncMock(return_value=[])
+
+    if execute_ok:
+        shared_pool.execute = AsyncMock(return_value="UPDATE 1")
+    else:
+        shared_pool.execute = AsyncMock(side_effect=Exception("DB error"))
+
+    # Fake transaction context manager (used by probe endpoint).
+    fake_conn = AsyncMock()
+    fake_conn.fetchrow = shared_pool.fetchrow
+    fake_conn.fetch = shared_pool.fetch
+    fake_conn.execute = shared_pool.execute
+    fake_conn.fetchval = AsyncMock(return_value=1)
+
+    # Fake transaction() context manager.
+    @asynccontextmanager
+    async def _transaction():
+        yield
+
+    fake_conn.transaction = _transaction
+
+    @asynccontextmanager
+    async def _acquire():
+        yield fake_conn
+
+    shared_pool.acquire = _acquire
+
+    return shared_pool
+
+
+def _make_db(
+    *,
+    user_row: MagicMock | None = None,
+    probe_row: MagicMock | None = None,
+    shared_pool_available: bool = True,
+    execute_ok: bool = True,
+) -> MagicMock:
+    """Build a mock DatabaseManager for mutation endpoint tests."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=AsyncMock())
+
+    if shared_pool_available:
+        shared_pool = _make_shared_pool(
+            user_row=user_row,
+            probe_row=probe_row,
+            execute_ok=execute_ok,
+        )
+        mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+    else:
+        mock_db.credential_shared_pool = MagicMock(side_effect=KeyError("no shared pool"))
+
+    return mock_db
+
+
+def _build_app(mock_db: MagicMock) -> TestClient:
+    """Create a TestClient with the given mock DatabaseManager."""
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    return TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /api/secrets/user/<provider>/rotate
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_returns_200_and_updated_credential():
+    """rotate returns 200 with ApiResponse<UserSecretDetail> envelope."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-tok3n"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert "meta" in body
+    assert body["data"]["provider"] == "google"
+    assert "type" in body["data"]
+
+
+def test_rotate_writes_audit_row(monkeypatch):
+    """rotate appends a 'rotated' audit row to public.audit_log."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "newval"})
+    assert resp.status_code == 200
+
+    assert any(c["action"] == "rotated" for c in audit_calls), (
+        f"Expected 'rotated' audit action; got: {audit_calls}"
+    )
+
+
+def test_rotate_audit_target_is_canonical_key(monkeypatch):
+    """rotate audit row target is the canonical key 'u:google'."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+    client.post("/api/secrets/user/google/rotate", json={"value": "newval"})
+
+    rotated = [c for c in audit_calls if c["action"] == "rotated"]
+    assert rotated, "No 'rotated' audit row"
+    assert rotated[0].get("target") == "u:google"
+
+
+def test_rotate_404_on_missing_credential():
+    """rotate returns 404 when no credential exists for the provider."""
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/rotate", json={"value": "tok"})
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /api/secrets/user/<provider>/disconnect
+# ---------------------------------------------------------------------------
+
+
+def test_disconnect_returns_200_with_disconnected_status():
+    """disconnect returns 200 with {status: 'disconnected'} payload."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/disconnect")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert body["data"]["status"] == "disconnected"
+
+
+def test_disconnect_writes_audit_row(monkeypatch):
+    """disconnect appends a 'disconnected' audit row to public.audit_log."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/disconnect")
+    assert resp.status_code == 200
+    assert any(c["action"] == "disconnected" for c in audit_calls), (
+        f"Expected 'disconnected' audit action; got: {audit_calls}"
+    )
+
+
+def test_disconnect_404_on_missing_credential():
+    """disconnect returns 404 when no credential exists for the provider."""
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/disconnect")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /api/secrets/user/<provider>/probe
+# ---------------------------------------------------------------------------
+
+
+def test_probe_returns_200_with_test_result():
+    """probe returns 200 with ApiResponse<TestResult> envelope."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/probe")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert "meta" in body
+    data = body["data"]
+    assert "ok" in data
+    assert "at" in data
+
+
+def test_probe_ok_credential_returns_true():
+    """probe returns ok=True for a credential with last_test_ok=True."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True, value="tok")
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/probe")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["ok"] is True
+
+
+def test_probe_writes_both_probe_log_and_cache_in_transaction():
+    """probe writes one probe_log row AND updates entity_info in the same transaction."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True, value="tok")
+    mock_db = _make_db(user_row=row)
+    shared_pool = mock_db.credential_shared_pool()
+
+    # Collect all execute calls through the transaction conn.
+    # Patch the fake_conn.execute inside the acquire context.
+    # We check that BOTH probe_log INSERT and entity_info UPDATE appear.
+    fake_conn_calls: list[str] = []
+
+    @asynccontextmanager
+    async def _acquire_tracking():
+        conn = AsyncMock()
+        conn.fetchrow = shared_pool.fetchrow
+        conn.fetch = shared_pool.fetch
+        conn.fetchval = AsyncMock(return_value=1)
+
+        @asynccontextmanager
+        async def _transaction():
+            yield
+
+        conn.transaction = _transaction
+
+        async def _conn_execute(sql, *args, **kwargs):
+            fake_conn_calls.append(sql)
+            return "OK"
+
+        conn.execute = _conn_execute
+        yield conn
+
+    shared_pool.acquire = _acquire_tracking
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/probe")
+    assert resp.status_code == 200
+
+    # Both SQL statements must appear.
+    probe_log_inserts = [s for s in fake_conn_calls if "secret_probe_log" in s]
+    entity_info_updates = [s for s in fake_conn_calls if "entity_info" in s and "UPDATE" in s]
+    assert probe_log_inserts, "Expected INSERT into secret_probe_log"
+    assert entity_info_updates, "Expected UPDATE on entity_info"
+
+
+def test_probe_writes_audit_row(monkeypatch):
+    """probe appends a 'verified' (ok) or 'failed' audit row."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True, value="tok")
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/probe")
+    assert resp.status_code == 200
+    assert any(c["action"] in {"verified", "failed"} for c in audit_calls), (
+        f"Expected 'verified' or 'failed' audit action; got: {audit_calls}"
+    )
+
+
+def test_probe_verified_action_when_ok(monkeypatch):
+    """probe writes 'verified' audit action when credential is ok."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True, value="tok")
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    client.post("/api/secrets/user/google/probe")
+    assert any(c["action"] == "verified" for c in audit_calls)
+
+
+def test_probe_failed_action_when_not_ok(monkeypatch):
+    """probe writes 'failed' audit action when credential is in a failing state."""
+    row = _make_entity_info_row(
+        info_type="google_oauth_refresh",
+        last_test_ok=False,
+        value="tok",
+        last_test_message="Token revoked",
+    )
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    client.post("/api/secrets/user/google/probe")
+    assert any(c["action"] == "failed" for c in audit_calls)
+
+
+def test_probe_404_on_missing_credential():
+    """probe returns 404 when no credential exists for the provider."""
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/probe")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /api/secrets/user/<provider>/reauthorize
+# ---------------------------------------------------------------------------
+
+
+def test_reauthorize_returns_200_with_redirect_url():
+    """reauthorize returns 200 with ApiResponse<{redirect_url: str}> envelope."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/reauthorize")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert "redirect_url" in body["data"]
+
+
+def test_reauthorize_redirect_url_contains_page_of_origin_secrets():
+    """reauthorize redirect_url contains page_of_origin=secrets."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/reauthorize")
+    assert resp.status_code == 200
+    redirect_url = resp.json()["data"]["redirect_url"]
+    assert "page_of_origin=secrets" in redirect_url, (
+        f"Expected 'page_of_origin=secrets' in redirect_url: {redirect_url!r}"
+    )
+
+
+def test_reauthorize_redirect_url_points_to_oauth_start():
+    """reauthorize redirect_url points to /api/oauth/<provider>/start."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/reauthorize")
+    redirect_url = resp.json()["data"]["redirect_url"]
+    assert "/api/oauth/google/start" in redirect_url, (
+        f"Expected '/api/oauth/google/start' in redirect_url: {redirect_url!r}"
+    )
+
+
+def test_reauthorize_redirect_url_includes_account_hint_when_label_present():
+    """reauthorize redirect_url includes account_hint when the credential has a label."""
+    row = _make_entity_info_row(
+        info_type="google_oauth_refresh",
+        label="user@example.com",
+    )
+    mock_db = _make_db(user_row=row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/reauthorize")
+    redirect_url = resp.json()["data"]["redirect_url"]
+    assert (
+        "account_hint=user%40example.com" in redirect_url
+        or "account_hint=user@example.com" in redirect_url
+    ), f"Expected account_hint in redirect_url: {redirect_url!r}"
+
+
+def test_reauthorize_writes_attempted_audit_row(monkeypatch):
+    """reauthorize appends an 'attempted' audit row to public.audit_log."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/reauthorize")
+    assert resp.status_code == 200
+    assert any(c["action"] == "attempted" for c in audit_calls), (
+        f"Expected 'attempted' audit action; got: {audit_calls}"
+    )
+
+
+def test_reauthorize_404_on_missing_credential():
+    """reauthorize returns 404 when no credential exists for the provider."""
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/reauthorize")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: OAuth token revocation during rotate (bu-ohwbh)
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_google_calls_revoke_url(monkeypatch):
+    """Google rotation calls the OAuth revoke endpoint with the old token."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-token-xyz")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url), **kwargs})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    # Patch AsyncClient.post — the revoke helper uses `async with httpx.AsyncClient() as c`.
+    # We patch the class-level __aenter__ / __aexit__ via AsyncMock so the async context manager
+    # yields a fake client with a mocked post().
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-token-abc"})
+
+    assert resp.status_code == 200
+    assert revoke_calls, "Expected at least one call to the Google revoke URL"
+    assert "oauth2.googleapis.com/revoke" in revoke_calls[0]["url"]
+    # The old token value must be in the POST body (data=), NOT in query params.
+    # Sending in query params risks token leakage via proxy/server logs.
+    data = revoke_calls[0].get("data", {})
+    assert data.get("token") == "old-token-xyz", (
+        f"Expected old token in revoke body data, got: {data}"
+    )
+
+
+def test_rotate_google_revoke_failure_does_not_fail_rotation(monkeypatch):
+    """Google revoke HTTP failure does NOT cause the rotate endpoint to return non-200."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-token")
+    mock_db = _make_db(user_row=row)
+
+    async def _fake_post(url, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-token"})
+
+    # Rotation MUST succeed even when revoke fails.
+    assert resp.status_code == 200
+    assert "data" in resp.json()
+
+
+def test_rotate_google_revoke_http_non_200_does_not_fail_rotation(monkeypatch):
+    """Google revoke HTTP 400 response does NOT cause the rotate endpoint to return non-200."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-tok")
+    mock_db = _make_db(user_row=row)
+
+    async def _fake_post(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 400
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-tok"})
+
+    assert resp.status_code == 200
+
+
+def test_rotate_non_oauth_provider_does_not_call_revoke(monkeypatch):
+    """Rotation of a non-OAuth credential (e.g. a plain API key) does NOT call the revoke URL.
+
+    Spotify type 'spotify_api_key' does not match the _OAUTH_TYPE_SUFFIXES, so
+    revoke is skipped entirely.
+    """
+    import httpx
+
+    row = _make_entity_info_row(info_type="spotify_api_key", value="old-api-key")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url)})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/spotify/rotate", json={"value": "new-api-key"})
+
+    assert resp.status_code == 200
+    assert not revoke_calls, (
+        f"Expected no revoke calls for non-OAuth credential, got: {revoke_calls}"
+    )
+
+
+def test_rotate_unlisted_provider_does_not_call_revoke(monkeypatch):
+    """Rotation of an OAuth credential for an unlisted provider logs a warning and skips revoke.
+
+    'github' with type 'github_oauth_refresh' would match the OAuth type suffix, but
+    'github' is not in _OAUTH_REVOKE_PROVIDERS (implementation pending), so revoke is skipped.
+    """
+    import httpx
+
+    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-github-tok")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url)})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-github-tok"})
+
+    assert resp.status_code == 200
+    assert not revoke_calls, (
+        f"Expected no revoke HTTP calls for unlisted provider, got: {revoke_calls}"
+    )
+
+
+def test_rotate_audit_note_contains_revoke_status(monkeypatch):
+    """Audit note for rotate contains revoke_status= field."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-tok")
+    mock_db = _make_db(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
+    async def _fake_post(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-tok"})
+    assert resp.status_code == 200
+
+    rotated = [c for c in audit_calls if c["action"] == "rotated"]
+    assert rotated, "Expected 'rotated' audit row"
+    note = rotated[0].get("note", "")
+    assert "revoke_status=" in note, f"Expected 'revoke_status=' in audit note, got: {note!r}"
+
+
+def test_rotate_no_revoke_when_new_value_equals_old(monkeypatch):
+    """No-op rotation (new value == old value) must NOT call the revoke endpoint.
+
+    Revoking the current token when value is unchanged would invalidate it.
+    """
+    import httpx
+
+    old_value = "same-token"
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value=old_value)
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url)})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    # Same value as stored — no-op rotation.
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": old_value})
+
+    assert resp.status_code == 200
+    assert not revoke_calls, (
+        f"Expected no revoke when new value equals old value, got: {revoke_calls}"
+    )

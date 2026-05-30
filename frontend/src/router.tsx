@@ -1,5 +1,8 @@
-import { Navigate, useParams, useSearchParams } from 'react-router'
+import { Link, Navigate, useParams, useSearchParams } from 'react-router'
+import { useQuery } from '@tanstack/react-query'
 import IngestionTimelinePage from './pages/IngestionTimelinePage.tsx'
+import { resolveContactEntity } from './api/client.ts'
+import { EmptyState } from './components/ui/empty-state.tsx'
 
 // ---------------------------------------------------------------------------
 // Private redirect helpers
@@ -35,6 +38,45 @@ export function RelationshipContactRedirect() {
   return <Navigate to={`/contacts/${id ?? ''}`} replace />
 }
 
+// Redirect /contacts/:contactId → /entities/:entityId when the contact has a
+// linked entity.  When the contact exists but has no entity_id, renders a
+// recovery state pointing users to the entities index.  When the contact does
+// not exist (API 404) or any other error occurs, renders the same recovery
+// state so the user is never left at a broken URL.
+//
+// Spec: openspec/changes/decommission-contact-detail-page/tasks.md §4
+export function ContactEntityRedirect() {
+  const { contactId } = useParams<{ contactId: string }>()
+  const { data, isPending, isError } = useQuery({
+    queryKey: ['contact-entity-resolve', contactId],
+    queryFn: () => resolveContactEntity(contactId!),
+    enabled: !!contactId,
+    retry: false,
+  })
+
+  if (isPending) return null
+
+  if (!isError && data?.entity_id) {
+    return <Navigate to={`/entities/${data.entity_id}`} replace />
+  }
+
+  // Either unlinked (no entity_id) or contact not found (ApiError 404).
+  return (
+    <EmptyState
+      title="Contact not linked to an entity"
+      description="This contact has not been migrated to an entity yet."
+      action={
+        <Link
+          to="/entities?has=contact"
+          className="text-sm text-primary hover:underline"
+        >
+          Browse entities
+        </Link>
+      }
+    />
+  )
+}
+
 // ---------------------------------------------------------------------------
 // IngestionTabRedirect — public component
 // ---------------------------------------------------------------------------
@@ -49,7 +91,10 @@ export function RelationshipContactRedirect() {
 // a permanent client-side replace() navigation, which is functionally identical
 // for bookmark resolution and browser history.
 //
-// Spec: ingestion-ui-information-architecture §"301 redirects from legacy tab parameters"
+// Spec: dashboard-ingestion-dispatch-console §"Legacy connectors tab normalizes to roster route"
+//       "History tab normalizes to Timeline state"
+// Note: ?tab=history normalises to /ingestion (Timeline), NOT /ingestion/history.
+//       There is no primary redesigned /ingestion/history route per the new spec.
 // Exported so tests can import the component directly without duplicating its logic.
 export function IngestionTabRedirect() {
   const [searchParams] = useSearchParams()
@@ -66,8 +111,10 @@ export function IngestionTabRedirect() {
   if (tab === 'filters') {
     return <Navigate to={`/ingestion/filters${qs ? `?${qs}` : ''}`} replace />
   }
-  if (tab === 'history') {
-    return <Navigate to={`/ingestion/history${qs ? `?${qs}` : ''}`} replace />
+  // history normalises to Timeline (no separate /ingestion/history route in the redesign)
+  // Spec: "history SHALL map to the Timeline route … it SHALL NOT remain a fourth redesigned tab"
+  if (tab === 'history' || tab === 'timeline') {
+    return <Navigate to={`/ingestion${qs ? `?${qs}` : ''}`} replace />
   }
 
   // Unrecognized ?tab= value: redirect to Timeline root, stripping the unknown

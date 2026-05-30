@@ -251,6 +251,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         """Process-level metadata from the most recent invoke() call.
 
         Returns a dict with keys: pid, exit_code, command, stderr, runtime_type.
+        On failure paths also includes ``error_detail`` (str) and
+        ``is_pre_tool_call`` (bool). See :attr:`RuntimeAdapter.last_process_info`
+        for the full field contract.
         Available after invoke() completes (success or failure). None before
         first invocation.
         """
@@ -472,6 +475,11 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             if returncode != 0:
                 error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                 logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
+                self._last_process_info["error_detail"] = error_detail
+                # On non-zero exit the adapter raises immediately — no tool calls
+                # were captured by the adapter itself, so this is pre-tool-call.
+                # The spawner will layer in daemon-side tool-call capture.
+                self._last_process_info["is_pre_tool_call"] = True
                 raise RuntimeError(f"Claude CLI exited with code {returncode}: {error_detail}")
 
             result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
@@ -485,6 +493,10 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "command": cmd_for_log,
                 "stderr": "(timeout — process killed)",
                 "runtime_type": "claude",
+                # Timeout fired before the adapter could confirm any tool calls —
+                # the failover classifier treats this as pre-tool-call eligible.
+                # The spawner will layer in daemon-side tool-call capture.
+                "is_pre_tool_call": True,
             }
             if proc:
                 proc.kill()

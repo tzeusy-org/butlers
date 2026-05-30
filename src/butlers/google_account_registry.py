@@ -531,6 +531,110 @@ async def set_primary_account(
     return account
 
 
+@dataclass
+class HealthScopedAccount:
+    """A Google account that has all required Google Health scopes and is active.
+
+    Returned by :func:`list_health_scoped_accounts` — used by the Google Health
+    connector to enumerate the full set of accounts it should poll.
+
+    Attributes
+    ----------
+    id:
+        UUID primary key of the ``public.google_accounts`` row.
+    email:
+        Authenticated Google email address.
+    entity_id:
+        UUID of the companion entity (used to resolve the refresh token via
+        ``google_credentials._resolve_entity_refresh_token``).
+    refresh_token_present:
+        ``True`` when a refresh token row exists in ``public.entity_info`` for
+        the companion entity.  The token value is NOT included here; callers
+        that need it must call ``_resolve_entity_refresh_token`` directly, per
+        design.md ADR-4.
+    """
+
+    id: uuid.UUID
+    email: str
+    entity_id: uuid.UUID
+    refresh_token_present: bool
+
+
+async def list_health_scoped_accounts(
+    pool: asyncpg.Pool,
+    health_scopes: frozenset[str] | None = None,
+) -> list[HealthScopedAccount]:
+    """Return every active Google account whose granted scopes are a superset of the
+    three ``googlehealth.*`` scope URLs.
+
+    Rows with ``status != 'active'`` or missing any required scope are excluded.
+    The result is ordered by ``connected_at ASC`` for determinism.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg pool connected to the shared database.
+    health_scopes:
+        The set of required scope URLs.  Defaults to the three canonical
+        Google Health RESTRICTED scopes.  Injected by tests to avoid importing
+        ``GOOGLE_HEALTH_SCOPES`` from the connector module.
+
+    Returns
+    -------
+    list[HealthScopedAccount]
+        One entry per qualifying account.  Empty when no accounts qualify.
+    """
+    if health_scopes is None:
+        # Import lazily to avoid circular imports — the connector module imports
+        # from this registry, and this function is the only place the registry
+        # needs connector-owned constants.
+        from butlers.connectors.google_health import GOOGLE_HEALTH_SCOPES  # noqa: PLC0415
+
+        health_scopes = GOOGLE_HEALTH_SCOPES
+
+    required = health_scopes
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                ga.id,
+                ga.email,
+                ga.entity_id,
+                ga.granted_scopes,
+                (
+                    SELECT 1
+                    FROM public.entity_info ei
+                    WHERE ei.entity_id = ga.entity_id
+                      AND ei.type = 'google_oauth_refresh'
+                    LIMIT 1
+                ) IS NOT NULL AS refresh_token_present
+            FROM public.google_accounts ga
+            WHERE ga.status = 'active'
+            ORDER BY ga.connected_at ASC
+            """,
+        )
+
+    results: list[HealthScopedAccount] = []
+    for row in rows:
+        granted = frozenset(row["granted_scopes"] or [])
+        if not required.issubset(granted):
+            continue
+        email = row["email"]
+        if not email:
+            # Accounts without an email cannot be identified — skip.
+            continue
+        results.append(
+            HealthScopedAccount(
+                id=row["id"],
+                email=email,
+                entity_id=row["entity_id"],
+                refresh_token_present=bool(row["refresh_token_present"]),
+            )
+        )
+    return results
+
+
 async def disconnect_account(
     pool: asyncpg.Pool,
     account_id: uuid.UUID,

@@ -404,7 +404,7 @@ Consolidated from Phases A–D. Numbered for `/project-direction` Phase 2 to res
 
 > Added 2026-05-17 by `/project-direction` Phase 1 (doctrine reconciliation). Verdict: `proceed-with-amendments`. The ten amendments below are **binding inputs to Phase 2 (OpenSpec changeset)**. Any spec section that contradicts these amendments fails reconciliation.
 
-**Critical context:** an existing OpenSpec change `relationship-tabs-to-entities` is the canonical precursor for the entity-detail surface. This redesign must **extend** that change, not duplicate or replace it. Routes already specced there live under `/api/butlers/relationship/entities/*`, not the top-level `/api/entities/*` the brief proposed.
+**Critical context:** an existing OpenSpec change `relationship-tabs-to-entities` is the canonical precursor for the entity-detail surface. This redesign must **extend** that change, not duplicate or replace it. Routes already specced there live under `/api/relationship/entities/*`, not the top-level `/api/entities/*` the brief proposed.
 
 ### Amendment 1 — Data model rewrite: contacts as RDF triples under entities (binding architectural change)
 
@@ -490,10 +490,12 @@ These beads block the redesign's UI-level features that depend on the triple sto
 
 All ~15 new endpoints proposed in §3 must either:
 
-- Live under `/api/butlers/relationship/entities/*` (consistent with `relationship-tabs-to-entities/spec.md:111-121` and `rfcs/0007:31` auto-discovery prefix), **OR**
+- Live under `/api/relationship/entities/*` (consistent with `relationship-tabs-to-entities/spec.md:111-121` and `rfcs/0007:31` auto-discovery prefix), **OR**
 - Be declared in a new "entities" core API package with an explicit RFC 0007 amendment akin to RFC 0007 Amendment 1 (`/api/system/*` carve-out at `:258-289`).
 
 **Recommendation:** option A — extend `relationship-tabs-to-entities`. Re-prefix every brief §3 endpoint accordingly.
+
+> **Spec-correction note (2026-05-27, bu-cj8om):** This amendment originally cited `/api/butlers/relationship/entities/*`. That prefix was incorrect. The shipped code uses `/api/relationship/` (see `roster/relationship/api/router.py:127`). RFC 0007:31 specifies auto-discovery uses `prefix='/api/<butler_name>'` — confirmed across the full roster: messenger, finance, chronicler, health, travel, home, general, education, and switchboard all use `/api/<butler>/`, not `/api/butlers/<butler>/`. All downstream specs have been corrected to use `/api/relationship/`.
 
 ### Amendment 3 — RFC 0007 envelope conformance
 
@@ -501,7 +503,7 @@ All responses use `ApiResponse<T>` / `PaginatedResponse<T>` envelopes (per `rfcs
 
 ### Amendment 4 — `/api/search` reconciliation
 
-`GET /api/search` already exists per `rfcs/0007:122` returning a grouped `SearchResults` shape. Brief §3 redefined the shape. **Either** extend the existing endpoint (add an `entities` group to the existing response), **or** rename the new endpoint (`/api/butlers/relationship/entities/search`). Do not silently redefine.
+`GET /api/search` already exists per `rfcs/0007:122` returning a grouped `SearchResults` shape. Brief §3 redefined the shape. **Either** extend the existing endpoint (add an `entities` group to the existing response), **or** rename the new endpoint (`/api/relationship/entities/search`). Do not silently redefine.
 
 ### Amendment 5 — Chronicler aggregator: tool surface check
 
@@ -543,7 +545,7 @@ The Editorial/Workbench toggle uses the same `localStorage` persistence pattern 
 
 `about/heart-and-soul/security.md:18-22` + RFC 0007:309 require non-trivial identity operations to gate on owner role. The new entity endpoints introduce both mutation surfaces (which mint, merge, archive, forget entities) and read surfaces that return contact-fact `object` values (raw emails/phones/handles/addresses — PII). Both need owner-only authz; one without the other leaves a PII-leak hole.
 
-**12a — Writes (mutations):** every `POST/PATCH/DELETE` under `/api/butlers/relationship/entities/*` MUST resolve the caller to an owner-role entity (`'owner' = ANY(e.roles)` per RFC 0007:309 pattern) and return HTTP 403 with `code='owner_required'` otherwise. Scope: `POST /entities`, `POST /entities/{id}/merge`, `POST /entities/{id}/archive`, `POST /entities/{id}/promote-tier`, `DELETE /entities/{id}`, `POST /entities/queue/dismiss`, `POST /entities/{id}/contacts`, `DELETE /entities/{id}/contacts/{pred}/{valueHash}`.
+**12a — Writes (mutations):** every `POST/PATCH/DELETE` under `/api/relationship/entities/*` MUST resolve the caller to an owner-role entity (`'owner' = ANY(e.roles)` per RFC 0007:309 pattern) and return HTTP 403 with `code='owner_required'` otherwise. Scope: `POST /entities`, `POST /entities/{id}/merge`, `POST /entities/{id}/archive`, `POST /entities/{id}/promote-tier`, `DELETE /entities/{id}`, `POST /entities/queue/dismiss`, `POST /entities/{id}/contacts`, `DELETE /entities/{id}/contacts/{pred}/{valueHash}`.
 
 **12b — Reads (PII-bearing):** the same owner-only gate MUST apply to `GET /entities/queue`, `GET /entities/search`, `GET /entities/{id}/contacts`, `GET /entities/{id}/neighbours`, `GET /entities/{id}/activity`. These endpoints return raw contact-fact values (emails, phone numbers, handles, addresses) and aliased identity links; exposing them through the existing shared `DASHBOARD_API_KEY` would leak PII to any caller that reaches the API surface. The list-only `GET /entities` and per-entity timeline/notes/interactions endpoints (no raw contact-fact `object` values surfaced) inherit the existing dashboard session boundary.
 

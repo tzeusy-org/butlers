@@ -120,6 +120,7 @@ if _models_path.exists():
         ActivityResponse = _models_module.ActivityResponse
         EntityFactEntry = _models_module.EntityFactEntry
         EntityFactsResponse = _models_module.EntityFactsResponse
+        ContactEntityResolverResponse = _models_module.ContactEntityResolverResponse
 
 logger = logging.getLogger(__name__)
 
@@ -1228,6 +1229,50 @@ async def list_contact_interactions(
 
 
 # ---------------------------------------------------------------------------
+# GET /contacts/{contact_id}/entity — redirect resolver
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/contacts/{contact_id}/entity",
+    response_model=ContactEntityResolverResponse,
+    summary="Resolve a contact to its linked entity",
+)
+async def resolve_contact_entity(
+    contact_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactEntityResolverResponse:
+    """Resolve a contact_id to its linked entity_id for redirect purposes.
+
+    Used by the /contacts/:contactId frontend route to locate the target
+    entity before redirecting to /entities/:entityId.  Returns a minimal
+    payload — callers must NOT use this as a substitute for the full entity
+    detail; call GET /memory/entities/{entityId} for that.
+
+    Responses:
+    - ``{"entity_id": "<uuid>", "status": "linked"}``   — contact exists and
+      is linked to an entity.
+    - ``{"entity_id": null, "status": "unlinked"}``     — contact exists but
+      has no entity link yet.
+    - HTTP 404                                           — no contact with
+      this ID.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT entity_id FROM contacts WHERE id = $1",
+        contact_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    entity_id = row["entity_id"]
+    if entity_id is None:
+        return ContactEntityResolverResponse(entity_id=None, status="unlinked")
+    return ContactEntityResolverResponse(entity_id=entity_id, status="linked")
+
+
+# ---------------------------------------------------------------------------
 # GET /contacts/{contact_id} — full detail
 # ---------------------------------------------------------------------------
 
@@ -1238,6 +1283,10 @@ async def get_contact(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ContactDetail:
     """Get full contact detail with labels, email, phone, birthday, roles, entity_id.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
+    is fully removed from the frontend.  Prefer entity-keyed endpoints for new
+    code.  Migration gate: bu-k9ylx (write-path cut-over) + bu-uhjxr children.
 
     Secured contact_info values are masked (value=None) in the response.
     Use GET /contacts/{id}/secrets/{info_id} to reveal a secured value.
@@ -1410,6 +1459,11 @@ async def reveal_contact_secret(
 ) -> dict[str, Any]:
     """Reveal the actual value of a secured contact_info entry.
 
+    COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
+    is fully removed and secured contact_info rows are migrated to entity_info
+    (bu-pl8fy).  Prefer GET /relationship/entities/{entityId}/secrets/{infoId}
+    for entity_info secured rows once that migration is complete.
+
     Returns the real value for a secured contact_info row.  Returns 404 if
     the info_id does not exist OR does not belong to the given contact_id —
     preventing enumeration of secured values across contacts.
@@ -1468,6 +1522,11 @@ async def patch_contact(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ContactDetail:
     """Partially update a contact.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
+    is fully removed.  CRM field writes (full_name, company, job_title) will
+    migrate to entity fact mutations after bu-k9ylx (write-path cut-over).
+    Preferred channel and label writes have the same migration dependency.
 
     Supported fields: full_name, nickname, company, job_title, roles.
     This is the sole write path for role assignment.  Only provided
@@ -1580,6 +1639,11 @@ async def delete_contact(
 ) -> None:
     """Hard-delete a contact and all its associated contact_info.
 
+    COMPAT-ONLY: this contact-keyed endpoint remains until the contact row
+    lifecycle is rationalized post bu-k9ylx + bu-e2ja9 (drop public.contact_info).
+    Prefer DELETE /relationship/entities/{entityId} (entity forget/tombstone)
+    for complete entity removal.
+
     CASCADE on public.contact_info FK handles info cleanup.
     Source links in contacts_source_links are also removed so a
     future sync can re-create the contact from scratch if needed.
@@ -1617,6 +1681,13 @@ async def archive_contact(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Soft-archive a contact.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until contact archive
+    semantics are rationalized with entity archive (POST /relationship/entities
+    /{entityId}/archive) post bu-k9ylx.  Contact archive (preserves source
+    links so sync won't re-create) is semantically distinct from entity archive
+    (hides from list views); both actions are available during the migration
+    window.
 
     Sets archived_at to now(). Source links are preserved so that future
     syncs recognise the contact and skip re-creation.
@@ -1954,7 +2025,11 @@ async def create_contact_info(
     request: CreateContactInfoRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CreateContactInfoResponse:
-    """Add a contact_info entry (email, telegram, phone, etc.) to a contact."""
+    """Add a contact_info entry (email, telegram, phone, etc.) to a contact.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until contact-info writes
+    are migrated to entity fact mutations (bu-k9ylx write-path cut-over).
+    """
     pool = _pool(db)
 
     # Verify contact exists
@@ -2048,7 +2123,11 @@ async def delete_contact_info(
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
-    """Delete a single contact_info entry."""
+    """Delete a single contact_info entry.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until contact-info writes
+    are migrated to entity fact mutations (bu-k9ylx write-path cut-over).
+    """
     pool = _pool(db)
 
     row = await pool.fetchrow(
@@ -2090,7 +2169,11 @@ async def patch_contact_info(
     request: PatchContactInfoRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ContactInfoEntry:
-    """Update a contact_info entry (type, value, is_primary)."""
+    """Update a contact_info entry (type, value, is_primary).
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until contact-info writes
+    are migrated to entity fact mutations (bu-k9ylx write-path cut-over).
+    """
     pool = _pool(db)
 
     row = await pool.fetchrow(
@@ -4337,7 +4420,12 @@ async def list_entity_linked_contacts(
 
     Returns 404 if the entity does not exist.
     Returns [] if no contacts are linked to the entity.
-    Each entry includes a primary email and phone for quick display.
+
+    Each entry is enriched with:
+    - ``email`` / ``phone`` — primary non-secured values for quick display.
+    - ``contact_info`` — all non-secured contact_info rows (channel chips).
+    - ``labels`` — full label objects assigned to the contact.
+    - ``preferred_channel`` — the contact's preferred outreach channel.
     """
     pool = _pool(db)
     await _assert_entity_exists(pool, entity_id)
@@ -4346,7 +4434,8 @@ async def list_entity_linked_contacts(
         """
         SELECT
             c.id,
-            c.full_name,
+            c.name AS full_name,
+            c.preferred_channel,
             (
                 SELECT ci.value
                 FROM public.contact_info ci
@@ -4368,16 +4457,70 @@ async def list_entity_linked_contacts(
         FROM public.contacts c
         WHERE c.entity_id = $1
           AND c.archived_at IS NULL
-        ORDER BY c.full_name
+        ORDER BY c.name
         """,
         entity_id,
     )
+
+    if not rows:
+        return []
+
+    contact_ids = [r["id"] for r in rows]
+
+    # Batch-fetch supplementary data to avoid N+1 queries.
+    ci_rows, label_rows = await asyncio.gather(
+        pool.fetch(
+            """
+            SELECT id, contact_id, type, value, is_primary, secured, parent_id, context
+            FROM public.contact_info
+            WHERE contact_id = ANY($1)
+              AND secured = false
+            ORDER BY contact_id, is_primary DESC NULLS LAST, type, id
+            """,
+            contact_ids,
+        ),
+        pool.fetch(
+            """
+            SELECT cl.contact_id, l.id, l.name, l.color
+            FROM contact_labels cl
+            JOIN labels l ON l.id = cl.label_id
+            WHERE cl.contact_id = ANY($1)
+            ORDER BY cl.contact_id, l.name
+            """,
+            contact_ids,
+        ),
+    )
+
+    # Index supplementary data by contact_id.
+    ci_by_contact: dict[UUID, list[ContactInfoEntry]] = {cid: [] for cid in contact_ids}
+    for ci in ci_rows:
+        ci_by_contact[ci["contact_id"]].append(
+            ContactInfoEntry(
+                id=ci["id"],
+                type=ci["type"],
+                value=ci["value"],
+                is_primary=bool(ci["is_primary"]),
+                secured=False,
+                parent_id=ci["parent_id"],
+                context=ci["context"],
+            )
+        )
+
+    labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
+    for lr in label_rows:
+        labels_by_contact[lr["contact_id"]].append(
+            Label(id=lr["id"], name=lr["name"], color=lr["color"])
+        )
+
     return [
         LinkedContactSummary(
             id=r["id"],
             full_name=r["full_name"],
             email=r["email"],
             phone=r["phone"],
+            contact_info=ci_by_contact.get(r["id"], []),
+            labels=labels_by_contact.get(r["id"], []),
+            preferred_channel=r["preferred_channel"],
         )
         for r in rows
     ]

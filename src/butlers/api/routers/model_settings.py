@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 catalog_router = APIRouter(prefix="/api/settings/models", tags=["model-catalog"])
 pricing_router = APIRouter(prefix="/api/settings", tags=["pricing"])
 butler_model_router = APIRouter(prefix="/api/butlers", tags=["butlers", "model-overrides"])
+dispatch_router = APIRouter(prefix="/api/dispatch", tags=["dispatch"])
 
 _COMPLEXITY_TIERS = ("reasoning", "workhorse", "cheap", "specialty", "local", "legacy")
 
@@ -1526,3 +1527,139 @@ async def get_model_pricing(
             )
 
     return ApiResponse[dict[str, ModelPricingResponse]](data=result)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/dispatch/attempts — query failover provenance by session or
+#                              logical_session_id (cross-model view)
+# ---------------------------------------------------------------------------
+
+
+@dispatch_router.get("/attempts", response_model=PaginatedResponse[DispatchAttemptEntry])
+async def get_dispatch_attempts(
+    session_id: str | None = Query(
+        None,
+        description=(
+            "Filter by the UUID of the session row. Returns all attempt rows tied to this session."
+        ),
+    ),
+    logical_session_id: str | None = Query(
+        None,
+        description=(
+            "Filter by logical_session_id. "
+            "Groups all attempts (quota-skip, failure, success) for one logical dispatch "
+            "cycle, even when multiple session rows exist."
+        ),
+    ),
+    limit: int = Query(100, ge=1, le=500, description="Max records to return"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[DispatchAttemptEntry]:
+    """Return failover attempt provenance rows for a session or logical session.
+
+    Exactly one of ``session_id`` or ``logical_session_id`` must be provided.
+
+    Rows are ordered by ``attempt_index ASC`` so callers can reconstruct the
+    ordered sequence of candidates for a single logical dispatch cycle.
+
+    Each row answers one of these questions:
+    - Which model was skipped before invocation (``quota_skip``)?
+    - Which model failed with a failover-eligible error (``runtime_failure``)?
+    - Why was failover suppressed (``suppressed``)?
+    - Which model finally succeeded (``success``)?
+
+    When the table does not exist (migration not yet applied) returns an empty
+    page rather than 503.
+    """
+    if session_id is None and logical_session_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail=("At least one of 'session_id' or 'logical_session_id' must be provided."),
+        )
+
+    pool = _shared_pool(db)
+
+    try:
+        if session_id is not None and logical_session_id is not None:
+            rows = await pool.fetch(
+                """
+                SELECT ts, butler, outcome, attempt_index,
+                       failure_reason, error_code, error_message,
+                       tool_call_count, session_id, logical_session_id
+                FROM public.model_dispatch_attempts
+                WHERE session_id = $1::uuid
+                   OR logical_session_id = $2
+                ORDER BY attempt_index ASC
+                LIMIT $3
+                """,
+                session_id,
+                logical_session_id,
+                limit,
+            )
+            total = await pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts"
+                " WHERE session_id = $1::uuid OR logical_session_id = $2",
+                session_id,
+                logical_session_id,
+            )
+        elif session_id is not None:
+            rows = await pool.fetch(
+                """
+                SELECT ts, butler, outcome, attempt_index,
+                       failure_reason, error_code, error_message,
+                       tool_call_count, session_id, logical_session_id
+                FROM public.model_dispatch_attempts
+                WHERE session_id = $1::uuid
+                ORDER BY attempt_index ASC
+                LIMIT $2
+                """,
+                session_id,
+                limit,
+            )
+            total = await pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE session_id = $1::uuid",
+                session_id,
+            )
+        else:
+            rows = await pool.fetch(
+                """
+                SELECT ts, butler, outcome, attempt_index,
+                       failure_reason, error_code, error_message,
+                       tool_call_count, session_id, logical_session_id
+                FROM public.model_dispatch_attempts
+                WHERE logical_session_id = $1
+                ORDER BY attempt_index ASC
+                LIMIT $2
+                """,
+                logical_session_id,
+                limit,
+            )
+            total = await pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE logical_session_id = $1",
+                logical_session_id,
+            )
+    except asyncpg.exceptions.UndefinedTableError:
+        return PaginatedResponse[DispatchAttemptEntry](
+            data=[],
+            meta=PaginationMeta(total=0, offset=0, limit=limit),
+        )
+
+    entries = [
+        DispatchAttemptEntry(
+            ts=row["ts"],
+            butler=row["butler"],
+            outcome=row["outcome"],
+            attempt_index=row["attempt_index"],
+            failure_reason=row["failure_reason"],
+            error_code=row["error_code"],
+            error_message=row["error_message"],
+            tool_call_count=row["tool_call_count"],
+            session_id=str(row["session_id"]) if row["session_id"] else None,
+            logical_session_id=row["logical_session_id"],
+        )
+        for row in rows
+    ]
+
+    return PaginatedResponse[DispatchAttemptEntry](
+        data=entries,
+        meta=PaginationMeta(total=int(total or 0), offset=0, limit=limit),
+    )

@@ -7,7 +7,7 @@
  * The four redirects under test:
  *   /ingestion?tab=connectors → /ingestion/connectors
  *   /ingestion?tab=filters    → /ingestion/filters
- *   /ingestion?tab=history    → /ingestion/history
+ *   /ingestion?tab=history    → /ingestion (Timeline; spec says history SHALL NOT remain a fourth redesigned tab)
  *   /ingestion                → /ingestion (no redirect — stays on timeline)
  *
  * This test skips gracefully when the dev/preview server is not reachable,
@@ -79,7 +79,10 @@ test.describe("ingestion sub-route redirects", () => {
     expect(page.url()).not.toContain("tab=");
   });
 
-  test("?tab=history redirects to /ingestion/history", async ({ page, baseURL }) => {
+  test("?tab=history redirects to /ingestion (Timeline)", async ({ page, baseURL }) => {
+    // Spec (complete-ingestion-redesign-parity §2.10): "history SHALL map to the Timeline
+    // route … it SHALL NOT remain a fourth redesigned tab." No primary /ingestion/history
+    // route in dispatch mode — /ingestion/history itself also redirects to /ingestion.
     const ok = await tryNavigate(page, "/ingestion?tab=history");
     if (!ok) {
       test.skip(
@@ -88,8 +91,10 @@ test.describe("ingestion sub-route redirects", () => {
       );
       return;
     }
-    await page.waitForURL(/\/ingestion\/history/, { timeout: TIMEOUT_MS });
-    expect(page.url()).toMatch(/\/ingestion\/history/);
+    // After redirect, URL must be exactly /ingestion — NOT /ingestion/history
+    await page.waitForURL(/\/ingestion$/, { timeout: TIMEOUT_MS });
+    expect(page.url()).toMatch(/\/ingestion$/);
+    expect(page.url()).not.toContain("/ingestion/history");
     expect(page.url()).not.toContain("tab=");
   });
 

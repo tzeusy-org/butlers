@@ -24,7 +24,10 @@ import {
   getCrossConnectorSummary,
   getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
+  getConnectorEvents,
   getConnectorFanout,
+  getConnectorIncidents,
+  getConnectorRoutingRules,
   getConnectorStats,
   getConnectorSummariesWithAggregates,
   getIngestionOverview,
@@ -73,6 +76,29 @@ export const ingestionKeys = {
     [...ingestionKeys.all, "cross-summary-with-aggregates"] as const,
   pipelineStats: (window: string) =>
     [...ingestionKeys.all, "pipeline-stats", window] as const,
+  connectorEvents: (connectorType: string, endpointIdentity: string, limit: number) =>
+    [
+      ...ingestionKeys.all,
+      "connector-events",
+      connectorType,
+      endpointIdentity,
+      limit,
+    ] as const,
+  connectorIncidents: (connectorType: string, endpointIdentity: string, limit: number) =>
+    [
+      ...ingestionKeys.all,
+      "connector-incidents",
+      connectorType,
+      endpointIdentity,
+      limit,
+    ] as const,
+  connectorRoutingRules: (connectorType: string, endpointIdentity: string) =>
+    [
+      ...ingestionKeys.all,
+      "connector-routing-rules",
+      connectorType,
+      endpointIdentity,
+    ] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -337,5 +363,76 @@ export function useBulkReplayEvents() {
         queryKey: ingestionKeys.all,
       });
     },
+  });
+}
+
+/**
+ * Recent events for a single connector (left zone, below histogram).
+ * Polls every 60s; disabled when connectorType or endpointIdentity is null.
+ * [bu-5ywn2]
+ */
+export function useConnectorEvents(
+  connectorType: string | null,
+  endpointIdentity: string | null,
+  limit = 20,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorEvents(
+      connectorType ?? "",
+      endpointIdentity ?? "",
+      limit,
+    ),
+    queryFn: () => getConnectorEvents(connectorType!, endpointIdentity!, limit),
+    enabled:
+      !!connectorType && !!endpointIdentity && options?.enabled !== false,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * Incident events (failures, errors) for a single connector (left zone).
+ * Polls every 60s; disabled when connectorType or endpointIdentity is null.
+ * [bu-5ywn2]
+ */
+export function useConnectorIncidents(
+  connectorType: string | null,
+  endpointIdentity: string | null,
+  limit = 10,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorIncidents(
+      connectorType ?? "",
+      endpointIdentity ?? "",
+      limit,
+    ),
+    queryFn: () => getConnectorIncidents(connectorType!, endpointIdentity!, limit),
+    enabled:
+      !!connectorType && !!endpointIdentity && options?.enabled !== false,
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * Routing rules scoped to a single connector (right zone).
+ * Polls every 120s; rules change infrequently.
+ * Disabled when connectorType or endpointIdentity is null.
+ * [bu-5ywn2]
+ */
+export function useConnectorRoutingRules(
+  connectorType: string | null,
+  endpointIdentity: string | null,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorRoutingRules(
+      connectorType ?? "",
+      endpointIdentity ?? "",
+    ),
+    queryFn: () => getConnectorRoutingRules(connectorType!, endpointIdentity!),
+    enabled:
+      !!connectorType && !!endpointIdentity && options?.enabled !== false,
+    refetchInterval: 120_000,
   });
 }

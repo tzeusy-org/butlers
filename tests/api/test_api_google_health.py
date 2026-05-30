@@ -166,7 +166,7 @@ def test_extract_rate_limit_remaining(row, expected):
         (
             {"id": uuid.uuid4()},
             _ALL_HEALTH_SCOPES[:1],
-            {"state": "healthy", "last_heartbeat_at": datetime.now(UTC)},
+            {"state": "healthy", "last_heartbeat_at": "NOW"},
             GoogleHealthConnectorState.degraded,
             False,
         ),
@@ -187,13 +187,18 @@ def test_extract_rate_limit_remaining(row, expected):
         (
             {"id": uuid.uuid4()},
             _ALL_HEALTH_SCOPES,
-            {"state": "healthy", "last_heartbeat_at": datetime.now(UTC)},
+            {"state": "healthy", "last_heartbeat_at": "NOW"},
             GoogleHealthConnectorState.healthy,
             True,
         ),
     ],
 )
 def test_derive_state(account, granted, heartbeat, exp_state, exp_connected):
+    # Resolve "NOW" sentinel at test-call time to avoid parametrize-eval staleness.
+    # parametrize runs at module import; a stale timestamp causes false degraded→healthy
+    # mismatches when CI takes more than _LIVENESS_THRESHOLD_SECONDS to reach this test.
+    if heartbeat and heartbeat.get("last_heartbeat_at") == "NOW":
+        heartbeat = {**heartbeat, "last_heartbeat_at": datetime.now(UTC)}
     state, connected = _derive_state(
         account=account, granted_health_scopes=granted, heartbeat=heartbeat
     )

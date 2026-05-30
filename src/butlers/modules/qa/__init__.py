@@ -554,6 +554,7 @@ class QaModule(Module):
         self._log_scanner_source = None
 
         enabled = set(self._config.enabled_sources)
+        session_records_available = "session_records" in enabled and pool is not None
 
         if "butler_reports" in enabled:
             self._butler_reports_source = ButlerReportsSource(
@@ -569,6 +570,7 @@ class QaModule(Module):
                 max_findings_per_scan=self._config.log_scanner_max_findings,
                 max_total_lines=self._config.log_scanner_max_total_lines,
                 max_scan_seconds=self._config.log_scanner_max_scan_seconds,
+                suppress_session_duplicate_timeouts=session_records_available,
             )
             self._sources.append(self._log_scanner_source)
             logger.info("QaModule: registered log_scanner source")
