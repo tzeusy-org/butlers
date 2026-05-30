@@ -657,32 +657,24 @@ async def retract_contact_info_fact(
         return None
 
     async def _retract(c: asyncpg.Connection) -> uuid.UUID | None:
-        row = await c.fetchrow(
+        fact_id = await c.fetchval(
             """
-            SELECT id
-            FROM relationship.entity_facts
+            UPDATE relationship.entity_facts
+            SET validity   = 'retracted',
+                updated_at = now()
             WHERE subject   = $1
               AND predicate = $2
               AND object    = $3
               AND validity  = 'active'
+            RETURNING id
             """,
             subject,
             predicate,
             ci_value,
         )
-        if row is None:
+        if fact_id is None:
             return None
 
-        fact_id: uuid.UUID = row["id"]
-        await c.execute(
-            """
-            UPDATE relationship.entity_facts
-            SET validity   = 'retracted',
-                updated_at = now()
-            WHERE id = $1
-            """,
-            fact_id,
-        )
         logger.info(
             "retract_contact_info_fact: retracted fact %s (subject=%s, predicate=%s, type=%s)",
             fact_id,

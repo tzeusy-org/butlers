@@ -241,18 +241,15 @@ class TestRetractContactInfoFactUnit:
     """Unit tests for retract_contact_info_fact() directly."""
 
     async def test_returns_fact_id_when_active_row_found(self):
-        """Active fact found → retract and return its id."""
+        """Active fact found → retract and return its id (single UPDATE...RETURNING)."""
         import asyncpg
 
         from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
 
         fact_id = uuid4()
-        fact_row = MagicMock()
-        fact_row.__getitem__ = MagicMock(side_effect=lambda key: {"id": fact_id}[key])
 
         mock_conn = AsyncMock(spec=asyncpg.Connection)
-        mock_conn.fetchrow = AsyncMock(return_value=fact_row)
-        mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+        mock_conn.fetchval = AsyncMock(return_value=fact_id)
 
         result = await retract_contact_info_fact(
             pool=AsyncMock(),
@@ -263,20 +260,20 @@ class TestRetractContactInfoFactUnit:
         )
 
         assert result == fact_id
-        # Verify the UPDATE set validity='retracted'.
-        mock_conn.execute.assert_awaited_once()
-        sql_called = mock_conn.execute.call_args[0][0]
+        # Verify the UPDATE...RETURNING was called with validity='retracted'.
+        mock_conn.fetchval.assert_awaited_once()
+        sql_called = mock_conn.fetchval.call_args[0][0]
         assert "retracted" in sql_called.lower()
+        assert "returning" in sql_called.lower()
 
     async def test_returns_none_when_no_active_row(self):
-        """No active fact → returns None without executing an UPDATE."""
+        """No active fact → UPDATE matches nothing, RETURNING gives None, no extra work."""
         import asyncpg
 
         from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
 
         mock_conn = AsyncMock(spec=asyncpg.Connection)
-        mock_conn.fetchrow = AsyncMock(return_value=None)
-        mock_conn.execute = AsyncMock()
+        mock_conn.fetchval = AsyncMock(return_value=None)
 
         result = await retract_contact_info_fact(
             pool=AsyncMock(),
@@ -287,7 +284,7 @@ class TestRetractContactInfoFactUnit:
         )
 
         assert result is None
-        mock_conn.execute.assert_not_awaited()
+        mock_conn.fetchval.assert_awaited_once()
 
     async def test_uses_pool_when_conn_is_none(self):
         """When conn=None, the function acquires a connection from the pool."""
@@ -296,12 +293,9 @@ class TestRetractContactInfoFactUnit:
         from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
 
         fact_id = uuid4()
-        fact_row = MagicMock()
-        fact_row.__getitem__ = MagicMock(side_effect=lambda key: {"id": fact_id}[key])
 
         mock_conn = AsyncMock(spec=asyncpg.Connection)
-        mock_conn.fetchrow = AsyncMock(return_value=fact_row)
-        mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+        mock_conn.fetchval = AsyncMock(return_value=fact_id)
 
         mock_pool = AsyncMock(spec=asyncpg.Pool)
         mock_pool.acquire = MagicMock(return_value=_async_ctx(mock_conn))
@@ -317,13 +311,13 @@ class TestRetractContactInfoFactUnit:
         mock_pool.acquire.assert_called_once()
 
     async def test_predicate_mapping_email_to_has_email(self):
-        """ci_type='email' must resolve to predicate 'has-email'."""
+        """ci_type='email' must resolve to predicate 'has-email' in the UPDATE SQL."""
         import asyncpg
 
         from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
 
         mock_conn = AsyncMock(spec=asyncpg.Connection)
-        mock_conn.fetchrow = AsyncMock(return_value=None)
+        mock_conn.fetchval = AsyncMock(return_value=None)
 
         await retract_contact_info_fact(
             pool=AsyncMock(),
@@ -333,20 +327,18 @@ class TestRetractContactInfoFactUnit:
             conn=mock_conn,
         )
 
-        fetchrow_sql = mock_conn.fetchrow.call_args[0][0]
-        assert "has-email" in fetchrow_sql or "has-email" in str(mock_conn.fetchrow.call_args)
-        # Check the predicate argument passed to fetchrow
-        fetchrow_args = mock_conn.fetchrow.call_args[0]
-        assert "has-email" in fetchrow_args
+        fetchval_args = mock_conn.fetchval.call_args[0]
+        # predicate 'has-email' must appear as a positional argument
+        assert "has-email" in fetchval_args
 
     async def test_predicate_mapping_phone_to_has_phone(self):
-        """ci_type='phone' must resolve to predicate 'has-phone'."""
+        """ci_type='phone' must resolve to predicate 'has-phone' in the UPDATE SQL."""
         import asyncpg
 
         from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
 
         mock_conn = AsyncMock(spec=asyncpg.Connection)
-        mock_conn.fetchrow = AsyncMock(return_value=None)
+        mock_conn.fetchval = AsyncMock(return_value=None)
 
         await retract_contact_info_fact(
             pool=AsyncMock(),
@@ -356,8 +348,8 @@ class TestRetractContactInfoFactUnit:
             conn=mock_conn,
         )
 
-        fetchrow_args = mock_conn.fetchrow.call_args[0]
-        assert "has-phone" in fetchrow_args
+        fetchval_args = mock_conn.fetchval.call_args[0]
+        assert "has-phone" in fetchval_args
 
 
 # ---------------------------------------------------------------------------
