@@ -4321,9 +4321,20 @@ async def list_entity_linked_contacts(
 
     Each entry is enriched with:
     - ``email`` / ``phone`` — primary non-secured values for quick display.
-    - ``contact_info`` — all non-secured contact_info rows (channel chips).
+    - ``contact_info`` — all non-secured contact_info rows **plus** any
+      ``relationship.entity_facts`` ``has-*`` triples for the entity that are
+      not already present (de-duped on ``(type, value)``).  Entity-facts-sourced
+      entries carry ``source="entity_facts"``; legacy contact_info rows carry
+      ``source=null`` (unchanged for backward compatibility).
     - ``labels`` — full label objects assigned to the contact.
     - ``preferred_channel`` — the contact's preferred outreach channel.
+
+    De-dup key: ``(type, value)`` where ``type`` is derived from the entity_facts
+    predicate by stripping the ``has-`` prefix (e.g. ``has-email`` → ``email``).
+    A channel present in both stores appears once, with the contact_info version
+    taking precedence.  Entity-facts-only channels are appended to the first
+    linked contact (by name order) because entity_facts are entity-level, not
+    per-contact.
     """
     pool = _pool(db)
     await _assert_entity_exists(pool, entity_id)
@@ -4365,8 +4376,8 @@ async def list_entity_linked_contacts(
 
     contact_ids = [r["id"] for r in rows]
 
-    # Batch-fetch supplementary data to avoid N+1 queries.
-    ci_rows, label_rows = await asyncio.gather(
+    # Batch-fetch supplementary data (contact_info, labels, entity_facts) in one round-trip.
+    ci_rows, label_rows, fact_rows = await asyncio.gather(
         pool.fetch(
             """
             SELECT id, contact_id, type, value, is_primary, secured, parent_id, context
@@ -4387,10 +4398,23 @@ async def list_entity_linked_contacts(
             """,
             contact_ids,
         ),
+        pool.fetch(
+            """
+            SELECT id, predicate, object, "primary"
+            FROM relationship.entity_facts
+            WHERE subject  = $1
+              AND predicate LIKE 'has-%'
+              AND validity  = 'active'
+            ORDER BY predicate ASC, "primary" DESC NULLS LAST, created_at DESC
+            """,
+            entity_id,
+        ),
     )
 
-    # Index supplementary data by contact_id.
+    # Index contact_info by contact_id.
     ci_by_contact: dict[UUID, list[ContactInfoEntry]] = {cid: [] for cid in contact_ids}
+    # Collect all (type, value) pairs already present across all contacts for de-dup.
+    existing_channel_keys: set[tuple[str, str]] = set()
     for ci in ci_rows:
         ci_by_contact[ci["contact_id"]].append(
             ContactInfoEntry(
@@ -4401,14 +4425,42 @@ async def list_entity_linked_contacts(
                 secured=False,
                 parent_id=ci["parent_id"],
                 context=ci["context"],
+                source=None,
             )
         )
+        if ci["value"] is not None:
+            existing_channel_keys.add((ci["type"], ci["value"]))
 
     labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
     for lr in label_rows:
         labels_by_contact[lr["contact_id"]].append(
             Label(id=lr["id"], name=lr["name"], color=lr["color"])
         )
+
+    # Merge entity_facts has-* triples into the first linked contact, de-duped by (type, value).
+    # Entity-facts are entity-level; attaching to the first contact (name order) keeps the
+    # response shape stable while surfacing new writes from the cut-over write path.
+    if fact_rows and contact_ids:
+        first_contact_id = contact_ids[0]  # rows already ordered by c.name
+        extras: list[ContactInfoEntry] = []
+        for fr in fact_rows:
+            channel_type = fr["predicate"].removeprefix("has-")
+            channel_value: str = fr["object"]
+            if (channel_type, channel_value) not in existing_channel_keys:
+                existing_channel_keys.add((channel_type, channel_value))
+                extras.append(
+                    ContactInfoEntry(
+                        id=fr["id"],
+                        type=channel_type,
+                        value=channel_value,
+                        is_primary=bool(fr["primary"]) if fr["primary"] is not None else False,
+                        secured=False,
+                        parent_id=None,
+                        context=None,
+                        source="entity_facts",
+                    )
+                )
+        ci_by_contact[first_contact_id].extend(extras)
 
     return [
         LinkedContactSummary(
