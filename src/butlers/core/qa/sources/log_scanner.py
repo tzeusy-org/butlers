@@ -78,7 +78,7 @@ DEFAULT_MAX_SCAN_SECONDS = 30.0
 #: Maximum length of event_summary stored in QaFinding.
 _MAX_SUMMARY_LEN = 200
 
-#: Log level strings that are always included.
+#: Log level strings included unless a source-level duplicate suppression applies.
 _ERROR_LEVELS = frozenset({"error", "critical"})
 
 #: Log level strings that are included only with crash sentinel patterns.
@@ -219,13 +219,19 @@ def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
     )
 
 
-def _should_include_entry(entry: LogEntry) -> bool:
+def _should_include_entry(
+    entry: LogEntry, *, suppress_session_duplicate_timeouts: bool = False
+) -> bool:
     """Return True if this log entry qualifies for finding extraction."""
     # Codex adapter noise that should never reach the QA finding set:
     #   * "MCP discovery failed after ..." — better sourced from session_records.
     #     The runtime/session tables tell us whether the session actually
     #     failed, while the raw adapter log can be emitted on a path that
     #     later recovers.
+    #   * "Runtime invocation failed: TimeoutError: ... timed out ..." from
+    #     the spawner — a duplicate daemon log for the failed session row.
+    #     The session_records source classifies these as SessionTimeoutError
+    #     and carries session IDs for investigation.
     #   * "codex_refresh_lock: lock held" / "codex_refresh_lock: waiting" —
     #     these contain the word "deadlock" while describing the adapter's
     #     non-fatal fallback path. It is operational contention, not a crash
@@ -234,6 +240,13 @@ def _should_include_entry(entry: LogEntry) -> bool:
         "MCP discovery failed after" in entry.event
         or "codex_refresh_lock: lock held" in entry.event
         or "codex_refresh_lock: waiting" in entry.event
+    ):
+        return False
+    if (
+        suppress_session_duplicate_timeouts
+        and entry.logger == "butlers.core.spawner"
+        and entry.event.startswith("Runtime invocation failed: TimeoutError:")
+        and "timed out" in entry.event.lower()
     ):
         return False
 
@@ -381,6 +394,9 @@ class LogScannerSource:
     max_scan_seconds:
         Wall-clock cap in seconds for a single ``discover()`` call.  Scan
         stops gracefully and returns findings collected so far.  Default 30.
+    suppress_session_duplicate_timeouts:
+        When ``True``, spawner timeout logs already covered by the
+        session_records source are skipped to avoid duplicate QA findings.
 
     Attributes
     ----------
@@ -402,6 +418,7 @@ class LogScannerSource:
         max_findings_per_scan: int = DEFAULT_MAX_FINDINGS_PER_SCAN,
         max_total_lines: int = DEFAULT_MAX_TOTAL_LINES,
         max_scan_seconds: float = DEFAULT_MAX_SCAN_SECONDS,
+        suppress_session_duplicate_timeouts: bool = False,
     ) -> None:
         self._log_root = log_root
         self._repo_root = (repo_root or Path.cwd()).resolve()
@@ -409,6 +426,7 @@ class LogScannerSource:
         self._max_findings = max_findings_per_scan
         self._max_total_lines = max_total_lines
         self._max_scan_seconds = max_scan_seconds
+        self._suppress_session_duplicate_timeouts = suppress_session_duplicate_timeouts
 
         # Truncation telemetry — updated each time a cap is hit during discover()
         self.last_truncated: datetime | None = None
@@ -500,7 +518,12 @@ class LogScannerSource:
 
                     # Budget only covers candidate error/warning entries;
                     # benign entries are skipped without consuming quota.
-                    if not _should_include_entry(entry):
+                    if not _should_include_entry(
+                        entry,
+                        suppress_session_duplicate_timeouts=(
+                            self._suppress_session_duplicate_timeouts
+                        ),
+                    ):
                         continue
 
                     entries_processed += 1

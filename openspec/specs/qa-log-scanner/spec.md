@@ -58,9 +58,23 @@ The scanner SHALL only process log entries within the configured lookback window
 ### Requirement: Severity Filtering
 The scanner SHALL filter log entries by severity level, extracting only entries at ERROR level or above, plus WARNING entries that match crash sentinel patterns.
 
-#### Scenario: ERROR entries always included
+#### Scenario: ERROR entries included
 - **WHEN** a log entry has `level = "error"` or `level = "critical"`
 - **THEN** it is included in the finding set
+- **EXCEPT** duplicate spawner runtime timeout logs MAY be excluded when the scanner is registered alongside the `session_records` source
+
+#### Scenario: Spawner timeout duplicate suppression
+- **WHEN** the scanner is registered with `session_records` available in the same patrol configuration
+- **AND** a log entry has logger `butlers.core.spawner`
+- **AND** its event starts with `Runtime invocation failed: TimeoutError:`
+- **AND** the event contains timeout wording
+- **THEN** the scanner excludes that entry from the log-scanner finding set
+- **AND** timeout coverage is provided by the `session_records` source with session identifiers and normalized timeout status
+
+#### Scenario: Log-scanner-only timeout coverage
+- **WHEN** the scanner is registered without an available `session_records` source
+- **AND** a spawner runtime timeout log qualifies by severity
+- **THEN** the scanner includes the entry in the finding set
 
 #### Scenario: WARNING entries with crash patterns included
 - **WHEN** a log entry has `level = "warning"` and its `event` or `exception` field matches a crash sentinel pattern (e.g., `OOM`, `SIGKILL`, `ConnectionRefused`, `TimeoutError`, `deadlock`)
