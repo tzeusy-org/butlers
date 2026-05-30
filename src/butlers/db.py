@@ -61,6 +61,42 @@ _SSL_UPGRADE_CONNECTION_LOST = "unexpected connection_lost() call"
 _SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def pool_sizes_from_env(
+    prefix: str,
+    *,
+    default_min: int,
+    default_max: int,
+) -> tuple[int, int]:
+    """Read asyncpg pool size overrides from environment variables."""
+
+    def _read_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid PostgreSQL pool size %s=%r", name, raw)
+            return default
+
+    min_size = _read_int(f"{prefix}_MIN_SIZE", default_min)
+    max_size = _read_int(f"{prefix}_MAX_SIZE", default_max)
+
+    if min_size < 0:
+        logger.warning("Ignoring negative PostgreSQL pool min size for %s", prefix)
+        min_size = default_min
+    if max_size <= 0:
+        logger.warning("Ignoring non-positive PostgreSQL pool max size for %s", prefix)
+        max_size = default_max
+    if min_size > max_size:
+        logger.warning(
+            "PostgreSQL pool min size exceeds max size for %s; clamping min to max",
+            prefix,
+        )
+        min_size = max_size
+    return min_size, max_size
+
+
 def _normalize_ssl_mode(value: str | None) -> str | None:
     """Normalize an SSL mode value for asyncpg or return None if unset/invalid."""
     if value is None:
@@ -386,6 +422,11 @@ class Database:
         Default: postgres://butlers:butlers@localhost/postgres
         """
         params = db_params_from_env()
+        min_pool_size, max_pool_size = pool_sizes_from_env(
+            "BUTLERS_DB_POOL",
+            default_min=1,
+            default_max=10,
+        )
         return cls(
             db_name=db_name,
             host=str(params["host"]),
@@ -393,4 +434,6 @@ class Database:
             user=str(params["user"]),
             password=str(params["password"]),
             ssl=params["ssl"] if isinstance(params["ssl"], str) else None,
+            min_pool_size=min_pool_size,
+            max_pool_size=max_pool_size,
         )
