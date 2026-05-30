@@ -180,8 +180,8 @@ def _make_pool(
 
     # fetchval sequence
     preflight_results: list[Any] = [
-        "relationship.entity_facts" if facts_table_exists else None,
-        "relationship.entity_predicate_registry" if predicate_registry_exists else None,
+        facts_table_exists,
+        predicate_registry_exists,
     ]
     _fetchval_index = [0]
     _fetchval_results = list(preflight_results)

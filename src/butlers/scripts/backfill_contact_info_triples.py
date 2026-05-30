@@ -151,17 +151,20 @@ async def _create_pool() -> asyncpg.Pool:
 
 
 async def _facts_table_exists(pool: asyncpg.Pool) -> bool:
-    result = await pool.fetchval(
-        "SELECT to_regclass('relationship.entity_facts'::text)",
+    return await pool.fetchval(
+        "SELECT EXISTS ("
+        "SELECT 1 FROM pg_tables WHERE schemaname = 'relationship' AND tablename = 'entity_facts'"
+        ")",
     )
-    return result is not None
 
 
 async def _predicate_registry_exists(pool: asyncpg.Pool) -> bool:
-    result = await pool.fetchval(
-        "SELECT to_regclass('relationship.entity_predicate_registry'::text)",
+    return await pool.fetchval(
+        "SELECT EXISTS ("
+        "SELECT 1 FROM pg_tables"
+        " WHERE schemaname = 'relationship' AND tablename = 'entity_predicate_registry'"
+        ")",
     )
-    return result is not None
 
 
 # ---------------------------------------------------------------------------
