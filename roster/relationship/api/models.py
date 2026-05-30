@@ -34,6 +34,10 @@ class ContactInfoEntry(BaseModel):
       from serialised output for backward compatibility).
     - ``"entity_facts"`` — the entry was synthesised from a
       ``relationship.entity_facts`` has-* triple for the linked entity.
+
+    For ``source="entity_facts"`` entries, ``predicate`` and ``value_hash``
+    are populated to enable entity-keyed mutation (delete / retract).
+    They are absent (``None``) for legacy ``public.contact_info`` rows.
     """
 
     id: UUID
@@ -44,6 +48,10 @@ class ContactInfoEntry(BaseModel):
     parent_id: UUID | None = None
     context: str | None = None  # personal | work | other | None (unclassified)
     source: Literal["entity_facts"] | None = None
+    # Populated only for source="entity_facts" entries — used by the frontend
+    # to call DELETE /entities/{id}/contacts/{predicate}/{value_hash}.
+    predicate: str | None = None
+    value_hash: str | None = None
 
 
 class ContactSummary(BaseModel):
