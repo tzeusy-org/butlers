@@ -445,6 +445,21 @@ class TestRateLimitAuthModelUnavailableTimeoutMapping:
                 await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
         assert _classify(exc_info.value)
 
+    async def test_opencode_empty_success_is_classifiable(self) -> None:
+        """OpenCodeAdapter treats empty exit-0 output as a failover-eligible runtime error."""
+        proc = _make_proc(0, stdout=b"", stderr=b"")
+        with patch(_OPENCODE_EXEC, return_value=proc):
+            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+            with pytest.raises(RuntimeError) as exc_info:
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+
+        assert "no response" in str(exc_info.value).lower()
+        assert _classify(exc_info.value)
+        info = adapter.last_process_info
+        assert info is not None
+        assert info.get("is_pre_tool_call") is True
+        assert "error_detail" in info
+
     async def test_opencode_model_not_found_sets_is_pre_tool_call(self) -> None:
         """OpenCodeAdapter model-not-found (exit 0) sets is_pre_tool_call=True."""
         proc = _make_proc(0, stdout=b"", stderr=b"ProviderModelNotFoundError: bad-model")

@@ -124,6 +124,16 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "remote compaction failed",
 )
 
+# Substrings matched (lowercased) against the exception message to detect a
+# runtime/provider process that exited successfully but produced no usable
+# output, tool calls, usage, or stderr. With no tool calls (Gate 1), this is a
+# pre-work systemic failure and should be eligible for same-tier failover.
+_EMPTY_RESPONSE_MARKERS: tuple[str, ...] = (
+    "no response",
+    "empty response",
+    "no result, tool calls, token usage, or stderr",
+)
+
 # Substrings matched (lowercased) against the exception message to detect
 # MCP discovery / transport failures that are pre-invocation.
 _MCP_DISCOVERY_MARKERS: tuple[str, ...] = (
@@ -317,6 +327,15 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
             return FailoverDecision(
                 eligible=True,
                 reason="rate_limit_before_work: provider rate-limit rejection "
+                "before any tool call was executed",
+            )
+
+        # Empty runtime/provider response before work
+        if _matches_any(exc_msg, _EMPTY_RESPONSE_MARKERS):
+            logger.debug("Failover eligible: RuntimeError — empty runtime response")
+            return FailoverDecision(
+                eligible=True,
+                reason="empty_runtime_response: runtime returned no usable output "
                 "before any tool call was executed",
             )
 

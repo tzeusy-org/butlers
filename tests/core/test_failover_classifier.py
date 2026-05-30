@@ -311,6 +311,27 @@ class TestProviderAuthErrorsEligible:
 
 
 # ---------------------------------------------------------------------------
+# AC-1b.1: Empty runtime responses ARE eligible
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyRuntimeResponsesEligible:
+    """Empty successful CLI responses are failover-eligible before any tool call."""
+
+    def test_no_response_returned_is_eligible(self) -> None:
+        """RuntimeError with empty-response wording is eligible."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "OpenCode CLI returned no response: no result, tool calls, token usage, or stderr"
+                )
+            )
+        )
+        assert _eligible(dec), dec.reason
+        assert "empty_runtime_response" in dec.reason
+
+
+# ---------------------------------------------------------------------------
 # AC-1c: Rate-limit errors ARE eligible
 # ---------------------------------------------------------------------------
 
