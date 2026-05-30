@@ -38,9 +38,11 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 OWNER_CONTACT_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+OWNER_ENTITY_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaab")
 OWNER_EMAIL = "owner@real.com"
 
 KNOWN_NON_OWNER_CONTACT_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+KNOWN_NON_OWNER_ENTITY_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbc")
 KNOWN_NON_OWNER_EMAIL = "friend@known.com"
 
 HALLUCINATED_EMAIL = "jo@reallylesson.com"
@@ -49,19 +51,19 @@ UNKNOWN_EMAIL = "unknown@evil.com"
 
 def _owner_contact() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=OWNER_CONTACT_ID,
+        contact_id=None,  # bead 7: entity_id is the authoritative key
         name="Owner",
         roles=["owner"],
-        entity_id=None,
+        entity_id=OWNER_ENTITY_ID,
     )
 
 
 def _non_owner_contact() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=KNOWN_NON_OWNER_CONTACT_ID,
+        contact_id=None,  # bead 7: entity_id is the authoritative key
         name="Friend",
         roles=["friend"],
-        entity_id=None,
+        entity_id=KNOWN_NON_OWNER_ENTITY_ID,
     )
 
 
@@ -84,7 +86,8 @@ class _MockPool:
         self, channel_type: str, channel_value: str, contact: ResolvedContact
     ) -> None:
         self._contact_info[(channel_type, channel_value)] = contact
-        self._contacts_by_id[contact.contact_id] = contact
+        if contact.contact_id is not None:
+            self._contacts_by_id[contact.contact_id] = contact
 
     async def execute(self, query: str, *args: Any) -> None:
         if "INSERT INTO pending_actions" in query:
@@ -124,18 +127,36 @@ class _MockPool:
             row = self.pending_actions.get(action_id)
             return dict(row) if row else None
 
-        if "public.contact_info" in query and args:
-            # _is_primary_contact query: SELECT is_primary WHERE contact_id=$1 AND type=$2 AND value=$3
-            if "is_primary" in query and len(args) == 3:
-                channel_type = str(args[1])
+        if "relationship.entity_facts" in query and args:
+            if '"primary"' in query and len(args) == 3:
+                # is_primary_contact query (bead 7): SELECT "primary" FROM relationship.entity_facts
+                # WHERE subject=$1 AND predicate=$2 AND object=$3
                 channel_value = str(args[2])
-                contact = self._contact_info.get((channel_type, channel_value))
+                found = any(ci_val == channel_value for (ci_type, ci_val) in self._contact_info)
+                if not found:
+                    return None
+                return {"primary": True}
+            if "ef.subject" in query and "entity_facts ef" in query and len(args) >= 2:
+                # resolve_contact_by_channel: SELECT ef.subject AS entity_id, e.canonical_name, ...
+                # WHERE ef.predicate=$1 AND ef.object=$2 AND ef.validity='active'
+                channel_value = str(args[1])
+                contact = next(
+                    (
+                        c
+                        for (ci_type, ci_val), c in self._contact_info.items()
+                        if ci_val == channel_value
+                    ),
+                    None,
+                )
                 if contact is None:
                     return None
-                # The entry is considered primary when it was explicitly registered
-                # in this mock (there is only one row per channel in these tests).
-                return {"is_primary": True}
+                return {
+                    "entity_id": contact.entity_id,
+                    "name": contact.name,
+                    "roles": contact.roles,
+                }
 
+        if "public.contact_info" in query and args:
             # Channel-resolution query: SELECT contact_id, name... WHERE type=$1 AND value=$2
             if len(args) >= 2:
                 contact = self._contact_info.get((str(args[0]), str(args[1])))

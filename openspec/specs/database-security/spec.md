@@ -80,6 +80,11 @@ Butler runtime roles SHALL have write access to a specific set of public tables.
   - `public.insight_engagement` — INSERT, UPDATE, DELETE (engagement tracking)
   - `public.insight_settings` — INSERT, UPDATE (delivery settings)
 
+#### Scenario: Dispatch attempt provenance table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to the dispatch attempt provenance table:
+  - `public.model_dispatch_attempts` — SELECT, INSERT (failover provenance, core_104 migration)
+
 #### Scenario: Read-only public tables
 - **WHEN** a butler operates under SET ROLE enforcement
 - **THEN** it can only SELECT (not INSERT, UPDATE, or DELETE) from public tables not in the write authorization matrix

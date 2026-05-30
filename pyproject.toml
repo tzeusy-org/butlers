@@ -102,7 +102,7 @@ testpaths = ["tests", "roster"]
 # --dist loadfile: keeps tests from the same file on the same worker so that
 #   module-scoped fixtures (e.g. shared FastAPI app, module-scoped DB pools)
 #   are not torn down and recreated across workers mid-module.
-addopts = "--import-mode=importlib -m 'not nightly and not bench' -n 3 --dist loadfile --ignore=tests/benchmarks"
+addopts = "--import-mode=importlib -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "integration: Integration tests — require Docker (testcontainers)",
@@ -116,6 +116,7 @@ markers = [
     "switchboard_bench: Switchboard routing accuracy benchmarks",
     "db: Database integration tests — require Docker (testcontainers with real PostgreSQL)",
     "contract: Architectural contract tests — validate invariants from heart-and-soul doctrine and key RFCs",
+    "perf: Performance/scale tests — seed large datasets and measure query latency; opt-in via -m perf",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here

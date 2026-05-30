@@ -269,8 +269,8 @@ class TestPipelineConfig:
     def test_defaults(self):
         cfg = PipelineConfig()
         assert cfg.enable_ingress_dedupe is True
-        assert cfg.classification_timeout_s is None
 
-    def test_legacy_classification_timeout_is_accepted(self):
+    def test_ignores_removed_classification_timeout(self):
         cfg = PipelineConfig(classification_timeout_s=30)
-        assert cfg.classification_timeout_s == 30
+        assert cfg.enable_ingress_dedupe is True
+        assert not hasattr(cfg, "classification_timeout_s")

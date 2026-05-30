@@ -1,37 +1,58 @@
-"""Google OAuth bootstrap endpoints.
+"""OAuth bootstrap endpoints — Google (legacy) and generalised <provider> routes.
 
-Implements a two-leg OAuth 2.0 authorization-code flow for acquiring
-Google OAuth refresh tokens for use by butler modules (Gmail connector,
-Calendar module, etc.).
+Implements a two-leg OAuth 2.0 authorization-code flow for acquiring OAuth
+refresh tokens for use by butler modules.
+
+Route surface
+-------------
+Legacy Google-specific routes (preserved unchanged for backward compatibility):
+  GET /api/oauth/google/start
+  GET /api/oauth/google/callback
+  GET /api/oauth/status
+  GET /api/oauth/google/accounts
+  GET /api/oauth/google/accounts/{id}/status
+  PUT /api/oauth/google/accounts/{id}/primary
+  DELETE /api/oauth/google/accounts/{id}
+  PUT /api/oauth/google/credentials
+  DELETE /api/oauth/google/credentials
+  GET /api/oauth/google/credentials
+
+Generalised per-provider routes (RFC 0007 ApiResponse<T> envelope):
+  GET /api/oauth/{provider}/start
+      ?redirect_uri=<uri>&account_hint=<hint>&force_consent=<bool>
+      &page_of_origin=<page>&scope_set=<sets>
+  GET /api/oauth/{provider}/callback
+      ?code=<code>&state=<state>[&error=<err>]
 
 The bootstrap flow:
-  1. GET /api/oauth/google/start
-     - Generates a cryptographically random state token (CSRF protection).
-     - Stores the state in an in-memory store (keyed by state value, TTL 10 min).
-     - Returns the Google authorization URL as a redirect response.
-     - Optional: account_hint passes login_hint to Google; force_consent adds prompt=consent.
+  1. GET /api/oauth/{provider}/start
+     - Generates a cryptographically random CSRF state token.
+     - Stores state in the in-memory store (TTL 10 min) carrying
+       ``page_of_origin`` for cross-page reauth bookkeeping.
+     - Writes an ``attempted`` audit row to ``public.audit_log`` BEFORE redirect.
+     - Returns ApiResponse<{ authorization_url }> or 302.
 
-  2. GET /api/oauth/google/callback
-     - Validates the state parameter against the stored state token.
-     - Exchanges the authorization code for tokens via Google's token endpoint.
-     - Calls Google's userinfo endpoint to resolve the authenticated email.
-     - Resolves or creates a google_accounts row via the registry.
-     - Stores the refresh token on the companion entity.
-     - Redirects to the dashboard URL on success (if OAUTH_DASHBOARD_URL is set),
-       or returns a JSON success payload.
+  2. GET /api/oauth/{provider}/callback
+     - Validates state, exchanges code for tokens.
+     - Persists credentials; writes ``connected`` (success) or ``failed`` audit row.
+     - Redirects based on ``state.page_of_origin``:
+         "secrets"   → /secrets?focus=u:<provider>&toast=connected
+         "ingestion" → /ingestion/connectors
+         (default)   → /secrets?focus=u:<provider>&toast=connected
 
-  3. GET /api/oauth/status
-     - Reports whether Google credentials are present and usable.
-     - Returns a machine-readable state (OAuthCredentialState) plus actionable
-       remediation guidance for the dashboard UX.
-     - Includes per-account status array when multi-account is configured.
+Provider registry
+-----------------
+Providers are registered in ``_PROVIDER_REGISTRY`` keyed by provider name.
+Each entry is a ``_ProviderConfig`` dataclass describing auth/token URLs,
+scope-sets, default scopes, and redirect-URI env-var name.
 
-  4. Account management endpoints (GET/PUT/DELETE /api/oauth/google/accounts/*)
-     - List, set primary, disconnect, and check per-account credential status.
+Currently registered: ``google``, ``spotify``.
 
 Environment variables:
   GOOGLE_OAUTH_REDIRECT_URI  — Callback URL registered with Google
                                (default: http://localhost:41200/api/oauth/google/callback)
+  SPOTIFY_OAUTH_REDIRECT_URI — Callback URL registered with Spotify
+                               (default: http://localhost:41200/api/oauth/spotify/callback)
   OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
                                (default: not set; returns JSON payload instead)
 
@@ -51,7 +72,7 @@ import os
 import secrets
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
@@ -59,6 +80,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+import butlers.api.routers.audit as _audit
+from butlers.api.models import ApiResponse
 from butlers.api.models.oauth import (
     DeleteCredentialsResponse,
     DisconnectAccountResponse,
@@ -75,6 +98,7 @@ from butlers.api.models.oauth import (
     UpsertAppCredentialsRequest,
     UpsertAppCredentialsResponse,
 )
+from butlers.core.credential_keys import normalize_credential_key
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import (
     GoogleAccountAlreadyExistsError,
@@ -234,6 +258,226 @@ _REQUIRED_SCOPES = frozenset(
     ]
 )
 
+# ---------------------------------------------------------------------------
+# Provider registry
+# ---------------------------------------------------------------------------
+#
+# Each provider entry describes the OAuth endpoints, scope-sets, default
+# redirect-URI, and redirect-URI env-var override.  New providers are added
+# here and picked up automatically by the generalised /{provider}/start and
+# /{provider}/callback routes.
+
+
+@dataclass
+class _ProviderConfig:
+    """Static configuration for one OAuth provider."""
+
+    auth_url: str
+    """Authorization endpoint URL."""
+
+    token_url: str
+    """Token exchange endpoint URL."""
+
+    scope_sets: dict[str, list[str]]
+    """Named scope-set registry for this provider."""
+
+    default_scope_sets: tuple[str, ...]
+    """Scope-set names used when no ``scope_set`` query param is supplied."""
+
+    default_redirect_uri: str
+    """Fallback redirect URI when the env-var override is absent."""
+
+    redirect_uri_env_var: str
+    """Environment variable name that overrides the default redirect URI."""
+
+    client_id_key: str = "GOOGLE_OAUTH_CLIENT_ID"
+    """butler_secrets key for the OAuth app client ID."""
+
+    client_secret_key: str = "GOOGLE_OAUTH_CLIENT_SECRET"
+    """butler_secrets key for the OAuth app client secret."""
+
+    userinfo_url: str | None = None
+    """Userinfo endpoint; None for providers that do not expose one (e.g. Spotify)."""
+
+    # Spotify: user profile URL plays the role of a userinfo endpoint.
+    profile_url: str | None = None
+    """Optional profile endpoint for providers that use a different mechanism."""
+
+
+# ---------------------------------------------------------------------------
+# Spotify scope-set registry
+# ---------------------------------------------------------------------------
+#
+# Spotify uses opaque scope strings (not URLs).  The ``base`` set provides
+# minimal identity so the /me call succeeds; downstream butlers add music/
+# listening-history scopes.
+SPOTIFY_SCOPE_SETS: dict[str, list[str]] = {
+    "base": [
+        "user-read-email",
+        "user-read-private",
+    ],
+    "listening_history": [
+        "user-read-recently-played",
+        "user-top-read",
+    ],
+    "playback": [
+        "user-read-playback-state",
+        "user-modify-playback-state",
+        "user-read-currently-playing",
+    ],
+    "library": [
+        "user-library-read",
+        "user-library-modify",
+    ],
+    "playlists": [
+        "playlist-read-private",
+        "playlist-read-collaborative",
+        "playlist-modify-public",
+        "playlist-modify-private",
+    ],
+}
+
+_SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
+_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+_SPOTIFY_PROFILE_URL = "https://api.spotify.com/v1/me"
+_DEFAULT_SPOTIFY_REDIRECT_URI = "http://localhost:41200/api/oauth/spotify/callback"
+
+_PROVIDER_REGISTRY: dict[str, _ProviderConfig] = {
+    "google": _ProviderConfig(
+        auth_url=GOOGLE_AUTH_URL,
+        token_url=GOOGLE_TOKEN_URL,
+        scope_sets=GOOGLE_SCOPE_SETS,
+        default_scope_sets=_DEFAULT_SCOPE_SETS,
+        default_redirect_uri=_DEFAULT_REDIRECT_URI,
+        redirect_uri_env_var="GOOGLE_OAUTH_REDIRECT_URI",
+        userinfo_url=GOOGLE_USERINFO_URL,
+    ),
+    "spotify": _ProviderConfig(
+        auth_url=_SPOTIFY_AUTH_URL,
+        token_url=_SPOTIFY_TOKEN_URL,
+        scope_sets=SPOTIFY_SCOPE_SETS,
+        default_scope_sets=("base",),
+        default_redirect_uri=_DEFAULT_SPOTIFY_REDIRECT_URI,
+        redirect_uri_env_var="SPOTIFY_OAUTH_REDIRECT_URI",
+        client_id_key="SPOTIFY_OAUTH_CLIENT_ID",
+        client_secret_key="SPOTIFY_OAUTH_CLIENT_SECRET",
+        userinfo_url=None,
+        profile_url=_SPOTIFY_PROFILE_URL,
+    ),
+}
+
+
+def _get_provider_config(provider: str) -> _ProviderConfig | None:
+    """Return the _ProviderConfig for *provider*, or None if unknown."""
+    return _PROVIDER_REGISTRY.get(provider)
+
+
+def _get_provider_redirect_uri(provider_cfg: _ProviderConfig) -> str:
+    """Read the provider-specific redirect-URI env-var or use the default."""
+    return os.environ.get(
+        provider_cfg.redirect_uri_env_var, provider_cfg.default_redirect_uri
+    ).strip()
+
+
+async def _resolve_provider_credentials(
+    provider_cfg: _ProviderConfig,
+    db_manager: Any,
+) -> tuple[str, str]:
+    """Resolve client_id and client_secret for *provider_cfg* from DB-backed storage.
+
+    Uses the provider's ``client_id_key`` and ``client_secret_key`` fields so
+    that each provider reads its own credentials rather than Google's.
+
+    Raises HTTPException(503) when the credential store is unavailable or the
+    provider's credentials are not configured.
+    """
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Shared credential database is unavailable.",
+        )
+
+    client_id = await cred_store.load(provider_cfg.client_id_key)
+    client_secret = await cred_store.load(provider_cfg.client_secret_key)
+
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"OAuth app credentials for this provider are not configured in DB. "
+                f"Configure {provider_cfg.client_id_key} and {provider_cfg.client_secret_key} "
+                f"on the Secrets page."
+            ),
+        )
+    return client_id, client_secret
+
+
+def _compose_provider_default_scopes(provider_cfg: _ProviderConfig) -> str:
+    """Build the default scope string for a provider from its default_scope_sets."""
+    return " ".join(
+        dict.fromkeys(
+            scope
+            for set_name in provider_cfg.default_scope_sets
+            for scope in provider_cfg.scope_sets[set_name]
+        )
+    )
+
+
+def _compose_provider_scopes_from_sets(provider_cfg: _ProviderConfig, set_names: list[str]) -> str:
+    """Compose an OAuth scope string from the named sets for a given provider.
+
+    Includes 'base' implicitly when it exists in the provider's scope_sets.
+    Raises ValueError with the first unknown set name.
+    """
+    unknown = [name for name in set_names if name not in provider_cfg.scope_sets]
+    if unknown:
+        raise ValueError(unknown[0])
+
+    # 'base' is always implicitly included when defined for the provider.
+    has_base = "base" in provider_cfg.scope_sets
+    if has_base:
+        ordered_sets = ["base", *set_names] if "base" not in set_names else list(set_names)
+    else:
+        ordered_sets = list(set_names)
+
+    scopes: dict[str, None] = {}
+    for set_name in ordered_sets:
+        for scope in provider_cfg.scope_sets[set_name]:
+            scopes.setdefault(scope, None)
+    return " ".join(scopes)
+
+
+# ---------------------------------------------------------------------------
+# Callback redirect helpers
+# ---------------------------------------------------------------------------
+
+_PAGE_OF_ORIGIN_DEFAULT = "secrets"
+
+
+def _build_success_redirect_url(provider: str, page_of_origin: str | None) -> str:
+    """Compute the post-OAuth-success redirect destination.
+
+    Routing table:
+      "secrets"    → /secrets?focus=u:<provider>&toast=connected
+      "ingestion"  → /ingestion/connectors
+      (None / any) → /secrets?focus=u:<provider>&toast=connected  (default)
+    """
+    resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
+    if resolved_page == "ingestion":
+        return "/ingestion/connectors"
+    cred_key = normalize_credential_key("user", provider)
+    return f"/secrets?focus={cred_key}&toast=connected"
+
+
+def _build_error_redirect_url(provider: str, page_of_origin: str | None, error_code: str) -> str:
+    """Compute the post-OAuth-error redirect destination."""
+    resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
+    if resolved_page == "ingestion":
+        return f"/ingestion/connectors?oauth_error={error_code}"
+    cred_key = normalize_credential_key("user", provider)
+    return f"/secrets?focus={cred_key}&oauth_error={error_code}"
+
 
 def _parse_scope_set_param(raw: str | None) -> list[str] | None:
     """Parse a `scope_set` query value into a list of set names.
@@ -325,6 +569,16 @@ class _StateEntry:
     force_consent: bool = False
     """When True, prompt=consent was added to the authorization URL."""
 
+    page_of_origin: str | None = None
+    """Page that initiated the OAuth dance; used by callback to route the redirect.
+
+    Known values: ``"secrets"`` → /secrets page, ``"ingestion"`` → /ingestion/connectors.
+    Absent/None defaults to the ``"secrets"`` return path.
+    """
+
+    provider: str = field(default="google")
+    """OAuth provider identifier (e.g. ``"google"``, ``"spotify"``)."""
+
 
 # Maps state token → _StateEntry
 # NOTE: This store is process-local. Do not run multiple worker processes
@@ -342,12 +596,16 @@ def _store_state(
     *,
     account_hint: str | None = None,
     force_consent: bool = False,
+    page_of_origin: str | None = None,
+    provider: str = "google",
 ) -> None:
     """Store a state token with an expiry timestamp and optional account context."""
     _state_store[state] = _StateEntry(
         expiry=time.monotonic() + _STATE_TTL_SECONDS,
         account_hint=account_hint,
         force_consent=force_consent,
+        page_of_origin=page_of_origin,
+        provider=provider,
     )
     _evict_expired_states()
 
@@ -526,6 +784,14 @@ async def oauth_google_start(
         "default scope composition (base+gmail+calendar+contacts+drive) for "
         "backward compatibility with callers that do not use the selector.",
     ),
+    page_of_origin: str | None = Query(
+        default=None,
+        description="Optional page that initiated the OAuth flow. "
+        "Known values: 'secrets' and 'ingestion'. "
+        "When present, the value is carried in the CSRF state token so the callback "
+        "can route the user back to the originating page. "
+        "Missing or empty is treated as the 'secrets' default at callback time.",
+    ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Begin the Google OAuth authorization flow.
@@ -623,7 +889,13 @@ async def oauth_google_start(
     redirect_uri = _get_redirect_uri()
 
     state = _generate_state()
-    _store_state(state, account_hint=account_hint, force_consent=force_consent)
+    page_of_origin = (page_of_origin or "").strip() or None
+    _store_state(
+        state,
+        account_hint=account_hint,
+        force_consent=force_consent,
+        page_of_origin=page_of_origin,
+    )
 
     params: dict[str, str] = {
         "client_id": client_id,
@@ -646,11 +918,13 @@ async def oauth_google_start(
     authorization_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
     logger.info(
-        "Google OAuth flow started (state=%s..., account_hint=%s, force_consent=%s, scope_set=%s)",
+        "Google OAuth flow started (state=%s..., account_hint=%s, force_consent=%s, "
+        "scope_set=%s, page_of_origin=%s)",
         state[:8],
         account_hint,
         force_consent,
         requested_sets,
+        page_of_origin,
     )
 
     if redirect:
@@ -981,55 +1255,21 @@ async def _register_google_health_contact_info(
     The function is idempotent — re-running pairing for the same account
     produces no duplicate row (``ON CONFLICT (type, value) DO NOTHING``).
     """
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Locate the owner entity by role.
-            owner_entity_id = await conn.fetchval(
-                """
-                SELECT id FROM public.entities
-                WHERE 'owner' = ANY(roles)
-                LIMIT 1
-                """
-            )
-            if owner_entity_id is None:
-                # Owner entity not bootstrapped yet — skip. The daemon
-                # bootstraps this on startup; if it's absent here it will
-                # be created before the connector's first poll.
-                logger.debug("Skipping google_health contact_info upsert — no owner entity")
-                return
-
-            # Find an existing contact linked to the owner entity. If none,
-            # create a minimal one. In a fresh install the owner contact
-            # row is bootstrapped by the daemon; this fallback guarantees
-            # the upsert succeeds even on partial installs.
-            owner_contact_id = await conn.fetchval(
-                """
-                SELECT id FROM public.contacts
-                WHERE entity_id = $1
-                ORDER BY created_at ASC
-                LIMIT 1
-                """,
-                owner_entity_id,
-            )
-            if owner_contact_id is None:
-                owner_contact_id = await conn.fetchval(
-                    """
-                    INSERT INTO public.contacts (name, entity_id, metadata)
-                    VALUES ('Owner', $1, '{}'::jsonb)
-                    RETURNING id
-                    """,
-                    owner_entity_id,
-                )
-
-            await conn.execute(
-                """
-                INSERT INTO public.contact_info (contact_id, type, value, secured)
-                VALUES ($1, 'google_health', $2, false)
-                ON CONFLICT (type, value) DO NOTHING
-                """,
-                owner_contact_id,
-                google_user_id,
-            )
+    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only and
+    # 'google_health' is an unmapped routing/credential identifier with no triple
+    # predicate, so it has no home in relationship.entity_facts.  This pairing
+    # therefore no longer persists anything and is a no-op.
+    #
+    # NOTE (follow-up): re-homing the google_health → owner-entity routing link
+    # (so inbound health events still reverse-resolve to the owner) is out of
+    # scope for the channel-fact triple model and tracked as a follow-up — it
+    # needs a dedicated routing/credential store, not the contact_info table.
+    _ = google_user_id  # retained for signature/back-compat; no longer persisted
+    logger.debug(
+        "_register_google_health_contact_info: skipped — google_health has no triple "
+        "home after the contact_info write-path cut-over (no-op)"
+    )
+    return
 
 
 async def _update_account_refresh_token(
@@ -1750,24 +1990,28 @@ async def _exchange_code_for_tokens(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
+    token_url: str = GOOGLE_TOKEN_URL,
 ) -> dict[str, Any]:
     """Exchange an authorization code for OAuth tokens.
 
     Parameters
     ----------
     code:
-        Authorization code returned by Google in the callback.
+        Authorization code returned by the provider in the callback.
     client_id:
-        Google OAuth client ID.
+        OAuth client ID.
     client_secret:
-        Google OAuth client secret.
+        OAuth client secret.
     redirect_uri:
-        The redirect URI registered with Google (must match exactly).
+        The redirect URI registered with the provider (must match exactly).
+    token_url:
+        Token endpoint URL.  Defaults to Google's token URL for backward
+        compatibility with existing Google-only call sites.
 
     Returns
     -------
     dict
-        The full token response from Google (access_token, refresh_token, scope, etc.).
+        The full token response (access_token, refresh_token, scope, etc.).
 
     Raises
     ------
@@ -1784,7 +2028,7 @@ async def _exchange_code_for_tokens(
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(GOOGLE_TOKEN_URL, data=payload)
+            response = await client.post(token_url, data=payload)
     except httpx.TransportError as exc:
         raise _TokenExchangeError(f"Network error during token exchange: {exc}") from exc
 
@@ -1858,3 +2102,705 @@ def _sanitize_provider_error(error: str) -> str:
         error,
         "The OAuth authorization failed. Please restart the flow.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Audit helper
+# ---------------------------------------------------------------------------
+
+
+async def _emit_oauth_audit(
+    shared_pool: Any,
+    *,
+    actor: str = "owner",
+    action: str,
+    provider: str,
+    note: str | None = None,
+) -> None:
+    """Best-effort append to ``public.audit_log`` for OAuth lifecycle events.
+
+    Swallows all errors (including AuditTableNotAvailableError) so that
+    missing migrations or DB downtime never block the OAuth flow.
+
+    Parameters
+    ----------
+    shared_pool:
+        asyncpg connection pool pointed at the public schema.  When None,
+        the call is a silent no-op.
+    actor:
+        Principal triggering the event.
+    action:
+        Audit action value (e.g. ``"attempted"``, ``"connected"``, ``"failed"``).
+    provider:
+        OAuth provider identifier (e.g. ``"google"``).
+    note:
+        Optional human-readable note stored alongside the audit row.
+    """
+    if shared_pool is None:
+        return
+    target = normalize_credential_key("user", provider)
+    try:
+        await _audit.append(
+            shared_pool,
+            actor,
+            action,
+            target=target,
+            note=note,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "OAuth audit write swallowed (action=%s, provider=%s)", action, provider, exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# Generalised /{provider}/start endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{provider}/start",
+    summary="Begin OAuth authorization flow for any registered provider",
+    description=(
+        "Generalized OAuth start endpoint. "
+        "Returns ApiResponse<{authorization_url}> when redirect=false, "
+        "or 302 to the provider's authorization URL. "
+        "Writes an 'attempted' audit row to public.audit_log BEFORE redirecting. "
+        "page_of_origin is threaded through the CSRF state token so the callback "
+        "can route the user back to the originating page. "
+        "For provider=google the behavior is identical to /api/oauth/google/start."
+    ),
+)
+async def oauth_provider_start(
+    provider: str,
+    redirect: bool = Query(
+        default=True,
+        description="If true (default), redirect to the provider authorization URL. "
+        "If false, return the URL as JSON.",
+    ),
+    account_hint: str | None = Query(
+        default=None,
+        description="Optional account email to pre-select (passed as login_hint where supported).",
+    ),
+    force_consent: bool = Query(
+        default=False,
+        description="When true, adds prompt=consent / show_dialog=true to the URL.",
+    ),
+    scope_set: str | None = Query(
+        default=None,
+        description="Named scope set(s) for this provider. Comma-separated. "
+        "When omitted, falls back to the provider's default scope composition.",
+    ),
+    page_of_origin: str | None = Query(
+        default=None,
+        description="Page that initiated the OAuth dance. "
+        "Known values: 'secrets' (default), 'ingestion'. "
+        "Threaded through state token; callback uses it for return routing.",
+    ),
+    db_manager: Any = Depends(_get_db_manager),
+) -> Response:
+    """Begin the OAuth authorization flow for *provider*.
+
+    Resolves scope-sets from the provider registry, checks account limits
+    (Google only), stores the CSRF state token carrying ``page_of_origin``,
+    writes an ``attempted`` audit row, and returns a redirect or JSON response.
+    """
+    provider_cfg = _get_provider_config(provider)
+    if provider_cfg is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "unknown_provider",
+                "provider": provider,
+                "known": sorted(_PROVIDER_REGISTRY.keys()),
+            },
+        )
+
+    # --- Resolve scope composition ---
+    requested_sets = _parse_scope_set_param(scope_set)
+    if requested_sets is not None:
+        try:
+            scopes = _compose_provider_scopes_from_sets(provider_cfg, requested_sets)
+        except ValueError as exc:
+            unknown_name = str(exc)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "unknown_scope_set",
+                    "scope_set": unknown_name,
+                    "known": sorted(provider_cfg.scope_sets.keys()),
+                },
+            )
+    else:
+        scopes = _compose_provider_default_scopes(provider_cfg)
+
+    # --- Google-specific: account limit check + scope-widening ---
+    shared_pool = _get_shared_pool(db_manager)
+    _hinted_account_granted_scopes: list[str] | None = None
+    if provider == "google" and shared_pool is not None:
+        if account_hint:
+            try:
+                existing = await get_google_account(shared_pool, account=account_hint)
+                _hinted_account_granted_scopes = list(existing.granted_scopes)
+            except GoogleAccountNotFoundError:
+                try:
+                    await _check_account_limit(shared_pool)
+                except GoogleAccountLimitExceededError as exc:
+                    from butlers.google_account_registry import _max_accounts  # noqa: PLC0415
+
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "error": "account_limit_reached",
+                            "max_accounts": _max_accounts(),
+                            "message": str(exc),
+                        },
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            try:
+                await _check_account_limit(shared_pool)
+            except GoogleAccountLimitExceededError as exc:
+                from butlers.google_account_registry import _max_accounts  # noqa: PLC0415
+
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": "account_limit_reached",
+                        "max_accounts": _max_accounts(),
+                        "message": str(exc),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Scope-widening for Google re-auth flows.
+        if requested_sets is not None and _hinted_account_granted_scopes:
+            scopes = _widen_scopes(scopes, _hinted_account_granted_scopes)
+
+    # --- Resolve app credentials ---
+    client_id, _ = await _resolve_provider_credentials(provider_cfg, db_manager)
+    redirect_uri = _get_provider_redirect_uri(provider_cfg)
+
+    # --- Build authorization URL ---
+    state = _generate_state()
+    _store_state(
+        state,
+        account_hint=account_hint,
+        force_consent=force_consent,
+        page_of_origin=page_of_origin,
+        provider=provider,
+    )
+
+    params: dict[str, str] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scopes,
+        "state": state,
+    }
+
+    if provider == "google":
+        params["access_type"] = "offline"
+        if force_consent:
+            params["prompt"] = "consent"
+        if account_hint:
+            params["login_hint"] = account_hint
+    elif provider == "spotify":
+        if force_consent:
+            params["show_dialog"] = "true"
+
+    authorization_url = f"{provider_cfg.auth_url}?{urlencode(params)}"
+
+    logger.info(
+        "OAuth flow started (provider=%s, state=%s..., account_hint=%s, "
+        "force_consent=%s, scope_set=%s, page_of_origin=%s)",
+        provider,
+        state[:8],
+        account_hint,
+        force_consent,
+        requested_sets,
+        page_of_origin,
+    )
+
+    # --- Audit: attempted BEFORE redirect ---
+    await _emit_oauth_audit(
+        shared_pool,
+        action="attempted",
+        provider=provider,
+        note=f"OAuth flow started (page_of_origin={page_of_origin or 'default'})",
+    )
+
+    if redirect:
+        return RedirectResponse(url=authorization_url, status_code=302)
+
+    return JSONResponse(
+        content=ApiResponse(
+            data={"authorization_url": authorization_url, "state": state}
+        ).model_dump()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generalised /{provider}/callback endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{provider}/callback",
+    summary="OAuth callback for any registered provider",
+    description=(
+        "Generalised OAuth callback endpoint. Validates CSRF state, exchanges "
+        "the authorization code for tokens, persists credentials, writes a "
+        "'connected' or 'failed' audit row, and redirects based on state.page_of_origin."
+    ),
+)
+async def oauth_provider_callback(
+    provider: str,
+    code: str | None = Query(default=None, description="Authorization code from the provider."),
+    state: str | None = Query(default=None, description="CSRF state token."),
+    error: str | None = Query(default=None, description="OAuth error code from the provider."),
+    error_description: str | None = Query(
+        default=None, description="Human-readable error from the provider."
+    ),
+    db_manager: Any = Depends(_get_db_manager),
+) -> Response:
+    """Handle the OAuth callback for *provider*.
+
+    For ``provider=google`` the full Google-specific credential persistence
+    logic (registry, health-scope metadata, gmail-reload) is reused.
+    For other providers (e.g. ``spotify``), a lightweight generic path
+    stores the refresh token in the shared credential store.
+
+    On success, redirects based on ``state.page_of_origin``:
+      "secrets"   → /secrets?focus=u:<provider>&toast=connected
+      "ingestion" → /ingestion/connectors
+      (default)   → /secrets?focus=u:<provider>&toast=connected
+    """
+    provider_cfg = _get_provider_config(provider)
+    if provider_cfg is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "unknown_provider",
+                "provider": provider,
+                "known": sorted(_PROVIDER_REGISTRY.keys()),
+            },
+        )
+
+    shared_pool = _get_shared_pool(db_manager)
+    dashboard_url = _get_dashboard_url()
+
+    # --- Handle provider-side errors ---
+    if error:
+        logger.warning("OAuth provider error (provider=%s): %s", provider, error)
+        if error_description:
+            logger.debug("OAuth provider error_description: %s", error_description)
+        if state:
+            state_entry = _validate_and_consume_state(state)
+            _page_of_origin = state_entry.page_of_origin if state_entry else None
+        else:
+            _page_of_origin = None
+
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider=provider,
+            note=f"Provider error: {_sanitize_provider_error(error)}",
+        )
+
+        safe_error = _sanitize_provider_error(error)
+        if dashboard_url:
+            return RedirectResponse(
+                url=f"{dashboard_url}?oauth_error=provider_error",
+                status_code=302,
+            )
+        error_redirect = _build_error_redirect_url(provider, _page_of_origin, "provider_error")
+        if _page_of_origin:
+            return RedirectResponse(url=error_redirect, status_code=302)
+        return JSONResponse(
+            status_code=400,
+            content=ApiResponse(
+                data={"success": False, "error_code": "provider_error", "message": safe_error}
+            ).model_dump(),
+        )
+
+    # --- Validate required parameters ---
+    if not code:
+        return JSONResponse(
+            status_code=400,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "missing_code",
+                    "message": "Authorization code is missing from the callback.",
+                }
+            ).model_dump(),
+        )
+
+    if not state:
+        return JSONResponse(
+            status_code=400,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "missing_state",
+                    "message": "State parameter is missing. Possible CSRF attempt.",
+                }
+            ).model_dump(),
+        )
+
+    # --- Validate CSRF state ---
+    state_entry = _validate_and_consume_state(state)
+    if state_entry is None:
+        logger.warning(
+            "OAuth callback received invalid/expired state token (provider=%s)", provider
+        )
+        return JSONResponse(
+            status_code=400,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "invalid_state",
+                    "message": "State parameter is invalid or expired. Please restart the flow.",
+                }
+            ).model_dump(),
+        )
+
+    page_of_origin = state_entry.page_of_origin
+
+    # --- For provider=google, delegate to the existing callback logic ---
+    if provider == "google":
+        # Re-use the full Google callback implementation by delegating.
+        # We pass the state_entry directly to avoid re-validating state.
+        return await _google_callback_from_state(
+            code=code,
+            state_entry=state_entry,
+            db_manager=db_manager,
+            page_of_origin=page_of_origin,
+        )
+
+    # --- Generic provider path ---
+    client_id, client_secret = await _resolve_provider_credentials(provider_cfg, db_manager)
+    redirect_uri = _get_provider_redirect_uri(provider_cfg)
+
+    try:
+        token_data = await _exchange_code_for_tokens(
+            code=code,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            token_url=provider_cfg.token_url,
+        )
+    except _TokenExchangeError as exc:
+        logger.warning("OAuth token exchange failed (provider=%s): %s", provider, exc)
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider=provider,
+            note="Token exchange failed",
+        )
+        return JSONResponse(
+            status_code=400,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "token_exchange_failed",
+                    "message": "Failed to exchange authorization code for tokens. Please restart.",
+                }
+            ).model_dump(),
+        )
+
+    refresh_token = token_data.get("refresh_token")
+    access_token = token_data.get("access_token")
+    scope = token_data.get("scope")
+
+    # --- Fetch account identity via profile URL if available ---
+    account_email: str | None = None
+    if access_token and provider_cfg.profile_url:
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                profile_resp = await http_client.get(provider_cfg.profile_url, headers=headers)
+            if profile_resp.status_code == 200:
+                profile_data = profile_resp.json()
+                account_email = profile_data.get("email") or profile_data.get("id")
+        except Exception:  # noqa: BLE001
+            logger.debug("Profile fetch failed for provider=%s (non-fatal)", provider)
+
+    # --- Persist credentials in shared credential store ---
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is None:
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider=provider,
+            note="Credential store unavailable",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Shared credential DB unavailable; cannot persist OAuth credentials.",
+        )
+
+    if refresh_token:
+        # Store the refresh token using the provider-namespaced key.
+        await cred_store.store(
+            f"oauth_{provider}_refresh_token",
+            refresh_token,
+            category=provider,
+            description=f"{provider} OAuth refresh token",
+            is_sensitive=True,
+        )
+
+    logger.info(
+        "OAuth COMPLETE (provider=%s, account=%s, scope=%s, persisted=true)",
+        provider,
+        account_email,
+        scope,
+    )
+
+    # --- Audit: connected ---
+    await _emit_oauth_audit(
+        shared_pool,
+        action="connected",
+        provider=provider,
+        note=(
+            f"OAuth dance complete (account={account_email})"
+            if account_email
+            else "OAuth dance complete"
+        ),
+    )
+
+    # --- Redirect ---
+    # Always redirect based on page_of_origin (default → /secrets).
+    # _build_success_redirect_url resolves None to "secrets" so the
+    # missing/default case is handled identically to an explicit "secrets" value.
+    success_url = _build_success_redirect_url(provider, page_of_origin)
+    if dashboard_url:
+        return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
+    return RedirectResponse(url=success_url, status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# _google_callback_from_state — used by the generalised /{provider}/callback
+# ---------------------------------------------------------------------------
+
+
+async def _google_callback_from_state(
+    *,
+    code: str,
+    state_entry: _StateEntry,
+    db_manager: Any,
+    page_of_origin: str | None,
+) -> Response:
+    """Run the full Google OAuth callback using an already-validated state entry.
+
+    Called by ``oauth_provider_callback`` when ``provider=google`` so that the
+    generalised route reuses the existing credential persistence logic without
+    duplicating it.  The CSRF state has already been validated and consumed by
+    the caller.
+    """
+    shared_pool = _get_shared_pool(db_manager)
+    dashboard_url = _get_dashboard_url()
+
+    client_id, client_secret = await _resolve_app_credentials(db_manager)
+    redirect_uri = _get_redirect_uri()
+
+    try:
+        token_data = await _exchange_code_for_tokens(
+            code=code,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+        )
+    except _TokenExchangeError as exc:
+        logger.warning("Google OAuth token exchange failed: %s", exc)
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider="google",
+            note="Token exchange failed",
+        )
+        return JSONResponse(
+            status_code=400,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "token_exchange_failed",
+                    "message": (
+                        "Failed to exchange authorization code for tokens. "
+                        "The code may have expired or already been used."
+                    ),
+                }
+            ).model_dump(),
+        )
+
+    refresh_token = token_data.get("refresh_token")
+    access_token = token_data.get("access_token")
+    scope = token_data.get("scope")
+
+    account_email: str | None = None
+    account_display_name: str | None = None
+
+    if access_token:
+        try:
+            userinfo = await _fetch_google_userinfo(access_token)
+            account_email = userinfo.get("email")
+            account_display_name = userinfo.get("name")
+        except _UserinfoError as exc:
+            logger.warning("Google userinfo call failed: %s", exc)
+            await _emit_oauth_audit(
+                shared_pool,
+                action="failed",
+                provider="google",
+                note="Userinfo call failed",
+            )
+            return JSONResponse(
+                status_code=502,
+                content=ApiResponse(
+                    data={
+                        "success": False,
+                        "error_code": "userinfo_failed",
+                        "message": "Failed to retrieve account information. Please restart.",
+                    }
+                ).model_dump(),
+            )
+
+    # Reuse the full account-registry + credential persistence path.
+    is_new_account: bool | None = None
+    resolved_entity_id: uuid.UUID | None = None
+
+    if shared_pool is not None and account_email:
+        try:
+            existing_account = await get_google_account(shared_pool, account=account_email)
+            is_new_account = False
+            resolved_entity_id = existing_account.entity_id
+            if refresh_token:
+                await _update_account_refresh_token(
+                    shared_pool,
+                    entity_id=existing_account.entity_id,
+                    refresh_token=refresh_token,
+                    scopes=scope,
+                )
+        except GoogleAccountNotFoundError:
+            is_new_account = True
+            if not refresh_token:
+                await _emit_oauth_audit(
+                    shared_pool,
+                    action="failed",
+                    provider="google",
+                    note="No refresh token for new account",
+                )
+                return JSONResponse(
+                    status_code=400,
+                    content=ApiResponse(
+                        data={
+                            "success": False,
+                            "error_code": "no_refresh_token",
+                            "message": (
+                                "Google did not return a refresh token. "
+                                "Re-authorize using force_consent=true."
+                            ),
+                        }
+                    ).model_dump(),
+                )
+            scope_list = [s for s in scope.split() if s] if scope else []
+            try:
+                new_account = await create_google_account(
+                    shared_pool,
+                    email=account_email,
+                    display_name=account_display_name,
+                    scopes=scope_list,
+                    refresh_token=refresh_token,
+                )
+                resolved_entity_id = new_account.entity_id
+            except GoogleAccountAlreadyExistsError:
+                is_new_account = False
+                existing_account = await get_google_account(shared_pool, account=account_email)
+                resolved_entity_id = existing_account.entity_id
+                if refresh_token:
+                    await _update_account_refresh_token(
+                        shared_pool,
+                        entity_id=existing_account.entity_id,
+                        refresh_token=refresh_token,
+                        scopes=scope,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Google account registry error: %s", exc)
+
+    # Health test-mode metadata.
+    if shared_pool is not None and resolved_entity_id is not None:
+        if _is_google_health_test_mode() and _has_health_scope(scope):
+            try:
+                await _set_account_health_test_mode(shared_pool, entity_id=resolved_entity_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to set google_health_test_mode: %s", exc)
+
+    # Persist app credentials + legacy refresh token path.
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is None:
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider="google",
+            note="Credential store unavailable",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Shared credential DB unavailable; cannot persist OAuth credentials.",
+        )
+
+    if refresh_token and (shared_pool is None or not account_email):
+        await store_google_credentials(
+            cred_store,
+            pool=shared_pool,
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            scope=scope,
+        )
+    else:
+        await store_app_credentials(cred_store, client_id=client_id, client_secret=client_secret)
+
+    logger.info(
+        "Google OAuth COMPLETE (client_id=%s, account=%s, is_new=%s, persisted=true)",
+        client_id,
+        account_email,
+        is_new_account,
+    )
+
+    # Register google_health contact_info if health scopes granted.
+    if shared_pool is not None and account_email and scope and "googlehealth." in scope:
+        try:
+            await _register_google_health_contact_info(shared_pool, google_user_id=account_email)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to upsert google_health contact_info: %s", exc)
+
+    # Notify Gmail connector to reload.
+    gmail_health_port = int(os.environ.get("GMAIL_CONNECTOR_HEALTH_PORT", "40082"))
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            await client.post(f"http://127.0.0.1:{gmail_health_port}/reload")
+    except Exception:  # noqa: BLE001
+        logger.debug("Gmail connector reload ping failed (port %s)", gmail_health_port)
+
+    # --- Audit: connected ---
+    await _emit_oauth_audit(
+        shared_pool,
+        action="connected",
+        provider="google",
+        note=(
+            f"Google OAuth complete (account={account_email})"
+            if account_email
+            else "Google OAuth complete"
+        ),
+    )
+
+    # Always redirect based on page_of_origin (default → /secrets).
+    # _build_success_redirect_url resolves None to "secrets" so the
+    # missing/default case is handled identically to an explicit "secrets" value.
+    success_url = _build_success_redirect_url("google", page_of_origin)
+    if dashboard_url:
+        return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
+    return RedirectResponse(url=success_url, status_code=302)

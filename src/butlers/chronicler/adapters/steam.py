@@ -33,9 +33,14 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
+from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import (
+    resolve_owner_entity_id,
+    upsert_owner_episode_entity,
+)
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
@@ -77,6 +82,9 @@ class SteamPlayAdapter(ProjectionAdapter):
             )
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        entity_id = await resolve_owner_entity_id(pool)
+
         latest_watermark = since
         for row in rows:
             candidate = row["recorded_at"]
@@ -90,7 +98,7 @@ class SteamPlayAdapter(ProjectionAdapter):
                 logger.warning("Skipping malformed %s row: %s", _EVIDENCE_TABLE, skip_reason)
                 continue
 
-            await self._project_row(chronicler_pool, row)
+            await self._project_row(chronicler_pool, row, entity_id=entity_id)
             result.rows_projected += 1
             result.episodes_closed += 1
 
@@ -187,6 +195,8 @@ class SteamPlayAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode:
         steam_id = row["steam_id"]
         app_id = row["app_id"]
@@ -269,8 +279,11 @@ class SteamPlayAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
+                    entity_id=entity_id,
                 ),
             )
+            # Write owner row into episode_entities join table (bu-4c1ks).
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
 

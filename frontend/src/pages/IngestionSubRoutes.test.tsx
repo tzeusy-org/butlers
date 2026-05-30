@@ -48,9 +48,22 @@ vi.mock('@/components/ingestion/ConnectorsTab', () => ({
 vi.mock('@/components/ingestion/ConnectorsListPage', () => ({
   ConnectorsListPage: () => <div data-testid="connectors-tab-stub">Connectors tab</div>,
 }))
+vi.mock('@/components/ingestion/connectors/ConnectorsRoster', () => ({
+  ConnectorsRoster: () => <div data-testid="connectors-tab-stub">Connectors roster</div>,
+}))
 vi.mock('@/components/switchboard/FiltersTab', () => ({
   FiltersTab: () => <div data-testid="filters-tab-stub">Filters tab</div>,
 }))
+vi.mock('@/components/ingestion/filters', () => ({
+  FiltersPipeline: () => <div data-testid="filters-pipeline-stub">Filters pipeline</div>,
+}))
+vi.mock('@/hooks/use-ingestion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/use-ingestion')>()
+  return {
+    ...actual,
+    usePipelineStats: () => ({ data: undefined, isLoading: false }),
+  }
+})
 vi.mock('@/components/switchboard/BackfillHistoryTab', () => ({
   BackfillHistoryTab: () => <div data-testid="history-tab-stub">History tab</div>,
 }))
@@ -127,9 +140,14 @@ describe('IngestionTabRedirect', () => {
     expect(container.querySelector('[data-testid="filters-page"]')).not.toBeNull()
   })
 
-  it('redirects ?tab=history to /ingestion/history', () => {
+  it('redirects ?tab=history to /ingestion (Timeline), not to /ingestion/history', () => {
+    // Spec (complete-ingestion-redesign-parity): "history SHALL map to the Timeline route …
+    // it SHALL NOT remain a fourth redesigned tab." No primary /ingestion/history route.
     render('/ingestion?tab=history')
-    expect(container.querySelector('[data-testid="history-page"]')).not.toBeNull()
+    // Must NOT land on /ingestion/history
+    expect(container.querySelector('[data-testid="history-page"]')).toBeNull()
+    // Must render Timeline (IngestionTabRedirect with no tab → renders IngestionTimelinePage stub)
+    expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
   })
 
   // --- Filter param preservation ---
@@ -244,7 +262,8 @@ describe('IngestionTimelinePage', () => {
         </MemoryRouter>,
       )
     })
-    expect(container.querySelector('h1')?.textContent).toBe('Ingestion')
+    // Headline updated to Dispatch-language range-aware copy
+    expect(container.querySelector('h1')?.textContent).toBe('Today, in order of arrival.')
     expect(container.querySelector('[data-testid="timeline-tab-stub"]')).not.toBeNull()
   })
 })
@@ -267,7 +286,7 @@ describe('IngestionConnectorsPage', () => {
     document.body.innerHTML = ''
   })
 
-  it('renders the Connectors heading and connectors tab', async () => {
+  it('renders the Connectors heading and connectors roster', async () => {
     const { default: IngestionConnectorsPage } = await import('@/pages/IngestionConnectorsPage')
     act(() => {
       root.render(
@@ -276,7 +295,8 @@ describe('IngestionConnectorsPage', () => {
         </MemoryRouter>,
       )
     })
-    expect(container.querySelector('h1')?.textContent).toBe('Connectors')
+    // The new Dispatch-language design uses "Where signals come from." as the display headline
+    expect(container.querySelector('h1')?.textContent).toBe('Where signals come from.')
     expect(container.querySelector('[data-testid="connectors-tab-stub"]')).not.toBeNull()
   })
 })
@@ -299,7 +319,7 @@ describe('IngestionFiltersPage', () => {
     document.body.innerHTML = ''
   })
 
-  it('renders the Filters heading and filters tab stub', async () => {
+  it('renders the Filters headline and filters pipeline', async () => {
     const { default: IngestionFiltersPage } = await import('@/pages/IngestionFiltersPage')
     act(() => {
       root.render(
@@ -308,8 +328,11 @@ describe('IngestionFiltersPage', () => {
         </MemoryRouter>,
       )
     })
-    expect(container.querySelector('h1')?.textContent).toBe('Filters')
-    expect(container.querySelector('[data-testid="filters-tab-stub"]')).not.toBeNull()
+    // New Dispatch-language headline per spec §"Filters Pipeline"
+    expect(container.querySelector('h1')?.textContent).toBe('How signals earn dispatch.')
+    // Old card stub is gone; new pipeline is rendered instead
+    expect(container.querySelector('[data-testid="filters-tab-stub"]')).toBeNull()
+    expect(container.querySelector('[data-testid="filters-pipeline-stub"]')).not.toBeNull()
   })
 })
 

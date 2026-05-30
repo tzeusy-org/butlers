@@ -492,27 +492,41 @@ class ContactBackfillWriter:
         local_id: uuid.UUID,
         contact: CanonicalContact,
     ) -> None:
-        """Upsert email, phone, url, and username rows in contact_info.
+        """Upsert channel-identity facts (email, phone, url, username) for a contact.
 
-        Security contract:
-        - ``secured`` is intentionally excluded from all UPDATE SET clauses.
-          Sync must never flip the secured flag; only privileged identity-layer
-          operations may set it.
-        - INSERT uses ``ON CONFLICT DO NOTHING`` so that the UNIQUE(type, value)
-          constraint on public.contact_info never raises; when a (type, value)
-          pair already exists for another contact we silently skip insertion.
+        Write-path cut-over (bu-k9ylx): channel facts are asserted as triples in
+        ``relationship.entity_facts`` via the central writer
+        ``relationship_assert_fact()``.  ``public.contact_info`` is read-only and
+        is no longer written here.  Connector identifier types with no triple
+        predicate (e.g. ``telegram_chat_id``) are skipped — they have no home in
+        the triple model.
         """
-        # Build the full set of contact_info entries to sync
-        entries: list[tuple[str, str, str | None, bool]] = []  # (type, value, label, primary)
+        # Resolve the entity to anchor channel facts on.  Channel facts live on
+        # the entity (subject), not the contact, in the triple store.
+        entity_row = await self._pool.fetchrow(
+            "SELECT entity_id FROM public.contacts WHERE id = $1",
+            local_id,
+        )
+        entity_id = entity_row["entity_id"] if entity_row is not None else None
+        if entity_id is None:
+            logger.debug(
+                "upsert_contact_info: contact %s has no linked entity; skipping channel facts",
+                local_id,
+            )
+            return
+
+        # (channel_type, value, predicate, is_primary) — predicate maps the
+        # connector channel type to a registered contact predicate.
+        entries: list[tuple[str, str, str, bool]] = []
 
         for email in contact.emails:
-            entries.append(("email", email.value, email.label, email.primary))
+            entries.append(("email", email.value, "has-email", email.primary))
 
         for phone in contact.phones:
-            entries.append(("phone", phone.value, phone.label, phone.primary))
+            entries.append(("phone", phone.value, "has-phone", phone.primary))
 
         for url in contact.urls:
-            entries.append(("website", url.value, url.label, False))
+            entries.append(("website", url.value, "has-website", False))
 
         for username in contact.usernames:
             service = username.service
@@ -520,72 +534,39 @@ class ContactBackfillWriter:
             if service == "telegram":
                 # Strip leading '@' if present (canonical form is without)
                 value = username.value.lstrip("@") if username.value else username.value
-                entries.append(("telegram_username", value, service, False))
+                entries.append(("telegram_username", value, "has-handle", False))
             else:
-                entries.append(("other", username.value, service, False))
+                entries.append(("other", username.value, "has-handle", False))
 
-        # For telegram provider, create telegram_user_id from external_id
-        # so reverse-lookup by telegram_user_id works
+        # For telegram provider, assert telegram_user_id as a has-handle triple
+        # so reverse-lookup by telegram_user_id works (identity.py maps
+        # telegram_user_id -> has-handle).
         if self._provider == "telegram" and contact.external_id:
-            entries.append(("telegram_user_id", contact.external_id, None, False))
+            entries.append(("telegram_user_id", contact.external_id, "has-handle", False))
 
-        for type_, value, label, primary in entries:
-            # Check if this value already exists for this contact.
-            # NOTE: Only is_primary is updated on existing rows; secured is never modified.
-            existing = await self._pool.fetchrow(
-                """
-                SELECT id, is_primary FROM public.contact_info
-                WHERE contact_id = $1 AND type = $2 AND lower(value) = lower($3)
-                """,
-                local_id,
-                type_,
-                value,
-            )
-            if existing is not None:
-                # Update primary status only — never touch secured.
-                if primary and not existing["is_primary"]:
-                    await self._pool.execute(
-                        """
-                        UPDATE public.contact_info SET is_primary = false
-                        WHERE contact_id = $1 AND type = $2
-                        """,
-                        local_id,
-                        type_,
-                    )
-                    await self._pool.execute(
-                        "UPDATE public.contact_info SET is_primary = true WHERE id = $1",
-                        existing["id"],
-                    )
-                continue
+        from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
 
-            # If setting as primary, clear existing primaries for this type.
-            # (Still does not touch secured on any row.)
-            if primary:
-                await self._pool.execute(
-                    """
-                    UPDATE public.contact_info SET is_primary = false
-                    WHERE contact_id = $1 AND type = $2
-                    """,
-                    local_id,
-                    type_,
+        for type_, value, predicate, primary in entries:
+            try:
+                await relationship_assert_fact(
+                    self._pool,
+                    entity_id,
+                    predicate,
+                    value,
+                    src="contacts-backfill",
+                    object_kind="literal",
+                    primary=primary,
                 )
-
-            # ON CONFLICT DO NOTHING handles:
-            # 1. Concurrent duplicate inserts for the same (contact_id, type, value).
-            # 2. The UNIQUE(type, value) constraint: if this value is already
-            #    linked to a *different* contact, we skip insertion silently.
-            await self._pool.execute(
-                """
-                INSERT INTO public.contact_info (contact_id, type, value, label, is_primary)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT DO NOTHING
-                """,
-                local_id,
-                type_,
-                value,
-                label,
-                primary,
-            )
+            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+                logger.warning(
+                    "upsert_contact_info: relationship_assert_fact failed for entity %s "
+                    "(ci_type=%r, predicate=%r, value=%r) — channel fact not written",
+                    entity_id,
+                    type_,
+                    predicate,
+                    value,
+                    exc_info=True,
+                )
 
     async def upsert_addresses(
         self,

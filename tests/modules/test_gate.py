@@ -112,41 +112,47 @@ async def _call_gate(
 
 
 class TestIsPrimaryContact:
-    """Unit tests for the shared is_primary_contact helper."""
+    """Unit tests for the shared is_primary_contact helper.
+
+    Migration bead 7 (bu-akads): is_primary_contact now takes entity_id and
+    queries relationship.entity_facts instead of public.contact_info.
+    The triple's ``"primary"`` column replaces the legacy ``is_primary`` column.
+    """
 
     async def test_returns_true_when_is_primary(self) -> None:
-        contact_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return={"is_primary": True})
-        result = await is_primary_contact(pool, contact_id, "telegram", "12345")
+        entity_id = uuid.uuid4()
+        pool = _make_pool(fetchrow_return={"primary": True})
+        result = await is_primary_contact(pool, entity_id, "telegram", "12345")
         assert result is True
 
     async def test_returns_false_when_not_primary(self) -> None:
-        contact_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return={"is_primary": False})
-        result = await is_primary_contact(pool, contact_id, "telegram", "99999")
+        entity_id = uuid.uuid4()
+        pool = _make_pool(fetchrow_return={"primary": False})
+        result = await is_primary_contact(pool, entity_id, "telegram", "99999")
         assert result is False
 
     async def test_returns_false_when_row_missing(self) -> None:
-        contact_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
         pool = _make_pool(fetchrow_return=None)
-        result = await is_primary_contact(pool, contact_id, "telegram", "no-such-id")
+        result = await is_primary_contact(pool, entity_id, "telegram", "no-such-id")
         assert result is False
 
     async def test_returns_false_on_db_error(self) -> None:
-        contact_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
         pool = _make_pool(fetchrow_side_effect=Exception("connection lost"))
-        result = await is_primary_contact(pool, contact_id, "whatsapp_jid", "+15555555")
+        result = await is_primary_contact(pool, entity_id, "whatsapp_jid", "+15555555")
         assert result is False
 
     async def test_queries_correct_columns(self) -> None:
-        contact_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return={"is_primary": True})
-        await is_primary_contact(pool, contact_id, "telegram", "chat-99")
+        """Bead 7 cut-over: query targets relationship.entity_facts with entity_id."""
+        entity_id = uuid.uuid4()
+        pool = _make_pool(fetchrow_return={"primary": True})
+        await is_primary_contact(pool, entity_id, "telegram", "chat-99")
         query, *args = pool.fetchrow.call_args.args
-        assert "contact_info" in query
-        assert "is_primary" in query
-        assert args[0] == contact_id
-        assert args[1] == "telegram"
+        assert "entity_facts" in query
+        assert '"primary"' in query or "primary" in query
+        assert args[0] == entity_id
+        assert args[1] == "has-handle"  # telegram → has-handle predicate
         assert args[2] == "chat-99"
 
 
@@ -162,7 +168,7 @@ class TestGateOwnerPrimaryRequirement:
         """Owner send to primary telegram chat_id is auto-approved."""
         owner = _owner_contact()
         # is_primary=True for the targeted chat_id
-        pool = _make_pool(fetchrow_return={"is_primary": True})
+        pool = _make_pool(fetchrow_return={"primary": True})
 
         result = await _call_gate(
             {"chat_id": "12345", "message": "hello"},
@@ -180,7 +186,7 @@ class TestGateOwnerPrimaryRequirement:
         """
         owner = _owner_contact()
         # Targeted chat_id is NOT the primary one
-        pool = _make_pool(fetchrow_return={"is_primary": False})
+        pool = _make_pool(fetchrow_return={"primary": False})
 
         with patch(
             "butlers.modules.approvals.gate._resolve_target_contact",
@@ -206,7 +212,7 @@ class TestGateOwnerPrimaryRequirement:
     async def test_owner_non_primary_whatsapp_parks(self) -> None:
         """Owner send to a non-primary whatsapp_jid is parked for approval."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"is_primary": False})
+        pool = _make_pool(fetchrow_return={"primary": False})
 
         with patch(
             "butlers.modules.approvals.gate._resolve_target_contact",
@@ -239,7 +245,7 @@ class TestGateOwnerPrimaryRequirement:
         owner_id = uuid.uuid4()
         owner = _owner_contact(owner_id)
         # fetchrow will NOT be called for is_primary in contact_id path
-        pool = _make_pool(fetchrow_return={"is_primary": False})
+        pool = _make_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
             {"contact_id": str(owner_id), "channel": "telegram", "message": "hi"},
@@ -256,7 +262,7 @@ class TestGateOwnerPrimaryRequirement:
     async def test_non_owner_with_primary_telegram_goes_through_rules(self) -> None:
         """Non-owner telegram target goes through rules path regardless of is_primary."""
         non_owner = _non_owner_contact()
-        pool = _make_pool(fetchrow_return={"is_primary": True})
+        pool = _make_pool(fetchrow_return={"primary": True})
 
         with patch(
             "butlers.modules.approvals.gate._resolve_target_contact",
@@ -291,13 +297,14 @@ class TestGateOwnerPrimaryRequirement:
         secondary_chat_id = "22222222"
 
         async def _fetchrow_with_primacy(query: str, *args: Any) -> dict | None:
-            """Return is_primary based on which chat_id is queried."""
-            if "contact_info" in query and "is_primary" in query:
+            """Return primary based on which chat_id is queried (bead 7: entity_facts)."""
+            if "entity_facts" in query and "primary" in query:
+                # args: (entity_id, predicate, channel_value)
                 queried_value = args[2] if len(args) > 2 else None
                 if queried_value == primary_chat_id:
-                    return {"is_primary": True}
+                    return {"primary": True}
                 if queried_value == secondary_chat_id:
-                    return {"is_primary": False}
+                    return {"primary": False}
             return None
 
         pool = _make_pool(fetchrow_side_effect=_fetchrow_with_primacy)
@@ -415,7 +422,7 @@ class TestGateEmitsCreatedEvent:
     async def test_owner_auto_approve_emits_created(self) -> None:
         """Owner-targeted primary channel: gate emits kind='created' with status='approved'."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"is_primary": True})
+        pool = _make_pool(fetchrow_return={"primary": True})
 
         result, mock_emit = await self._call_gate_patched(
             {"chat_id": "12345", "message": "hello"},
@@ -436,7 +443,7 @@ class TestGateEmitsCreatedEvent:
         """No-rule path: gate emits kind='created' with status='pending'."""
         owner = _owner_contact()
         # Non-primary → falls through to park
-        pool = _make_pool(fetchrow_return={"is_primary": False})
+        pool = _make_pool(fetchrow_return={"primary": False})
 
         with (
             patch(
@@ -468,7 +475,7 @@ class TestGateEmitsCreatedEvent:
     async def test_emit_created_survives_import_failure(self) -> None:
         """If emit_approvals_event import fails, gate wrapper must not crash."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"is_primary": True})
+        pool = _make_pool(fetchrow_return={"primary": True})
 
         from butlers.modules.approvals.executor import ExecutionResult
 

@@ -1,3 +1,18 @@
+/**
+ * ConnectorDetailPage tests — updated for the Dispatch-language redesign.
+ *
+ * The old card-based UI has been replaced with a Dispatch-language two-zone
+ * layout (ConnectorDetailView). This test file covers the page-level contract:
+ * - Correct H1 rendering
+ * - Key content rendered (connector type, endpoint, liveness)
+ * - Error and not-found states render explicit messages
+ * - Loading state renders skeleton (no H1)
+ * - Reauth callout renders when auth is broken
+ *
+ * Component-level tests for ConnectorDetailView (KPI strip, scope list, etc.)
+ * live in ConnectorDetailView.test.tsx.
+ */
+
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
@@ -7,8 +22,6 @@ import ConnectorDetailPage from "@/pages/ConnectorDetailPage";
 import {
   useConnectorDetail,
   useConnectorStats,
-  useUpdateConnectorCursor,
-  useUpdateConnectorSettings,
 } from "@/hooks/use-ingestion";
 import type { ConnectorDetail } from "@/api/types";
 
@@ -27,32 +40,10 @@ vi.mock("react-router", async (importOriginal) => {
 vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorDetail: vi.fn(),
   useConnectorStats: vi.fn(),
-  useUpdateConnectorCursor: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useUpdateConnectorSettings: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useConnectorEvents: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useConnectorIncidents: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useConnectorRoutingRules: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
 }));
-
-// Stub complex child components to avoid deep dependency chains in SSR tests
-vi.mock("@/components/ingestion/LivenessBadge", () => ({
-  LivenessBadge: ({ liveness, state }: { liveness: string; state: string }) => (
-    <span data-testid="liveness-badge">{liveness} {state}</span>
-  ),
-}));
-
-vi.mock("@/components/ingestion/VolumeTrendChart", () => ({
-  VolumeTrendChart: () => <div data-testid="volume-trend-chart" />,
-}));
-
-vi.mock("@/components/ingestion/ConnectorRulesSection", () => ({
-  ConnectorRulesSection: () => <div data-testid="connector-rules-section" />,
-}));
-
-vi.mock("@/components/ingestion/BatchSettingsCard", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/components/ingestion/BatchSettingsCard")>();
-  return {
-    ...actual,
-    BatchSettingsCard: () => <div data-testid="batch-settings-card" />,
-  };
-});
 
 type UseConnectorDetailResult = ReturnType<typeof useConnectorDetail>;
 type UseConnectorStatsResult = ReturnType<typeof useConnectorStats>;
@@ -79,6 +70,14 @@ const BASE_CONNECTOR: ConnectorDetail = {
     dedupe_accepted: 10,
   },
   settings: null,
+};
+
+const REAUTH_CONNECTOR: ConnectorDetail = {
+  ...BASE_CONNECTOR,
+  liveness: "offline",
+  state: "error",
+  error_message: "401 Unauthorized — token expired",
+  today: { messages_ingested: 0, messages_failed: 8, uptime_pct: null },
 };
 
 function setConnectorState(
@@ -113,17 +112,13 @@ function renderPage(): string {
   );
 }
 
+// ---------------------------------------------------------------------------
+// H1 contract
+// ---------------------------------------------------------------------------
+
 describe("ConnectorDetailPage — single-H1 contract", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(useUpdateConnectorCursor).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useUpdateConnectorCursor>);
-    vi.mocked(useUpdateConnectorSettings).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useUpdateConnectorSettings>);
   });
 
   it("renders exactly one H1 when connector is loaded", () => {
@@ -141,25 +136,20 @@ describe("ConnectorDetailPage — single-H1 contract", () => {
     } as UseConnectorDetailResult);
     setStatsState();
     const html = renderPage();
-    // In loading state, Page renders a skeleton (no H1 from HeadingBlock)
     expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(0);
   });
 });
 
+// ---------------------------------------------------------------------------
+// Content rendering
+// ---------------------------------------------------------------------------
+
 describe("ConnectorDetailPage — content", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(useUpdateConnectorCursor).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useUpdateConnectorCursor>);
-    vi.mocked(useUpdateConnectorSettings).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useUpdateConnectorSettings>);
   });
 
-  it("renders connector type as the H1 title", () => {
+  it("renders connector type as the H1 display headline", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
@@ -167,127 +157,99 @@ describe("ConnectorDetailPage — content", () => {
     expect(html.match(/<h1[^>]*>.*?<\/h1>/s)?.[0]).toContain("gmail");
   });
 
-  it("renders endpoint_identity as page description", () => {
+  it("renders endpoint_identity in the page", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
     expect(html).toContain("user@example.com");
   });
 
-  it("renders version in status card", () => {
-    setConnectorState(BASE_CONNECTOR);
-    setStatsState();
-    const html = renderPage();
-    expect(html).toContain("Version 1.2.3");
-  });
-
-  it("renders liveness badge", () => {
+  it("renders liveness status in the header band", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
     expect(html).toContain("online");
-    expect(html).toContain("healthy");
   });
 
-  it("renders lifetime counters when present", () => {
+  it("renders lifetime counters", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("Lifetime Counters");
-    expect(html).toContain("Ingested");
+    // New layout: "lifetime counters" eyebrow + counter values
+    expect(html).toContain("lifetime counters");
+    expect(html).toContain("1,000"); // messages_ingested lifetime
   });
 
-  it("renders checkpoint cursor", () => {
+  it("renders checkpoint cursor in the config block", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("Checkpoint Cursor");
     expect(html).toContain("token-xyz");
   });
 
-  it("renders discretion settings card", () => {
+  it("renders version in the config block", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("Discretion Settings");
+    expect(html).toContain("1.2.3");
   });
 
-  it("renders volume trend chart", () => {
+  it("renders KPI strip for today's events", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("volume-trend-chart");
+    // KPI strip shows today.messages_ingested = 50
+    expect(html).toContain("50");
+    expect(html).toContain("events · today");
   });
 
-  it("renders connector rules section", () => {
+  it("renders scope list unavailable state (backend capability not yet present)", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("connector-rules-section");
+    // ScopeList should show the unavailable state with scopes=null
+    expect(html).toContain("scopes-unavailable");
   });
 
-  it("renders breadcrumbs to Ingestion and Connectors", () => {
+  it("renders breadcrumb link back to /ingestion/connectors", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("/ingestion");
-    expect(html).toContain("/ingestion?tab=connectors");
+    expect(html).toContain("/ingestion/connectors");
+    expect(html).toContain("ingestion / connectors");
   });
 
-  it("renders error message when connector has one", () => {
-    setConnectorState({
-      ...BASE_CONNECTOR,
-      error_message: "Auth token expired",
-    });
+  it("renders reauth callout when connector has error state", () => {
+    setConnectorState(REAUTH_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("Auth token expired");
+    expect(html).toContain("reauth-callout");
+    expect(html).toContain("reauth required");
   });
 
-  it("does not render back button (replaced by Page breadcrumbs)", () => {
+  it("does NOT render reauth callout when connector is healthy", () => {
     setConnectorState(BASE_CONNECTOR);
     setStatsState();
     const html = renderPage();
-    expect(html).not.toContain("Back to Connectors");
+    expect(html).not.toContain("reauth-callout");
   });
 
-  it("renders period summary when stats are present", () => {
-    setConnectorState(BASE_CONNECTOR);
-    vi.mocked(useConnectorStats).mockReturnValue({
-      data: {
-        data: {
-          connector_type: "gmail",
-          endpoint_identity: "user@example.com",
-          period: "24h",
-          summary: {
-            messages_ingested: 120,
-            messages_failed: 2,
-            error_rate_pct: 1.6,
-            uptime_pct: 99.5,
-            avg_messages_per_hour: 5.0,
-          },
-          timeseries: [],
-        },
-      },
-      isLoading: false,
-      error: null,
-    } as unknown as UseConnectorStatsResult);
+  it("renders error message text when connector has one", () => {
+    setConnectorState(REAUTH_CONNECTOR);
+    setStatsState();
     const html = renderPage();
-    expect(html).toContain("Period Summary");
+    // Error note appears in the reauth callout or header
+    expect(html).toContain("401 Unauthorized");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Error + not-found states
+// ---------------------------------------------------------------------------
 
 describe("ConnectorDetailPage — error state", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(useUpdateConnectorCursor).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useUpdateConnectorCursor>);
-    vi.mocked(useUpdateConnectorSettings).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useUpdateConnectorSettings>);
   });
 
   it("shows an error region when connector fetch fails", () => {
@@ -298,7 +260,15 @@ describe("ConnectorDetailPage — error state", () => {
     } as UseConnectorDetailResult);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("Something went wrong");
+    expect(html).toContain("detail-error");
     expect(html).toContain("Network error");
+  });
+
+  it("shows not-found state when connector data is missing after load", () => {
+    setConnectorState(null);
+    setStatsState();
+    const html = renderPage();
+    expect(html).toContain("detail-not-found");
+    expect(html).toContain("Connector not found");
   });
 });

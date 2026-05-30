@@ -31,6 +31,10 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
+from butlers.contact_info_write_guard import (
+    ContactInfoWriteBlockedError,
+    assert_contact_info_writes_blocked,
+)
 
 # Load local models module
 _api_dir = Path(__file__).parent
@@ -119,6 +123,7 @@ if _models_path.exists():
         ActivityResponse = _models_module.ActivityResponse
         EntityFactEntry = _models_module.EntityFactEntry
         EntityFactsResponse = _models_module.EntityFactsResponse
+        ContactEntityResolverResponse = _models_module.ContactEntityResolverResponse
 
 logger = logging.getLogger(__name__)
 
@@ -1227,6 +1232,50 @@ async def list_contact_interactions(
 
 
 # ---------------------------------------------------------------------------
+# GET /contacts/{contact_id}/entity — redirect resolver
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/contacts/{contact_id}/entity",
+    response_model=ContactEntityResolverResponse,
+    summary="Resolve a contact to its linked entity",
+)
+async def resolve_contact_entity(
+    contact_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactEntityResolverResponse:
+    """Resolve a contact_id to its linked entity_id for redirect purposes.
+
+    Used by the /contacts/:contactId frontend route to locate the target
+    entity before redirecting to /entities/:entityId.  Returns a minimal
+    payload — callers must NOT use this as a substitute for the full entity
+    detail; call GET /memory/entities/{entityId} for that.
+
+    Responses:
+    - ``{"entity_id": "<uuid>", "status": "linked"}``   — contact exists and
+      is linked to an entity.
+    - ``{"entity_id": null, "status": "unlinked"}``     — contact exists but
+      has no entity link yet.
+    - HTTP 404                                           — no contact with
+      this ID.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT entity_id FROM contacts WHERE id = $1",
+        contact_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    entity_id = row["entity_id"]
+    if entity_id is None:
+        return ContactEntityResolverResponse(entity_id=None, status="unlinked")
+    return ContactEntityResolverResponse(entity_id=entity_id, status="linked")
+
+
+# ---------------------------------------------------------------------------
 # GET /contacts/{contact_id} — full detail
 # ---------------------------------------------------------------------------
 
@@ -1237,6 +1286,10 @@ async def get_contact(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ContactDetail:
     """Get full contact detail with labels, email, phone, birthday, roles, entity_id.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
+    is fully removed from the frontend.  Prefer entity-keyed endpoints for new
+    code.  Migration gate: bu-k9ylx (write-path cut-over) + bu-uhjxr children.
 
     Secured contact_info values are masked (value=None) in the response.
     Use GET /contacts/{id}/secrets/{info_id} to reveal a secured value.
@@ -1409,6 +1462,11 @@ async def reveal_contact_secret(
 ) -> dict[str, Any]:
     """Reveal the actual value of a secured contact_info entry.
 
+    COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
+    is fully removed and secured contact_info rows are migrated to entity_info
+    (bu-pl8fy).  Prefer GET /relationship/entities/{entityId}/secrets/{infoId}
+    for entity_info secured rows once that migration is complete.
+
     Returns the real value for a secured contact_info row.  Returns 404 if
     the info_id does not exist OR does not belong to the given contact_id —
     preventing enumeration of secured values across contacts.
@@ -1467,6 +1525,11 @@ async def patch_contact(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ContactDetail:
     """Partially update a contact.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
+    is fully removed.  CRM field writes (full_name, company, job_title) will
+    migrate to entity fact mutations after bu-k9ylx (write-path cut-over).
+    Preferred channel and label writes have the same migration dependency.
 
     Supported fields: full_name, nickname, company, job_title, roles.
     This is the sole write path for role assignment.  Only provided
@@ -1579,6 +1642,11 @@ async def delete_contact(
 ) -> None:
     """Hard-delete a contact and all its associated contact_info.
 
+    COMPAT-ONLY: this contact-keyed endpoint remains until the contact row
+    lifecycle is rationalized post bu-k9ylx + bu-e2ja9 (drop public.contact_info).
+    Prefer DELETE /relationship/entities/{entityId} (entity forget/tombstone)
+    for complete entity removal.
+
     CASCADE on public.contact_info FK handles info cleanup.
     Source links in contacts_source_links are also removed so a
     future sync can re-create the contact from scratch if needed.
@@ -1616,6 +1684,13 @@ async def archive_contact(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Soft-archive a contact.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until contact archive
+    semantics are rationalized with entity archive (POST /relationship/entities
+    /{entityId}/archive) post bu-k9ylx.  Contact archive (preserves source
+    links so sync won't re-create) is semantically distinct from entity archive
+    (hides from list views); both actions are available during the migration
+    window.
 
     Sets archived_at to now(). Source links are preserved so that future
     syncs recognise the contact and skip re-creation.
@@ -1742,34 +1817,12 @@ async def merge_contact(
     if contact_id == source_id:
         raise HTTPException(status_code=400, detail="Source and target contacts must be different")
 
-    # Move contact_info from source to target.
-    # First delete source rows whose (type, value) already exist on the target to
-    # avoid producing duplicates (public.contact_info has no unique constraint on
-    # (contact_id, type, value), so a plain UPDATE would silently create them).
-    await pool.execute(
-        """
-        DELETE FROM public.contact_info
-        WHERE contact_id = $1
-          AND (type, value) IN (
-              SELECT type, value
-              FROM public.contact_info
-              WHERE contact_id = $2
-          )
-        """,
-        source_id,
-        contact_id,
-    )
-    moved_result = await pool.fetch(
-        """
-        UPDATE public.contact_info
-        SET contact_id = $1
-        WHERE contact_id = $2
-        RETURNING id
-        """,
-        contact_id,
-        source_id,
-    )
-    contact_info_moved = len(moved_result)
+    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only and is no
+    # longer re-pointed here. The source entity's channel facts are re-pointed to
+    # the target entity by entity_merge on relationship.entity_facts (below).
+    # contact_info_moved is reported as 0 — channel identifiers now live only in
+    # the triple store, which the merge consolidates via entity_merge.
+    contact_info_moved = 0
 
     # Attempt entity_merge if both have entity_ids
     entity_merged = False
@@ -1953,48 +2006,97 @@ async def create_contact_info(
     request: CreateContactInfoRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CreateContactInfoResponse:
-    """Add a contact_info entry (email, telegram, phone, etc.) to a contact."""
+    """Add a contact_info entry (email, telegram, phone, etc.) to a contact.
+
+    COMPAT-ONLY: this contact-keyed endpoint remains until contact-info writes
+    are migrated to entity fact mutations (bu-k9ylx write-path cut-over).
+    """
     pool = _pool(db)
 
-    # Verify contact exists
+    # Verify contact exists and resolve its entity (channel facts anchor on the
+    # entity, not the contact, in the triple store).
     existing = await pool.fetchrow(
-        "SELECT id FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        "SELECT id, entity_id FROM contacts WHERE id = $1 AND archived_at IS NULL",
         contact_id,
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    try:
-        row = await pool.fetchrow(
-            """
-            INSERT INTO public.contact_info
-                (contact_id, type, value, is_primary, secured, parent_id, context)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, contact_id, type, value, is_primary, secured, parent_id, context
-            """,
-            contact_id,
-            request.type,
-            request.value,
-            request.is_primary,
-            request.secured,
-            request.parent_id,
-            request.context,
-        )
-    except asyncpg.UniqueViolationError:
+    entity_id = existing["entity_id"]
+    if entity_id is None:
         raise HTTPException(
             status_code=409,
-            detail=f"A {request.type} entry with this value already exists.",
+            detail="Contact has no linked entity; cannot record a channel fact.",
         )
 
+    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only. The
+    # channel fact is written via the central writer relationship_assert_fact()
+    # into relationship.entity_facts. Secured (credential) rows and types with
+    # no triple predicate have no home after the cut-over and are rejected.
+    from butlers.tools.relationship.relationship_assert_fact import (
+        contact_info_type_to_predicate,
+        relationship_assert_fact,
+    )
+
+    predicate = contact_info_type_to_predicate(request.type)
+    if request.secured or predicate is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Contact-info type '{request.type}' cannot be written after the "
+                "write-path cut-over: public.contact_info is read-only and this "
+                "type has no triple predicate (or is a secured credential row)."
+            ),
+        )
+
+    assert_result = await relationship_assert_fact(
+        pool,
+        entity_id,
+        predicate,
+        request.value,
+        src="relationship",
+        object_kind="literal",
+        primary=request.is_primary,
+    )
+
+    # Owner carve-out: when the assertion is parked for human approval the fact
+    # was NOT written (fact_id is None). Surface HTTP 202 with the pending action
+    # id instead of a misleading 201 carrying a synthesized uuid that maps to no
+    # real row — this mirrors the contact_info_add tool's pending_approval shape.
+    if assert_result.outcome.value == "pending_approval":
+        await emit_dashboard_audit(
+            db,
+            butler="relationship",
+            operation="contact_info_create",
+            method="POST",
+            path=f"/api/relationship/contacts/{contact_id}/contact-info",
+            path_params={"contact_id": str(contact_id)},
+            body={"type": request.type, "outcome": "pending_approval"},
+            response_status=202,
+            request=http_request,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "pending_approval",
+                "action_id": str(assert_result.action_id),
+                "message": (
+                    f"Adding {request.type} to the owner's entity requires human approval."
+                ),
+            },
+        )
+
+    from uuid import uuid4
+
     result = CreateContactInfoResponse(
-        id=row["id"],
-        contact_id=row["contact_id"],
-        type=row["type"],
-        value=row["value"],
-        is_primary=row["is_primary"],
-        secured=row["secured"],
-        parent_id=row["parent_id"],
-        context=row["context"],
+        id=assert_result.fact_id or uuid4(),
+        contact_id=contact_id,
+        type=request.type,
+        value=request.value,
+        is_primary=request.is_primary,
+        secured=request.secured,
+        parent_id=request.parent_id,
+        context=request.context,
     )
 
     # Explicit audit — middleware also fires but this carries a richer operation label.
@@ -2022,33 +2124,20 @@ async def create_contact_info(
 async def delete_contact_info(
     contact_id: UUID,
     info_id: UUID,
-    request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    request: Request,  # noqa: ARG001 — kept for route signature/back-compat
+    db: DatabaseManager = Depends(_get_db_manager),  # noqa: ARG001
 ) -> None:
-    """Delete a single contact_info entry."""
-    pool = _pool(db)
+    """Reject deletes — public.contact_info is read-only after the cut-over.
 
-    row = await pool.fetchrow(
-        "SELECT id FROM public.contact_info WHERE id = $1 AND contact_id = $2",
-        info_id,
-        contact_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Contact info entry not found")
-
-    await pool.execute("DELETE FROM public.contact_info WHERE id = $1", info_id)
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    await emit_dashboard_audit(
-        db,
-        butler="relationship",
-        operation="contact_info_delete",
-        method="DELETE",
-        path=f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
-        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
-        response_status=204,
-        request=request,
-    )
+    Write-path cut-over (bu-k9ylx): public.contact_info is read-only and the
+    triple store is not addressable by contact_info.id. Channel-fact retraction
+    flows through the relationship butler's triple retraction path instead.
+    Returns HTTP 409 to signal the write is no longer permitted.
+    """
+    try:
+        assert_contact_info_writes_blocked("delete")
+    except ContactInfoWriteBlockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -2061,108 +2150,23 @@ async def delete_contact_info(
     response_model=ContactInfoEntry,
 )
 async def patch_contact_info(
-    contact_id: UUID,
-    info_id: UUID,
-    http_request: Request,
-    request: PatchContactInfoRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    contact_id: UUID,  # noqa: ARG001 — kept for route signature/back-compat
+    info_id: UUID,  # noqa: ARG001
+    http_request: Request,  # noqa: ARG001
+    request: PatchContactInfoRequest = Body(...),  # noqa: ARG001
+    db: DatabaseManager = Depends(_get_db_manager),  # noqa: ARG001
 ) -> ContactInfoEntry:
-    """Update a contact_info entry (type, value, is_primary)."""
-    pool = _pool(db)
+    """Reject in-place updates — public.contact_info is read-only after cut-over.
 
-    row = await pool.fetchrow(
-        "SELECT id FROM public.contact_info WHERE id = $1 AND contact_id = $2",
-        info_id,
-        contact_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Contact info entry not found")
-
-    updates: list[str] = []
-    args: list[Any] = []
-    idx = 1
-
-    if request.type is not None:
-        updates.append(f"type = ${idx}")
-        args.append(request.type)
-        idx += 1
-
-    if request.value is not None:
-        updates.append(f"value = ${idx}")
-        args.append(request.value)
-        idx += 1
-
-    if request.is_primary is not None:
-        updates.append(f"is_primary = ${idx}")
-        args.append(request.is_primary)
-        idx += 1
-
-    # context uses sentinel to distinguish "not provided" from "set to None"
-    if "context" in (request.model_fields_set or set()):
-        updates.append(f"context = ${idx}")
-        args.append(request.context)
-        idx += 1
-
-    if updates:
-        set_clause = ", ".join(updates)
-        args.append(info_id)
-        await pool.execute(
-            f"UPDATE public.contact_info SET {set_clause} WHERE id = ${idx}",
-            *args,
-        )
-
-    # When toggling is_primary=true, clear siblings of same type (top-level only)
-    if request.is_primary is True:
-        entry = await pool.fetchrow(
-            "SELECT contact_id, type FROM public.contact_info WHERE id = $1",
-            info_id,
-        )
-        if entry is not None:
-            await pool.execute(
-                """
-                UPDATE public.contact_info SET is_primary = false
-                WHERE contact_id = $1 AND type = $2 AND parent_id IS NULL AND id != $3
-                """,
-                entry["contact_id"],
-                entry["type"],
-                info_id,
-            )
-
-    updated = await pool.fetchrow(
-        "SELECT id, type, value, is_primary, secured, parent_id, context"
-        " FROM public.contact_info WHERE id = $1",
-        info_id,
-    )
-    entry_result = ContactInfoEntry(
-        id=updated["id"],
-        type=updated["type"],
-        value=updated["value"],
-        is_primary=updated["is_primary"],
-        secured=updated["secured"],
-        parent_id=updated["parent_id"],
-        context=updated["context"],
-    )
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    audit_body: dict = {}
-    if request.type is not None:
-        audit_body["type"] = request.type
-    if request.is_primary is not None:
-        audit_body["is_primary"] = request.is_primary
-    # Note: request.value is intentionally excluded (may contain credential values)
-    await emit_dashboard_audit(
-        db,
-        butler="relationship",
-        operation="contact_info_patch",
-        method="PATCH",
-        path=f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
-        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
-        body=audit_body or None,
-        response_status=200,
-        request=http_request,
-    )
-
-    return entry_result
+    Write-path cut-over (bu-k9ylx): public.contact_info is read-only and the
+    triple store has no contact_info.id-addressable update. To change a channel
+    fact, re-assert it via POST /contacts/{id}/contact-info (central writer).
+    Returns HTTP 409 to signal the write is no longer permitted.
+    """
+    try:
+        assert_contact_info_writes_blocked("update")
+    except ContactInfoWriteBlockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -4314,7 +4318,12 @@ async def list_entity_linked_contacts(
 
     Returns 404 if the entity does not exist.
     Returns [] if no contacts are linked to the entity.
-    Each entry includes a primary email and phone for quick display.
+
+    Each entry is enriched with:
+    - ``email`` / ``phone`` — primary non-secured values for quick display.
+    - ``contact_info`` — all non-secured contact_info rows (channel chips).
+    - ``labels`` — full label objects assigned to the contact.
+    - ``preferred_channel`` — the contact's preferred outreach channel.
     """
     pool = _pool(db)
     await _assert_entity_exists(pool, entity_id)
@@ -4323,7 +4332,8 @@ async def list_entity_linked_contacts(
         """
         SELECT
             c.id,
-            c.full_name,
+            c.name AS full_name,
+            c.preferred_channel,
             (
                 SELECT ci.value
                 FROM public.contact_info ci
@@ -4345,16 +4355,70 @@ async def list_entity_linked_contacts(
         FROM public.contacts c
         WHERE c.entity_id = $1
           AND c.archived_at IS NULL
-        ORDER BY c.full_name
+        ORDER BY c.name
         """,
         entity_id,
     )
+
+    if not rows:
+        return []
+
+    contact_ids = [r["id"] for r in rows]
+
+    # Batch-fetch supplementary data to avoid N+1 queries.
+    ci_rows, label_rows = await asyncio.gather(
+        pool.fetch(
+            """
+            SELECT id, contact_id, type, value, is_primary, secured, parent_id, context
+            FROM public.contact_info
+            WHERE contact_id = ANY($1)
+              AND secured = false
+            ORDER BY contact_id, is_primary DESC NULLS LAST, type, id
+            """,
+            contact_ids,
+        ),
+        pool.fetch(
+            """
+            SELECT cl.contact_id, l.id, l.name, l.color
+            FROM contact_labels cl
+            JOIN labels l ON l.id = cl.label_id
+            WHERE cl.contact_id = ANY($1)
+            ORDER BY cl.contact_id, l.name
+            """,
+            contact_ids,
+        ),
+    )
+
+    # Index supplementary data by contact_id.
+    ci_by_contact: dict[UUID, list[ContactInfoEntry]] = {cid: [] for cid in contact_ids}
+    for ci in ci_rows:
+        ci_by_contact[ci["contact_id"]].append(
+            ContactInfoEntry(
+                id=ci["id"],
+                type=ci["type"],
+                value=ci["value"],
+                is_primary=bool(ci["is_primary"]),
+                secured=False,
+                parent_id=ci["parent_id"],
+                context=ci["context"],
+            )
+        )
+
+    labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
+    for lr in label_rows:
+        labels_by_contact[lr["contact_id"]].append(
+            Label(id=lr["id"], name=lr["name"], color=lr["color"])
+        )
+
     return [
         LinkedContactSummary(
             id=r["id"],
             full_name=r["full_name"],
             email=r["email"],
             phone=r["phone"],
+            contact_info=ci_by_contact.get(r["id"], []),
+            labels=labels_by_contact.get(r["id"], []),
+            preferred_channel=r["preferred_channel"],
         )
         for r in rows
     ]

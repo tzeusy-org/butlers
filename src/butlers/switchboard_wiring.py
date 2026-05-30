@@ -145,6 +145,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
     enable_ingress_dedupe = (
         pipeline_mod._config.enable_ingress_dedupe if pipeline_mod is not None else True
     )
+
     pipeline = MessagePipeline(
         switchboard_pool=pool,
         dispatch_fn=daemon.spawner.trigger,

@@ -1,14 +1,19 @@
 """Shared primacy check helper for the approvals module.
 
 Both the email guard (``email_guard.py``) and the approval gate (``gate.py``)
-need to verify whether a specific channel address is the *primary* entry for a
-contact in ``public.contact_info``.  This module provides a single canonical
+need to verify whether a specific channel address is the *primary* entry for an
+entity in ``relationship.entity_facts``.  This module provides a single canonical
 implementation so both code-paths enforce identical policy.
+
+Migration bead 7 (bu-akads): primacy is now read from
+``relationship.entity_facts.primary`` (a BOOL column on the triple row)
+rather than from ``public.contact_info.is_primary``.
 
 Public surface
 --------------
-- :func:`is_primary_contact` — returns True when (contact_id, channel_type,
-  channel_value) matches a row in ``public.contact_info`` with ``is_primary=True``.
+- :func:`is_primary_contact` — returns True when (entity_id, channel_type,
+  channel_value) matches an active triple in ``relationship.entity_facts``
+  with ``"primary" = true``.
 """
 
 from __future__ import annotations
@@ -22,62 +27,89 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Channel-type → predicate mapping (mirrors identity._CHANNEL_TYPE_TO_PREDICATE)
+_CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
+    "email": "has-email",
+    "phone": "has-phone",
+    "telegram": "has-handle",
+    "telegram_user_id": "has-handle",
+    "telegram_user_client": "has-handle",
+    "linkedin": "has-handle",
+    "twitter": "has-handle",
+    "website": "has-website",
+    "other": "has-handle",
+    "whatsapp_jid": "has-handle",
+}
+
 
 async def is_primary_contact(
     pool: asyncpg.Pool,
-    contact_id: uuid.UUID,
+    entity_id: uuid.UUID,
     channel_type: str,
     channel_value: str,
 ) -> bool:
-    """Return True if *channel_value* is the primary entry for *contact_id*/*channel_type*.
+    """Return True if *channel_value* is the primary entry for *entity_id*/*channel_type*.
 
-    Queries ``public.contact_info`` for the matching ``(contact_id, type, value)``
-    row and returns ``is_primary``.  Returns ``False`` on any DB error or missing
-    row so that non-primary addresses fall through to the rules/parking flow.
+    Queries ``relationship.entity_facts`` for the matching active triple and
+    returns the value of the ``"primary"`` column.  Returns ``False`` on any
+    DB error or missing row so that non-primary addresses fall through to the
+    rules/parking flow.
+
+    Migration bead 7 (bu-akads): previously queried ``public.contact_info``
+    with ``contact_id``.  Now queries ``relationship.entity_facts`` with
+    ``entity_id`` and the mapped predicate.
 
     Parameters
     ----------
     pool:
-        asyncpg connection pool (must have SELECT on ``public.contact_info``).
-    contact_id:
-        UUID of the contact in ``public.contacts``.
+        asyncpg connection pool (must have SELECT on ``relationship.entity_facts``).
+    entity_id:
+        UUID of the entity in ``public.entities``.
     channel_type:
-        The ``contact_info.type`` value (e.g. ``"email"``, ``"telegram"``).
+        The channel type (e.g. ``"email"``, ``"telegram"``).
     channel_value:
-        The ``contact_info.value`` to check (e.g. an email address or chat ID).
+        The channel value to check (e.g. an email address or chat ID).
 
     Returns
     -------
     bool
-        ``True`` when the row exists and ``is_primary`` is set; ``False``
-        otherwise (row absent, ``is_primary`` false, or DB error).
+        ``True`` when the triple exists, is active, and ``"primary"`` is true;
+        ``False`` otherwise (triple absent, not primary, or DB error).
 
     Notes
     -----
     Only meaningful for channel-based lookups.  ``contact_id`` dispatch has no
     specific address to check and must be handled separately by the caller.
     """
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    if predicate is None:
+        # Unknown channel type — treat as non-primary
+        return False
+
     try:
         row = await pool.fetchrow(
             """
-            SELECT is_primary
-            FROM public.contact_info
-            WHERE contact_id = $1
-              AND type = $2
-              AND value = $3
+            SELECT "primary"
+            FROM relationship.entity_facts
+            WHERE subject    = $1
+              AND predicate  = $2
+              AND object     = $3
+              AND object_kind = 'literal'
+              AND validity   = 'active'
+            LIMIT 1
             """,
-            contact_id,
-            channel_type,
+            entity_id,
+            predicate,
             channel_value,
         )
         if row is None:
             return False
-        return bool(row["is_primary"])
+        return bool(row["primary"])
     except Exception:  # noqa: BLE001
         logger.warning(
-            "approvals: could not determine is_primary for contact %s %s=%r; "
+            "approvals: could not determine is_primary for entity %s %s=%r; "
             "treating as non-primary (will fall through to rules/park flow)",
-            contact_id,
+            entity_id,
             channel_type,
             channel_value,
             exc_info=True,

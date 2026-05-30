@@ -7,7 +7,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._schema import contact_name_expr, table_columns
+from butlers.tools.relationship._schema import table_columns
 from butlers.tools.relationship.contacts import _parse_contact
 
 
@@ -59,16 +59,26 @@ async def group_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
 
 async def group_members(pool: asyncpg.Pool, group_id: uuid.UUID) -> list[dict[str, Any]]:
-    """List all members of a group."""
-    contact_cols = await table_columns(pool, "contacts")
-    name_sql = contact_name_expr(contact_cols, alias="c")
+    """List all members of a group, using entity canonical_name for display (bead 7)."""
     rows = await pool.fetch(
-        f"""
-        SELECT c.*, {name_sql} AS name
+        """
+        SELECT c.*,
+               COALESCE(
+                   e.canonical_name,
+                   NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+                   c.nickname,
+                   'Unknown'
+               ) AS name
         FROM contacts c
         JOIN group_members gm ON c.id = gm.contact_id
+        LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE gm.group_id = $1
-        ORDER BY {name_sql}
+        ORDER BY COALESCE(
+            e.canonical_name,
+            NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+            c.nickname,
+            'Unknown'
+        )
         """,
         group_id,
     )

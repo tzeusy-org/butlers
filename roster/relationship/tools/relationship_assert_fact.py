@@ -46,6 +46,47 @@ _PENDING_ACTION_EXPIRY_HOURS = 72
 
 
 # ---------------------------------------------------------------------------
+# Channel-type → contact predicate mapping
+# ---------------------------------------------------------------------------
+# Maps a ``public.contact_info.type`` (or channel type) to the contact predicate
+# in ``relationship.entity_predicate_registry``.  This lived in the now-removed
+# dual-write shim (dual_write.py) during the migration window; after the
+# write-path cut-over (Migration bead 8, bu-k9ylx) it is owned by the central
+# writer module so all writers resolve channel-type → predicate from one place.
+#
+# Must stay in sync with the reconciler's CASE mapping in
+# ``roster/relationship/jobs/relationship_jobs.py`` and the channel-type mapping
+# in ``src/butlers/identity.py::_CHANNEL_TYPE_TO_PREDICATE``.
+#
+#     email    → has-email
+#     phone    → has-phone
+#     telegram → has-handle   (scoped handle)
+#     linkedin → has-handle
+#     twitter  → has-handle
+#     website  → has-website
+#     other    → has-handle
+_CI_TYPE_TO_PREDICATE: dict[str, str] = {
+    "email": "has-email",
+    "phone": "has-phone",
+    "telegram": "has-handle",
+    "linkedin": "has-handle",
+    "twitter": "has-handle",
+    "website": "has-website",
+    "other": "has-handle",
+}
+
+
+def contact_info_type_to_predicate(ci_type: str) -> str | None:
+    """Return the contact predicate for *ci_type*, or ``None`` when unmapped.
+
+    Returns ``None`` for types with no registered predicate mapping (e.g.
+    ``'address'``, ``'fax'``, ``'telegram_chat_id'``, ``'google_health'``) —
+    callers MUST skip the triple write for those types.
+    """
+    return _CI_TYPE_TO_PREDICATE.get(ci_type)
+
+
+# ---------------------------------------------------------------------------
 # Return type
 # ---------------------------------------------------------------------------
 
@@ -131,8 +172,42 @@ async def _create_pending_action(
     tool_name: str,
     tool_args: dict[str, Any],
     summary: str,
+    *,
+    dedup_match: dict[str, Any] | None = None,
+    why: str | None = None,
+    evidence: list[str] | None = None,
 ) -> uuid.UUID:
-    """Insert a pending_actions row and return its action_id."""
+    """Insert a pending_actions row (or return an existing pending match).
+
+    When *dedup_match* is provided, the writer first looks for an existing
+    ``status='pending'`` row with the same ``tool_name`` whose ``tool_args``
+    JSONB-contains *dedup_match*.  If found, the existing ``action_id`` is
+    returned and no new row is created.  This prevents reconciler-driven
+    duplicate approvals when the same (subject, predicate, object) fact is
+    re-asserted on successive sweeps before the owner has acted on the prior
+    request.
+
+    *why* and *evidence* populate the ``pending_actions.why`` and
+    ``pending_actions.evidence`` columns added in migration ``core_097`` so the
+    Dispatch dossier UI can render a human-readable rationale for each pending
+    approval rather than showing it blank.
+    """
+    if dedup_match is not None:
+        existing = await conn.fetchval(
+            """
+            SELECT id FROM pending_actions
+             WHERE tool_name = $1
+               AND status   = 'pending'
+               AND tool_args @> $2::jsonb
+             ORDER BY requested_at ASC
+             LIMIT 1
+            """,
+            tool_name,
+            dedup_match,
+        )
+        if existing is not None:
+            return existing
+
     action_id = uuid.uuid4()
     now = datetime.now(UTC)
     expires_at = now + timedelta(hours=_PENDING_ACTION_EXPIRY_HOURS)
@@ -140,8 +215,8 @@ async def _create_pending_action(
     await conn.execute(
         "INSERT INTO pending_actions "
         "(id, tool_name, tool_args, agent_summary, session_id, status, "
-        "requested_at, expires_at) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "requested_at, expires_at, why, evidence) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         action_id,
         tool_name,
         tool_args,
@@ -150,6 +225,8 @@ async def _create_pending_action(
         "pending",
         now,
         expires_at,
+        why,
+        evidence if evidence is not None else [],
     )
     return action_id
 
@@ -305,6 +382,8 @@ async def _assert_on_conn(
     verified: bool,
     primary: bool | None,
     wrap_transaction: bool,
+    why: str | None = None,
+    evidence: list[str] | None = None,
 ) -> AssertResult:
     """Execute the full assert logic on *conn*.
 
@@ -314,6 +393,9 @@ async def _assert_on_conn(
         When True, wraps the upsert in ``conn.transaction()`` for atomic
         supersession.  Set to False when the caller is already inside a
         transaction to avoid nested-transaction errors.
+    why, evidence:
+        Forwarded to the pending_actions row on owner carve-out so the
+        Dispatch dossier UI can render a rationale instead of a blank cell.
     """
     # Predicate validation (fast indexed lookup, runs on every call).
     await _validate_predicate(conn, predicate)
@@ -336,9 +418,45 @@ async def _assert_on_conn(
         if primary is not None:
             tool_args["primary"] = primary
 
+        # Dedup probe: any pending row whose tool_args JSONB contains the same
+        # identity triple is the same approval request. Without this, a job
+        # like contact_info_reconciler that re-runs every 30 min creates a new
+        # pending row each tick until the owner acts.
+        dedup_match: dict[str, Any] = {
+            "subject": str(subject),
+            "predicate": predicate,
+            "object": object,
+            "object_kind": object_kind,
+        }
+
         summary = f"relationship_assert_fact: assert ({predicate}) on owner entity {subject}"
+        # Default why/evidence when caller didn't supply richer context — keeps
+        # the dossier non-blank even for direct (non-reconciler) callers.
+        effective_why = why or (
+            f"Approve to record `{predicate} = {object}` on your own entity "
+            f"(source: {src}, confidence: {conf:g}). Rejecting leaves the "
+            "fact unrecorded; you can also approve once and create a standing "
+            "rule for this source."
+        )
+        effective_evidence: list[str] = (
+            list(evidence)
+            if evidence
+            else [
+                f"subject={subject}",
+                f"predicate={predicate}",
+                f"object={object}",
+                f"src={src}",
+            ]
+        )
+
         action_id = await _create_pending_action(
-            conn, "relationship_assert_fact", tool_args, summary
+            conn,
+            "relationship_assert_fact",
+            tool_args,
+            summary,
+            dedup_match=dedup_match,
+            why=effective_why,
+            evidence=effective_evidence,
         )
         logger.warning(
             "relationship_assert_fact: owner-entity mutation blocked; "
@@ -392,6 +510,8 @@ async def relationship_assert_fact(
     verified: bool = False,
     primary: bool | None = None,
     conn: asyncpg.Connection | None = None,
+    why: str | None = None,
+    evidence: list[str] | None = None,
 ) -> AssertResult:
     """Assert a fact triple in ``relationship.entity_facts``.
 
@@ -430,6 +550,12 @@ async def relationship_assert_fact(
         inside an existing transaction to avoid nested-transaction deadlocks.
         When omitted, the writer acquires its own connection from *pool* and
         manages its own transaction.
+    why:
+        Human-readable rationale shown to the owner in the approvals UI when
+        the owner carve-out fires.  Falls back to a generated sentence.
+    evidence:
+        Ordered list of evidence strings shown to the owner in the approvals
+        UI under the rationale.  Falls back to a minimal identity summary.
 
     Returns
     -------
@@ -460,6 +586,8 @@ async def relationship_assert_fact(
         weight=weight,
         verified=verified,
         primary=primary,
+        why=why,
+        evidence=evidence,
     )
 
     if conn is not None:

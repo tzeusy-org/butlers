@@ -71,7 +71,7 @@ async def test_owner_message_gets_owner_preamble():
     ):
         result = await resolve_and_inject_identity(pool, "telegram", "12345")
 
-    assert result.preamble == f"[Source: Owner (contact_id: {_OWNER_ID}), via telegram]"
+    assert result.preamble == "[Source: Owner, via telegram]"
     assert result.is_owner is True
     assert result.is_known is True
     assert result.is_unknown is False
@@ -80,7 +80,7 @@ async def test_owner_message_gets_owner_preamble():
 
 
 async def test_known_contact_gets_identity_preamble_with_entity_id():
-    """Known contact produces full preamble with contact_id and entity_id."""
+    """Known contact produces full preamble with entity_id (contact_id excluded per bu-akads)."""
     pool = AsyncMock()
 
     with patch(
@@ -89,7 +89,7 @@ async def test_known_contact_gets_identity_preamble_with_entity_id():
     ):
         result = await resolve_and_inject_identity(pool, "telegram", "99999")
 
-    assert f"contact_id: {_CONTACT_ID}" in result.preamble
+    assert f"contact_id: {_CONTACT_ID}" not in result.preamble
     assert f"entity_id: {_ENTITY_ID}" in result.preamble
     assert "Chloe" in result.preamble
     assert "via telegram" in result.preamble
@@ -117,7 +117,8 @@ async def test_unknown_sender_creates_temp_contact():
         result = await resolve_and_inject_identity(pool, "telegram", "12345")
 
     assert "pending disambiguation" in result.preamble
-    assert str(_TEMP_ID) in result.preamble
+    assert str(_TEMP_ENTITY_ID) in result.preamble
+    assert str(_TEMP_ID) not in result.preamble  # contact_id excluded per bu-akads
     assert result.is_unknown is True
     assert result.is_known is False
     assert result.contact_id == _TEMP_ID

@@ -23,16 +23,13 @@
 
 import { useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { NetworkIcon } from "lucide-react";
 
-import type { NeighbourEntry } from "@/api/types";
 import { getOwnerSetupStatus } from "@/api/index";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
+import { PredicateGroup } from "@/components/ui/PredicateGroup";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityNeighbours } from "@/hooks/use-entities";
 
@@ -52,83 +49,6 @@ function parsePath(raw: string | null): string[] {
 /** Serialise an entity ID list back to a ?path= CSV. */
 function serialisePath(ids: string[]): string {
   return ids.join(",");
-}
-
-// ---------------------------------------------------------------------------
-// NeighbourItem — a single clickable neighbour entry inside a column
-// ---------------------------------------------------------------------------
-
-interface NeighbourItemProps {
-  entry: NeighbourEntry;
-  /** Column index this item belongs to (used for path truncation and test attribution). */
-  columnIndex: number;
-  onSelect: (entityId: string, columnIndex: number) => void;
-}
-
-function NeighbourItem({ entry, columnIndex, onSelect }: NeighbourItemProps) {
-  return (
-    <li
-      className="flex items-center justify-between py-2 border-b last:border-0 hover:bg-muted/40 px-2 rounded-sm"
-      data-testid={`column-neighbour-row-${columnIndex}`}
-    >
-      <button
-        type="button"
-        className="flex items-center gap-2 text-left text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-        onClick={() => onSelect(entry.entity_id, columnIndex)}
-        aria-label={`Select entity ${entry.canonical_name || entry.entity_id}`}
-        data-entity-id={entry.entity_id}
-        data-column-index={columnIndex}
-      >
-        <NetworkIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden />
-        <span>{entry.canonical_name || entry.entity_id}</span>
-      </button>
-
-      <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0 ml-4">
-        {entry.weight != null && (
-          <span className="tabular-nums" title="Edge weight">
-            w={entry.weight}
-          </span>
-        )}
-        {entry.last_seen != null && <Time value={entry.last_seen} mode="relative" />}
-        <Badge variant="outline" className="text-xs">
-          {entry.direction === "forward" ? "→" : "←"}
-        </Badge>
-      </div>
-    </li>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PredicateGroup — grouped list of neighbours within a column
-// ---------------------------------------------------------------------------
-
-interface PredicateGroupProps {
-  predicate: string;
-  entries: NeighbourEntry[];
-  columnIndex: number;
-  onSelect: (entityId: string, columnIndex: number) => void;
-}
-
-function PredicateGroup({ predicate, entries, columnIndex, onSelect }: PredicateGroupProps) {
-  const label = predicate.replace(/-/g, " ");
-  return (
-    <section data-testid={`column-predicate-group-${columnIndex}-${predicate}`}>
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1 px-2">
-        {label}
-        <span className="ml-2 font-normal tabular-nums">({entries.length})</span>
-      </h3>
-      <ul>
-        {entries.map((entry) => (
-          <NeighbourItem
-            key={entry.entity_id}
-            entry={entry}
-            columnIndex={columnIndex}
-            onSelect={onSelect}
-          />
-        ))}
-      </ul>
-    </section>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +128,7 @@ function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelP
                 predicate={predicate}
                 entries={neighbours[predicate]}
                 columnIndex={columnIndex}
-                onSelect={onSelect}
+                onSelect={(entityId) => onSelect(entityId, columnIndex)}
               />
             ))}
           </div>

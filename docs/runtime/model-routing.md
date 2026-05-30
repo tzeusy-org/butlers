@@ -64,16 +64,101 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 ## Resolution Flow in the Spawner
 
-1. Call `resolve_model(pool, butler_name, complexity)` to query the catalog.
-2. If found, set `resolution_source = "catalog"`. If not, fall back to TOML model with `resolution_source = "toml_fallback"`.
-3. Call `check_token_quota()` for catalog-resolved models.
-4. If quota returns `allowed=False`, skip the session with a warning.
-5. After completion, call `record_token_usage()` to update the ledger.
+`resolve_model_with_effective_tier(pool, butler_name, complexity)` is the catalog entry point used by the spawner. It returns a 6-tuple:
+
+```
+(runtime_type, model_id, extra_args, catalog_entry_id, timeout_s, effective_tier)
+```
+
+The `effective_tier` is pinned at initial resolution and used to scope all same-tier failover candidates for the logical session.
+
+1. Call `resolve_model_with_effective_tier(pool, butler_name, complexity)` to query the catalog.
+2. If found, set `resolution_source = "catalog"`. If not, fall back to TOML model with `resolution_source = "static_fallback"`.
+3. Call `check_token_quota()` for catalog-resolved models (see quota section above).
+4. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.
+5. Invoke the selected adapter.
+6. After completion, call `record_token_usage()` to update the ledger.
 
 Both `resolution_source` and `complexity` are recorded on the session row for observability.
 
+## Same-Tier Failover
+
+When a catalog-resolved model fails before any side effects occur, the spawner may retry using another model from the same effective tier. The **effective tier** is the tier that produced the initial candidate and is pinned for the logical session — failover never crosses tier boundaries.
+
+### What Makes a Model Eligible for Same-Tier Failover
+
+The `next_same_tier_candidate()` function returns the next enabled catalog entry that meets all of these conditions:
+
+1. **Same effective tier** — matches the tier string pinned from initial resolution.
+2. **Enabled** — `effective_enabled = true` after applying per-butler overrides.
+3. **Not already attempted** — the catalog entry UUID is not in the `_attempted_ids` list.
+4. **Priority ordering** — sorted by effective priority descending, then `created_at ASC` (stable tie-break).
+
+Butler-level overrides (`public.butler_model_overrides`) are applied via COALESCE: when an override field is NULL, the catalog value is used.
+
+### Quota-Skip Loop
+
+Before invoking any adapter, the spawner checks `check_token_quota()` for the current candidate. If quota is exhausted:
+
+1. A `quota_skip` row is written to `public.model_dispatch_attempts` with `outcome='quota_skip'`.
+2. The skipped catalog entry ID is appended to `_attempted_ids`.
+3. `next_same_tier_candidate()` is called with `_attempted_ids` to get the next eligible candidate.
+4. If no candidate remains, `record_failover_exhausted(tier=...)` is emitted and the session fails.
+
+All `quota_skip` rows share the same `logical_session_id` as subsequent attempt rows, enabling end-to-end provenance correlation even when the initial `request_id` is None (scheduler/tick triggers).
+
+### Adapter Signals (bu-ojiij.5)
+
+Each runtime adapter exposes adapter-level signals in `last_process_info` that inform the failover classifier:
+
+- **`is_pre_tool_call`** (`bool`) — `True` when the failure happened before any MCP tool was executed. Set by all adapters on non-zero exit, timeout, and certain pre-invocation errors.
+- **`error_detail`** (`str`) — Adapter-extracted error detail (stderr, structured error, etc.) for classifier pattern matching.
+- **`internal_retry_count`** (`int`, on `MCPToolDiscoveryError`) — Number of adapter-internal retry attempts. The spawner treats `MCPToolDiscoveryError` as **one** logical failover attempt regardless of this count.
+
+### Failover Classification
+
+The `classify_failover_eligibility()` function (in `failover_classifier.py`) decides whether a failed attempt may be retried:
+
+**Eligible (default-open for these classes):**
+- Missing CLI binary (`FileNotFoundError`)
+- Timeout before any tool call (`TimeoutError` with no captured calls)
+- Rate-limit / auth / model-unavailable / provider-unavailable (`RuntimeError` matching known markers)
+- MCP discovery failure with no captured tool calls (`MCPToolDiscoveryError`)
+
+**Suppressed (default-closed):**
+- Any captured MCP tool call — world may have been touched
+- Guardrail terminations (`degenerate_tool_loop`, `tool_call_budget_exceeded`, `token_budget_exceeded`)
+- Unknown error classes — cannot confirm no side effect occurred
+- Business / validation errors (`ValueError`, `TypeError`)
+
+The classifier is **default-closed**: unknown failures suppress failover to protect against duplicate side effects on retry.
+
+### Attempt Provenance
+
+Every attempt in the failover sequence writes a row to `public.model_dispatch_attempts`:
+
+| `outcome` | Meaning |
+|---|---|
+| `quota_skip` | Candidate skipped before invocation due to quota exhaustion |
+| `runtime_failure` | Adapter raised a failover-eligible error |
+| `suppressed` | Failover decision was ineligible (side effects or unknown error) |
+| `exhausted` | All same-tier candidates tried, none succeeded |
+| `success` | This attempt produced the final successful result (only written on failover) |
+
+Query provenance via the API: `GET /api/dispatch/attempts?session_id=<uuid>` or directly from `public.model_dispatch_attempts`.
+
+### Metrics
+
+Three counters track failover at the process level:
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `butlers.spawner.failover_attempts_total` | `butler, from_model, to_model, reason` | Successful failover transition (primary failed, next candidate invoked) |
+| `butlers.spawner.failover_suppressed_total` | `butler, reason` | Failover suppressed by classifier |
+| `butlers.spawner.failover_exhausted_total` | `butler, tier` | All same-tier candidates exhausted |
+
 ## Related Pages
 
-- [LLM CLI Spawner](spawner.md) --- where model resolution integrates into the spawn pipeline
+- [LLM CLI Spawner](spawner.md) --- where model resolution integrates into the spawn pipeline, including same-tier failover flow
 - [Session Lifecycle](session-lifecycle.md) --- how resolution metadata is recorded on sessions
 - [Scheduler Execution](scheduler-execution.md) --- how scheduled tasks specify complexity tiers

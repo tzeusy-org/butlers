@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   ArrowDown,
@@ -26,7 +26,6 @@ import type {
   EntityInfoEntry,
   EntityTimelineItem,
   Fact,
-  LinkedContactSummary,
   MessageThreadSummary,
 } from "@/api/types";
 import {
@@ -34,6 +33,7 @@ import {
   telegramSendCode,
   telegramVerifyCode,
 } from "@/api/index";
+import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
@@ -79,7 +79,6 @@ import {
   useEntityDates,
   useEntityFacts,
   useEntityGifts,
-  useEntityLinkedContacts,
   useEntityLoans,
   useEntityMessageThreads,
   useEntityTimeline,
@@ -640,7 +639,7 @@ function LinkedContactSection({
         {entity.linked_contact_id ? (
           <div className="flex items-center gap-3">
             <Link
-              to={`/contacts/${entity.linked_contact_id}`}
+              to={`/entities/${entityId}`}
               className="text-primary hover:underline"
             >
               {entity.linked_contact_name ?? entity.linked_contact_id}
@@ -1356,39 +1355,6 @@ function MessageThreadRow({ thread }: { thread: MessageThreadSummary }) {
 }
 
 // ---------------------------------------------------------------------------
-// Linked contacts (relationship butler) — surfaces other contacts on this entity
-// ---------------------------------------------------------------------------
-
-function LinkedContactsList({ entityId }: { entityId: string }) {
-  const { data: contacts, isLoading } = useEntityLinkedContacts(entityId);
-  if (isLoading || !contacts || contacts.length === 0) return null;
-
-  return (
-    <section className="space-y-2">
-      <h3 className="text-sm font-semibold uppercase tracking-wide">
-        Linked contacts
-      </h3>
-      <ul className="space-y-1.5">
-        {contacts.map((contact: LinkedContactSummary) => (
-          <li key={contact.id} className="flex items-baseline gap-3 text-sm">
-            <Link
-              to={`/contacts/${contact.id}`}
-              className="text-primary truncate font-medium hover:underline"
-            >
-              {contact.full_name}
-            </Link>
-            <span className="text-muted-foreground flex flex-1 gap-3 text-xs">
-              {contact.email && <span className="truncate">{contact.email}</span>}
-              {contact.phone && <span className="truncate">{contact.phone}</span>}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Facts section — grouped, lighter than the previous full-table layout
 // ---------------------------------------------------------------------------
 
@@ -1939,6 +1905,10 @@ export default function EntityDetailPage() {
   const promoteEntity = usePromoteEntity();
   const forgetEntity = useForgetRelationshipEntity();
 
+  // Ref used by the ContactChannelCard "Link contact" CTA to scroll to the
+  // practical drawer where the existing link/unlink flow lives.
+  const practicalDrawerRef = useRef<HTMLDivElement>(null);
+
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [forgetError, setForgetError] = useState<string | null>(null);
 
@@ -2055,14 +2025,29 @@ export default function EntityDetailPage() {
       (f) => f.predicate === "dunbar_tier_override" && f.validity === "active",
     ) ?? false;
 
-  const breadcrumbs = useMemo(
-    () => [
-      { label: "Home", href: "/" },
-      { label: "Entities", href: "/entities" },
+  // Build breadcrumbs based on origin page.
+  // The optional `?from=` query param signals which entities sub-page the user
+  // arrived from (hop | columns | concentration). Links in those pages that
+  // navigate to an entity detail page may include e.g. `?from=hop` so that
+  // the crumb trail reflects the real navigation path.
+  // Direct URL access (no ?from=) shows only: Index → Entity name.
+  const originFrom = searchParams.get("from");
+  const breadcrumbs = useMemo(() => {
+    const ORIGIN_CRUMBS: Record<string, { label: string; href: string }> = {
+      hop:           { label: "Hop",           href: "/entities/hop" },
+      columns:       { label: "Columns",       href: "/entities/columns" },
+      concentration: { label: "Concentration", href: "/entities/concentration" },
+    };
+    const originCrumb =
+      originFrom && Object.prototype.hasOwnProperty.call(ORIGIN_CRUMBS, originFrom)
+        ? ORIGIN_CRUMBS[originFrom]
+        : null;
+    return [
+      { label: "Index", href: "/entities" },
+      ...(originCrumb ? [originCrumb] : []),
       { label: entity?.canonical_name ?? entityId ?? "Entity" },
-    ],
-    [entity?.canonical_name, entityId],
-  );
+    ];
+  }, [entity?.canonical_name, entityId, originFrom]);
 
   // Editorial mode uses archetype="editorial" for the Display 44px headline
   // (Brief §6b Amendment 7). Workbench uses archetype="overview" (interim,
@@ -2369,8 +2354,13 @@ export default function EntityDetailPage() {
               {/* Message threads — only when matches exist */}
               <MessageThreadsSection entityId={entityId} />
 
-              {/* Linked contacts — only when contacts exist */}
-              <LinkedContactsList entityId={entityId} />
+              {/* Contact-channel card — linked contacts with channel info */}
+              <ContactChannelCard
+                entityId={entityId}
+                onLinkContact={() => {
+                  practicalDrawerRef.current?.scrollIntoView({ behavior: "smooth" });
+                }}
+              />
 
               {/* Facts — grouped by predicate family */}
               <FactsSection
@@ -2390,6 +2380,7 @@ export default function EntityDetailPage() {
           )}
 
           {/* Practical drawer — collapsed by default, owner setup forces it open */}
+          <div ref={practicalDrawerRef}>
           <PracticalDrawer entity={entity} forceOpen={ownerNeedsSetup}>
             <OwnerSetupBanner entity={entity} />
             <LinkedContactSection entityId={entity.id} entity={entity} />
@@ -2414,6 +2405,7 @@ export default function EntityDetailPage() {
               />
             )}
           </PracticalDrawer>
+          </div>
         </>
       )}
     </Page>

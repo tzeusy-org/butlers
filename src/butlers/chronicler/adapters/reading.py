@@ -28,9 +28,14 @@ import logging
 import re
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import (
+    resolve_owner_entity_id,
+    upsert_owner_episode_entity,
+)
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
@@ -83,9 +88,12 @@ class ReadingInferredAdapter(ProjectionAdapter):
             result.skipped_reason = "no source surface available"
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        entity_id = await resolve_owner_entity_id(pool)
+
         latest_watermark = since
         for row in cal_rows or []:
-            episode = await self._project_calendar_row(chronicler_pool, row)
+            episode = await self._project_calendar_row(chronicler_pool, row, entity_id=entity_id)
             candidate = row["created_at"]
             if candidate is not None and (latest_watermark is None or candidate > latest_watermark):
                 latest_watermark = candidate
@@ -93,7 +101,7 @@ class ReadingInferredAdapter(ProjectionAdapter):
                 result.rows_projected += 1
                 result.episodes_closed += 1
         for row in fact_rows or []:
-            episode = await self._project_fact_row(chronicler_pool, row)
+            episode = await self._project_fact_row(chronicler_pool, row, entity_id=entity_id)
             candidate = row["created_at"]
             if candidate is not None and (latest_watermark is None or candidate > latest_watermark):
                 latest_watermark = candidate
@@ -196,6 +204,8 @@ class ReadingInferredAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode | None:
         title = row["title"]
         if not _title_matches_reading(title):
@@ -218,7 +228,7 @@ class ReadingInferredAdapter(ProjectionAdapter):
         }
         out_title = f"Reading: {title}"
         async with chronicler_pool.acquire() as conn:
-            return await upsert_episode(
+            episode = await upsert_episode(
                 conn,
                 Episode(
                     source_name=self.source_name,
@@ -230,13 +240,19 @@ class ReadingInferredAdapter(ProjectionAdapter):
                     title=out_title[:200],
                     payload=payload,
                     privacy=Privacy.NORMAL,
+                    entity_id=entity_id,
                 ),
             )
+            # Write owner row into episode_entities join table (bu-4c1ks).
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+            return episode
 
     async def _project_fact_row(
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode | None:
         start_at: datetime | None = row["valid_at"]
         if start_at is None:
@@ -266,7 +282,7 @@ class ReadingInferredAdapter(ProjectionAdapter):
             if val is not None:
                 payload[field_name] = val
         async with chronicler_pool.acquire() as conn:
-            return await upsert_episode(
+            episode = await upsert_episode(
                 conn,
                 Episode(
                     source_name=self.source_name,
@@ -278,8 +294,12 @@ class ReadingInferredAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
+                    entity_id=entity_id,
                 ),
             )
+            # Write owner row into episode_entities join table (bu-4c1ks).
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+            return episode
 
 
 __all__ = [

@@ -35,9 +35,14 @@ import logging
 import re
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import (
+    resolve_owner_entity_id,
+    upsert_owner_episode_entity,
+)
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.aggregations import category_for
 from butlers.chronicler.models import Episode, Precision, Privacy
@@ -103,9 +108,13 @@ class FocusInferredAdapter(ProjectionAdapter):
             result.skipped_reason = "chronicler.episodes not found"
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        # pool is the cross-butler pool that can access public.contacts.
+        entity_id = await resolve_owner_entity_id(pool)
+
         latest_watermark = since
         for row in rows:
-            episode = await self._maybe_project(chronicler_pool, row)
+            episode = await self._maybe_project(chronicler_pool, row, entity_id=entity_id)
             candidate = row["created_at"]
             if candidate is not None:
                 if latest_watermark is None or candidate > latest_watermark:
@@ -188,6 +197,8 @@ class FocusInferredAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode | None:
         source_name = row["source_name"]
         episode_type = row["episode_type"]
@@ -241,8 +252,11 @@ class FocusInferredAdapter(ProjectionAdapter):
                     title=out_title[:200],
                     payload=out_payload,
                     privacy=Privacy.NORMAL,
+                    entity_id=entity_id,
                 ),
             )
+            # Write owner row into episode_entities join table (bu-4c1ks).
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
 

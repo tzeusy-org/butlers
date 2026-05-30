@@ -69,7 +69,7 @@ def test_build_config_file_and_tool_call_formats(tmp_path: Path):
             "functionCall": {"name": "my_tool", "args": {"arg1": "val1"}},
         }
     )
-    _, tool_calls = _parse_gemini_output(line, "", 0)
+    _, tool_calls = _parse_gemini_output(line, "")
     assert len(tool_calls) == 1 and tool_calls[0]["id"] == "fc1"
     assert tool_calls[0]["name"] == "my_tool" and tool_calls[0]["input"] == {"arg1": "val1"}
 
@@ -122,3 +122,57 @@ async def test_invoke():
     assert (
         result_text2 == "Complete" and len(tool_calls) == 1 and tool_calls[0]["name"] == "state_get"
     )
+
+
+@pytest.mark.parametrize(
+    "returncode,stderr,stdout,expected_fragment",
+    [
+        (1, "authentication failed", "", "authentication failed"),
+        (401, "unauthorized", "", "unauthorized"),
+        (429, "too many requests", "", "too many requests"),
+        (1, "", "Error: connection refused", "connection refused"),
+        (1, "", "", "exit code 1"),
+    ],
+)
+async def test_invoke_nonzero_exit_raises_runtime_error(
+    returncode: int, stderr: str, stdout: str, expected_fragment: str
+) -> None:
+    """Non-zero Gemini exit codes raise RuntimeError so the failover classifier can act.
+
+    Before the fix, non-zero exits were absorbed as result text.  The classifier
+    was never invoked, so provider/auth/rate-limit failures silently produced
+    'Error: ...' output instead of triggering same-tier failover.
+    """
+    adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+    mock_proc = AsyncMock()
+    mock_proc.returncode = returncode
+    mock_proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError) as exc_info:
+            await adapter.invoke(
+                prompt="do something",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
+    assert expected_fragment in str(exc_info.value)
+    assert str(returncode) in str(exc_info.value)
+
+
+async def test_invoke_nonzero_exit_records_process_info() -> None:
+    """Non-zero exit populates last_process_info before raising RuntimeError."""
+    adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+    mock_proc = AsyncMock()
+    mock_proc.pid = 12345
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"auth error"))
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError):
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    info = adapter.last_process_info
+    assert info is not None
+    assert info["exit_code"] == 1
+    assert info["runtime_type"] == "gemini"
+    assert "auth error" in info["stderr"]

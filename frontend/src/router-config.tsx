@@ -30,7 +30,6 @@ import SettingsSpendPage from './pages/SettingsSpendPage.tsx'
 import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import SettingsModelsPage from './pages/SettingsModelsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
-import ContactDetailPage from './pages/ContactDetailPage.tsx'
 import GroupsPage from './pages/GroupsPage.tsx'
 import MeasurementsPage from './pages/MeasurementsPage.tsx'
 import MedicationsPage from './pages/MedicationsPage.tsx'
@@ -62,6 +61,7 @@ import ChroniclesPage from './pages/ChroniclesPage.tsx'
 import SystemPage from './pages/SystemPage.tsx'
 import {
   ConnectorDetailRedirect,
+  ContactEntityRedirect,
   IngestionTabRedirect,
   RelationshipContactRedirect,
   RelationshipEntityRedirect,
@@ -89,7 +89,10 @@ export const router = createBrowserRouter(
         { path: '/calendar', element: <CalendarWorkspacePage /> },
         // /contacts → /entities?has=contact (§8.10 entity-redesign redirect)
         { path: '/contacts', element: <Navigate to="/entities?has=contact" replace /> },
-        { path: '/contacts/:contactId', element: <ContactDetailPage /> },
+        // /contacts/:contactId → /entities/:entityId via entity-id lookup.
+        // Renders a recovery state for unlinked or missing contacts.
+        // Spec: openspec/changes/decommission-contact-detail-page/tasks.md §4
+        { path: '/contacts/:contactId', element: <ContactEntityRedirect /> },
         { path: '/groups', element: <GroupsPage /> },
         { path: '/health/measurements', element: <MeasurementsPage /> },
         { path: '/health/medications', element: <MedicationsPage /> },
@@ -133,23 +136,41 @@ export const router = createBrowserRouter(
         // Ingestion routes — behaviour depends on INGESTION_DISPATCH_CONSOLE flag.
         //
         // Flag ON (default in dev): first-class sub-routes + 301-equivalent redirects
-        //   from legacy ?tab= URLs per ingestion-ui-information-architecture spec.
+        //   from legacy ?tab= URLs per dashboard-ingestion-dispatch-console spec.
         // Flag OFF (default in prod): legacy single-route IngestionPage with ?tab= param.
         //
-        // Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
-        //       ingestion-ui-information-architecture/spec.md
+        // Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
+        //       dashboard-ingestion-dispatch-console/spec.md
+        //       dashboard-shell/spec.md
+        //
+        // Route hierarchy (flag ON):
+        //   /ingestion                                    Timeline ledger (default)
+        //   /ingestion/connectors                         Connectors roster
+        //   /ingestion/connectors/:connectorType/:id      Connector detail
+        //   /ingestion/filters                            Filters pipeline
+        //
+        // Legacy compat (flag ON):
+        //   ?tab=connectors  → /ingestion/connectors
+        //   ?tab=filters     → /ingestion/filters
+        //   ?tab=history     → /ingestion (Timeline; no /ingestion/history primary route)
+        //   ?tab=timeline    → /ingestion (strips param)
+        //   /ingestion/history → /ingestion (redirect; route retained for bookmark compat)
         ...(INGESTION_DISPATCH_CONSOLE
           ? [
               // Root /ingestion: redirect ?tab= params → sub-routes; else Timeline.
               { path: '/ingestion', element: <IngestionTabRedirect /> },
-              // First-class sub-routes (§2.1)
+              // First-class sub-routes
               { path: '/ingestion/connectors', element: <IngestionConnectorsPage /> },
               { path: '/ingestion/filters', element: <IngestionFiltersPage /> },
-              { path: '/ingestion/history', element: <IngestionHistoryPage /> },
+              // /ingestion/history: bookmark compat redirect → Timeline
+              // There is no primary redesigned /ingestion/history route.
+              { path: '/ingestion/history', element: <Navigate to="/ingestion" replace /> },
             ]
           : [
               // Legacy single-route with ?tab= param (prod-safe fallback)
               { path: '/ingestion', element: <IngestionPage /> },
+              // Retain history sub-route in legacy mode
+              { path: '/ingestion/history', element: <IngestionHistoryPage /> },
             ]),
         {
           path: '/ingestion/connectors/:connectorType/:endpointIdentity',

@@ -46,25 +46,32 @@ def _normalize_session_id(session_id: str | uuid.UUID | None) -> uuid.UUID | Non
 
 
 async def _get_email_context(pool: asyncpg.Pool, email_address: str) -> str | None:
-    """Return the ``context`` tag for *email_address* from ``public.contact_info``.
+    """Return the ``context`` tag for *email_address* from ``relationship.entity_facts``.
 
-    Queries by ``(type='email', value=email_address)`` — the UNIQUE constraint
-    guarantees at most one row.  Returns ``None`` when the row does not exist,
-    has no context tag, or on any DB error (missing column is treated as NULL).
+    Queries the active ``has-email`` triple whose object matches the address.
+    Returns ``metadata->>'context'`` from the triple row.  Returns ``None`` when
+    the triple does not exist, has no context tag, or on any DB error
+    (missing column is treated as NULL).
+
+    Migration bead 7 (bu-akads): previously queried ``public.contact_info``.
+    Now reads from ``relationship.entity_facts``.
     """
     try:
         row = await pool.fetchrow(
             """
-            SELECT context
-            FROM public.contact_info
-            WHERE type = 'email'
-              AND value = $1
+            SELECT metadata->>'context' AS context
+            FROM relationship.entity_facts
+            WHERE predicate   = 'has-email'
+              AND object      = $1
+              AND object_kind = 'literal'
+              AND validity    = 'active'
+            LIMIT 1
             """,
             email_address,
         )
         if row is None:
             return None
-        return row["context"]  # may be None for unclassified rows
+        return row["context"]  # may be None for unclassified triples
     except Exception:  # noqa: BLE001
         logger.debug(
             "email guard: could not fetch context for <%s>; treating as unclassified",
@@ -174,7 +181,17 @@ async def check_email_recipient(
 
     # Owner primary address → always allowed (no further checks needed)
     if contact is not None and "owner" in contact.roles:
-        is_primary = await is_primary_contact(pool, contact.contact_id, "email", email_target)
+        if contact.entity_id is None:
+            # Owner contact has no entity_id — cannot check primacy; treat as non-primary
+            # so the address falls through to the rules/parking flow.
+            is_primary = False
+        else:
+            is_primary = await is_primary_contact(
+                pool,
+                contact.entity_id,
+                "email",
+                email_target,
+            )
         if is_primary:
             return EmailGuardDecision(allowed=True, reason="owner")
 

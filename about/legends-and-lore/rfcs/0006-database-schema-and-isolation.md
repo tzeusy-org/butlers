@@ -24,9 +24,10 @@ PostgreSQL Database
   |     +-- contact_info       (per-channel identifiers)
   |     +-- entity_info        (extended entity data / credentials)
   |     +-- google_accounts    (OAuth account registry)
-  |     +-- model_catalog      (LLM model definitions)
-  |     +-- token_limits       (per-butler token quotas)
-  |     +-- token_usage_ledger (token consumption tracking)
+  |     +-- model_catalog             (LLM model definitions)
+  |     +-- token_limits              (per-butler token quotas)
+  |     +-- token_usage_ledger        (token consumption tracking)
+  |     +-- model_dispatch_attempts   (failover attempt provenance)
   |
   +-- switchboard schema
   |     +-- state              (KV state store)
@@ -93,6 +94,7 @@ Additional shared infrastructure tables:
 - **`public.token_limits`** -- Per-butler token quotas (daily/monthly caps).
 - **`public.token_usage_ledger`** -- Token consumption tracking for quota enforcement.
 - **`public.google_accounts`** -- Google OAuth account registry for multi-account support.
+- **`public.model_dispatch_attempts`** -- Per-session failover attempt provenance (quota skips, runtime failures, suppressed failovers, successful fallbacks). Written best-effort from the spawner; queried by `GET /api/dispatch/attempts` and `GET /api/settings/models/{id}/attempts`.
 
 ### Staffer Schema Permissions and Cross-Butler Access
 
@@ -170,6 +172,7 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `insight_cooldowns` | INSERT, DELETE | insight broker |
 | `insight_engagement` | INSERT, UPDATE, DELETE | insight engagement tracking |
 | `insight_settings` | INSERT, UPDATE | insight delivery settings |
+| `model_dispatch_attempts` | SELECT, INSERT | failover provenance (core_104 migration) |
 
 Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
 explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers

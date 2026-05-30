@@ -719,17 +719,102 @@ class TestProvenanceContractOnTabEndpoints:
 
 
 def _make_linked_contact_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record for a contacts row."""
+    """Build a MagicMock that behaves like an asyncpg Record for a contacts row.
+
+    Includes ``preferred_channel`` so the enriched endpoint can read it from
+    the main contacts query result.
+    """
     data = {
         "id": uuid4(),
         "full_name": "Alice Example",
         "email": None,
         "phone": None,
+        "preferred_channel": None,
         **kwargs,
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
     return row
+
+
+def _make_ci_row(contact_id, **kwargs) -> MagicMock:
+    """Build a MagicMock like an asyncpg Record for a contact_info row."""
+    from uuid import uuid4 as _uuid4
+
+    data = {
+        "id": _uuid4(),
+        "contact_id": contact_id,
+        "type": "email",
+        "value": "alice@example.com",
+        "is_primary": True,
+        "secured": False,
+        "parent_id": None,
+        "context": None,
+        **kwargs,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+def _make_label_row(contact_id, **kwargs) -> MagicMock:
+    """Build a MagicMock like an asyncpg Record for a contact_labels/labels join row."""
+    from uuid import uuid4 as _uuid4
+
+    data = {
+        "contact_id": contact_id,
+        "id": _uuid4(),
+        "name": "friend",
+        "color": "#aabbcc",
+        **kwargs,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+def _app_with_pool_linked_contacts(
+    *,
+    entity_exists: bool = True,
+    contact_rows: list | None = None,
+    ci_rows: list | None = None,
+    label_rows: list | None = None,
+) -> tuple[FastAPI, AsyncMock]:
+    """Wire a FastAPI app for the linked-contacts endpoint.
+
+    The endpoint makes three ``pool.fetch`` calls:
+      1. contacts query (main rows)
+      2. asyncio.gather → contact_info batch query
+      3. asyncio.gather → label batch query  (calls 2 & 3 are concurrent)
+
+    ``side_effect`` threads them in the order they are issued.
+    When ``contact_rows`` is empty the handler returns early; the supplementary
+    queries are never called so ``ci_rows`` / ``label_rows`` are irrelevant.
+    """
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+
+    _contacts = contact_rows if contact_rows is not None else []
+    _ci = ci_rows if ci_rows is not None else []
+    _labels = label_rows if label_rows is not None else []
+
+    # For non-empty contacts: 3 fetch calls in order (contacts, ci, labels).
+    # For empty contacts: only 1 fetch call (the contacts query).
+    if _contacts:
+        mock_pool.fetch = AsyncMock(side_effect=[_contacts, _ci, _labels])
+    else:
+        mock_pool.fetch = AsyncMock(return_value=_contacts)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+
+    app = create_app()
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+
+    return app, mock_pool
 
 
 class TestEntityLinkedContacts:
@@ -742,7 +827,7 @@ class TestEntityLinkedContacts:
             ),
             _make_linked_contact_row(full_name="Bob Builder", email=None, phone="+1-555-0100"),
         ]
-        app, _ = _app_with_pool(fetch_rows=rows)
+        app, _ = _app_with_pool_linked_contacts(contact_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
         assert resp.status_code == 200
@@ -759,7 +844,7 @@ class TestEntityLinkedContacts:
                 phone="+44-20-1234",
             )
         ]
-        app, _ = _app_with_pool(fetch_rows=rows)
+        app, _ = _app_with_pool_linked_contacts(contact_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
         item = resp.json()[0]
@@ -769,7 +854,7 @@ class TestEntityLinkedContacts:
         assert "id" in item
 
     async def test_returns_empty_list_when_no_contacts(self):
-        app, _ = _app_with_pool(fetch_rows=[])
+        app, _ = _app_with_pool_linked_contacts(contact_rows=[])
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
         assert resp.status_code == 200
@@ -777,7 +862,7 @@ class TestEntityLinkedContacts:
 
     async def test_null_email_and_phone_returned_as_null(self):
         rows = [_make_linked_contact_row(full_name="Charlie", email=None, phone=None)]
-        app, _ = _app_with_pool(fetch_rows=rows)
+        app, _ = _app_with_pool_linked_contacts(contact_rows=rows)
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
         item = resp.json()[0]
@@ -785,9 +870,126 @@ class TestEntityLinkedContacts:
         assert item["phone"] is None
 
     async def test_returns_404_for_missing_entity(self):
-        app, _ = _app_with_pool(entity_exists=False)
+        app, _ = _app_with_pool_linked_contacts(entity_exists=False)
         resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/linked-contacts")
         assert resp.status_code == 404
+
+    async def test_enriched_response_includes_contact_info(self):
+        """contact_info[] is populated from the batch CI query (non-secured rows only)."""
+        contact_id = uuid4()
+        contact_row = _make_linked_contact_row(
+            id=contact_id,
+            full_name="Alice Example",
+            email="alice@example.com",
+            phone=None,
+        )
+        ci = _make_ci_row(contact_id, type="email", value="alice@example.com", is_primary=True)
+
+        app, _ = _app_with_pool_linked_contacts(
+            contact_rows=[contact_row],
+            ci_rows=[ci],
+            label_rows=[],
+        )
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        assert "contact_info" in item
+        assert len(item["contact_info"]) == 1
+        assert item["contact_info"][0]["type"] == "email"
+        assert item["contact_info"][0]["value"] == "alice@example.com"
+        assert item["contact_info"][0]["secured"] is False
+
+    async def test_enriched_response_includes_labels(self):
+        """labels[] is populated from the batch label query."""
+        contact_id = uuid4()
+        contact_row = _make_linked_contact_row(id=contact_id, full_name="Bob")
+        label = _make_label_row(contact_id, name="friend", color="#ff0000")
+
+        app, _ = _app_with_pool_linked_contacts(
+            contact_rows=[contact_row],
+            ci_rows=[],
+            label_rows=[label],
+        )
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        assert "labels" in item
+        assert len(item["labels"]) == 1
+        assert item["labels"][0]["name"] == "friend"
+        assert item["labels"][0]["color"] == "#ff0000"
+
+    async def test_enriched_response_includes_preferred_channel(self):
+        """preferred_channel is included from the main contacts query."""
+        contact_id = uuid4()
+        contact_row = _make_linked_contact_row(
+            id=contact_id,
+            full_name="Carol",
+            preferred_channel="telegram",
+        )
+
+        app, _ = _app_with_pool_linked_contacts(
+            contact_rows=[contact_row],
+            ci_rows=[],
+            label_rows=[],
+        )
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        assert resp.status_code == 200
+        item = resp.json()[0]
+        assert item["preferred_channel"] == "telegram"
+
+    async def test_enriched_contact_info_empty_when_no_ci_rows(self):
+        """contact_info defaults to [] when no CI rows exist for the contact."""
+        contact_id = uuid4()
+        contact_row = _make_linked_contact_row(id=contact_id, full_name="Dave")
+
+        app, _ = _app_with_pool_linked_contacts(
+            contact_rows=[contact_row],
+            ci_rows=[],
+            label_rows=[],
+        )
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        item = resp.json()[0]
+        assert item["contact_info"] == []
+        assert item["labels"] == []
+        assert item["preferred_channel"] is None
+
+    async def test_multiple_contacts_ci_and_labels_correctly_bucketed(self):
+        """contact_info and labels are correctly bucketed per-contact when multiple contacts."""
+        cid_a = uuid4()
+        cid_b = uuid4()
+        contact_a = _make_linked_contact_row(id=cid_a, full_name="Alice")
+        contact_b = _make_linked_contact_row(id=cid_b, full_name="Bob")
+
+        ci_a = _make_ci_row(cid_a, type="email", value="alice@example.com")
+        ci_b = _make_ci_row(cid_b, type="phone", value="+1-555-9999")
+        label_b = _make_label_row(cid_b, name="colleague")
+
+        app, _ = _app_with_pool_linked_contacts(
+            contact_rows=[contact_a, contact_b],
+            ci_rows=[ci_a, ci_b],
+            label_rows=[label_b],
+        )
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 2
+
+        alice = next(item for item in body if item["full_name"] == "Alice")
+        bob = next(item for item in body if item["full_name"] == "Bob")
+
+        assert len(alice["contact_info"]) == 1
+        assert alice["contact_info"][0]["value"] == "alice@example.com"
+        assert alice["labels"] == []
+
+        assert len(bob["contact_info"]) == 1
+        assert bob["contact_info"][0]["value"] == "+1-555-9999"
+        assert len(bob["labels"]) == 1
+        assert bob["labels"][0]["name"] == "colleague"
 
 
 # ---------------------------------------------------------------------------
@@ -1438,6 +1640,15 @@ async def _patch(app: FastAPI, path: str, json_body: dict) -> httpx.Response:
 
 class TestDunbarTierOverride:
     """PATCH /entities/{id}/dunbar-tier — pin or clear an override."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_dunbar_tier_set(self):
+        """Restore the real dunbar_tier_set after each test to prevent mock pollution."""
+        from butlers.tools.relationship import dunbar as _dunbar_mod
+
+        original = _dunbar_mod.dunbar_tier_set
+        yield
+        _dunbar_mod.dunbar_tier_set = original
 
     async def test_returns_404_when_entity_missing(self):
         app, _ = _build_app_for_dunbar_patch(entity_exists=False)

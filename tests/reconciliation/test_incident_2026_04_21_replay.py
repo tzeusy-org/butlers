@@ -25,7 +25,6 @@ dependencies (Docker, real DB).  It validates the code contracts.
 
 from __future__ import annotations
 
-import json
 import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -50,117 +49,106 @@ WORK_EMAIL = "owner@example.com"
 # ---------------------------------------------------------------------------
 
 
+def _raf_module():
+    """Return the central-writer SUBMODULE object for patching.
+
+    ``butlers.tools.relationship.__init__`` re-exports the *function*
+    ``relationship_assert_fact``, shadowing the submodule of the same name as a
+    package attribute. The import machinery still registers the real submodule in
+    ``sys.modules``; we fetch it from there so the patch lands on the object the
+    deferred ``from ...relationship_assert_fact import relationship_assert_fact``
+    in contact_info.py resolves against.
+    """
+    import importlib
+    import sys
+
+    name = "butlers.tools.relationship.relationship_assert_fact"
+    importlib.import_module(name)
+    return sys.modules[name]
+
+
+def _assert_result(outcome: str, *, fact_id=None, action_id=None):
+    r = MagicMock()
+    r.outcome.value = outcome
+    r.fact_id = fact_id
+    r.action_id = action_id
+    return r
+
+
 class TestAC3OwnerGate:
-    """bu-v6ttx: owner-contact contact_info_add is gated."""
+    """bu-v6ttx + bu-k9ylx: owner-contact channel writes are gated.
+
+    Post write-path cut-over (bu-k9ylx): contact_info_add no longer INSERTs into
+    public.contact_info. It resolves the contact's entity_id and asserts the
+    channel triple via relationship_assert_fact(), which owns the RFC 0017 owner
+    carve-out (returns pending_approval for owner-role entities). The original
+    2026-04-21 incident protection now lives in the central writer.
+    """
 
     async def test_contact_info_add_owner_parks_acme_email(self) -> None:
         """Replays the 2026-04-21 incident: speculative work email write is parked.
 
-        The relationship butler called contact_info_add with the owner contact_id
-        and value='owner@example.com'.  With bu-v6ttx applied, the mutation
-        must create a pending_action row rather than inserting into contact_info.
+        The central writer returns pending_approval for the owner entity, and
+        contact_info_add surfaces that without any contact_info INSERT.
         """
         from butlers.tools.relationship.contact_info import contact_info_add
 
-        # Build a minimal pool that knows:
-        # - contacts table: owner contact exists
-        # - entities table: contact has 'owner' role (via _is_owner_contact JOIN)
-        # - pending_actions table: accept INSERT
-        pool = AsyncMock()
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"entity_id": OWNER_ENTITY_ID})
+        pool.execute = AsyncMock()
 
-        # contact_create check: fetchrow("SELECT id FROM contacts ...")
-        # _is_owner_contact JOIN: fetchrow with entities JOIN
-        side_effects: list = [
-            # contact existence check → found
-            MagicMock(**{"__getitem__.return_value": OWNER_CONTACT_ID}),
-            # _is_owner_contact → row not None (owner found)
-            MagicMock(),
-        ]
-        pool.fetchrow = AsyncMock(side_effect=side_effects)
+        action_id = uuid.uuid4()
+        with patch.object(
+            _raf_module(), "relationship_assert_fact", new_callable=AsyncMock
+        ) as writer:
+            writer.return_value = _assert_result("pending_approval", action_id=action_id)
+            result = await contact_info_add(
+                pool, OWNER_CONTACT_ID, "email", WORK_EMAIL, is_primary=False
+            )
 
-        result = await contact_info_add(
-            pool,
-            OWNER_CONTACT_ID,
-            "email",
-            WORK_EMAIL,
-            is_primary=False,
-        )
+        # Central writer owns the owner carve-out; called with the resolved
+        # entity as subject, has-email predicate, and the speculative email.
+        writer.assert_awaited_once()
+        call = writer.call_args
+        assert call.args[1] == OWNER_ENTITY_ID  # subject = entity_id
+        assert call.args[2] == "has-email"
+        assert call.args[3] == WORK_EMAIL
 
-        # Must return pending_approval, not a contact_info row
-        assert result["status"] == "pending_approval", (
-            f"Expected pending_approval but got: {result}"
-        )
-        assert "action_id" in result
+        # Surfaced as pending_approval; no contact_info INSERT (read-only table).
+        assert result["status"] == "pending_approval", f"got: {result}"
+        assert result["action_id"] == str(action_id)
+        pool.execute.assert_not_called()
 
-        # Must have called INSERT INTO pending_actions (not contact_info)
-        assert pool.execute.called, "pool.execute must be called for pending_actions INSERT"
-        insert_call_args = pool.execute.call_args_list[0][0]
-        sql = insert_call_args[0]
-        assert "pending_actions" in sql, f"INSERT must target pending_actions, got: {sql}"
-        assert "contact_info" not in sql, "Must NOT insert into contact_info for owner contact"
+    async def test_contact_info_add_non_owner_asserts_triple(self) -> None:
+        """Non-owner contact_info_add writes via the central writer (no gate).
 
-        # Verify args include the speculative email
-        # tool_args is serialized as JSON in the INSERT; check the raw args
-        tool_args_json = insert_call_args[3]  # 4th positional param after id, tool_name
-        parsed = tool_args_json if isinstance(tool_args_json, dict) else json.loads(tool_args_json)
-        assert parsed["value"] == WORK_EMAIL, f"pending_action must record the email: {parsed}"
-        assert str(parsed["contact_id"]) == str(OWNER_CONTACT_ID)
-
-    async def test_contact_info_add_non_owner_writes_immediately(self) -> None:
-        """Non-owner contact_info_add must write directly (no gate).
-
-        The non-owner path uses pool.acquire() as an async context manager
-        and conn.transaction() for atomicity.  This test wires those correctly
-        so the assertion exercises the actual code path.
+        Post-cut-over the non-owner path asserts a channel triple through
+        relationship_assert_fact() — there is NO direct contact_info INSERT.
         """
         from butlers.tools.relationship.contact_info import contact_info_add
 
         non_owner_id = uuid.uuid4()
+        non_owner_entity = uuid.uuid4()
 
-        inserted_row = {
-            "id": uuid.uuid4(),
-            "contact_id": non_owner_id,
-            "type": "email",
-            "value": "nonowner@example.com",
-            "label": None,
-            "is_primary": False,
-            "context": None,
-            "created_at": None,
-        }
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"entity_id": non_owner_entity})
+        pool.execute = AsyncMock()
 
-        # Outer pool: handles fetchrow calls before acquire() (existence + owner check).
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                # 1. contact existence check → found
-                MagicMock(**{"__getitem__.return_value": non_owner_id}),
-                # 2. _is_owner_contact → None (not owner)
-                None,
-            ]
-        )
+        fact_id = uuid.uuid4()
+        with patch.object(
+            _raf_module(), "relationship_assert_fact", new_callable=AsyncMock
+        ) as writer:
+            writer.return_value = _assert_result("inserted", fact_id=fact_id)
+            result = await contact_info_add(pool, non_owner_id, "email", "nonowner@example.com")
 
-        # conn is the connection obtained inside the async with pool.acquire() block
-        conn = AsyncMock()
-        conn.fetchrow = AsyncMock(return_value=inserted_row)  # INSERT RETURNING
-        conn.transaction = MagicMock(
-            return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=False)
-            )
-        )
-
-        @asynccontextmanager
-        async def mock_acquire():
-            yield conn
-
-        pool.acquire = mock_acquire
-
-        result = await contact_info_add(pool, non_owner_id, "email", "nonowner@example.com")
-
-        # Must return a real row, not pending_approval
-        assert result.get("status") != "pending_approval", (
-            "Non-owner contact_info_add must write immediately"
-        )
-        assert result["value"] == "nonowner@example.com"
+        writer.assert_awaited_once()
+        assert writer.call_args.args[1] == non_owner_entity
+        assert writer.call_args.args[2] == "has-email"
+        assert writer.call_args.args[3] == "nonowner@example.com"
+        # No direct contact_info DML — the triple write is the only write.
+        pool.execute.assert_not_called()
+        assert result["status"] == "asserted"
+        assert result["fact_id"] == str(fact_id)
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +177,7 @@ class TestAC1EmailGuardNonPrimary:
         )
         pool = AsyncMock()
         # Targeted address is NOT primary
-        pool.fetchrow = AsyncMock(return_value={"is_primary": False})
+        pool.fetchrow = AsyncMock(return_value={"primary": False})
 
         with (
             patch(
@@ -234,7 +222,7 @@ class TestAC1EmailGuardNonPrimary:
             roles=["owner"],
         )
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"is_primary": True})
+        pool.fetchrow = AsyncMock(return_value={"primary": True})
 
         with patch(
             "butlers.identity.resolve_contact_by_channel",

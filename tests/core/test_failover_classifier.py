@@ -311,6 +311,27 @@ class TestProviderAuthErrorsEligible:
 
 
 # ---------------------------------------------------------------------------
+# AC-1b.1: Empty runtime responses ARE eligible
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyRuntimeResponsesEligible:
+    """Empty successful CLI responses are failover-eligible before any tool call."""
+
+    def test_no_response_returned_is_eligible(self) -> None:
+        """RuntimeError with empty-response wording is eligible."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "OpenCode CLI returned no response: no result, tool calls, token usage, or stderr"
+                )
+            )
+        )
+        assert _eligible(dec), dec.reason
+        assert "empty_runtime_response" in dec.reason
+
+
+# ---------------------------------------------------------------------------
 # AC-1c: Rate-limit errors ARE eligible
 # ---------------------------------------------------------------------------
 
@@ -343,6 +364,29 @@ class TestRateLimitErrorsEligible:
         """Decision reason should identify rate limit category."""
         dec = classify_failover_eligibility(_ctx(RuntimeError("too many requests")))
         assert _eligible(dec)
+        assert "rate_limit" in dec.reason
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            # Codex-specific transient backend failures — adapter exhausts internal
+            # retries before propagating; spawner should attempt cross-model failover.
+            "Codex CLI exited with code 1: codex_core::compact_remote failed",
+            "Codex CLI exited with code 1: remote compaction failed",
+            "compact_remote: could not compact session history",
+        ],
+    )
+    def test_codex_compact_remote_is_eligible(self, msg: str) -> None:
+        """Codex compact_remote / remote compaction failures are failover-eligible.
+
+        These are transient Codex backend failures.  The adapter retries them
+        internally; when all internal retries are exhausted the spawner should
+        attempt failover to another same-tier model.
+        """
+        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        assert _eligible(dec), (
+            f"Expected eligible for compact_remote msg={msg!r}, got: {dec.reason}"
+        )
         assert "rate_limit" in dec.reason
 
 

@@ -21,12 +21,10 @@ from butlers.modules.memory.tools import (
     _helpers,
     memory_confirm,
     memory_forget,
-    memory_get,
     memory_mark_harmful,
     memory_mark_helpful,
-    memory_recall,
-    memory_search,
 )
+from butlers.modules.memory.tools.reading import memory_get, memory_recall, memory_search
 
 pytestmark = pytest.mark.unit
 

@@ -820,7 +820,7 @@ export default function EntitiesPage() {
                                   <Button
                                     variant="ghost"
                                     size="icon-xs"
-                                    onClick={() => navigate(`/contacts/${entity.linked_contact_id}`)}
+                                    onClick={() => navigate(`/entities/${entity.id}`)}
                                   >
                                     <UserIcon />
                                   </Button>

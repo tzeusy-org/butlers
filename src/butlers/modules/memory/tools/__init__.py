@@ -1,7 +1,14 @@
 """Memory module tools — episode, fact, and rule management.
 
-Re-exports all public symbols so that ``from butlers.modules.memory.tools import X``
-works as expected.
+Re-exports public symbols from non-embedding submodules so that
+``from butlers.modules.memory.tools import X`` works for entity, feedback,
+management, writing, and helper tools.
+
+Reading tools (memory_search, memory_recall, memory_get, predicate_search,
+memory_catalog_search) are intentionally NOT re-exported here because they
+contain pgvector distance-operator SQL fragments and must remain outside the
+static import graph reachable from relationship butler startup (Amendment 15
+guardrail). Import them directly from ``butlers.modules.memory.tools.reading``.
 """
 
 from butlers.modules.memory.tools._helpers import (
@@ -27,13 +34,6 @@ from butlers.modules.memory.tools.feedback import (
 )
 from butlers.modules.memory.tools.management import memory_forget, memory_stats, predicate_list
 from butlers.modules.memory.tools.preferences import get_preferences, set_preference
-from butlers.modules.memory.tools.reading import (
-    memory_catalog_search,
-    memory_get,
-    memory_recall,
-    memory_search,
-    predicate_search,
-)
 from butlers.modules.memory.tools.writing import (
     memory_store_episode,
     memory_store_fact,
@@ -56,15 +56,10 @@ __all__ = [
     "memory_confirm",
     "memory_context",
     "memory_forget",
-    "memory_get",
     "memory_mark_harmful",
     "memory_mark_helpful",
-    "memory_recall",
-    "memory_search",
     "memory_stats",
     "predicate_list",
-    "predicate_search",
-    "memory_catalog_search",
     "memory_store_episode",
     "memory_store_fact",
     "memory_store_rule",

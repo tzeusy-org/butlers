@@ -78,6 +78,44 @@
   --red:   oklch(0.627 0.257 29.2);   /* matches --severity-high  — #ef4444 */
   --amber: oklch(0.769 0.189 84.0);   /* matches --severity-medium — #f59e0b */
 
+  /* ---------------------------------------------------------------------------
+   * Dispatch semantic surface tokens
+   *
+   * These tokens implement the Dispatch design language surface palette defined
+   * in pr/overview/secrets-redesign/DESIGN_LANGUAGE.md §1a (surfaces) and §1b
+   * (state colors). They are the canonical vocabulary for new pages using the
+   * Dispatch language (Secrets redesign, and future pages).
+   *
+   * Naming reconciliation (Q11):
+   *   --bg / --bg-elev / --bg-deep  surface elevation layers
+   *   --fg                          primary text
+   *   --mfg                         muted text (eyebrows, secondary labels)
+   *   --dim                         tertiary text (deltas, timestamps)
+   *   --border-soft                 list separators (6% / 5% opacity)
+   *   --border-strong               buttons, link underlines (18% / 20% opacity)
+   *   --green                       healthy / positive delta state color
+   *
+   * Note: --border, --red, and --amber already exist above and their dark-mode
+   * values match the Dispatch spec exactly. --border light-mode uses the
+   * shadcn opaque form (oklch(0.922 0 0)) which resolves identically for
+   * components; new Dispatch consumers should use var(--border) for hairlines.
+   * ---------------------------------------------------------------------------*/
+
+  /* Dispatch surface layers (light mode) */
+  --bg:       oklch(0.985 0.003 85);   /* page — paper-warm, not stark white */
+  --bg-elev:  oklch(1 0 0);            /* code blocks, tooltips */
+  --bg-deep:  oklch(0.965 0.005 85);   /* sidebar, sticky bars */
+  --fg:       oklch(0.18 0 0);         /* primary text */
+  --mfg:      oklch(0.46 0 0);         /* muted text, eyebrows */
+  --dim:      oklch(0.62 0 0);         /* tertiary text, deltas */
+
+  /* Dispatch border softness variants (light mode) */
+  --border-soft:   oklch(0 0 0 / 0.05);   /* list separators */
+  --border-strong: oklch(0 0 0 / 0.20);   /* buttons, link underlines */
+
+  /* Dispatch state color: green (light mode) */
+  --green: oklch(0.50 0.140 152);   /* healthy, positive delta */
+
   /* Permanence */
   --permanence-fleeting:  oklch(0.708 0 0);        /* neutral gray              — chroma 0 (achromatic) */
   --permanence-medium:    oklch(0.6 0.110 184.7);  /* teal-blue                 — chroma 0.118 → 0.110 */
@@ -202,6 +240,12 @@
    * Loaded via Google Fonts in frontend/index.html. The :root font-family
    * rule above remains the body default; opt-in consumers reference these
    * variables directly. See about/lay-and-land/frontend.md § Type tokens.
+   *
+   * Font verification (Q10 — 2026-05-26):
+   *   Inter Tight:ital,wght@0,400..700  ✓ loaded (index.html line 9)
+   *   Source Serif 4:ital,wght@0,400;0,500;1,400  ✓ loaded (index.html line 9)
+   *   JetBrains Mono:wght@400;500  ✓ loaded (index.html line 9)
+   *   No @import additions required — all three families already present.
    * ---------------------------------------------------------------------------*/
   --font-sans:  'Inter Tight', ui-sans-serif, system-ui, sans-serif;
   --font-serif: 'Source Serif 4', ui-serif, Georgia, serif;
@@ -399,6 +443,17 @@ body {
   /* Attention-tint rail tokens — lifted to match dark-mode severity */
   --red:   oklch(0.685 0.250 29.2);   /* matches dark --severity-high  */
   --amber: oklch(0.810 0.185 84.0);   /* matches dark --severity-medium */
+
+  /* Dispatch semantic surface tokens — dark mode (canonical per DESIGN_LANGUAGE.md §1a–b) */
+  --bg:       oklch(0.145 0 0);         /* page */
+  --bg-elev:  oklch(0.205 0 0);         /* code blocks, tooltips */
+  --bg-deep:  oklch(0.115 0 0);         /* sidebar, sticky bars */
+  --fg:       oklch(0.985 0 0);         /* primary text */
+  --mfg:      oklch(0.708 0 0);         /* muted text, eyebrows */
+  --dim:      oklch(0.55 0 0);          /* tertiary text, deltas */
+  --border-soft:   oklch(1 0 0 / 0.06); /* list separators */
+  --border-strong: oklch(1 0 0 / 0.18); /* buttons, link underlines */
+  --green: oklch(0.790 0.195 148);      /* healthy, positive delta */
 
   /* Permanence — muted to match evening-glance dark-primary commitment */
   --permanence-fleeting:  oklch(0.556 0 0);                        /* achromatic — no change */

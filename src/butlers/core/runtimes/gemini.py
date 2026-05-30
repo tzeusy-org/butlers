@@ -74,9 +74,7 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
     return dict(env)
 
 
-def _parse_gemini_output(
-    stdout: str, stderr: str, returncode: int
-) -> tuple[str | None, list[dict[str, Any]]]:
+def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dict[str, Any]]]:
     """Parse Gemini CLI output into (result_text, tool_calls).
 
     The Gemini CLI may output JSON or plain text to stdout. We attempt
@@ -94,18 +92,12 @@ def _parse_gemini_output(
         Raw stdout from the Gemini process.
     stderr:
         Raw stderr from the Gemini process.
-    returncode:
-        Exit code from the Gemini process.
 
     Returns
     -------
     tuple[str | None, list[dict[str, Any]]]
         (result_text, tool_calls)
     """
-    if returncode != 0:
-        error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
-        logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
-        return (f"Error: {error_detail}", [])
 
     result_text: str | None = None
     tool_calls: list[dict[str, Any]] = []
@@ -343,7 +335,17 @@ class GeminiAdapter(RuntimeAdapter):
                 "runtime_type": "gemini",
             }
 
-            result_text, tool_calls = _parse_gemini_output(stdout, stderr, returncode)
+            if returncode != 0:
+                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
+                self._last_process_info["error_detail"] = error_detail
+                # On non-zero exit the adapter raises immediately — no tool calls
+                # were captured by the adapter itself, so this is pre-tool-call.
+                # The spawner will layer in daemon-side tool-call capture.
+                self._last_process_info["is_pre_tool_call"] = True
+                raise RuntimeError(f"Gemini CLI exited with code {returncode}: {error_detail}")
+
+            result_text, tool_calls = _parse_gemini_output(stdout, stderr)
             # Token reporting contract: Gemini CLI does not expose token counts
             # in its output format. Usage is None — no ledger row will be written
             # for this invocation. This is intentional and documented.
@@ -357,6 +359,10 @@ class GeminiAdapter(RuntimeAdapter):
                 "command": cmd_for_log,
                 "stderr": "(timeout — process killed)",
                 "runtime_type": "gemini",
+                # Timeout fired before the adapter could confirm any tool calls —
+                # the failover classifier treats this as pre-tool-call eligible.
+                # The spawner will layer in daemon-side tool-call capture.
+                "is_pre_tool_call": True,
             }
             if proc:
                 proc.kill()

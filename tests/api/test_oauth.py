@@ -156,6 +156,33 @@ def test_state_expired_rejected():
     assert _validate_and_consume_state(state) is None
 
 
+def test_store_state_preserves_page_of_origin():
+    """_store_state round-trips page_of_origin through the state store."""
+    state = _generate_state()
+    _store_state(state, page_of_origin="ingestion")
+    entry = _validate_and_consume_state(state)
+    assert entry is not None
+    assert entry.page_of_origin == "ingestion"
+
+
+def test_store_state_page_of_origin_defaults_to_none():
+    """_store_state with no page_of_origin persists None."""
+    state = _generate_state()
+    _store_state(state)
+    entry = _validate_and_consume_state(state)
+    assert entry is not None
+    assert entry.page_of_origin is None
+
+
+def test_store_state_secrets_page_of_origin():
+    """_store_state persists 'secrets' as page_of_origin."""
+    state = _generate_state()
+    _store_state(state, page_of_origin="secrets")
+    entry = _validate_and_consume_state(state)
+    assert entry is not None
+    assert entry.page_of_origin == "secrets"
+
+
 # ---------------------------------------------------------------------------
 # OAuth start
 # ---------------------------------------------------------------------------
@@ -188,6 +215,90 @@ async def test_start_missing_credentials_returns_503(app):
     ) as client:
         resp = await client.get("/api/oauth/google/start")
     assert resp.status_code in (503, 500)
+
+
+async def test_start_page_of_origin_ingestion_persists_in_state(app):
+    """?page_of_origin=ingestion is carried into the state store entry."""
+    _make_app(app)
+    captured_state: list[str] = []
+
+    original_store = oauth_module._store_state
+
+    def _capturing_store(state, **kwargs):
+        captured_state.append(state)
+        original_store(state, **kwargs)
+
+    with patch.object(oauth_module, "_store_state", side_effect=_capturing_store):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={"redirect": "false", "page_of_origin": "ingestion"},
+            )
+
+    assert resp.status_code == 200
+    assert len(captured_state) == 1
+    stored_state = captured_state[0]
+    entry = oauth_module._validate_and_consume_state(stored_state)
+    assert entry is not None
+    assert entry.page_of_origin == "ingestion"
+
+
+async def test_start_page_of_origin_omitted_persists_none(app):
+    """Omitting ?page_of_origin stores None in the state entry (not a hard error)."""
+    _make_app(app)
+    captured_state: list[str] = []
+
+    original_store = oauth_module._store_state
+
+    def _capturing_store(state, **kwargs):
+        captured_state.append(state)
+        original_store(state, **kwargs)
+
+    with patch.object(oauth_module, "_store_state", side_effect=_capturing_store):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={"redirect": "false"},
+            )
+
+    assert resp.status_code == 200
+    assert len(captured_state) == 1
+    stored_state = captured_state[0]
+    entry = oauth_module._validate_and_consume_state(stored_state)
+    assert entry is not None
+    assert entry.page_of_origin is None
+
+
+async def test_start_page_of_origin_empty_string_normalised_to_none(app):
+    """?page_of_origin= (empty string) is normalised to None before storage."""
+    _make_app(app)
+    captured_state: list[str] = []
+
+    original_store = oauth_module._store_state
+
+    def _capturing_store(state, **kwargs):
+        captured_state.append(state)
+        original_store(state, **kwargs)
+
+    with patch.object(oauth_module, "_store_state", side_effect=_capturing_store):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={"redirect": "false", "page_of_origin": ""},
+            )
+
+    assert resp.status_code == 200
+    assert len(captured_state) == 1
+    stored_state = captured_state[0]
+    entry = oauth_module._validate_and_consume_state(stored_state)
+    assert entry is not None
+    assert entry.page_of_origin is None
 
 
 # ---------------------------------------------------------------------------

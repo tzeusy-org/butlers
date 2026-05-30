@@ -121,7 +121,7 @@ def _codex_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None,
 
 
 def _gemini_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None, list]:
-    return _parse_gemini_output(stdout, stderr, returncode)
+    return _parse_gemini_output(stdout, stderr)
 
 
 def _opencode_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None, list]:
@@ -142,7 +142,11 @@ _ALL_PARSERS = [_codex_parse, _gemini_parse, _opencode_parse, _claude_parse]
 
 
 def test_shared_parser_contract_text_and_error() -> None:
-    """All parsers: plain text, empty output, and non-zero exit code handling."""
+    """All parsers: plain text, empty output, and non-zero exit code handling.
+
+    Note: Gemini parser no longer handles non-zero exit codes (invoke() raises
+    before calling _parse_gemini_output). Test only non-zero cases for other parsers.
+    """
     for parse in _ALL_PARSERS:
         # plain text
         text, calls = parse("Hello, world!", "", 0)
@@ -150,12 +154,14 @@ def test_shared_parser_contract_text_and_error() -> None:
         # empty
         text, calls = parse("", "", 0)
         assert text is None and calls == []
-        # nonzero exit with stderr
-        text, calls = parse("", "Something went wrong", 1)
-        assert text is not None and "Something went wrong" in text and calls == []
-        # nonzero with stdout
-        text, calls = parse("stdout error", "", 1)
-        assert text is not None and "stdout error" in text
+        # nonzero exit tests: skip for Gemini (handled by invoke() before parser)
+        if parse is not _gemini_parse:
+            # nonzero exit with stderr
+            text, calls = parse("", "Something went wrong", 1)
+            assert text is not None and "Something went wrong" in text and calls == []
+            # nonzero with stdout
+            text, calls = parse("stdout error", "", 1)
+            assert text is not None and "stdout error" in text
 
 
 def test_shared_parser_contract_json_messages() -> None:
@@ -399,7 +405,7 @@ async def test_claude_usage_contract() -> None:
 
 def test_gemini_usage_is_none() -> None:
     """_parse_gemini_output returns 2-tuple; GeminiAdapter.invoke() reports usage=None."""
-    result = _parse_gemini_output("hello world", "", 0)
+    result = _parse_gemini_output("hello world", "")
     assert len(result) == 2
     result_text, tool_calls = result
     assert result_text == "hello world" and tool_calls == []
