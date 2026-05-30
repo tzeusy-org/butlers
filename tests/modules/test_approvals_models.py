@@ -316,6 +316,72 @@ class TestApprovalsMigration:
                 conn.commit()
         engine.dispose()
 
+    def test_migration_updates_existing_approvals_001_pending_actions(self, postgres_container):
+        """Existing approvals_001 tables receive dossier columns on upgrade."""
+        import asyncio
+
+        from sqlalchemy import create_engine, text
+
+        from butlers.migrations import run_migrations
+
+        db_name = _unique_db_name()
+        db_url = _create_db(postgres_container, db_name)
+
+        engine = create_engine(db_url)
+        action_id = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE pending_actions ("
+                    "id UUID PRIMARY KEY,"
+                    "tool_name TEXT NOT NULL,"
+                    "tool_args JSONB NOT NULL,"
+                    "status VARCHAR NOT NULL DEFAULT 'pending',"
+                    "requested_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+                    ")"
+                )
+            )
+            conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('approvals_001')"))
+            conn.execute(
+                text(
+                    "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
+                    " VALUES (:id, :tn, :ta, :s, :r)"
+                ),
+                {
+                    "id": str(action_id),
+                    "tn": "email_send",
+                    "ta": "{}",
+                    "s": "pending",
+                    "r": datetime.now(UTC),
+                },
+            )
+
+        assert not _column_exists(db_url, "pending_actions", "why")
+        assert not _column_exists(db_url, "pending_actions", "evidence")
+
+        asyncio.run(run_migrations(db_url, chain="approvals"))
+
+        assert _column_exists(db_url, "pending_actions", "why")
+        assert _column_exists(db_url, "pending_actions", "evidence")
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT why, evidence::text AS evidence FROM pending_actions WHERE id=:id"
+                    ),
+                    {"id": str(action_id)},
+                )
+                .mappings()
+                .one()
+            )
+            versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
+        engine.dispose()
+
+        assert row["why"] is None
+        assert row["evidence"] == "[]"
+        assert "approvals_002" in versions
+
     def test_model_round_trip_pending_action(self, postgres_container):
         import asyncio
 
