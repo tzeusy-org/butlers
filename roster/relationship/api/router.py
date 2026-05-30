@@ -31,7 +31,10 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
-from butlers.tools.relationship.dual_write import emit_contact_info_fact
+from butlers.contact_info_write_guard import (
+    ContactInfoWriteBlockedError,
+    assert_contact_info_writes_blocked,
+)
 
 # Load local models module
 _api_dir = Path(__file__).parent
@@ -1814,34 +1817,12 @@ async def merge_contact(
     if contact_id == source_id:
         raise HTTPException(status_code=400, detail="Source and target contacts must be different")
 
-    # Move contact_info from source to target.
-    # First delete source rows whose (type, value) already exist on the target to
-    # avoid producing duplicates (public.contact_info has no unique constraint on
-    # (contact_id, type, value), so a plain UPDATE would silently create them).
-    await pool.execute(
-        """
-        DELETE FROM public.contact_info
-        WHERE contact_id = $1
-          AND (type, value) IN (
-              SELECT type, value
-              FROM public.contact_info
-              WHERE contact_id = $2
-          )
-        """,
-        source_id,
-        contact_id,
-    )
-    moved_result = await pool.fetch(
-        """
-        UPDATE public.contact_info
-        SET contact_id = $1
-        WHERE contact_id = $2
-        RETURNING id
-        """,
-        contact_id,
-        source_id,
-    )
-    contact_info_moved = len(moved_result)
+    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only and is no
+    # longer re-pointed here. The source entity's channel facts are re-pointed to
+    # the target entity by entity_merge on relationship.entity_facts (below).
+    # contact_info_moved is reported as 0 — channel identifiers now live only in
+    # the triple store, which the merge consolidates via entity_merge.
+    contact_info_moved = 0
 
     # Attempt entity_merge if both have entity_ids
     entity_merged = False
@@ -2032,67 +2013,63 @@ async def create_contact_info(
     """
     pool = _pool(db)
 
-    # Verify contact exists
+    # Verify contact exists and resolve its entity (channel facts anchor on the
+    # entity, not the contact, in the triple store).
     existing = await pool.fetchrow(
-        "SELECT id FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        "SELECT id, entity_id FROM contacts WHERE id = $1 AND archived_at IS NULL",
         contact_id,
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    try:
-        row = await pool.fetchrow(
-            """
-            INSERT INTO public.contact_info
-                (contact_id, type, value, is_primary, secured, parent_id, context)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, contact_id, type, value, is_primary, secured, parent_id, context
-            """,
-            contact_id,
-            request.type,
-            request.value,
-            request.is_primary,
-            request.secured,
-            request.parent_id,
-            request.context,
-        )
-    except asyncpg.UniqueViolationError:
+    entity_id = existing["entity_id"]
+    if entity_id is None:
         raise HTTPException(
             status_code=409,
-            detail=f"A {request.type} entry with this value already exists.",
+            detail="Contact has no linked entity; cannot record a channel fact.",
         )
 
-    # Dual-write shim (Amendment 14): best-effort triple assertion after SQL commit.
-    # UniqueViolationError raises above, so we only reach here when INSERT succeeded.
-    # Secured rows (credentials/tokens) MUST NOT be emitted to the triple store per spec.
-    if not row["secured"]:
-        try:
-            await emit_contact_info_fact(
-                pool,
-                contact_id=row["contact_id"],
-                ci_type=row["type"],
-                value=row["value"],
-                is_primary=row["is_primary"],
-                src="dual-write",
-            )
-        except Exception:  # noqa: BLE001 — best-effort: never block the response
-            logger.warning(
-                "create_contact_info: emit_contact_info_fact failed for contact %s "
-                "(ci_type=%r) — dual-write failure swallowed",
-                row["contact_id"],
-                row["type"],
-                exc_info=True,
-            )
+    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only. The
+    # channel fact is written via the central writer relationship_assert_fact()
+    # into relationship.entity_facts. Secured (credential) rows and types with
+    # no triple predicate have no home after the cut-over and are rejected.
+    from butlers.tools.relationship.relationship_assert_fact import (
+        contact_info_type_to_predicate,
+        relationship_assert_fact,
+    )
+
+    predicate = contact_info_type_to_predicate(request.type)
+    if request.secured or predicate is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Contact-info type '{request.type}' cannot be written after the "
+                "write-path cut-over: public.contact_info is read-only and this "
+                "type has no triple predicate (or is a secured credential row)."
+            ),
+        )
+
+    assert_result = await relationship_assert_fact(
+        pool,
+        entity_id,
+        predicate,
+        request.value,
+        src="relationship",
+        object_kind="literal",
+        primary=request.is_primary,
+    )
+
+    from uuid import uuid4
 
     result = CreateContactInfoResponse(
-        id=row["id"],
-        contact_id=row["contact_id"],
-        type=row["type"],
-        value=row["value"],
-        is_primary=row["is_primary"],
-        secured=row["secured"],
-        parent_id=row["parent_id"],
-        context=row["context"],
+        id=assert_result.fact_id or uuid4(),
+        contact_id=contact_id,
+        type=request.type,
+        value=request.value,
+        is_primary=request.is_primary,
+        secured=request.secured,
+        parent_id=request.parent_id,
+        context=request.context,
     )
 
     # Explicit audit — middleware also fires but this carries a richer operation label.
@@ -2120,37 +2097,20 @@ async def create_contact_info(
 async def delete_contact_info(
     contact_id: UUID,
     info_id: UUID,
-    request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    request: Request,  # noqa: ARG001 — kept for route signature/back-compat
+    db: DatabaseManager = Depends(_get_db_manager),  # noqa: ARG001
 ) -> None:
-    """Delete a single contact_info entry.
+    """Reject deletes — public.contact_info is read-only after the cut-over.
 
-    COMPAT-ONLY: this contact-keyed endpoint remains until contact-info writes
-    are migrated to entity fact mutations (bu-k9ylx write-path cut-over).
+    Write-path cut-over (bu-k9ylx): public.contact_info is read-only and the
+    triple store is not addressable by contact_info.id. Channel-fact retraction
+    flows through the relationship butler's triple retraction path instead.
+    Returns HTTP 409 to signal the write is no longer permitted.
     """
-    pool = _pool(db)
-
-    row = await pool.fetchrow(
-        "SELECT id FROM public.contact_info WHERE id = $1 AND contact_id = $2",
-        info_id,
-        contact_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Contact info entry not found")
-
-    await pool.execute("DELETE FROM public.contact_info WHERE id = $1", info_id)
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    await emit_dashboard_audit(
-        db,
-        butler="relationship",
-        operation="contact_info_delete",
-        method="DELETE",
-        path=f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
-        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
-        response_status=204,
-        request=request,
-    )
+    try:
+        assert_contact_info_writes_blocked("delete")
+    except ContactInfoWriteBlockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -2163,112 +2123,23 @@ async def delete_contact_info(
     response_model=ContactInfoEntry,
 )
 async def patch_contact_info(
-    contact_id: UUID,
-    info_id: UUID,
-    http_request: Request,
-    request: PatchContactInfoRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    contact_id: UUID,  # noqa: ARG001 — kept for route signature/back-compat
+    info_id: UUID,  # noqa: ARG001
+    http_request: Request,  # noqa: ARG001
+    request: PatchContactInfoRequest = Body(...),  # noqa: ARG001
+    db: DatabaseManager = Depends(_get_db_manager),  # noqa: ARG001
 ) -> ContactInfoEntry:
-    """Update a contact_info entry (type, value, is_primary).
+    """Reject in-place updates — public.contact_info is read-only after cut-over.
 
-    COMPAT-ONLY: this contact-keyed endpoint remains until contact-info writes
-    are migrated to entity fact mutations (bu-k9ylx write-path cut-over).
+    Write-path cut-over (bu-k9ylx): public.contact_info is read-only and the
+    triple store has no contact_info.id-addressable update. To change a channel
+    fact, re-assert it via POST /contacts/{id}/contact-info (central writer).
+    Returns HTTP 409 to signal the write is no longer permitted.
     """
-    pool = _pool(db)
-
-    row = await pool.fetchrow(
-        "SELECT id FROM public.contact_info WHERE id = $1 AND contact_id = $2",
-        info_id,
-        contact_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Contact info entry not found")
-
-    updates: list[str] = []
-    args: list[Any] = []
-    idx = 1
-
-    if request.type is not None:
-        updates.append(f"type = ${idx}")
-        args.append(request.type)
-        idx += 1
-
-    if request.value is not None:
-        updates.append(f"value = ${idx}")
-        args.append(request.value)
-        idx += 1
-
-    if request.is_primary is not None:
-        updates.append(f"is_primary = ${idx}")
-        args.append(request.is_primary)
-        idx += 1
-
-    # context uses sentinel to distinguish "not provided" from "set to None"
-    if "context" in (request.model_fields_set or set()):
-        updates.append(f"context = ${idx}")
-        args.append(request.context)
-        idx += 1
-
-    if updates:
-        set_clause = ", ".join(updates)
-        args.append(info_id)
-        await pool.execute(
-            f"UPDATE public.contact_info SET {set_clause} WHERE id = ${idx}",
-            *args,
-        )
-
-    # When toggling is_primary=true, clear siblings of same type (top-level only)
-    if request.is_primary is True:
-        entry = await pool.fetchrow(
-            "SELECT contact_id, type FROM public.contact_info WHERE id = $1",
-            info_id,
-        )
-        if entry is not None:
-            await pool.execute(
-                """
-                UPDATE public.contact_info SET is_primary = false
-                WHERE contact_id = $1 AND type = $2 AND parent_id IS NULL AND id != $3
-                """,
-                entry["contact_id"],
-                entry["type"],
-                info_id,
-            )
-
-    updated = await pool.fetchrow(
-        "SELECT id, type, value, is_primary, secured, parent_id, context"
-        " FROM public.contact_info WHERE id = $1",
-        info_id,
-    )
-    entry_result = ContactInfoEntry(
-        id=updated["id"],
-        type=updated["type"],
-        value=updated["value"],
-        is_primary=updated["is_primary"],
-        secured=updated["secured"],
-        parent_id=updated["parent_id"],
-        context=updated["context"],
-    )
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    audit_body: dict = {}
-    if request.type is not None:
-        audit_body["type"] = request.type
-    if request.is_primary is not None:
-        audit_body["is_primary"] = request.is_primary
-    # Note: request.value is intentionally excluded (may contain credential values)
-    await emit_dashboard_audit(
-        db,
-        butler="relationship",
-        operation="contact_info_patch",
-        method="PATCH",
-        path=f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
-        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
-        body=audit_body or None,
-        response_status=200,
-        request=http_request,
-    )
-
-    return entry_result
+    try:
+        assert_contact_info_writes_blocked("update")
+    except ContactInfoWriteBlockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

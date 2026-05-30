@@ -35,7 +35,8 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Channel-type → relationship.entity_facts predicate mapping (bead 7 cut-over)
-# Must stay in sync with dual_write._CI_TYPE_TO_PREDICATE
+# Must stay in sync with
+# relationship_assert_fact._CI_TYPE_TO_PREDICATE
 # ---------------------------------------------------------------------------
 _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "email": "has-email",
@@ -243,15 +244,20 @@ async def create_temp_contact(
 
     Creates a ``public.entities`` entry with ``metadata.unidentified = true``
     and a ``public.contacts`` entry linked to it (with
-    ``metadata.needs_disambiguation = true``), plus a ``contact_info`` entry.
-    If a contact_info entry for (type, value) already exists (due to
-    concurrent creation or a race), the existing contact is returned instead.
+    ``metadata.needs_disambiguation = true``), then asserts the sender's channel
+    identifier as a triple in ``relationship.entity_facts`` via the central
+    writer ``relationship_assert_fact()``.
+
+    Write-path cut-over (bu-k9ylx): the channel identifier is NO LONGER written
+    to ``public.contact_info`` (that table is read-only). Existing-sender
+    detection now queries the triple store (the same path
+    ``resolve_contact_by_channel()`` uses after the bead-7 read cut-over).
 
     Parameters
     ----------
     pool:
-        asyncpg connection pool.  Role must have INSERT on public.contacts
-        and public.contact_info.
+        asyncpg connection pool.  Role must have INSERT on public.entities and
+        public.contacts; the channel triple is written via the central writer.
     channel_type:
         Channel type (e.g., ``"telegram"``).
     channel_value:
@@ -268,46 +274,15 @@ async def create_temp_contact(
     name = display_name or f"Unknown ({channel_type} {channel_value})"
 
     try:
+        # Re-check via the triple store to avoid double-creation: if the channel
+        # identifier already resolves to an entity, return that instead of
+        # minting a duplicate.  This mirrors resolve_contact_by_channel().
+        existing_resolved = await resolve_contact_by_channel(pool, channel_type, channel_value)
+        if existing_resolved is not None:
+            return existing_resolved
+
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Re-check under transaction to avoid double-creation.
-                existing: asyncpg.Record | None = await conn.fetchrow(
-                    """
-                    SELECT c.id                          AS contact_id,
-                           c.name                        AS name,
-                           COALESCE(e.roles, '{}')       AS roles,
-                           c.entity_id                   AS entity_id
-                    FROM   public.contact_info ci
-                    JOIN   public.contacts c ON c.id = ci.contact_id
-                    LEFT JOIN public.entities e ON e.id = c.entity_id
-                    WHERE  ci.type = $1
-                      AND  ci.value = $2
-                    LIMIT  1
-                    """,
-                    channel_type,
-                    channel_value,
-                )
-                if existing is not None:
-                    raw_roles = existing["roles"]
-                    roles = (
-                        [str(r) for r in raw_roles] if isinstance(raw_roles, (list, tuple)) else []
-                    )
-                    eid = existing["entity_id"]
-                    if eid is not None and not isinstance(eid, UUID):
-                        try:
-                            eid = UUID(str(eid))
-                        except (ValueError, AttributeError):
-                            eid = None
-                    cid = existing["contact_id"]
-                    if not isinstance(cid, UUID):
-                        cid = UUID(str(cid))
-                    return ResolvedContact(
-                        contact_id=cid,
-                        name=existing["name"] or None,
-                        roles=roles,
-                        entity_id=eid,
-                    )
-
                 # Create an unidentified entity so facts can be anchored.
                 entity_metadata: dict[str, Any] = {
                     "unidentified": True,
@@ -343,39 +318,38 @@ async def create_temp_contact(
                 )
                 contact_id: UUID = contact_row["id"]
 
-                # Link contact_info — use ON CONFLICT to survive races.
-                await conn.execute(
-                    """
-                    INSERT INTO public.contact_info (contact_id, type, value, is_primary)
-                    VALUES ($1, $2, $3, true)
-                    ON CONFLICT (type, value) DO NOTHING
-                    """,
-                    contact_id,
-                    channel_type,
-                    channel_value,
+        # Write-path cut-over (bu-k9ylx): assert the channel identifier as a
+        # triple via the central writer.  No public.contact_info write.
+        predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+        if predicate is not None:
+            try:
+                from butlers.tools.relationship.relationship_assert_fact import (
+                    relationship_assert_fact,
                 )
 
-        # Dual-write shim (Group A): best-effort post-commit triple emission (Amendment 14).
-        # Called after the SQL transaction commits.  Failure is swallowed — never blocks return.
-        try:
-            from butlers.tools.relationship.dual_write import emit_contact_info_fact
-
-            await emit_contact_info_fact(
-                pool,
-                contact_id=contact_id,
-                ci_type=channel_type,
-                value=channel_value,
-                is_primary=True,
-                src="dual-write",
-            )
-        except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
-            logger.warning(
-                "create_temp_contact: emit_contact_info_fact failed for contact %s "
-                "(ci_type=%r, value=%r) — dual-write failure swallowed",
-                contact_id,
+                await relationship_assert_fact(
+                    pool,
+                    entity_id,
+                    predicate,
+                    channel_value,
+                    src="identity",
+                    object_kind="literal",
+                    primary=True,
+                )
+            except Exception:  # noqa: BLE001 — never block temp-contact creation
+                logger.warning(
+                    "create_temp_contact: relationship_assert_fact failed for entity %s "
+                    "(channel_type=%r, value=%r) — channel triple not written",
+                    entity_id,
+                    channel_type,
+                    channel_value,
+                    exc_info=True,
+                )
+        else:
+            logger.debug(
+                "create_temp_contact: no predicate mapping for channel_type=%r; "
+                "channel triple not written",
                 channel_type,
-                channel_value,
-                exc_info=True,
             )
 
         return ResolvedContact(
