@@ -16,8 +16,9 @@ where the table lives in ``public``.
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "core_105"
 down_revision = "core_104"
@@ -61,12 +62,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for schema in _pending_action_schemas():
-        table_fqn = f"{_quote_ident(schema)}.pending_actions"
-        op.execute(
-            f"""
-            ALTER TABLE {table_fqn}
-                DROP COLUMN IF EXISTS why,
-                DROP COLUMN IF EXISTS evidence
-            """
-        )
+    # Repair-only migration: these columns are now part of the base schema and
+    # may already contain data in healthy deployments.
+    pass

@@ -27,6 +27,19 @@ _APPROVALS_MIGRATION_PATH = (
 )
 
 
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _Connection:
+    def execute(self, _sql):
+        return _Rows([("relationship",)])
+
+
 def _load_core_migration():
     spec = importlib.util.spec_from_file_location("core_105", _CORE_MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
@@ -47,6 +60,31 @@ def test_core_repair_migration_adds_pending_action_columns():
     assert "ADD COLUMN IF NOT EXISTS why TEXT" in source
     assert "ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '[]'::jsonb" in source
     assert "n.nspname NOT IN ('pg_catalog', 'information_schema')" in source
+    assert "DROP COLUMN" not in source
+
+
+def test_core_repair_migration_upgrade_repairs_discovered_schema(monkeypatch):
+    mod = _load_core_migration()
+    executed_sql = []
+    monkeypatch.setattr(mod.op, "get_bind", lambda: _Connection())
+    monkeypatch.setattr(mod.op, "execute", lambda sql: executed_sql.append(sql))
+
+    mod.upgrade()
+
+    assert len(executed_sql) == 1
+    assert 'ALTER TABLE "relationship".pending_actions' in executed_sql[0]
+    assert "ADD COLUMN IF NOT EXISTS why TEXT" in executed_sql[0]
+    assert "ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '[]'::jsonb" in executed_sql[0]
+
+
+def test_core_repair_migration_downgrade_is_noop(monkeypatch):
+    mod = _load_core_migration()
+    executed_sql = []
+    monkeypatch.setattr(mod.op, "execute", lambda sql: executed_sql.append(sql))
+
+    mod.downgrade()
+
+    assert executed_sql == []
 
 
 def test_approvals_base_table_creates_pending_action_columns():
