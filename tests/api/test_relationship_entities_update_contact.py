@@ -458,8 +458,14 @@ class TestPutEntityContactOwnerCarveOut:
         assert body["retracted_fact_id"] is None
         assert UUID(body["action_id"]) == action_id
 
-    async def test_old_fact_reactivated_when_pending_approval(self):
-        """When pending_approval fires, the old fact is re-activated to preserve UI consistency."""
+    async def test_transaction_rolled_back_when_pending_approval(self):
+        """When pending_approval fires, the transaction is rolled back atomically.
+
+        The fix raises _PendingApproval inside the transaction block so the retract
+        is never committed — no separate re-activation UPDATE is needed or issued.
+        pool.execute should NOT have been called on the pool directly (only on
+        the mock connection inside the transaction, which is rolled back).
+        """
         candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
         action_id = uuid4()
         app, mock_pool = _make_app(candidate_rows=[candidate])
@@ -473,9 +479,10 @@ class TestPutEntityContactOwnerCarveOut:
         ):
             await _put(app, json_body={"new_value": _NEW_EMAIL})
 
-        # pool.execute should have been called to re-activate the old fact
-        # (the UPDATE ... validity='active' after detecting pending_approval).
-        assert mock_pool.execute.call_count >= 1
-        last_call_sql = mock_pool.execute.call_args_list[-1][0][0]
-        assert "active" in last_call_sql.lower()
-        assert mock_pool.execute.call_args_list[-1][0][1] == _FACT_ID
+        # The transaction is rolled back via exception — pool.execute (top-level pool,
+        # outside the connection) must NOT have been called with a re-activation SQL.
+        for call in mock_pool.execute.call_args_list:
+            sql = call[0][0] if call[0] else ""
+            assert "active" not in sql.lower(), (
+                "pool.execute should not re-activate the old fact; the rollback handles it"
+            )

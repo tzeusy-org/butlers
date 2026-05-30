@@ -5438,51 +5438,54 @@ async def update_entity_contact(
     # We acquire a single connection and wrap both operations in one transaction
     # so the triple store is never left in a state where both old and new are
     # simultaneously absent or simultaneously active.
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # 1. Retract old row.
-            await conn.execute(
-                """
-                UPDATE relationship.entity_facts
-                SET validity   = 'retracted',
-                    updated_at = now()
-                WHERE id = $1
-                """,
-                old_fact_id,
-            )
+    #
+    # Owner carve-out: when relationship_assert_fact returns pending_approval,
+    # the new value is parked for approval and must NOT be committed.  We raise
+    # _PendingApproval inside the transaction to force a rollback — the retract
+    # is rolled back too, so the old row stays active while the owner reviews.
+    class _PendingApproval(Exception):
+        """Sentinel: triggers rollback so retraction is never committed."""
 
-            # 2. Assert new row via central writer (pass conn= to avoid nested tx).
-            result = await relationship_assert_fact(
-                pool,
-                subject=entity_id,
-                predicate=predicate,
-                object=new_value,
-                src=body.src,
-                object_kind="literal",
-                conf=body.conf,
-                verified=body.verified,
-                primary=body.primary,
-                conn=conn,
-            )
+        def __init__(self, inner_result: object) -> None:
+            self.result = inner_result
 
-    if result.outcome == AssertOutcome.pending_approval:
-        # Owner carve-out: new value is parked for approval.
-        # The retraction of the old value was rolled back inside the transaction
-        # (the conn.transaction() context manager rolls back on any exception;
-        # pending_approval does NOT raise so the transaction committed —
-        # meaning the old row IS retracted even though the new write is pending).
-        # To preserve a consistent UX (owner must explicitly approve), we
-        # roll back the retraction: re-activate the old row so the UI still
-        # shows the existing value while the approval is pending.
-        await pool.execute(
-            """
-            UPDATE relationship.entity_facts
-            SET validity   = 'active',
-                updated_at = now()
-            WHERE id = $1
-            """,
-            old_fact_id,
-        )
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. Retract old row.
+                await conn.execute(
+                    """
+                    UPDATE relationship.entity_facts
+                    SET validity   = 'retracted',
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    old_fact_id,
+                )
+
+                # 2. Assert new row via central writer (pass conn= to avoid nested tx).
+                result = await relationship_assert_fact(
+                    pool,
+                    subject=entity_id,
+                    predicate=predicate,
+                    object=new_value,
+                    src=body.src,
+                    object_kind="literal",
+                    conf=body.conf,
+                    verified=body.verified,
+                    primary=body.primary,
+                    conn=conn,
+                )
+
+                if result.outcome == AssertOutcome.pending_approval:
+                    # Raise inside the transaction so both the retract and the
+                    # pending-approval write are rolled back atomically.
+                    raise _PendingApproval(result)
+    except _PendingApproval as exc:
+        # Owner carve-out: the entire transaction was rolled back.  The old
+        # fact row is still active.  Return 202 so the caller knows an approval
+        # is needed; fact and retracted_fact_id are both null.
+        result = exc.result
         fastapi_response.status_code = 202
         return UpdateContactResponse(
             outcome=result.outcome.value,

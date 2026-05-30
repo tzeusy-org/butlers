@@ -307,7 +307,7 @@ export function ExpandedContactInfoRow({
       toast.error("Value cannot be empty.");
       return;
     }
-    const request: UpdateEntityContactRequest = { new_value: trimmed };
+    const request: UpdateEntityContactRequest = { new_value: trimmed, primary: entry.is_primary };
     try {
       await updateEntityContact.mutateAsync({
         entityId,
@@ -361,6 +361,13 @@ export function ExpandedContactInfoRow({
           type="text"
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              void handleEditSave();
+            } else if (e.key === "Escape") {
+              handleEditCancel();
+            }
+          }}
           disabled={updateEntityContact.isPending}
           autoFocus
           placeholder={inputPlaceholder(entry.type)}
