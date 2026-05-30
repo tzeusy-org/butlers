@@ -86,6 +86,63 @@ describe("adaptInventoryResponse: user credential state", () => {
   });
 });
 
+describe("adaptInventoryResponse: user provider derivation", () => {
+  const backendProviders: Record<string, SecretsProviderInfo> = {
+    ...PROVIDER_CATALOG,
+    github: {
+      id: "github",
+      label: "GitHub",
+      glyph: "G",
+      kind: "token",
+      authority: "api.github.com",
+      brief: "Repo access via Personal Access Token.",
+      cadence: "on demand",
+    },
+  };
+
+  it("maps live backend credential types to provider catalog slugs", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({ id: "u-ha", entity_id: "tze", state: "warn", type: "home_assistant_token" }),
+        makeUser({ id: "u-tg", entity_id: "tze", state: "warn", type: "telegram_user_session" }),
+        makeUser({ id: "u-gh", entity_id: "tze", state: "warn", type: "github_token" }),
+        makeUser({ id: "u-go", entity_id: "tze", state: "ok", type: "google_oauth_refresh" }),
+      ],
+      identities: [],
+      providers: backendProviders,
+    });
+
+    expect(result.user.map((credential) => credential.provider)).toEqual([
+      "homeassistant",
+      "telegram_bot",
+      "github",
+      "google",
+    ]);
+    for (const credential of result.user) {
+      expect(result.providers[credential.provider]?.kind).toBeDefined();
+    }
+  });
+
+  it("adds generic provider metadata for unknown credential families", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [makeUser({ entity_id: "tze", state: "warn", type: "custom_service_token" })],
+      identities: [],
+      providers: {},
+    });
+
+    expect(result.user[0].provider).toBe("custom");
+    expect(result.providers.custom).toMatchObject({
+      id: "custom",
+      label: "Custom",
+      kind: "token",
+    });
+  });
+});
+
 describe("adaptInventoryResponse: identity mapping from backend", () => {
   it("maps backend identities[] to frontend Identity[] with real names and roles", () => {
     const result = adaptInventoryResponse({

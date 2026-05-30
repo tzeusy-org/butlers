@@ -61,12 +61,75 @@ export const PROVIDER_CATALOG: Record<string, SecretsProviderInfo> = {
 // Adapter helpers
 // ---------------------------------------------------------------------------
 
+const USER_TYPE_PROVIDER_ALIASES: Record<string, string> = {
+  home_assistant_token: "homeassistant",
+  home_assistant_url: "homeassistant",
+  telegram_api_hash: "telegram_bot",
+  telegram_api_id: "telegram_bot",
+  telegram_user_session: "telegram_bot",
+};
+
+const USER_TYPE_PREFIX_ALIASES: Record<string, string> = {
+  home_assistant: "homeassistant",
+  telegram: "telegram_bot",
+};
+
+function normalizeProviderId(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function titleFromProviderId(providerId: string): string {
+  return providerId
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ") || "Credential";
+}
+
+function genericProvider(providerId: string, type: string): SecretsProviderInfo {
+  const label = titleFromProviderId(providerId);
+  return {
+    id: providerId,
+    label,
+    glyph: label.slice(0, 1).toUpperCase() || "?",
+    kind: "token",
+    authority: "credential store",
+    brief: `Stored ${type} credential.`,
+    cadence: "on demand",
+  };
+}
+
 /**
  * Extract the provider slug from an entity_info.type string.
- * Convention: `<provider>_oauth_refresh`, `<provider>_api_key`, etc.
- * Returns the first underscore-delimited segment.
+ *
+ * Most OAuth-style rows use `<provider>_oauth_refresh`, but several live
+ * entity_info rows predate that convention (`home_assistant_token`,
+ * `telegram_user_session`). Prefer provider catalog keys and explicit aliases
+ * so the passport page always has matching provider metadata.
  */
-function extractProvider(type: string): string {
+function extractProvider(type: string, providers: Record<string, SecretsProviderInfo>): string {
+  if (providers[type]) return type;
+
+  const exactAlias = USER_TYPE_PROVIDER_ALIASES[type];
+  if (exactAlias && providers[exactAlias]) return exactAlias;
+
+  const providerIds = Object.keys(providers);
+  const directPrefix = providerIds.find((providerId) => type === providerId || type.startsWith(`${providerId}_`));
+  if (directPrefix) return directPrefix;
+
+  for (const [prefix, providerId] of Object.entries(USER_TYPE_PREFIX_ALIASES)) {
+    if ((type === prefix || type.startsWith(`${prefix}_`)) && providers[providerId]) {
+      return providerId;
+    }
+  }
+
+  const normalizedType = normalizeProviderId(type);
+  const normalizedPrefix = providerIds
+    .slice()
+    .sort((a, b) => b.length - a.length)
+    .find((providerId) => normalizedType.startsWith(normalizeProviderId(providerId)));
+  if (normalizedPrefix) return normalizedPrefix;
+
   const idx = type.indexOf("_");
   return idx > 0 ? type.slice(0, idx) : type;
 }
@@ -82,9 +145,9 @@ function adaptProbeResult(raw: SecretsCliRaw["test"]): TestResult | null {
   };
 }
 
-function adaptUserCredential(raw: SecretsUserRaw): UserCredential {
+function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, SecretsProviderInfo>): UserCredential {
   return {
-    provider:       extractProvider(raw.type),
+    provider:       extractProvider(raw.type, providers),
     identity:       raw.entity_id,
     state:          raw.state as CredentialState,
     fingerprint:    raw.fingerprint ?? null,
@@ -163,9 +226,14 @@ export function adaptInventoryResponse(data: {
   // Prefer the backend-supplied catalog; fall back to the static FE copy
   // for rolling deploys where the backend has not yet been updated.
   // TODO(post-deploy): remove fallback once all backends include providers.
-  const providers = data.providers ?? PROVIDER_CATALOG;
+  const providers: Record<string, SecretsProviderInfo> = { ...(data.providers ?? PROVIDER_CATALOG) };
+  const user = data.user.map((raw) => {
+    const credential = adaptUserCredential(raw, providers);
+    providers[credential.provider] ??= genericProvider(credential.provider, raw.type);
+    return credential;
+  });
   return {
-    user:       data.user.map(adaptUserCredential),
+    user,
     system:     data.system.map(adaptSystemCredential),
     cli:        data.cli.map(adaptCliCredential),
     identities: mapIdentities(data.identities),
