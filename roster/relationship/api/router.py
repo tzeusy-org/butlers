@@ -1650,15 +1650,50 @@ async def delete_contact(
     CASCADE on public.contact_info FK handles info cleanup.
     Source links in contacts_source_links are also removed so a
     future sync can re-create the contact from scratch if needed.
+
+    Retraction: before deleting the contact row (which cascades to
+    public.contact_info), all active ``has-*`` triples in
+    ``relationship.entity_facts`` that correspond to the contact's
+    channel rows are retracted.  This prevents stale facts on the
+    linked entity after the contact is removed.
     """
+    from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
+
     pool = _pool(db)
 
     existing = await pool.fetchrow(
-        "SELECT id FROM contacts WHERE id = $1",
+        "SELECT id, entity_id FROM contacts WHERE id = $1",
         contact_id,
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="Contact not found")
+
+    entity_id = existing["entity_id"]
+
+    # Retract entity_facts triples for every channel row on this contact
+    # before the CASCADE delete removes the contact_info rows.
+    if entity_id is not None:
+        ci_rows = await pool.fetch(
+            "SELECT type, value FROM public.contact_info WHERE contact_id = $1",
+            contact_id,
+        )
+        for ci in ci_rows:
+            try:
+                await retract_contact_info_fact(
+                    pool,
+                    subject=entity_id,
+                    ci_type=ci["type"],
+                    ci_value=ci["value"],
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "delete_contact: retract_contact_info_fact failed for "
+                    "contact=%s entity=%s type=%s; continuing",
+                    contact_id,
+                    entity_id,
+                    ci["type"],
+                    exc_info=True,
+                )
 
     # Remove source links so re-sync can recreate cleanly
     has_source_links = await pool.fetchval(
