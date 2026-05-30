@@ -4458,6 +4458,8 @@ async def list_entity_linked_contacts(
                         parent_id=None,
                         context=None,
                         source="entity_facts",
+                        predicate=fr["predicate"],
+                        value_hash=_contact_value_hash(channel_value),
                     )
                 )
         ci_by_contact[first_contact_id].extend(extras)

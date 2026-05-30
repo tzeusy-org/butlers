@@ -744,6 +744,12 @@ export interface ContactInfoEntry {
   /** Backing store discriminator. Absent/null → legacy public.contact_info row.
    * "entity_facts" → synthesised from relationship.entity_facts has-* triple. */
   source?: "entity_facts" | null;
+  /** Populated only when source="entity_facts". The contact predicate (e.g. "has-email").
+   * Used by the delete mutation: DELETE /entities/{id}/contacts/{predicate}/{value_hash}. */
+  predicate?: string | null;
+  /** Populated only when source="entity_facts". SHA-256[:16] of the object value.
+   * Used as the stable URL segment in the entity-keyed delete endpoint. */
+  value_hash?: string | null;
 }
 
 /** Full contact detail with all fields including identity fields. */
