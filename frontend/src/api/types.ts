@@ -5542,3 +5542,64 @@ export interface SecretsInventoryParams {
    */
   identity?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Entity-contacts triple API (GET/POST/DELETE /entities/{id}/contacts)
+// Introduced by entity-redesign §9.4 (bu-u1w78). These types represent
+// contact-fact triples in relationship.entity_facts (has-* predicates).
+// ---------------------------------------------------------------------------
+
+/**
+ * One contact-fact triple from GET /entities/{id}/contacts.
+ *
+ * `id` is the fact UUID in relationship.entity_facts.
+ * `predicate` is the contact predicate (e.g. has-email, has-phone, has-handle).
+ * `object` is the fact value (e.g. "alice@example.com").
+ * `value_hash` is SHA-256[:16] of the object, used as the DELETE path segment.
+ */
+export interface ContactFact {
+  id: string;
+  predicate: string;
+  object: string;
+  value_hash: string;
+  src: string;
+  conf: number;
+  last_seen: string | null;
+  weight: number | null;
+  verified: boolean;
+  primary: boolean | null;
+}
+
+/** Response for GET /entities/{id}/contacts. */
+export interface EntityContactsResponse {
+  facts: ContactFact[];
+}
+
+/** Request body for POST /entities/{id}/contacts. */
+export interface AddEntityContactRequest {
+  predicate: string;
+  value: string;
+  src?: string;
+  verified?: boolean;
+  primary?: boolean | null;
+  conf?: number;
+}
+
+/**
+ * Response for POST /entities/{id}/contacts.
+ *
+ * `outcome` is one of "inserted", "unchanged", "superseded", or
+ * "pending_approval". When outcome == "pending_approval", `fact` is null
+ * and `action_id` carries the pending-actions UUID; HTTP status is 202.
+ */
+export interface AddEntityContactResponse {
+  outcome: string;
+  fact: ContactFact | null;
+  action_id: string | null;
+}
+
+/** Response for DELETE /entities/{id}/contacts/{predicate}/{value_hash}. */
+export interface DeleteEntityContactResponse {
+  deleted: boolean;
+  fact_id: string;
+}

@@ -5,8 +5,15 @@
  * - Entity with one linked contact (populated state)
  * - Entity with multiple linked contacts (multi-contact stacking)
  * - Entity with sparse contact (no labels, no preferred_channel, one channel)
- * - Entity with secured contact_info (reveal/hide cycle)
+ * - Entity with secured contact_info (reveal/hide cycle — COMPAT path, dead
+ *   code in practice since secured entries are excluded from linked-contacts)
  * - Entity with zero linked contacts (empty-state with Link contact CTA)
+ *
+ * Migration note (bu-k9ylx / bu-rxptt):
+ *   Mutation hooks remain contact-keyed (useCreateContactInfo, usePatchContactInfo,
+ *   useDeleteContactInfo, usePatchContact, useRevealContactSecret). Full migration
+ *   to entity-keyed (useAddEntityContact / useDeleteEntityContact) is blocked on
+ *   bu-e2ja9 (display layer unification with entity_facts).
  *
  * IMPORTANT: Secured reveal tests assert that the secret value does NOT appear
  * in the masked render. They DO NOT assert the actual secret value to prevent

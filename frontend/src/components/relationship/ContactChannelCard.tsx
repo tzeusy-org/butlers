@@ -2,8 +2,8 @@
  * ContactChannelCard — entity detail contact-channel card.
  *
  * Renders one collapsed row per linked contact when an entity has linked
- * contacts. Expand-on-click shows full channel list with channel-specific
- * actions (edit, delete) via COMPAT-ONLY contact-keyed endpoints.
+ * contacts. Expand-on-click shows full channel list (read-only; edit/delete
+ * affordances hidden pending bu-rf2dh + bu-rxptt — see ExpandedContactInfoRow).
  *
  * Data source:
  *   Primary:  GET /relationship/entities/{entityId}/linked-contacts
@@ -11,19 +11,34 @@
  *             labels[], and preferred_channel. No N+1 getContact() fanout
  *             is needed for the collapsed view.
  *
- * COMPAT-ONLY reads/writes (temporary, during migration window):
- *   - createContactInfo — routed to relationship_assert_fact() after the
- *     write-path cut-over (bu-k9ylx). Still functional for contacts with a
- *     linked entity and non-secured types.
- *   - patchContactInfo, deleteContactInfo — contact-keyed writes that now
- *     return HTTP 409 (public.contact_info is write-blocked, PR #2021).
- *     Edit and Delete affordances are hidden [bu-zfsvj] pending rewiring to
- *     entity-keyed endpoints in bu-rxptt + bu-rf2dh.
- *   - patchContact (preferred_channel) — contact-keyed write to public.contacts
- *     (not write-blocked). Remove when bu-k9ylx completes.
- *   - revealContactSecret — contact-keyed reveal for secured=true entries
- *     that still live in contact_info. Remove when bu-pl8fy (secured
- *     migration to entity_info) completes.
+ * Migration status (bu-k9ylx write-path cut-over is COMPLETE as of PR #2021):
+ *
+ *   createContactInfo — COMPAT-ONLY. The contact-keyed POST still works (the
+ *     backend routes it through the triple writer), but new entries go to
+ *     relationship.entity_facts while the display reads from public.contact_info
+ *     via list_entity_linked_contacts. Migrating create to addEntityContact
+ *     (entity-keyed, entity_facts) would cause new entries to be invisible in
+ *     this card. Blocked on bu-e2ja9 (unify display with entity_facts).
+ *
+ *   patchContactInfo — COMPAT-ONLY. The contact-keyed PATCH returns HTTP 409
+ *     since PR #2021 (public.contact_info is read-only). No entity-keyed
+ *     "update in place by ID" exists for entity_facts triples; update requires
+ *     retract + re-assert. Blocked on display layer unification (bu-e2ja9).
+ *
+ *   deleteContactInfo — COMPAT-ONLY. The contact-keyed DELETE returns HTTP 409
+ *     since PR #2021. Entity-keyed retraction (deleteEntityContact) operates on
+ *     entity_facts, but existing entries in public.contact_info have no
+ *     corresponding entity_facts row until bu-e2ja9 migrates the data.
+ *
+ *   patchContact (preferred_channel) — COMPAT-ONLY. No entity-keyed endpoint
+ *     for preferred_channel exists. preferred_channel lives on contacts.preferred_channel;
+ *     it has no triple equivalent yet. Blocked on bu-uhjxr.
+ *
+ *   revealContactSecret — COMPAT-ONLY path is dead code in practice: the
+ *     list_entity_linked_contacts endpoint excludes secured=true contact_info
+ *     rows (WHERE secured = false), so no secured entries appear in this card.
+ *     The entity-keyed revealEntitySecret exists for entity_info secured rows
+ *     (bu-pl8fy migrates contact_info secured rows to entity_info).
  *
  * See: docs/reports/contact-detail-parity-inventory-2026-05-25.md
  */
@@ -65,8 +80,9 @@ import {
  */
 const REVEAL_AUTO_HIDE_MS = 30_000;
 
-// COMPAT-ONLY: contact_info types currently writable via contact-keyed endpoints.
-// Will shrink as bu-k9ylx and bu-e2ja9 land.
+// Contact_info types available in the add-channel form. After bu-k9ylx (PR #2021),
+// new writes route through the triple writer but the display reads from
+// public.contact_info; full migration gated on bu-e2ja9 (display layer unification).
 const CONTACT_INFO_TYPES = [
   "email",
   "phone",
@@ -127,8 +143,11 @@ function SecuredChannelEntry({
   const [isRevealing, setIsRevealing] = useState(false);
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // COMPAT-ONLY: revealContactSecret used for secured=true contact_info entries.
-  // After bu-pl8fy migrates these to entity_info, switch to revealEntitySecret.
+  // COMPAT-ONLY reveal path — effectively dead code in practice. The
+  // list_entity_linked_contacts endpoint excludes secured=true contact_info rows
+  // (WHERE secured = false), so no secured entries reach this component from the
+  // real API. The entity-keyed alternative (revealEntitySecret) exists for
+  // entity_info secured rows once bu-pl8fy migrates contact_info secured rows.
   const revealMutation = useRevealContactSecret();
 
   // Auto-hide the revealed secret 30s after it becomes visible.
@@ -275,8 +294,13 @@ export function ExpandedContactInfoRow({
 
 // ---------------------------------------------------------------------------
 // AddChannelInfoForm — inline add form for a linked contact
-// COMPAT-ONLY: createContactInfo uses contact-keyed endpoint.
-// Remove after bu-k9ylx (write-path cut-over) completes.
+//
+// COMPAT-ONLY: createContactInfo uses contact-keyed endpoint. After PR #2021
+// (bu-k9ylx write-path cut-over), the backend routes this through the triple
+// writer (relationship_assert_fact), but new entries land in entity_facts while
+// the display reads from public.contact_info via list_entity_linked_contacts.
+// Using addEntityContact here would make new entries invisible in this card.
+// Full migration requires bu-e2ja9 to unify the display with entity_facts.
 // ---------------------------------------------------------------------------
 
 function AddChannelInfoForm({
@@ -288,7 +312,9 @@ function AddChannelInfoForm({
   existingEntries: ContactInfoEntry[];
   onDone: () => void;
 }) {
-  // COMPAT-ONLY: createContactInfo via contact-keyed endpoint.
+  // COMPAT-ONLY: createContactInfo via contact-keyed endpoint (now routes to
+  // triple writer in the backend). The entity-keyed alternative (addEntityContact)
+  // writes to entity_facts but the display reads contact_info — blocked on bu-e2ja9.
   const createInfo = useCreateContactInfo();
   const [type, setType] = useState<string>("email");
   const [value, setValue] = useState("");
@@ -426,7 +452,10 @@ function AddChannelInfoForm({
 
 // ---------------------------------------------------------------------------
 // PreferredChannelSelector — COMPAT-ONLY write via patchContact
-// Remove after bu-k9ylx (write-path cut-over) completes.
+//
+// preferred_channel lives in contacts.preferred_channel (a CRM field, not a
+// triple). No entity-keyed endpoint exists for this field. Migration requires
+// bu-uhjxr to model preferred_channel as a fact in relationship.entity_facts.
 // ---------------------------------------------------------------------------
 
 function PreferredChannelSelector({
@@ -439,6 +468,8 @@ function PreferredChannelSelector({
   contactInfo: ContactInfoEntry[];
 }) {
   // COMPAT-ONLY: patchContact for preferred_channel — contact-keyed write.
+  // No entity-keyed alternative exists; preferred_channel is a CRM field on the
+  // contacts row, not yet modelled as an entity_facts triple (bu-uhjxr).
   const patchContact = usePatchContact();
 
   const hasTelegram = contactInfo.some((ci) => ci.type === "telegram_chat_id");
@@ -652,8 +683,10 @@ function ContactRow({
  *   GET /relationship/entities/{entityId}/linked-contacts which returns
  *   enriched LinkedContactSummary with contact_info[], labels[], and
  *   preferred_channel.
- * - For mutations, uses COMPAT-ONLY contact-keyed endpoints (see module
- *   docstring and individual component comments for migration gating info).
+ * - Mutations remain on contact-keyed compat endpoints (see module docstring).
+ *   The entity-keyed write surface (addEntityContact / deleteEntityContact)
+ *   targets entity_facts, which the display layer does not yet read from.
+ *   Full migration is blocked on bu-e2ja9 (display layer unification).
  * - onLinkContact: callback to open the existing link/unlink flow on the host
  *   page. The actual link/unlink UI is NOT moved into this card.
  */
