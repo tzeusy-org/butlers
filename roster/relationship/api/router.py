@@ -2059,6 +2059,33 @@ async def create_contact_info(
         primary=request.is_primary,
     )
 
+    # Owner carve-out: when the assertion is parked for human approval the fact
+    # was NOT written (fact_id is None). Surface HTTP 202 with the pending action
+    # id instead of a misleading 201 carrying a synthesized uuid that maps to no
+    # real row — this mirrors the contact_info_add tool's pending_approval shape.
+    if assert_result.outcome.value == "pending_approval":
+        await emit_dashboard_audit(
+            db,
+            butler="relationship",
+            operation="contact_info_create",
+            method="POST",
+            path=f"/api/relationship/contacts/{contact_id}/contact-info",
+            path_params={"contact_id": str(contact_id)},
+            body={"type": request.type, "outcome": "pending_approval"},
+            response_status=202,
+            request=http_request,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "pending_approval",
+                "action_id": str(assert_result.action_id),
+                "message": (
+                    f"Adding {request.type} to the owner's entity requires human approval."
+                ),
+            },
+        )
+
     from uuid import uuid4
 
     result = CreateContactInfoResponse(

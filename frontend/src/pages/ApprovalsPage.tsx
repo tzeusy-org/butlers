@@ -292,7 +292,7 @@ function Dossier({
             >
               {detail.target_contact.name || detail.target_contact.id}
             </Link>
-            {detail.target_contact.roles.map((role) => (
+            {detail.target_contact.roles?.map((role) => (
               <span
                 key={role}
                 className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground border border-border rounded px-1.5 py-0.5 capitalize"

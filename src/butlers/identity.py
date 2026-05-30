@@ -283,6 +283,18 @@ async def create_temp_contact(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Re-check under the transaction (on the acquired connection) to
+                # close the duplicate-creation race: two concurrent callers can
+                # both pass the pre-transaction lookup above and each mint a
+                # duplicate unidentified entity/contact for the same channel.
+                # Re-resolving here on ``conn`` collapses that window — if the
+                # channel now resolves, return it instead of creating a dup.
+                existing_in_txn = await resolve_contact_by_channel(
+                    conn, channel_type, channel_value
+                )
+                if existing_in_txn is not None:
+                    return existing_in_txn
+
                 # Create an unidentified entity so facts can be anchored.
                 entity_metadata: dict[str, Any] = {
                     "unidentified": True,
