@@ -281,20 +281,22 @@ function setupWithData() {
     isLoading: false,
   } as ReturnType<typeof useFinanceUpcomingBills>);
 
-  // useFinanceSpendingSummary is called twice: once for monthly KPI, once for category chart.
-  // The mock returns different data based on the params passed.
-  vi.mocked(useFinanceSpendingSummary).mockImplementation((params) => {
-    if (params?.start_date && params.start_date.endsWith("-01")) {
-      return {
-        data: MONTHLY_SUMMARY,
-        isLoading: false,
-      } as ReturnType<typeof useFinanceSpendingSummary>;
-    }
-    return {
+  // useFinanceSpendingSummary is called twice: once for monthly KPI, once for
+  // category chart. Keep the mock call-order based so this test does not depend
+  // on today's date or owner timezone making both windows start on day 01.
+  vi.mocked(useFinanceSpendingSummary)
+    .mockReturnValueOnce({
+      data: MONTHLY_SUMMARY,
+      isLoading: false,
+    } as ReturnType<typeof useFinanceSpendingSummary>)
+    .mockReturnValueOnce({
       data: CATEGORY_SUMMARY,
       isLoading: false,
-    } as ReturnType<typeof useFinanceSpendingSummary>;
-  });
+    } as ReturnType<typeof useFinanceSpendingSummary>)
+    .mockReturnValue({
+      data: CATEGORY_SUMMARY,
+      isLoading: false,
+    } as ReturnType<typeof useFinanceSpendingSummary>);
 }
 
 function setupEmpty() {
