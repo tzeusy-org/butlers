@@ -22,7 +22,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from opentelemetry import trace
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 
 from butlers.core.model_routing import Complexity
 from butlers.core.utils import generate_uuid7_string
@@ -673,7 +673,6 @@ class MessagePipeline:
         enable_ingress_dedupe: bool = False,
         enable_identity_resolution: bool = False,
         notify_owner_fn: Callable[..., Coroutine] | None = None,
-        classification_timeout_s: int = 30,
     ) -> None:
         self._pool = switchboard_pool
         self._dispatch_fn = dispatch_fn
@@ -683,7 +682,6 @@ class MessagePipeline:
         self._enable_ingress_dedupe = enable_ingress_dedupe
         self._enable_identity_resolution = enable_identity_resolution
         self._notify_owner_fn = notify_owner_fn
-        self._classification_timeout_s = classification_timeout_s
 
     def _set_routing_context(
         self,
@@ -1739,14 +1737,14 @@ class MessagePipeline:
                         attachments=attachments,
                     )
 
-                    # Spawn CC — it calls route_to_butler tool(s) directly
+                    # Spawn the routing classifier. Runtime session timeouts are
+                    # owned by the model catalog.
                     with tracer.start_as_current_span("butlers.switchboard.routing.llm_decision"):
                         spawn_result = await self._dispatch_fn(
                             prompt=routing_prompt,
                             trigger_source="tick",
                             request_id=request_id,
                             complexity=Complexity.CHEAP,
-                            timeout_override=self._classification_timeout_s,
                         )
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
@@ -2151,11 +2149,10 @@ class PipelineConfig(BaseModel):
     via :meth:`_wire_pipelines`.
     """
 
+    model_config = ConfigDict(extra="ignore")
+
     enable_ingress_dedupe: bool = True
     """Whether to deduplicate incoming messages by idempotency key."""
-
-    classification_timeout_s: int = Field(default=30, ge=1)
-    """Maximum seconds to spend on Switchboard LLM classification."""
 
 
 class PipelineModule(Module):

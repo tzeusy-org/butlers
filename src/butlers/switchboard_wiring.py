@@ -145,16 +145,12 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
     enable_ingress_dedupe = (
         pipeline_mod._config.enable_ingress_dedupe if pipeline_mod is not None else True
     )
-    classification_timeout_s = (
-        pipeline_mod._config.classification_timeout_s if pipeline_mod is not None else 30
-    )
 
     pipeline = MessagePipeline(
         switchboard_pool=pool,
         dispatch_fn=daemon.spawner.trigger,
         source_butler="switchboard",
         enable_ingress_dedupe=enable_ingress_dedupe,
-        classification_timeout_s=classification_timeout_s,
     )
     daemon._pipeline = pipeline
 
