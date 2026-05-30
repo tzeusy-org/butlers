@@ -346,6 +346,8 @@ import type {
   AddEntityContactRequest,
   AddEntityContactResponse,
   DeleteEntityContactResponse,
+  UpdateEntityContactRequest,
+  UpdateEntityContactResponse,
   EntityContactsResponse,
 } from "./types.ts";
 
@@ -1869,6 +1871,26 @@ export function deleteEntityContact(
   return apiFetch<DeleteEntityContactResponse>(
     `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
     { method: "DELETE" },
+  );
+}
+
+/**
+ * Edit-in-place a contact-fact triple: retract old value, assert new value atomically.
+ *
+ * `predicate` must start with "has-". `valueHash` is SHA-256[:16] of the
+ * current object value (matches `ContactFact.value_hash`). Returns 200 on
+ * success, 202 on owner-entity pending_approval, 404 when no active fact
+ * matches (entity_id, predicate, value_hash).
+ */
+export function updateEntityContact(
+  entityId: string,
+  predicate: string,
+  valueHash: string,
+  request: UpdateEntityContactRequest,
+): Promise<UpdateEntityContactResponse> {
+  return apiFetch<UpdateEntityContactResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
+    { method: "PUT", body: JSON.stringify(request) },
   );
 }
 

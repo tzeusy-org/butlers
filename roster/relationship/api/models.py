@@ -1175,6 +1175,41 @@ class DeleteContactResponse(BaseModel):
     fact_id: UUID
 
 
+class UpdateContactRequest(BaseModel):
+    """Request body for ``PUT /entities/{id}/contacts/{pred}/{valueHash}``.
+
+    ``new_value`` is the replacement contact object value (e.g. a new email address).
+    All provenance fields (``src``, ``verified``, ``primary``, ``conf``) are
+    optional and default to the same values used by the add endpoint when omitted.
+
+    The predicate is fixed by the URL path — the edit changes only the value.
+    """
+
+    new_value: str
+    src: str = "relationship"
+    verified: bool = False
+    primary: bool | None = None
+    conf: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class UpdateContactResponse(BaseModel):
+    """Response for ``PUT /entities/{id}/contacts/{pred}/{valueHash}``.
+
+    ``outcome`` is one of ``inserted``, ``unchanged``, ``superseded``, or
+    ``pending_approval``.  When ``outcome == 'pending_approval'``, ``fact``
+    is ``None`` and ``action_id`` carries the pending-actions row UUID;
+    the HTTP status is 202.
+
+    ``retracted_fact_id`` is the UUID of the old (retracted) row.
+    ``fact`` is the new active fact row (``None`` when pending_approval).
+    """
+
+    outcome: str
+    retracted_fact_id: UUID | None = None
+    fact: ContactFact | None = None
+    action_id: UUID | None = None
+
+
 # ---------------------------------------------------------------------------
 # Entity merge models (entity-redesign Phase 2, bu-jp6r6)
 # ---------------------------------------------------------------------------
