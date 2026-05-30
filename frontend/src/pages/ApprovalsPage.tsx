@@ -18,6 +18,7 @@
  */
 
 import { useState } from "react";
+import { Link } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -277,6 +278,31 @@ function Dossier({
           </pre>
         </div>
       </div>
+
+      {/* Target contact — resolved from contact_id */}
+      {detail.target_contact && (
+        <div className="border-t border-border pt-4">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
+            Target Contact
+          </div>
+          <div className="flex items-center gap-2 flex-wrap text-sm">
+            <Link
+              to={`/contacts/${encodeURIComponent(detail.target_contact.id)}`}
+              className="font-medium text-foreground hover:underline"
+            >
+              {detail.target_contact.name || detail.target_contact.id}
+            </Link>
+            {detail.target_contact.roles.map((role) => (
+              <span
+                key={role}
+                className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground border border-border rounded px-1.5 py-0.5 capitalize"
+              >
+                {role}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Decision buttons (only for pending) */}
       {isPending && (
