@@ -14,7 +14,7 @@ _CORE_MIGRATION_PATH = (
     / "alembic"
     / "versions"
     / "core"
-    / "core_105_repair_pending_actions_why_evidence.py"
+    / "core_110_repair_pending_actions_why_evidence.py"
 )
 _APPROVALS_MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -41,7 +41,7 @@ class _Connection:
 
 
 def _load_core_migration():
-    spec = importlib.util.spec_from_file_location("core_105", _CORE_MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_110", _CORE_MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -50,8 +50,8 @@ def _load_core_migration():
 
 def test_core_repair_migration_revision_chain():
     mod = _load_core_migration()
-    assert mod.revision == "core_105"
-    assert mod.down_revision == "core_104"
+    assert mod.revision == "core_110"
+    assert mod.down_revision == "core_109"
 
 
 def test_core_repair_migration_adds_pending_action_columns():
