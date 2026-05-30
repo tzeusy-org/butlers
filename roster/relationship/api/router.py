@@ -4400,7 +4400,7 @@ async def list_entity_linked_contacts(
         ),
         pool.fetch(
             """
-            SELECT id, predicate, object
+            SELECT id, predicate, object, "primary"
             FROM relationship.entity_facts
             WHERE subject  = $1
               AND predicate LIKE 'has-%'
@@ -4453,7 +4453,7 @@ async def list_entity_linked_contacts(
                         id=fr["id"],
                         type=channel_type,
                         value=channel_value,
-                        is_primary=False,
+                        is_primary=bool(fr["primary"]) if fr["primary"] is not None else False,
                         secured=False,
                         parent_id=None,
                         context=None,

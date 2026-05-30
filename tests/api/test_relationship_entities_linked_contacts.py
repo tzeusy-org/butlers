@@ -133,12 +133,14 @@ def _make_fact_row(
     id: UUID | None = None,
     predicate: str = "has-email",
     object: str = _EMAIL,
+    primary: bool | None = None,
 ) -> MagicMock:
     return _make_row(
         {
             "id": id or _FACT_ID,
             "predicate": predicate,
             "object": object,
+            "primary": primary,
         }
     )
 
@@ -379,6 +381,28 @@ class TestLinkedContactsEntityFactsMerge:
         assert len(contact_info) == 1
         assert contact_info[0]["type"] == "handle"
         assert contact_info[0]["value"] == "@alice"
+
+    async def test_entity_facts_is_primary_propagated(self):
+        """is_primary from entity_facts 'primary' column is mapped (not hardcoded False)."""
+        contact = _make_contact_row(email=None, phone=None)
+        fact_primary = _make_fact_row(predicate="has-email", object=_EMAIL, primary=True)
+        fact_secondary = _make_fact_row(
+            id=_FACT_ID_2, predicate="has-phone", object=_PHONE, primary=False
+        )
+        app, _ = _make_app(
+            contact_rows=[contact],
+            ci_rows=[],
+            label_rows=[],
+            fact_rows=[fact_primary, fact_secondary],
+        )
+        resp = await _get(app)
+
+        contact_info = resp.json()[0]["contact_info"]
+        assert len(contact_info) == 2
+        email_entry = next(e for e in contact_info if e["type"] == "email")
+        phone_entry = next(e for e in contact_info if e["type"] == "phone")
+        assert email_entry["is_primary"] is True
+        assert phone_entry["is_primary"] is False
 
 
 class TestLinkedContactsDedup:
