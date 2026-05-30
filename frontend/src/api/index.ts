@@ -114,6 +114,7 @@ export {
   searchAll,
   getContact,
   getContacts,
+  resolveContactEntity,
   triggerContactsSync,
   getPendingContacts,
   revealContactSecret,
@@ -327,6 +328,7 @@ export type {
   TimelineResponse,
   TopSession,
   ContactDetail,
+  ContactEntityResolverResponse,
   ContactInfoEntry,
   ContactListResponse,
   ContactMergeRequest,
@@ -379,6 +381,7 @@ export type {
   GoogleAccount,
   GoogleAccountStatus,
   GoogleCredentialStatusResponse,
+  GoogleHealthAccountStatus,
   GoogleHealthConnectorState,
   GoogleHealthDisconnectResponse,
   GoogleHealthStatusResponse,
@@ -468,11 +471,15 @@ export type {
 
 export {
   bulkReplayEvents,
+  bulkRetryEvents,
   deleteConnector,
   getCrossConnectorSummary,
   getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
+  getConnectorEvents,
   getConnectorFanout,
+  getConnectorIncidents,
+  getConnectorRoutingRules,
   getConnectorStats,
   getConnectorSummariesWithAggregates,
   getIngestionOverview,
@@ -489,8 +496,11 @@ export type {
   ConnectorCounters,
   ConnectorDaySummary,
   ConnectorDetail,
+  ConnectorEventsResponse,
   ConnectorFanout,
   ConnectorFanoutEntry,
+  ConnectorIncidentsResponse,
+  ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -508,9 +518,11 @@ export {
   getIngestionEvent,
   getIngestionEventSessions,
   getIngestionEventRollup,
+  getIngestionWindowRollup,
   replayIngestionEvent,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
+  getIngestionEventPayload,
 } from "./client.ts";
 
 export type {
@@ -521,8 +533,13 @@ export type {
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
   IngestionEventSenderContact,
+  IngestionEventPayload,
   IngestionEventsParams,
   ButlerRollupEntry,
+  IngestionWindowRollup,
+  IngestionWindowRollupParams,
+  BulkRetryEventResult,
+  BulkRetryEventsResponse,
 } from "./types.ts";
 
 export {

@@ -101,14 +101,14 @@ a follow-on.
 
 ---
 
-### AC3 — Change explicitly distinguishes frontend routes from `/api/butlers/relationship/entities/*` API namespace
+### AC3 — Change explicitly distinguishes frontend routes from `/api/relationship/entities/*` API namespace
 
 **PASS — resolved per F4 fix.**
 
 A "Scope Note" block has been added at the top of the delta spec
 (`openspec/changes/decommission-contact-detail-page/specs/dashboard-relationship/spec.md`)
 explicitly stating that this is a FRONTEND-ONLY change and that the
-`/api/butlers/relationship/entities/*` API namespace is NOT affected.
+`/api/relationship/entities/*` API namespace is NOT affected.
 
 ---
 
@@ -142,7 +142,7 @@ code-level reality.
 | F1 | SEMANTIC | Two requirements in existing spec still name `/butlers/relationship/entities/:id` as the entity detail page: "Entity detail Editorial/Workbench mode toggle" (lines 797–857) and "Dispatch design language token discipline" (line 944–948). Delta does not cover these. | **RESOLVED** — Both requirements added as MODIFIED blocks in the delta spec. "Editorial/Workbench" updated to use `/entities/:entityId` in body text and scenarios. "Dispatch" updated to list `/entities/:entityId` as the sixth route (replacing `/butlers/relationship/entities/:id`). |
 | F2 | SEMANTIC | "Owner identity and credential management via contact detail page" (line 264) still references `/butlers/relationship/contacts/:id` as the primary mechanism; contact detail is being decommissioned. Delta does not replace this requirement. | **RESOLVED** — MODIFIED block added to delta spec re-homing the primary credential management surface to the entity detail contact-channel card at `/entities/:entityId`. Scenarios updated to match. |
 | F3 | SEMANTIC | "Owner identity setup banner" (line 291) and "Pending identities queue on contacts page" (line 318) reference the `/butlers/relationship/contacts` contacts page path, which is not a registered route. Delta does not update these. | **RESOLVED** — Both requirements added as MODIFIED blocks in the delta spec. Banner requirement now references `/entities?has=contact` (entity index). Pending identities queue now references `/entities?has=contact`. All scenarios updated. |
-| F4 | MODERATE | AC3: The delta spec contains no explicit statement that the `/api/butlers/relationship/entities/*` API namespace is unaffected. The proposal.md says this, but the spec delta does not. | **RESOLVED** — "Scope Note" section added at the top of the delta spec explicitly stating this is a FRONTEND-ONLY change and the `/api/butlers/relationship/entities/*` API namespace is unchanged. |
+| F4 | MODERATE | AC3: The delta spec contains no explicit statement that the `/api/relationship/entities/*` API namespace is unaffected. The proposal.md says this, but the spec delta does not. | **RESOLVED** — "Scope Note" section added at the top of the delta spec explicitly stating this is a FRONTEND-ONLY change and the `/api/relationship/entities/*` API namespace is unchanged. |
 
 ---
 
@@ -186,5 +186,5 @@ Summary of changes made in response to operator decision:
   queue on contacts page" — both now reference `/entities?has=contact` (the entity index)
   instead of the unregistered `/butlers/relationship/contacts` route.
 - **F4:** Added "Scope Note" at the top of the delta spec explicitly stating this is a
-  FRONTEND-ONLY change and the `/api/butlers/relationship/entities/*` API namespace is
+  FRONTEND-ONLY change and the `/api/relationship/entities/*` API namespace is
   unaffected.

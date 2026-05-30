@@ -326,3 +326,96 @@ describe("EntitiesPage Activity button", () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// "View contact" button navigation — direct /entities/:id link (bu-rah6u)
+// ---------------------------------------------------------------------------
+
+describe("EntitiesPage View-contact button", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const LINKED_ENTITY: EntitySummary = {
+    ...PERSON_ENTITY,
+    id: "entity-linked-001",
+    canonical_name: "Linked Person",
+    linked_contact_id: "contact-abc",
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockNavigate.mockReset();
+
+    vi.mocked(useArchiveEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useArchiveEntity>>(),
+    );
+    vi.mocked(useUnarchiveEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useUnarchiveEntity>>(),
+    );
+    vi.mocked(useMergeEntity).mockReturnValue(mockMutationResult<ReturnType<typeof useMergeEntity>>());
+    vi.mocked(usePromoteEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof usePromoteEntity>>(),
+    );
+    vi.mocked(useDeleteEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useDeleteEntity>>(),
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    document.body.innerHTML = "";
+    vi.restoreAllMocks();
+  });
+
+  function renderWith(entity: EntitySummary) {
+    vi.mocked(useEntities).mockImplementation((params) => {
+      if (params?.unidentified === true) return mockEntitiesResult([]);
+      return mockEntitiesResult([entity]);
+    });
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <EntitiesPage />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  function getViewContactButton(entity: EntitySummary): HTMLButtonElement | undefined {
+    const entityLink = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.textContent?.trim() === entity.canonical_name,
+    );
+    const row = entityLink?.closest("tr");
+    const buttons = row?.querySelectorAll("button") ?? [];
+    // buttons: [User(0=View contact), Edit(1), Activity(2), Merge(3), Archive/Restore(4), Delete(5)]
+    return buttons[0] as HTMLButtonElement | undefined;
+  }
+
+  it("View-contact button is enabled when linked_contact_id is set", () => {
+    renderWith(LINKED_ENTITY);
+    const btn = getViewContactButton(LINKED_ENTITY);
+    expect(btn).toBeDefined();
+    expect(btn?.disabled).toBe(false);
+  });
+
+  it("clicking View-contact button navigates directly to /entities/:id (not /contacts/:id)", async () => {
+    renderWith(LINKED_ENTITY);
+    const btn = getViewContactButton(LINKED_ENTITY);
+    expect(btn).toBeDefined();
+
+    await act(async () => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(`/entities/${LINKED_ENTITY.id}`);
+    expect(mockNavigate).not.toHaveBeenCalledWith(expect.stringContaining("/contacts/"));
+  });
+});

@@ -1,31 +1,36 @@
 /**
  * IngestionConnectorsPage — route component for /ingestion/connectors.
  *
- * Thin page wrapper around ConnectorsListPage, which is the extracted
- * first-class component for the connector roster list sub-route.
+ * Thin page wrapper around ConnectorsRoster, the dense hairline-divided
+ * connector register for the first-class /ingestion/connectors sub-route.
+ *
+ * Uses Dispatch primitives and IngestionSubNav for consistent navigation.
+ * No legacy TabsTrigger shell. No card chrome — hairlines and rhythm only.
  *
  * NOTE: useConnectorDetail MUST NOT be mounted from this list view (§6.2).
  * Only summary-level data is shown here (per spec "Connector roster list
  * summary-only polling"). Detail data loads only on the connector detail page.
  *
- * Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
- *       ingestion-ui-information-architecture/spec.md §"Sub-route hierarchy"
- *       connector-base-spec/spec.md §"Dashboard Connector Page"
- *       tasks.md §3.4
+ * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
+ *       dashboard-ingestion-dispatch-console/spec.md §"Connectors Roster"
  */
 
-import { ConnectorsListPage } from '@/components/ingestion/ConnectorsListPage'
+import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
+import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
+import { ConnectorsRoster } from '@/components/ingestion/connectors/ConnectorsRoster'
 
 export default function IngestionConnectorsPage() {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Connectors</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Active ingestion connectors — status, health, and configuration.
-        </p>
-      </div>
-      <ConnectorsListPage />
-    </div>
+    <DispatchLayout>
+      <DispatchHeader
+        eyebrow="Ingestion · connectors"
+        headline="Where signals come from."
+        description="Every channel the house listens on — status, health, and credential state."
+      />
+      <IngestionSubNav />
+      <DispatchSurface>
+        <ConnectorsRoster />
+      </DispatchSurface>
+    </DispatchLayout>
   )
 }

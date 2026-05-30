@@ -51,6 +51,7 @@ from butlers.api.routers.google_health import router as google_health_router
 from butlers.api.routers.healing import router as healing_router
 from butlers.api.routers.home_assistant import router as home_assistant_router
 from butlers.api.routers.ingestion_connectors import router as ingestion_connectors_router
+from butlers.api.routers.ingestion_events import rollup_router as ingestion_rollup_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
 from butlers.api.routers.ingestion_pipeline import router as ingestion_pipeline_router
 from butlers.api.routers.issues import router as issues_router
@@ -59,6 +60,7 @@ from butlers.api.routers.memory import router as memory_router
 from butlers.api.routers.model_settings import (
     butler_model_router,
     catalog_router,
+    dispatch_router,
     pricing_router,
 )
 from butlers.api.routers.modules import router as modules_router
@@ -79,6 +81,7 @@ from butlers.api.routers.runtime_config import router as runtime_config_router
 from butlers.api.routers.schedules import router as schedules_router
 from butlers.api.routers.search import router as search_router
 from butlers.api.routers.secrets import router as secrets_router
+from butlers.api.routers.secrets_v2 import router as secrets_v2_router
 from butlers.api.routers.sessions import (
     butler_sessions_router,
 )
@@ -274,8 +277,10 @@ def create_app(
     app.include_router(schedules_router)
     app.include_router(modules_router)
     app.include_router(secrets_router)
+    app.include_router(secrets_v2_router)
     app.include_router(state_router)
     app.include_router(ingestion_events_router)
+    app.include_router(ingestion_rollup_router)
     app.include_router(ingestion_connectors_router)
     app.include_router(ingestion_pipeline_router)
     app.include_router(priority_contacts_router)
@@ -293,6 +298,7 @@ def create_app(
     app.include_router(catalog_router)
     app.include_router(pricing_router)
     app.include_router(butler_model_router)
+    app.include_router(dispatch_router)
     app.include_router(healing_router)
     app.include_router(qa_router)
     app.include_router(provider_settings_router)

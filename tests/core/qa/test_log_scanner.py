@@ -180,7 +180,7 @@ async def test_temporal_filtering(tmp_path):
     ],
 )
 def test_severity_filtering(level, event, exception, expected):
-    """ERROR/CRITICAL always in; WARNING with crash pattern; INFO/debug out."""
+    """ERROR/CRITICAL included; WARNING with crash pattern; INFO/debug out."""
     entry = LogEntry(
         level=level, event=event, timestamp=datetime.now(UTC), butler_name="b", exception=exception
     )
@@ -197,6 +197,42 @@ def test_codex_mcp_discovery_exhaustion_excluded_from_log_scanner():
         logger="butlers.core.runtimes.codex",
     )
     assert _should_include_entry(entry) is False
+
+
+def test_spawner_runtime_timeout_included_without_session_records():
+    """Log-scanner-only deployments must keep timeout coverage."""
+    entry = LogEntry(
+        level="error",
+        event="Runtime invocation failed: TimeoutError: Codex CLI timed out after 30 seconds",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry) is True
+
+
+def test_spawner_runtime_timeout_excluded_when_session_records_covers_it():
+    """Spawner timeout logs are duplicate evidence when session_records is enabled."""
+    entry = LogEntry(
+        level="error",
+        event="Runtime invocation failed: TimeoutError: Codex CLI timed out after 30 seconds",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
+
+
+def test_spawner_non_timeout_errors_remain_in_log_scanner():
+    """Only runtime timeout duplicates are suppressed from spawner logs."""
+    entry = LogEntry(
+        level="error",
+        event="Runtime invocation failed: RuntimeError: adapter crashed before session create",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry) is True
 
 
 @pytest.mark.parametrize(
@@ -216,6 +252,77 @@ def test_codex_refresh_lock_contention_excluded_from_log_scanner(event):
         logger="butlers.core.runtimes.codex",
     )
     assert _should_include_entry(entry) is False
+
+
+@pytest.mark.parametrize(
+    "logger_name,event",
+    [
+        (
+            "butlers.core.runtimes.opencode",
+            "OpenCode CLI timed out after 1800s",
+        ),
+        (
+            "butlers.core.spawner",
+            "Runtime invocation failed: TimeoutError: OpenCode CLI timed out after 1800 seconds",
+        ),
+    ],
+)
+def test_runtime_session_timeout_logs_excluded_from_log_scanner(logger_name, event):
+    """Handled runtime session timeouts should be discovered from session_records."""
+    entry = LogEntry(
+        level="error",
+        event=event,
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger=logger_name,
+        exception="TimeoutError",
+    )
+    assert _should_include_entry(entry) is False
+
+
+def test_generic_spawner_timeout_log_still_included():
+    """Only adapter-managed OpenCode timeout duplicates are excluded."""
+    entry = LogEntry(
+        level="error",
+        event="Runtime invocation failed: TimeoutError: adapter timed out before startup",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+        exception="TimeoutError",
+    )
+    assert _should_include_entry(entry) is True
+
+
+@pytest.mark.asyncio
+async def test_discover_excludes_runtime_session_timeout_logs(tmp_path):
+    """OpenCode timeout ERROR lines do not create duplicate log_scanner findings."""
+    now = datetime.now(UTC)
+    _write(
+        tmp_path / "butlers" / "switchboard.log",
+        [
+            _line(
+                event="OpenCode CLI timed out after 1800s",
+                ts=now,
+                logger_name="butlers.core.runtimes.opencode",
+                exception="TimeoutError",
+                butler_name="switchboard",
+            ),
+            _line(
+                event=(
+                    "Runtime invocation failed: TimeoutError: "
+                    "OpenCode CLI timed out after 1800 seconds"
+                ),
+                ts=now,
+                logger_name="butlers.core.spawner",
+                exception="TimeoutError",
+                butler_name="switchboard",
+            ),
+        ],
+    )
+
+    findings = await LogScannerSource(log_root=tmp_path).discover(lookback_minutes=15)
+
+    assert findings == []
 
 
 @pytest.mark.asyncio
@@ -655,6 +762,65 @@ async def test_discover_skips_codex_mcp_discovery_exhaustion_logs(tmp_path):
     )
 
     findings = await LogScannerSource(log_root=tmp_path).discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    assert "database connection refused" in findings[0].event_summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_discover_includes_spawner_runtime_timeout_logs_without_session_records(tmp_path):
+    """Log-scanner-only source config keeps timeout findings discoverable."""
+    now = datetime.now(UTC)
+    _write(
+        tmp_path / "butlers" / "switchboard.log",
+        [
+            _line(
+                level="error",
+                event="Runtime invocation failed: TimeoutError: Codex CLI timed out after 30 seconds",
+                ts=now,
+                butler_name="switchboard",
+                logger_name="butlers.core.spawner",
+                exception=None,
+            ),
+        ],
+    )
+
+    findings = await LogScannerSource(log_root=tmp_path).discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    assert "timed out" in findings[0].event_summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_spawner_runtime_timeout_logs(tmp_path):
+    """Raw spawner timeout logs are suppressed in favor of session_records."""
+    now = datetime.now(UTC)
+    _write(
+        tmp_path / "butlers" / "switchboard.log",
+        [
+            _line(
+                level="error",
+                event="Runtime invocation failed: TimeoutError: Codex CLI timed out after 30 seconds",
+                ts=now,
+                butler_name="switchboard",
+                logger_name="butlers.core.spawner",
+                exception=None,
+            ),
+            _line(
+                level="error",
+                event="Database connection refused",
+                ts=now,
+                butler_name="switchboard",
+                logger_name="butlers.core.db",
+                exception="ConnectionError",
+            ),
+        ],
+    )
+
+    findings = await LogScannerSource(
+        log_root=tmp_path,
+        suppress_session_duplicate_timeouts=True,
+    ).discover(lookback_minutes=15)
 
     assert len(findings) == 1
     assert "database connection refused" in findings[0].event_summary.lower()

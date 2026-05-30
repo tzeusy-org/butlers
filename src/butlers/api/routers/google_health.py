@@ -54,6 +54,7 @@ can track status-card poll load.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -63,10 +64,12 @@ from fastapi import APIRouter, Depends, Request
 from prometheus_client import Counter
 
 from butlers.api.models.google_health import (
+    AccountStatus,
     GoogleHealthConnectorState,
     GoogleHealthDisconnectResponse,
     GoogleHealthStatusResponse,
 )
+from butlers.google_account_registry import list_health_scoped_accounts
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +236,12 @@ def _filter_health_scopes(granted: list[str] | None) -> list[str]:
 
 
 async def _fetch_last_ingest_at(shared_pool: Any) -> datetime | None:
-    """Return the most-recent ``public.ingestion_events.received_at`` for Google Health."""
+    """Return the most-recent ``public.ingestion_events.received_at`` for Google Health.
+
+    Matches both the new email-prefixed key shape (``google_health:<email>:...``)
+    and the legacy 3-segment shape (``google_health:<resource>:<date>``) so the
+    dashboard remains correct during the migration window.
+    """
     if shared_pool is None:
         return None
     try:
@@ -261,9 +269,18 @@ async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
     to avoid N+1 queries.
 
     Pattern rules (validated against ``src/butlers/connectors/google_health.py``):
-    - Sleep sessions:   ``external_event_id LIKE 'google_health:sleep_session:%'``
-    - Daily summaries:  ``external_event_id LIKE 'google_health:%:%'``
-                        AND NOT ``LIKE 'google_health:sleep_session:%'``
+
+    After the email-prefix migration (core_109), keys follow the 4-segment shape:
+    - Sleep sessions:   ``google_health:<email>:sleep_session:<id>``
+      matched by segment 3 = 'sleep_session' AND exactly 4 segments
+    - Daily summaries:  ``google_health:<email>:<resource>:<date>``
+      matched by exactly 4 segments AND segment 3 != 'sleep_session'
+
+    The predicates use ``split_part`` with a 4-segment guard to match ONLY the
+    new email-prefixed shape and exclude any legacy 3-segment rows still present
+    before the migration runs.  The Alembic backfill (core_109) rewrites the 3
+    historical rows, so both the migration window and the steady-state case are
+    handled correctly.
     """
     default: dict[str, int] = {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
     if shared_pool is None:
@@ -274,11 +291,15 @@ async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
                 """
                 SELECT
                     count(*) FILTER (
-                        WHERE external_event_id LIKE 'google_health:sleep_session:%'
+                        WHERE external_event_id LIKE 'google_health:%:sleep_session:%'
+                          AND split_part(external_event_id, ':', 3) = 'sleep_session'
+                          AND split_part(external_event_id, ':', 5) = ''
                     ) AS sleep_sessions_7d,
                     count(*) FILTER (
-                        WHERE external_event_id LIKE 'google_health:%:%'
-                          AND external_event_id NOT LIKE 'google_health:sleep_session:%'
+                        WHERE external_event_id LIKE 'google_health:%:%:%'
+                          AND split_part(external_event_id, ':', 4) != ''
+                          AND split_part(external_event_id, ':', 5) = ''
+                          AND split_part(external_event_id, ':', 3) != 'sleep_session'
                     ) AS daily_summaries_7d
                 FROM public.ingestion_events
                 WHERE source_channel = 'wellness'
@@ -398,6 +419,198 @@ def _extract_rate_limit_remaining(heartbeat: dict[str, Any] | None) -> int | Non
         return None
 
 
+async def _fetch_heartbeat_rows_by_email(switchboard_pool: Any) -> dict[str, dict[str, Any]]:
+    """Return all connector_registry heartbeat rows for Google Health keyed by email.
+
+    Parses the ``endpoint_identity`` column — which has the shape
+    ``google_health:user:<email>`` for per-account heartbeats — to extract the
+    email segment.  Rows whose ``endpoint_identity`` does not match the expected
+    pattern (e.g. the legacy connector-level degraded sentinel) are silently
+    skipped.
+
+    Returns a dict mapping email → heartbeat row dict.  Empty dict when the
+    switchboard pool is unavailable or the query fails.
+    """
+    if switchboard_pool is None:
+        return {}
+    try:
+        rows = await switchboard_pool.fetch(
+            "SELECT cr.state, cr.last_heartbeat_at, cr.uptime_s,"
+            " cr.endpoint_identity, cr.metadata"
+            " FROM connector_registry cr"
+            f" WHERE cr.connector_type = '{_CONNECTOR_TYPE}'"
+            " ORDER BY cr.last_heartbeat_at DESC NULLS LAST"
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("connector_registry multi-row query failed for Google Health", exc_info=True)
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        eid = row.get("endpoint_identity") or ""
+        # Expected shape: "google_health:user:<email>"
+        parts = eid.split(":", 2)
+        if len(parts) != 3 or parts[0] != "google_health" or parts[1] != "user":
+            continue
+        email = parts[2]
+        if not email or "@" not in email:
+            # Skip resource-cursor rows (google_health:user:<email>:<uuid>:<resource>)
+            # that may appear in older registry snapshots.
+            continue
+        if email not in result:
+            result[email] = dict(row)
+    return result
+
+
+async def _fetch_per_account_ingest_counts(
+    shared_pool: Any,
+    email: str,
+) -> dict[str, int]:
+    """Return 7-day ingestion counts for a specific account email.
+
+    Uses the email-prefixed ``external_event_id`` key shape introduced in
+    the multi-account migration:
+    - Sleep sessions:  ``google_health:<email>:sleep_session:<id>``
+    - Daily summaries: ``google_health:<email>:<resource>:<date>``
+    """
+    default: dict[str, int] = {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+    if shared_pool is None:
+        return default
+    prefix = f"google_health:{email}:"
+    try:
+        async with shared_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    count(*) FILTER (
+                        WHERE external_event_id LIKE $2
+                          AND split_part(external_event_id, ':', 3) = 'sleep_session'
+                          AND split_part(external_event_id, ':', 5) = ''
+                    ) AS sleep_sessions_7d,
+                    count(*) FILTER (
+                        WHERE external_event_id LIKE $3
+                          AND split_part(external_event_id, ':', 4) != ''
+                          AND split_part(external_event_id, ':', 5) = ''
+                          AND split_part(external_event_id, ':', 3) != 'sleep_session'
+                    ) AS daily_summaries_7d
+                FROM public.ingestion_events
+                WHERE source_channel = 'wellness'
+                  AND source_provider = $1
+                  AND received_at >= now() - interval '7 days'
+                """,
+                _CONNECTOR_TYPE,
+                prefix + "%",
+                prefix + "%",
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Failed to query per-account ingest counts for Google Health email=%s",
+            email,
+            exc_info=True,
+        )
+        return default
+    if row is None:
+        return default
+    return {
+        "sleep_sessions_7d": int(row["sleep_sessions_7d"] or 0),
+        "daily_summaries_7d": int(row["daily_summaries_7d"] or 0),
+    }
+
+
+async def _fetch_last_ingest_at_for_email(shared_pool: Any, email: str) -> datetime | None:
+    """Return the most-recent ingest timestamp for a specific account email."""
+    if shared_pool is None:
+        return None
+    prefix = f"google_health:{email}:"
+    try:
+        async with shared_pool.acquire() as conn:
+            value = await conn.fetchval(
+                """
+                SELECT MAX(received_at) FROM public.ingestion_events
+                WHERE source_channel = 'wellness'
+                  AND source_provider = $1
+                  AND external_event_id LIKE $2
+                """,
+                _CONNECTOR_TYPE,
+                prefix + "%",
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Failed to query per-account last_ingest_at for Google Health email=%s",
+            email,
+            exc_info=True,
+        )
+        return None
+    return value
+
+
+def _worst_of_state(
+    states: list[GoogleHealthConnectorState],
+) -> GoogleHealthConnectorState:
+    """Return the worst state across a list of per-account states.
+
+    Severity order (highest to lowest): error > degraded > healthy > not_configured.
+
+    When ``states`` is empty, returns ``not_configured``.
+    """
+    if not states:
+        return GoogleHealthConnectorState.not_configured
+    order = [
+        GoogleHealthConnectorState.error,
+        GoogleHealthConnectorState.degraded,
+        GoogleHealthConnectorState.healthy,
+        GoogleHealthConnectorState.not_configured,
+    ]
+    for candidate in order:
+        if candidate in states:
+            return candidate
+    return GoogleHealthConnectorState.not_configured
+
+
+async def _build_account_status(
+    *,
+    email: str,
+    account_row: dict[str, Any],
+    heartbeat: dict[str, Any] | None,
+    shared_pool: Any,
+) -> AccountStatus:
+    """Construct an ``AccountStatus`` for a single health-scoped Google account.
+
+    Fetches per-account ingest counts and derives the per-account state from
+    the connector heartbeat row.
+    """
+    granted = list(account_row.get("granted_scopes") or [])
+    granted_health = _filter_health_scopes(granted)
+
+    last_token_refresh_at = account_row.get("last_token_refresh_at")
+    if isinstance(last_token_refresh_at, str):
+        try:
+            last_token_refresh_at = datetime.fromisoformat(last_token_refresh_at)
+        except ValueError:
+            last_token_refresh_at = None
+
+    rate_limit_remaining = _extract_rate_limit_remaining(heartbeat)
+
+    state, _ = _derive_state(
+        account=account_row,
+        granted_health_scopes=granted_health,
+        heartbeat=heartbeat,
+    )
+
+    ingest_counts = await _fetch_per_account_ingest_counts(shared_pool, email)
+    last_ingest_at = await _fetch_last_ingest_at_for_email(shared_pool, email)
+
+    return AccountStatus(
+        email=email,
+        state=state,
+        scopes_granted=granted_health,
+        last_ingest_at=last_ingest_at,
+        last_token_refresh_at=last_token_refresh_at,
+        rate_limit_remaining=rate_limit_remaining,
+        sleep_sessions_7d=ingest_counts["sleep_sessions_7d"],
+        daily_summaries_7d=ingest_counts["daily_summaries_7d"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /status
 # ---------------------------------------------------------------------------
@@ -410,10 +623,12 @@ async def get_google_health_status(
 ) -> GoogleHealthStatusResponse:
     """Return the current Google Health connector state.
 
-    Reads the primary Google account's ``granted_scopes``, the most recent
-    ``ingestion_events`` row for the wellness channel, and the connector's
-    heartbeat from ``switchboard.connector_registry`` to derive a composite
-    state. Never echoes credential material.
+    Enumerates health-scoped Google accounts via ``list_health_scoped_accounts``
+    and builds per-account ``AccountStatus`` entries from connector heartbeat rows
+    in ``switchboard.connector_registry``.  Top-level summary fields are computed
+    as worst-of across per-account states so single-account installs render
+    identically to the pre-multi-account shape (ADR-1).  Never echoes credential
+    material.
     """
     dashboard_connector_status_requests_total.labels(connector="google-health").inc()
 
@@ -422,19 +637,10 @@ async def get_google_health_status(
     shared_pool = _make_shared_pool(db_manager)
     switchboard_pool = _make_switchboard_pool(db_manager)
 
+    # Fetch primary account for top-level summary fields (back-compat).
     account = await _fetch_primary_google_account(shared_pool)
-    heartbeat = await _fetch_heartbeat_row(switchboard_pool)
     last_ingest_at = await _fetch_last_ingest_at(shared_pool)
     ingest_counts = await _fetch_ingest_counts(shared_pool)
-
-    granted = list(account["granted_scopes"] or []) if account else []
-    granted_health = _filter_health_scopes(granted)
-
-    state, connected = _derive_state(
-        account=account,
-        granted_health_scopes=granted_health,
-        heartbeat=heartbeat,
-    )
 
     metadata = _parse_jsonb_metadata((account or {}).get("metadata"))
     test_mode = bool(metadata.get("google_health_test_mode"))
@@ -446,16 +652,94 @@ async def get_google_health_status(
         except ValueError:
             last_token_refresh_at = None
 
-    rate_limit_remaining = _extract_rate_limit_remaining(heartbeat)
+    primary_account_email: str | None = (account or {}).get("email")
+
+    # Build per-account entries.
+    account_entries: list[AccountStatus] = []
+    if shared_pool is not None:
+        try:
+            health_accounts = await list_health_scoped_accounts(shared_pool)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "list_health_scoped_accounts failed; falling back to empty list", exc_info=True
+            )
+            health_accounts = []
+
+        if health_accounts:
+            heartbeat_by_email = await _fetch_heartbeat_rows_by_email(switchboard_pool)
+
+            # Fetch account rows from google_accounts for granted_scopes and token metadata.
+            # Filter to the health-scoped set so the query scales with accounts, not total DB rows.
+            try:
+                emails = [ha.email for ha in health_accounts if ha.email]
+                async with shared_pool.acquire() as conn:
+                    ga_rows = await conn.fetch(
+                        """
+                        SELECT id, email, granted_scopes, last_token_refresh_at, status
+                        FROM public.google_accounts
+                        WHERE status = 'active'
+                          AND email = ANY($1::text[])
+                        """,
+                        emails,
+                    )
+                ga_by_email: dict[str, dict[str, Any]] = {
+                    row["email"]: dict(row) for row in ga_rows if row.get("email")
+                }
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Failed to batch-fetch google_accounts for per-account status", exc_info=True
+                )
+                ga_by_email = {}
+
+            tasks = [
+                _build_account_status(
+                    email=ha.email,
+                    account_row=ga_by_email.get(ha.email)
+                    or {"email": ha.email, "granted_scopes": None},
+                    heartbeat=heartbeat_by_email.get(ha.email),
+                    shared_pool=shared_pool,
+                )
+                for ha in health_accounts
+            ]
+            account_entries = list(await asyncio.gather(*tasks))
+
+    # Derive worst-of top-level state from per-account entries.
+    if account_entries:
+        worst_state = _worst_of_state([e.state for e in account_entries])
+        # not_configured is only valid when there is truly no account.
+        if worst_state == GoogleHealthConnectorState.not_configured:
+            worst_state = GoogleHealthConnectorState.degraded
+        connected = worst_state == GoogleHealthConnectorState.healthy
+        # Top-level scopes_granted = primary account's scopes for back-compat.
+        granted = list((account or {}).get("granted_scopes") or [])
+        granted_health = _filter_health_scopes(granted)
+        # Top-level rate_limit_remaining = minimum observed across accounts (most constrained).
+        rlr_values = [
+            e.rate_limit_remaining for e in account_entries if e.rate_limit_remaining is not None
+        ]
+        rate_limit_remaining = min(rlr_values) if rlr_values else None
+    else:
+        # No health-scoped accounts — fall back to primary-account-only path (original behaviour).
+        heartbeat = await _fetch_heartbeat_row(switchboard_pool)
+        granted = list(account["granted_scopes"] or []) if account else []
+        granted_health = _filter_health_scopes(granted)
+        worst_state, connected = _derive_state(
+            account=account,
+            granted_health_scopes=granted_health,
+            heartbeat=heartbeat,
+        )
+        rate_limit_remaining = _extract_rate_limit_remaining(heartbeat)
 
     account_id_str = str((account or {}).get("id")) if account else None
     logger.info(
-        "google_health.status request_id=%s account_id=%s state=%s scopes=%d test_mode=%s",
+        "google_health.status request_id=%s account_id=%s state=%s scopes=%d "
+        "test_mode=%s accounts=%d",
         request_id,
         account_id_str,
-        state.value,
+        worst_state.value,
         len(granted_health),
         test_mode,
+        len(account_entries),
     )
 
     return GoogleHealthStatusResponse(
@@ -465,9 +749,11 @@ async def get_google_health_status(
         last_token_refresh_at=last_token_refresh_at,
         rate_limit_remaining=rate_limit_remaining,
         test_mode=test_mode,
-        state=state,
+        state=worst_state,
         sleep_sessions_7d=ingest_counts["sleep_sessions_7d"],
         daily_summaries_7d=ingest_counts["daily_summaries_7d"],
+        accounts=account_entries,
+        primary_account_email=primary_account_email,
     )
 
 

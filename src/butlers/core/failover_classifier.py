@@ -87,6 +87,9 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "service unavailable",
     "backend unavailable",
     "no such model",
+    # OpenCode-specific structured errors (exit 0 with stderr)
+    "providermodelnotfounderror",
+    "model not found:",
     # Connection-level failures before work starts
     "connection refused",
     "connection reset",
@@ -119,6 +122,16 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
     # different same-tier model is the correct response.
     "compact_remote",
     "remote compaction failed",
+)
+
+# Substrings matched (lowercased) against the exception message to detect a
+# runtime/provider process that exited successfully but produced no usable
+# output, tool calls, usage, or stderr. With no tool calls (Gate 1), this is a
+# pre-work systemic failure and should be eligible for same-tier failover.
+_EMPTY_RESPONSE_MARKERS: tuple[str, ...] = (
+    "no response",
+    "empty response",
+    "no result, tool calls, token usage, or stderr",
 )
 
 # Substrings matched (lowercased) against the exception message to detect
@@ -314,6 +327,15 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
             return FailoverDecision(
                 eligible=True,
                 reason="rate_limit_before_work: provider rate-limit rejection "
+                "before any tool call was executed",
+            )
+
+        # Empty runtime/provider response before work
+        if _matches_any(exc_msg, _EMPTY_RESPONSE_MARKERS):
+            logger.debug("Failover eligible: RuntimeError — empty runtime response")
+            return FailoverDecision(
+                eligible=True,
+                reason="empty_runtime_response: runtime returned no usable output "
                 "before any tool call was executed",
             )
 

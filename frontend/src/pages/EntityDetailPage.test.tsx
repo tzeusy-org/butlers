@@ -72,6 +72,12 @@ vi.mock("@/hooks/use-entities", () => ({
 
 vi.mock("@/hooks/use-contacts", () => ({
   useContacts: vi.fn(() => ({ data: { contacts: [] } })),
+  // ContactChannelCard hooks (COMPAT-ONLY reads/writes via contact-keyed endpoints)
+  useRevealContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
+  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
@@ -748,5 +754,157 @@ describe("EntityDetailPage — Mark confirmed button (promote unidentified)", ()
     // Check icon is rendered (svg class from lucide-react)
     expect(html).toContain("h-3.5 w-3.5");
     expect(html).toContain("Mark confirmed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BreadcrumbStrip — bu-ky3qk (v2 brief §5 G3)
+// ---------------------------------------------------------------------------
+
+describe("EntityDetailPage — BreadcrumbStrip", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+  });
+
+  it("renders the breadcrumb nav container (aria-label=Breadcrumb)", () => {
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain('aria-label="Breadcrumb"');
+  });
+
+  it("renders an Index link pointing to /entities (direct URL, no ?from=)", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Test Person" });
+    const html = renderPage();
+    // The Index crumb must link to /entities
+    expect(html).toContain('href="/entities"');
+    expect(html).toContain("Index");
+  });
+
+  it("renders entity name as the last crumb (no link) on direct navigation", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Direct Nav Entity" });
+    const html = renderPage();
+    // Entity name appears as a non-linked span (text-foreground font-medium)
+    expect(html).toContain("Direct Nav Entity");
+    // The entity name must NOT be inside an anchor tag (href="/entities/entity-001")
+    expect(html).not.toContain('href="/entities/entity-001"');
+  });
+
+  it("direct URL (no ?from=): only Index + entity name crumbs, no origin crumb", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Direct Entity" });
+    // No ?from= param — useSearchParams returns empty URLSearchParams (default mock)
+    const html = renderPage();
+    expect(html).toContain("Index");
+    expect(html).toContain("Direct Entity");
+    // No conditional origin crumbs
+    expect(html).not.toContain("Hop");
+    expect(html).not.toContain("Columns");
+    expect(html).not.toContain("Concentration");
+  });
+
+  it("?from=hop: renders Hop crumb between Index and entity name", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Hop Entity" });
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("from=hop"),
+      vi.fn(),
+    ]);
+    const html = renderPage();
+    expect(html).toContain("Index");
+    expect(html).toContain("Hop");
+    expect(html).toContain('href="/entities/hop"');
+    expect(html).toContain("Hop Entity");
+  });
+
+  it("?from=columns: renders Columns crumb between Index and entity name", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Columns Entity" });
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("from=columns"),
+      vi.fn(),
+    ]);
+    const html = renderPage();
+    expect(html).toContain("Index");
+    expect(html).toContain("Columns");
+    expect(html).toContain('href="/entities/columns"');
+    expect(html).toContain("Columns Entity");
+  });
+
+  it("?from=concentration: renders Concentration crumb between Index and entity name", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Concentration Entity" });
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("from=concentration"),
+      vi.fn(),
+    ]);
+    const html = renderPage();
+    expect(html).toContain("Index");
+    expect(html).toContain("Concentration");
+    expect(html).toContain('href="/entities/concentration"');
+    expect(html).toContain("Concentration Entity");
+  });
+
+  it("?from=unknown: falls back to Index + entity name (ignores unrecognised origin)", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Unknown Origin Entity" });
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("from=unknown-page"),
+      vi.fn(),
+    ]);
+    const html = renderPage();
+    expect(html).toContain("Index");
+    expect(html).toContain("Unknown Origin Entity");
+    expect(html).not.toContain("unknown-page");
+  });
+
+  it("breadcrumb is visible in editorial mode", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "editorial" : null,
+    );
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Editorial Entity" });
+    const html = renderPage();
+    expect(html).toContain('aria-label="Breadcrumb"');
+    expect(html).toContain("Index");
+  });
+
+  it("breadcrumb is visible in workbench mode", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "workbench" : null,
+    );
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Workbench Entity" });
+    const html = renderPage();
+    expect(html).toContain('aria-label="Breadcrumb"');
+    expect(html).toContain("Index");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LinkedContactSection — direct /entities/:id link (bu-rah6u)
+// ---------------------------------------------------------------------------
+
+describe("EntityDetailPage — LinkedContactSection direct entity link", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("linked contact name links to /entities/:entityId directly (not /contacts/:contactId)", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      linked_contact_id: "contact-xyz",
+      linked_contact_name: "Linked Contact Name",
+    });
+    const html = renderPage();
+    // Must link to the entity page directly
+    expect(html).toContain('href="/entities/entity-001"');
+    // Must NOT use the /contacts/ redirect path
+    expect(html).not.toContain('href="/contacts/contact-xyz"');
+  });
+
+  it("linked contact section is not rendered when linked_contact_id is null", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      linked_contact_id: null,
+      linked_contact_name: null,
+    });
+    const html = renderPage();
+    // No link to a contact page should appear
+    expect(html).not.toContain("/contacts/");
   });
 });

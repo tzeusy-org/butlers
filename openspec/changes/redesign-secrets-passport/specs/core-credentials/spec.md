@@ -93,9 +93,10 @@ The audit action enum used by `public.audit_log` (originally specified by `redes
 | `failed` | Probe failure |
 | `rotated` | Value replaced (User rotate, System set on existing key, CLI rotate) |
 | `connected` | OAuth dance completed successfully |
-| `disconnected` | Credential explicitly disconnected (User disconnect, System delete, CLI revoke) |
+| `disconnected` | Credential explicitly disconnected (User disconnect, CLI revoke) |
 | `warned` | Scope mismatch or expiring-soon detected during probe |
 | `overrode` | System override created (per-butler `butler_secrets` row added) |
+| `revoked` | System override removed (per-butler `butler_secrets` row removed via `DELETE /api/secrets/system/<key>?target=<butler>`) |
 | `attempted` | OAuth dance initiated (begin endpoint called) but not yet completed |
 | `set` | New System secret created (first-time `POST /api/secrets/system/<key>`) |
 
@@ -106,20 +107,33 @@ These values SHALL be added to whichever enum or check constraint enforces the a
 - **THEN** an `audit_log` row is appended with `actor = "owner"` (single-owner system), `action = <appropriate enum value above>`, `target = <canonical credential key>`, and `note = <stored prose; never LLM-generated>`
 
 ### Requirement: `public.audit_log` Index for Credential-Key Filtering
-The Switchboard's migration chain SHALL add an index `ix_audit_log_target_recorded` on `public.audit_log (target, recorded_at DESC)` to support `GET /api/audit-log?key=<key>` filtering in O(log N) time even at high audit-log row counts.
+The Switchboard's migration chain SHALL add an index `ix_audit_log_target_ts` on `public.audit_log (target, ts DESC)` to support `GET /api/audit-log?key=<key>` filtering in O(log N) time even at high audit-log row counts. (The `public.audit_log` timestamp column is `ts`, declared by `redesign-settings-dispatch-console`'s `dashboard-audit-log` spec; this index reuses that column unchanged.)
 
 #### Scenario: Audit filter performance
 - **WHEN** `GET /api/audit-log?key=u:google&limit=50` is called against an audit log with > 1 million rows
-- **THEN** the query uses `ix_audit_log_target_recorded` and returns in < 50 ms
+- **THEN** the query uses `ix_audit_log_target_ts` and returns in < 50 ms
 
 ### Requirement: Credential-Key Normalisation Function
-The `core-credentials` capability SHALL expose a Python utility `normalize_credential_key(scope: str, key: str) -> str` returning the canonical form `<scope>:<key>` used by `audit_log.target`, the `/secrets` focus-key URL parameter, and `secret_probe_log.credential_key`. The function SHALL be used by every audit-write callsite and by the `/api/audit-log?key=` filter to ensure a consistent key vocabulary.
+The `core-credentials` capability SHALL expose a Python utility `normalize_credential_key(scope: str, key: str) -> str` returning the canonical form `<prefix>:<key>` used by `audit_log.target`, the `/secrets` focus-key URL parameter, and `secret_probe_log.credential_key`. The function SHALL be used by every audit-write callsite and by the `/api/audit-log?key=` filter to ensure a consistent key vocabulary.
+
+**Implementation:** `src/butlers/core/credential_keys.py` — module `butlers.core.credential_keys`.
+
+The module exposes two public helpers:
+- `normalize_credential_key(scope, key)` — primary factory; maps long-form scope (`"user"`, `"system"`, `"cli"`) or single-letter alias (`"u"`, `"s"`, `"c"`) to the canonical `<prefix>:<key>` string. Raises `ValueError` for unknown scopes.
+- `normalize_key_param(raw_key)` — entry-point for `GET /api/audit-log?key=`; accepts either short-prefix or long-scope form and delegates to `normalize_credential_key`.
+
+**Audit-write contract:** Every code path that appends a credential-lifecycle row to `public.audit_log` MUST pass `normalize_credential_key(scope, key)` as the `target` argument. Writing a raw, un-normalised string is a defect because it breaks the `?key=` filter's index lookup (`ix_audit_log_target_ts` on `(target, ts DESC)`).
 
 #### Scenario: Normalisation roundtrip
 - **WHEN** `normalize_credential_key("user", "google")` is called
 - **THEN** the return value is `"u:google"`
 - **AND** `normalize_credential_key("system", "BUTLER_TELEGRAM_TOKEN")` returns `"s:BUTLER_TELEGRAM_TOKEN"`
 - **AND** `normalize_credential_key("cli", "claude")` returns `"c:claude"`
+
+#### Scenario: Audit-write → key-filter round-trip
+- **WHEN** a credential-lifecycle endpoint (e.g. `POST /api/secrets/user/<provider>/rotate`) appends an audit row using `normalize_credential_key("user", provider)` as `target`
+- **THEN** `GET /api/audit-log?key=u:<provider>` returns that row
+- **AND** `GET /api/audit-log?key=user:<provider>` returns the same row (long-scope form is also accepted by the filter)
 
 ### Requirement: On-Read Fingerprint Computation (No Persistence)
 Credential fingerprints rendered on `/secrets` SHALL be computed on-read using PostgreSQL's `sha256()` function and truncated to the first 8 hex characters. Fingerprints SHALL NOT be persisted to any column, cache, or log.

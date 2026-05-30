@@ -935,6 +935,11 @@ class OpenCodeAdapter(RuntimeAdapter):
                 if returncode != 0:
                     error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                     logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
+                    self._last_process_info["error_detail"] = error_detail
+                    # On non-zero exit the adapter raises immediately — no tool calls
+                    # were captured by the adapter itself, so this is pre-tool-call.
+                    # The spawner will layer in daemon-side tool-call capture.
+                    self._last_process_info["is_pre_tool_call"] = True
                     raise RuntimeError(
                         f"OpenCode CLI exited with code {returncode}: {error_detail}"
                     )
@@ -952,11 +957,23 @@ class OpenCodeAdapter(RuntimeAdapter):
                                 "OpenCode CLI exited 0 but stderr indicates failure: %s",
                                 stderr[:500],
                             )
-                            raise RuntimeError(
-                                f"OpenCode CLI error (exit 0): {stderr.strip()[:300]}"
-                            )
+                            error_detail = stderr.strip()[:300]
+                            self._last_process_info["error_detail"] = error_detail
+                            # Auth/model-not-found failures detected via stderr before
+                            # any output — this is a pre-tool-call systemic failure.
+                            self._last_process_info["is_pre_tool_call"] = True
+                            raise RuntimeError(f"OpenCode CLI error (exit 0): {error_detail}")
 
                 result_text, tool_calls, usage = _parse_opencode_output(stdout, stderr, returncode)
+                if result_text is None and not tool_calls and usage is None and not stderr.strip():
+                    error_detail = (
+                        "OpenCode CLI returned no response: no result, tool calls, "
+                        "token usage, or stderr"
+                    )
+                    logger.error(error_detail)
+                    self._last_process_info["error_detail"] = error_detail
+                    self._last_process_info["is_pre_tool_call"] = True
+                    raise RuntimeError(error_detail)
                 return result_text, tool_calls, usage
 
             except TimeoutError:
@@ -967,6 +984,10 @@ class OpenCodeAdapter(RuntimeAdapter):
                     "command": cmd_for_log,
                     "stderr": "(timeout — process killed)",
                     "runtime_type": "opencode",
+                    # Timeout fired before the adapter could confirm any tool calls —
+                    # the failover classifier treats this as pre-tool-call eligible.
+                    # The spawner will layer in daemon-side tool-call capture.
+                    "is_pre_tool_call": True,
                 }
                 if proc is not None:
                     proc.kill()

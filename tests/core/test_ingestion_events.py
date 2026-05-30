@@ -277,11 +277,17 @@ async def test_ingestion_events_list_and_sessions() -> None:
     with pytest.raises(ValueError):
         decode_cursor("not-a-valid-cursor")
 
-    # List: channel filter in SQL
+    # List: channel filter in SQL — single channel via channels list
     pool = _FakePool(fetch_results=[])
-    await ingestion_events_list(pool, source_channel="telegram_bot", limit=5)
+    await ingestion_events_list(pool, channels=["telegram_bot"], limit=5)
     _, sql, args = pool.calls[0]
-    assert "source_channel" in sql and "telegram_bot" in args
+    assert "source_channel" in sql and ["telegram_bot"] in args
+
+    # List: multi-channel filter — channels = ANY(...)
+    pool2 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool2, channels=["email", "telegram"], limit=5)
+    _, sql2, args2 = pool2.calls[0]
+    assert "ANY(" in sql2 and ["email", "telegram"] in args2
 
     # Sessions: empty; single butler; multiple butlers merged; cost JSONB decoded
     assert await ingestion_event_sessions(_FakeDatabaseManager(), "req-001") == []

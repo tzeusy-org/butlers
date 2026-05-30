@@ -182,6 +182,52 @@ It SHALL include:
 - **AND** no access token, refresh token, or credential secret appears in the
   response or UI
 
+### Requirement: Ingestion-Originated OAuth page_of_origin Contract
+
+Any OAuth dance initiated from `/ingestion/connectors` SHALL stamp
+`page_of_origin=ingestion` in the OAuth state token by passing it as a query
+parameter to the begin endpoint (`GET /api/oauth/<provider>/start`).
+
+This requirement is **co-owned** with the in-flight `redesign-secrets-passport` change,
+which defines the `/secrets`-side callback behaviour. This change owns the
+`/ingestion/connectors`-side contract.
+
+The generalised OAuth callback handler (specified in `redesign-secrets-passport §dashboard-api
+§OAuth Per-Provider Generalisation`) routes the post-dance redirect based on
+`state.page_of_origin`. For this contract to function:
+
+1. The ingestion reauth initiation MUST pass `page_of_origin=ingestion` as a query
+   parameter to the OAuth start endpoint.
+2. The OAuth state token MUST carry `page_of_origin` through the dance (the
+   `redesign-secrets-passport` change extends `_StateEntry` and `_store_state` to
+   support this field; this change may not land before that extension is in place).
+3. The callback MUST redirect to `/ingestion/connectors` when `state.page_of_origin`
+   is `ingestion` (callback routing table is defined in `redesign-secrets-passport
+   §dashboard-api`; no duplication required here).
+
+**Implementation gate:** this requirement depends on `redesign-secrets-passport`
+landing the generalised `/api/oauth/<provider>/start` endpoint. Until then, the
+reauth callout MAY initiate the existing Google-only begin endpoint, but MUST still
+pass `page_of_origin=ingestion` and MUST be updated when the generalised endpoint
+lands.
+
+#### Scenario: Ingestion reauth stamps page_of_origin
+
+- **WHEN** the owner clicks the reauthorize action on a connector detail page under
+  `/ingestion/connectors`
+- **THEN** the frontend calls `GET /api/oauth/<provider>/start?...&page_of_origin=ingestion`
+- **AND** the OAuth state token carries `page_of_origin=ingestion` through the dance
+- **AND** on successful OAuth callback the browser is redirected to `/ingestion/connectors`
+  (NOT to `/secrets`)
+
+#### Scenario: Post-reauth connector state reflects new credential
+
+- **WHEN** the OAuth callback redirects back to `/ingestion/connectors`
+- **THEN** the connectors roster and the previously-reauthorizing connector detail
+  both reflect the updated auth state within the standard TanStack Query refresh
+  interval
+- **AND** the reauth callout is no longer rendered (auth state is now `ok`)
+
 ### Requirement: Filters Pipeline
 
 The `/ingestion/filters` route SHALL explain how events earn dispatch through
@@ -283,3 +329,5 @@ Verification SHALL include:
 - `pr/overview/ingestion-redesign/DESIGN_LANGUAGE.md`
 - `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/`
 - `openspec/changes/add-connector-oauth-scope-surface/`
+- `openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md` (generalised OAuth callback endpoint and `page_of_origin` routing table)
+- `openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md` (Cross-Page Reauth Bookkeeping requirement)

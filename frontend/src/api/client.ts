@@ -144,8 +144,12 @@ import type {
   IngestionEventRollup,
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
+  BulkRetryEventsResponse,
   IngestionEventSenderContact,
+  IngestionEventPayload,
   IngestionEventsParams,
+  IngestionWindowRollup,
+  IngestionWindowRollupParams,
   IngestionRule,
   IngestionRuleCreate,
   IngestionRuleUpdate,
@@ -338,6 +342,7 @@ import type {
   KillResponse,
   EntityFactsResponse,
   EntityFactsParams,
+  ContactEntityResolverResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1042,6 +1047,26 @@ export function triggerContactsSync(
 export function getContact(contactId: string): Promise<ContactDetail> {
   return apiFetch<ContactDetail>(
     `/relationship/contacts/${encodeURIComponent(contactId)}`,
+  );
+}
+
+/**
+ * Resolve a contact_id to its linked entity_id.
+ *
+ * Used by the /contacts/:contactId redirect route to locate the target entity
+ * before redirecting to /entities/:entityId.  Returns a minimal payload —
+ * do NOT use this as a substitute for full entity detail.
+ *
+ * Resolves to:
+ *   - { entity_id: string, status: "linked" }   when linked
+ *   - { entity_id: null,   status: "unlinked" } when contact exists but has no entity
+ *   - throws ApiError with status 404            when contact does not exist
+ */
+export function resolveContactEntity(
+  contactId: string,
+): Promise<ContactEntityResolverResponse> {
+  return apiFetch<ContactEntityResolverResponse>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/entity`,
   );
 }
 
@@ -2436,16 +2461,24 @@ export function getOAuthStartUrl(): string {
  * ``"calendar,drive"``). Omitting ``scopeSet`` reproduces the pre-existing
  * default scope composition — callers that only needed Calendar/Drive/
  * Gmail continue to work without modification.
+ *
+ * ``pageOfOrigin`` is threaded through the OAuth state token so the callback
+ * can redirect back to the originating page. Supported values:
+ *   - ``"secrets"``     → /secrets?focus=u:google&toast=connected
+ *   - ``"ingestion"``   → /ingestion/connectors (handled by ingestion spec)
+ *   - omitted / null    → defaults to /secrets (backend default)
  */
 export function getGoogleOAuthStartUrl(opts?: {
   accountHint?: string;
   forceConsent?: boolean;
   scopeSet?: string;
+  pageOfOrigin?: "secrets" | "ingestion";
 }): string {
   const params = new URLSearchParams();
   if (opts?.accountHint) params.set("account_hint", opts.accountHint);
   if (opts?.forceConsent) params.set("force_consent", "true");
   if (opts?.scopeSet) params.set("scope_set", opts.scopeSet);
+  if (opts?.pageOfOrigin) params.set("page_of_origin", opts.pageOfOrigin);
   const qs = params.toString();
   return `${API_BASE_URL}/oauth/google/start${qs ? `?${qs}` : ""}`;
 }
@@ -2967,8 +3000,11 @@ import type {
   ConnectorCrossSummaryResponse,
   ConnectorDaySummary,
   ConnectorDetail,
+  ConnectorEventsResponse,
   ConnectorFanout,
   ConnectorFanoutEntry,
+  ConnectorIncidentsResponse,
+  ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -2988,8 +3024,11 @@ export type {
   ConnectorCounters,
   ConnectorDaySummary,
   ConnectorDetail,
+  ConnectorEventsResponse,
   ConnectorFanout,
   ConnectorFanoutEntry,
+  ConnectorIncidentsResponse,
+  ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -3321,6 +3360,21 @@ export async function bulkReplayEvents(
   );
 }
 
+/**
+ * POST /api/ingestion/events/retry/bulk
+ * Bulk-retry/replay up to 100 events from both ingestion and filtered tables.
+ * Each event is attempted independently — partial failures do not abort the batch.
+ */
+export async function bulkRetryEvents(
+  eventIds: string[],
+): Promise<BulkRetryEventsResponse> {
+  return apiFetch<BulkRetryEventsResponse>(`/ingestion/events/retry/bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event_ids: eventIds }),
+  });
+}
+
 /** Get period-scoped ingestion overview statistics (message_inbox-based). */
 export async function getIngestionOverview(
   period: IngestionPeriod = "24h",
@@ -3354,6 +3408,50 @@ export async function getConnectorFanout(
     ...resp,
     data: _toConnectorFanout(resp.data ?? [], period),
   };
+}
+
+/**
+ * GET /api/ingestion/connectors/{type}/{identity}/events?limit=N
+ * Returns recent events for a single connector. Default limit=20, max=100.
+ * [bu-5ywn2]
+ */
+export async function getConnectorEvents(
+  connectorType: string,
+  endpointIdentity: string,
+  limit = 20,
+): Promise<ConnectorEventsResponse> {
+  return apiFetch<ConnectorEventsResponse>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/events?limit=${limit}`,
+  );
+}
+
+/**
+ * GET /api/ingestion/connectors/{type}/{identity}/incidents?limit=N
+ * Returns incident events (failures, errors) for a single connector. Default limit=10, max=50.
+ * [bu-5ywn2]
+ */
+export async function getConnectorIncidents(
+  connectorType: string,
+  endpointIdentity: string,
+  limit = 10,
+): Promise<ConnectorIncidentsResponse> {
+  return apiFetch<ConnectorIncidentsResponse>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/incidents?limit=${limit}`,
+  );
+}
+
+/**
+ * GET /api/ingestion/connectors/{type}/{identity}/routing-rules
+ * Returns ingestion rules scoped to this connector (scope='connector:type:identity').
+ * [bu-5ywn2]
+ */
+export async function getConnectorRoutingRules(
+  connectorType: string,
+  endpointIdentity: string,
+): Promise<ConnectorRoutingRulesResponse> {
+  return apiFetch<ConnectorRoutingRulesResponse>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/routing-rules`,
+  );
 }
 
 /** Update a connector's checkpoint cursor (PATCH /connectors/{type}/{identity}/cursor). */
@@ -3482,12 +3580,34 @@ export async function listIngestionEvents(
   const sp = new URLSearchParams();
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   if (params?.cursor) sp.set("cursor", params.cursor);
+  if (params?.channels) sp.set("channels", params.channels);
   if (params?.source_channel) sp.set("source_channel", params.source_channel);
   if (params?.status) sp.set("status", params.status);
+  if (params?.q) sp.set("q", params.q);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
   );
+}
+
+/**
+ * Aggregate event/session/cost counts for the active filter window.
+ * GET /api/ingestion/rollup
+ *
+ * Accepts the same filter shape as GET /api/ingestion/events.
+ * The ``cost`` field is always null until cost-per-event data is available.
+ */
+export async function getIngestionWindowRollup(
+  params?: IngestionWindowRollupParams,
+): Promise<IngestionWindowRollup> {
+  const sp = new URLSearchParams();
+  if (params?.from) sp.set("from", params.from);
+  if (params?.to) sp.set("to", params.to);
+  if (params?.channels) sp.set("channels", params.channels);
+  if (params?.statuses) sp.set("statuses", params.statuses);
+  if (params?.q) sp.set("q", params.q);
+  const qs = sp.toString() ? `?${sp.toString()}` : "";
+  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`);
 }
 
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */
@@ -3554,6 +3674,22 @@ export async function getIngestionEventSenderContact(
 ): Promise<ApiResponse<IngestionEventSenderContact>> {
   return apiFetch<ApiResponse<IngestionEventSenderContact>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sender-contact`,
+  );
+}
+
+/**
+ * Get the raw inbound payload for an ingestion event.
+ * GET /api/ingestion/events/{id}/payload
+ *
+ * Gated by audit log: the backend records an audit entry on every access.
+ * Returns 403 when the caller lacks payload-access grant.
+ * Callers MUST handle ApiError with status 403 and render a gated state.
+ */
+export async function getIngestionEventPayload(
+  requestId: string,
+): Promise<ApiResponse<IngestionEventPayload>> {
+  return apiFetch<ApiResponse<IngestionEventPayload>>(
+    `/ingestion/events/${encodeURIComponent(requestId)}/payload`,
   );
 }
 
@@ -4905,4 +5041,95 @@ export function killButler(name: string, body: KillRequest): Promise<ApiResponse
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — breaks catalogue (bu-qo3sf)
+// ---------------------------------------------------------------------------
+
+import type { BreakEntry, BreaksCatalogueParams } from "./types.ts";
+
+/**
+ * GET /api/secrets/breaks-catalogue
+ *
+ * Returns the list of butler features that depend on a given provider's
+ * credential. When `?provider=` is omitted the full catalogue is returned.
+ *
+ * Response shape: ApiResponse<BreakEntry[]>
+ * When provider is omitted, meta.by_provider contains entries keyed by provider.
+ */
+export function getBreaksCatalogue(
+  params?: BreaksCatalogueParams,
+): Promise<ApiResponse<BreakEntry[]>> {
+  const qs = params?.provider
+    ? `?provider=${encodeURIComponent(params.provider)}`
+    : "";
+  return apiFetch<ApiResponse<BreakEntry[]>>(`/secrets/breaks-catalogue${qs}`);
+}
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — user credential mutations [bu-f1loa]
+// ---------------------------------------------------------------------------
+
+/** Response payload for POST /api/secrets/user/<provider>/reauthorize. */
+export interface UserReauthorizeResponse {
+  redirect_url: string;
+}
+
+/**
+ * POST /api/secrets/user/<provider>/reauthorize?identity=<uuid>
+ *
+ * Initiates an OAuth reauthorization dance for a user-scoped credential.
+ * Returns a redirect_url that the caller should navigate to; the OAuth
+ * callback will redirect back to /secrets?focus=u:<provider>&toast=connected
+ * on success.
+ *
+ * Spec: redesign-secrets-passport §User credential mutations
+ */
+export function reauthorizeUserCredential(
+  provider: string,
+  identity: string,
+): Promise<ApiResponse<UserReauthorizeResponse>> {
+  const qs = `?identity=${encodeURIComponent(identity)}`;
+  return apiFetch<ApiResponse<UserReauthorizeResponse>>(
+    `/secrets/user/${encodeURIComponent(provider)}/reauthorize${qs}`,
+    { method: "POST" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — inventory (bu-nrgk9)
+// ---------------------------------------------------------------------------
+
+import type {
+  SecretsInventoryData,
+  SecretsInventoryMeta,
+  SecretsInventoryParams,
+} from "./types.ts";
+
+/** Full inventory response envelope from GET /api/secrets/inventory. */
+export interface SecretsInventoryResponse {
+  data: SecretsInventoryData;
+  meta: SecretsInventoryMeta;
+}
+
+/**
+ * GET /api/secrets/inventory?identity=<uuid>
+ *
+ * Returns the aggregated credential inventory for the /secrets passport page:
+ * CLI runtime tokens, system secrets, and user (OAuth/token/key) credentials.
+ *
+ * When `identity` is provided, the `user` array is filtered to that entity.
+ * When omitted, the owner entity is used (projection-lens semantics).
+ *
+ * Response shape: ApiResponse<InventoryData>
+ */
+export function getSecretsInventory(
+  params?: SecretsInventoryParams,
+): Promise<SecretsInventoryResponse> {
+  const qs =
+    params?.identity
+      ? `?identity=${encodeURIComponent(params.identity)}`
+      : "";
+  return apiFetch<SecretsInventoryResponse>(`/secrets/inventory${qs}`);
 }

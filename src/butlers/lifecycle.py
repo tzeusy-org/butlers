@@ -21,6 +21,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from butlers.catalogue_bootstrap import upsert_provider_feature_catalogue
 from butlers.config import (
     ButlerType,
     load_config,
@@ -254,6 +255,12 @@ async def run_startup(daemon: Any) -> None:
     # 8d. Bootstrap owner entity (idempotent; non-fatal).
     #     Ensures owner entity exists in public.entities.
     await _ensure_owner_entity(pool)
+
+    # 8d2. Seed provider feature catalogue (idempotent; non-fatal).
+    #      UPSERTs the canonical known-provider rows into
+    #      public.provider_feature_catalogue so the WhatBreaks affordance on
+    #      /secrets has server-side data from the first boot onward.
+    await upsert_provider_feature_catalogue(pool)
 
     # 8e. Recover orphaned sessions from a previous daemon run.
     #     Any sessions row with completed_at IS NULL at startup is necessarily

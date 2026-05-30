@@ -104,6 +104,27 @@ async def test_state_list(pool):
     assert len(app_entries) == 2
 
 
+async def test_state_list_prefix_with_wildcard_is_not_widened(pool):
+    """A prefix containing % is treated as a literal, not a LIKE wildcard.
+
+    Regression guard for bu-76w4b: without escape_like_pattern(), a prefix
+    like "app%" would match every key (% wildcard), leaking keys that don't
+    actually start with "app%".
+    """
+    from butlers.core.state import state_list, state_set
+
+    # Two keys that do NOT start with the literal "app%"
+    await state_set(pool, "app.x", 1)
+    await state_set(pool, "other.z", 2)
+
+    # A key that DOES start with the literal "app%"
+    await state_set(pool, "app%suffix", 3)
+
+    results = await state_list(pool, prefix="app%")
+    # Only the key that literally starts with "app%" should be returned.
+    assert results == ["app%suffix"]
+
+
 # ---------------------------------------------------------------------------
 # CAS (compare-and-swap)
 # ---------------------------------------------------------------------------

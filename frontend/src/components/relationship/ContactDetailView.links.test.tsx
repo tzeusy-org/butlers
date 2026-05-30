@@ -103,6 +103,7 @@ describe("ContactDetailView — email/phone link rendering", () => {
           is_primary: true,
           secured: false,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -122,6 +123,7 @@ describe("ContactDetailView — email/phone link rendering", () => {
           is_primary: true,
           secured: false,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -144,6 +146,7 @@ describe("ContactDetailView — email/phone link rendering", () => {
           is_primary: false,
           secured: true,
           parent_id: null,
+          context: null,
         },
       ],
     });
@@ -190,6 +193,7 @@ describe("ContactDetailView — email/phone link rendering", () => {
           is_primary: false,
           secured: false,
           parent_id: null,
+          context: null,
         },
       ],
     });

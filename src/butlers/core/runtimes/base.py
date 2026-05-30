@@ -124,7 +124,34 @@ class RuntimeAdapter(abc.ABC):
     def last_process_info(self) -> dict[str, Any] | None:
         """Process-level metadata from the most recent invoke() call.
 
-        Returns a dict with keys: pid, exit_code, command, stderr, runtime_type.
+        Returns a dict with some or all of the following keys:
+
+        Always present (subprocess adapters):
+        - ``pid`` (int | None): OS process ID.
+        - ``exit_code`` (int): Process exit code; ``-1`` for timeout/kill.
+        - ``command`` (str): Sanitized command string for logging.
+        - ``stderr`` (str): Captured stderr (may be truncated or placeholder).
+        - ``runtime_type`` (str): Adapter type label (e.g. ``"codex"``).
+
+        Failover classification fields (present on failure paths):
+        - ``error_detail`` (str): Structured error detail extracted from
+          stdout/stderr, preferred over raw ``stderr`` for classifier matching.
+          Set on non-zero exit for all subprocess adapters.
+        - ``is_pre_tool_call`` (bool): ``True`` when the failure occurred before
+          the adapter itself observed any tool calls in its output stream. This
+          is a best-effort signal from the adapter's parser; the spawner should
+          combine it with daemon-side tool-call capture for the authoritative
+          side-effect gate. Set on all failure paths (non-zero exit, timeout).
+
+        Codex-specific:
+        - ``retry_attempted`` (bool): Whether adapter-internal retries were made.
+        - ``retry_succeeded`` (bool | None): Outcome of internal retries.
+        - ``attempt_count`` (int): Total subprocess spawns for this invocation.
+        - ``mcp_connection_failed`` (bool): Whether MCP discovery failed.
+        - ``result_source`` (str): Which attempt produced the result.
+        - ``spawn_latency_ms`` (int): Total spawn-to-completion latency.
+        - ``mcp_server_count`` (int): Number of MCP servers configured.
+
         Available after invoke() completes for subprocess-based adapters.
         SDK-based adapters may return None or partial info.
         """

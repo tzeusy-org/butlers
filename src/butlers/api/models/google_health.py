@@ -37,6 +37,42 @@ class GoogleHealthConnectorState(StrEnum):
     """No primary Google account exists in public.google_accounts."""
 
 
+class AccountStatus(BaseModel):
+    """Per-account connector state for a single Google account.
+
+    Populated by ``get_google_health_status`` from ``connector_registry``
+    heartbeat rows keyed by ``endpoint_identity = google_health:user:<email>``.
+    One entry per health-scoped Google account.
+    """
+
+    email: str
+    """Authenticated Google email address — stable identifier for the account."""
+
+    state: GoogleHealthConnectorState
+    """Per-account operational state derived from connector_registry heartbeat."""
+
+    scopes_granted: list[str]
+    """Full Google Health scope URLs granted for this account.  Empty when the
+    account row exists but has not yet completed the OAuth flow."""
+
+    last_ingest_at: datetime | None = None
+    """Most recent ingest timestamp for events originating from this account,
+    or null when no events have been ingested yet."""
+
+    last_token_refresh_at: datetime | None = None
+    """Value of ``public.google_accounts.last_token_refresh_at`` for this account."""
+
+    rate_limit_remaining: int | None = None
+    """Most recently observed ``X-RateLimit-Remaining`` from the connector heartbeat,
+    or null when the connector has not yet observed a rate-limit header."""
+
+    sleep_sessions_7d: int = 0
+    """Count of sleep-session ingestion events in the last 7 days for this account."""
+
+    daily_summaries_7d: int = 0
+    """Count of daily-summary ingestion events in the last 7 days for this account."""
+
+
 class GoogleHealthStatusResponse(BaseModel):
     """Response for GET /api/connectors/google-health/status.
 
@@ -46,6 +82,10 @@ class GoogleHealthStatusResponse(BaseModel):
     the last token refresh timestamp (used by the UI's 7-day test-mode expiry
     heuristic), the most recently observed rate-limit headroom, and the
     ``google_health_test_mode`` metadata flag.
+
+    Top-level summary fields are computed as worst-of across all per-account
+    entries (error > degraded > healthy) so single-account installs render
+    identically to the pre-multi-account shape (ADR-1).
 
     No credential material is returned — only state flags, timestamps, and
     scope URLs.
@@ -81,7 +121,8 @@ class GoogleHealthStatusResponse(BaseModel):
     Google account. Drives the orange/red warning banner on the status card."""
 
     state: GoogleHealthConnectorState
-    """Machine-readable state flag — healthy / degraded / error / not_configured."""
+    """Machine-readable state flag — healthy / degraded / error / not_configured.
+    Computed as worst-of across all per-account entries."""
 
     sleep_sessions_7d: int = 0
     """Count of sleep-session ingestion events in the last 7 days.
@@ -95,6 +136,18 @@ class GoogleHealthStatusResponse(BaseModel):
     Derived from ``public.ingestion_events`` rows whose
     ``external_event_id`` matches ``google_health:*:*`` but NOT
     ``google_health:sleep_session:*``."""
+
+    accounts: list[AccountStatus] = []
+    """Per-account status entries — one per health-scoped Google account.
+
+    Empty list when no primary account exists (``state = not_configured``).
+    For single-account installs this will contain exactly one entry and the
+    top-level summary fields will mirror that entry's values."""
+
+    primary_account_email: str | None = None
+    """Email of the ``is_primary=true`` Google account, or null when no primary
+    account is configured.  Single-account consumers can use this as the
+    canonical identity without inspecting the ``accounts`` list."""
 
 
 class GoogleHealthDisconnectResponse(BaseModel):
