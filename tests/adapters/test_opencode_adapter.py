@@ -27,6 +27,7 @@ from butlers.core.runtimes.opencode import (
     _find_opencode_binary,
     _looks_like_tool_call_event,
     _parse_opencode_output,
+    _select_error_detail,
 )
 
 pytestmark = pytest.mark.unit
@@ -193,6 +194,61 @@ def test_extract_usage_and_find_binary():
             _find_opencode_binary()
 
 
+def test_select_error_detail_prefers_stdout_error_over_migration_noise():
+    """OpenCode first-run migration notices must not mask structured stdout failures."""
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "session.started", "id": "session-123"}),
+            json.dumps(
+                {
+                    "type": "error",
+                    "message": "AuthenticationError: provider rejected the request",
+                }
+            ),
+        ]
+    )
+    stderr = (
+        "Performing one time database migration, may take a few minutes...\n"
+        "sqlite-migration:done\n"
+        "Database migration complete.\n"
+    )
+
+    detail = _select_error_detail(stderr, stdout, 1)
+
+    assert detail == "AuthenticationError: provider rejected the request"
+
+
+def test_select_error_detail_accepts_code_only_stdout_error():
+    """Structured stdout errors may carry only a numeric provider error code."""
+    stdout = json.dumps({"type": "result", "code": 429})
+
+    detail = _select_error_detail("plain stderr fallback", stdout, 1)
+
+    assert detail == "429"
+
+
+def test_select_error_detail_accepts_nested_numeric_code():
+    """Nested scalar error fields are still useful diagnostics."""
+    stdout = json.dumps({"type": "error", "error": {"code": 401}})
+
+    detail = _select_error_detail("plain stderr fallback", stdout, 1)
+
+    assert detail == "401"
+
+
+def test_select_error_detail_uses_exit_code_when_only_migration_noise_exists():
+    """A benign migration banner alone is not a useful non-zero-exit diagnostic."""
+    stderr = (
+        "Performing one time database migration, may take a few minutes...\n"
+        "sqlite-migration:done\n"
+        "Database migration complete.\n"
+    )
+
+    detail = _select_error_detail(stderr, "", 1)
+
+    assert detail == "exit code 1"
+
+
 async def test_invoke_success_and_config():
     """invoke() calls subprocess with run subcommand; injects OPENCODE_CONFIG; forwards --model."""
     adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
@@ -248,6 +304,23 @@ async def test_invoke_error_paths():
     with patch(_EXEC, return_value=mock_proc):
         with pytest.raises(RuntimeError, match="rate limit exceeded"):
             await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    mock_proc.communicate = AsyncMock(
+        return_value=(
+            json.dumps(
+                {"type": "error", "message": "AuthenticationError: login required"}
+            ).encode(),
+            b"Performing one time database migration, may take a few minutes...\n"
+            b"sqlite-migration:done\n"
+            b"Database migration complete.\n",
+        )
+    )
+    mock_proc.returncode = 1
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError) as exc_info:
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+    assert "AuthenticationError: login required" in str(exc_info.value)
+    assert "sqlite-migration:done" not in str(exc_info.value)
 
     mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
     mock_proc.kill = AsyncMock()
