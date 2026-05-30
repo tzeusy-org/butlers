@@ -26,100 +26,90 @@
 import { test, expect } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
-// Mock inventory data (mirrors frontend/src/components/secrets/passport/mock-data.ts)
+// Mock inventory data in the raw API response format (SecretsInventoryResponse).
+//
+// The /api/secrets/inventory endpoint returns raw backend types that the
+// useSecretsInventory hook adapts via adaptInventoryResponse().  The e2e mock
+// must mirror the actual API shape, not the already-adapted frontend types.
+//
+// Key differences from the old frontend-only mock:
+//   - user[].type  (not .provider) — e.g. "google_oauth_refresh"
+//   - user[].entity_id (not .identity) — entity UUID
+//   - identities[].entity_id (not .id)
+//   - identities[].name (not .label)
+//   - system[].butler (not .source) — owning butler name
+//   - cli[].key (not .id) — credential key
+//   - cli[].description (not .label)
+//   - The full response is { data: {...}, meta: {...} }
 // ---------------------------------------------------------------------------
 
-const MOCK_INVENTORY = {
-  user: [
-    {
-      provider: "google",
-      identity: "tze",
-      state: "ok",
-      fingerprint: "sha256:7a3f9e2c",
-      issued: "2026-02-14",
-      expires: null,
-      lastVerified: "14:21 today",
-      lastUsed: "14:18 today",
-      scopesRequired: ["calendar.readonly", "gmail.readonly"],
-      scopesGranted: ["calendar.readonly", "gmail.readonly"],
-      feeds: ["calendar", "chronicler"],
-      breaks: [],
-      test: { ok: true, code: 200, latencyMs: 42, at: "14:21 today" },
-      audit: [],
+const MOCK_INVENTORY_RESPONSE = {
+  data: {
+    user: [
+      {
+        id: "u-google-tze",
+        entity_id: "tze",
+        type: "google_oauth_refresh",
+        label: "Google (tze)",
+        state: "ok",
+        fingerprint: "sha256:7a3f9e2c",
+        last_verified: "14:21 today",
+        test: { ok: true, code: 200, at: "14:21 today" },
+      },
+      {
+        id: "u-spotify-tze",
+        entity_id: "tze",
+        type: "spotify_oauth_refresh",
+        label: "Spotify (tze)",
+        state: "expired",
+        fingerprint: "sha256:d4e1b8a0",
+        last_verified: "2 days ago",
+        test: { ok: false, code: 401, at: "2 days ago", message: "refresh-token expired" },
+      },
+      {
+        id: "u-google-wei",
+        entity_id: "wei",
+        type: "google_oauth_refresh",
+        label: "Google (wei)",
+        state: "ok",
+        fingerprint: "sha256:aa1122bb",
+        last_verified: "12:00 today",
+        test: { ok: true, code: 200, at: "12:00 today" },
+      },
+    ],
+    system: [
+      {
+        key: "BUTLER_TELEGRAM_TOKEN",
+        category: "messaging",
+        description: "Bot token for Telegram.",
+        state: "ok",
+        fingerprint: "sha256:ab12cd34",
+        last_verified: "14:01 today",
+        butler: "switchboard",
+        test: { ok: true, code: 200, at: "14:01 today" },
+      },
+    ],
+    cli: [
+      {
+        key: "claude-cli",
+        category: "runtime",
+        description: "Claude Code",
+        state: "ok",
+        fingerprint: "sha256:11a47cd2",
+        last_verified: "14:15 today",
+        test: { ok: true, code: 200, at: "14:15 today" },
+      },
+    ],
+    identities: [
+      { entity_id: "tze", name: "Tze", role: "owner" },
+      { entity_id: "wei", name: "Wei", role: "member" },
+    ],
+    providers: {
+      google: { id: "google", label: "Google", glyph: "G", kind: "oauth", authority: "accounts.google.com", brief: "Calendar, Gmail, Drive read.", cadence: "on demand · refreshes hourly" },
+      spotify: { id: "spotify", label: "Spotify", glyph: "S", kind: "oauth", authority: "accounts.spotify.com", brief: "Recent listens.", cadence: "poll · 15m" },
     },
-    {
-      provider: "spotify",
-      identity: "tze",
-      state: "expired",
-      fingerprint: "sha256:d4e1b8a0",
-      issued: "2025-11-03",
-      expires: "2026-05-20",
-      lastVerified: "2 days ago",
-      lastUsed: "2 days ago",
-      scopesRequired: ["user-read-recently-played"],
-      scopesGranted: ["user-read-recently-played"],
-      feeds: ["chronicler"],
-      breaks: [],
-      test: { ok: false, code: 401, latencyMs: 134, at: "2 days ago", message: "refresh-token expired" },
-      audit: [],
-    },
-    {
-      provider: "google",
-      identity: "wei",
-      state: "ok",
-      fingerprint: "sha256:aa1122bb",
-      issued: "2026-03-01",
-      expires: null,
-      lastVerified: "12:00 today",
-      lastUsed: "12:00 today",
-      scopesRequired: ["calendar.readonly"],
-      scopesGranted: ["calendar.readonly"],
-      feeds: ["calendar"],
-      breaks: [],
-      test: { ok: true, code: 200, latencyMs: 55, at: "12:00 today" },
-      audit: [],
-    },
-  ],
-  system: [
-    {
-      key: "BUTLER_TELEGRAM_TOKEN",
-      category: "messaging",
-      state: "ok",
-      rowState: "shared",
-      fingerprint: "sha256:ab12cd34",
-      description: "Bot token for Telegram.",
-      source: "shared",
-      target: "shared",
-      lastVerified: "14:01 today",
-      usedBy: ["switchboard"],
-      plainValue: null,
-      breaks: [],
-      test: { ok: true, code: 200, latencyMs: 30, at: "14:01 today" },
-      audit: [],
-    },
-  ],
-  cli: [
-    {
-      id: "claude-cli",
-      label: "Claude Code",
-      state: "ok",
-      fingerprint: "sha256:11a47cd2",
-      issued: "2026-02-10",
-      expires: null,
-      lastUsed: "14:15 today",
-      scopesGranted: ["repo.write"],
-      scopesRequired: ["repo.write"],
-      test: { ok: true, code: 200, latencyMs: 95, at: "14:15 today" },
-    },
-  ],
-  identities: [
-    { id: "tze", label: "Tze", role: "owner", pronoun: "you", hue: "oklch(0.78 0.13 30)" },
-    { id: "wei", label: "Wei", role: "member", pronoun: null, hue: "oklch(0.78 0.13 200)" },
-  ],
-  providers: {
-    google: { id: "google", label: "Google", glyph: "G", kind: "oauth", authority: "accounts.google.com", brief: "Calendar, Gmail, Drive read.", cadence: "on demand · refreshes hourly" },
-    spotify: { id: "spotify", label: "Spotify", glyph: "S", kind: "oauth", authority: "accounts.spotify.com", brief: "Recent listens.", cadence: "poll · 15m" },
   },
+  meta: { needs_hand_count: 1 },
 };
 
 // ---------------------------------------------------------------------------
@@ -127,11 +117,13 @@ const MOCK_INVENTORY = {
 // ---------------------------------------------------------------------------
 
 async function mockSecretsRoutes(page: ReturnType<typeof test.info> extends never ? never : Parameters<Parameters<typeof test>[1]>[0]["page"]) {
-  await page.route("**/api/secrets/inventory", (route) => {
+  // Use "**" suffix to match both /api/secrets/inventory and
+  // /api/secrets/inventory?identity=<uuid> (the identity-scoped query).
+  await page.route("**/api/secrets/inventory**", (route) => {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(MOCK_INVENTORY),
+      body: JSON.stringify(MOCK_INVENTORY_RESPONSE),
     });
   });
 
@@ -149,15 +141,15 @@ async function mockSecretsRoutes(page: ReturnType<typeof test.info> extends neve
 // ---------------------------------------------------------------------------
 
 test("secrets: page loads DirectionPassport", async ({ page, baseURL }) => {
+  // Install mocks before navigation so all API calls are intercepted from the start.
+  await mockSecretsRoutes(page);
+
   try {
     await page.goto("/secrets", { timeout: 10_000 });
   } catch {
     test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
     return;
   }
-
-  await mockSecretsRoutes(page);
-  await page.goto("/secrets");
 
   // DirectionPassport root element
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
@@ -168,27 +160,27 @@ test("secrets: page loads DirectionPassport", async ({ page, baseURL }) => {
 // ---------------------------------------------------------------------------
 
 test("secrets: ?focus=u:google renders Google user page", async ({ page, baseURL }) => {
+  // Install mocks before navigation so the inventory fetch is intercepted.
+  await mockSecretsRoutes(page);
+
   try {
-    await page.goto("/secrets", { timeout: 10_000 });
+    await page.goto("/secrets?focus=u:google", { timeout: 10_000 });
   } catch {
     test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
     return;
   }
 
-  await mockSecretsRoutes(page);
-  await page.goto("/secrets?focus=u:google");
-
   // Wait for passport to render
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
 
-  // Google user page is rendered (either from API data or mock data fallback)
-  // The data-page="user" element should be present
-  const userPage = page.locator('[data-page="user"]');
-  if (await userPage.isAttached({ timeout: 3_000 }).catch(() => false)) {
-    await expect(userPage).toBeAttached();
-  }
-  // URL should contain focus param
-  expect(page.url()).toContain("focus=u%3Agoogle");
+  // Google user page must be rendered with the correct mock data
+  await expect(page.locator('[data-page="user"]')).toBeAttached({ timeout: 5_000 });
+  await expect(page.locator('[data-provider="google"]')).toBeAttached({ timeout: 5_000 });
+
+  // URL should contain focus param; use the URL API to parse query params
+  // robustly regardless of browser-specific percent-encoding of the colon.
+  const url = new URL(page.url());
+  expect(url.searchParams.get("focus")).toBe("u:google");
 });
 
 // ---------------------------------------------------------------------------
@@ -196,23 +188,23 @@ test("secrets: ?focus=u:google renders Google user page", async ({ page, baseURL
 // ---------------------------------------------------------------------------
 
 test("secrets: ?identity=wei shows wei identity chip", async ({ page, baseURL }) => {
+  // Install mocks before navigation.
+  await mockSecretsRoutes(page);
+
   try {
-    await page.goto("/secrets", { timeout: 10_000 });
+    await page.goto("/secrets?identity=wei", { timeout: 10_000 });
   } catch {
     test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
     return;
   }
 
-  await mockSecretsRoutes(page);
-  await page.goto("/secrets?identity=wei");
-
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
 
-  // If the component uses mock data (not API), check for identity chip
-  const weiChip = page.locator('[data-identity-id="wei"]');
-  if (await weiChip.isAttached({ timeout: 3_000 }).catch(() => false)) {
-    await expect(weiChip).toBeAttached();
-  }
+  // Wei identity chip must be present (rendered from mock identities).
+  // The chip appears in the Spine's identity switcher bar.
+  // Use .first() since multiple elements with this attribute may be rendered
+  // (Spine switcher + DirectionPassport header chip).
+  await expect(page.locator('[data-identity-id="wei"]').first()).toBeAttached({ timeout: 5_000 });
 });
 
 // ---------------------------------------------------------------------------
@@ -220,17 +212,15 @@ test("secrets: ?identity=wei shows wei identity chip", async ({ page, baseURL })
 // ---------------------------------------------------------------------------
 
 test("secrets OAuth callback: ?toast=connected shows connected toast and strips param", async ({ page, baseURL }) => {
+  await mockSecretsRoutes(page);
+
   try {
-    await page.goto("/secrets", { timeout: 10_000 });
+    // Navigate directly to the post-OAuth callback URL
+    await page.goto("/secrets?focus=u:google&toast=connected", { timeout: 10_000 });
   } catch {
     test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
     return;
   }
-
-  await mockSecretsRoutes(page);
-
-  // Navigate to the post-OAuth callback URL
-  await page.goto("/secrets?focus=u:google&toast=connected");
 
   // Passport renders without crashing
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
@@ -250,15 +240,14 @@ test("secrets OAuth callback: ?toast=connected shows connected toast and strips 
 // ---------------------------------------------------------------------------
 
 test("secrets OAuth error: ?oauth_error=invalid_grant renders without crash", async ({ page, baseURL }) => {
+  await mockSecretsRoutes(page);
+
   try {
-    await page.goto("/secrets", { timeout: 10_000 });
+    await page.goto("/secrets?oauth_error=invalid_grant", { timeout: 10_000 });
   } catch {
     test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
     return;
   }
-
-  await mockSecretsRoutes(page);
-  await page.goto("/secrets?oauth_error=invalid_grant");
 
   // Passport renders without crashing even with error param
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
@@ -274,6 +263,10 @@ test("secrets OAuth error: ?oauth_error=invalid_grant renders without crash", as
 // ---------------------------------------------------------------------------
 
 test("secrets: revealMode=never from localStorage hides reveal button on CLI page", async ({ page, baseURL }) => {
+  // Install mocks before the first navigation so all API calls are intercepted.
+  await mockSecretsRoutes(page);
+
+  // First goto establishes the page origin so we can write to localStorage.
   try {
     await page.goto("/secrets", { timeout: 10_000 });
   } catch {
@@ -281,22 +274,22 @@ test("secrets: revealMode=never from localStorage hides reveal button on CLI pag
     return;
   }
 
-  // Set revealMode=never in localStorage before navigating
+  // Set revealMode=never in localStorage AFTER origin is established.
   await page.evaluate(() => {
     localStorage.setItem("secrets.tweaks.revealMode", "never");
   });
 
-  await mockSecretsRoutes(page);
+  // Navigate to the CLI focus URL. Mocks are already active so the inventory
+  // fetch will return the stub data and claude-cli will appear in the Spine.
   await page.goto("/secrets?focus=c:claude-cli");
 
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
 
-  // When data-page="cli" is rendered (mock data), "reveal token" must be absent
-  const cliPage = page.locator('[data-page="cli"]');
-  if (await cliPage.isAttached({ timeout: 3_000 }).catch(() => false)) {
-    // The reveal token button should not be present
-    await expect(page.locator("button", { hasText: /reveal token/i })).not.toBeAttached();
-  }
+  // CLI page must be rendered for the claude-cli credential
+  await expect(page.locator('[data-page="cli"]')).toBeAttached({ timeout: 5_000 });
+
+  // When revealMode=never, the "reveal token" button must not be present
+  await expect(page.locator("button", { hasText: /reveal token/i })).not.toBeAttached();
 
   // Cleanup
   await page.evaluate(() => localStorage.removeItem("secrets.tweaks.revealMode"));

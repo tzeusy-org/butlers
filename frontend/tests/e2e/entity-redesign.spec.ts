@@ -69,37 +69,11 @@ const MOCK_ENTITY_DETAIL = {
   meta: {},
 };
 
-/** ContactDetail with entity_id set — for entity-link navigation test. */
-const MOCK_CONTACT_WITH_ENTITY: Record<string, unknown> = {
-  id: CONTACT_ID,
-  full_name: "Alice Fixture",
-  first_name: "Alice",
-  last_name: "Fixture",
-  nickname: null,
-  email: null,
-  phone: null,
-  labels: [],
-  last_interaction_at: null,
-  warmth: null,
-  notes: null,
-  birthday: null,
-  company: null,
-  job_title: null,
-  address: null,
-  metadata: {},
-  created_at: "2026-01-01T00:00:00Z",
-  updated_at: "2026-01-01T00:00:00Z",
-  roles: [],
-  entity_id: ENTITY_ID,
-  contact_info: [],
-  preferred_channel: null,
-};
-
-/** ContactDetail without entity_id — for "no entity link" test. */
-const MOCK_CONTACT_NO_ENTITY: Record<string, unknown> = {
-  ...MOCK_CONTACT_WITH_ENTITY,
-  entity_id: null,
-};
+// Note: The /contacts/:contactId route now uses ContactEntityRedirect (PR #2000)
+// which calls GET /api/relationship/contacts/:id/entity (the entity-resolver
+// sub-endpoint), not the full contact detail endpoint.  The old ContactDetail
+// mock objects have been replaced with entity-resolver response stubs in the
+// contact detail tests below.
 
 /** A dunbar_tier_override timeline event. */
 const MOCK_DUNBAR_TIER_OVERRIDE_ITEM = {
@@ -322,25 +296,31 @@ test.describe("entity-redesign: entity detail page", () => {
 
 // ---------------------------------------------------------------------------
 // Test suite: contact detail page
+//
+// The /contacts/:contactId route now uses ContactEntityRedirect (PR #2000).
+// It calls GET /api/relationship/contacts/:id/entity (the entity-resolver
+// sub-endpoint, NOT the full contact detail endpoint) and either:
+//   - redirects to /entities/:entityId when entity_id is set, or
+//   - shows a "Contact not linked to an entity" recovery state when unlinked.
+// The old ContactDetailPage (with tabs) is no longer rendered.
 // ---------------------------------------------------------------------------
 
 test.describe("entity-redesign: contact detail page", () => {
 
   // -------------------------------------------------------------------------
-  // Test 5: Contact detail page no longer renders a tab block
+  // Test 5: Unlinked contact shows recovery state (no tab block)
   //
-  // The old contact detail page had a tabbed-content block (Notes, Interactions,
-  // Gifts, Loans). The entity-redesign removed this in favour of the unified
-  // entity detail page. Verify no [role="tablist"] is present.
+  // When a contact has no entity_id, ContactEntityRedirect renders an empty
+  // state ("Contact not linked to an entity") — the old tabbed layout is gone.
   // -------------------------------------------------------------------------
 
   test("contact detail page does not render a tab block", async ({ page, baseURL }) => {
-    // Stub the contact detail endpoint (no entity_id → no entity link rendered)
-    await page.route(`**/api/relationship/contacts/${CONTACT_ID}**`, (route) => {
+    // Stub the entity-resolver sub-endpoint (unlinked: no entity_id)
+    await page.route(`**/api/relationship/contacts/${CONTACT_ID}/entity**`, (route) => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(MOCK_CONTACT_NO_ENTITY),
+        body: JSON.stringify({ entity_id: null, status: "unlinked" }),
       });
     });
 
@@ -353,29 +333,33 @@ test.describe("entity-redesign: contact detail page", () => {
       return;
     }
 
-    // The contact name should be visible (page rendered successfully).
-    // Use the page-level heading (text-3xl in DetailPage) for a stable, unique locator.
-    await expect(page.getByRole("heading", { name: "Alice Fixture" })).toBeVisible();
+    // Recovery state must be shown (contact not linked to entity)
+    await expect(
+      page.getByText("Contact not linked to an entity"),
+    ).toBeVisible({ timeout: TIMEOUT_MS });
 
     // No tablist must be present anywhere on the page
     await expect(page.locator('[role="tablist"]')).not.toBeAttached();
   });
 
   // -------------------------------------------------------------------------
-  // Test 6: Entity link in contact header navigates to /entities/:id
+  // Test 6: Linked contact redirects directly to /entities/:id
+  //
+  // When the entity-resolver returns an entity_id, ContactEntityRedirect
+  // performs a client-side navigate() to /entities/:entityId immediately.
   // -------------------------------------------------------------------------
 
   test("entity link in contact header navigates to /entities/:id", async ({ page, baseURL }) => {
-    // Stub the contact endpoint WITH entity_id so the "View entity activity →" link renders
-    await page.route(`**/api/relationship/contacts/${CONTACT_ID}**`, (route) => {
+    // Stub the entity-resolver sub-endpoint (linked: has entity_id)
+    await page.route(`**/api/relationship/contacts/${CONTACT_ID}/entity**`, (route) => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(MOCK_CONTACT_WITH_ENTITY),
+        body: JSON.stringify({ entity_id: ENTITY_ID, status: "linked" }),
       });
     });
 
-    // Also stub the entity page stubs so clicking the link doesn't error
+    // Stub the entity detail endpoints so the redirect destination renders
     await installEntityStubs(page);
 
     const ok = await tryNavigate(page, `/contacts/${CONTACT_ID}`);
@@ -387,14 +371,14 @@ test.describe("entity-redesign: contact detail page", () => {
       return;
     }
 
-    // The "View entity activity →" link must be present
-    const entityLink = page.getByRole("link", { name: /view entity activity/i });
-    await expect(entityLink).toBeVisible();
-
-    // Click the link and verify navigation to /entities/:id
-    await entityLink.click();
+    // ContactEntityRedirect navigates to /entities/:entityId immediately.
     await page.waitForURL(new RegExp(`/entities/${ENTITY_ID}`), { timeout: TIMEOUT_MS });
     expect(page.url()).toContain(`/entities/${ENTITY_ID}`);
+
+    // The entity detail page renders the entity name
+    await expect(
+      page.getByRole("heading", { name: "Alice Fixture" }).first(),
+    ).toBeVisible({ timeout: TIMEOUT_MS });
   });
 
 });

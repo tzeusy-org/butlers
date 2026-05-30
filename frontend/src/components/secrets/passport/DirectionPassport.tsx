@@ -214,7 +214,7 @@ export function DirectionPassport({
           style={{ borderBottom: "1px solid var(--border)" }}
         >
           <div className="min-w-0">
-            <Eyebrow sub={new Date().toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: "numeric" })}>
+            <Eyebrow sub={new Date().toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}>
               secrets
             </Eyebrow>
             <div className="mt-2.5">
