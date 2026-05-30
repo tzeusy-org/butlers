@@ -258,7 +258,11 @@ def _pending_action_to_api(
     )
 
 
-def _pending_action_to_detail(action: PendingAction, butler_name: str) -> ApprovalDetail:
+def _pending_action_to_detail(
+    action: PendingAction,
+    butler_name: str,
+    target_contact: TargetContact | None = None,
+) -> ApprovalDetail:
     """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
     proposed_action = {
@@ -278,6 +282,7 @@ def _pending_action_to_detail(action: PendingAction, butler_name: str) -> Approv
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,
+        target_contact=target_contact,
     )
 
 
@@ -1862,7 +1867,8 @@ async def get_approval_detail(
                 row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
             if row is not None:
                 pa = PendingAction.from_row(row)
-                return ApiResponse(data=_pending_action_to_detail(pa, butler_name))
+                target_contact = await _resolve_target_contact(db_mgr, pa)
+                return ApiResponse(data=_pending_action_to_detail(pa, butler_name, target_contact))
         except Exception:
             continue
 

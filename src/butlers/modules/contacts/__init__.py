@@ -957,79 +957,23 @@ class ContactsModule(Module):
 
 
 async def _enrich_telegram_chat_ids(provider: TelegramContactsProvider, pool: Any) -> None:
-    """Post-sync enrichment: resolve private chat IDs and write to contact_info.
+    """Post-sync enrichment for Telegram private chat IDs — disabled after cut-over.
 
-    Calls provider.enrich_chat_ids() to get {user_id: chat_id} mapping from
-    Telegram dialogs, then upserts telegram_chat_id entries in public.contact_info
-    for each contact matched via contacts_source_links.
+    Write-path cut-over (bu-k9ylx): ``public.contact_info`` is read-only and
+    ``telegram_chat_id`` is a routing identifier with NO triple predicate (it is
+    a numeric chat ID, not a user-facing handle), so it has no home in
+    ``relationship.entity_facts``.  This enrichment therefore no longer persists
+    anything and is a no-op.
+
+    NOTE (follow-up): re-homing routing identifiers like ``telegram_chat_id`` is
+    out of scope for the channel-fact triple model and tracked as a follow-up —
+    they need a dedicated routing-identifier store, not the contact_info table.
     """
-    try:
-        user_to_chat = await provider.enrich_chat_ids(pool)
-    except Exception as exc:
-        logger.warning("Telegram chat ID enrichment failed: %s", exc, exc_info=True)
-        return
-
-    if not user_to_chat:
-        return
-
-    enriched = 0
-    for user_id, chat_id in user_to_chat.items():
-        # Find the local contact via source link
-        row = await pool.fetchrow(
-            """
-            SELECT sl.local_contact_id FROM contacts_source_links sl
-            WHERE sl.provider = 'telegram' AND sl.external_contact_id = $1
-              AND sl.deleted_at IS NULL
-            """,
-            str(user_id),
-        )
-        if row is None:
-            continue
-
-        local_contact_id = row["local_contact_id"]
-        chat_id_str = str(chat_id)
-
-        # Upsert telegram_chat_id in public.contact_info
-        await pool.execute(
-            """
-            INSERT INTO public.contact_info (contact_id, type, value, label, is_primary)
-            VALUES ($1, 'telegram_chat_id', $2, NULL, false)
-            ON CONFLICT DO NOTHING
-            """,
-            local_contact_id,
-            chat_id_str,
-        )
-
-        # Dual-write shim (Group C): best-effort post-commit triple emission (Amendment 14).
-        # ``telegram_chat_id`` is intentionally NOT in _CI_TYPE_TO_PREDICATE — it is a routing
-        # identifier (numeric chat ID), not a user-facing handle.  emit_contact_info_fact()
-        # will log a debug skip and return immediately for unmapped types.  The shim call is
-        # kept here for pattern consistency so future predicate additions need only update the
-        # mapping in dual_write.py; no call-site changes will be required.
-        try:
-            from butlers.tools.relationship.dual_write import emit_contact_info_fact
-
-            await emit_contact_info_fact(
-                pool,
-                contact_id=local_contact_id,
-                ci_type="telegram_chat_id",
-                value=chat_id_str,
-                is_primary=False,
-                src="dual-write",
-            )
-        except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
-            logger.warning(
-                "_enrich_telegram_chat_ids: emit_contact_info_fact failed for contact %s "
-                "(ci_type='telegram_chat_id', value=%r) — dual-write failure swallowed",
-                local_contact_id,
-                chat_id_str,
-                exc_info=True,
-            )
-
-        enriched += 1
-
-    if enriched:
-        logger.info("Telegram chat ID enrichment: wrote %d entries", enriched)
+    logger.debug(
+        "_enrich_telegram_chat_ids: skipped — telegram_chat_id has no triple home "
+        "after the contact_info write-path cut-over (no-op)"
+    )
+    return
 
 
 __all__ = [

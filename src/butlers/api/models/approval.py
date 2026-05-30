@@ -68,6 +68,7 @@ class ApprovalDetail(BaseModel):
     status: str
     decided_by: str | None = None
     decided_at: datetime | None = None
+    target_contact: TargetContact | None = None
 
 
 class ApprovalSummary(BaseModel):

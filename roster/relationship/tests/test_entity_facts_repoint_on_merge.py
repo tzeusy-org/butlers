@@ -36,6 +36,7 @@ All tests are pure unit tests (no Docker / Postgres required).
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -217,10 +218,16 @@ def _patch_entity_merge():
 
 
 def _patch_retract_all():
-    return patch(
-        "butlers.tools.relationship.contacts.retract_all_contact_info_facts",
-        new_callable=AsyncMock,
-    )
+    """No-op context manager (retained for call-site compatibility).
+
+    The write-path cut-over (Migration bead 8, bu-k9ylx) removed the dual-write
+    snapshot-retraction helper ``contacts.retract_all_contact_info_facts``;
+    ``contact_merge`` no longer calls it (channel facts live only in the triple
+    store and are re-pointed by the entity_facts blocks these tests exercise).
+    There is nothing left to patch, so this is a null context manager kept only
+    so the existing ``with ... _patch_retract_all():`` call sites stay valid.
+    """
+    return nullcontext()
 
 
 # ---------------------------------------------------------------------------
