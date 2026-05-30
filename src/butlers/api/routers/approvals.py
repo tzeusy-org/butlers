@@ -319,15 +319,20 @@ async def _resolve_target_contact(
     except (ValueError, AttributeError):
         return None
 
-    # Find a pool that has public.contacts (try all butlers)
+    # Find a pool that has public.contacts (try all butlers).
+    # Roles live on public.entities (joined via contacts.entity_id), NOT on
+    # public.contacts — the contacts table has no roles column.
     for butler_name in db_mgr.butler_names:
         try:
             pool = db_mgr.pool(butler_name)
             row = await pool.fetchrow(
                 """
-                SELECT id, name, COALESCE(roles, '{}') AS roles
-                FROM public.contacts
-                WHERE id = $1
+                SELECT c.id,
+                       c.name,
+                       COALESCE(e.roles, '{}') AS roles
+                FROM public.contacts c
+                LEFT JOIN public.entities e ON e.id = c.entity_id
+                WHERE c.id = $1
                 """,
                 contact_uuid,
             )
