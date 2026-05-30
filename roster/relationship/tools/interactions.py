@@ -1,15 +1,21 @@
 """Interactions — log and list interactions with contacts backed by SPO facts.
 
 Each interaction is a temporal fact in the facts table:
-  subject   = contact:{contact_id}
+  subject   = entity:{entity_id}
   predicate = 'interaction_{type}'  (e.g. 'interaction_call', 'interaction_meeting')
   content   = summary
   metadata  = {type, direction, duration_minutes, extra_metadata}
-  valid_at  = occurred_at   (temporal — multiple coexist per contact)
+  valid_at  = occurred_at   (temporal — multiple coexist per entity)
   scope     = 'relationship'
-  entity_id = contact's entity UUID (resolved via contacts.entity_id)
+  entity_id = entity UUID (same value as subject's id)
 
 The response shape is backward compatible with the legacy interactions table.
+
+Subject key format changed from ``contact:{contact_id}`` to ``entity:{entity_id}``
+in migration rel_018.  All callers that previously passed contact_id must resolve
+to entity_id before calling interaction_log/interaction_list.  The MCP tool
+wrappers in roster/relationship/modules/tools.py handle this resolution so that
+LLM-facing tool signatures still accept contact_id.
 """
 
 from __future__ import annotations
@@ -21,8 +27,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
-
-from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +45,7 @@ def _get_embedding_engine() -> Any:
     return _embedding_engine
 
 
-def _fact_to_interaction(row: dict[str, Any], contact_id: uuid.UUID) -> dict[str, Any]:
+def _fact_to_interaction(row: dict[str, Any], entity_id: uuid.UUID) -> dict[str, Any]:
     """Convert a facts row to the interactions API shape.
 
     ``type`` is derived from the predicate suffix (e.g. 'interaction_call' → 'call'),
@@ -58,7 +62,7 @@ def _fact_to_interaction(row: dict[str, Any], contact_id: uuid.UUID) -> dict[str
         interaction_type = meta.get("type", "")
     return {
         "id": row["id"],
-        "contact_id": contact_id,
+        "entity_id": entity_id,
         "type": interaction_type,
         "summary": row.get("content") or None,
         "occurred_at": row.get("valid_at"),
@@ -71,7 +75,7 @@ def _fact_to_interaction(row: dict[str, Any], contact_id: uuid.UUID) -> dict[str
 
 async def interaction_log(
     pool: asyncpg.Pool,
-    contact_id: uuid.UUID,
+    entity_id: uuid.UUID,
     type: str,
     summary: str | None = None,
     occurred_at: datetime | None = None,
@@ -79,7 +83,22 @@ async def interaction_log(
     duration_minutes: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Log an interaction with a contact."""
+    """Log an interaction with an entity.
+
+    Args:
+        pool: Database connection pool.
+        entity_id: The entity UUID to log the interaction for.  Callers that
+            only have a contact_id must resolve it first via
+            ``resolve_contact_entity_id()`` before calling this function.
+            The MCP tool wrappers in roster/relationship/modules/tools.py
+            perform this resolution transparently.
+        type: Interaction type string (e.g. 'call', 'email', 'meeting').
+        summary: Optional free-text summary of the interaction.
+        occurred_at: When the interaction occurred. If None, defaults to now.
+        direction: One of 'incoming', 'outgoing', 'mutual'.
+        duration_minutes: Duration of the interaction in minutes.
+        metadata: Arbitrary extra metadata dict.
+    """
     if direction is not None and direction not in _VALID_DIRECTIONS:
         raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
 
@@ -90,7 +109,7 @@ async def interaction_log(
 
     # Idempotency guard: only explicit timestamps are treated as deterministic backfills.
     # Direction is included in the dedup key so that incoming and outgoing facts for the
-    # same contact on the same day can coexist (RFC 0013 D4).  Two facts with direction=None
+    # same entity on the same day can coexist (RFC 0013 D4).  Two facts with direction=None
     # still collide with each other to preserve backward compatibility.
     if occurred_at is not None:
         predicate = f"interaction_{type}"
@@ -106,7 +125,7 @@ async def interaction_log(
                   AND metadata->>'direction' = $4
                 LIMIT 1
                 """,
-                f"contact:{contact_id}",
+                f"entity:{entity_id}",
                 predicate,
                 occurred_at,
                 direction,
@@ -123,7 +142,7 @@ async def interaction_log(
                   AND metadata->>'direction' IS NULL
                 LIMIT 1
                 """,
-                f"contact:{contact_id}",
+                f"entity:{entity_id}",
                 predicate,
                 occurred_at,
             )
@@ -133,7 +152,6 @@ async def interaction_log(
                 "existing_id": str(existing["id"]),
             }
 
-    entity_id = await resolve_contact_entity_id(pool, contact_id)
     embedding_engine = _get_embedding_engine()
 
     fact_metadata: dict[str, Any] = {"type": type}
@@ -147,7 +165,7 @@ async def interaction_log(
     fact_id = (
         await store_fact(
             pool,
-            subject=f"contact:{contact_id}",
+            subject=f"entity:{entity_id}",
             predicate=f"interaction_{type}",
             content=summary or "",
             embedding_engine=embedding_engine,
@@ -161,7 +179,7 @@ async def interaction_log(
 
     result = {
         "id": fact_id,
-        "contact_id": contact_id,
+        "entity_id": entity_id,
         "type": type,
         "summary": summary,
         "occurred_at": effective_occurred_at,
@@ -186,9 +204,13 @@ async def interaction_log_group(
 ) -> dict[str, Any]:
     """Log an interaction with all members of a contact group in a single call.
 
-    Resolves group membership from the group_members table and fans out
+    Resolves group membership from the group_members table, maps each member's
+    contact_id to their entity_id via public.contacts, and fans out
     interaction_log() calls for each member with group_size injected into
     the fact metadata.
+
+    Members whose contact has no linked entity_id (data integrity issue) are
+    skipped with a warning; they are not counted in either logged or skipped.
 
     Returns:
         {"logged": N, "skipped": M, "group_size": G, "status": "ok"} on success.
@@ -199,8 +221,15 @@ async def interaction_log_group(
         raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
 
     # Fetch up to 21 rows so we can detect oversized groups without reading unbounded rows.
+    # Join contacts to resolve entity_id in the same query.
     rows = await pool.fetch(
-        "SELECT contact_id FROM group_members WHERE group_id = $1 LIMIT 21",
+        """
+        SELECT gm.contact_id, c.entity_id
+        FROM group_members gm
+        JOIN contacts c ON c.id = gm.contact_id
+        WHERE gm.group_id = $1
+        LIMIT 21
+        """,
         group_id,
     )
 
@@ -215,8 +244,7 @@ async def interaction_log_group(
         )
         return {"logged": 0, "skipped": 0, "group_size": group_size, "status": "group_too_large"}
 
-    members = [row["contact_id"] for row in rows]
-    group_size = len(members)
+    group_size = len(rows)
 
     logged = 0
     skipped = 0
@@ -226,10 +254,18 @@ async def interaction_log_group(
         **(metadata or {}),
     }
 
-    for contact_id in members:
+    for row in rows:
+        contact_id = row["contact_id"]
+        entity_id = row["entity_id"]
+        if entity_id is None:
+            logger.warning(
+                "interaction_log_group: contact %s has no linked entity_id — skipping",
+                contact_id,
+            )
+            continue
         result = await interaction_log(
             pool,
-            contact_id,
+            entity_id,
             type=type,
             summary=summary,
             occurred_at=occurred_at,
@@ -247,14 +283,20 @@ async def interaction_log_group(
 
 async def interaction_list(
     pool: asyncpg.Pool,
-    contact_id: uuid.UUID,
+    entity_id: uuid.UUID,
     limit: int = 20,
     direction: str | None = None,
     type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List interactions for a contact, most recent first.
+    """List interactions for an entity, most recent first.
 
     Optionally filter by direction and/or type.
+
+    Args:
+        pool: Database connection pool.
+        entity_id: The entity UUID to list interactions for.  Callers that
+            only have a contact_id must resolve it first via
+            ``resolve_contact_entity_id()`` before calling this function.
     """
     conditions = [
         "subject = $1",
@@ -262,7 +304,7 @@ async def interaction_list(
         "scope = 'relationship'",
         "validity = 'active'",
     ]
-    params: list[Any] = [f"contact:{contact_id}"]
+    params: list[Any] = [f"entity:{entity_id}"]
     idx = 2
 
     if direction is not None:
@@ -287,4 +329,4 @@ async def interaction_list(
         """,
         *params,
     )
-    return [_fact_to_interaction(dict(r), contact_id) for r in rows]
+    return [_fact_to_interaction(dict(r), entity_id) for r in rows]
