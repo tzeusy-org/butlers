@@ -46,6 +46,47 @@ _PENDING_ACTION_EXPIRY_HOURS = 72
 
 
 # ---------------------------------------------------------------------------
+# Channel-type → contact predicate mapping
+# ---------------------------------------------------------------------------
+# Maps a ``public.contact_info.type`` (or channel type) to the contact predicate
+# in ``relationship.entity_predicate_registry``.  This lived in the now-removed
+# dual-write shim (dual_write.py) during the migration window; after the
+# write-path cut-over (Migration bead 8, bu-k9ylx) it is owned by the central
+# writer module so all writers resolve channel-type → predicate from one place.
+#
+# Must stay in sync with the reconciler's CASE mapping in
+# ``roster/relationship/jobs/relationship_jobs.py`` and the channel-type mapping
+# in ``src/butlers/identity.py::_CHANNEL_TYPE_TO_PREDICATE``.
+#
+#     email    → has-email
+#     phone    → has-phone
+#     telegram → has-handle   (scoped handle)
+#     linkedin → has-handle
+#     twitter  → has-handle
+#     website  → has-website
+#     other    → has-handle
+_CI_TYPE_TO_PREDICATE: dict[str, str] = {
+    "email": "has-email",
+    "phone": "has-phone",
+    "telegram": "has-handle",
+    "linkedin": "has-handle",
+    "twitter": "has-handle",
+    "website": "has-website",
+    "other": "has-handle",
+}
+
+
+def contact_info_type_to_predicate(ci_type: str) -> str | None:
+    """Return the contact predicate for *ci_type*, or ``None`` when unmapped.
+
+    Returns ``None`` for types with no registered predicate mapping (e.g.
+    ``'address'``, ``'fax'``, ``'telegram_chat_id'``, ``'google_health'``) —
+    callers MUST skip the triple write for those types.
+    """
+    return _CI_TYPE_TO_PREDICATE.get(ci_type)
+
+
+# ---------------------------------------------------------------------------
 # Return type
 # ---------------------------------------------------------------------------
 

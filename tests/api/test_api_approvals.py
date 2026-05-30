@@ -795,3 +795,78 @@ async def test_why_null_evidence_empty_on_legacy_rows(app):
     assert len(actions) == 1
     assert actions[0]["why"] is None
     assert actions[0]["evidence"] == []
+
+
+# ---------------------------------------------------------------------------
+# Detail dossier resolves target_contact from contact_id (bu — approvals UX)
+# ---------------------------------------------------------------------------
+
+
+async def test_detail_resolves_target_contact_from_contact_id(app):
+    """GET /api/approvals/{id} resolves a tool_args.contact_id into a named,
+    linkable target_contact so the dossier never shows a bare UUID."""
+    contact_id = uuid4()
+    action_id = uuid4()
+    action_row = {
+        "id": action_id,
+        "tool_name": "notify",
+        "tool_args": {"contact_id": str(contact_id), "text": "hi"},
+        "status": "pending",
+        "requested_at": _NOW,
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": None,
+        "decided_at": None,
+        "execution_result": None,
+        "approval_rule_id": None,
+        "why": None,
+        "evidence": [],
+    }
+    contact_row = {"id": contact_id, "name": "Ada Lovelace", "roles": ["owner"]}
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    # detail SELECT * FROM pending_actions WHERE id = $1
+    mock_conn.fetchrow = AsyncMock(return_value=action_row)
+
+    def fetchval_mock(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return None
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_mock)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    # _resolve_target_contact queries public.contacts via pool.fetchrow directly
+    mock_pool.fetchrow = AsyncMock(return_value=contact_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+    mock_db.butler_names = ["general"]
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    detail = resp.json()["data"]
+    assert detail["target_contact"] is not None
+    assert detail["target_contact"]["id"] == str(contact_id)
+    assert detail["target_contact"]["name"] == "Ada Lovelace"
+    assert detail["target_contact"]["roles"] == ["owner"]

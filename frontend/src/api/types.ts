@@ -1572,6 +1572,7 @@ export interface ApprovalDetail {
   status: string;
   decided_by?: string | null;
   decided_at?: string | null;
+  target_contact?: TargetContact | null;
 }
 
 /** Quiet-hours policy singleton. */
