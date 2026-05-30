@@ -28,6 +28,12 @@ class ContactInfoEntry(BaseModel):
     The ``value`` field is set to ``None`` when ``secured=True`` and the
     caller has not been granted reveal access (masked in list views).
     Use GET /contacts/{id}/secrets/{info_id} to retrieve the real value.
+
+    ``source`` discriminates the backing store for this entry:
+    - ``None`` / absent — legacy ``public.contact_info`` row (default; omitted
+      from serialised output for backward compatibility).
+    - ``"entity_facts"`` — the entry was synthesised from a
+      ``relationship.entity_facts`` has-* triple for the linked entity.
     """
 
     id: UUID
@@ -37,6 +43,7 @@ class ContactInfoEntry(BaseModel):
     secured: bool = False
     parent_id: UUID | None = None
     context: str | None = None  # personal | work | other | None (unclassified)
+    source: Literal["entity_facts"] | None = None
 
 
 class ContactSummary(BaseModel):

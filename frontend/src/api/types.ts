@@ -741,6 +741,9 @@ export interface ContactInfoEntry {
   secured: boolean;
   parent_id: string | null;
   context: string | null; // personal | work | other | null (unclassified)
+  /** Backing store discriminator. Absent/null → legacy public.contact_info row.
+   * "entity_facts" → synthesised from relationship.entity_facts has-* triple. */
+  source?: "entity_facts" | null;
 }
 
 /** Full contact detail with all fields including identity fields. */
