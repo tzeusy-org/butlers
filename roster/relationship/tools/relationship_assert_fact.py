@@ -46,6 +46,47 @@ _PENDING_ACTION_EXPIRY_HOURS = 72
 
 
 # ---------------------------------------------------------------------------
+# Channel-type → contact predicate mapping
+# ---------------------------------------------------------------------------
+# Maps a ``public.contact_info.type`` (or channel type) to the contact predicate
+# in ``relationship.entity_predicate_registry``.  This lived in the now-removed
+# dual-write shim (dual_write.py) during the migration window; after the
+# write-path cut-over (Migration bead 8, bu-k9ylx) it is owned by the central
+# writer module so all writers resolve channel-type → predicate from one place.
+#
+# Must stay in sync with the reconciler's CASE mapping in
+# ``roster/relationship/jobs/relationship_jobs.py`` and the channel-type mapping
+# in ``src/butlers/identity.py::_CHANNEL_TYPE_TO_PREDICATE``.
+#
+#     email    → has-email
+#     phone    → has-phone
+#     telegram → has-handle   (scoped handle)
+#     linkedin → has-handle
+#     twitter  → has-handle
+#     website  → has-website
+#     other    → has-handle
+_CI_TYPE_TO_PREDICATE: dict[str, str] = {
+    "email": "has-email",
+    "phone": "has-phone",
+    "telegram": "has-handle",
+    "linkedin": "has-handle",
+    "twitter": "has-handle",
+    "website": "has-website",
+    "other": "has-handle",
+}
+
+
+def contact_info_type_to_predicate(ci_type: str) -> str | None:
+    """Return the contact predicate for *ci_type*, or ``None`` when unmapped.
+
+    Returns ``None`` for types with no registered predicate mapping (e.g.
+    ``'address'``, ``'fax'``, ``'telegram_chat_id'``, ``'google_health'``) —
+    callers MUST skip the triple write for those types.
+    """
+    return _CI_TYPE_TO_PREDICATE.get(ci_type)
+
+
+# ---------------------------------------------------------------------------
 # Return type
 # ---------------------------------------------------------------------------
 
@@ -558,3 +599,93 @@ async def relationship_assert_fact(
     # transaction ourselves.
     async with pool.acquire() as acquired_conn:
         return await _assert_on_conn(acquired_conn, wrap_transaction=True, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Retraction helper
+# ---------------------------------------------------------------------------
+
+
+async def retract_contact_info_fact(
+    pool: asyncpg.Pool,
+    subject: uuid.UUID,
+    ci_type: str,
+    ci_value: str,
+    *,
+    conn: asyncpg.Connection | None = None,
+) -> uuid.UUID | None:
+    """Retract the active ``has-*`` fact matching *(subject, ci_type, ci_value)*.
+
+    Mirrors the retraction performed by
+    ``delete_entity_contact`` (``DELETE /entities/{id}/contacts/{pred}/{hash}``):
+    marks the matching row ``validity = 'retracted'``.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.  Used when *conn* is None.
+    subject:
+        UUID of the subject entity (FK to ``public.entities.id``).
+    ci_type:
+        ``public.contact_info.type`` value (e.g. ``'email'``, ``'phone'``,
+        ``'telegram'``).  Used to derive the predicate via
+        :func:`contact_info_type_to_predicate`.
+    ci_value:
+        The channel value (object string) of the fact to retract.
+    conn:
+        Optional open ``asyncpg.Connection``.  Pass when calling from inside
+        an existing transaction to avoid nested-transaction errors.
+
+    Returns
+    -------
+    uuid.UUID | None
+        The ``id`` of the retracted row, or ``None`` when no active fact
+        matching ``(subject, predicate, ci_value)`` was found (already
+        retracted or never asserted).
+
+    Notes
+    -----
+    - Types that have no registered predicate mapping (e.g.
+      ``'telegram_chat_id'``, ``'address'``) are silently skipped — the
+      function returns ``None`` without touching the DB.
+    - The caller is responsible for supplying the correct ``ci_value``; the
+      retraction is keyed on the exact string stored in ``object``.
+    """
+    predicate = contact_info_type_to_predicate(ci_type)
+    if predicate is None:
+        # No triple for this channel type — nothing to retract.
+        return None
+
+    async def _retract(c: asyncpg.Connection) -> uuid.UUID | None:
+        fact_id = await c.fetchval(
+            """
+            UPDATE relationship.entity_facts
+            SET validity   = 'retracted',
+                updated_at = now()
+            WHERE subject   = $1
+              AND predicate = $2
+              AND object    = $3
+              AND validity  = 'active'
+            RETURNING id
+            """,
+            subject,
+            predicate,
+            ci_value,
+        )
+        if fact_id is None:
+            return None
+
+        logger.info(
+            "retract_contact_info_fact: retracted fact %s (subject=%s, predicate=%s, type=%s)",
+            fact_id,
+            subject,
+            predicate,
+            ci_type,
+        )
+        return fact_id
+
+    if conn is not None:
+        return await _retract(conn)
+
+    async with pool.acquire() as acquired_conn:
+        return await _retract(acquired_conn)

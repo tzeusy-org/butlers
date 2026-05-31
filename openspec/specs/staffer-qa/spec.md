@@ -43,6 +43,9 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 - **THEN** it registers all enabled discovery sources from `[modules.qa].enabled_sources` config
 - **AND** default enabled sources are: `["log_scanner", "session_records", "butler_reports"]`
 - **AND** disabled sources are logged at INFO level and skipped during patrol
+- **AND** adapter diagnostics that are only useful through structured session
+  records are suppressed by `log_scanner` only when `session_records` actually
+  registered successfully
 
 #### Scenario: QA module MCP tool registration
 - **WHEN** the QA module's `register_tools()` is called

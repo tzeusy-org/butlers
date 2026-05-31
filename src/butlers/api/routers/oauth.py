@@ -1255,88 +1255,21 @@ async def _register_google_health_contact_info(
     The function is idempotent — re-running pairing for the same account
     produces no duplicate row (``ON CONFLICT (type, value) DO NOTHING``).
     """
-    insert_status: str | None = None
-    owner_contact_id_for_shim: uuid.UUID | None = None
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Locate the owner entity by role.
-            owner_entity_id = await conn.fetchval(
-                """
-                SELECT id FROM public.entities
-                WHERE 'owner' = ANY(roles)
-                LIMIT 1
-                """
-            )
-            if owner_entity_id is None:
-                # Owner entity not bootstrapped yet — skip. The daemon
-                # bootstraps this on startup; if it's absent here it will
-                # be created before the connector's first poll.
-                logger.debug("Skipping google_health contact_info upsert — no owner entity")
-                return
-
-            # Find an existing contact linked to the owner entity. If none,
-            # create a minimal one. In a fresh install the owner contact
-            # row is bootstrapped by the daemon; this fallback guarantees
-            # the upsert succeeds even on partial installs.
-            owner_contact_id = await conn.fetchval(
-                """
-                SELECT id FROM public.contacts
-                WHERE entity_id = $1
-                ORDER BY created_at ASC
-                LIMIT 1
-                """,
-                owner_entity_id,
-            )
-            if owner_contact_id is None:
-                owner_contact_id = await conn.fetchval(
-                    """
-                    INSERT INTO public.contacts (name, entity_id, metadata)
-                    VALUES ('Owner', $1, '{}'::jsonb)
-                    RETURNING id
-                    """,
-                    owner_entity_id,
-                )
-
-            insert_status = await conn.execute(
-                """
-                INSERT INTO public.contact_info (contact_id, type, value, secured)
-                VALUES ($1, 'google_health', $2, false)
-                ON CONFLICT (type, value) DO NOTHING
-                """,
-                owner_contact_id,
-                google_user_id,
-            )
-            owner_contact_id_for_shim = owner_contact_id
-
-    # Dual-write shim (Group E): best-effort post-commit triple emission (Amendment 14).
-    # Only emit when the INSERT actually created a row (asyncpg status == "INSERT 0 1").
-    # When ON CONFLICT DO NOTHING silently skips because the (type, value) pair is already
-    # claimed by a different contact, we must not assert a triple for the owner entity —
-    # that would contradict the authoritative SQL state.
-    # Note: google_health is currently unmapped in _CI_TYPE_TO_PREDICATE, so emit_contact_info_fact
-    # will no-op internally. The gate is kept as a correctness safeguard so that if the
-    # predicate mapping is added in the future, spurious triples on conflict paths are prevented.
-    if insert_status == "INSERT 0 1" and owner_contact_id_for_shim is not None:
-        try:
-            from butlers.tools.relationship.dual_write import emit_contact_info_fact
-
-            await emit_contact_info_fact(
-                pool,
-                contact_id=owner_contact_id_for_shim,
-                ci_type="google_health",
-                value=google_user_id,
-                is_primary=False,
-                src="dual-write",
-            )
-        except Exception:  # noqa: BLE001 — best-effort: never block the legacy commit
-            logger.warning(
-                "_register_google_health_contact_info: emit_contact_info_fact failed for "
-                "contact %s (ci_type='google_health', value=%r) — dual-write failure swallowed",
-                owner_contact_id_for_shim,
-                google_user_id,
-                exc_info=True,
-            )
+    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only and
+    # 'google_health' is an unmapped routing/credential identifier with no triple
+    # predicate, so it has no home in relationship.entity_facts.  This pairing
+    # therefore no longer persists anything and is a no-op.
+    #
+    # NOTE (follow-up): re-homing the google_health → owner-entity routing link
+    # (so inbound health events still reverse-resolve to the owner) is out of
+    # scope for the channel-fact triple model and tracked as a follow-up — it
+    # needs a dedicated routing/credential store, not the contact_info table.
+    _ = google_user_id  # retained for signature/back-compat; no longer persisted
+    logger.debug(
+        "_register_google_health_contact_info: skipped — google_health has no triple "
+        "home after the contact_info write-path cut-over (no-op)"
+    )
+    return
 
 
 async def _update_account_refresh_token(

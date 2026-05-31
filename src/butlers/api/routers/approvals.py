@@ -258,7 +258,11 @@ def _pending_action_to_api(
     )
 
 
-def _pending_action_to_detail(action: PendingAction, butler_name: str) -> ApprovalDetail:
+def _pending_action_to_detail(
+    action: PendingAction,
+    butler_name: str,
+    target_contact: TargetContact | None = None,
+) -> ApprovalDetail:
     """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
     proposed_action = {
@@ -278,6 +282,7 @@ def _pending_action_to_detail(action: PendingAction, butler_name: str) -> Approv
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,
+        target_contact=target_contact,
     )
 
 
@@ -314,15 +319,20 @@ async def _resolve_target_contact(
     except (ValueError, AttributeError):
         return None
 
-    # Find a pool that has public.contacts (try all butlers)
+    # Find a pool that has public.contacts (try all butlers).
+    # Roles live on public.entities (joined via contacts.entity_id), NOT on
+    # public.contacts — the contacts table has no roles column.
     for butler_name in db_mgr.butler_names:
         try:
             pool = db_mgr.pool(butler_name)
             row = await pool.fetchrow(
                 """
-                SELECT id, name, COALESCE(roles, '{}') AS roles
-                FROM public.contacts
-                WHERE id = $1
+                SELECT c.id,
+                       c.name,
+                       COALESCE(e.roles, '{}') AS roles
+                FROM public.contacts c
+                LEFT JOIN public.entities e ON e.id = c.entity_id
+                WHERE c.id = $1
                 """,
                 contact_uuid,
             )
@@ -1862,7 +1872,8 @@ async def get_approval_detail(
                 row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
             if row is not None:
                 pa = PendingAction.from_row(row)
-                return ApiResponse(data=_pending_action_to_detail(pa, butler_name))
+                target_contact = await _resolve_target_contact(db_mgr, pa)
+                return ApiResponse(data=_pending_action_to_detail(pa, butler_name, target_contact))
         except Exception:
             continue
 

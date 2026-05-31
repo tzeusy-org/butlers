@@ -455,10 +455,18 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         duration_minutes: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Log an interaction with a contact."""
+        """Log an interaction with a contact.
+
+        Resolves the contact's entity_id internally before writing the fact.
+        The fact is stored under subject='entity:{entity_id}' in the facts table.
+        """
+        from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
+
+        pool = module._get_pool()
+        entity_id = await resolve_contact_entity_id(pool, contact_id)
         return await _inter.interaction_log(
-            module._get_pool(),
-            contact_id,
+            pool,
+            entity_id,
             type,
             summary=summary,
             occurred_at=occurred_at,
@@ -476,11 +484,16 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     ) -> list[dict[str, Any]]:
         """List interactions for a contact, most recent first.
 
+        Resolves the contact's entity_id internally before querying.
         Optionally filter by direction and/or type.
         """
+        from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
+
+        pool = module._get_pool()
+        entity_id = await resolve_contact_entity_id(pool, contact_id)
         return await _inter.interaction_list(
-            module._get_pool(),
-            contact_id,
+            pool,
+            entity_id,
             limit=limit,
             direction=direction,
             type=type,

@@ -6,6 +6,7 @@ import shutil
 import sys
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,6 +59,51 @@ async def pool(provisioned_postgres_pool):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
+        """)
+
+        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
+                predicate TEXT NOT NULL PRIMARY KEY,
+                kind TEXT NOT NULL,
+                object_kind TEXT NOT NULL,
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            INSERT INTO relationship.entity_predicate_registry
+                (predicate, kind, object_kind, description)
+            VALUES
+                ('has-email', 'contact', 'literal', 'Email address for the entity.'),
+                ('has-phone', 'contact', 'literal', 'Phone number for the entity.'),
+                ('has-handle', 'contact', 'literal', 'Channel-scoped handle.'),
+                ('has-website', 'contact', 'literal', 'Web URL associated with the entity.')
+            ON CONFLICT (predicate) DO NOTHING
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
+                id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+                subject UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
+                predicate TEXT NOT NULL,
+                object TEXT NOT NULL,
+                object_kind TEXT NOT NULL CHECK (object_kind IN ('literal', 'entity')),
+                src TEXT NOT NULL,
+                conf FLOAT NOT NULL DEFAULT 1.0 CHECK (conf >= 0.0 AND conf <= 1.0),
+                last_seen TIMESTAMPTZ,
+                weight INT,
+                verified BOOL NOT NULL DEFAULT false,
+                "primary" BOOL,
+                validity TEXT NOT NULL DEFAULT 'active'
+                    CHECK (validity IN ('active', 'retracted', 'superseded')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
+                ON relationship.entity_facts (subject, predicate, object)
+                WHERE validity = 'active'
         """)
 
         # Create base relationship tables (from 001 migration)
@@ -119,7 +165,9 @@ async def pool(provisioned_postgres_pool):
                 decided_by TEXT,
                 decided_at TIMESTAMPTZ,
                 execution_result JSONB,
-                approval_rule_id UUID
+                approval_rule_id UUID,
+                why TEXT,
+                evidence JSONB NOT NULL DEFAULT '[]'::jsonb
             )
         """)
 
@@ -206,56 +254,124 @@ async def pool(provisioned_postgres_pool):
         yield p
 
 
+_TYPE_TO_PREDICATE = {
+    "email": "has-email",
+    "phone": "has-phone",
+    "telegram": "has-handle",
+    "linkedin": "has-handle",
+    "twitter": "has-handle",
+    "website": "has-website",
+    "other": "has-handle",
+}
+
+
+async def _insert_legacy_contact_info(
+    pool,
+    contact_id: uuid.UUID,
+    type: str,
+    value: str,
+    *,
+    label: str | None = None,
+    is_primary: bool = False,
+    context: str | None = None,
+) -> dict[str, Any]:
+    row = await pool.fetchrow(
+        """
+        INSERT INTO public.contact_info (contact_id, type, value, label, is_primary, context)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+        """,
+        contact_id,
+        type,
+        value,
+        label,
+        is_primary,
+        context,
+    )
+    return dict(row)
+
+
+async def _fetch_contact_fact(pool, entity_id: uuid.UUID, type: str, value: str):
+    return await pool.fetchrow(
+        """
+        SELECT *
+        FROM relationship.entity_facts
+        WHERE subject = $1
+          AND predicate = $2
+          AND object = $3
+          AND validity = 'active'
+        """,
+        entity_id,
+        _TYPE_TO_PREDICATE[type],
+        value,
+    )
+
+
 # ------------------------------------------------------------------
 # contact_info_add
 # ------------------------------------------------------------------
 
 
 async def test_contact_info_add_email(pool):
-    """contact_info_add stores an email entry."""
+    """contact_info_add stores an email triple."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "Alice")
     info = await contact_info_add(pool, c["id"], "email", "alice@example.com")
-    assert info["contact_id"] == c["id"]
+    assert info["status"] == "asserted"
     assert info["type"] == "email"
     assert info["value"] == "alice@example.com"
     assert info["is_primary"] is False
-    assert info["label"] is None
+    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "alice@example.com")
+    assert fact is not None
+    assert fact["src"] == "relationship"
 
 
 async def test_contact_info_add_with_label(pool):
-    """contact_info_add stores an entry with a label."""
+    """contact_info_add accepts legacy label input but writes a triple."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "Bob")
     info = await contact_info_add(pool, c["id"], "phone", "+1-555-0100", label="Work")
-    assert info["label"] == "Work"
     assert info["type"] == "phone"
     assert info["value"] == "+1-555-0100"
+    assert "label" not in info
+    fact = await _fetch_contact_fact(pool, c["entity_id"], "phone", "+1-555-0100")
+    assert fact is not None
 
 
 async def test_contact_info_add_primary(pool):
-    """contact_info_add can mark an entry as primary."""
+    """contact_info_add encodes primary on the triple."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "Charlie")
     info = await contact_info_add(pool, c["id"], "email", "c@example.com", is_primary=True)
     assert info["is_primary"] is True
+    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "c@example.com")
+    assert fact["primary"] is True
 
 
 async def test_contact_info_add_primary_unsets_previous(pool):
-    """Setting a new primary unsets the previous primary of the same type."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    """Primary is stored per asserted triple after the write-path cut-over."""
+    from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "Diana")
     await contact_info_add(pool, c["id"], "email", "d1@example.com", is_primary=True)
     await contact_info_add(pool, c["id"], "email", "d2@example.com", is_primary=True)
 
-    infos = await contact_info_list(pool, c["id"], type="email")
-    primary_entries = [i for i in infos if i["is_primary"]]
-    assert len(primary_entries) == 1
-    assert primary_entries[0]["value"] == "d2@example.com"
+    rows = await pool.fetch(
+        """
+        SELECT object, "primary"
+        FROM relationship.entity_facts
+        WHERE subject = $1 AND predicate = 'has-email' AND validity = 'active'
+        ORDER BY object
+        """,
+        c["entity_id"],
+    )
+    assert [(row["object"], row["primary"]) for row in rows] == [
+        ("d1@example.com", True),
+        ("d2@example.com", True),
+    ]
 
 
 async def test_contact_info_add_invalid_type(pool):
@@ -277,8 +393,8 @@ async def test_contact_info_add_nonexistent_contact(pool):
 
 
 async def test_contact_info_add_all_types(pool):
-    """contact_info_add accepts all valid types."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    """contact_info_add accepts all valid types and maps them to contact predicates."""
+    from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "AllTypes")
     types_values = [
@@ -293,10 +409,22 @@ async def test_contact_info_add_all_types(pool):
     for t, v in types_values:
         await contact_info_add(pool, c["id"], t, v)
 
-    infos = await contact_info_list(pool, c["id"])
-    assert len(infos) == 7
-    stored_types = {i["type"] for i in infos}
-    assert stored_types == {"email", "phone", "telegram", "linkedin", "twitter", "website", "other"}
+    facts = await pool.fetch(
+        """
+        SELECT predicate, object
+        FROM relationship.entity_facts
+        WHERE subject = $1 AND validity = 'active'
+        ORDER BY object
+        """,
+        c["entity_id"],
+    )
+    assert len(facts) == 7
+    assert {row["predicate"] for row in facts} == {
+        "has-email",
+        "has-phone",
+        "has-handle",
+        "has-website",
+    }
 
 
 # ------------------------------------------------------------------
@@ -306,11 +434,11 @@ async def test_contact_info_add_all_types(pool):
 
 async def test_contact_info_list_all(pool):
     """contact_info_list returns all info for a contact."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "ListAll")
-    await contact_info_add(pool, c["id"], "email", "list@example.com")
-    await contact_info_add(pool, c["id"], "phone", "+1-555-0200")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "list@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-0200")
 
     infos = await contact_info_list(pool, c["id"])
     assert len(infos) == 2
@@ -318,12 +446,12 @@ async def test_contact_info_list_all(pool):
 
 async def test_contact_info_list_by_type(pool):
     """contact_info_list filters by type when specified."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "ListByType")
-    await contact_info_add(pool, c["id"], "email", "a@example.com")
-    await contact_info_add(pool, c["id"], "email", "b@example.com")
-    await contact_info_add(pool, c["id"], "phone", "+1-555-0300")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "a@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "b@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-0300")
 
     emails = await contact_info_list(pool, c["id"], type="email")
     assert len(emails) == 2
@@ -335,11 +463,13 @@ async def test_contact_info_list_by_type(pool):
 
 async def test_contact_info_list_primary_first(pool):
     """contact_info_list returns primary entries first."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "PrimaryFirst")
-    await contact_info_add(pool, c["id"], "email", "secondary@example.com")
-    await contact_info_add(pool, c["id"], "email", "primary@example.com", is_primary=True)
+    await _insert_legacy_contact_info(pool, c["id"], "email", "secondary@example.com")
+    await _insert_legacy_contact_info(
+        pool, c["id"], "email", "primary@example.com", is_primary=True
+    )
 
     emails = await contact_info_list(pool, c["id"], type="email")
     assert emails[0]["value"] == "primary@example.com"
@@ -361,49 +491,40 @@ async def test_contact_info_list_empty(pool):
 
 
 async def test_contact_info_remove(pool):
-    """contact_info_remove deletes an entry."""
-    from butlers.tools.relationship import (
-        contact_create,
-        contact_info_add,
-        contact_info_list,
-        contact_info_remove,
-    )
+    """contact_info_remove is blocked after the write-path cut-over."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create, contact_info_remove
 
     c = await contact_create(pool, "RemoveMe")
-    info = await contact_info_add(pool, c["id"], "email", "remove@example.com")
+    info = await _insert_legacy_contact_info(pool, c["id"], "email", "remove@example.com")
 
-    await contact_info_remove(pool, info["id"])
-
-    infos = await contact_info_list(pool, c["id"])
-    assert len(infos) == 0
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_remove(pool, info["id"])
 
 
 async def test_contact_info_remove_nonexistent(pool):
-    """contact_info_remove raises ValueError for nonexistent entry."""
+    """contact_info_remove fails fast before looking up the legacy row."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
     from butlers.tools.relationship import contact_info_remove
 
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
         await contact_info_remove(pool, uuid.uuid4())
 
 
 async def test_contact_info_remove_keeps_others(pool):
-    """contact_info_remove only deletes the specified entry."""
-    from butlers.tools.relationship import (
-        contact_create,
-        contact_info_add,
-        contact_info_list,
-        contact_info_remove,
-    )
+    """contact_info_remove leaves legacy rows untouched because deletes are blocked."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create, contact_info_list, contact_info_remove
 
     c = await contact_create(pool, "KeepOthers")
-    info1 = await contact_info_add(pool, c["id"], "email", "keep1@example.com")
-    await contact_info_add(pool, c["id"], "email", "keep2@example.com")
+    info1 = await _insert_legacy_contact_info(pool, c["id"], "email", "keep1@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "keep2@example.com")
 
-    await contact_info_remove(pool, info1["id"])
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_remove(pool, info1["id"])
 
     infos = await contact_info_list(pool, c["id"])
-    assert len(infos) == 1
-    assert infos[0]["value"] == "keep2@example.com"
+    assert len(infos) == 2
 
 
 # ------------------------------------------------------------------
@@ -415,12 +536,11 @@ async def test_contact_search_by_info_exact(pool):
     """contact_search_by_info finds a contact by exact email value."""
     from butlers.tools.relationship import (
         contact_create,
-        contact_info_add,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "SearchExact")
-    await contact_info_add(pool, c["id"], "email", "searchexact@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "searchexact@example.com")
 
     results = await contact_search_by_info(pool, "searchexact@example.com")
     assert len(results) >= 1
@@ -431,12 +551,11 @@ async def test_contact_search_by_info_partial(pool):
     """contact_search_by_info supports partial matching (ILIKE)."""
     from butlers.tools.relationship import (
         contact_create,
-        contact_info_add,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "SearchPartial")
-    await contact_info_add(pool, c["id"], "email", "partial_unique_xyz@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "partial_unique_xyz@example.com")
 
     results = await contact_search_by_info(pool, "partial_unique_xyz")
     assert len(results) >= 1
@@ -447,13 +566,12 @@ async def test_contact_search_by_info_with_type_filter(pool):
     """contact_search_by_info filters by type when specified."""
     from butlers.tools.relationship import (
         contact_create,
-        contact_info_add,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "SearchTyped")
-    await contact_info_add(pool, c["id"], "email", "typed_search_unique@example.com")
-    await contact_info_add(pool, c["id"], "phone", "+1-555-9999")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "typed_search_unique@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-9999")
 
     # Search by email type only
     results = await contact_search_by_info(pool, "typed_search_unique", type="email")
@@ -469,14 +587,13 @@ async def test_contact_search_by_info_multiple_contacts(pool):
     """contact_search_by_info finds multiple contacts sharing a domain."""
     from butlers.tools.relationship import (
         contact_create,
-        contact_info_add,
         contact_search_by_info,
     )
 
     c1 = await contact_create(pool, "Multi-A")
     c2 = await contact_create(pool, "Multi-B")
-    await contact_info_add(pool, c1["id"], "email", "a@shareduniquedomain.com")
-    await contact_info_add(pool, c2["id"], "email", "b@shareduniquedomain.com")
+    await _insert_legacy_contact_info(pool, c1["id"], "email", "a@shareduniquedomain.com")
+    await _insert_legacy_contact_info(pool, c2["id"], "email", "b@shareduniquedomain.com")
 
     results = await contact_search_by_info(pool, "shareduniquedomain.com")
     found_ids = {r["id"] for r in results}
@@ -490,40 +607,42 @@ async def test_contact_search_by_info_multiple_contacts(pool):
 
 
 async def test_contact_info_add_work_domain_sets_context_work(pool, monkeypatch):
-    """Email at a known work domain gets context='work' automatically."""
+    """Legacy context heuristic is not written by contact_info_add after cut-over."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "WorkPerson")
     monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
     info = await contact_info_add(pool, c["id"], "email", "alice@example.com")
 
-    assert info["context"] == "work"
+    assert "context" not in info
+    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "alice@example.com")
+    assert fact is not None
 
 
 async def test_contact_info_add_personal_domain_leaves_context_null(pool, monkeypatch):
-    """Email at a non-work domain leaves context as None."""
+    """contact_info_add ignores legacy context metadata for non-work domains too."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "PersonalPerson")
     monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
     info = await contact_info_add(pool, c["id"], "email", "bob@gmail.com")
 
-    assert info["context"] is None
+    assert "context" not in info
 
 
 async def test_contact_info_add_explicit_context_not_overridden(pool, monkeypatch):
-    """Explicit context='personal' on a work-domain email is respected."""
+    """Explicit legacy context is accepted for compatibility and ignored."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "ExplicitContext")
     monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
     info = await contact_info_add(pool, c["id"], "email", "boss@example.com", context="personal")
 
-    assert info["context"] == "personal"
+    assert "context" not in info
 
 
 async def test_contact_info_add_non_email_type_no_heuristic(pool, monkeypatch):
-    """Work-domain heuristic does not apply to non-email types."""
+    """contact_info_add ignores legacy context metadata for non-email types."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "PhonePerson")
@@ -531,18 +650,16 @@ async def test_contact_info_add_non_email_type_no_heuristic(pool, monkeypatch):
     # Phone value happens to look like a domain — should not be classified
     info = await contact_info_add(pool, c["id"], "phone", "+1-555-0200")
 
-    assert info["context"] is None
+    assert "context" not in info
 
 
 async def test_contact_info_add_invalid_context_raises(pool):
-    """contact_info_add raises ValueError for an unrecognised context value."""
-    import pytest
-
+    """contact_info_add accepts ignored legacy context values after cut-over."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "InvalidContextPerson")
-    with pytest.raises(ValueError, match="Invalid context"):
-        await contact_info_add(pool, c["id"], "email", "x@example.com", context="bogus")
+    info = await contact_info_add(pool, c["id"], "email", "x@example.com", context="bogus")
+    assert info["status"] == "asserted"
 
 
 # ------------------------------------------------------------------
@@ -605,12 +722,11 @@ async def test_contact_search_by_info_case_insensitive(pool):
     """contact_search_by_info is case-insensitive."""
     from butlers.tools.relationship import (
         contact_create,
-        contact_info_add,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "CaseTest")
-    await contact_info_add(pool, c["id"], "email", "CaseUnique@Example.COM")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "CaseUnique@Example.COM")
 
     results = await contact_search_by_info(pool, "caseunique@example.com")
     assert any(r["id"] == c["id"] for r in results)
@@ -621,12 +737,11 @@ async def test_contact_search_by_info_excludes_archived(pool):
     from butlers.tools.relationship import (
         contact_archive,
         contact_create,
-        contact_info_add,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "ArchivedSearch")
-    await contact_info_add(pool, c["id"], "email", "archivedsearch_unique@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "archivedsearch_unique@example.com")
     await contact_archive(pool, c["id"])
 
     results = await contact_search_by_info(pool, "archivedsearch_unique@example.com")
@@ -645,12 +760,11 @@ async def test_contact_search_by_info_phone(pool):
     """contact_search_by_info works for phone lookups."""
     from butlers.tools.relationship import (
         contact_create,
-        contact_info_add,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "PhoneLookup")
-    await contact_info_add(pool, c["id"], "phone", "+1-555-7777-unique")
+    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-7777-unique")
 
     results = await contact_search_by_info(pool, "+1-555-7777-unique", type="phone")
     assert len(results) >= 1
@@ -664,11 +778,13 @@ async def test_contact_search_by_info_phone(pool):
 
 async def test_multiple_emails_per_contact(pool):
     """A contact can have multiple email addresses."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "MultiEmail")
-    await contact_info_add(pool, c["id"], "email", "work@example.com", label="Work")
-    await contact_info_add(pool, c["id"], "email", "personal@example.com", label="Personal")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "work@example.com", label="Work")
+    await _insert_legacy_contact_info(
+        pool, c["id"], "email", "personal@example.com", label="Personal"
+    )
 
     emails = await contact_info_list(pool, c["id"], type="email")
     assert len(emails) == 2
@@ -678,12 +794,12 @@ async def test_multiple_emails_per_contact(pool):
 
 async def test_multiple_types_per_contact(pool):
     """A contact can have multiple types of contact info."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "MultiType")
-    await contact_info_add(pool, c["id"], "email", "multi@example.com")
-    await contact_info_add(pool, c["id"], "phone", "+1-555-0400")
-    await contact_info_add(pool, c["id"], "telegram", "@multitype")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "multi@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-0400")
+    await _insert_legacy_contact_info(pool, c["id"], "telegram", "@multitype")
 
     infos = await contact_info_list(pool, c["id"])
     assert len(infos) == 3
@@ -709,10 +825,10 @@ async def test_contact_info_orphan_after_contact_delete(pool):
     contact is hard-deleted.  Application code that performs hard contact deletes must
     explicitly clean up public.contact_info rows.
     """
-    from butlers.tools.relationship import contact_create, contact_info_add
+    from butlers.tools.relationship import contact_create
 
     c = await contact_create(pool, "CascadeTest")
-    await contact_info_add(pool, c["id"], "email", "cascade@example.com")
+    await _insert_legacy_contact_info(pool, c["id"], "email", "cascade@example.com")
 
     # Hard delete the contact — no FK cascade, so public.contact_info rows persist
     await pool.execute("DELETE FROM contacts WHERE id = $1", c["id"])
@@ -796,18 +912,19 @@ async def test_contact_info_add_owner_gate_parks_action(pool):
         action_id,
     )
     assert action is not None, "pending_actions row must exist"
-    assert action["tool_name"] == "contact_info_add"
+    assert action["tool_name"] == "relationship_assert_fact"
     assert action["status"] == "pending"
 
     # asyncpg JSONB codec returns a Python dict directly; no json.loads needed
     args = action["tool_args"]
-    assert args["value"] == "owner@example.com"
-    assert args["type"] == "email"
-    assert str(args["contact_id"]) == str(owner["id"])
+    assert args["object"] == "owner@example.com"
+    assert args["predicate"] == "has-email"
+    assert args["object_kind"] == "literal"
+    assert args["subject"] == str(owner["entity_id"])
 
 
 async def test_contact_info_add_non_owner_writes_immediately(pool):
-    """contact_info_add targeting a non-owner contact writes immediately (no gate)."""
+    """contact_info_add targeting a non-owner contact writes a fact immediately."""
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "NonOwner")
@@ -818,12 +935,8 @@ async def test_contact_info_add_non_owner_writes_immediately(pool):
     assert result["type"] == "email"
     assert result["value"] == "nonowner@example.com"
 
-    # Row exists in DB
-    rows = await pool.fetch(
-        "SELECT * FROM public.contact_info WHERE contact_id = $1",
-        c["id"],
-    )
-    assert len(rows) == 1
+    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "nonowner@example.com")
+    assert fact is not None
 
 
 # ------------------------------------------------------------------
@@ -832,73 +945,83 @@ async def test_contact_info_add_non_owner_writes_immediately(pool):
 
 
 async def test_contact_info_update_value(pool):
-    """contact_info_update can change the value of a non-owner entry."""
-    from butlers.tools.relationship import contact_create, contact_info_add
+    """contact_info_update is blocked after the write-path cut-over."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "UpdateValue")
-    info = await contact_info_add(pool, c["id"], "email", "old@example.com")
+    info = await _insert_legacy_contact_info(pool, c["id"], "email", "old@example.com")
 
-    updated = await contact_info_update(pool, info["id"], value="new@example.com")
-    assert updated["value"] == "new@example.com"
-    assert updated["type"] == "email"
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_update(pool, info["id"], value="new@example.com")
 
 
 async def test_contact_info_update_label(pool):
-    """contact_info_update can change the label of a non-owner entry."""
-    from butlers.tools.relationship import contact_create, contact_info_add
+    """contact_info_update rejects legacy label updates."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "UpdateLabel")
-    info = await contact_info_add(pool, c["id"], "phone", "+1-555-0001", label="Home")
+    info = await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-0001", label="Home")
 
-    updated = await contact_info_update(pool, info["id"], label="Mobile")
-    assert updated["label"] == "Mobile"
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_update(pool, info["id"], label="Mobile")
 
 
 async def test_contact_info_update_is_primary(pool):
-    """contact_info_update can promote an entry to primary and demotes the previous primary."""
-    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    """contact_info_update rejects legacy primary updates."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create, contact_info_list
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "UpdatePrimary")
-    i1 = await contact_info_add(pool, c["id"], "email", "first@example.com", is_primary=True)
-    i2 = await contact_info_add(pool, c["id"], "email", "second@example.com", is_primary=False)
+    i1 = await _insert_legacy_contact_info(
+        pool, c["id"], "email", "first@example.com", is_primary=True
+    )
+    i2 = await _insert_legacy_contact_info(
+        pool, c["id"], "email", "second@example.com", is_primary=False
+    )
 
-    await contact_info_update(pool, i2["id"], is_primary=True)
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_update(pool, i2["id"], is_primary=True)
 
     emails = await contact_info_list(pool, c["id"], type="email")
     primary = [e for e in emails if e["is_primary"]]
     assert len(primary) == 1
-    assert primary[0]["id"] == i2["id"]
+    assert primary[0]["id"] == i1["id"]
 
-    # First entry is no longer primary
+    # First entry is unchanged because update is blocked.
     first = next(e for e in emails if e["id"] == i1["id"])
-    assert first["is_primary"] is False
+    assert first["is_primary"] is True
 
 
 async def test_contact_info_update_no_fields_raises(pool):
-    """contact_info_update raises ValueError when no fields are provided."""
-    from butlers.tools.relationship import contact_create, contact_info_add
+    """contact_info_update fails fast even when no fields are provided."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "UpdateNoFields")
-    info = await contact_info_add(pool, c["id"], "email", "noupdate@example.com")
+    info = await _insert_legacy_contact_info(pool, c["id"], "email", "noupdate@example.com")
 
-    with pytest.raises(ValueError, match="At least one"):
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
         await contact_info_update(pool, info["id"])
 
 
 async def test_contact_info_update_nonexistent_raises(pool):
-    """contact_info_update raises ValueError for nonexistent entry."""
+    """contact_info_update fails fast before looking up the legacy row."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
     from butlers.tools.relationship.contact_info import contact_info_update
 
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
         await contact_info_update(pool, uuid.uuid4(), value="x@example.com")
 
 
 async def test_contact_info_update_owner_gate_parks_action(pool):
-    """contact_info_update targeting the owner contact creates a pending_action."""
+    """contact_info_update targeting the owner contact is blocked, not parked."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
     from butlers.tools.relationship.contact_info import contact_info_update
 
     owner = await _make_owner_contact(pool)
@@ -913,41 +1036,25 @@ async def test_contact_info_update_owner_gate_parks_action(pool):
         owner["id"],
     )
 
-    result = await contact_info_update(pool, info_id, value="new-owner@example.com")
-
-    # Returns pending_approval, not the updated row
-    assert result["status"] == "pending_approval"
-    assert "action_id" in result
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_update(pool, info_id, value="new-owner@example.com")
 
     # DB value unchanged
     row = await pool.fetchrow("SELECT value FROM public.contact_info WHERE id = $1", info_id)
     assert row["value"] == "old-owner@example.com"
 
-    # pending_actions row created
-    action = await pool.fetchrow(
-        "SELECT * FROM pending_actions WHERE id = $1::uuid",
-        result["action_id"],
-    )
-    assert action is not None
-    assert action["tool_name"] == "contact_info_update"
-    assert action["status"] == "pending"
-    # asyncpg JSONB codec returns a Python dict directly; no json.loads needed
-    args = action["tool_args"]
-    assert args["value"] == "new-owner@example.com"
-
 
 async def test_contact_info_update_non_owner_writes_immediately(pool):
-    """contact_info_update targeting a non-owner contact writes immediately."""
-    from butlers.tools.relationship import contact_create, contact_info_add
+    """contact_info_update targeting a non-owner contact is blocked."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "UpdateNonOwner")
-    info = await contact_info_add(pool, c["id"], "email", "nonowner-update@example.com")
+    info = await _insert_legacy_contact_info(pool, c["id"], "email", "nonowner-update@example.com")
 
-    result = await contact_info_update(pool, info["id"], value="updated-nonowner@example.com")
-
-    assert result.get("status") != "pending_approval"
-    assert result["value"] == "updated-nonowner@example.com"
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_update(pool, info["id"], value="updated-nonowner@example.com")
 
 
 # ------------------------------------------------------------------
@@ -1006,60 +1113,52 @@ class _PoolWithFailingConn:
 
 
 async def test_contact_info_add_rollback_on_insert_failure(pool):
-    """contact_info_add rolls back the demote-primary UPDATE when the INSERT fails.
-
-    Sets up a contact with an existing primary email, then injects a failure on the
-    INSERT RETURNING fetchrow so only the demote UPDATE ran before the error.  Asserts
-    that after the exception propagates the original primary row is still marked
-    is_primary=True — demonstrating that the transaction wraps both operations atomically.
-    """
-    from butlers.tools.relationship import contact_create, contact_info_add
+    """contact_info_add propagates central-writer failures without legacy writes."""
+    from butlers.tools.relationship import contact_create
     from butlers.tools.relationship.contact_info import contact_info_add as _contact_info_add
 
     c = await contact_create(pool, "TxnRollbackAdd")
-    existing = await contact_info_add(
-        pool, c["id"], "email", "original@example.com", is_primary=True
-    )
 
-    # Verify baseline: original row is primary.
-    row_before = await pool.fetchrow(
-        "SELECT is_primary FROM public.contact_info WHERE id = $1", existing["id"]
-    )
-    assert row_before["is_primary"] is True
-
-    failing_pool = _PoolWithFailingConn(pool, RuntimeError("simulated INSERT failure"))
-
-    with pytest.raises(RuntimeError, match="simulated INSERT failure"):
+    with (
+        patch(
+            "butlers.tools.relationship.contact_info.relationship_assert_fact",
+            side_effect=RuntimeError("simulated central-writer failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated central-writer failure"),
+    ):
         await _contact_info_add(
-            failing_pool,  # type: ignore[arg-type]
+            pool,
             c["id"],
             "email",
             "new@example.com",
             is_primary=True,
         )
 
-    # The demote UPDATE must have been rolled back — original row still primary.
-    row_after = await pool.fetchrow(
-        "SELECT is_primary FROM public.contact_info WHERE id = $1", existing["id"]
+    fact_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1",
+        c["entity_id"],
     )
-    assert row_after["is_primary"] is True, (
-        "Transaction rollback failed: demote UPDATE was not rolled back when INSERT raised"
+    legacy_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM public.contact_info WHERE contact_id = $1",
+        c["id"],
     )
+    assert fact_count == 0
+    assert legacy_count == 0
 
 
 async def test_contact_info_update_rollback_on_update_failure(pool):
-    """contact_info_update rolls back the demote-primary UPDATE when the main UPDATE fails.
-
-    Sets up a contact with two emails — the first marked primary.  Injects a failure on
-    the main UPDATE RETURNING fetchrow after the demote-primary execute has already run.
-    Asserts that the original primary row is still marked is_primary=True.
-    """
-    from butlers.tools.relationship import contact_create, contact_info_add
+    """contact_info_update is blocked before any legacy mutation can occur."""
+    from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+    from butlers.tools.relationship import contact_create
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "TxnRollbackUpdate")
-    first = await contact_info_add(pool, c["id"], "email", "first@example.com", is_primary=True)
-    second = await contact_info_add(pool, c["id"], "email", "second@example.com", is_primary=False)
+    first = await _insert_legacy_contact_info(
+        pool, c["id"], "email", "first@example.com", is_primary=True
+    )
+    second = await _insert_legacy_contact_info(
+        pool, c["id"], "email", "second@example.com", is_primary=False
+    )
 
     # Verify baseline.
     row_before = await pool.fetchrow(
@@ -1067,19 +1166,11 @@ async def test_contact_info_update_rollback_on_update_failure(pool):
     )
     assert row_before["is_primary"] is True
 
-    failing_pool = _PoolWithFailingConn(pool, RuntimeError("simulated UPDATE failure"))
+    with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
+        await contact_info_update(pool, second["id"], is_primary=True)
 
-    with pytest.raises(RuntimeError, match="simulated UPDATE failure"):
-        await contact_info_update(
-            failing_pool,  # type: ignore[arg-type]
-            second["id"],
-            is_primary=True,
-        )
-
-    # Demote of first must have been rolled back — first row still primary.
+    # No demote happened — first row remains primary.
     row_after = await pool.fetchrow(
         "SELECT is_primary FROM public.contact_info WHERE id = $1", first["id"]
     )
-    assert row_after["is_primary"] is True, (
-        "Transaction rollback failed: demote UPDATE was not rolled back when main UPDATE raised"
-    )
+    assert row_after["is_primary"] is True

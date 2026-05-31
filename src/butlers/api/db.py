@@ -12,7 +12,12 @@ from typing import Any
 
 import asyncpg
 
-from butlers.db import register_jsonb_codec, schema_search_path, should_retry_with_ssl_disable
+from butlers.db import (
+    pool_sizes_from_env,
+    register_jsonb_codec,
+    schema_search_path,
+    should_retry_with_ssl_disable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +42,21 @@ class DatabaseManager:
         user: str = "postgres",
         password: str = "postgres",
         ssl: str | None = None,
-        min_pool_size: int = 1,
-        max_pool_size: int = 3,
+        min_pool_size: int | None = None,
+        max_pool_size: int | None = None,
     ) -> None:
+        env_min_pool_size, env_max_pool_size = pool_sizes_from_env(
+            "BUTLERS_API_DB_POOL",
+            default_min=1,
+            default_max=3,
+        )
         self._host = host
         self._port = port
         self._user = user
         self._password = password
         self._ssl = ssl
-        self._min_pool_size = min_pool_size
-        self._max_pool_size = max_pool_size
+        self._min_pool_size = env_min_pool_size if min_pool_size is None else min_pool_size
+        self._max_pool_size = env_max_pool_size if max_pool_size is None else max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
         self._butler_modules: dict[str, frozenset[str]] = {}

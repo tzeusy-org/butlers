@@ -616,17 +616,24 @@ async def test_loan_list_returns_loans(pool):
 
 
 async def test_interaction_log_writes_to_facts(pool):
-    """interaction_log writes a temporal fact."""
+    """interaction_log writes a temporal fact keyed by entity_id."""
     from butlers.tools.relationship.interactions import interaction_log
 
     contact = await _make_contact(pool, "Wendy")
-    cid = contact["id"]
+    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact["id"])
     occurred = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
 
-    result = await interaction_log(pool, cid, "call", summary="Caught up", occurred_at=occurred)
+    result = await interaction_log(
+        pool, entity_id, "call", summary="Caught up", occurred_at=occurred
+    )
     assert result["type"] == "call"
     assert result["summary"] == "Caught up"
-    assert result["contact_id"] == cid
+    assert result["entity_id"] == entity_id
+
+    # Fact must be stored with entity: subject prefix.
+    row = await pool.fetchrow("SELECT subject FROM facts WHERE id = $1", result["id"])
+    assert row is not None
+    assert row["subject"] == f"entity:{entity_id}"
 
 
 async def test_interaction_log_with_metadata(pool):
@@ -634,31 +641,31 @@ async def test_interaction_log_with_metadata(pool):
     from butlers.tools.relationship.interactions import interaction_log
 
     contact = await _make_contact(pool, "Xavier")
-    cid = contact["id"]
+    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact["id"])
     meta = {"topic": "project update"}
     occurred = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
 
     result = await interaction_log(
-        pool, cid, "meeting", summary="Project sync", occurred_at=occurred, metadata=meta
+        pool, entity_id, "meeting", summary="Project sync", occurred_at=occurred, metadata=meta
     )
     assert result["metadata"] == meta
 
 
 async def test_interaction_list_returns_interactions(pool):
-    """interaction_list reads interactions from facts."""
+    """interaction_list reads interactions from facts by entity_id."""
     from butlers.tools.relationship.interactions import interaction_list, interaction_log
 
     contact = await _make_contact(pool, "Yara")
-    cid = contact["id"]
+    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact["id"])
 
     await interaction_log(
-        pool, cid, "email", summary="Hi!", occurred_at=datetime(2026, 3, 1, tzinfo=UTC)
+        pool, entity_id, "email", summary="Hi!", occurred_at=datetime(2026, 3, 1, tzinfo=UTC)
     )
     await interaction_log(
-        pool, cid, "call", summary="Chat", occurred_at=datetime(2026, 3, 2, tzinfo=UTC)
+        pool, entity_id, "call", summary="Chat", occurred_at=datetime(2026, 3, 2, tzinfo=UTC)
     )
 
-    items = await interaction_list(pool, cid)
+    items = await interaction_list(pool, entity_id)
     assert len(items) == 2
     types = {i["type"] for i in items}
     assert "email" in types

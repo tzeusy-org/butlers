@@ -33,6 +33,81 @@ logger = logging.getLogger(__name__)
 
 # Default timeout for OpenCode CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
+_BENIGN_STDERR_LINES = frozenset(
+    {
+        "Performing one time database migration, may take a few minutes...",
+        "sqlite-migration:done",
+        "Database migration complete.",
+    }
+)
+
+
+def _filtered_stderr_lines(stderr: str) -> list[str]:
+    """Return stderr lines with known benign OpenCode lifecycle notices removed."""
+    stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return [line for line in stderr_lines if line not in _BENIGN_STDERR_LINES]
+
+
+def _extract_stdout_error_detail(stdout: str) -> str | None:
+    """Extract an actionable error detail from OpenCode JSONL stdout when present."""
+    for line in reversed(stdout.strip().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+
+        obj_type = str(obj.get("type", "")).lower()
+        if "error" not in obj_type and not any(
+            key in obj for key in ("error", "message", "detail", "details", "stderr", "code")
+        ):
+            continue
+
+        detail = _stringify_error_payload(obj)
+        if detail:
+            return detail
+    return None
+
+
+def _stringify_error_payload(payload: Any) -> str | None:
+    """Render common OpenCode error payload shapes as a compact message."""
+    if isinstance(payload, (str, int, float, bool)):
+        stripped = str(payload).strip()
+        return stripped or None
+    if isinstance(payload, dict):
+        for key in ("message", "detail", "details", "stderr", "error", "code"):
+            value = payload.get(key)
+            detail = _stringify_error_payload(value)
+            if detail:
+                return detail
+    if isinstance(payload, list):
+        parts = [
+            detail for item in payload if (detail := _stringify_error_payload(item)) is not None
+        ]
+        if parts:
+            return "; ".join(parts)
+    return None
+
+
+def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
+    """Prefer actionable OpenCode failures over benign stderr lifecycle noise."""
+    stdout_error = _extract_stdout_error_detail(stdout)
+    if stdout_error:
+        return stdout_error
+
+    filtered_stderr_lines = _filtered_stderr_lines(stderr)
+    if filtered_stderr_lines:
+        return "\n".join(filtered_stderr_lines)
+
+    stdout_clean = stdout.strip()
+    if stdout_clean:
+        return stdout_clean
+
+    return f"exit code {returncode}"
 
 
 def _find_opencode_binary() -> str:
@@ -105,7 +180,7 @@ def _parse_opencode_output(
         - usage is {input_tokens, output_tokens} or None when unavailable
     """
     if returncode != 0:
-        error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+        error_detail = _select_error_detail(stderr, stdout, returncode)
         logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
         return (f"Error: {error_detail}", [], None)
 
@@ -933,7 +1008,7 @@ class OpenCodeAdapter(RuntimeAdapter):
                 }
 
                 if returncode != 0:
-                    error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                    error_detail = _select_error_detail(stderr, stdout, returncode)
                     logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
                     self._last_process_info["error_detail"] = error_detail
                     # On non-zero exit the adapter raises immediately — no tool calls

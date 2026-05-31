@@ -259,8 +259,12 @@ memory_store_fact(
 When the message implies the user interacted with a person (met, called, had lunch, etc.), log the interaction using the resolved `contact_id`:
 
 ```python
-interaction_log(contact_id="<contact_id>", interaction_type="<type>", summary="<summary>")
+interaction_log(contact_id="<contact_id>", type="<type>", summary="<summary>")
 ```
+
+The `interaction_log` tool accepts `contact_id` and resolves it to the entity's
+`entity_id` internally before writing the fact. Passing `contact_id` is correct
+for the MCP tool interface.
 
 ## Step 7: Update Domain Records
 

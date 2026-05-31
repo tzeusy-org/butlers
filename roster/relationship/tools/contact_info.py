@@ -1,33 +1,50 @@
-"""Contact info — structured contact details and addresses."""
+"""Contact info — structured contact details and addresses.
+
+Write-path cut-over (Migration bead 8, bu-k9ylx)
+------------------------------------------------
+``public.contact_info`` is now **read-only**.  Channel-identity writes go
+through the central writer ``relationship_assert_fact()`` into
+``relationship.entity_facts`` ONLY.  Reads (``contact_info_list``,
+``contact_search_by_info``) still query ``public.contact_info`` until the table
+is dropped at Migration bead 10.
+
+- ``contact_info_add`` resolves the contact's ``entity_id`` and asserts a
+  channel triple via ``relationship_assert_fact()``.  Owner-entity writes are
+  parked as ``pending_actions`` by the central writer's RFC 0017 carve-out.
+- ``contact_info_update`` / ``contact_info_remove`` are keyed by the
+  ``public.contact_info.id`` PK, which has no equivalent in the triple store.
+  After the cut-over there is no in-place mutate/delete-by-id path; callers must
+  re-assert (update) or retract (remove) the channel fact via
+  ``relationship_assert_fact()``.  These functions now fail fast via the
+  contact_info write-block guard.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
 import uuid
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
 
+from butlers.contact_info_write_guard import assert_contact_info_writes_blocked
 from butlers.tools.relationship.contacts import _parse_contact
-from butlers.tools.relationship.dual_write import emit_contact_info_fact, retract_contact_info_fact
+from butlers.tools.relationship.relationship_assert_fact import (
+    contact_info_type_to_predicate,
+    relationship_assert_fact,
+)
 
 _CONTACT_INFO_TYPES = {"email", "phone", "telegram", "linkedin", "twitter", "website", "other"}
 _CONTACT_INFO_CONTEXTS = {"personal", "work", "other"}
 
 logger = logging.getLogger(__name__)
 
-# Pending actions expire after 72 hours by default.
-_PENDING_ACTION_EXPIRY_HOURS = 72
-
 # Work-domain heuristic: email addresses at these domains are auto-tagged
 # context='work' when no explicit context is provided on insert.
 #
 # Override at runtime via BUTLERS_WORK_DOMAINS env var (comma-separated list
 # of lowercase domain names, e.g. "example.com,acme.corp").
-# Conservative: existing rows are never updated; only new inserts pick up
-# this heuristic.
 _DEFAULT_WORK_DOMAINS: frozenset[str] = frozenset(["example.com"])
 
 
@@ -65,63 +82,19 @@ def classify_email_context(email: str) -> str | None:
     return "work" if domain in _get_work_domains() else None
 
 
-async def _is_owner_contact(pool: asyncpg.Pool, contact_id: uuid.UUID) -> bool:
-    """Return True if *contact_id* belongs to the owner contact.
+async def _resolve_contact_entity(pool: asyncpg.Pool, contact_id: uuid.UUID) -> uuid.UUID | None:
+    """Resolve the entity_id linked to *contact_id*, or None if absent.
 
-    Joins public.contacts to public.entities to read the ``roles`` array.
-    Returns False on any DB error or if the contact does not exist.
+    Reads ``public.contacts`` (a SELECT — still allowed after the cut-over).
+    Returns None when the contact does not exist or has no linked entity.
     """
-    try:
-        row = await pool.fetchrow(
-            """
-            SELECT 1
-            FROM public.contacts c
-            LEFT JOIN public.entities e ON e.id = c.entity_id
-            WHERE c.id = $1
-              AND 'owner' = ANY(COALESCE(e.roles, '{}'))
-            """,
-            contact_id,
-        )
-        return row is not None
-    except Exception:  # noqa: BLE001
-        logger.debug(
-            "contact_info: owner check failed for contact %s; treating as non-owner",
-            contact_id,
-            exc_info=True,
-        )
-        return False
-
-
-async def _create_pending_action(
-    pool: asyncpg.Pool,
-    tool_name: str,
-    tool_args: dict[str, Any],
-    summary: str,
-) -> uuid.UUID:
-    """Insert a pending_actions row and return its action_id.
-
-    Writes status='pending' so the action awaits human approval before any
-    mutation to public.contact_info occurs.
-    """
-    action_id = uuid.uuid4()
-    now = datetime.now(UTC)
-    expires_at = now + timedelta(hours=_PENDING_ACTION_EXPIRY_HOURS)
-
-    await pool.execute(
-        "INSERT INTO pending_actions "
-        "(id, tool_name, tool_args, agent_summary, session_id, status, "
-        "requested_at, expires_at) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        action_id,
-        tool_name,
-        tool_args,
-        summary,
-        None,  # session_id not available at this layer
-        "pending",
-        now,
-        expires_at,
+    row = await pool.fetchrow(
+        "SELECT entity_id FROM public.contacts WHERE id = $1",
+        contact_id,
     )
-    return action_id
+    if row is None:
+        return None
+    return row["entity_id"]
 
 
 async def contact_info_add(
@@ -129,257 +102,107 @@ async def contact_info_add(
     contact_id: uuid.UUID,
     type: str,
     value: str,
-    label: str | None = None,
+    label: str | None = None,  # noqa: ARG001 — accepted for back-compat; not stored on triples
     is_primary: bool = False,
-    context: str | None = None,
+    context: str | None = None,  # noqa: ARG001 — accepted for back-compat; not stored on triples
 ) -> dict[str, Any]:
-    """Add a piece of contact information (email, phone, etc.) for a contact.
+    """Add a channel-identity fact for a contact via the central writer.
 
-    Owner gate: if *contact_id* resolves to the owner contact, the mutation is
-    blocked and a ``pending_actions`` row is created for human approval.  The
-    caller receives a ``{"status": "pending_approval", ...}`` dict instead of
-    the inserted row.  Non-owner contacts are written immediately as before.
+    Write-path cut-over (bu-k9ylx): this asserts a triple in
+    ``relationship.entity_facts`` through ``relationship_assert_fact()`` instead
+    of inserting into ``public.contact_info``.  The contact's ``entity_id`` is
+    resolved first (SELECT on ``public.contacts``); the ``type`` is mapped to a
+    contact predicate (``has-email``, ``has-phone``, ``has-handle``,
+    ``has-website``).
+
+    Owner carve-out (RFC 0017 §2.3): when the contact's entity carries the
+    ``'owner'`` role, ``relationship_assert_fact()`` parks the mutation as a
+    ``pending_actions`` row and returns ``pending_approval``; this function
+    surfaces that as ``{"status": "pending_approval", "action_id": ...}``.
+
+    ``label`` and ``context`` are accepted for backward compatibility but are
+    NOT part of the triple model — they are ignored.
 
     Parameters
     ----------
     pool:
         asyncpg connection pool.
     contact_id:
-        UUID of the contact to attach this info to.
+        UUID of the contact (resolved to its linked entity).
     type:
         Channel type (``email``, ``phone``, ``telegram``, etc.).
     value:
         Channel value (email address, phone number, handle, etc.).
-    label:
-        Optional human-readable label (e.g. ``"Work"``).
     is_primary:
-        Whether this is the primary entry of its type for this contact.
-    context:
-        Optional context tag: ``'personal'``, ``'work'``, or ``'other'``.
-        When ``None`` and ``type='email'``, the work-domain heuristic runs:
-        if the email domain is in the configured work-domain list the row is
-        stored with ``context='work'``.  An explicit caller-supplied value is
-        always respected and never overridden.
+        Whether this is the primary entry of its type; encoded on the triple's
+        ``primary`` field.
     """
     if type not in _CONTACT_INFO_TYPES:
         raise ValueError(
             f"Invalid contact info type '{type}'. Must be one of {sorted(_CONTACT_INFO_TYPES)}"
         )
-    if context is not None and context not in _CONTACT_INFO_CONTEXTS:
+
+    predicate = contact_info_type_to_predicate(type)
+    if predicate is None:
         raise ValueError(
-            f"Invalid context '{context}'. Must be one of {sorted(_CONTACT_INFO_CONTEXTS)}"
+            f"Contact info type '{type}' has no registered triple predicate; "
+            "cannot assert a channel fact for it after the write-path cut-over."
         )
 
-    # Verify contact exists
-    existing = await pool.fetchrow("SELECT id FROM contacts WHERE id = $1", contact_id)
-    if existing is None:
+    entity_id = await _resolve_contact_entity(pool, contact_id)
+    if entity_id is None:
         raise ValueError(
-            f"Contact {contact_id} not found. "
+            f"Contact {contact_id} not found or has no linked entity. "
+            "Channel facts must be anchored to an entity. "
             "Use contact_search(query=<name>) to find the correct contact ID."
         )
 
-    # Apply work-domain heuristic: only when context is not explicitly set
-    # and the type is email.  Never overrides an explicit caller-supplied value.
-    effective_context = context
-    if effective_context is None and type == "email":
-        effective_context = classify_email_context(value)
+    result = await relationship_assert_fact(
+        pool,
+        entity_id,
+        predicate,
+        value,
+        src="relationship",
+        object_kind="literal",
+        primary=is_primary,
+    )
 
-    # Owner gate — block direct mutation for the owner contact
-    if await _is_owner_contact(pool, contact_id):
-        tool_args: dict[str, Any] = {
-            "contact_id": str(contact_id),
-            "type": type,
-            "value": value,
-        }
-        if label is not None:
-            tool_args["label"] = label
-        if is_primary:
-            tool_args["is_primary"] = is_primary
-        if effective_context is not None:
-            tool_args["context"] = effective_context
-
-        summary = f"contact_info_add: add {type} '{value}' to owner contact {contact_id}"
-        action_id = await _create_pending_action(pool, "contact_info_add", tool_args, summary)
-
-        logger.warning(
-            "contact_info_add: owner-contact mutation blocked and parked as pending_action %s "
-            "(contact=%s, type=%s, value=%r)",
-            action_id,
-            contact_id,
-            type,
-            value,
-        )
+    if result.outcome.value == "pending_approval":
         return {
             "status": "pending_approval",
-            "action_id": str(action_id),
+            "action_id": str(result.action_id),
             "message": (
-                f"Adding {type} to the owner contact requires human approval. "
-                f"Action {action_id} is queued for review."
+                f"Adding {type} to the owner's entity requires human approval. "
+                f"Action {result.action_id} is queued for review."
             ),
         }
 
-    # Non-owner path — write immediately, wrapped in a transaction so the
-    # demote-primary and insert are atomic.
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # If marking as primary, unset any existing primary for this type
-            if is_primary:
-                await conn.execute(
-                    """
-                    UPDATE public.contact_info SET is_primary = false
-                    WHERE contact_id = $1 AND type = $2 AND is_primary = true
-                    """,
-                    contact_id,
-                    type,
-                )
-
-            row = await conn.fetchrow(
-                """
-                INSERT INTO public.contact_info
-                    (contact_id, type, value, label, is_primary, context)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING *
-                """,
-                contact_id,
-                type,
-                value,
-                label,
-                is_primary,
-                effective_context,
-            )
-
-    # Dual-write shim: best-effort post-commit triple assertion (Amendment 14).
-    # The SQL transaction has committed above; any failure here is swallowed.
-    await emit_contact_info_fact(
-        pool,
-        contact_id=contact_id,
-        ci_type=type,
-        value=value,
-        is_primary=is_primary,
-    )
-
-    return dict(row)
+    return {
+        "status": "asserted",
+        "outcome": result.outcome.value,
+        "fact_id": str(result.fact_id) if result.fact_id is not None else None,
+        "entity_id": str(entity_id),
+        "type": type,
+        "value": value,
+        "is_primary": is_primary,
+    }
 
 
 async def contact_info_update(
-    pool: asyncpg.Pool,
-    contact_info_id: uuid.UUID,
-    value: str | None = None,
-    label: str | None = None,
-    is_primary: bool | None = None,
+    pool: asyncpg.Pool,  # noqa: ARG001 — guard rejects before use
+    contact_info_id: uuid.UUID,  # noqa: ARG001
+    value: str | None = None,  # noqa: ARG001
+    label: str | None = None,  # noqa: ARG001
+    is_primary: bool | None = None,  # noqa: ARG001
 ) -> dict[str, Any]:
-    """Update fields on an existing contact_info entry.
+    """Reject in-place updates to the read-only ``contact_info`` table.
 
-    Owner gate: if the entry belongs to the owner contact, the mutation is
-    blocked and a ``pending_actions`` row is created for human approval.  The
-    caller receives a ``{"status": "pending_approval", ...}`` dict instead of
-    the updated row.  Non-owner contact entries are updated immediately.
-
-    At least one of *value*, *label*, or *is_primary* must be provided.
+    Write-path cut-over (bu-k9ylx): ``public.contact_info`` is read-only and the
+    triple store has no ``contact_info.id``-addressable update.  To change a
+    channel fact, re-assert it via ``contact_info_add`` /
+    ``relationship_assert_fact()`` (supersession applies on changed provenance).
     """
-    if value is None and label is None and is_primary is None:
-        raise ValueError("At least one of value, label, or is_primary must be provided.")
-
-    row = await pool.fetchrow(
-        "SELECT * FROM public.contact_info WHERE id = $1",
-        contact_info_id,
-    )
-    if row is None:
-        raise ValueError(
-            f"Contact info {contact_info_id} not found. "
-            "Use contact_info_list(contact_id=...) to list contact info entries."
-        )
-
-    contact_id: uuid.UUID = row["contact_id"]
-
-    # Owner gate — block direct mutation for the owner contact
-    if await _is_owner_contact(pool, contact_id):
-        tool_args: dict[str, Any] = {"contact_info_id": str(contact_info_id)}
-        if value is not None:
-            tool_args["value"] = value
-        if label is not None:
-            tool_args["label"] = label
-        if is_primary is not None:
-            tool_args["is_primary"] = is_primary
-
-        summary = (
-            f"contact_info_update: update contact_info {contact_info_id} "
-            f"(type={row['type']}) on owner contact {contact_id}"
-        )
-        action_id = await _create_pending_action(pool, "contact_info_update", tool_args, summary)
-
-        logger.warning(
-            "contact_info_update: owner-contact mutation blocked and parked as pending_action %s "
-            "(contact_info=%s, contact=%s)",
-            action_id,
-            contact_info_id,
-            contact_id,
-        )
-        return {
-            "status": "pending_approval",
-            "action_id": str(action_id),
-            "message": (
-                f"Updating contact info on the owner contact requires human approval. "
-                f"Action {action_id} is queued for review."
-            ),
-        }
-
-    # Non-owner path — update immediately, wrapped in a transaction so the
-    # demote-primary and update are atomic.
-
-    # Build SET clause from provided fields
-    updates: dict[str, Any] = {}
-    if value is not None:
-        updates["value"] = value
-    if label is not None:
-        updates["label"] = label
-    if is_primary is not None:
-        updates["is_primary"] = is_primary
-
-    # Capture row metadata before entering the transaction (already fetched above)
-    row_type = row["type"]
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # If marking as primary, unset any existing primary for this type on the same contact
-            if is_primary:
-                await conn.execute(
-                    """
-                    UPDATE public.contact_info SET is_primary = false
-                    WHERE contact_id = $1 AND type = $2 AND is_primary = true AND id != $3
-                    """,
-                    contact_id,
-                    row_type,
-                    contact_info_id,
-                )
-
-            # Build dynamic SET clause
-            set_parts = [f"{col} = ${i + 2}" for i, col in enumerate(updates)]
-            params: list[Any] = [contact_info_id, *updates.values()]
-            updated = await conn.fetchrow(
-                f"UPDATE public.contact_info SET {', '.join(set_parts)} WHERE id = $1 RETURNING *",  # noqa: S608
-                *params,
-            )
-
-    if updated is None:
-        raise ValueError(
-            f"Contact info {contact_info_id} not found. "
-            "Use contact_info_list(contact_id=...) to list contact info entries."
-        )
-    result = dict(updated)
-
-    # Dual-write shim: best-effort post-commit triple assertion (Amendment 14).
-    # The SQL transaction has committed above; any failure here is swallowed.
-    # result comes from RETURNING * so all NOT NULL columns are guaranteed present.
-    await emit_contact_info_fact(
-        pool,
-        contact_id=contact_id,
-        ci_type=row_type,
-        value=result["value"],
-        is_primary=result["is_primary"],
-    )
-
-    return result
+    assert_contact_info_writes_blocked("update")
 
 
 async def contact_info_list(
@@ -387,7 +210,11 @@ async def contact_info_list(
     contact_id: uuid.UUID,
     type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List contact info for a contact, optionally filtered by type."""
+    """List contact info for a contact, optionally filtered by type.
+
+    READ path — still queries ``public.contact_info`` (reads remain allowed
+    after the cut-over until the table is dropped at Migration bead 10).
+    """
     if type is not None:
         rows = await pool.fetch(
             """
@@ -411,30 +238,16 @@ async def contact_info_list(
 
 
 async def contact_info_remove(
-    pool: asyncpg.Pool,
-    contact_info_id: uuid.UUID,
+    pool: asyncpg.Pool,  # noqa: ARG001 — guard rejects before use
+    contact_info_id: uuid.UUID,  # noqa: ARG001
 ) -> None:
-    """Remove a piece of contact information by its ID."""
-    row = await pool.fetchrow(
-        "SELECT * FROM public.contact_info WHERE id = $1",
-        contact_info_id,
-    )
-    if row is None:
-        raise ValueError(
-            f"Contact info {contact_info_id} not found. "
-            "Use contact_info_list(contact_id=...) to list contact info entries."
-        )
+    """Reject deletes from the read-only ``contact_info`` table.
 
-    await pool.execute("DELETE FROM public.contact_info WHERE id = $1", contact_info_id)
-
-    # Dual-write shim: best-effort post-commit retraction (Amendment 14).
-    # The DELETE has committed above; any failure here is swallowed.
-    await retract_contact_info_fact(
-        pool,
-        contact_id=row["contact_id"],
-        ci_type=row["type"],
-        value=row["value"],
-    )
+    Write-path cut-over (bu-k9ylx): ``public.contact_info`` is read-only.
+    Channel-fact retraction is handled through the relationship butler's triple
+    retraction path, not by deleting a ``contact_info`` row by id.
+    """
+    assert_contact_info_writes_blocked("delete")
 
 
 async def contact_search_by_info(
@@ -444,9 +257,10 @@ async def contact_search_by_info(
 ) -> list[dict[str, Any]]:
     """Search contacts by contact info value (reverse lookup).
 
-    Finds all contacts that have a matching contact info entry.
-    Optionally filter by info type (email, phone, etc.).
-    Uses ILIKE for case-insensitive partial matching.
+    READ path — still queries ``public.contact_info`` (reads remain allowed
+    after the cut-over). Finds all contacts that have a matching contact info
+    entry. Optionally filter by info type (email, phone, etc.). Uses ILIKE for
+    case-insensitive partial matching.
     """
     if type is not None:
         rows = await pool.fetch(

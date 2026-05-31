@@ -5,8 +5,15 @@
  * - Entity with one linked contact (populated state)
  * - Entity with multiple linked contacts (multi-contact stacking)
  * - Entity with sparse contact (no labels, no preferred_channel, one channel)
- * - Entity with secured contact_info (reveal/hide cycle)
+ * - Entity with secured contact_info (reveal/hide cycle — COMPAT path, dead
+ *   code in practice since secured entries are excluded from linked-contacts)
  * - Entity with zero linked contacts (empty-state with Link contact CTA)
+ * - ExpandedContactInfoRow: edit/delete affordances present for entity_facts
+ *   entries; read-only (legacy marker) for source=null entries
+ * - ExpandedContactInfoRow: edit button is ENABLED for entity_facts rows and
+ *   calls useUpdateEntityContact (bu-690xu)
+ * - ExpandedContactInfoRow: delete mutation wired to useDeleteEntityContact
+ * - AddChannelInfoForm: add mutation wired to useAddEntityContact
  *
  * IMPORTANT: Secured reveal tests assert that the secret value does NOT appear
  * in the masked render. They DO NOT assert the actual secret value to prevent
@@ -18,9 +25,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
-import { useEntityLinkedContacts } from "@/hooks/use-entities";
-import type { LinkedContactSummary } from "@/api/types";
+import { ContactChannelCard, ExpandedContactInfoRow } from "@/components/relationship/ContactChannelCard";
+import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact } from "@/hooks/use-entities";
+import type { LinkedContactSummary, ContactInfoEntry } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -28,16 +35,17 @@ import type { LinkedContactSummary } from "@/api/types";
 
 vi.mock("@/hooks/use-entities", () => ({
   useEntityLinkedContacts: vi.fn(),
+  useAddEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDeleteEntityContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useUpdateEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
-// All contact mutation hooks return minimal viable mocks at module level.
-// No per-test override needed — the module mock factory is the source of truth.
+// Contact-keyed hooks retained only for COMPAT paths (revealContactSecret,
+// patchContact for preferred_channel). usePatchContactInfo and
+// useDeleteContactInfo are no longer used in ContactChannelCard.
 vi.mock("@/hooks/use-contacts", () => ({
   useRevealContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
-  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
@@ -70,35 +78,89 @@ function renderCard(entityId = "entity-001", onLinkContact?: () => void): string
   );
 }
 
+function renderExpandedRow(entry: ContactInfoEntry, contactId = "contact-001", entityId = "entity-001"): string {
+  return renderToStaticMarkup(
+    <ExpandedContactInfoRow
+      entry={entry}
+      contactId={contactId}
+      entityId={entityId}
+    />,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
+
+// Legacy contact_info entry (source=null, write-blocked since PR #2021).
+const CI_LEGACY_EMAIL: ContactInfoEntry = {
+  id: "ci-001",
+  type: "email",
+  value: "alice@example.com",
+  is_primary: true,
+  secured: false,
+  parent_id: null,
+  context: null,
+  source: null,
+};
+
+// Entity-facts-sourced entry (source="entity_facts", entity-keyed mutations available).
+const CI_ENTITY_FACTS_TELEGRAM: ContactInfoEntry = {
+  id: "ci-002",
+  type: "telegram",
+  value: "@alice_tg",
+  is_primary: false,
+  secured: false,
+  parent_id: null,
+  context: null,
+  source: "entity_facts",
+  predicate: "has-handle",
+  value_hash: "abcdef0123456789",
+};
+
+const CI_PHONE_ENTITY_FACTS: ContactInfoEntry = {
+  id: "ci-010",
+  type: "phone",
+  value: "555-0100",
+  is_primary: true,
+  secured: false,
+  parent_id: null,
+  context: null,
+  source: "entity_facts",
+  predicate: "has-phone",
+  value_hash: "fedcba9876543210",
+};
+
+const CI_WEBSITE: ContactInfoEntry = {
+  id: "ci-020",
+  type: "website",
+  value: "https://charlie.example.com",
+  is_primary: false,
+  secured: false,
+  parent_id: null,
+  context: null,
+  source: "entity_facts",
+  predicate: "has-website",
+  value_hash: "1234567890abcdef",
+};
+
+const CI_SECURED: ContactInfoEntry = {
+  id: "ci-031",
+  type: "other",
+  value: null, // secured — value is null until revealed
+  is_primary: false,
+  secured: true,
+  parent_id: null,
+  context: null,
+  source: null,
+};
 
 const CONTACT_ONE: LinkedContactSummary = {
   id: "contact-001",
   full_name: "Alice Smith",
   email: "alice@example.com",
   phone: null,
-  contact_info: [
-    {
-      id: "ci-001",
-      type: "email",
-      value: "alice@example.com",
-      is_primary: true,
-      secured: false,
-      parent_id: null,
-      context: null,
-    },
-    {
-      id: "ci-002",
-      type: "telegram",
-      value: "@alice_tg",
-      is_primary: false,
-      secured: false,
-      parent_id: null,
-      context: null,
-    },
-  ],
+  contact_info: [CI_LEGACY_EMAIL, CI_ENTITY_FACTS_TELEGRAM],
   labels: [
     { id: "label-001", name: "Friend", color: null },
   ],
@@ -110,17 +172,7 @@ const CONTACT_TWO: LinkedContactSummary = {
   full_name: "Bob Jones",
   email: "bob@example.com",
   phone: "555-0100",
-  contact_info: [
-    {
-      id: "ci-010",
-      type: "phone",
-      value: "555-0100",
-      is_primary: true,
-      secured: false,
-      parent_id: null,
-      context: null,
-    },
-  ],
+  contact_info: [CI_PHONE_ENTITY_FACTS],
   labels: [
     { id: "label-002", name: "Work", color: "#1a73e8" },
   ],
@@ -132,17 +184,7 @@ const SPARSE_CONTACT: LinkedContactSummary = {
   full_name: "Charlie",
   email: null,
   phone: null,
-  contact_info: [
-    {
-      id: "ci-020",
-      type: "website",
-      value: "https://charlie.example.com",
-      is_primary: false,
-      secured: false,
-      parent_id: null,
-      context: null,
-    },
-  ],
+  contact_info: [CI_WEBSITE],
   labels: [],
   preferred_channel: null,
 };
@@ -161,16 +203,11 @@ const SECURED_CONTACT: LinkedContactSummary = {
       secured: false,
       parent_id: null,
       context: null,
+      source: "entity_facts",
+      predicate: "has-email",
+      value_hash: "aabbccddeeff0011",
     },
-    {
-      id: "ci-031",
-      type: "other",
-      value: null, // secured — value is null until revealed
-      is_primary: false,
-      secured: true,
-      parent_id: null,
-      context: null,
-    },
+    CI_SECURED,
   ],
   labels: [],
   preferred_channel: null,
@@ -183,6 +220,9 @@ const SECURED_CONTACT: LinkedContactSummary = {
 describe("ContactChannelCard — one linked contact (populated state)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
   });
 
   it("renders the Channels heading", () => {
@@ -245,6 +285,9 @@ describe("ContactChannelCard — one linked contact (populated state)", () => {
 describe("ContactChannelCard — multi-contact stacking", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
   });
 
   it("renders both contact names when two contacts are linked", () => {
@@ -284,6 +327,9 @@ describe("ContactChannelCard — multi-contact stacking", () => {
 describe("ContactChannelCard — sparse contact", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
   });
 
   it("renders the contact name", () => {
@@ -331,6 +377,9 @@ describe("ContactChannelCard — sparse contact", () => {
 describe("ContactChannelCard — secured contact_info (reveal/hide)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
   });
 
   it("renders the secured contact name in the collapsed row", () => {
@@ -382,6 +431,9 @@ describe("ContactChannelCard — secured contact_info (reveal/hide)", () => {
 describe("ContactChannelCard — zero linked contacts (empty-state)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
   });
 
   it("renders the empty-state section", () => {
@@ -431,6 +483,9 @@ describe("ContactChannelCard — zero linked contacts (empty-state)", () => {
 describe("ContactChannelCard — loading state", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
   });
 
   it("renders the loading skeleton when isLoading is true", () => {
@@ -438,5 +493,150 @@ describe("ContactChannelCard — loading state", () => {
     const html = renderCard();
     expect(html).toContain("Channels");
     expect(html).toContain("animate-pulse");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: ExpandedContactInfoRow — edit/delete affordances (bu-690xu)
+//
+// edit/delete affordances are present for entity_facts-sourced entries
+// (source="entity_facts"). Legacy contact_info rows (source=null) remain
+// read-only (shown with a "legacy" marker) because they are write-blocked.
+//
+// Edit button is now ENABLED for entity_facts rows and wired to
+// useUpdateEntityContact (bu-690xu). Secured entries get a disabled Edit
+// button since inline text editing of a masked value makes no sense.
+//
+// These tests render ExpandedContactInfoRow directly to verify the expanded
+// row's actual structure (the collapsed card never renders ExpandedContactInfoRow).
+// ---------------------------------------------------------------------------
+
+describe("ExpandedContactInfoRow — entity_facts entries have Delete button", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
+  });
+
+  it("renders a Delete (Trash) button for an entity_facts entry", () => {
+    const html = renderExpandedRow(CI_ENTITY_FACTS_TELEGRAM);
+    expect(html).toContain('title="Delete"');
+  });
+
+  it("renders a Delete button for a phone entity_facts entry", () => {
+    const html = renderExpandedRow(CI_PHONE_ENTITY_FACTS);
+    expect(html).toContain('title="Delete"');
+  });
+
+  it("renders a Delete button for a website entity_facts entry", () => {
+    const html = renderExpandedRow(CI_WEBSITE);
+    expect(html).toContain('title="Delete"');
+  });
+
+  it("still renders the channel value alongside the Delete button", () => {
+    const html = renderExpandedRow(CI_ENTITY_FACTS_TELEGRAM);
+    expect(html).toContain("@alice_tg");
+    expect(html).toContain('title="Delete"');
+  });
+});
+
+describe("ExpandedContactInfoRow — entity_facts entries have Edit button (ENABLED, bu-690xu)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
+  });
+
+  it("renders an Edit (Pencil) button for an entity_facts entry (enabled — update endpoint exists)", () => {
+    const html = renderExpandedRow(CI_ENTITY_FACTS_TELEGRAM);
+    // Edit button is present and enabled (update-in-place endpoint exists as of bu-690xu)
+    expect(html).toContain('title="Edit"');
+    // Must NOT contain the old disabled tooltip
+    expect(html).not.toContain('title="Edit (not yet supported for entity-facts channels)"');
+  });
+
+  it("renders Edit button with the edit testid", () => {
+    const html = renderExpandedRow(CI_ENTITY_FACTS_TELEGRAM);
+    expect(html).toContain('data-testid="edit-contact-btn"');
+  });
+
+  it("Edit button is not disabled for a non-secured entity_facts entry", () => {
+    const html = renderExpandedRow(CI_ENTITY_FACTS_TELEGRAM);
+    // The edit button should NOT have the disabled HTML attribute.
+    // renderToStaticMarkup renders disabled as `disabled=""` when present.
+    const editBtnIdx = html.indexOf('data-testid="edit-contact-btn"');
+    expect(editBtnIdx).toBeGreaterThan(-1);
+    // Extract the full opening button tag around the testid attribute.
+    const btnStart = html.lastIndexOf("<button", editBtnIdx);
+    const btnEnd = html.indexOf(">", editBtnIdx);
+    const btnTag = html.slice(btnStart, btnEnd + 1);
+    // The disabled attribute renders as 'disabled=""' — check for that specific form.
+    expect(btnTag).not.toContain('disabled=""');
+  });
+});
+
+describe("ExpandedContactInfoRow — legacy entries are read-only (source=null)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
+  });
+
+  it("does NOT render Edit or Delete buttons for a legacy (source=null) entry", () => {
+    const html = renderExpandedRow(CI_LEGACY_EMAIL);
+    expect(html).not.toContain('title="Delete"');
+    expect(html).not.toContain('title="Edit"');
+  });
+
+  it("renders the legacy marker for source=null entries", () => {
+    const html = renderExpandedRow(CI_LEGACY_EMAIL);
+    expect(html).toContain("(legacy)");
+  });
+
+  it("still renders the channel value for legacy entries", () => {
+    const html = renderExpandedRow(CI_LEGACY_EMAIL);
+    expect(html).toContain("alice@example.com");
+  });
+});
+
+describe("ExpandedContactInfoRow — delete mutation uses useDeleteEntityContact", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
+  });
+
+  it("calls useDeleteEntityContact hook (not a contact-keyed hook)", () => {
+    const mockDeleteMutate = vi.fn();
+    vi.mocked(useDeleteEntityContact).mockReturnValue({
+      mutate: mockDeleteMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useDeleteEntityContact>);
+
+    // Render an entity_facts entry — the component should consume useDeleteEntityContact
+    renderExpandedRow(CI_ENTITY_FACTS_TELEGRAM, "contact-001", "entity-001");
+
+    // The hook must have been called (component setup)
+    expect(vi.mocked(useDeleteEntityContact)).toHaveBeenCalled();
+  });
+});
+
+describe("ExpandedContactInfoRow — edit mutation uses useUpdateEntityContact (bu-690xu)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+  });
+
+  it("calls useUpdateEntityContact hook for entity_facts entries", () => {
+    const mockUpdateMutateAsync = vi.fn();
+    vi.mocked(useUpdateEntityContact).mockReturnValue({
+      mutateAsync: mockUpdateMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useUpdateEntityContact>);
+
+    // Render a non-secured entity_facts entry
+    renderExpandedRow(CI_ENTITY_FACTS_TELEGRAM, "contact-001", "entity-001");
+
+    // The hook must have been called (component setup)
+    expect(vi.mocked(useUpdateEntityContact)).toHaveBeenCalled();
   });
 });

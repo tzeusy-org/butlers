@@ -1,0 +1,270 @@
+"""Unit tests for the contact_info write-path cut-over (Migration bead 8, bu-k9ylx).
+
+Covers:
+  (a) The app-level write-block guard raises ContactInfoWriteBlockedError.
+  (b) contact_info_add asserts a channel triple via relationship_assert_fact()
+      and never issues a direct INSERT/UPDATE/DELETE to public.contact_info.
+  (c) contact_info_add maps types to predicates and honours the owner carve-out
+      (pending_approval) surfaced by the central writer.
+  (d) contact_info_update / contact_info_remove fail fast via the write-block guard.
+  (e) contact_info_list still reads public.contact_info (reads remain allowed).
+  (f) The revoke migration upgrade()/downgrade() are symmetric (REVOKE ↔ GRANT)
+      and cover every runtime role + connector_writer for contact_info only.
+
+All tests are pure unit tests (no Docker/Postgres). The asyncpg pool and the
+central writer are mocked via unittest.mock.
+"""
+
+from __future__ import annotations
+
+import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+pytestmark = pytest.mark.unit
+
+_ADD_PATCH_TARGET = "butlers.tools.relationship.contact_info.relationship_assert_fact"
+_CONTACT_ID = uuid.uuid4()
+_ENTITY_ID = uuid.uuid4()
+
+
+class _AsyncCM:
+    """Minimal async context manager helper for mocking pool.acquire()."""
+
+    def __init__(self, value):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, *args):
+        return False
+
+
+# ===========================================================================
+# (a) App-level write-block guard
+# ===========================================================================
+
+
+class TestWriteBlockGuard:
+    def test_guard_raises(self):
+        from butlers.contact_info_write_guard import (
+            ContactInfoWriteBlockedError,
+            assert_contact_info_writes_blocked,
+        )
+
+        with pytest.raises(ContactInfoWriteBlockedError):
+            assert_contact_info_writes_blocked("insert")
+
+    def test_guard_message_mentions_table_and_writer(self):
+        from butlers.contact_info_write_guard import (
+            ContactInfoWriteBlockedError,
+            assert_contact_info_writes_blocked,
+        )
+
+        with pytest.raises(ContactInfoWriteBlockedError) as exc:
+            assert_contact_info_writes_blocked("update")
+        msg = str(exc.value)
+        assert "public.contact_info" in msg
+        assert "relationship_assert_fact" in msg
+
+    def test_error_is_runtime_error_subclass(self):
+        from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+
+        assert issubclass(ContactInfoWriteBlockedError, RuntimeError)
+
+
+# ===========================================================================
+# (b, c) contact_info_add asserts a triple via the central writer
+# ===========================================================================
+
+
+def _result(outcome: str, *, fact_id=None, action_id=None):
+    """Build a stand-in AssertResult-like object for the central writer mock."""
+    r = MagicMock()
+    r.outcome.value = outcome
+    r.fact_id = fact_id
+    r.action_id = action_id
+    return r
+
+
+def _pool_with_entity(entity_id=_ENTITY_ID):
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value={"entity_id": entity_id})
+    # Wire execute/acquire so any accidental SQL DML would be observable.
+    pool.execute = AsyncMock(return_value=None)
+    conn = AsyncMock()
+    conn.execute = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=_AsyncCM(None))
+    pool.acquire = MagicMock(return_value=_AsyncCM(conn))
+    return pool, conn
+
+
+class TestContactInfoAddUsesCentralWriter:
+    async def test_email_maps_to_has_email_and_calls_writer(self):
+        from butlers.tools.relationship.contact_info import contact_info_add
+
+        pool, conn = _pool_with_entity()
+        with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
+            writer.return_value = _result("inserted", fact_id=uuid.uuid4())
+            await contact_info_add(pool, _CONTACT_ID, "email", "alice@example.com")
+
+        writer.assert_awaited_once()
+        call = writer.call_args
+        assert call.args[1] == _ENTITY_ID  # subject = entity_id
+        assert call.args[2] == "has-email"  # predicate
+        assert call.args[3] == "alice@example.com"  # object
+
+    async def test_no_direct_sql_dml_to_contact_info(self):
+        """The add path must NOT issue any SQL execute (INSERT/UPDATE) — writer only."""
+        from butlers.tools.relationship.contact_info import contact_info_add
+
+        pool, conn = _pool_with_entity()
+        with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
+            writer.return_value = _result("inserted", fact_id=uuid.uuid4())
+            await contact_info_add(pool, _CONTACT_ID, "phone", "+1-555-0001")
+
+        # No write DML anywhere: neither pool.execute nor conn.execute called.
+        pool.execute.assert_not_called()
+        conn.execute.assert_not_called()
+
+    async def test_owner_carveout_surfaces_pending_approval(self):
+        from butlers.tools.relationship.contact_info import contact_info_add
+
+        pool, _ = _pool_with_entity()
+        action_id = uuid.uuid4()
+        with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
+            writer.return_value = _result("pending_approval", action_id=action_id)
+            result = await contact_info_add(pool, _CONTACT_ID, "email", "owner@example.com")
+
+        assert result["status"] == "pending_approval"
+        assert result["action_id"] == str(action_id)
+
+    async def test_unmapped_type_rejected(self):
+        from butlers.tools.relationship.contact_info import contact_info_add
+
+        pool, _ = _pool_with_entity()
+        # 'address' is a valid input check would reject; use a type that passes
+        # the type-set check but has no predicate is impossible here, so assert
+        # the invalid-type path raises ValueError instead.
+        with pytest.raises(ValueError):
+            await contact_info_add(pool, _CONTACT_ID, "fax", "555")
+
+    async def test_missing_entity_raises(self):
+        from butlers.tools.relationship.contact_info import contact_info_add
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"entity_id": None})
+        with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
+            with pytest.raises(ValueError):
+                await contact_info_add(pool, _CONTACT_ID, "email", "a@b.com")
+            writer.assert_not_called()
+
+
+# ===========================================================================
+# (d) update / remove are write-blocked
+# ===========================================================================
+
+
+class TestContactInfoMutatorsBlocked:
+    async def test_update_raises_write_block(self):
+        from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+        from butlers.tools.relationship.contact_info import contact_info_update
+
+        pool = MagicMock()
+        with pytest.raises(ContactInfoWriteBlockedError):
+            await contact_info_update(pool, uuid.uuid4(), value="x")
+
+    async def test_remove_raises_write_block(self):
+        from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
+        from butlers.tools.relationship.contact_info import contact_info_remove
+
+        pool = MagicMock()
+        with pytest.raises(ContactInfoWriteBlockedError):
+            await contact_info_remove(pool, uuid.uuid4())
+
+
+# ===========================================================================
+# (e) reads still work
+# ===========================================================================
+
+
+class TestContactInfoReadsAllowed:
+    async def test_list_reads_contact_info(self):
+        from butlers.tools.relationship.contact_info import contact_info_list
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[{"id": uuid.uuid4(), "type": "email", "value": "a@b.com"}]
+        )
+        rows = await contact_info_list(pool, _CONTACT_ID)
+        assert len(rows) == 1
+        assert rows[0]["type"] == "email"
+        # Read used pool.fetch (SELECT), not a write path.
+        pool.fetch.assert_awaited_once()
+
+
+# ===========================================================================
+# (f) revoke migration is reversible and well-scoped
+# ===========================================================================
+
+
+class TestRevokeMigration:
+    def _load_migration(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "alembic"
+            / "versions"
+            / "core"
+            / "core_110_contact_info_write_block.py"
+        )
+        spec = importlib.util.spec_from_file_location("core_110_test", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_revision_chain(self):
+        mod = self._load_migration()
+        assert mod.revision == "core_110"
+        assert mod.down_revision == "core_109"
+
+    def test_targets_contact_info_only_not_contacts(self):
+        mod = self._load_migration()
+        # The table FQN constant targets contact_info — NOT public.contacts.
+        assert mod._TABLE_FQN == "public.contact_info"
+
+    def test_role_coverage_matches_core_065(self):
+        mod = self._load_migration()
+        # Every butler runtime role + connector_writer is covered.
+        assert "connector_writer" in mod._ALL_ROLES
+        assert "butler_relationship_rw" in mod._ALL_ROLES
+        # 10 butler schemas + connector_writer.
+        assert len(mod._ALL_ROLES) == 11
+
+    def test_upgrade_revokes_and_downgrade_grants(self):
+        """upgrade() emits REVOKE statements; downgrade() emits matching GRANTs."""
+        mod = self._load_migration()
+        emitted: list[str] = []
+
+        def _capture(stmt, *, role_name=None):  # noqa: ARG001
+            emitted.append(stmt)
+
+        with patch.object(mod, "_execute_best_effort", side_effect=_capture):
+            mod.upgrade()
+        assert emitted, "upgrade emitted no statements"
+        assert all("REVOKE INSERT, UPDATE, DELETE" in s for s in emitted)
+        assert all("public.contact_info" in s for s in emitted)
+        # SELECT is never revoked (reads stay allowed).
+        assert not any("SELECT" in s for s in emitted)
+
+        emitted.clear()
+        with patch.object(mod, "_execute_best_effort", side_effect=_capture):
+            mod.downgrade()
+        assert emitted, "downgrade emitted no statements"
+        assert all("GRANT INSERT, UPDATE, DELETE" in s for s in emitted)
+        assert all("public.contact_info" in s for s in emitted)

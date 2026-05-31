@@ -139,6 +139,8 @@ class TestOnStartup:
         assert mod._pool is None
         source_names = [s.name for s in mod._sources]
         assert "session_records" not in source_names
+        assert mod._log_scanner_source is not None
+        assert mod._log_scanner_source._suppress_session_duplicate_timeouts is False
 
         mod2 = _make_module()
         pool = _make_pool()

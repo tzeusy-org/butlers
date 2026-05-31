@@ -29,10 +29,9 @@ from butlers.identity import (
 
 pytestmark = pytest.mark.unit
 
-_FLAG_ENV = "BUTLERS_CONTACT_INFO_DUAL_WRITE"
-# Patch the function in its home module — create_temp_contact uses a deferred import,
-# so patching the source module is the only stable anchor.
-_EMIT_FACT_PATCH = "butlers.tools.relationship.dual_write.emit_contact_info_fact"
+# Patch the central writer in its home module — create_temp_contact uses a
+# deferred import, so patching the source module is the only stable anchor.
+_ASSERT_FACT_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
 
 _OWNER_ID = uuid.uuid4()
 _CONTACT_ID = uuid.uuid4()
@@ -232,191 +231,168 @@ def test_build_identity_preamble():
 # ---------------------------------------------------------------------------
 
 
-async def test_create_temp_contact():
-    """Creates new contact; returns existing on race; returns None on DB error."""
-    new_contact_id = uuid.uuid4()
-    new_entity_id = uuid.uuid4()
+def _make_new_temp_contact_pool(contact_id: uuid.UUID, entity_id: uuid.UUID):
+    """Pool mock for create_temp_contact's new-contact path (no existing match).
 
-    mock_conn = AsyncMock()
-    mock_contact_row = MagicMock()
-    mock_contact_row.__getitem__ = lambda self, k: {
-        "id": new_contact_id,
-        "name": "Unknown (telegram 555)",
-        "entity_id": new_entity_id,
-    }[k]
-    mock_conn.fetchrow = AsyncMock(side_effect=[None, mock_contact_row])
-    mock_conn.fetchval = AsyncMock(return_value=new_entity_id)
-    mock_conn.execute = AsyncMock()
+    Write-path cut-over (bu-k9ylx): create_temp_contact first calls
+    resolve_contact_by_channel (pool.fetchrow on entity_facts → None here), then
+    acquires a conn to INSERT the entity (conn.fetchval) and contact
+    (conn.fetchrow), then asserts the channel triple via the central writer.
+    """
+    pool = MagicMock()
+    # resolve_contact_by_channel queries the triple store on the pool → no match.
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    conn = AsyncMock()
+
+    async def conn_fetchrow(query, *args):
+        if "INSERT INTO public.contacts" in query:
+            return {"id": contact_id, "name": args[0], "entity_id": entity_id}
+        return None
+
+    conn.fetchrow = AsyncMock(side_effect=conn_fetchrow)
+    conn.fetchval = AsyncMock(return_value=entity_id)  # entity INSERT RETURNING id
+    conn.execute = AsyncMock()
+
     mock_transaction = AsyncMock()
     mock_transaction.__aenter__ = AsyncMock(return_value=mock_transaction)
     mock_transaction.__aexit__ = AsyncMock(return_value=False)
-    mock_conn.transaction = MagicMock(return_value=mock_transaction)
-    pool = AsyncMock()
+    conn.transaction = MagicMock(return_value=mock_transaction)
+
     pool.acquire = MagicMock()
-    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    return pool, conn
+
+
+async def test_create_temp_contact():
+    """create_temp_contact creates entity + contact and returns it (cut-over path)."""
+    entity_id = uuid.uuid4()
+    contact_id = uuid.uuid4()
+    pool, _conn = _make_new_temp_contact_pool(contact_id, entity_id)
+
+    with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock):
+        result = await create_temp_contact(pool, "telegram", "555")
+
+    assert result is not None
+    assert result.contact_id == contact_id
+    assert result.entity_id == entity_id
+    assert result.name == "Unknown (telegram 555)"
+    assert result.roles == []
+
+
+async def test_create_temp_contact_db_error_returns_none():
+    """A DB error during creation returns None (graceful degradation)."""
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=None)  # no existing match
+    pool.acquire = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(side_effect=Exception("connection refused"))
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
-    result = await create_temp_contact(pool, "telegram", "555")
-    assert (
-        result is not None
-        and result.entity_id == new_entity_id
-        and result.name == "Unknown (telegram 555)"
-    )
-
-    # Race: existing contact found inside transaction
-    existing_id = uuid.uuid4()
-    existing_row = MagicMock()
-    existing_row.__getitem__ = lambda self, k: {
-        "contact_id": existing_id,
-        "name": "Alice",
-        "roles": [],
-        "entity_id": None,
-    }[k]
-    mock_conn2 = AsyncMock()
-    mock_conn2.fetchrow = AsyncMock(return_value=existing_row)
-    mock_conn2.transaction = MagicMock(return_value=mock_transaction)
-    pool2 = AsyncMock()
-    pool2.acquire = MagicMock()
-    pool2.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn2)
-    pool2.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    result2 = await create_temp_contact(pool2, "telegram", "777")
-    assert result2 is not None and result2.contact_id == existing_id
-
-    # DB error → None
-    pool3 = AsyncMock()
-    pool3.acquire = MagicMock()
-    pool3.acquire.return_value.__aenter__ = AsyncMock(side_effect=Exception("connection refused"))
-    pool3.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    assert await create_temp_contact(pool3, "telegram", "999") is None
+    with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock):
+        assert await create_temp_contact(pool, "telegram", "999") is None
 
 
-# ---------------------------------------------------------------------------
-# create_temp_contact — dual-write shim parity tests (Group A, bu-3jfvv)
-# ---------------------------------------------------------------------------
+async def test_create_temp_contact_returns_existing_on_conflict():
+    """create_temp_contact returns the existing contact if one resolves (race).
 
-# Design contract (Amendment 14):
-#   - SQL is authoritative. Legacy write commits first; triple write is best-effort.
-#   - Shim failures are swallowed; legacy SQL commit is never blocked or rolled back.
-#   - Flag is read on every call via ``dual_write_enabled()``.
-#
-# Test scope:
-#   (a) Flag off → emit_contact_info_fact called but returns early internally.
-#   (b) Flag on  → emit_contact_info_fact is called after SQL commit with correct args.
-#   (c) Shim raises → failure swallowed; ResolvedContact is still returned.
-
-
-def _make_create_temp_contact_pool(
-    new_contact_id: uuid.UUID,
-    new_entity_id: uuid.UUID,
-) -> MagicMock:
-    """Build pool mock wired for create_temp_contact (new-contact path)."""
-    mock_contact_row = MagicMock()
-    mock_contact_row.__getitem__ = lambda self, k: {
-        "id": new_contact_id,
-        "name": f"Unknown (telegram {new_contact_id})",
-        "entity_id": new_entity_id,
-    }[k]
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(side_effect=[None, mock_contact_row])
-    mock_conn.fetchval = AsyncMock(return_value=new_entity_id)
-    mock_conn.execute = AsyncMock()
-
-    mock_transaction = AsyncMock()
-    mock_transaction.__aenter__ = AsyncMock(return_value=mock_transaction)
-    mock_transaction.__aexit__ = AsyncMock(return_value=False)
-    mock_conn.transaction = MagicMock(return_value=mock_transaction)
+    Existing-sender detection now goes through resolve_contact_by_channel (the
+    triple store), not a contact_info join.
+    """
+    existing_entity_id = uuid.uuid4()
 
     pool = MagicMock()
-    pool.acquire = MagicMock()
-    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    return pool
+    # resolve_contact_by_channel: triple lookup returns an active row joined to
+    # the owner entity.
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "entity_id": existing_entity_id,
+            "name": "Existing Person",
+            "roles": ["owner"],
+        }
+    )
+
+    with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
+        result = await create_temp_contact(pool, "telegram", "existing-chat")
+        mock_assert.assert_not_awaited()
+
+    assert result is not None
+    assert result.contact_id is None  # entity_id is the authoritative key post bead 7
+    assert result.entity_id == existing_entity_id
+    assert result.name == "Existing Person"
+    assert result.roles == ["owner"]
 
 
-class TestCreateTempContactDualWriteShim:
-    """create_temp_contact: emit_contact_info_fact is called after the INSERT commits."""
+# ---------------------------------------------------------------------------
+# create_temp_contact — central-writer cut-over (Migration bead 8, bu-k9ylx)
+# ---------------------------------------------------------------------------
+# The dual-write shim is removed.  create_temp_contact now writes the sender's
+# channel identifier to relationship.entity_facts ONLY, via the central writer
+# relationship_assert_fact() — there is NO public.contact_info INSERT.
 
-    async def test_emit_fact_called_when_flag_on(self, monkeypatch):
-        """(b) emit_contact_info_fact is called once after the INSERT commits."""
-        monkeypatch.setenv(_FLAG_ENV, "1")
 
+class TestCreateTempContactCentralWriter:
+    """create_temp_contact asserts the channel triple via the central writer."""
+
+    async def test_assert_fact_called_with_mapped_predicate(self):
+        """The channel triple is asserted with the mapped predicate + entity subject."""
         contact_id = uuid.uuid4()
         entity_id = uuid.uuid4()
-        pool = _make_create_temp_contact_pool(contact_id, entity_id)
+        pool, _conn = _make_new_temp_contact_pool(contact_id, entity_id)
 
-        with patch(_EMIT_FACT_PATCH, new_callable=AsyncMock) as mock_emit:
-            result = await create_temp_contact(pool, "telegram", "12345")
+        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
+            await create_temp_contact(pool, "telegram", "12345")
+            mock_assert.assert_awaited_once()
+            call = mock_assert.call_args
+            # positional: (pool, subject=entity_id, predicate, object=value)
+            assert call.args[1] == entity_id
+            assert call.args[2] == "has-handle"  # telegram → has-handle
+            assert call.args[3] == "12345"
+            assert call.kwargs.get("primary") is True
 
-        mock_emit.assert_awaited_once()
-        call_kwargs = mock_emit.call_args.kwargs
-        assert call_kwargs["contact_id"] == contact_id
-        assert call_kwargs["ci_type"] == "telegram"
-        assert call_kwargs["value"] == "12345"
-        assert call_kwargs["is_primary"] is True
-        assert result is not None and result.contact_id == contact_id
-
-    async def test_emit_fact_called_when_flag_off(self, monkeypatch):
-        """(a) emit_contact_info_fact is called even when flag is off (returns early internally)."""
-        monkeypatch.delenv(_FLAG_ENV, raising=False)
-
+    async def test_assert_fact_failure_does_not_block_return_value(self):
+        """A central-writer failure is swallowed — ResolvedContact is still returned."""
         contact_id = uuid.uuid4()
         entity_id = uuid.uuid4()
-        pool = _make_create_temp_contact_pool(contact_id, entity_id)
+        pool, _conn = _make_new_temp_contact_pool(contact_id, entity_id)
 
-        with patch(_EMIT_FACT_PATCH, new_callable=AsyncMock) as mock_emit:
+        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock, side_effect=RuntimeError("boom")):
             result = await create_temp_contact(pool, "telegram", "12345")
+            assert result is not None
+            assert result.contact_id == contact_id
 
-        # Call-site always invokes helper; helper checks flag internally.
-        mock_emit.assert_awaited_once()
-        assert result is not None and result.contact_id == contact_id
-
-    async def test_shim_failure_does_not_block_return_value(self, monkeypatch):
-        """(c) emit_contact_info_fact raising does not propagate — ResolvedContact is returned."""
-        monkeypatch.setenv(_FLAG_ENV, "1")
-
+    async def test_no_contact_info_insert_anywhere(self):
+        """No INSERT/UPDATE/DELETE against public.contact_info is ever issued."""
         contact_id = uuid.uuid4()
         entity_id = uuid.uuid4()
-        pool = _make_create_temp_contact_pool(contact_id, entity_id)
+        pool, conn = _make_new_temp_contact_pool(contact_id, entity_id)
 
-        with patch(
-            _EMIT_FACT_PATCH,
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("triple store down"),
-        ):
-            result = await create_temp_contact(pool, "telegram", "12345")
+        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock):
+            await create_temp_contact(pool, "telegram", "12345")
 
-        assert result is not None and result.contact_id == contact_id
+        # Inspect every SQL string passed to conn.execute / conn.fetchrow:
+        # none may write public.contact_info.
+        for mock_call in [*conn.execute.await_args_list, *conn.fetchrow.await_args_list]:
+            sql = mock_call.args[0] if mock_call.args else ""
+            assert "contact_info" not in sql.lower(), f"unexpected contact_info SQL: {sql!r}"
 
-    async def test_shim_not_called_when_existing_contact_found(self, monkeypatch):
-        """Shim is NOT called when the race path returns an existing contact (no new INSERT)."""
-        monkeypatch.setenv(_FLAG_ENV, "1")
-
-        existing_id = uuid.uuid4()
-        existing_row = MagicMock()
-        existing_row.__getitem__ = lambda self, k: {
-            "contact_id": existing_id,
-            "name": "Alice",
-            "roles": [],
-            "entity_id": None,
-        }[k]
-
-        mock_transaction = AsyncMock()
-        mock_transaction.__aenter__ = AsyncMock(return_value=mock_transaction)
-        mock_transaction.__aexit__ = AsyncMock(return_value=False)
-
-        mock_conn = AsyncMock()
-        mock_conn.fetchrow = AsyncMock(return_value=existing_row)
-        mock_conn.transaction = MagicMock(return_value=mock_transaction)
-
+    async def test_existing_match_short_circuits_before_writes(self):
+        """An existing triple match returns immediately without acquiring a conn."""
+        existing_entity_id = uuid.uuid4()
         pool = MagicMock()
-        pool.acquire = MagicMock()
-        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "entity_id": existing_entity_id,
+                "name": "Existing Person",
+                "roles": ["owner"],
+            }
+        )
+        pool.acquire = MagicMock()  # must not be used
 
-        with patch(_EMIT_FACT_PATCH, new_callable=AsyncMock) as mock_emit:
+        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
             result = await create_temp_contact(pool, "telegram", "777")
-
-        # Existing path returns inside the transaction — no INSERT, so no shim call.
-        mock_emit.assert_not_called()
-        assert result is not None and result.contact_id == existing_id
+            mock_assert.assert_not_awaited()
+        pool.acquire.assert_not_called()
+        assert result is not None
+        assert result.entity_id == existing_entity_id
+        assert result.roles == ["owner"]

@@ -266,12 +266,6 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
         "INSERT INTO public.contacts (name) VALUES ('acl-probe-contact')",
     ),
     (
-        "contact_info",
-        "INSERT INTO public.contact_info (contact_id, type, value)"
-        " SELECT id, 'email', 'acl-probe@example.com' FROM public.contacts"
-        " WHERE name = 'acl-probe-contact' LIMIT 1",
-    ),
-    (
         "entity_info",
         "INSERT INTO public.entity_info (entity_id, type, value)"
         " SELECT id, 'acl-probe-key', 'acl-probe-val' FROM public.entities"
@@ -465,7 +459,7 @@ def test_set_role_blocks_cross_schema_write(postgres_container):
 def test_set_role_allows_public_table_writes(postgres_container):
     """SET ROLE butler_general_rw: write succeeds for each table in the public write matrix.
 
-    Iterates all 20 public tables guaranteed to exist after the core migration chain.
+    Iterates all public tables guaranteed to exist after the core migration chain.
     Each test row is written under the runtime role; success proves the write grant
     is in effect.
 
@@ -508,10 +502,10 @@ def test_set_role_allows_public_table_writes(postgres_container):
 
 
 def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
-    """SET ROLE butler_general_rw: INSERT into protected public table is denied.
+    """SET ROLE butler_general_rw: INSERT into protected public tables is denied.
 
-    alembic_version is migration-owned metadata and must not be writable by
-    runtime roles.
+    alembic_version is migration-owned metadata, and contact_info is read-only
+    after the entity-redesign write-path cut-over.
     """
     from butlers.migrations import run_migrations
 
@@ -520,11 +514,27 @@ def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
     asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
+    seed_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with seed_engine.connect() as conn:
+            conn.execute(text("INSERT INTO public.contacts (name) VALUES ('acl-probe-contact')"))
+    finally:
+        seed_engine.dispose()
+
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
             db_url,
             _RUNTIME_ROLES["general"],
             "INSERT INTO public.alembic_version (version_num) VALUES ('acl-probe-version')",
+        )
+
+    with pytest.raises(ProgrammingError, match="permission denied"):
+        _execute_as_role(
+            db_url,
+            _RUNTIME_ROLES["general"],
+            "INSERT INTO public.contact_info (contact_id, type, value)"
+            " SELECT id, 'email', 'acl-probe@example.com' FROM public.contacts"
+            " WHERE name = 'acl-probe-contact' LIMIT 1",
         )
 
 

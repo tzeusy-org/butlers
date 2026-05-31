@@ -653,12 +653,13 @@ async def run_relationship_briefing_contribution(
             EXTRACT(DAY FROM now() - MAX(f.valid_at)) AS days_since_last
         FROM contacts c
         JOIN facts f
-            ON f.subject = 'contact:' || c.id::text
+            ON f.entity_id = c.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE c.stay_in_touch_days IS NOT NULL
           AND c.listed = true
+          AND c.entity_id IS NOT NULL
         GROUP BY c.id, c.first_name, c.last_name, c.nickname, c.stay_in_touch_days
         HAVING EXTRACT(DAY FROM now() - MAX(f.valid_at)) > c.stay_in_touch_days
         ORDER BY (EXTRACT(DAY FROM now() - MAX(f.valid_at)) - c.stay_in_touch_days) DESC
