@@ -61,6 +61,8 @@ def upgrade() -> None:
             decided_at TIMESTAMPTZ,
             execution_result JSONB,
             approval_rule_id UUID REFERENCES approval_rules(id),
+            why TEXT,
+            evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
             CONSTRAINT pending_actions_status_check
                 CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'))
         )
