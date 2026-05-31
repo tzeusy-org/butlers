@@ -250,6 +250,10 @@ def _should_include_entry(
     #     the spawner — a duplicate daemon log for the failed session row.
     #     The session_records source classifies these as SessionTimeoutError
     #     and carries session IDs for investigation.
+    #   * OpenCode empty exit-zero response diagnostics — the adapter logs the
+    #     failed pre-tool-call attempt before same-tier failover can recover.
+    #     If recovery does not happen, session_records carries the final failed
+    #     session with IDs and trigger context.
     #   * "codex_refresh_lock: lock held" / "codex_refresh_lock: waiting" —
     #     these contain the word "deadlock" while describing the adapter's
     #     non-fatal fallback path. It is operational contention, not a crash
@@ -280,6 +284,24 @@ def _should_include_entry(
 
     if entry.logger == "butlers.core.spawner" and entry.event.startswith(
         "Runtime invocation failed: TimeoutError: OpenCode CLI timed out after "
+    ):
+        return False
+
+    if suppress_session_duplicate_timeouts and entry.logger == "butlers.core.runtimes.opencode":
+        event_lower = entry.event.lower()
+        if event_lower.startswith("opencode cli returned no response:") and (
+            "no result" in event_lower
+            and "tool calls" in event_lower
+            and ("token usage" in event_lower or "tokens" in event_lower)
+        ):
+            return False
+
+    if (
+        suppress_session_duplicate_timeouts
+        and entry.logger == "butlers.core.spawner"
+        and entry.event.startswith(
+            "Runtime invocation failed: RuntimeError: OpenCode CLI returned no response:"
+        )
     ):
         return False
 

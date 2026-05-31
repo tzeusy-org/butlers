@@ -331,6 +331,45 @@ def test_spawner_runtime_timeout_excluded_when_session_records_covers_it():
     assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
 
 
+def test_opencode_empty_response_included_without_session_records_coverage():
+    """Log-scanner-only deployments keep OpenCode empty-response coverage."""
+    entry = LogEntry(
+        level="error",
+        event=("OpenCode CLI returned no response: no result, tool calls, or token usage"),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.opencode",
+    )
+    assert _should_include_entry(entry) is True
+
+
+def test_opencode_empty_response_excluded_when_session_records_covers_it():
+    """OpenCode empty-response adapter logs are duplicate evidence with session records."""
+    entry = LogEntry(
+        level="error",
+        event=("OpenCode CLI returned no response: no result, tool calls, token usage, or stderr"),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.opencode",
+    )
+    assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
+
+
+def test_spawner_opencode_empty_response_excluded_when_session_records_covers_it():
+    """Spawner wrapper logs for terminal OpenCode empty responses are session duplicates."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: RuntimeError: OpenCode CLI returned no response: "
+            "no result, tool calls, or token usage"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
+
+
 def test_spawner_non_timeout_errors_remain_in_log_scanner():
     """Only runtime timeout duplicates are suppressed from spawner logs."""
     entry = LogEntry(
