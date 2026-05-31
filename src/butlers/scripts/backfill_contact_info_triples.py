@@ -120,6 +120,7 @@ def _load_assert_fact():  # type: ignore[return]
     spec = importlib.util.spec_from_file_location("relationship_assert_fact", tools_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # register before exec so @dataclass can resolve cls.__module__
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
 
