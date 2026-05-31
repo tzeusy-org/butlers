@@ -103,6 +103,12 @@ The adapter SHALL parse OpenCode's `--format json` output to extract result text
 - **WHEN** no valid JSON is found in stdout
 - **THEN** the entire stdout is returned as result text
 
+#### Scenario: Empty exit-zero response is rejected
+- **WHEN** the OpenCode process exits successfully but parsing produces no result text, no tool calls, and no token usage
+- **THEN** the adapter SHALL raise a runtime error instead of returning a successful empty response
+- **AND** it SHALL mark the process metadata as pre-tool-call
+- **AND** if stderr contains non-fatal CLI noise, the adapter SHALL include that stderr detail in the error message without treating it as a successful response
+
 ### Requirement: Environment Variable Handling
 The adapter SHALL pass the provided `env` dict to the subprocess, adding `OPENCODE_CONFIG` pointing to the temporary config file. The adapter SHALL NOT filter out any env vars, since OpenCode supports multiple providers.
 

@@ -1101,16 +1101,13 @@ class OpenCodeAdapter(RuntimeAdapter):
                     result_text, tool_calls, usage = _parse_opencode_output(
                         stdout, stderr, returncode
                     )
-                    if (
-                        result_text is None
-                        and not tool_calls
-                        and usage is None
-                        and not stderr.strip()
-                    ):
+                    if result_text is None and not tool_calls and usage is None:
                         error_detail = (
-                            "OpenCode CLI returned no response: no result, tool calls, "
-                            "token usage, or stderr"
+                            "OpenCode CLI returned no response: no result, "
+                            "tool calls, or token usage"
                         )
+                        if stderr.strip():
+                            error_detail += f" (stderr: {stderr.strip()})"
                         logger.error(error_detail)
                         self._last_process_info["error_detail"] = error_detail
                         self._last_process_info["is_pre_tool_call"] = True

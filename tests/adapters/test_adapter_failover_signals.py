@@ -485,6 +485,23 @@ class TestRateLimitAuthModelUnavailableTimeoutMapping:
         assert info is not None
         assert info.get("is_pre_tool_call") is True
 
+    async def test_opencode_empty_exit_zero_classifiable(self) -> None:
+        """OpenCodeAdapter empty exit-0 output is a pre-tool-call failover signal."""
+        proc = _make_proc(0, stdout=b"", stderr=b"")
+        with patch(_OPENCODE_EXEC, return_value=proc):
+            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+            with pytest.raises(RuntimeError) as exc_info:
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+
+        info = adapter.last_process_info
+        assert info is not None
+        assert info.get("is_pre_tool_call") is True
+        decision = classify_failover_eligibility(
+            FailoverContext(exception=exc_info.value, tool_calls=[], process_info=info)
+        )
+        assert decision.eligible
+        assert "empty_runtime_response" in decision.reason
+
 
 # ---------------------------------------------------------------------------
 # AC-4: Adapter-internal retry provenance NOT conflated with failover
