@@ -45,6 +45,7 @@
 - [ ] 8.2 If SIGTERM was ignored: update `OpenCodeAdapter` to escalate to SIGKILL after a short grace period (e.g. 5 s) and add a test covering the escalation.
 - [ ] 8.3 If the timeout was not being plumbed: fix the plumbing. Add a spawner-level integration test that asserts the subprocess is dead within `timeout + grace`.
 - [ ] 8.4 Update `runtime-opencode` spec to document the grace-and-kill behavior (already drafted in this change's delta spec).
+- [ ] 8.5 Add the narrow OpenCode SQLite migration bootstrap retry path and regression coverage for success, partial/error output, stdout-bearing failures, and retry-failure provenance.
 
 ## 9. Dashboard Surfacing
 

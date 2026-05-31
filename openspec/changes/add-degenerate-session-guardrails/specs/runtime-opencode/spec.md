@@ -27,11 +27,13 @@ The strengthened timeout contract exists because a real incident (session `46f18
 - **THEN** the test SHALL confirm the process is dead within `timeout + grace`
 - **AND** the test SHALL reference session `46f18840-4f74-4e0a-a3bf-cafa2b579f3a` as the motivating incident
 
-#### Scenario: Completed startup migration retry
-- **WHEN** the first OpenCode process exits nonzero after reporting a completed first-run startup database migration
+#### Scenario: SQLite migration bootstrap retried once
+- **WHEN** the first OpenCode process exits with a non-zero return code, stdout is empty, and stderr exactly matches the known one-time SQLite migration completion banner
 - **THEN** the adapter retries the same invocation once
-- **AND** records retry provenance and the zero-based attempt index in process metadata
+- **AND** records retry provenance, the retry reason, one-based attempt count, and zero-based attempt index in `last_process_info`
+- **AND** if the retry succeeds, the adapter returns the retry result
+- **AND** if stderr is partial, has extra lines, stdout is non-empty, or the retry fails, the adapter follows the normal error path
 
 #### Scenario: Non-zero exit code without completed startup migration
 - **WHEN** the OpenCode process exits with a non-zero return code
-- **THEN** the adapter raises `RuntimeError` with the stderr/stdout error detail
+- **THEN** except for the one-time SQLite migration bootstrap retry case, the adapter raises `RuntimeError` with the stderr/stdout error detail

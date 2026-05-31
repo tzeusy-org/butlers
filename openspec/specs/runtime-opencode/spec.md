@@ -21,14 +21,16 @@ The `OpenCodeAdapter` SHALL invoke the OpenCode CLI via `opencode run --format j
 - **WHEN** the OpenCode process exceeds the configured timeout (default 300s)
 - **THEN** the adapter kills the process and raises `TimeoutError`
 
-#### Scenario: Completed startup migration retry
-- **WHEN** the first OpenCode process exits nonzero after reporting a completed first-run startup database migration
+#### Scenario: SQLite migration bootstrap retried once
+- **WHEN** the first OpenCode process exits with a non-zero return code, stdout is empty, and stderr exactly matches the known one-time SQLite migration completion banner
 - **THEN** the adapter retries the same invocation once
-- **AND** records retry provenance and the zero-based attempt index in process metadata
+- **AND** records retry provenance, the retry reason, one-based attempt count, and zero-based attempt index in `last_process_info`
+- **AND** if the retry succeeds, the adapter returns the retry result
+- **AND** if stderr is partial, has extra lines, stdout is non-empty, or the retry fails, the adapter follows the normal error path
 
 #### Scenario: Non-zero exit code without completed startup migration
 - **WHEN** the OpenCode process exits with a non-zero return code
-- **THEN** the adapter raises `RuntimeError` with the stderr/stdout error detail
+- **THEN** except for the one-time SQLite migration bootstrap retry case, the adapter raises `RuntimeError` with the stderr/stdout error detail
 
 ### Requirement: Model Selection
 The adapter SHALL pass the model via the `--model` CLI flag using OpenCode's `provider/model` format (e.g., `anthropic/claude-sonnet-4-5`). Butler authors MUST use the `provider/model` format in `butler.toml` when using the OpenCode runtime.

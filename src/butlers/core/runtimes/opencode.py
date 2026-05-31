@@ -33,13 +33,14 @@ logger = logging.getLogger(__name__)
 
 # Default timeout for OpenCode CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
-_BENIGN_STDERR_LINES = frozenset(
-    {
-        "Performing one time database migration, may take a few minutes...",
-        "sqlite-migration:done",
-        "Database migration complete.",
-    }
+_OPENCODE_SQLITE_MIGRATION_RETRY_REASON = "opencode_sqlite_migration"
+
+_OPENCODE_SQLITE_MIGRATION_LINES = (
+    "Performing one time database migration, may take a few minutes...",
+    "sqlite-migration:done",
+    "Database migration complete.",
 )
+_BENIGN_STDERR_LINES = frozenset(_OPENCODE_SQLITE_MIGRATION_LINES)
 
 
 def _filtered_stderr_lines(stderr: str) -> list[str]:
@@ -50,13 +51,9 @@ def _filtered_stderr_lines(stderr: str) -> list[str]:
 
 def _looks_like_completed_startup_migration(stdout: str, stderr: str) -> bool:
     """Return True when OpenCode only reports a completed first-run DB migration."""
-    output = "\n".join(part for part in (stdout, stderr) if part)
-    output_lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if not output_lines or _extract_stdout_error_detail(stdout):
+    if stdout.strip():
         return False
-    return _BENIGN_STDERR_LINES.issubset(output_lines) and all(
-        line in _BENIGN_STDERR_LINES for line in output_lines
-    )
+    return _is_opencode_sqlite_migration_only(stderr)
 
 
 def _extract_stdout_error_detail(stdout: str) -> str | None:
@@ -142,6 +139,12 @@ def _find_opencode_binary() -> str:
             "or see https://opencode.ai/docs"
         )
     return path
+
+
+def _is_opencode_sqlite_migration_only(stderr: str) -> bool:
+    """Return true when stderr only contains OpenCode's benign SQLite migration banner."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return tuple(lines) == _OPENCODE_SQLITE_MIGRATION_LINES
 
 
 def _parse_opencode_output(
@@ -992,6 +995,7 @@ class OpenCodeAdapter(RuntimeAdapter):
             attempt_infos: list[dict[str, Any]] = []
             for _ in range(2):
                 attempt_index = len(attempt_infos)
+                attempt_count = attempt_index + 1
                 try:
                     proc = await asyncio.create_subprocess_exec(
                         *cmd,
@@ -1021,6 +1025,7 @@ class OpenCodeAdapter(RuntimeAdapter):
                         "stderr": stderr,
                         "runtime_type": "opencode",
                         "attempt_index": attempt_index,
+                        "attempt_count": attempt_count,
                     }
                     attempt_infos.append(self._last_process_info)
 
@@ -1036,6 +1041,9 @@ class OpenCodeAdapter(RuntimeAdapter):
                             self._last_process_info["error_detail"] = error_detail
                             self._last_process_info["is_pre_tool_call"] = True
                             self._last_process_info["retry_attempted"] = True
+                            self._last_process_info["retry_reason"] = (
+                                _OPENCODE_SQLITE_MIGRATION_RETRY_REASON
+                            )
                             self._last_process_info["retry_succeeded"] = None
                             retry_attempted = True
                             continue
@@ -1049,8 +1057,14 @@ class OpenCodeAdapter(RuntimeAdapter):
                         # The spawner will layer in daemon-side tool-call capture.
                         self._last_process_info["is_pre_tool_call"] = True
                         if retry_attempted:
-                            self._last_process_info["retry_attempted"] = True
-                            self._last_process_info["retry_succeeded"] = False
+                            self._last_process_info.update(
+                                {
+                                    "retry_attempted": True,
+                                    "retry_reason": _OPENCODE_SQLITE_MIGRATION_RETRY_REASON,
+                                    "retry_succeeded": False,
+                                    "result_source": "retry",
+                                }
+                            )
                         raise RuntimeError(
                             f"OpenCode CLI exited with code {returncode}: {error_detail}"
                         )
@@ -1074,8 +1088,14 @@ class OpenCodeAdapter(RuntimeAdapter):
                                 # any output — this is a pre-tool-call systemic failure.
                                 self._last_process_info["is_pre_tool_call"] = True
                                 if retry_attempted:
-                                    self._last_process_info["retry_attempted"] = True
-                                    self._last_process_info["retry_succeeded"] = False
+                                    self._last_process_info.update(
+                                        {
+                                            "retry_attempted": True,
+                                            "retry_reason": _OPENCODE_SQLITE_MIGRATION_RETRY_REASON,
+                                            "retry_succeeded": False,
+                                            "result_source": "retry",
+                                        }
+                                    )
                                 raise RuntimeError(f"OpenCode CLI error (exit 0): {error_detail}")
 
                     result_text, tool_calls, usage = _parse_opencode_output(
@@ -1095,13 +1115,23 @@ class OpenCodeAdapter(RuntimeAdapter):
                         self._last_process_info["error_detail"] = error_detail
                         self._last_process_info["is_pre_tool_call"] = True
                         if retry_attempted:
-                            self._last_process_info["retry_attempted"] = True
-                            self._last_process_info["retry_succeeded"] = False
+                            self._last_process_info.update(
+                                {
+                                    "retry_attempted": True,
+                                    "retry_reason": _OPENCODE_SQLITE_MIGRATION_RETRY_REASON,
+                                    "retry_succeeded": False,
+                                }
+                            )
                         raise RuntimeError(error_detail)
                     if retry_attempted:
-                        self._last_process_info["retry_attempted"] = True
-                        self._last_process_info["retry_succeeded"] = True
-                        self._last_process_info["result_source"] = "retry"
+                        self._last_process_info.update(
+                            {
+                                "retry_attempted": True,
+                                "retry_reason": _OPENCODE_SQLITE_MIGRATION_RETRY_REASON,
+                                "retry_succeeded": True,
+                                "result_source": "retry",
+                            }
+                        )
                     return result_text, tool_calls, usage
 
                 except TimeoutError:
@@ -1110,17 +1140,24 @@ class OpenCodeAdapter(RuntimeAdapter):
                         "pid": proc.pid if proc is not None else None,
                         "exit_code": -1,
                         "command": cmd_for_log,
-                        "stderr": "(timeout — process killed)",
+                        "stderr": "(timeout - process killed)",
                         "runtime_type": "opencode",
                         "attempt_index": attempt_index,
+                        "attempt_count": attempt_count,
                         # Timeout fired before the adapter could confirm any tool calls —
                         # the failover classifier treats this as pre-tool-call eligible.
                         # The spawner will layer in daemon-side tool-call capture.
                         "is_pre_tool_call": True,
                     }
                     if retry_attempted:
-                        self._last_process_info["retry_attempted"] = True
-                        self._last_process_info["retry_succeeded"] = False
+                        self._last_process_info.update(
+                            {
+                                "retry_attempted": True,
+                                "retry_reason": _OPENCODE_SQLITE_MIGRATION_RETRY_REASON,
+                                "retry_succeeded": False,
+                                "result_source": "retry",
+                            }
+                        )
                     if proc is not None:
                         proc.kill()
                         await proc.wait()
