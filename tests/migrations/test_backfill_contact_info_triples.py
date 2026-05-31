@@ -757,3 +757,68 @@ class TestMixedRows:
         content = report_path.read_text()
         assert "APPLY" in content
         assert "telegram_user_id" in content
+
+
+# ---------------------------------------------------------------------------
+# 16. _load_assert_fact — real (non-mocked) execution
+# ---------------------------------------------------------------------------
+# This test exercises the REAL dynamic-import path without mocking the writer
+# module, so it would have failed before the sys.modules registration fix.
+# Before the fix: @dataclass in relationship_assert_fact.py crashed with
+#   AttributeError: 'NoneType' object has no attribute '__dict__'
+# because the module was exec'd before being added to sys.modules.
+# ---------------------------------------------------------------------------
+
+
+class TestLoadAssertFactReal:
+    @pytest.fixture(autouse=True)
+    def _cleanup_sys_modules(self) -> Any:
+        with patch.dict(_sys.modules):
+            yield
+
+    def test_load_assert_fact_returns_real_module(self) -> None:
+        """_load_assert_fact() must succeed without any mocking.
+
+        This test catches the class of bug where the module is not registered
+        in sys.modules before exec_module — causing @dataclass field resolution
+        to crash with AttributeError on 'NoneType'.
+        """
+        mod = _load_module()
+
+        # Invoke the real _load_assert_fact — no patching of sys.modules or
+        # the writer module itself.  Before the fix this raised:
+        #   AttributeError: 'NoneType' object has no attribute '__dict__'
+        writer_mod = mod._load_assert_fact()
+
+        # The returned module must expose the expected public symbols.
+        assert callable(getattr(writer_mod, "relationship_assert_fact", None)), (
+            "relationship_assert_fact must be a callable on the loaded module"
+        )
+        assert callable(getattr(writer_mod, "contact_info_type_to_predicate", None)), (
+            "contact_info_type_to_predicate must be a callable on the loaded module"
+        )
+        assert getattr(writer_mod, "AssertOutcome", None) is not None, (
+            "AssertOutcome must be present on the loaded module"
+        )
+        # AssertResult is a @dataclass — its presence proves the fix worked because
+        # @dataclass field resolution requires the module to be in sys.modules.
+        assert getattr(writer_mod, "AssertResult", None) is not None, (
+            "AssertResult (@dataclass) must be present — its presence proves "
+            "sys.modules registration happened before exec_module"
+        )
+
+    def test_load_assert_fact_registers_in_sys_modules(self) -> None:
+        """After calling _load_assert_fact(), the module must be in sys.modules."""
+        mod = _load_module()
+        mod_name = "relationship_assert_fact"
+
+        # Call the real loader (may already be cached — that is fine).
+        writer_mod = mod._load_assert_fact()
+
+        # The module must be reachable via sys.modules under its spec name.
+        assert mod_name in _sys.modules, (
+            f"Module '{mod_name}' was not registered in sys.modules after _load_assert_fact()"
+        )
+        assert _sys.modules[mod_name] is writer_mod, (
+            "sys.modules entry must be the same object returned by _load_assert_fact()"
+        )
