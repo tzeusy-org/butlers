@@ -77,6 +77,14 @@ The scanner SHALL filter log entries by severity level, extracting entries at ER
 - **AND** a spawner runtime timeout log qualifies by severity
 - **THEN** the scanner includes the entry in the finding set
 
+#### Scenario: Codex timeout diagnostics delegated to session records
+- **WHEN** the scanner is registered with `session_records` available in the same patrol configuration
+- **AND** the log scanner sees `butlers.core.runtimes.codex` emit `Codex CLI timed out after ...`
+- **THEN** the scanner excludes the raw adapter diagnostic
+- **AND** timeout investigations are sourced from `session_records`, where the finding includes session identifiers and timeout status
+- **WHEN** `session_records` is unavailable or disabled
+- **THEN** the log scanner includes the timeout entry to preserve degraded-mode coverage
+
 #### Scenario: Adapter-managed session timeout duplicates excluded
 - **WHEN** an OpenCode adapter timeout is logged by `butlers.core.runtimes.opencode`
 - **OR** the matching spawner wrapper log is `Runtime invocation failed: TimeoutError: OpenCode CLI timed out after ...`

@@ -45,7 +45,42 @@ def _get_embedding_engine() -> Any:
     return _embedding_engine
 
 
-def _fact_to_interaction(row: dict[str, Any], entity_id: uuid.UUID) -> dict[str, Any]:
+async def _resolve_interaction_target(
+    pool: asyncpg.Pool,
+    target_id: uuid.UUID,
+) -> tuple[uuid.UUID, uuid.UUID | None]:
+    """Return ``(entity_id, contact_id)`` for an entity-or-contact target UUID.
+
+    ``interaction_log`` and ``interaction_list`` now store/read canonical
+    ``entity:{entity_id}`` subjects, but direct legacy callers may still pass a
+    contact UUID. Resolve contact UUIDs here so the low-level helpers remain
+    compatible while keeping the storage shape entity-keyed.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT id, entity_id FROM contacts WHERE id = $1",
+            target_id,
+        )
+    except asyncpg.PostgresError:
+        row = None
+
+    if row is None:
+        return target_id, None
+
+    entity_id = row["entity_id"]
+    if entity_id is None:
+        raise ValueError(
+            f"Contact {target_id} has no linked entity_id. "
+            "All contacts must resolve to an entity — this is a data integrity issue."
+        )
+    return entity_id, row["id"]
+
+
+def _fact_to_interaction(
+    row: dict[str, Any],
+    entity_id: uuid.UUID,
+    contact_id: uuid.UUID | None,
+) -> dict[str, Any]:
     """Convert a facts row to the interactions API shape.
 
     ``type`` is derived from the predicate suffix (e.g. 'interaction_call' → 'call'),
@@ -63,6 +98,7 @@ def _fact_to_interaction(row: dict[str, Any], entity_id: uuid.UUID) -> dict[str,
     return {
         "id": row["id"],
         "entity_id": entity_id,
+        "contact_id": contact_id,
         "type": interaction_type,
         "summary": row.get("content") or None,
         "occurred_at": row.get("valid_at"),
@@ -87,11 +123,9 @@ async def interaction_log(
 
     Args:
         pool: Database connection pool.
-        entity_id: The entity UUID to log the interaction for.  Callers that
-            only have a contact_id must resolve it first via
-            ``resolve_contact_entity_id()`` before calling this function.
-            The MCP tool wrappers in roster/relationship/modules/tools.py
-            perform this resolution transparently.
+        entity_id: The entity UUID to log the interaction for.  For backward
+            compatibility, a contact UUID is also accepted and resolved to its
+            linked entity UUID before writing.
         type: Interaction type string (e.g. 'call', 'email', 'meeting').
         summary: Optional free-text summary of the interaction.
         occurred_at: When the interaction occurred. If None, defaults to now.
@@ -106,6 +140,7 @@ async def interaction_log(
 
     now = datetime.now(UTC)
     effective_occurred_at = occurred_at if occurred_at is not None else now
+    entity_id, contact_id = await _resolve_interaction_target(pool, entity_id)
 
     # Idempotency guard: only explicit timestamps are treated as deterministic backfills.
     # Direction is included in the dedup key so that incoming and outgoing facts for the
@@ -180,6 +215,7 @@ async def interaction_log(
     result = {
         "id": fact_id,
         "entity_id": entity_id,
+        "contact_id": contact_id,
         "type": type,
         "summary": summary,
         "occurred_at": effective_occurred_at,
@@ -294,10 +330,11 @@ async def interaction_list(
 
     Args:
         pool: Database connection pool.
-        entity_id: The entity UUID to list interactions for.  Callers that
-            only have a contact_id must resolve it first via
-            ``resolve_contact_entity_id()`` before calling this function.
+        entity_id: The entity UUID to list interactions for.  For backward
+            compatibility, a contact UUID is also accepted and resolved to its
+            linked entity UUID before querying.
     """
+    entity_id, contact_id = await _resolve_interaction_target(pool, entity_id)
     conditions = [
         "subject = $1",
         "predicate LIKE 'interaction_%'",
@@ -329,4 +366,4 @@ async def interaction_list(
         """,
         *params,
     )
-    return [_fact_to_interaction(dict(r), entity_id) for r in rows]
+    return [_fact_to_interaction(dict(r), entity_id, contact_id) for r in rows]
