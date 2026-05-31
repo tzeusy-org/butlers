@@ -27,6 +27,11 @@ The strengthened timeout contract exists because a real incident (session `46f18
 - **THEN** the test SHALL confirm the process is dead within `timeout + grace`
 - **AND** the test SHALL reference session `46f18840-4f74-4e0a-a3bf-cafa2b579f3a` as the motivating incident
 
-#### Scenario: Non-zero exit code
+#### Scenario: Completed startup migration retry
+- **WHEN** the first OpenCode process exits nonzero after reporting a completed first-run startup database migration
+- **THEN** the adapter retries the same invocation once
+- **AND** records retry provenance and the zero-based attempt index in process metadata
+
+#### Scenario: Non-zero exit code without completed startup migration
 - **WHEN** the OpenCode process exits with a non-zero return code
 - **THEN** the adapter raises `RuntimeError` with the stderr/stdout error detail
