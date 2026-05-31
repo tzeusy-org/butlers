@@ -298,6 +298,165 @@ def _compute_warmth(
 
 
 # ---------------------------------------------------------------------------
+# entity_facts channel helpers — replaces public.contact_info reads (bu-6ioq3)
+# ---------------------------------------------------------------------------
+
+_TELEGRAM_HANDLE_PREFIX = "telegram:"
+
+
+def _ef_predicate_to_ci_type(predicate: str, object_val: str) -> str:
+    """Derive a legacy-compatible CI type string from an entity_facts row.
+
+    Mapping:
+    - ``has-email``   → ``"email"``
+    - ``has-phone``   → ``"phone"``
+    - ``has-website`` → ``"website"``
+    - ``has-handle``  with ``"telegram:"`` prefix → ``"telegram_user_id"``
+    - ``has-handle``  without prefix → ``"handle"``
+
+    The ``"telegram_user_id"`` type is used so callers can distinguish
+    Telegram entries (numeric id, stripped of the prefix) from bare handles
+    (linkedin, twitter, etc.).  Bare ``has-handle`` entries that lack the
+    prefix are typed as ``"handle"`` — a neutral label that avoids implying
+    any particular network.
+    """
+    if predicate == "has-email":
+        return "email"
+    if predicate == "has-phone":
+        return "phone"
+    if predicate == "has-website":
+        return "website"
+    # has-handle: distinguish telegram (prefixed) from other handles
+    if predicate == "has-handle":
+        if object_val.startswith(_TELEGRAM_HANDLE_PREFIX):
+            return "telegram_user_id"
+        return "handle"
+    # Fallback: strip the "has-" prefix for any future predicates
+    return predicate.removeprefix("has-")
+
+
+def _ef_object_to_display_value(predicate: str, object_val: str) -> str:
+    """Strip the ``telegram:`` prefix from telegram has-handle values.
+
+    For all other predicates the raw object string is returned as-is.
+    """
+    if predicate == "has-handle" and object_val.startswith(_TELEGRAM_HANDLE_PREFIX):
+        return object_val[len(_TELEGRAM_HANDLE_PREFIX) :]
+    return object_val
+
+
+def _ef_row_to_ci_entry(fr: Any) -> Any:
+    """Convert a relationship.entity_facts row to a ContactInfoEntry.
+
+    Expected keys on *fr*: ``id``, ``predicate``, ``object``, ``primary``.
+
+    The returned entry carries ``source="entity_facts"`` and populates
+    ``predicate`` + ``value_hash`` for entity-keyed mutation paths.
+    """
+    raw_obj: str = fr["object"]
+    ci_type = _ef_predicate_to_ci_type(fr["predicate"], raw_obj)
+    display_val = _ef_object_to_display_value(fr["predicate"], raw_obj)
+    primary_raw = fr["primary"]
+    return ContactInfoEntry(
+        id=fr["id"],
+        type=ci_type,
+        value=display_val,
+        is_primary=bool(primary_raw) if primary_raw is not None else False,
+        secured=False,
+        parent_id=None,
+        context=None,
+        source="entity_facts",
+        predicate=fr["predicate"],
+        value_hash=_contact_value_hash(raw_obj),
+    )
+
+
+async def _entity_facts_channels_by_entity(
+    pool: Any,
+    entity_ids: list[UUID],
+) -> dict[UUID, list[dict]]:
+    """Batch-fetch active has-* triples from relationship.entity_facts.
+
+    Returns a dict mapping entity_id → list of asyncpg-like row dicts
+    with keys ``id``, ``predicate``, ``object``, ``primary``.
+
+    Entity IDs with no facts map to an empty list.  Entity IDs with
+    ``entity_id IS NULL`` are not passed in and must be handled by the
+    caller (no facts → empty).
+    """
+    if not entity_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT ef.subject AS entity_id, ef.id, ef.predicate, ef.object, ef."primary"
+        FROM relationship.entity_facts ef
+        WHERE ef.subject = ANY($1)
+          AND ef.predicate LIKE 'has-%'
+          AND ef.validity = 'active'
+          AND ef.object_kind = 'literal'
+        ORDER BY ef.subject, ef."primary" DESC NULLS LAST, ef.created_at ASC
+        """,
+        entity_ids,
+    )
+    result: dict[UUID, list[dict]] = {eid: [] for eid in entity_ids}
+    for r in rows:
+        eid = r["entity_id"]
+        if eid in result:
+            result[eid].append(r)
+    return result
+
+
+async def _contact_entity_map(
+    pool: Any,
+    contact_ids: list[UUID],
+) -> dict[UUID, UUID | None]:
+    """Batch-fetch entity_id for a list of contact IDs.
+
+    Returns a dict mapping contact_id → entity_id (or None when unlinked).
+    """
+    if not contact_ids:
+        return {}
+    rows = await pool.fetch(
+        "SELECT id, entity_id FROM public.contacts WHERE id = ANY($1)",
+        contact_ids,
+    )
+    mapping: dict[UUID, UUID | None] = {cid: None for cid in contact_ids}
+    for r in rows:
+        mapping[r["id"]] = r["entity_id"]
+    return mapping
+
+
+def _first_ef_value(
+    facts: list[dict],
+    *,
+    predicate: str,
+    exclude_telegram_prefix: bool = False,
+) -> str | None:
+    """Return the first matching object value from a list of entity_facts rows.
+
+    Parameters
+    ----------
+    facts:
+        Rows from :func:`_entity_facts_channels_by_entity` (already ordered
+        by ``primary DESC NULLS LAST, created_at ASC``).
+    predicate:
+        The predicate to match (e.g. ``"has-email"``).
+    exclude_telegram_prefix:
+        When *True* (used for bare handle lookups), skip objects that start
+        with the ``"telegram:"`` prefix so telegram IDs are not returned as
+        generic handles.
+    """
+    for fr in facts:
+        if fr["predicate"] != predicate:
+            continue
+        val: str = fr["object"]
+        if exclude_telegram_prefix and val.startswith(_TELEGRAM_HANDLE_PREFIX):
+            continue
+        return _ef_object_to_display_value(predicate, val)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # GET /contacts — list with search and label filter
 # ---------------------------------------------------------------------------
 
@@ -363,7 +522,10 @@ async def list_contacts(
     last_interaction_by_contact: dict[UUID, Any] = {cid: None for cid in contact_ids}
 
     if contact_ids:
-        label_rows, ci_rows, interaction_rows = await asyncio.gather(
+        # Batch-fetch entity_ids and interaction data; labels run in parallel.
+        # Channel identifiers now come from relationship.entity_facts (bu-6ioq3).
+        entity_map, label_rows, interaction_rows = await asyncio.gather(
+            _contact_entity_map(pool, contact_ids),
             pool.fetch(
                 """
                 SELECT cl.contact_id, l.id, l.name, l.color
@@ -371,18 +533,6 @@ async def list_contacts(
                 JOIN labels l ON l.id = cl.label_id
                 WHERE cl.contact_id = ANY($1)
                 ORDER BY l.name
-                """,
-                contact_ids,
-            ),
-            pool.fetch(
-                """
-                SELECT DISTINCT ON (ci.contact_id, ci.type)
-                    ci.contact_id, ci.type, ci.value
-                FROM public.contact_info ci
-                WHERE ci.contact_id = ANY($1)
-                  AND ci.type IN ('email', 'phone')
-                ORDER BY ci.contact_id, ci.type,
-                         ci.is_primary DESC NULLS LAST, ci.id
                 """,
                 contact_ids,
             ),
@@ -400,15 +550,19 @@ async def list_contacts(
                 contact_ids,
             ),
         )
+        # Collect non-null entity_ids to batch-fetch channel facts.
+        entity_ids_for_contacts = [(cid, eid) for cid, eid in entity_map.items() if eid is not None]
+        unique_entity_ids = list({eid for _, eid in entity_ids_for_contacts})
+        facts_by_entity = await _entity_facts_channels_by_entity(pool, unique_entity_ids)
+
         for lr in label_rows:
             labels_by_contact[lr["contact_id"]].append(
                 Label(id=lr["id"], name=lr["name"], color=lr["color"])
             )
-        for ci in ci_rows:
-            if ci["type"] == "email":
-                email_by_contact[ci["contact_id"]] = ci["value"]
-            else:
-                phone_by_contact[ci["contact_id"]] = ci["value"]
+        for cid, eid in entity_ids_for_contacts:
+            facts = facts_by_entity.get(eid, [])
+            email_by_contact[cid] = _first_ef_value(facts, predicate="has-email")
+            phone_by_contact[cid] = _first_ef_value(facts, predicate="has-phone")
         for ir in interaction_rows:
             last_interaction_by_contact[ir["contact_id"]] = ir["last_at"]
 
@@ -583,31 +737,17 @@ async def list_pending_contacts(
         """,
     )
 
+    # Batch-fetch entity_facts channels for all pending contacts in one round-trip.
+    # Channel identifiers now come from relationship.entity_facts (bu-6ioq3).
+    entity_ids = [r["entity_id"] for r in rows if r["entity_id"] is not None]
+    facts_by_entity = await _entity_facts_channels_by_entity(pool, entity_ids)
+
     result: list[ContactDetail] = []
     for row in rows:
         cid = row["id"]
-
-        ci_rows = await pool.fetch(
-            """
-            SELECT id, type, value, is_primary, secured, parent_id, context
-            FROM public.contact_info
-            WHERE contact_id = $1
-            ORDER BY is_primary DESC NULLS LAST, type, id
-            """,
-            cid,
-        )
-        contact_info_entries = [
-            ContactInfoEntry(
-                id=ci["id"],
-                type=ci["type"],
-                value=None if ci["secured"] else ci["value"],
-                is_primary=bool(ci["is_primary"]),
-                secured=bool(ci["secured"]),
-                parent_id=ci["parent_id"],
-                context=ci["context"],
-            )
-            for ci in ci_rows
-        ]
+        entity_id = row["entity_id"]
+        facts = facts_by_entity.get(entity_id, []) if entity_id is not None else []
+        contact_info_entries = [_ef_row_to_ci_entry(fr) for fr in facts]
 
         _raw_meta = row["metadata"]
         # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
@@ -635,7 +775,7 @@ async def list_pending_contacts(
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 roles=roles,
-                entity_id=row["entity_id"],
+                entity_id=entity_id,
                 contact_info=contact_info_entries,
             )
         )
@@ -720,16 +860,23 @@ async def _suggest_entities(
         for r in results:
             _merge(r["entity_id"], r)
 
-    # Layer 2: contact info matching
+    # Layer 2: contact channel matching via relationship.entity_facts (bu-6ioq3).
+    # Unlinked contacts (entity_id IS NULL) have no entity_facts rows → skip gracefully.
     contact_id = contact_row.get("id")
     if contact_id is not None:
-        info_rows = await rel_pool.fetch(
-            "SELECT type, value FROM public.contact_info WHERE contact_id = $1",
+        entity_id_row = await rel_pool.fetchrow(
+            "SELECT entity_id FROM public.contacts WHERE id = $1 LIMIT 1",
             contact_id,
         )
+        contact_entity_id = entity_id_row["entity_id"] if entity_id_row else None
+        if contact_entity_id is not None:
+            facts_map = await _entity_facts_channels_by_entity(rel_pool, [contact_entity_id])
+            info_rows = facts_map.get(contact_entity_id, [])
+        else:
+            info_rows = []
         for info in info_rows:
-            ci_type = info["type"]
-            ci_value = info["value"]
+            ci_type = _ef_predicate_to_ci_type(info["predicate"], info["object"])
+            ci_value = _ef_object_to_display_value(info["predicate"], info["object"])
             if not ci_value:
                 continue
             if ci_type in ("email", "phone"):
@@ -814,15 +961,13 @@ async def list_unlinked_contacts(
     limit_idx = offset_idx + 1
     params_rows.extend([offset, limit])
 
+    # Unlinked contacts (entity_id IS NULL) have no entity_facts rows, so email/phone
+    # are not fetchable via entity_facts.  Return NULL for both fields (bu-6ioq3).
     rows = await pool.fetch(
         f"""
         SELECT c.id, c.name AS full_name, c.first_name, c.last_name, c.company,
-               (SELECT ci.value FROM public.contact_info ci
-                WHERE ci.contact_id = c.id AND ci.type = 'email'
-                  AND ci.is_primary = true LIMIT 1) AS email,
-               (SELECT ci.value FROM public.contact_info ci
-                WHERE ci.contact_id = c.id AND ci.type = 'phone'
-                  AND ci.is_primary = true LIMIT 1) AS phone
+               NULL::text AS email,
+               NULL::text AS phone
         FROM contacts c
         WHERE c.entity_id IS NULL
           AND c.archived_at IS NULL
@@ -1316,18 +1461,6 @@ async def get_contact(
             c.entity_id,
             c.preferred_channel,
             (
-                SELECT ci.value FROM public.contact_info ci
-                WHERE ci.contact_id = c.id AND ci.type = 'email'
-                ORDER BY ci.is_primary DESC NULLS LAST, ci.id
-                LIMIT 1
-            ) AS email,
-            (
-                SELECT ci.value FROM public.contact_info ci
-                WHERE ci.contact_id = c.id AND ci.type = 'phone'
-                ORDER BY ci.is_primary DESC NULLS LAST, ci.id
-                LIMIT 1
-            ) AS phone,
-            (
                 SELECT MAX(f.valid_at) FROM facts f
                 WHERE f.entity_id = c.entity_id
                   AND f.predicate LIKE 'interaction_%'
@@ -1344,8 +1477,11 @@ async def get_contact(
     if row is None:
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    # Run independent detail queries concurrently
-    label_rows, birthday_row, addr_row, ci_rows = await asyncio.gather(
+    entity_id = row["entity_id"]
+
+    # Run independent detail queries concurrently.
+    # Channel identifiers come from relationship.entity_facts (bu-6ioq3).
+    label_rows, birthday_row, addr_row, ef_facts = await asyncio.gather(
         pool.fetch(
             """
             SELECT l.id, l.name, l.color
@@ -1376,15 +1512,7 @@ async def get_contact(
             """,
             contact_id,
         ),
-        pool.fetch(
-            """
-            SELECT id, type, value, is_primary, secured, parent_id, context
-            FROM public.contact_info
-            WHERE contact_id = $1
-            ORDER BY is_primary DESC NULLS LAST, type, id
-            """,
-            contact_id,
-        ),
+        _entity_facts_channels_by_entity(pool, [entity_id] if entity_id is not None else []),
     )
 
     labels = [Label(id=lr["id"], name=lr["name"], color=lr["color"]) for lr in label_rows]
@@ -1405,18 +1533,9 @@ async def get_contact(
             addr_row["country"],
         ]
         address = ", ".join(p for p in parts if p)
-    contact_info_entries = [
-        ContactInfoEntry(
-            id=ci["id"],
-            type=ci["type"],
-            value=None if ci["secured"] else ci["value"],
-            is_primary=bool(ci["is_primary"]),
-            secured=bool(ci["secured"]),
-            parent_id=ci["parent_id"],
-            context=ci["context"],
-        )
-        for ci in ci_rows
-    ]
+
+    facts = ef_facts.get(entity_id, []) if entity_id is not None else []
+    contact_info_entries = [_ef_row_to_ci_entry(fr) for fr in facts]
 
     _raw_meta = row["metadata"]
     # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
@@ -1425,14 +1544,17 @@ async def get_contact(
     raw_roles = row["roles"]
     roles = list(raw_roles) if raw_roles else []
 
+    email = _first_ef_value(facts, predicate="has-email")
+    phone = _first_ef_value(facts, predicate="has-phone")
+
     return ContactDetail(
         id=row["id"],
         full_name=row["full_name"],
         first_name=row["first_name"],
         last_name=row["last_name"],
         nickname=row["nickname"],
-        email=row["email"],
-        phone=row["phone"],
+        email=email,
+        phone=phone,
         labels=labels,
         last_interaction_at=row["last_interaction_at"],
         notes=row["notes"],
@@ -1444,7 +1566,7 @@ async def get_contact(
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         roles=roles,
-        entity_id=row["entity_id"],
+        entity_id=entity_id,
         contact_info=contact_info_entries,
         preferred_channel=row["preferred_channel"],
     )
@@ -1462,57 +1584,59 @@ async def reveal_contact_secret(
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict[str, Any]:
-    """Reveal the actual value of a secured contact_info entry.
+    """Reveal the actual value of a secured contact channel entry.
 
     COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
-    is fully removed and secured contact_info rows are migrated to entity_info
-    (bu-pl8fy).  Prefer GET /relationship/entities/{entityId}/secrets/{infoId}
-    for entity_info secured rows once that migration is complete.
+    is fully removed.  Prefer GET /relationship/entities/{entityId}/secrets/{infoId}
+    for entity_info secured rows (bu-pl8fy).
 
-    Returns the real value for a secured contact_info row.  Returns 404 if
-    the info_id does not exist OR does not belong to the given contact_id —
-    preventing enumeration of secured values across contacts.
+    After bu-6ioq3, channel identifiers live in relationship.entity_facts which
+    has no "secured" concept — all channel values are non-secured.  This endpoint
+    resolves the fact by id, validates it belongs to the contact's entity, and
+    returns 400 (not secured) per the pre-existing contract for non-secured entries.
+    Returns 404 if the fact_id is not found or does not belong to this contact.
 
     The response is intentionally minimal: ``{"id": ..., "type": ..., "value": ...}``.
     """
     pool = _pool(db)
 
-    row = await pool.fetchrow(
-        """
-        SELECT id, type, value, secured
-        FROM public.contact_info
-        WHERE id = $1 AND contact_id = $2
-        """,
-        info_id,
+    # Resolve contact → entity_id, then look up the entity_facts row by id.
+    # This replaces the direct public.contact_info read (bu-6ioq3).
+    contact_row = await pool.fetchrow(
+        "SELECT entity_id FROM public.contacts WHERE id = $1 AND archived_at IS NULL LIMIT 1",
         contact_id,
     )
-
-    if row is None:
+    if contact_row is None:
         raise HTTPException(status_code=404, detail="Contact info entry not found")
+    entity_id = contact_row["entity_id"]
 
-    if not row["secured"]:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "This contact_info entry is not secured; "
-                "value is available in the contact detail response."
-            ),
+    ef_row = None
+    if entity_id is not None:
+        ef_row = await pool.fetchrow(
+            """
+            SELECT ef.id, ef.predicate, ef.object
+            FROM relationship.entity_facts ef
+            WHERE ef.id = $1
+              AND ef.subject = $2
+              AND ef.predicate LIKE 'has-%'
+              AND ef.validity = 'active'
+            LIMIT 1
+            """,
+            info_id,
+            entity_id,
         )
 
-    # Explicit audit for credential reveal (GET — middleware skips GETs).
-    await emit_dashboard_audit(
-        db,
-        butler="relationship",
-        operation="contact_secret_reveal",
-        method="GET",
-        path=f"/api/relationship/contacts/{contact_id}/secrets/{info_id}",
-        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
-        body={"type": row["type"]},
-        response_status=200,
-        request=request,
-    )
+    if ef_row is None:
+        raise HTTPException(status_code=404, detail="Contact info entry not found")
 
-    return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}
+    # entity_facts has no secured concept; all entries are non-secured.
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "This contact channel entry is not secured; "
+            "value is available in the contact detail response."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1642,22 +1766,19 @@ async def delete_contact(
     contact_id: UUID,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
-    """Hard-delete a contact and all its associated contact_info.
+    """Hard-delete a contact.
 
     COMPAT-ONLY: this contact-keyed endpoint remains until the contact row
     lifecycle is rationalized post bu-k9ylx + bu-e2ja9 (drop public.contact_info).
     Prefer DELETE /relationship/entities/{entityId} (entity forget/tombstone)
     for complete entity removal.
 
-    CASCADE on public.contact_info FK handles info cleanup.
-    Source links in contacts_source_links are also removed so a
-    future sync can re-create the contact from scratch if needed.
+    Source links in contacts_source_links are removed so a future sync can
+    re-create the contact from scratch if needed.
 
-    Retraction: before deleting the contact row (which cascades to
-    public.contact_info), all active ``has-*`` triples in
-    ``relationship.entity_facts`` that correspond to the contact's
-    channel rows are retracted.  This prevents stale facts on the
-    linked entity after the contact is removed.
+    Retraction: before deleting the contact row, all active ``has-*`` triples in
+    ``relationship.entity_facts`` for the linked entity are retracted.  This
+    prevents stale facts on the entity after the contact is removed.
     """
     from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
 
@@ -1672,28 +1793,38 @@ async def delete_contact(
 
     entity_id = existing["entity_id"]
 
-    # Retract entity_facts triples for every channel row on this contact
-    # before the CASCADE delete removes the contact_info rows.
+    # Retract all active has-* triples in entity_facts for the linked entity.
+    # After bu-6ioq3 we read directly from entity_facts instead of public.contact_info
+    # (which is being dropped as part of bu-e2ja9).
     if entity_id is not None:
-        ci_rows = await pool.fetch(
-            "SELECT type, value FROM public.contact_info WHERE contact_id = $1",
-            contact_id,
+        ef_rows = await pool.fetch(
+            """
+            SELECT predicate, object
+            FROM relationship.entity_facts
+            WHERE subject   = $1
+              AND predicate LIKE 'has-%'
+              AND validity  = 'active'
+              AND object_kind = 'literal'
+            """,
+            entity_id,
         )
-        for ci in ci_rows:
+        for ef in ef_rows:
+            ci_type = _ef_predicate_to_ci_type(ef["predicate"], ef["object"])
+            ci_value = ef["object"]  # raw object value (with telegram: prefix if any)
             try:
                 await retract_contact_info_fact(
                     pool,
                     subject=entity_id,
-                    ci_type=ci["type"],
-                    ci_value=ci["value"],
+                    ci_type=ci_type,
+                    ci_value=ci_value,
                 )
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "delete_contact: retract_contact_info_fact failed for "
-                    "contact=%s entity=%s type=%s; continuing",
+                    "contact=%s entity=%s predicate=%s; continuing",
                     contact_id,
                     entity_id,
-                    ci["type"],
+                    ef["predicate"],
                     exc_info=True,
                 )
 
@@ -4376,30 +4507,15 @@ async def list_entity_linked_contacts(
     pool = _pool(db)
     await _assert_entity_exists(pool, entity_id)
 
+    # Channel identifiers now come exclusively from relationship.entity_facts (bu-6ioq3).
+    # email/phone for quick-display and the full contact_info list are both derived
+    # from the entity_facts has-* facts fetched below.
     rows = await pool.fetch(
         """
         SELECT
             c.id,
             c.name AS full_name,
-            c.preferred_channel,
-            (
-                SELECT ci.value
-                FROM public.contact_info ci
-                WHERE ci.contact_id = c.id
-                  AND ci.type = 'email'
-                  AND ci.secured = false
-                ORDER BY ci.is_primary DESC, ci.id
-                LIMIT 1
-            ) AS email,
-            (
-                SELECT ci.value
-                FROM public.contact_info ci
-                WHERE ci.contact_id = c.id
-                  AND ci.type = 'phone'
-                  AND ci.secured = false
-                ORDER BY ci.is_primary DESC, ci.id
-                LIMIT 1
-            ) AS phone
+            c.preferred_channel
         FROM public.contacts c
         WHERE c.entity_id = $1
           AND c.archived_at IS NULL
@@ -4413,18 +4529,8 @@ async def list_entity_linked_contacts(
 
     contact_ids = [r["id"] for r in rows]
 
-    # Batch-fetch supplementary data (contact_info, labels, entity_facts) in one round-trip.
-    ci_rows, label_rows, fact_rows = await asyncio.gather(
-        pool.fetch(
-            """
-            SELECT id, contact_id, type, value, is_primary, secured, parent_id, context
-            FROM public.contact_info
-            WHERE contact_id = ANY($1)
-              AND secured = false
-            ORDER BY contact_id, is_primary DESC NULLS LAST, type, id
-            """,
-            contact_ids,
-        ),
+    # Batch-fetch supplementary data (labels, entity_facts) in one round-trip.
+    label_rows, fact_rows = await asyncio.gather(
         pool.fetch(
             """
             SELECT cl.contact_id, l.id, l.name, l.color
@@ -4442,31 +4548,12 @@ async def list_entity_linked_contacts(
             WHERE subject  = $1
               AND predicate LIKE 'has-%'
               AND validity  = 'active'
-            ORDER BY predicate ASC, "primary" DESC NULLS LAST, created_at DESC
+              AND object_kind = 'literal'
+            ORDER BY predicate ASC, "primary" DESC NULLS LAST, created_at ASC
             """,
             entity_id,
         ),
     )
-
-    # Index contact_info by contact_id.
-    ci_by_contact: dict[UUID, list[ContactInfoEntry]] = {cid: [] for cid in contact_ids}
-    # Collect all (type, value) pairs already present across all contacts for de-dup.
-    existing_channel_keys: set[tuple[str, str]] = set()
-    for ci in ci_rows:
-        ci_by_contact[ci["contact_id"]].append(
-            ContactInfoEntry(
-                id=ci["id"],
-                type=ci["type"],
-                value=ci["value"],
-                is_primary=bool(ci["is_primary"]),
-                secured=False,
-                parent_id=ci["parent_id"],
-                context=ci["context"],
-                source=None,
-            )
-        )
-        if ci["value"] is not None:
-            existing_channel_keys.add((ci["type"], ci["value"]))
 
     labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
     for lr in label_rows:
@@ -4474,39 +4561,26 @@ async def list_entity_linked_contacts(
             Label(id=lr["id"], name=lr["name"], color=lr["color"])
         )
 
-    # Merge entity_facts has-* triples into the first linked contact, de-duped by (type, value).
-    # Entity-facts are entity-level; attaching to the first contact (name order) keeps the
-    # response shape stable while surfacing new writes from the cut-over write path.
-    if fact_rows and contact_ids:
-        first_contact_id = contact_ids[0]  # rows already ordered by c.name
-        extras: list[ContactInfoEntry] = []
-        for fr in fact_rows:
-            channel_type = fr["predicate"].removeprefix("has-")
-            channel_value: str = fr["object"]
-            if (channel_type, channel_value) not in existing_channel_keys:
-                existing_channel_keys.add((channel_type, channel_value))
-                extras.append(
-                    ContactInfoEntry(
-                        id=fr["id"],
-                        type=channel_type,
-                        value=channel_value,
-                        is_primary=bool(fr["primary"]) if fr["primary"] is not None else False,
-                        secured=False,
-                        parent_id=None,
-                        context=None,
-                        source="entity_facts",
-                        predicate=fr["predicate"],
-                        value_hash=_contact_value_hash(channel_value),
-                    )
-                )
-        ci_by_contact[first_contact_id].extend(extras)
+    # All entity_facts channel entries belong to the entity, not a specific contact.
+    # Attach them all to the first linked contact (by name order), consistent with
+    # the pre-migration merge behaviour.
+    contact_info_entries = [_ef_row_to_ci_entry(fr) for fr in fact_rows]
+    first_contact_id = contact_ids[0] if contact_ids else None
+
+    ci_by_contact: dict[UUID, list[ContactInfoEntry]] = {cid: [] for cid in contact_ids}
+    if first_contact_id is not None:
+        ci_by_contact[first_contact_id] = contact_info_entries
+
+    # Derive quick-display email/phone from the same facts (ordered primary-first).
+    email_val = _first_ef_value(fact_rows, predicate="has-email")
+    phone_val = _first_ef_value(fact_rows, predicate="has-phone")
 
     return [
         LinkedContactSummary(
             id=r["id"],
             full_name=r["full_name"],
-            email=r["email"],
-            phone=r["phone"],
+            email=email_val if r["id"] == first_contact_id else None,
+            phone=phone_val if r["id"] == first_contact_id else None,
             contact_info=ci_by_contact.get(r["id"], []),
             labels=labels_by_contact.get(r["id"], []),
             preferred_channel=r["preferred_channel"],
@@ -4531,8 +4605,8 @@ async def list_entity_message_threads(
 ) -> list[MessageThreadSummary]:
     """Aggregate message activity for an entity, grouped by channel + thread.
 
-    Resolves the entity's linked contacts → their ``public.contact_info``
-    identifiers → matches against ``request_context ->> 'source_sender_identity'``
+    Resolves the entity's channel identifiers from ``relationship.entity_facts``
+    has-* triples → matches against ``request_context ->> 'source_sender_identity'``
     in ``switchboard.message_inbox``. Groups by (source_channel, thread_identity)
     ordered by recency.
 
@@ -4546,18 +4620,18 @@ async def list_entity_message_threads(
     pool = _pool(db)
     await _assert_entity_exists(pool, entity_id)
 
-    # Collect candidate sender identifiers from linked contacts' contact_info
-    # plus the entity's own entity_info (some channels store sender identity
-    # there for owner-attached accounts).
+    # Collect candidate sender identifiers from relationship.entity_facts has-* triples
+    # plus the entity's own entity_info (some channels store sender identity there for
+    # owner-attached accounts).  Replaces the public.contact_info join (bu-6ioq3).
     identifiers = await pool.fetch(
         """
-        SELECT DISTINCT ci.value
-        FROM public.contact_info ci
-        JOIN public.contacts c ON c.id = ci.contact_id
-        WHERE c.entity_id = $1
-          AND c.archived_at IS NULL
-          AND ci.value IS NOT NULL
-          AND ci.secured = false
+        SELECT DISTINCT ef.object AS value
+        FROM relationship.entity_facts ef
+        WHERE ef.subject = $1
+          AND ef.predicate LIKE 'has-%'
+          AND ef.validity = 'active'
+          AND ef.object_kind = 'literal'
+          AND ef.object IS NOT NULL
         UNION
         SELECT DISTINCT ei.value
         FROM public.entity_info ei
@@ -4567,7 +4641,15 @@ async def list_entity_message_threads(
         """,
         entity_id,
     )
-    candidates = [r["value"] for r in identifiers if r["value"]]
+    # For telegram has-handle entries, strip the "telegram:" prefix so the raw
+    # numeric user_id is compared against switchboard sender_identity values.
+    candidates = [
+        _ef_object_to_display_value("has-handle", r["value"])
+        if r["value"] and r["value"].startswith(_TELEGRAM_HANDLE_PREFIX)
+        else r["value"]
+        for r in identifiers
+        if r["value"]
+    ]
     if not candidates:
         return []
 

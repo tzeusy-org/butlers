@@ -1,23 +1,23 @@
-"""Tests for GET /api/relationship/entities/{id}/linked-contacts (display-layer unification).
+"""Tests for GET /api/relationship/entities/{id}/linked-contacts.
 
-Covers the merged read introduced in bu-rf2dh: the endpoint now returns channels
-from BOTH ``public.contact_info`` (legacy) AND ``relationship.entity_facts`` has-*
-triples (new write path), de-duped by ``(type, value)``.
+After bu-6ioq3, channel identifiers come exclusively from
+``relationship.entity_facts`` — ``public.contact_info`` reads are removed.
 
-Acceptance criteria:
+Acceptance criteria (post-migration):
 1. Entity with no linked contacts returns [].
-2. Entity with contacts but no entity_facts returns contact_info rows unchanged
-   (source=null, backward compatible).
-3. Entity_facts-sourced channels are appended to first contact's contact_info
-   with source="entity_facts".
-4. De-dup: channel present in both stores appears once (contact_info wins,
-   entity_facts duplicate silently dropped).
-5. Multiple entity_facts channels (none in contact_info) all appear on first
-   contact.
-6. Unknown entity returns 404.
-7. Entity with no entity_facts still returns contacts correctly.
-8. De-dup across multiple contacts: entity_facts channel already on any contact
-   is not duplicated.
+2. Entity with contacts but no entity_facts returns contacts with empty
+   contact_info and null email/phone.
+3. Entity_facts has-* triples appear in contact_info with source="entity_facts".
+4. Multiple entity_facts channels all appear on the first contact (entity-level).
+5. Unknown entity returns 404.
+6. has-handle with "telegram:" prefix → type="telegram_user_id", value=numeric part.
+7. has-handle without prefix → type="handle", value unchanged.
+8. email/phone quick-display fields come from entity_facts (not a separate query).
+9. Labels are returned correctly.
+10. Multiple linked contacts: facts attached to first contact; subsequent contacts
+    have empty contact_info unless they have their own entity_facts (entity-level,
+    all on same entity_id).
+11. is_primary propagated from entity_facts "primary" column.
 """
 
 from __future__ import annotations
@@ -43,12 +43,13 @@ _CONTACT_ID_A = uuid4()
 _CONTACT_ID_B = uuid4()
 _FACT_ID = uuid4()
 _FACT_ID_2 = uuid4()
-_CI_ID = uuid4()
 _LABEL_ID = uuid4()
 _MISSING_ENT_ID = uuid4()
 
 _EMAIL = "alice@example.com"
 _PHONE = "+1-555-0100"
+_TELEGRAM_NUMERIC = "210454304"
+_TELEGRAM_OBJECT = f"telegram:{_TELEGRAM_NUMERIC}"
 
 _LINKED_PATH = f"/api/relationship/entities/{_ENT_ID}/linked-contacts"
 _MISSING_PATH = f"/api/relationship/entities/{_MISSING_ENT_ID}/linked-contacts"
@@ -71,42 +72,13 @@ def _make_contact_row(
     *,
     contact_id: UUID | None = None,
     full_name: str = "Alice",
-    email: str | None = _EMAIL,
-    phone: str | None = None,
     preferred_channel: str | None = None,
 ) -> MagicMock:
     return _make_row(
         {
             "id": contact_id or _CONTACT_ID_A,
             "full_name": full_name,
-            "email": email,
-            "phone": phone,
             "preferred_channel": preferred_channel,
-        }
-    )
-
-
-def _make_ci_row(
-    *,
-    id: UUID | None = None,
-    contact_id: UUID | None = None,
-    type: str = "email",
-    value: str = _EMAIL,
-    is_primary: bool = True,
-    secured: bool = False,
-    parent_id: UUID | None = None,
-    context: str | None = None,
-) -> MagicMock:
-    return _make_row(
-        {
-            "id": id or _CI_ID,
-            "contact_id": contact_id or _CONTACT_ID_A,
-            "type": type,
-            "value": value,
-            "is_primary": is_primary,
-            "secured": secured,
-            "parent_id": parent_id,
-            "context": context,
         }
     )
 
@@ -154,17 +126,15 @@ def _make_app(
     *,
     entity_exists: bool = True,
     contact_rows: list | None = None,
-    ci_rows: list | None = None,
     label_rows: list | None = None,
     fact_rows: list | None = None,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app with a mocked relationship DB pool.
 
-    pool.fetch call sequence (4 total):
+    pool.fetch call sequence (3 total after bu-6ioq3 migration):
       1. contacts query (initial fetch, not in gather)
-      2. contact_info query   ⎤
-      3. label query          ⎬ asyncio.gather
-      4. entity_facts query   ⎦
+      2. label query       ⎤ asyncio.gather
+      3. entity_facts query ⎦
 
     pool.fetchval:
       - entity-exists check (returns 1 or None)
@@ -174,12 +144,10 @@ def _make_app(
 
     # Build the side_effect sequence for pool.fetch:
     #   call 1 → contact_rows
-    #   call 2 → ci_rows      (gather)
-    #   call 3 → label_rows   (gather)
-    #   call 4 → fact_rows    (gather)
+    #   call 2 → label_rows   (gather)
+    #   call 3 → fact_rows    (gather)
     fetch_sequence = [
         contact_rows if contact_rows is not None else [],
-        ci_rows if ci_rows is not None else [],
         label_rows if label_rows is not None else [],
         fact_rows if fact_rows is not None else [],
     ]
@@ -230,131 +198,72 @@ class TestLinkedContactsEmpty:
         assert resp.status_code == 404
 
 
-class TestLinkedContactsLegacyOnly:
-    """Contacts with contact_info rows only (no entity_facts) — backward compatible."""
+class TestLinkedContactsNoFacts:
+    """Contacts with no entity_facts return empty contact_info."""
 
-    async def test_contact_info_returned_with_source_null(self):
-        """Legacy contact_info entries must NOT gain a source field (backward compat)."""
+    async def test_no_entity_facts_returns_empty_contact_info(self):
+        """When entity_facts is empty, contact_info list is empty and email/phone are None."""
         contact = _make_contact_row()
-        ci = _make_ci_row(type="email", value=_EMAIL)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[ci],
-            label_rows=[],
-            fact_rows=[],
-        )
+        app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[])
         resp = await _get(app)
 
         assert resp.status_code == 200
         body = resp.json()
         assert len(body) == 1
-        contact_info = body[0]["contact_info"]
-        assert len(contact_info) == 1
-        # source must be absent or null — not "entity_facts"
-        entry = contact_info[0]
-        assert entry.get("source") is None
-        assert entry["type"] == "email"
-        assert entry["value"] == _EMAIL
+        assert body[0]["contact_info"] == []
+        assert body[0]["email"] is None
+        assert body[0]["phone"] is None
 
-    async def test_top_level_email_phone_preserved(self):
-        """Top-level email/phone convenience fields are unchanged."""
-        contact = _make_contact_row(email=_EMAIL, phone=_PHONE)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[],
-            label_rows=[],
-            fact_rows=[],
-        )
-        resp = await _get(app)
-
-        body = resp.json()
-        assert body[0]["email"] == _EMAIL
-        assert body[0]["phone"] == _PHONE
-
-    async def test_labels_returned(self):
-        """Label objects are returned for the contact."""
+    async def test_labels_returned_without_entity_facts(self):
+        """Labels are returned even when entity_facts is empty."""
         contact = _make_contact_row()
         label = _make_label_row(contact_id=_CONTACT_ID_A, name="VIP", color="#ff0000")
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[],
-            label_rows=[label],
-            fact_rows=[],
-        )
+        app, _ = _make_app(contact_rows=[contact], label_rows=[label], fact_rows=[])
         resp = await _get(app)
 
         labels = resp.json()[0]["labels"]
         assert len(labels) == 1
         assert labels[0]["name"] == "VIP"
 
-    async def test_no_entity_facts_does_not_change_contact_info_count(self):
-        """Zero entity_facts → contact_info list has exactly the ci_rows count."""
-        contact = _make_contact_row()
-        ci_email = _make_ci_row(type="email", value=_EMAIL)
-        ci_phone = _make_ci_row(id=uuid4(), type="phone", value=_PHONE)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[ci_email, ci_phone],
-            label_rows=[],
-            fact_rows=[],
-        )
-        resp = await _get(app)
 
-        contact_info = resp.json()[0]["contact_info"]
-        assert len(contact_info) == 2
-
-
-class TestLinkedContactsEntityFactsMerge:
+class TestLinkedContactsEntityFacts:
     """Entity_facts has-* triples appear in contact_info with source="entity_facts"."""
 
-    async def test_entity_facts_only_channel_appended_to_first_contact(self):
-        """A has-phone triple not in contact_info is added with source=entity_facts."""
-        contact = _make_contact_row(email=_EMAIL, phone=None)
-        ci_email = _make_ci_row(type="email", value=_EMAIL)
-        fact_phone = _make_fact_row(predicate="has-phone", object=_PHONE)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[ci_email],
-            label_rows=[],
-            fact_rows=[fact_phone],
-        )
-        resp = await _get(app)
-
-        contact_info = resp.json()[0]["contact_info"]
-        # Should have 2 entries: legacy email + entity_facts phone
-        assert len(contact_info) == 2
-
-        ef_entry = next(e for e in contact_info if e["type"] == "phone")
-        assert ef_entry["value"] == _PHONE
-        assert ef_entry["source"] == "entity_facts"
-
-    async def test_legacy_entry_has_no_source_field_when_mixed(self):
-        """When both sources are present, legacy entries still have source=null."""
+    async def test_has_email_triple_appears_in_contact_info(self):
+        """A has-email triple → type="email", value=address, source="entity_facts"."""
         contact = _make_contact_row()
-        ci_email = _make_ci_row(type="email", value=_EMAIL)
-        fact_phone = _make_fact_row(predicate="has-phone", object=_PHONE)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[ci_email],
-            label_rows=[],
-            fact_rows=[fact_phone],
-        )
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[fact])
+        resp = await _get(app)
+
+        body = resp.json()
+        assert resp.status_code == 200
+        contact_info = body[0]["contact_info"]
+        assert len(contact_info) == 1
+        assert contact_info[0]["type"] == "email"
+        assert contact_info[0]["value"] == _EMAIL
+        assert contact_info[0]["source"] == "entity_facts"
+        assert contact_info[0]["secured"] is False
+
+    async def test_has_phone_triple_appears_in_contact_info(self):
+        """A has-phone triple → type="phone"."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-phone", object=_PHONE)
+        app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[fact])
         resp = await _get(app)
 
         contact_info = resp.json()[0]["contact_info"]
-        legacy_entry = next(e for e in contact_info if e["type"] == "email")
-        assert legacy_entry.get("source") is None
+        assert len(contact_info) == 1
+        assert contact_info[0]["type"] == "phone"
+        assert contact_info[0]["value"] == _PHONE
 
-    async def test_multiple_entity_facts_channels_all_appended(self):
-        """Multiple entity_facts triples (no overlap) are all added."""
-        contact = _make_contact_row(email=None, phone=None)
+    async def test_multiple_entity_facts_channels_all_appear(self):
+        """Multiple entity_facts triples → all appear in contact_info."""
+        contact = _make_contact_row()
         fact_email = _make_fact_row(id=_FACT_ID, predicate="has-email", object=_EMAIL)
         fact_phone = _make_fact_row(id=_FACT_ID_2, predicate="has-phone", object=_PHONE)
         app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[],
-            label_rows=[],
-            fact_rows=[fact_email, fact_phone],
+            contact_rows=[contact], label_rows=[], fact_rows=[fact_email, fact_phone]
         )
         resp = await _get(app)
 
@@ -365,131 +274,111 @@ class TestLinkedContactsEntityFactsMerge:
         for e in contact_info:
             assert e["source"] == "entity_facts"
 
-    async def test_predicate_prefix_stripped_to_type(self):
-        """'has-email' → type='email', 'has-phone' → type='phone', etc."""
-        contact = _make_contact_row(email=None, phone=None)
-        fact = _make_fact_row(predicate="has-handle", object="@alice")
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[],
-            label_rows=[],
-            fact_rows=[fact],
-        )
-        resp = await _get(app)
-
-        contact_info = resp.json()[0]["contact_info"]
-        assert len(contact_info) == 1
-        assert contact_info[0]["type"] == "handle"
-        assert contact_info[0]["value"] == "@alice"
-
-    async def test_entity_facts_is_primary_propagated(self):
-        """is_primary from entity_facts 'primary' column is mapped (not hardcoded False)."""
-        contact = _make_contact_row(email=None, phone=None)
+    async def test_is_primary_propagated_from_facts(self):
+        """is_primary from entity_facts 'primary' column is mapped correctly."""
+        contact = _make_contact_row()
         fact_primary = _make_fact_row(predicate="has-email", object=_EMAIL, primary=True)
         fact_secondary = _make_fact_row(
             id=_FACT_ID_2, predicate="has-phone", object=_PHONE, primary=False
         )
         app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[],
-            label_rows=[],
-            fact_rows=[fact_primary, fact_secondary],
+            contact_rows=[contact], label_rows=[], fact_rows=[fact_primary, fact_secondary]
         )
         resp = await _get(app)
 
         contact_info = resp.json()[0]["contact_info"]
-        assert len(contact_info) == 2
         email_entry = next(e for e in contact_info if e["type"] == "email")
         phone_entry = next(e for e in contact_info if e["type"] == "phone")
         assert email_entry["is_primary"] is True
         assert phone_entry["is_primary"] is False
 
-
-class TestLinkedContactsDedup:
-    """A channel present in both stores appears exactly once (contact_info wins)."""
-
-    async def test_duplicate_email_appears_once(self):
-        """Same email in contact_info AND entity_facts → only one entry."""
-        contact = _make_contact_row(email=_EMAIL)
-        ci_email = _make_ci_row(type="email", value=_EMAIL)
-        fact_email = _make_fact_row(predicate="has-email", object=_EMAIL)
+    async def test_top_level_email_phone_from_entity_facts(self):
+        """Top-level email/phone are derived from entity_facts (primary-first)."""
+        contact = _make_contact_row()
+        fact_email = _make_fact_row(predicate="has-email", object=_EMAIL, primary=True)
+        fact_phone = _make_fact_row(id=_FACT_ID_2, predicate="has-phone", object=_PHONE)
         app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[ci_email],
-            label_rows=[],
-            fact_rows=[fact_email],
+            contact_rows=[contact], label_rows=[], fact_rows=[fact_email, fact_phone]
         )
         resp = await _get(app)
 
-        contact_info = resp.json()[0]["contact_info"]
-        email_entries = [e for e in contact_info if e["type"] == "email"]
-        assert len(email_entries) == 1
-        # contact_info version wins — source should be null (not entity_facts)
-        assert email_entries[0].get("source") is None
+        body = resp.json()[0]
+        assert body["email"] == _EMAIL
+        assert body["phone"] == _PHONE
 
-    async def test_duplicate_phone_appears_once(self):
-        """Same phone in contact_info AND entity_facts → only one entry."""
-        contact = _make_contact_row(phone=_PHONE)
-        ci_phone = _make_ci_row(type="phone", value=_PHONE)
-        fact_phone = _make_fact_row(predicate="has-phone", object=_PHONE)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[ci_phone],
-            label_rows=[],
-            fact_rows=[fact_phone],
-        )
+
+class TestTelegramDisambiguation:
+    """Telegram has-handle entries are correctly typed and stripped of prefix."""
+
+    async def test_telegram_handle_prefix_stripped_to_numeric(self):
+        """has-handle with 'telegram:' prefix → type='telegram_user_id', numeric value."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-handle", object=_TELEGRAM_OBJECT)
+        app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[fact])
         resp = await _get(app)
 
         contact_info = resp.json()[0]["contact_info"]
-        phone_entries = [e for e in contact_info if e["type"] == "phone"]
-        assert len(phone_entries) == 1
-        assert phone_entries[0].get("source") is None
+        assert len(contact_info) == 1
+        assert contact_info[0]["type"] == "telegram_user_id"
+        assert contact_info[0]["value"] == _TELEGRAM_NUMERIC
 
-    async def test_different_value_same_type_not_deduped(self):
-        """Different value for the same type → both kept (not de-dup candidates)."""
-        new_email = "bob@example.com"
-        contact = _make_contact_row(email=_EMAIL)
-        ci_email = _make_ci_row(type="email", value=_EMAIL)
-        fact_email = _make_fact_row(predicate="has-email", object=new_email)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            ci_rows=[ci_email],
-            label_rows=[],
-            fact_rows=[fact_email],
-        )
+    async def test_bare_handle_returns_handle_type(self):
+        """has-handle without 'telegram:' prefix → type='handle', value unchanged."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-handle", object="kohjingyu")
+        app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[fact])
         resp = await _get(app)
 
         contact_info = resp.json()[0]["contact_info"]
-        email_entries = [e for e in contact_info if e["type"] == "email"]
-        assert len(email_entries) == 2
-        values = {e["value"] for e in email_entries}
-        assert values == {_EMAIL, new_email}
+        assert len(contact_info) == 1
+        assert contact_info[0]["type"] == "handle"
+        assert contact_info[0]["value"] == "kohjingyu"
 
-    async def test_entity_facts_channel_on_second_contact_not_duplicated(self):
-        """Entity_facts channel matching second contact's ci is not added to first contact."""
-        # Two contacts: A has email, B has phone. entity_facts has phone (same as B).
-        contact_a = _make_contact_row(contact_id=_CONTACT_ID_A, full_name="Alice", email=_EMAIL)
-        contact_b = _make_contact_row(contact_id=_CONTACT_ID_B, full_name="Bob", phone=_PHONE)
-        ci_email = _make_ci_row(id=uuid4(), contact_id=_CONTACT_ID_A, type="email", value=_EMAIL)
-        ci_phone = _make_ci_row(id=uuid4(), contact_id=_CONTACT_ID_B, type="phone", value=_PHONE)
-        # entity_facts has the phone that's already in ci_phone
-        fact_phone = _make_fact_row(predicate="has-phone", object=_PHONE)
+    async def test_telegram_not_returned_for_bare_handle(self):
+        """Bare has-handle (linkedin/twitter) is NOT typed as telegram_user_id."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-handle", object="linkedin.com/in/alice")
+        app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[fact])
+        resp = await _get(app)
+
+        contact_info = resp.json()[0]["contact_info"]
+        assert contact_info[0]["type"] != "telegram_user_id"
+        assert contact_info[0]["type"] == "handle"
+
+
+class TestLinkedContactsMultiContact:
+    """Entity facts are attached to the first linked contact (entity-level)."""
+
+    async def test_facts_on_first_contact_only(self):
+        """When two contacts linked, facts go to first contact; second contact is empty."""
+        contact_a = _make_contact_row(contact_id=_CONTACT_ID_A, full_name="Alice")
+        contact_b = _make_contact_row(contact_id=_CONTACT_ID_B, full_name="Bob")
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
         app, _ = _make_app(
-            contact_rows=[contact_a, contact_b],  # sorted by name → Alice first
-            ci_rows=[ci_email, ci_phone],
+            contact_rows=[contact_a, contact_b],  # Alice first (sorted by name)
             label_rows=[],
-            fact_rows=[fact_phone],
+            fact_rows=[fact],
         )
         resp = await _get(app)
 
         body = resp.json()
-        # Alice's contact_info: only email (phone already in Bob's ci → de-duped out)
         alice = next(c for c in body if c["full_name"] == "Alice")
-        alice_types = {e["type"] for e in alice["contact_info"]}
-        assert "phone" not in alice_types
-
-        # Bob's contact_info: phone from contact_info
         bob = next(c for c in body if c["full_name"] == "Bob")
-        bob_phone_entries = [e for e in bob["contact_info"] if e["type"] == "phone"]
-        assert len(bob_phone_entries) == 1
-        assert bob_phone_entries[0].get("source") is None
+        assert len(alice["contact_info"]) == 1
+        assert alice["email"] == _EMAIL
+        assert len(bob["contact_info"]) == 0
+        assert bob["email"] is None
+
+    async def test_two_contacts_no_facts_both_empty(self):
+        """Two contacts, no entity_facts → both have empty contact_info."""
+        contact_a = _make_contact_row(contact_id=_CONTACT_ID_A, full_name="Alice")
+        contact_b = _make_contact_row(contact_id=_CONTACT_ID_B, full_name="Bob")
+        app, _ = _make_app(contact_rows=[contact_a, contact_b], label_rows=[], fact_rows=[])
+        resp = await _get(app)
+
+        body = resp.json()
+        assert len(body) == 2
+        for c in body:
+            assert c["contact_info"] == []
+            assert c["email"] is None
+            assert c["phone"] is None

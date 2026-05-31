@@ -1,21 +1,20 @@
 """Tests for retraction of entity_facts triples when a contact is deleted.
 
-Covers the gap identified in bu-5bvzk: DELETE /contacts/{contact_id} must
-retract all active ``has-*`` facts in ``relationship.entity_facts`` that
-correspond to the contact's channel rows before the contact row (and its
-CASCADE-linked ``public.contact_info`` rows) is deleted.
+After bu-6ioq3: DELETE /contacts/{contact_id} reads active has-* triples
+directly from ``relationship.entity_facts`` (not ``public.contact_info``)
+and calls ``retract_contact_info_fact`` for each.
 
 Acceptance criteria:
-1. Deleting a contact with an entity_id and one email channel retracts the
-   matching ``has-email`` fact in ``relationship.entity_facts``.
-2. Deleting a contact with multiple channel types retracts each corresponding
-   fact (one retraction call per channel row).
+1. Deleting a contact with an entity_id and one email fact retracts that
+   ``has-email`` fact in ``relationship.entity_facts``.
+2. Deleting a contact with multiple channel facts retracts each one
+   (one retraction call per entity_facts row).
 3. Deleting a contact with no entity_id (unlinked contact) skips retraction
    entirely and still succeeds (204).
-4. Deleting a contact whose channel type has no predicate mapping (e.g.
-   ``'telegram_chat_id'``) does not attempt retraction for that row.
-5. A retraction failure does not abort the contact delete (graceful degradation).
-6. Deleting a contact that does not exist returns 404.
+4. A retraction failure does not abort the contact delete (graceful degradation).
+5. Deleting a contact that does not exist returns 404.
+6. Telegram has-handle facts (object "telegram:<id>") are passed with the raw
+   object value (including prefix) so retract_contact_info_fact can match exactly.
 
 All tests are unit-level (mock pool — no Postgres or Docker required).
 """
@@ -44,6 +43,7 @@ _MISSING_CONTACT_ID = uuid4()
 
 _EMAIL = "alice@example.com"
 _PHONE = "+1-555-0100"
+_TELEGRAM_OBJECT = "telegram:210454304"
 
 _DELETE_PATH = f"/api/relationship/contacts/{_CONTACT_ID}"
 
@@ -67,9 +67,9 @@ def _make_contact_row(
     return row
 
 
-def _make_ci_row(ci_type: str, value: str) -> MagicMock:
-    """Simulate a contact_info row with type and value."""
-    data = {"type": ci_type, "value": value}
+def _make_ef_row(predicate: str, object_val: str) -> MagicMock:
+    """Simulate an entity_facts row with predicate and object."""
+    data = {"predicate": predicate, "object": object_val}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
     return row
@@ -83,19 +83,22 @@ def _make_ci_row(ci_type: str, value: str) -> MagicMock:
 def _make_app(
     *,
     contact_row: MagicMock | None,
-    ci_rows: list[MagicMock] | None = None,
+    ef_rows: list[MagicMock] | None = None,
     source_links_exist: bool = True,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app with a mocked relationship DB pool.
 
+    After bu-6ioq3 the retraction path reads entity_facts instead of
+    contact_info:
+
     ``fetchrow`` returns the contact row (or None when contact is missing).
-    ``fetch``    returns the contact_info rows for the contact.
+    ``fetch``    returns the entity_facts rows for the entity.
     ``fetchval`` returns True/1 when source_links table exists.
     ``execute``  is a spy — tracks all DELETE/UPDATE calls.
     """
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=contact_row)
-    mock_pool.fetch = AsyncMock(return_value=ci_rows or [])
+    mock_pool.fetch = AsyncMock(return_value=ef_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=1 if source_links_exist else None)
     mock_pool.execute = AsyncMock(return_value="DELETE 1")
 
@@ -126,11 +129,11 @@ async def _delete(app: FastAPI, path: str = _DELETE_PATH) -> httpx.Response:
 class TestDeleteContactRetractsEntityFacts:
     """DELETE /contacts/{id} retracts matching entity_facts triples."""
 
-    async def test_single_email_channel_retracts_has_email_fact(self):
-        """Deleting a contact with one email channel calls retract once."""
+    async def test_single_email_fact_retracts_once(self):
+        """Deleting a contact with one has-email fact calls retract once."""
         contact_row = _make_contact_row(entity_id=_ENTITY_ID)
-        ci_rows = [_make_ci_row("email", _EMAIL)]
-        app, _ = _make_app(contact_row=contact_row, ci_rows=ci_rows)
+        ef_rows = [_make_ef_row("has-email", _EMAIL)]
+        app, _ = _make_app(contact_row=contact_row, ef_rows=ef_rows)
 
         with patch(
             "butlers.tools.relationship.relationship_assert_fact.retract_contact_info_fact",
@@ -143,19 +146,17 @@ class TestDeleteContactRetractsEntityFacts:
         call_kwargs = mock_retract.call_args
         # subject must be the entity_id
         assert call_kwargs.kwargs["subject"] == _ENTITY_ID or call_kwargs.args[1] == _ENTITY_ID
-        # ci_type must be 'email'
-        assert call_kwargs.kwargs.get("ci_type") == "email" or "email" in str(call_kwargs)
-        # ci_value must be the email address
+        # ci_value must be the email address (raw object from entity_facts)
         assert call_kwargs.kwargs.get("ci_value") == _EMAIL or _EMAIL in str(call_kwargs)
 
-    async def test_multiple_channels_each_retracted(self):
-        """Two channel rows → two retraction calls, one per channel."""
+    async def test_multiple_facts_each_retracted(self):
+        """Two entity_facts rows → two retraction calls, one per row."""
         contact_row = _make_contact_row(entity_id=_ENTITY_ID)
-        ci_rows = [
-            _make_ci_row("email", _EMAIL),
-            _make_ci_row("phone", _PHONE),
+        ef_rows = [
+            _make_ef_row("has-email", _EMAIL),
+            _make_ef_row("has-phone", _PHONE),
         ]
-        app, _ = _make_app(contact_row=contact_row, ci_rows=ci_rows)
+        app, _ = _make_app(contact_row=contact_row, ef_rows=ef_rows)
 
         with patch(
             "butlers.tools.relationship.relationship_assert_fact.retract_contact_info_fact",
@@ -169,8 +170,7 @@ class TestDeleteContactRetractsEntityFacts:
     async def test_no_entity_id_skips_retraction(self):
         """Unlinked contact (entity_id=None) → retraction is not called."""
         contact_row = _make_contact_row(entity_id=None)
-        ci_rows = [_make_ci_row("email", _EMAIL)]
-        app, _ = _make_app(contact_row=contact_row, ci_rows=ci_rows)
+        app, _ = _make_app(contact_row=contact_row, ef_rows=[])
 
         with patch(
             "butlers.tools.relationship.relationship_assert_fact.retract_contact_info_fact",
@@ -181,32 +181,31 @@ class TestDeleteContactRetractsEntityFacts:
         assert resp.status_code == 204
         mock_retract.assert_not_awaited()
 
-    async def test_unmapped_ci_type_does_not_retract(self):
-        """Channel types with no predicate mapping return None (no DB write)."""
-        import asyncpg
+    async def test_telegram_handle_raw_object_passed_to_retract(self):
+        """Telegram has-handle with prefix → raw object (including prefix) passed to retract."""
+        contact_row = _make_contact_row(entity_id=_ENTITY_ID)
+        ef_rows = [_make_ef_row("has-handle", _TELEGRAM_OBJECT)]
+        app, _ = _make_app(contact_row=contact_row, ef_rows=ef_rows)
 
-        from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
+        with patch(
+            "butlers.tools.relationship.relationship_assert_fact.retract_contact_info_fact",
+            new=AsyncMock(return_value=uuid4()),
+        ) as mock_retract:
+            resp = await _delete(app)
 
-        # Call retract_contact_info_fact directly with a no-mapped type.
-        # It must return None without hitting the DB.
-        mock_pool = AsyncMock(spec=asyncpg.Pool)
-
-        result = await retract_contact_info_fact(
-            mock_pool,
-            subject=_ENTITY_ID,
-            ci_type="telegram_chat_id",
-            ci_value="12345678",
-        )
-
-        assert result is None
-        # Pool must not have been used (no acquire call).
-        mock_pool.acquire.assert_not_called()
+        assert resp.status_code == 204
+        mock_retract.assert_awaited_once()
+        call_kwargs = mock_retract.call_args
+        # The raw object value (with "telegram:" prefix) must be passed so the
+        # UPDATE in entity_facts matches on the exact stored object string.
+        ci_value = call_kwargs.kwargs.get("ci_value") or call_kwargs.args[2]
+        assert ci_value == _TELEGRAM_OBJECT
 
     async def test_retraction_failure_does_not_abort_delete(self):
         """If retraction raises, delete still completes (graceful degradation)."""
         contact_row = _make_contact_row(entity_id=_ENTITY_ID)
-        ci_rows = [_make_ci_row("email", _EMAIL)]
-        app, mock_pool = _make_app(contact_row=contact_row, ci_rows=ci_rows)
+        ef_rows = [_make_ef_row("has-email", _EMAIL)]
+        app, mock_pool = _make_app(contact_row=contact_row, ef_rows=ef_rows)
 
         with patch(
             "butlers.tools.relationship.relationship_assert_fact.retract_contact_info_fact",
@@ -285,6 +284,25 @@ class TestRetractContactInfoFactUnit:
 
         assert result is None
         mock_conn.fetchval.assert_awaited_once()
+
+    async def test_unmapped_ci_type_returns_none_without_db_call(self):
+        """Channel types with no predicate mapping return None without hitting DB."""
+        import asyncpg
+
+        from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
+
+        mock_pool = AsyncMock(spec=asyncpg.Pool)
+
+        result = await retract_contact_info_fact(
+            mock_pool,
+            subject=_ENTITY_ID,
+            ci_type="telegram_chat_id",
+            ci_value="12345678",
+        )
+
+        assert result is None
+        # Pool must not have been used (no acquire call).
+        mock_pool.acquire.assert_not_called()
 
     async def test_uses_pool_when_conn_is_none(self):
         """When conn=None, the function acquires a connection from the pool."""
