@@ -153,6 +153,14 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Contributor workflow: PRs only, never push directly to main
+All code changes must go through a pull request — never `git push origin main` or
+`git push --force origin main`. This is enforced by the `guard-direct-push` CI job
+(`.github/workflows/ci.yml`), which fails loudly if a commit lands on main without
+an associated PR. CI can only detect the violation after the push; branch protection
+(Settings → Branches → "Require a pull request before merging") is the authoritative
+prevention mechanism and should be kept enabled. See bu-ue37d.
+
 ### Core migration optional-schema guard contract
 - Core-chain migrations must tolerate fresh/core-only databases where specialist schema tables are absent; cross-schema `ALTER/UPDATE/GRANT` statements should guard with `to_regclass(...)` / information_schema checks instead of assuming `education.*`, `general.*`, etc. always exist.
 
