@@ -807,9 +807,26 @@ class ButlerDaemon:
 
         return None
 
-    # Maps notify channel names to the contact_info type used for delivery.
-    # ``telegram`` uses ``telegram_chat_id`` (numeric ID) rather than the
-    # human-readable ``telegram`` entry (which stores the @username handle).
+    # Maps notify channel names to the entity_facts predicate used for delivery.
+    # Channels that collapse to ``has-handle`` (e.g. ``telegram``) require an
+    # additional object-value filter to avoid cross-platform ambiguity — see
+    # ``_CHANNEL_HANDLE_PREFIX`` below.
+    _CHANNEL_TO_PREDICATE: dict[str, str] = {
+        "telegram": "has-handle",
+        "email": "has-email",
+        "phone": "has-phone",
+        "sms": "has-phone",
+    }
+
+    # Telegram ``telegram_user_id`` entries in contact_info are written to
+    # entity_facts as ``has-handle`` with object value ``telegram:<numeric_id>``.
+    # This prefix disambiguates telegram from other ``has-handle`` entries
+    # (e.g. linkedin, twitter, website handles).  For delivery, the numeric
+    # part after the prefix is returned as the Telegram chat/user ID.
+    _TELEGRAM_HANDLE_PREFIX = "telegram:"
+
+    # Kept for use by ``_notifications.py`` error messages (references the
+    # CI-type name for user-facing error text).
     _CHANNEL_TO_CONTACT_INFO_TYPE: dict[str, str] = {
         "telegram": "telegram_chat_id",
     }
@@ -819,76 +836,119 @@ class ButlerDaemon:
     ) -> str | None:
         """Resolve the channel identifier for a specific contact_id and channel type.
 
-        Queries ``public.contact_info`` for rows matching the given ``contact_id``
-        and the delivery-appropriate type (e.g. ``telegram_chat_id`` for telegram),
-        preferring entries whose ``context`` matches *msg_context* first, then
-        falling back to the primary entry within any context.
+        Reads from ``relationship.entity_facts`` via the contact's linked entity
+        (``public.contacts.entity_id``).  Migration bead bu-tv67t cut the read
+        path away from ``public.contact_info``.
 
-        When *msg_context* is provided, the resolution order is:
-        1. Entries where ``context = msg_context``, ordered by ``is_primary DESC``.
-        2. Entries where ``context IS NULL`` (unclassified), ordered by ``is_primary DESC``.
-        3. Any remaining entry, ordered by ``is_primary DESC, created_at ASC``.
+        Resolution:
+        - contact_id → entity_id (via ``public.contacts.entity_id``)
+        - channel → predicate (``_CHANNEL_TO_PREDICATE``)
+        - For ``telegram``: queries ``has-handle`` WHERE object starts with
+          ``"telegram:"`` (the format written by the reconciler for
+          ``telegram_user_id`` entries).  Returns the numeric part after the
+          prefix, which equals the Telegram user/chat ID used for delivery.
+          This prefix disambiguates Telegram from other ``has-handle`` entries
+          (linkedin, twitter, etc.).
+        - For ``email``/``phone``/``sms``: queries the corresponding predicate
+          and returns the raw object value.
 
-        This ensures callers that declare a message context (e.g. ``"personal"``)
-        prefer contact addresses tagged for that sphere, while remaining backward
-        compatible when no context column exists or no context-filtered row is found.
+        Note on ``msg_context``: ``relationship.entity_facts`` has no ``context``
+        column, so context-preference ordering (preferring work vs. personal
+        addresses) is not preserved in this read path.  ``msg_context`` is still
+        used downstream by the email guard (``check_email_recipient``) for
+        context validation — only the context-aware *ordering* during resolution
+        is dropped.
 
         Returns the identifier value on success, ``None`` if:
         - No DB pool is available.
-        - No ``contact_info`` row exists for the given contact_id and channel.
-        - The ``public.contact_info`` table does not exist.
+        - No linked entity found for the contact.
+        - No matching ``entity_facts`` row exists.
+        - The ``relationship.entity_facts`` or ``public.contacts`` table does
+          not exist (graceful schema-not-ready guard).
         """
-        info_type = self._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
+        from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE
+
+        predicate = self._CHANNEL_TO_PREDICATE.get(channel)
+        if predicate is None:
+            # Channel has no known predicate mapping — cannot resolve via entity_facts.
+            predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel)
+        if predicate is None:
+            logger.debug(
+                "_resolve_contact_channel_identifier: no predicate for channel=%r; returning None",
+                channel,
+            )
+            return None
+
         pool = self.db.pool if self.db is not None else None
         if pool is None:
             return None
+
         try:
             async with pool.acquire() as conn:
-                if msg_context is not None:
-                    # Context-aware resolution: prefer matching context, then unclassified,
-                    # then fall back to any entry.  The CASE expression in ORDER BY achieves
-                    # this with a single query that gracefully handles NULL context values
-                    # (from pre-migration rows or unclassified entries).
+                # Step 1: resolve contact_id → entity_id
+                entity_row = await conn.fetchrow(
+                    "SELECT entity_id FROM public.contacts WHERE id = $1 LIMIT 1",
+                    contact_id,
+                )
+                if entity_row is None or entity_row["entity_id"] is None:
+                    logger.debug(
+                        "_resolve_contact_channel_identifier: no entity linked to contact_id=%s",
+                        contact_id,
+                    )
+                    return None
+                entity_id = entity_row["entity_id"]
+
+                # Step 2: query entity_facts for the active triple.
+                # For telegram, filter to entries with the "telegram:" prefix
+                # to avoid ambiguity with other has-handle entries (linkedin, etc.).
+                if channel == "telegram" and predicate == "has-handle":
                     row = await conn.fetchrow(
                         """
-                        SELECT ci.value
-                        FROM public.contact_info ci
-                        WHERE ci.contact_id = $1
-                          AND ci.type = $2
-                        ORDER BY
-                            CASE
-                                WHEN ci.context = $3 THEN 0
-                                WHEN ci.context IS NULL THEN 1
-                                ELSE 2
-                            END ASC,
-                            ci.is_primary DESC NULLS LAST,
-                            ci.created_at ASC
+                        SELECT ef.object
+                        FROM relationship.entity_facts ef
+                        WHERE ef.subject    = $1
+                          AND ef.predicate  = $2
+                          AND ef.object LIKE $3
+                          AND ef.object_kind = 'literal'
+                          AND ef.validity   = 'active'
+                        ORDER BY ef."primary" DESC NULLS LAST, ef.created_at ASC
                         LIMIT 1
                         """,
-                        contact_id,
-                        info_type,
-                        msg_context,
+                        entity_id,
+                        predicate,
+                        self._TELEGRAM_HANDLE_PREFIX + "%",
                     )
+                    if row is None:
+                        return None
+                    raw = row["object"]
+                    if not raw or not raw.startswith(self._TELEGRAM_HANDLE_PREFIX):
+                        return None
+                    # Strip prefix; return the numeric Telegram user/chat ID.
+                    numeric = raw[len(self._TELEGRAM_HANDLE_PREFIX) :].strip()
+                    return numeric or None
                 else:
                     row = await conn.fetchrow(
                         """
-                        SELECT ci.value
-                        FROM public.contact_info ci
-                        WHERE ci.contact_id = $1
-                          AND ci.type = $2
-                        ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
+                        SELECT ef.object
+                        FROM relationship.entity_facts ef
+                        WHERE ef.subject    = $1
+                          AND ef.predicate  = $2
+                          AND ef.object_kind = 'literal'
+                          AND ef.validity   = 'active'
+                        ORDER BY ef."primary" DESC NULLS LAST, ef.created_at ASC
                         LIMIT 1
                         """,
-                        contact_id,
-                        info_type,
+                        entity_id,
+                        predicate,
                     )
-                if row is None:
-                    return None
-                value = row["value"]
-                if not value:
-                    return None
-                stripped = value.strip()
-                return stripped or None
+                    if row is None:
+                        return None
+                    value = row["object"]
+                    if not value:
+                        return None
+                    stripped = value.strip()
+                    return stripped or None
+
         except Exception as exc:  # noqa: BLE001
             from butlers.credential_store import (
                 _is_missing_column_or_schema_error,

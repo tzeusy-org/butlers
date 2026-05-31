@@ -2,9 +2,13 @@
 
 Covers tasks 7.1-7.4 from the contacts-identity-model spec:
   7.1 - notify() accepts contact_id parameter
-  7.2 - contact_id resolves to channel identifier (primary preferred)
+  7.2 - contact_id resolves to channel identifier via entity_facts (bu-tv67t migration)
   7.3 - missing identifier parks action and notifies owner
   7.4 - neither param defaults to owner resolution
+
+Migration notes (bu-tv67t):
+  Resolution now queries relationship.entity_facts via contacts.entity_id, NOT public.contact_info.
+  Tests seed entity_facts rows and assert queries target the new path.
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
 
 pytestmark = pytest.mark.unit
+
+_ENTITY_ID = uuid.UUID("00000000-0000-0000-0000-000000000099")
 
 
 @pytest.fixture
@@ -236,8 +242,78 @@ def _make_mock_client(*, is_error: bool = False) -> Any:
     return mock_client
 
 
-def _make_pool_with_conn(fetchrow_return: Any = None, fetchrow_error: Exception | None = None):
-    """Build a mock (pool, conn) pair for resolver tests."""
+def _make_entity_facts_conn(
+    entity_id: uuid.UUID | None = _ENTITY_ID,
+    facts_value: str | None = None,
+    fetchrow_error: Exception | None = None,
+) -> AsyncMock:
+    """Build a mock connection that simulates the two-step entity_facts resolution.
+
+    Step 1: fetchrow("SELECT entity_id FROM public.contacts ...") → {"entity_id": entity_id}
+    Step 2: fetchrow("SELECT ef.object FROM relationship.entity_facts ...") → {"object": facts_value}
+    """
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+
+    if fetchrow_error is not None:
+        mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_error)
+        return mock_conn
+
+    call_count = 0
+
+    async def _two_step_fetchrow(query: str, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "public.contacts" in query:
+            # Step 1: return entity_id lookup
+            if entity_id is None:
+                return None
+            return {"entity_id": entity_id}
+        if "relationship.entity_facts" in query or "entity_facts" in query:
+            # Step 2: return fact object
+            if facts_value is None:
+                return None
+            return {"object": facts_value}
+        return None
+
+    mock_conn.fetchrow = AsyncMock(side_effect=_two_step_fetchrow)
+    return mock_conn
+
+
+def _make_pool_with_entity_facts_conn(
+    entity_id: uuid.UUID | None = _ENTITY_ID,
+    facts_value: str | None = None,
+    fetchrow_error: Exception | None = None,
+) -> tuple[AsyncMock, AsyncMock]:
+    """Build a (pool, conn) pair that supports the two-step entity_facts resolver."""
+    mock_conn = _make_entity_facts_conn(
+        entity_id=entity_id,
+        facts_value=facts_value,
+        fetchrow_error=fetchrow_error,
+    )
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(return_value=None)
+    mock_pool.execute = AsyncMock(return_value=None)
+    # pool-level fetchrow must return runtime_config rows so seed_if_empty works
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn
+
+    mock_pool.acquire = mock_acquire
+    return mock_pool, mock_conn
+
+
+# Legacy helper retained for backward compat with patches that don't need two-step.
+def _make_pool_with_conn(
+    fetchrow_return: Any = None, fetchrow_error: Exception | None = None
+) -> tuple[AsyncMock, AsyncMock]:
+    """Build a mock (pool, conn) pair for resolver tests (single-step legacy)."""
     mock_conn = AsyncMock()
     if fetchrow_error:
         mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_error)
@@ -276,11 +352,11 @@ def _patch_db_in_patches(patches: dict, mock_pool: Any) -> None:
 
 @pytest.mark.asyncio
 class TestNotifyContactIdResolution:
-    """Tasks 7.1+7.2 — contact_id resolves to channel identifier, used in delivery."""
+    """Tasks 7.1+7.2 — contact_id resolves to channel identifier via entity_facts."""
 
     async def test_contact_id_resolves_and_delivers(self, butler_dir: Path) -> None:
         """contact_id=UUID calls resolver; resolved identifier used in delivery payload;
-        DB query uses correct table+columns; returns None when not found/error."""
+        DB query uses entity_facts path; returns None when not found/error."""
         patches = _patch_infra()
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None
@@ -304,20 +380,29 @@ class TestNotifyContactIdResolution:
         ]
         assert delivery["recipient"] == "contact@example.com"
 
-        # DB resolver queries contact_info with primary preference; None when not found
-        mock_pool, mock_conn = _make_pool_with_conn({"value": "123456789"})
+        # DB resolver queries entity_facts (not contact_info) with entity_id; None when not found.
+        # Two-step: (1) contacts→entity_id, (2) entity_facts→object.
+        mock_pool2, mock_conn2 = _make_pool_with_entity_facts_conn(
+            entity_id=_ENTITY_ID,
+            facts_value="user@example.com",
+        )
         patches2 = _patch_infra()
-        _patch_db_in_patches(patches2, mock_pool)
+        _patch_db_in_patches(patches2, mock_pool2)
         daemon2, _ = await _start_daemon_with_notify(butler_dir, patches2)
         cid = uuid.UUID("00000000-0000-0000-0000-000000000020")
-        result2 = await daemon2._resolve_contact_channel_identifier(
-            contact_id=cid, channel="telegram"
-        )
-        assert result2 == "123456789"
-        query = mock_conn.fetchrow.await_args.args[0]
-        assert "public.contact_info" in query and "is_primary DESC" in query
+        result2 = await daemon2._resolve_contact_channel_identifier(contact_id=cid, channel="email")
+        assert result2 == "user@example.com"
+        # First fetchrow: contacts lookup; second: entity_facts lookup
+        assert mock_conn2.fetchrow.await_count == 2
+        queries = [c.args[0] for c in mock_conn2.fetchrow.await_args_list]
+        assert any("public.contacts" in q for q in queries)
+        assert any("relationship.entity_facts" in q for q in queries)
+        # entity_facts query must NOT reference contact_info
+        ef_query = next(q for q in queries if "relationship.entity_facts" in q)
+        assert "contact_info" not in ef_query
 
-        mock_pool3, _ = _make_pool_with_conn(None)
+        # Returns None when no entity linked to contact
+        mock_pool3, _ = _make_pool_with_entity_facts_conn(entity_id=None, facts_value=None)
         patches3 = _patch_infra()
         _patch_db_in_patches(patches3, mock_pool3)
         daemon3, _ = await _start_daemon_with_notify(butler_dir, patches3)
@@ -327,6 +412,95 @@ class TestNotifyContactIdResolution:
             )
             is None
         )
+
+    async def test_telegram_resolution_uses_handle_prefix_filter(self, butler_dir: Path) -> None:
+        """Telegram channel resolution queries has-handle with 'telegram:' prefix filter.
+
+        entity_facts stores telegram_user_id as has-handle with object 'telegram:NUMERIC_ID'.
+        The resolver must filter by this prefix to disambiguate from linkedin/twitter handles,
+        then strip the prefix and return the numeric delivery ID.
+        """
+        # Seed entity_facts with a telegram has-handle triple in 'telegram:<id>' format.
+        mock_pool, mock_conn = _make_pool_with_entity_facts_conn(
+            entity_id=_ENTITY_ID,
+            facts_value="telegram:210454304",
+        )
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
+
+        result = await daemon._resolve_contact_channel_identifier(
+            contact_id=uuid.UUID("00000000-0000-0000-0000-000000000030"),
+            channel="telegram",
+        )
+        # Prefix stripped: "telegram:210454304" → "210454304"
+        assert result == "210454304"
+
+        # Assert the entity_facts query used the 'telegram:%' LIKE filter
+        queries = [c.args[0] for c in mock_conn.fetchrow.await_args_list]
+        ef_query = next(q for q in queries if "relationship.entity_facts" in q)
+        # Must use LIKE prefix filter for telegram disambiguation
+        assert "LIKE" in ef_query or "like" in ef_query.lower()
+        # Must NOT reference contact_info anywhere
+        assert "contact_info" not in ef_query
+
+    async def test_telegram_no_has_handle_with_prefix_returns_none(self, butler_dir: Path) -> None:
+        """Returns None if entity has has-handle entries but none with 'telegram:' prefix.
+
+        This covers the disambiguation case: an entity with only linkedin/twitter
+        has-handle facts must not be delivered to the wrong platform.
+        """
+        # entity has has-handle but NOT with telegram: prefix (e.g. a linkedin handle)
+        mock_pool, _ = _make_pool_with_entity_facts_conn(
+            entity_id=_ENTITY_ID,
+            facts_value=None,  # query returns no row (no telegram:-prefixed handle)
+        )
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
+
+        result = await daemon._resolve_contact_channel_identifier(
+            contact_id=uuid.UUID("00000000-0000-0000-0000-000000000031"),
+            channel="telegram",
+        )
+        assert result is None
+
+    async def test_email_resolution_uses_has_email_predicate(self, butler_dir: Path) -> None:
+        """Email channel resolution queries has-email predicate; no prefix filter needed."""
+        mock_pool, mock_conn = _make_pool_with_entity_facts_conn(
+            entity_id=_ENTITY_ID,
+            facts_value="someone@example.com",
+        )
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
+
+        result = await daemon._resolve_contact_channel_identifier(
+            contact_id=uuid.UUID("00000000-0000-0000-0000-000000000032"),
+            channel="email",
+        )
+        assert result == "someone@example.com"
+
+        # Email uses has-email predicate (passed as arg, checked in args list)
+        ef_args = [c.args for c in mock_conn.fetchrow.await_args_list]
+        ef_call_args = next(a for a in ef_args if any("entity_facts" in str(x) for x in a))
+        assert "has-email" in ef_call_args
+
+    async def test_unknown_channel_returns_none(self, butler_dir: Path) -> None:
+        """Returns None immediately for channels with no known predicate mapping."""
+        mock_pool, mock_conn = _make_pool_with_entity_facts_conn(
+            entity_id=_ENTITY_ID,
+            facts_value="irrelevant",
+        )
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
+
+        result = await daemon._resolve_contact_channel_identifier(
+            contact_id=uuid.UUID("00000000-0000-0000-0000-000000000033"),
+            channel="fax",  # unmapped channel
+        )
+        assert result is None
 
 
 def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:

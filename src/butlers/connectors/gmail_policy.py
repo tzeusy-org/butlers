@@ -497,21 +497,26 @@ class GmailPolicyEvaluator:
             return
 
         try:
+            # Resolve priority-contact emails from relationship.entity_facts (has-email)
+            # via the contact's linked entity.  Falls back gracefully if the tables
+            # do not yet exist (schema-not-ready guard in the except block).
             rows = await self._db_pool.fetch(
                 """
-                SELECT DISTINCT ci.value
+                SELECT DISTINCT ef.object AS value
                 FROM public.priority_contacts pc
-                JOIN public.contact_info ci ON ci.contact_id = pc.contact_id
+                JOIN public.contacts c ON c.id = pc.contact_id
+                JOIN relationship.entity_facts ef ON ef.subject = c.entity_id
                 WHERE pc.butler = 'gmail'
-                  AND ci.type = 'email'
-                  AND ci.secured = false
-                  AND ci.value IS NOT NULL
+                  AND ef.predicate  = 'has-email'
+                  AND ef.object_kind = 'literal'
+                  AND ef.validity   = 'active'
+                  AND ef.object IS NOT NULL
                 """
             )
             self._cache = frozenset(_normalize_email(row["value"]) for row in rows)
             self._cache_loaded_at = time.monotonic()
             logger.debug(
-                "GmailPolicyEvaluator: refreshed %d priority contact emails from DB",
+                "GmailPolicyEvaluator: refreshed %d priority contact emails from entity_facts",
                 len(self._cache),
             )
         except Exception:

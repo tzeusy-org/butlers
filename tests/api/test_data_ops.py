@@ -158,10 +158,12 @@ async def test_download_all_scope_fetches_all_tables(app):
 
     assert resp.status_code == 200
     body = resp.text
-    # All three tables should appear as comments in the body
+    # Both exportable tables should appear as comments in the body.
+    # Note: contact_info was removed from _EXPORTABLE_TABLES (bu-tv67t) —
+    # channel identifiers are now stored in relationship.entity_facts.
     assert "// table=contacts" in body
-    assert "// table=contact_info" in body
     assert "// table=audit_log" in body
+    assert "// table=contact_info" not in body
 
 
 async def test_download_expired_token_returns_410(app):

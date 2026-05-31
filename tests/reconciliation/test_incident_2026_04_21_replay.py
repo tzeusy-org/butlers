@@ -239,20 +239,31 @@ class TestAC1EmailGuardNonPrimary:
 class TestAC2ContextAwareRouting:
     """bu-uv4b4: context-aware recipient resolution."""
 
-    async def test_personal_msg_context_prefers_personal_address(self) -> None:
-        """When msg_context='personal', the resolution query orders personal context first.
+    async def test_personal_msg_context_resolves_via_entity_facts(self) -> None:
+        """Resolution with msg_context now queries entity_facts (not contact_info).
 
-        This test verifies that _resolve_contact_channel_identifier uses the
-        context-priority ORDER BY when msg_context is provided, selecting the
-        personal email before the work email even if the work email was inserted
-        first (i.e., has an earlier created_at).
+        Migration bead bu-tv67t: _resolve_contact_channel_identifier reads from
+        relationship.entity_facts via the contact's entity_id.  msg_context is no
+        longer used for DB-level ordering (entity_facts has no context column);
+        context-mismatch enforcement happens downstream in the email guard.
+
+        This test verifies that resolution queries entity_facts and returns the
+        active has-email value, regardless of msg_context.
         """
         from butlers.daemon import ButlerDaemon
 
+        entity_id = OWNER_ENTITY_ID
         pool = AsyncMock()
         conn = AsyncMock()
-        # Simulate DB returning the personal email (context='personal') as top row
-        conn.fetchrow = AsyncMock(return_value={"value": PERSONAL_EMAIL})
+
+        async def _two_step(query: str, *args, **kwargs):
+            if "public.contacts" in query:
+                return {"entity_id": entity_id}
+            if "entity_facts" in query:
+                return {"object": PERSONAL_EMAIL}
+            return None
+
+        conn.fetchrow = AsyncMock(side_effect=_two_step)
 
         @asynccontextmanager
         async def mock_acquire():
@@ -263,7 +274,9 @@ class TestAC2ContextAwareRouting:
         mock_db = MagicMock()
         mock_db.pool = pool
         daemon = MagicMock(spec=ButlerDaemon)
-        daemon._CHANNEL_TO_CONTACT_INFO_TYPE = {"email": "email"}
+        daemon._CHANNEL_TO_PREDICATE = ButlerDaemon._CHANNEL_TO_PREDICATE
+        daemon._TELEGRAM_HANDLE_PREFIX = ButlerDaemon._TELEGRAM_HANDLE_PREFIX
+        daemon._CHANNEL_TO_CONTACT_INFO_TYPE = ButlerDaemon._CHANNEL_TO_CONTACT_INFO_TYPE
         daemon.db = mock_db
         daemon._resolve_contact_channel_identifier = (
             ButlerDaemon._resolve_contact_channel_identifier.__get__(daemon)
@@ -276,13 +289,17 @@ class TestAC2ContextAwareRouting:
         )
 
         assert result == PERSONAL_EMAIL, (
-            f"Context-aware resolution should return personal email, got: {result}"
+            f"Resolution should return active has-email from entity_facts, got: {result}"
         )
 
-        # Verify the context-aware query was used (contains CASE expression)
-        called_query = conn.fetchrow.call_args[0][0]
-        assert "CASE" in called_query, "Context-aware query must use CASE ORDER BY"
-        assert "context" in called_query, "Query must filter/order by context"
+        # Verify entity_facts was queried (not contact_info)
+        queries = [c.args[0] for c in conn.fetchrow.await_args_list]
+        assert any("relationship.entity_facts" in q for q in queries), (
+            "Must query relationship.entity_facts"
+        )
+        assert not any("contact_info" in q for q in queries), (
+            "Must NOT query public.contact_info (migrated to entity_facts)"
+        )
 
     async def test_context_mismatch_parks_email(self) -> None:
         """When msg_context='personal' but resolved address is tagged 'work', email parks.

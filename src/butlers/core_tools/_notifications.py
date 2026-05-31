@@ -218,8 +218,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     description=(
                         "Optional contact UUID. When provided, the channel"
                         " identifier is resolved "
-                        "from public.contact_info (primary entry preferred). If no matching "
-                        "contact_info entry exists, the notification is parked as a "
+                        "from relationship.entity_facts (active triple preferred). If no matching "
+                        "entity_facts triple exists, the notification is parked as a "
                         "pending_action and {status: pending_missing_identifier} is returned."
                     )
                 ),
@@ -258,10 +258,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
 
             Optional fields:
             - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
-            - `contact_id` (UUID): resolve recipient from public.contact_info; primary entry
-              preferred. If no matching entry exists the notification is parked as a
-              pending_action
-              and `{"status": "pending_missing_identifier"}` is returned.
+            - `contact_id` (UUID): resolve recipient from relationship.entity_facts (active
+              triple preferred). If no matching triple exists the notification is parked as
+              a pending_action and `{"status": "pending_missing_identifier"}` is returned.
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
@@ -272,8 +271,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               Pass an object value, not a quoted placeholder string.
 
             Recipient resolution priority:
-            1. `contact_id` provided → look up channel identifier from public.contact_info,
-               preferring entries that match `msg_context` (if provided)
+            1. `contact_id` provided → look up channel identifier from relationship.entity_facts
+               via the contact's linked entity; msg_context is not used for ordering (entity_facts
+               has no context column) but is still applied by the email guard for validation
             2. `recipient` string provided → use as-is
             3. Neither → resolve owner entity's channel identifier (default)
 
@@ -529,8 +529,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 }
 
             # Resolution priority:
-            # (1) contact_id → query public.contact_info WHERE contact_id = X AND type = channel,
-            #     preferring entries that match msg_context (if provided)
+            # (1) contact_id → query relationship.entity_facts via contact's entity_id;
+            #     msg_context is not used for ordering (entity_facts has no context column)
             # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
             # (3) neither → resolve owner entity's channel identifier (default path)
             if contact_id is not None:
@@ -555,9 +555,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         agent_summary = (
                             f"notify() could not deliver a {channel!r} notification: "
                             f"contact {contact_id} has no {info_type!r} identifier in "
-                            f"public.contact_info. The message was: {message!r}. "
-                            f"To resolve, add a {info_type!r} contact_info entry for this "
-                            f"contact and re-trigger the notification."
+                            f"relationship.entity_facts. The message was: {message!r}. "
+                            f"To resolve, assert a channel triple for this contact in the "
+                            f"entity graph and re-trigger the notification."
                         )
                         await pool.execute(
                             "INSERT INTO pending_actions "
@@ -582,7 +582,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         )
                         logger.warning(
                             "notify() parked as pending_missing_identifier: "
-                            "contact_id=%s has no %r contact_info entry (action=%s)",
+                            "contact_id=%s has no %r entity_facts triple (action=%s)",
                             contact_id,
                             info_type,
                             action_id,
