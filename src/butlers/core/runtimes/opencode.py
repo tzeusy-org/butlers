@@ -1135,7 +1135,7 @@ class OpenCodeAdapter(RuntimeAdapter):
                     return result_text, tool_calls, usage
 
                 except TimeoutError:
-                    logger.error("OpenCode CLI timed out after %ds", effective_timeout)
+                    logger.warning("OpenCode CLI timed out after %ds", effective_timeout)
                     self._last_process_info = {
                         "pid": proc.pid if proc is not None else None,
                         "exit_code": -1,

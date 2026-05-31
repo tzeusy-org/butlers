@@ -237,7 +237,7 @@ def _should_include_entry(
     if _is_switchboard_classification_timeout(entry):
         return False
 
-    # Codex adapter noise that should never reach the QA finding set:
+    # Runtime-adapter noise that should never reach the QA finding set:
     #   * "MCP discovery failed after ..." — better sourced from session_records.
     #     The runtime/session tables tell us whether the session actually
     #     failed, while the raw adapter log can be emitted on a path that

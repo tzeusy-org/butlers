@@ -199,6 +199,18 @@ def test_codex_mcp_discovery_exhaustion_excluded_from_log_scanner():
     assert _should_include_entry(entry) is False
 
 
+def test_opencode_subprocess_timeout_warning_excluded_from_log_scanner():
+    """OpenCode adapter timeout warnings are duplicate session-timeout evidence."""
+    entry = LogEntry(
+        level="warning",
+        event="OpenCode CLI timed out after 30s",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.opencode",
+    )
+    assert _should_include_entry(entry) is False
+
+
 def test_switchboard_classification_timeout_excluded_from_log_scanner():
     """Expected switchboard classification caps are fallback telemetry, not QA cases."""
     entry = LogEntry(
