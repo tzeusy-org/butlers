@@ -29,10 +29,17 @@ before the remaining implementation PRs (#1392, #1393) merge.
   the router registers `/contacts/:contactId`. The delta removes the stale route,
   installs `/contacts/:id` as the single normative route, adds a permanent redirect
   from the legacy path, and requires `<Page archetype="detail">` conformance.
-- **Modified capability**: `dashboard-butler-management` — Butler detail page tabs
-  become the archetype's `primary` slot. The breadcrumb requirement (currently
-  "Overview > Butlers > {name}") is updated to require the `breadcrumbs` prop on
-  `<Page>` rather than a standalone `<Breadcrumbs>` component.
+
+> **Note (descoped):** An earlier draft of this change also modified
+> `dashboard-butler-management` to put the butler detail page on
+> `<Page archetype="detail">`. That scope was superseded by the status-board
+> lineage (`redesign-butlers-page-status-board`,
+> `extend-butler-detail-status-board-chrome`, archived 2026-05-13), which migrated
+> `/butlers/:name` to `<Page archetype="status-board">` (shipped in PR #1614). The
+> butler-management delta has been removed from this change so archiving it does not
+> regress the canonical spec back to the obsolete `detail` archetype. Reconciling the
+> remaining drift in the canonical `dashboard-butler-management` spec is tracked
+> separately.
 
 ## Capabilities
 
@@ -51,15 +58,12 @@ before the remaining implementation PRs (#1392, #1393) merge.
 - `dashboard-relationship`: Contact detail page route duplication resolved.
   Canonical route is `/contacts/:id`; `/butlers/relationship/contacts/:id` becomes
   a permanent redirect. Page conforms to the detail-page archetype.
-- `dashboard-butler-management`: Butler detail page adopts `<Page archetype="detail">`
-  breadcrumbs prop. Tabs body is documented as the `primary` slot in the archetype
-  vocabulary.
 
 ## Impact
 
 - **New spec**: `openspec/specs/detail-page-archetype/spec.md` created by this change.
-- **Delta specs**: `dashboard-domain-pages`, `dashboard-relationship`,
-  `dashboard-butler-management` — requirement-level additions/corrections only.
+- **Delta specs**: `dashboard-domain-pages`, `dashboard-relationship` —
+  requirement-level additions/corrections only.
 - **Frontend implementation beads**: bu-rqfil (parent epic). Detail page migrations
   are implemented in the corresponding implementation PRs.
 - **No database changes. No new API endpoints.**

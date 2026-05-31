@@ -131,3 +131,17 @@ def test_from_env_parsing(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     db4 = Database.from_env("test_db")
     assert db4.host == "localhost" and db4.port == 5432 and db4.user == "butlers"
+
+
+def test_from_env_uses_pool_size_overrides(monkeypatch):
+    """from_env() applies runtime pool-size overrides for constrained dev DBs."""
+    from butlers.db import Database
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("BUTLERS_DB_POOL_MIN_SIZE", "0")
+    monkeypatch.setenv("BUTLERS_DB_POOL_MAX_SIZE", "4")
+
+    db = Database.from_env("test_db")
+
+    assert db.min_pool_size == 0
+    assert db.max_pool_size == 4

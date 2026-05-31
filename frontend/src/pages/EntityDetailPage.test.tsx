@@ -254,6 +254,99 @@ describe("EntityDetailPage — facts section", () => {
   });
 });
 
+describe("EntityDetailPage — Profile snapshot subject scoping", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  // Regression: a directional, subject-owned fact (role/works_at/lives_in)
+  // where the viewed entity is only the OBJECT must NOT leak into its Profile.
+  // e.g. a doctor's "role" fact ("Cardiologist at NHCS, managing <owner>'s
+  // follow-up") has the doctor as subject and the owner as object_entity_id;
+  // it describes the doctor, not the owner.
+  it("does not show an object-side role fact as the entity's own Profile", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      fact_count: 1,
+      recent_facts_total: 1,
+      recent_facts: [
+        {
+          id: "fact-role-other",
+          subject: "doctor-uuid",
+          predicate: "role",
+          content:
+            "Cardiologist at NHCS (National Heart Centre Singapore), managing Test Owner's post-BAVD surgery follow-up.",
+          importance: 7,
+          confidence: 0.9,
+          decay_rate: 0.008,
+          permanence: "standard",
+          source_butler: "general",
+          source_episode_id: null,
+          session_id: null,
+          supersedes_id: null,
+          // Subject is the doctor; the viewed entity (entity-001) is only the object.
+          entity_id: "doctor-uuid",
+          entity_name: "Dr. Loh Yee Jim",
+          object_entity_id: "entity-001",
+          object_entity_name: "Test Owner",
+          validity: "active",
+          scope: "global",
+          reference_count: 1,
+          created_at: "2025-01-01T12:00:00Z",
+          last_referenced_at: null,
+          last_confirmed_at: null,
+          tags: [],
+          metadata: {},
+        },
+      ],
+    });
+
+    const html = renderPage();
+
+    expect(html).not.toContain("Cardiologist at NHCS");
+  });
+
+  it("shows a role fact when the viewed entity IS the subject", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      fact_count: 1,
+      recent_facts_total: 1,
+      recent_facts: [
+        {
+          id: "fact-role-own",
+          subject: "entity-001",
+          predicate: "role",
+          content: "Software engineer",
+          importance: 7,
+          confidence: 0.9,
+          decay_rate: 0.008,
+          permanence: "standard",
+          source_butler: "general",
+          source_episode_id: null,
+          session_id: null,
+          supersedes_id: null,
+          entity_id: "entity-001",
+          entity_name: "Test Owner",
+          object_entity_id: null,
+          object_entity_name: null,
+          validity: "active",
+          scope: "global",
+          reference_count: 1,
+          created_at: "2025-01-01T12:00:00Z",
+          last_referenced_at: null,
+          last_confirmed_at: null,
+          tags: [],
+          metadata: {},
+        },
+      ],
+    });
+
+    const html = renderPage();
+
+    expect(html).toContain("Software engineer");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Mode toggle — Editorial / Workbench
 // ---------------------------------------------------------------------------

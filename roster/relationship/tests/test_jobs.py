@@ -143,8 +143,15 @@ async def _insert_contact(
     stay_in_touch_days: int | None = None,
     entity_id: str | None = None,
 ) -> str:
-    """Insert a contact and return its UUID string."""
+    """Insert a contact and return its UUID string.
+
+    Always assigns an entity_id (auto-generated when not provided) so that
+    interaction facts inserted via _insert_interaction_fact can be keyed by
+    entity_id and matched by the reader queries that join on
+    ``f.entity_id = c.entity_id``.
+    """
     contact_id = str(uuid.uuid4())
+    resolved_entity_id = uuid.UUID(entity_id) if entity_id else uuid.uuid4()
     await pool.execute(
         """
         INSERT INTO contacts (id, first_name, last_name, listed, stay_in_touch_days, entity_id)
@@ -155,7 +162,7 @@ async def _insert_contact(
         last_name,
         listed,
         stay_in_touch_days,
-        uuid.UUID(entity_id) if entity_id else None,
+        resolved_entity_id,
     )
     return contact_id
 
@@ -193,18 +200,28 @@ async def _insert_interaction_fact(
     occurred_at: datetime | None = None,
     interaction_type: str = "call",
 ) -> str:
-    """Insert an interaction fact for a contact."""
+    """Insert an interaction fact for a contact.
+
+    Looks up entity_id from the contacts table so the fact is stored with
+    ``subject='entity:{entity_id}'`` and the entity_id column set.  The new
+    reader queries join on ``f.entity_id = c.entity_id``, so facts without a
+    populated entity_id would be silently dropped.
+    """
     if occurred_at is None:
         occurred_at = _utcnow()
+    entity_id = await pool.fetchval(
+        "SELECT entity_id FROM contacts WHERE id = $1::uuid", contact_id
+    )
     fact_id = str(uuid.uuid4())
     await pool.execute(
         """
-        INSERT INTO facts (id, subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1::uuid, $2, $3, 'had a chat', 'relationship', 'active', $4)
+        INSERT INTO facts (id, subject, predicate, content, scope, entity_id, validity, valid_at)
+        VALUES ($1::uuid, $2, $3, 'had a chat', 'relationship', $4, 'active', $5)
         """,
         fact_id,
-        f"contact:{contact_id}",
+        f"entity:{entity_id}",
         f"interaction_{interaction_type}",
+        entity_id,
         occurred_at,
     )
     return fact_id
@@ -1504,7 +1521,11 @@ async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_p
 
         assert result["logged"] == 1
         assert result["errors"] == 0
-        # Verify a fact was created with the typed predicate
+        # Verify a fact was created with the typed predicate.
+        # Facts are now stored with subject='entity:{entity_id}'.
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+        )
         rows = await pool.fetch(
             """
             SELECT id, predicate, metadata FROM facts
@@ -1512,7 +1533,7 @@ async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_p
               AND predicate LIKE 'interaction_%'
               AND scope = 'relationship'
             """,
-            f"contact:{contact_id}",
+            f"entity:{entity_id}",
         )
         assert len(rows) == 1
         assert rows[0]["predicate"] == "interaction_telegram_user_client"
@@ -1585,9 +1606,12 @@ async def test_interaction_sync_different_channels_logged_separately(
         result = await run_interaction_sync(pool)
 
         assert result["logged"] == 2
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+        )
         rows = await pool.fetch(
             "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
-            f"contact:{contact_id}",
+            f"entity:{entity_id}",
         )
         assert len(rows) == 2
 
@@ -1667,10 +1691,13 @@ async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool)
         # Should be skipped as duplicate (interaction_log idempotency guard)
         assert result2["logged"] == 0
 
-        # Only one fact should exist
+        # Only one fact should exist.
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+        )
         rows = await pool.fetch(
             "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
-            f"contact:{contact_id}",
+            f"entity:{entity_id}",
         )
         assert len(rows) == 1
 
@@ -1910,7 +1937,11 @@ async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_p
         assert result["logged"] == 1
         assert result["errors"] == 0
 
-        # Verify the fact was written correctly with typed predicate
+        # Verify the fact was written correctly with typed predicate.
+        # Facts are stored with subject='entity:{entity_id}' since rel_018.
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+        )
         rows = await pool.fetch(
             """
             SELECT id, predicate, metadata FROM facts
@@ -1918,7 +1949,7 @@ async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_p
               AND predicate LIKE 'interaction_%'
               AND scope = 'relationship'
             """,
-            f"contact:{contact_id}",
+            f"entity:{entity_id}",
         )
         assert len(rows) == 1
         assert rows[0]["predicate"] == "interaction_calendar_event"
@@ -2144,9 +2175,12 @@ async def test_interaction_sync_calendar_multiple_attendees_same_event(
         assert result["logged"] == 2
 
         for cid in (contact_a, contact_b):
+            eid = await pool.fetchval(
+                "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", cid
+            )
             rows = await pool.fetch(
                 "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
-                f"contact:{cid}",
+                f"entity:{eid}",
             )
             assert len(rows) == 1
 
@@ -2209,9 +2243,12 @@ async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postg
         result2 = await run_interaction_sync(pool)
         assert result2["logged"] == 0  # duplicate skipped
 
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+        )
         rows = await pool.fetch(
             "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
-            f"contact:{contact_id}",
+            f"entity:{entity_id}",
         )
         assert len(rows) == 1
 

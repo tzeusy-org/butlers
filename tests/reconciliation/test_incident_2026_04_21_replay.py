@@ -49,22 +49,11 @@ WORK_EMAIL = "owner@example.com"
 # ---------------------------------------------------------------------------
 
 
-def _raf_module():
-    """Return the central-writer SUBMODULE object for patching.
-
-    ``butlers.tools.relationship.__init__`` re-exports the *function*
-    ``relationship_assert_fact``, shadowing the submodule of the same name as a
-    package attribute. The import machinery still registers the real submodule in
-    ``sys.modules``; we fetch it from there so the patch lands on the object the
-    deferred ``from ...relationship_assert_fact import relationship_assert_fact``
-    in contact_info.py resolves against.
-    """
+def _contact_info_module():
+    """Return the module that owns contact_info_add's writer binding."""
     import importlib
-    import sys
 
-    name = "butlers.tools.relationship.relationship_assert_fact"
-    importlib.import_module(name)
-    return sys.modules[name]
+    return importlib.import_module("butlers.tools.relationship.contact_info")
 
 
 def _assert_result(outcome: str, *, fact_id=None, action_id=None):
@@ -99,7 +88,7 @@ class TestAC3OwnerGate:
 
         action_id = uuid.uuid4()
         with patch.object(
-            _raf_module(), "relationship_assert_fact", new_callable=AsyncMock
+            _contact_info_module(), "relationship_assert_fact", new_callable=AsyncMock
         ) as writer:
             writer.return_value = _assert_result("pending_approval", action_id=action_id)
             result = await contact_info_add(
@@ -136,7 +125,7 @@ class TestAC3OwnerGate:
 
         fact_id = uuid.uuid4()
         with patch.object(
-            _raf_module(), "relationship_assert_fact", new_callable=AsyncMock
+            _contact_info_module(), "relationship_assert_fact", new_callable=AsyncMock
         ) as writer:
             writer.return_value = _assert_result("inserted", fact_id=fact_id)
             result = await contact_info_add(pool, non_owner_id, "email", "nonowner@example.com")

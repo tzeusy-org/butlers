@@ -9,7 +9,7 @@ by the `<Page>` primitive contract documented in
 
 ## MODIFIED Requirements
 
-### Requirement: Page Header
+### Requirement: Page Header with Breadcrumbs
 
 The `PageHeader` component SHALL render inside the shell's header bar and
 provide the breadcrumbs strip (populated by the active page), a command palette

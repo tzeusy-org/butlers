@@ -110,6 +110,64 @@ jobs:
       - name: Test
         run: npm run test
 
+  guard-direct-push:
+    # Detects pushes that landed on main without going through the PR-review
+    # flow and fails loudly so the violation is visible in the CI dashboard.
+    #
+    # IMPORTANT LIMITATION: CI runs *after* the push has already been accepted
+    # by GitHub. This job can only detect and flag the violation — it cannot
+    # prevent it. To truly block direct pushes, enable GitHub branch protection
+    # on main (Settings → Branches → Branch protection rules → "Require a pull
+    # request before merging"). This guard is a complementary in-repo signal.
+    #
+    # How it distinguishes a legitimate squash/merge-commit landing from a raw
+    # "git push origin main":
+    #   The GitHub Commits API (commits/{sha}/pulls) returns the PRs associated
+    #   with a given commit. A commit that arrived via GitHub's merge button
+    #   (squash, merge, or rebase) will have at least one entry in that list.
+    #   A commit pushed directly will return an empty array. This heuristic is
+    #   reliable for any merge strategy the GitHub UI produces. See bu-ue37d.
+    #
+    # Tradeoff: The API call requires `pull-requests: read` permission and uses
+    # the built-in GITHUB_TOKEN, so no extra secrets are needed. One edge case:
+    # if a PR is deleted after merging, the API may return an empty list for the
+    # merge commit — this is very uncommon and acceptable for a detection guard.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check that HEAD commit arrived via a merged PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          echo "Checking whether $SHA on main is associated with a merged PR..."
+          PR_COUNT=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPO}/commits/${SHA}/pulls" \
+            --jq 'length')
+
+          if [ "${PR_COUNT:-0}" -gt 0 ]; then
+            echo "OK: commit ${SHA} is associated with ${PR_COUNT} PR(s). Legitimate merge."
+          else
+            echo ""
+            echo "ERROR: commit ${SHA} was pushed directly to main without an associated PR."
+            echo ""
+            echo "This bypasses code review and the safety gates enforced by the PR workflow."
+            echo "All changes to main must go through a pull request. See: bu-ue37d"
+            echo ""
+            echo "NOTE: This guard detects the violation after the push has already landed."
+            echo "To prevent direct pushes entirely, enable GitHub branch protection on main"
+            echo "(Settings -> Branches -> Branch protection rules -> 'Require a pull request"
+            echo "before merging'). The owner should enable branch protection as the"
+            echo "authoritative prevention control."
+            exit 1
+          fi
+
   frontend-e2e:
     runs-on: ubuntu-latest
 

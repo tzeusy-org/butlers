@@ -2481,16 +2481,18 @@ async def test_contact_get_with_interactions_shows_nonzero_score(pool):
 
     contact = await contact_create(pool, "Active Person")
     cid = contact["id"]
+    entity_id = contact["entity_id"]
 
     # Insert an active interaction fact directly
     occurred = datetime.now(UTC) - timedelta(days=3)
     await pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2)
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, entity_id)
+        VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2, $3)
         """,
-        f"contact:{cid}",
+        f"entity:{entity_id}",
         occurred,
+        entity_id,
     )
 
     fetched = await contact_get(pool, cid)
@@ -2686,7 +2688,7 @@ async def test_interaction_log_group_group_size_in_metadata(pool):
     await interaction_log_group(pool, grp["id"])
 
     # Check metadata on the fact stored for the first member
-    contact_id = members[0]["id"]
+    entity_id = members[0]["entity_id"]
     row = await pool.fetchrow(
         """
         SELECT metadata FROM facts
@@ -2697,7 +2699,7 @@ async def test_interaction_log_group_group_size_in_metadata(pool):
         ORDER BY created_at DESC
         LIMIT 1
         """,
-        f"contact:{contact_id}",
+        f"entity:{entity_id}",
     )
     assert row is not None
     import json

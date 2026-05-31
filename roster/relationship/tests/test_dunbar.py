@@ -443,14 +443,27 @@ async def _make_contact(
     return dict(row)
 
 
-async def _log_interaction(pool, contact_id: uuid.UUID, days_ago: float) -> None:
+async def _log_interaction(pool, entity_id: uuid.UUID | None, days_ago: float) -> None:
+    """Insert an active interaction fact keyed by entity_id.
+
+    entity_id=None simulates a contact with no linked entity; the fact is stored
+    with a placeholder subject and NULL entity_id so the new reader (which joins
+    on f.entity_id = c.entity_id) will not match it — matching pre-migration
+    behaviour where NULL-entity contacts were excluded from Dunbar scoring.
+    """
     occurred_at = datetime.now(UTC) - timedelta(days=days_ago)
+    if entity_id is None:
+        # No entity linkage — store as unmatchable orphan (NULL entity_id on fact).
+        subject = "entity:unknown"
+    else:
+        subject = f"entity:{entity_id}"
     await pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3)
         """,
-        f"contact:{contact_id}",
+        subject,
+        entity_id,
         occurred_at,
     )
 
@@ -485,8 +498,8 @@ async def test_score_reflects_recency(dunbar_pool):
     recent = await _make_contact(dunbar_pool, "Recent")
     old = await _make_contact(dunbar_pool, "Old")
 
-    await _log_interaction(dunbar_pool, recent["id"], days_ago=2)
-    await _log_interaction(dunbar_pool, old["id"], days_ago=60)
+    await _log_interaction(dunbar_pool, recent["entity_id"], days_ago=2)
+    await _log_interaction(dunbar_pool, old["entity_id"], days_ago=60)
 
     scores = await compute_dunbar_scores(dunbar_pool)
     score_map = {s["contact_id"]: s["score"] for s in scores}
@@ -505,8 +518,8 @@ async def test_score_rewards_frequency(dunbar_pool):
     infrequent = await _make_contact(dunbar_pool, "Infrequent")
 
     for i in range(10):
-        await _log_interaction(dunbar_pool, frequent["id"], days_ago=i * 3 + 1)
-    await _log_interaction(dunbar_pool, infrequent["id"], days_ago=5)
+        await _log_interaction(dunbar_pool, frequent["entity_id"], days_ago=i * 3 + 1)
+    await _log_interaction(dunbar_pool, infrequent["entity_id"], days_ago=5)
 
     scores = await compute_dunbar_scores(dunbar_pool)
     score_map = {s["contact_id"]: s["score"] for s in scores}
@@ -522,7 +535,7 @@ async def test_archived_contact_excluded(dunbar_pool):
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     archived = await _make_contact(dunbar_pool, "Archived", listed=False)
-    await _log_interaction(dunbar_pool, archived["id"], days_ago=1)
+    await _log_interaction(dunbar_pool, archived["entity_id"], days_ago=1)
 
     scores = await compute_dunbar_scores(dunbar_pool)
     ids = [s["contact_id"] for s in scores]
@@ -537,7 +550,9 @@ async def test_contact_without_entity_excluded(dunbar_pool):
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     no_entity = await _make_contact(dunbar_pool, "NoEntity", with_entity=False)
-    await _log_interaction(dunbar_pool, no_entity["id"], days_ago=1)
+    await _log_interaction(
+        dunbar_pool, no_entity["entity_id"], days_ago=1
+    )  # entity_id=None → excluded
 
     scores = await compute_dunbar_scores(dunbar_pool)
     ids = [s["contact_id"] for s in scores]
@@ -552,13 +567,14 @@ async def test_inactive_facts_excluded(dunbar_pool):
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     contact = await _make_contact(dunbar_pool, "SupersededFacts")
-    # Insert an inactive interaction
+    # Insert an inactive interaction (validity='superseded' — must not count).
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'superseded', now() - INTERVAL '1 day')
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'superseded', now() - INTERVAL '1 day')
         """,
-        f"contact:{contact['id']}",
+        f"entity:{contact['entity_id']}",
+        contact["entity_id"],
     )
     scores = await compute_dunbar_scores(dunbar_pool)
     contact_score = next((s for s in scores if s["contact_id"] == contact["id"]), None)
@@ -583,19 +599,21 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     occurred_at = datetime.now(UTC) - timedelta(days=1)
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{outgoing['id']}",
+        f"entity:{outgoing['entity_id']}",
+        outgoing["entity_id"],
         occurred_at,
         {"direction": "outgoing"},
     )
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{incoming['id']}",
+        f"entity:{incoming['entity_id']}",
+        incoming["entity_id"],
         occurred_at,
         {"direction": "incoming"},
     )
@@ -625,19 +643,21 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     occurred_at = datetime.now(UTC) - timedelta(days=2)
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{mutual['id']}",
+        f"entity:{mutual['entity_id']}",
+        mutual["entity_id"],
         occurred_at,
         {"direction": "mutual"},
     )
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{incoming['id']}",
+        f"entity:{incoming['entity_id']}",
+        incoming["entity_id"],
         occurred_at,
         {"direction": "incoming"},
     )
@@ -665,19 +685,21 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
     occurred_at = datetime.now(UTC) - timedelta(days=3)
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{group_contact['id']}",
+        f"entity:{group_contact['entity_id']}",
+        group_contact["entity_id"],
         occurred_at,
         {"group_size": group_size_large},
     )
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{dm_contact['id']}",
+        f"entity:{dm_contact['entity_id']}",
+        dm_contact["entity_id"],
         occurred_at,
         {"group_size": group_size_dm},
     )
@@ -705,18 +727,20 @@ async def test_null_direction_defaults_to_1x(dunbar_pool):
     # fact without direction metadata (simulates pre-RFC facts)
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3)
         """,
-        f"contact:{null_dir['id']}",
+        f"entity:{null_dir['entity_id']}",
+        null_dir["entity_id"],
         occurred_at,
     )
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{explicit_incoming['id']}",
+        f"entity:{explicit_incoming['entity_id']}",
+        explicit_incoming["entity_id"],
         occurred_at,
         {"direction": "incoming"},
     )
@@ -742,18 +766,20 @@ async def test_null_group_size_defaults_to_1x(dunbar_pool):
     # fact without group_size metadata (simulates pre-RFC facts)
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3)
         """,
-        f"contact:{null_gs['id']}",
+        f"entity:{null_gs['entity_id']}",
+        null_gs["entity_id"],
         occurred_at,
     )
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{explicit_dm['id']}",
+        f"entity:{explicit_dm['entity_id']}",
+        explicit_dm["entity_id"],
         occurred_at,
         {"group_size": 1},
     )
@@ -776,11 +802,12 @@ async def test_connector_extracted_mentions_do_not_count_as_direct_interactions(
     occurred_at = datetime.now(UTC) - timedelta(days=1)
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', 'Talked about MentionedPerson', 'relationship', 'active',
-                $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', 'Talked about MentionedPerson', 'relationship', $2, 'active',
+                $3, $4)
         """,
-        f"contact:{mentioned['id']}",
+        f"entity:{mentioned['entity_id']}",
+        mentioned["entity_id"],
         occurred_at,
         {
             "type": "chat_message",
@@ -810,10 +837,11 @@ async def test_interaction_sync_connector_events_still_count(dunbar_pool):
     occurred_at = datetime.now(UTC) - timedelta(days=1)
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{direct['id']}",
+        f"entity:{direct['entity_id']}",
+        direct["entity_id"],
         occurred_at,
         {
             "type": "telegram_user_client",
@@ -845,19 +873,21 @@ async def test_interview_interactions_are_downweighted(dunbar_pool):
 
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{interview['id']}",
+        f"entity:{interview['entity_id']}",
+        interview["entity_id"],
         occurred_at,
         {"type": "interview", "direction": "outgoing"},
     )
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{call['id']}",
+        f"entity:{call['entity_id']}",
+        call["entity_id"],
         occurred_at,
         {"type": "call", "direction": "outgoing"},
     )
@@ -882,19 +912,21 @@ async def test_email_interactions_are_downweighted(dunbar_pool):
 
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{email['id']}",
+        f"entity:{email['entity_id']}",
+        email["entity_id"],
         occurred_at,
         {"type": "email", "direction": "outgoing"},
     )
     await dunbar_pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at, metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
-        f"contact:{call['id']}",
+        f"entity:{call['entity_id']}",
+        call["entity_id"],
         occurred_at,
         {"type": "call", "direction": "outgoing"},
     )
@@ -916,9 +948,9 @@ async def test_scores_ordered_descending(dunbar_pool):
     low = await _make_contact(dunbar_pool, "Low")
     high = await _make_contact(dunbar_pool, "High")
 
-    await _log_interaction(dunbar_pool, low["id"], days_ago=90)
+    await _log_interaction(dunbar_pool, low["entity_id"], days_ago=90)
     for i in range(5):
-        await _log_interaction(dunbar_pool, high["id"], days_ago=i + 1)
+        await _log_interaction(dunbar_pool, high["entity_id"], days_ago=i + 1)
 
     scores = await compute_dunbar_scores(dunbar_pool)
     scored = [s for s in scores if s["contact_id"] in {low["id"], high["id"]}]
@@ -1017,11 +1049,11 @@ async def test_urgency_ordered_descending(dunbar_pool):
 
     # high: tier 5, heavily overdue
     high = await _make_contact(dunbar_pool, "HighUrgency")
-    await _log_interaction(dunbar_pool, high["id"], days_ago=200)
+    await _log_interaction(dunbar_pool, high["entity_id"], days_ago=200)
 
     # low: tier 50, recently contacted
     low = await _make_contact(dunbar_pool, "LowUrgency")
-    await _log_interaction(dunbar_pool, low["id"], days_ago=1)
+    await _log_interaction(dunbar_pool, low["entity_id"], days_ago=1)
 
     scores = [
         {
@@ -1373,14 +1405,20 @@ async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) ->
 
 
 async def _log_simple_interaction(pool, contact_id: uuid.UUID, days_ago: float) -> None:
-    """Insert an active interaction fact valid_at=now()-days_ago."""
+    """Insert an active interaction fact valid_at=now()-days_ago.
+
+    Looks up entity_id from contacts so the new entity-keyed reader JOIN
+    (f.entity_id = c.entity_id) matches the fact correctly.
+    """
     valid_at = datetime.now(UTC) - timedelta(days=days_ago)
+    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact_id)
     await pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at)
+        VALUES ($1, 'interaction_other', 'chat', 'relationship', $2, 'active', $3)
         """,
-        f"contact:{contact_id}",
+        f"entity:{entity_id}",
+        entity_id,
         valid_at,
     )
 
@@ -1688,11 +1726,11 @@ async def test_urgency_top_n_defaults_to_3(dunbar_pool):
     contact5 = await _make_contact(dunbar_pool, "LowUrgency5", stay_in_touch_days=100)
 
     # Log interactions at different times to create urgency variation
-    await _log_interaction(dunbar_pool, contact1["id"], days_ago=100)
-    await _log_interaction(dunbar_pool, contact2["id"], days_ago=80)
-    await _log_interaction(dunbar_pool, contact3["id"], days_ago=60)
-    await _log_interaction(dunbar_pool, contact4["id"], days_ago=150)
-    await _log_interaction(dunbar_pool, contact5["id"], days_ago=130)
+    await _log_interaction(dunbar_pool, contact1["entity_id"], days_ago=100)
+    await _log_interaction(dunbar_pool, contact2["entity_id"], days_ago=80)
+    await _log_interaction(dunbar_pool, contact3["entity_id"], days_ago=60)
+    await _log_interaction(dunbar_pool, contact4["entity_id"], days_ago=150)
+    await _log_interaction(dunbar_pool, contact5["entity_id"], days_ago=130)
 
     scores = [
         {
@@ -1748,7 +1786,7 @@ async def test_urgency_top_n_respects_explicit_value(dunbar_pool):
             f"Contact{i}",
             stay_in_touch_days=10,
         )
-        await _log_interaction(dunbar_pool, contact["id"], days_ago=100 - i * 10)
+        await _log_interaction(dunbar_pool, contact["entity_id"], days_ago=100 - i * 10)
         contacts.append(contact)
 
     scores = [
@@ -1786,7 +1824,7 @@ async def test_urgency_top_n_none_returns_all(dunbar_pool):
             f"AllContact{i}",
             stay_in_touch_days=10,
         )
-        await _log_interaction(dunbar_pool, contact["id"], days_ago=100 - i * 10)
+        await _log_interaction(dunbar_pool, contact["entity_id"], days_ago=100 - i * 10)
         contacts.append(contact)
 
     scores = [

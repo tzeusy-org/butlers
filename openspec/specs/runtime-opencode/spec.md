@@ -21,7 +21,12 @@ The `OpenCodeAdapter` SHALL invoke the OpenCode CLI via `opencode run --format j
 - **WHEN** the OpenCode process exceeds the configured timeout (default 300s)
 - **THEN** the adapter kills the process and raises `TimeoutError`
 
-#### Scenario: Non-zero exit code
+#### Scenario: Completed startup migration retry
+- **WHEN** the first OpenCode process exits nonzero after reporting a completed first-run startup database migration
+- **THEN** the adapter retries the same invocation once
+- **AND** records retry provenance and the zero-based attempt index in process metadata
+
+#### Scenario: Non-zero exit code without completed startup migration
 - **WHEN** the OpenCode process exits with a non-zero return code
 - **THEN** the adapter raises `RuntimeError` with the stderr/stdout error detail
 

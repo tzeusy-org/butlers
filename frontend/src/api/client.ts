@@ -343,6 +343,12 @@ import type {
   EntityFactsResponse,
   EntityFactsParams,
   ContactEntityResolverResponse,
+  AddEntityContactRequest,
+  AddEntityContactResponse,
+  DeleteEntityContactResponse,
+  UpdateEntityContactRequest,
+  UpdateEntityContactResponse,
+  EntityContactsResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1817,6 +1823,74 @@ export function revealEntitySecret(
 ): Promise<EntityInfoEntry> {
   return apiFetch<EntityInfoEntry>(
     `/relationship/entities/${encodeURIComponent(entityId)}/secrets/${encodeURIComponent(infoId)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Entity-contacts triple API (§9.4, bu-u1w78)
+// Writes channel-fact triples in relationship.entity_facts (has-* predicates).
+// Used by ContactChannelCard after the write-path cut-over (bu-k9ylx).
+// ---------------------------------------------------------------------------
+
+/** List active contact-fact triples for an entity (has-* predicates). */
+export function listEntityContacts(entityId: string): Promise<EntityContactsResponse> {
+  return apiFetch<EntityContactsResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/contacts`,
+  );
+}
+
+/**
+ * Add (or upsert) a contact-fact triple for an entity.
+ *
+ * `predicate` must start with "has-" (e.g. "has-email", "has-phone",
+ * "has-handle", "has-website"). Returns 201 on success, 202 when the
+ * owner-entity carve-out parks the write as pending_approval.
+ */
+export function addEntityContact(
+  entityId: string,
+  request: AddEntityContactRequest,
+): Promise<AddEntityContactResponse> {
+  return apiFetch<AddEntityContactResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/contacts`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/**
+ * Retract an active contact-fact triple.
+ *
+ * `predicate` must start with "has-". `valueHash` is SHA-256[:16] of the
+ * object value (matches `ContactFact.value_hash`). Returns 200 on success,
+ * 404 when no active fact matches (entity_id, predicate, value_hash).
+ */
+export function deleteEntityContact(
+  entityId: string,
+  predicate: string,
+  valueHash: string,
+): Promise<DeleteEntityContactResponse> {
+  return apiFetch<DeleteEntityContactResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
+    { method: "DELETE" },
+  );
+}
+
+/**
+ * Edit-in-place a contact-fact triple: retract old value, assert new value atomically.
+ *
+ * `predicate` must start with "has-". `valueHash` is SHA-256[:16] of the
+ * current object value (matches `ContactFact.value_hash`). Returns 200 on
+ * success, 202 on owner-entity pending_approval, 404 when no active fact
+ * matches (entity_id, predicate, value_hash).
+ */
+export function updateEntityContact(
+  entityId: string,
+  predicate: string,
+  valueHash: string,
+  request: UpdateEntityContactRequest,
+): Promise<UpdateEntityContactResponse> {
+  return apiFetch<UpdateEntityContactResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
+    { method: "PUT", body: JSON.stringify(request) },
   );
 }
 

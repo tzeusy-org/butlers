@@ -199,6 +199,30 @@ def test_codex_mcp_discovery_exhaustion_excluded_from_log_scanner():
     assert _should_include_entry(entry) is False
 
 
+def test_codex_cli_timeout_included_without_session_records_coverage():
+    """Codex timeout logs stay visible when session_records cannot cover them."""
+    entry = LogEntry(
+        level="error",
+        event="Codex CLI timed out after 1800s",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.codex",
+    )
+    assert _should_include_entry(entry) is True
+
+
+def test_codex_cli_timeout_excluded_when_session_records_covers_it():
+    """Codex adapter timeout logs are duplicate evidence when session_records is enabled."""
+    entry = LogEntry(
+        level="error",
+        event="Codex CLI timed out after 1800s",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.codex",
+    )
+    assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
+
+
 def test_spawner_runtime_timeout_included_without_session_records():
     """Log-scanner-only deployments must keep timeout coverage."""
     entry = LogEntry(
@@ -824,3 +848,54 @@ async def test_discover_skips_spawner_runtime_timeout_logs(tmp_path):
 
     assert len(findings) == 1
     assert "database connection refused" in findings[0].event_summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_discover_includes_codex_cli_timeout_log_without_session_records(tmp_path):
+    """Log scanner preserves Codex timeout coverage when session_records is unavailable."""
+    now = datetime.now(UTC)
+    _write(
+        tmp_path / "butlers" / "switchboard.log",
+        [
+            _line(
+                ts=now,
+                butler_name="switchboard",
+                logger_name="butlers.core.runtimes.codex",
+                event="Codex CLI timed out after 1800s",
+                exception=None,
+            )
+        ],
+    )
+
+    findings = await LogScannerSource(log_root=tmp_path, repo_root=tmp_path).discover(
+        lookback_minutes=15
+    )
+
+    assert len(findings) == 1
+    assert findings[0].event_summary == "Codex CLI timed out after <ID>"
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_codex_cli_timeout_log_with_session_records(tmp_path):
+    """Generic Codex timeout logs are suppressed when session_records covers them."""
+    now = datetime.now(UTC)
+    _write(
+        tmp_path / "butlers" / "switchboard.log",
+        [
+            _line(
+                ts=now,
+                butler_name="switchboard",
+                logger_name="butlers.core.runtimes.codex",
+                event="Codex CLI timed out after 1800s",
+                exception=None,
+            )
+        ],
+    )
+
+    findings = await LogScannerSource(
+        log_root=tmp_path,
+        repo_root=tmp_path,
+        suppress_session_duplicate_timeouts=True,
+    ).discover(lookback_minutes=15)
+
+    assert findings == []

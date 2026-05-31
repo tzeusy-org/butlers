@@ -33,9 +33,12 @@
       PR #1393). Verify merged. Confirm route redirect from step 2.3 is included.
 - [ ] 3.3 Episode detail page — title lifted to record-identity. Confirm the
       spec change from task 1.4 is reflected in the implementation.
-- [ ] 3.4 Butler detail page outer chrome — `<Page archetype="detail">` adoption
-      (pending bead). Title = butler name, actions = `<ChatPanel />`, primary =
-      `<Tabs>` block.
+- [x] 3.4 Butler detail page outer chrome — DESCOPED. Superseded by the
+      status-board lineage (`extend-butler-detail-status-board-chrome`, archived
+      2026-05-13; shipped PR #1614). `/butlers/:name` now uses
+      `<Page archetype="status-board">`, not `detail`. The `dashboard-butler-management`
+      delta has been removed from this change. Remaining canonical-spec reconciliation
+      is tracked in a separate follow-up bead.
 - [ ] 3.5 ConnectorDetailPage — implementation migrated (PR #1397, out of this
       spec scope). File sibling bead to delta `connector-base-spec` when
       ConnectorDetailPage spec home is decided.
@@ -50,8 +53,9 @@
 - [ ] 4.3 Verify that `openspec/specs/dashboard-relationship/spec.md` reflects the
       canonical `/contacts/:id` route and removes the stale `/butlers/relationship/contacts/:id`
       requirement.
-- [ ] 4.4 Verify that `openspec/specs/dashboard-butler-management/spec.md` reflects
-      the `<Page archetype="detail">` breadcrumbs requirement.
+- [x] 4.4 N/A — `dashboard-butler-management` delta removed from this change (see
+      task 3.4). The canonical spec's butler-detail requirement is reconciled to
+      `<Page archetype="status-board">` under a separate follow-up bead, not this change.
 - [ ] 4.5 Verify that `openspec/specs/detail-page-archetype/spec.md` is created
       and matches the new capability spec authored in task 1.7.
 

@@ -744,9 +744,23 @@ interface FamilyEntry {
   entityId: string | null;
 }
 
-function _firstActiveFact(facts: Fact[], predicates: Set<string>): Fact | null {
+function _firstActiveFact(
+  facts: Fact[],
+  predicates: Set<string>,
+  entityId: string,
+): Fact | null {
   for (const f of facts) {
-    if (f.validity === "active" && predicates.has(f.predicate)) return f;
+    if (f.validity !== "active") continue;
+    if (!predicates.has(f.predicate)) continue;
+    // Place/work/role are directional, subject-owned properties. The detail
+    // API returns facts where this entity is the subject OR the object
+    // (entity_id = $1 OR object_entity_id = $1), so an object-side fact —
+    // e.g. a doctor's "role" fact that references the owner as its object —
+    // would otherwise leak into the owner's Profile. Only honor facts where
+    // the viewed entity is the SUBJECT.
+    const isSubject = f.entity_id === entityId || f.subject === entityId;
+    if (!isSubject) continue;
+    return f;
   }
   return null;
 }
@@ -844,9 +858,18 @@ function ProfileSnapshot({
     return list.slice(0, 2);
   }, [dates]);
 
-  const placeFact = useMemo(() => _firstActiveFact(facts, _PLACE_PREDICATES), [facts]);
-  const workFact = useMemo(() => _firstActiveFact(facts, _WORK_PREDICATES), [facts]);
-  const roleFact = useMemo(() => _firstActiveFact(facts, _ROLE_PREDICATES), [facts]);
+  const placeFact = useMemo(
+    () => _firstActiveFact(facts, _PLACE_PREDICATES, entityId),
+    [facts, entityId],
+  );
+  const workFact = useMemo(
+    () => _firstActiveFact(facts, _WORK_PREDICATES, entityId),
+    [facts, entityId],
+  );
+  const roleFact = useMemo(
+    () => _firstActiveFact(facts, _ROLE_PREDICATES, entityId),
+    [facts, entityId],
+  );
   const family = useMemo(() => _familyFromFacts(facts, entityId), [facts, entityId]);
 
   const hasBirthday = !!birthday;

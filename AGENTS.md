@@ -153,6 +153,14 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Contributor workflow: PRs only, never push directly to main
+All code changes must go through a pull request — never `git push origin main` or
+`git push --force origin main`. This is enforced by the `guard-direct-push` CI job
+(`.github/workflows/ci.yml`), which fails loudly if a commit lands on main without
+an associated PR. CI can only detect the violation after the push; branch protection
+(Settings → Branches → "Require a pull request before merging") is the authoritative
+prevention mechanism and should be kept enabled. See bu-ue37d.
+
 ### Core migration optional-schema guard contract
 - Core-chain migrations must tolerate fresh/core-only databases where specialist schema tables are absent; cross-schema `ALTER/UPDATE/GRANT` statements should guard with `to_regclass(...)` / information_schema checks instead of assuming `education.*`, `general.*`, etc. always exist.
 
@@ -195,6 +203,9 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 
 ### Runtime timeout propagation contract
 - `Spawner._run()` must forward the effective `session_timeout_s` into `runtime.invoke(timeout=...)`, not just wrap the call in outer `asyncio.wait_for(...)`; otherwise adapter-specific inner timeouts can drift from session records and produce misleading mixed timeout behavior (observed in QA self-healing Codex runs).
+
+### OpenCode empty-response failover contract
+- OpenCode exit 0 with no result text, no tool calls, no token usage, and empty stderr is a failed pre-tool-call runtime attempt; `OpenCodeAdapter` must raise a classifier-eligible `RuntimeError` so same-tier model failover can run instead of persisting a successful null session.
 
 ### Model catalog timeout authority contract
 - `public.model_catalog.session_timeout_s` is the authoritative per-session runtime timeout for catalog-resolved runs; `resolve_model()` returns it, `Spawner` uses it for normal butler sessions, and `DiscretionDispatcher` uses it for discretion-tier direct adapter calls.
@@ -1179,6 +1190,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - `src/butlers/connectors/whatsapp_user_client.py::_get_bridge_db_dsn()` currently hands the Go bridge a bare `butlers` DSN with no schema search_path; in live dev that means the real linked-device state restores from `public.whatsmeow_*` tables while `messenger.whatsapp_sessions` stays empty, so bridge session bookkeeping and whatsmeow device restore can silently diverge.
 - `curriculum/` is the generated prerequisite-learning surface for this repo; keep it concept-first under the training-curriculum contract, with `curriculum/research-ledger.md` preserving the required 3-pass discovery audit.
 - Dunbar decay scoring treats connector-provenance LLM extraction facts as mention/context facts unless `extra_metadata.source == "interaction_sync"`; `email`, `interview`, and `calendar_event` interactions are intentionally downweighted to `0.2` so one-off transactional work/onboarding exchanges do not masquerade as inner-circle relationships.
+- Relationship interaction facts are canonically stored under `subject='entity:{entity_id}'`; low-level `interaction_log`/`interaction_list` still accept legacy contact UUIDs and resolve them to `contacts.entity_id` before writing/querying.
 - Memory entity Dunbar enrichment must aggregate duplicate contacts linked to the same `entity_id` by keeping the highest `dunbar_score`; otherwise a zero-score duplicate contact can overwrite the real scored contact and make `/entities` show tier 1500 while `/relationship/dunbar/ranking` shows an inner tier.
 - Draft RFC 0014 proposes Chronicler as the retrospective Time Butler; until accepted/synced, treat its future-source compatibility note as proposed guidance, not an enforced rule.
 - Google Health OAuth scopes live per-account in `public.google_accounts.granted_scopes`; the static `GOOGLE_OAUTH_SCOPES` app secret can lag. A connector state of `degraded` with `error_message='account_not_linked'` means OAuth scopes are granted but the Google/Fitbit Health account has not been linked, so no wellness ingestion will occur yet.
@@ -1190,6 +1202,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - Telegram user-client conversation-history batches must preserve `sender.participants` / `owner_sender_id` through `message_inbox.raw_payload`; durable-buffer routing must derive the non-owner sender and pass `source_id` so identity resolution can anchor downstream memory facts to the contact instead of the owner.
 - `frontend/src/components/chronicles/MapWidgetInner.tsx` must guard `map.addSource(...)` / `map.addLayer(...)` behind `map.isStyleLoaded()` (or `map.once('load', ...)`); calling them synchronously after `new maplibreGl.Map(...)` throws `Style is not done loading` and renders the user-visible `Failed to load the map. Try again` fallback even when valid trail data exists.
 - Frontend links under the `/butlers-dev` mount must respect the routing surface: React Router `Link to` values should stay app-internal (for example `/butlers/lifestyle`) because `createBrowserRouter(..., { basename })` prefixes them; raw `<a href>` targets still need an explicit `import.meta.env.BASE_URL` prefix if they must leave React Router navigation.
+- Dev compose runs against an external Postgres capped at `max_connections=200`; keep `BUTLERS_DB_POOL_*` and `BUTLERS_API_DB_POOL_*` defaults conservative in `docker-compose.yml` or late-starting butlers such as `travel` can fail after other services consume regular connection slots.
 - Core Alembic migration revisions must stay globally unique and linear; `tests/config/test_migration_contract.py` now asserts duplicate `revision` IDs fail before compose migrations do.
 - Alembic migrations that rewrite enum-like `TEXT` values guarded by `CHECK` constraints must drop/replace the old constraint before writing new values; otherwise live upgrades fail even if fresh-schema tests pass.
 - The relationship butler has `[modules.memory]`, so `relationship.facts` and `relationship.predicate_registry` are memory-module bare tables in that schema. New relationship-domain triple-store work must use `relationship.entity_facts` plus `relationship.entity_predicate_registry`, and keep tests proving migrations tolerate existing memory-shaped tables.

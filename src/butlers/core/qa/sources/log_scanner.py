@@ -228,6 +228,10 @@ def _should_include_entry(
     #     The runtime/session tables tell us whether the session actually
     #     failed, while the raw adapter log can be emitted on a path that
     #     later recovers.
+    #   * "Codex CLI timed out after ..." — generic adapter process-control
+    #     diagnostics. When session_records is available, it provides session
+    #     IDs and timeout status; without it, log-scanner-only deployments keep
+    #     degraded timeout coverage.
     #   * "Runtime invocation failed: TimeoutError: ... timed out ..." from
     #     the spawner — a duplicate daemon log for the failed session row.
     #     The session_records source classifies these as SessionTimeoutError
@@ -238,6 +242,7 @@ def _should_include_entry(
     #     sentinel.
     if entry.logger == "butlers.core.runtimes.codex" and (
         "MCP discovery failed after" in entry.event
+        or (suppress_session_duplicate_timeouts and "Codex CLI timed out after" in entry.event)
         or "codex_refresh_lock: lock held" in entry.event
         or "codex_refresh_lock: waiting" in entry.event
     ):

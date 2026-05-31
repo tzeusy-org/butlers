@@ -47,6 +47,8 @@ x-postgres-env: &postgres-env
   POSTGRES_USER: ${POSTGRES_USER:-butlers}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.dev or .env.prod}
   POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
+  BUTLERS_DB_POOL_MIN_SIZE: ${BUTLERS_DB_POOL_MIN_SIZE:-0}
+  BUTLERS_DB_POOL_MAX_SIZE: ${BUTLERS_DB_POOL_MAX_SIZE:-4}
 
 x-connector-env: &connector-env
   <<: *postgres-env
@@ -182,6 +184,8 @@ services:
       BUTLERS_HOST: butlers-up
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
       BUTLERS_BACKUP_DIR: /backups
+      BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
+      BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -655,6 +659,8 @@ services:
       BUTLERS_HOST: butlers-up
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
       BUTLERS_BACKUP_DIR: /backups
+      BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
+      BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro

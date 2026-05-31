@@ -111,6 +111,8 @@ if _models_path.exists():
         AddContactRequest = _models_module.AddContactRequest
         AddContactResponse = _models_module.AddContactResponse
         DeleteContactResponse = _models_module.DeleteContactResponse
+        UpdateContactRequest = _models_module.UpdateContactRequest
+        UpdateContactResponse = _models_module.UpdateContactResponse
         MergeEntitiesRequest = _models_module.MergeEntitiesRequest
         MergeEntitiesResponse = _models_module.MergeEntitiesResponse
         PromoteTierRequest = _models_module.PromoteTierRequest
@@ -1650,15 +1652,50 @@ async def delete_contact(
     CASCADE on public.contact_info FK handles info cleanup.
     Source links in contacts_source_links are also removed so a
     future sync can re-create the contact from scratch if needed.
+
+    Retraction: before deleting the contact row (which cascades to
+    public.contact_info), all active ``has-*`` triples in
+    ``relationship.entity_facts`` that correspond to the contact's
+    channel rows are retracted.  This prevents stale facts on the
+    linked entity after the contact is removed.
     """
+    from butlers.tools.relationship.relationship_assert_fact import retract_contact_info_fact
+
     pool = _pool(db)
 
     existing = await pool.fetchrow(
-        "SELECT id FROM contacts WHERE id = $1",
+        "SELECT id, entity_id FROM contacts WHERE id = $1",
         contact_id,
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="Contact not found")
+
+    entity_id = existing["entity_id"]
+
+    # Retract entity_facts triples for every channel row on this contact
+    # before the CASCADE delete removes the contact_info rows.
+    if entity_id is not None:
+        ci_rows = await pool.fetch(
+            "SELECT type, value FROM public.contact_info WHERE contact_id = $1",
+            contact_id,
+        )
+        for ci in ci_rows:
+            try:
+                await retract_contact_info_fact(
+                    pool,
+                    subject=entity_id,
+                    ci_type=ci["type"],
+                    ci_value=ci["value"],
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "delete_contact: retract_contact_info_fact failed for "
+                    "contact=%s entity=%s type=%s; continuing",
+                    contact_id,
+                    entity_id,
+                    ci["type"],
+                    exc_info=True,
+                )
 
     # Remove source links so re-sync can recreate cleanly
     has_source_links = await pool.fetchval(
@@ -4321,9 +4358,20 @@ async def list_entity_linked_contacts(
 
     Each entry is enriched with:
     - ``email`` / ``phone`` — primary non-secured values for quick display.
-    - ``contact_info`` — all non-secured contact_info rows (channel chips).
+    - ``contact_info`` — all non-secured contact_info rows **plus** any
+      ``relationship.entity_facts`` ``has-*`` triples for the entity that are
+      not already present (de-duped on ``(type, value)``).  Entity-facts-sourced
+      entries carry ``source="entity_facts"``; legacy contact_info rows carry
+      ``source=null`` (unchanged for backward compatibility).
     - ``labels`` — full label objects assigned to the contact.
     - ``preferred_channel`` — the contact's preferred outreach channel.
+
+    De-dup key: ``(type, value)`` where ``type`` is derived from the entity_facts
+    predicate by stripping the ``has-`` prefix (e.g. ``has-email`` → ``email``).
+    A channel present in both stores appears once, with the contact_info version
+    taking precedence.  Entity-facts-only channels are appended to the first
+    linked contact (by name order) because entity_facts are entity-level, not
+    per-contact.
     """
     pool = _pool(db)
     await _assert_entity_exists(pool, entity_id)
@@ -4365,8 +4413,8 @@ async def list_entity_linked_contacts(
 
     contact_ids = [r["id"] for r in rows]
 
-    # Batch-fetch supplementary data to avoid N+1 queries.
-    ci_rows, label_rows = await asyncio.gather(
+    # Batch-fetch supplementary data (contact_info, labels, entity_facts) in one round-trip.
+    ci_rows, label_rows, fact_rows = await asyncio.gather(
         pool.fetch(
             """
             SELECT id, contact_id, type, value, is_primary, secured, parent_id, context
@@ -4387,10 +4435,23 @@ async def list_entity_linked_contacts(
             """,
             contact_ids,
         ),
+        pool.fetch(
+            """
+            SELECT id, predicate, object, "primary"
+            FROM relationship.entity_facts
+            WHERE subject  = $1
+              AND predicate LIKE 'has-%'
+              AND validity  = 'active'
+            ORDER BY predicate ASC, "primary" DESC NULLS LAST, created_at DESC
+            """,
+            entity_id,
+        ),
     )
 
-    # Index supplementary data by contact_id.
+    # Index contact_info by contact_id.
     ci_by_contact: dict[UUID, list[ContactInfoEntry]] = {cid: [] for cid in contact_ids}
+    # Collect all (type, value) pairs already present across all contacts for de-dup.
+    existing_channel_keys: set[tuple[str, str]] = set()
     for ci in ci_rows:
         ci_by_contact[ci["contact_id"]].append(
             ContactInfoEntry(
@@ -4401,14 +4462,44 @@ async def list_entity_linked_contacts(
                 secured=False,
                 parent_id=ci["parent_id"],
                 context=ci["context"],
+                source=None,
             )
         )
+        if ci["value"] is not None:
+            existing_channel_keys.add((ci["type"], ci["value"]))
 
     labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
     for lr in label_rows:
         labels_by_contact[lr["contact_id"]].append(
             Label(id=lr["id"], name=lr["name"], color=lr["color"])
         )
+
+    # Merge entity_facts has-* triples into the first linked contact, de-duped by (type, value).
+    # Entity-facts are entity-level; attaching to the first contact (name order) keeps the
+    # response shape stable while surfacing new writes from the cut-over write path.
+    if fact_rows and contact_ids:
+        first_contact_id = contact_ids[0]  # rows already ordered by c.name
+        extras: list[ContactInfoEntry] = []
+        for fr in fact_rows:
+            channel_type = fr["predicate"].removeprefix("has-")
+            channel_value: str = fr["object"]
+            if (channel_type, channel_value) not in existing_channel_keys:
+                existing_channel_keys.add((channel_type, channel_value))
+                extras.append(
+                    ContactInfoEntry(
+                        id=fr["id"],
+                        type=channel_type,
+                        value=channel_value,
+                        is_primary=bool(fr["primary"]) if fr["primary"] is not None else False,
+                        secured=False,
+                        parent_id=None,
+                        context=None,
+                        source="entity_facts",
+                        predicate=fr["predicate"],
+                        value_hash=_contact_value_hash(channel_value),
+                    )
+                )
+        ci_by_contact[first_contact_id].extend(extras)
 
     return [
         LinkedContactSummary(
@@ -5193,6 +5284,233 @@ async def delete_entity_contact(
     )
 
     return DeleteContactResponse(deleted=True, fact_id=fact_id)
+
+
+@router.put(
+    "/entities/{entity_id}/contacts/{predicate}/{value_hash}",
+    response_model=UpdateContactResponse,
+)
+async def update_entity_contact(
+    entity_id: UUID,
+    predicate: str,
+    value_hash: str,
+    body: UpdateContactRequest,
+    fastapi_response: Response,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> UpdateContactResponse:
+    """Edit-in-place a contact-fact triple: retract old value, assert new value.
+
+    Locates the active fact whose ``subject = entity_id``,
+    ``predicate = predicate``, and whose ``object`` hashes to ``value_hash``
+    (SHA-256[:16]).  Retracts the old row and asserts the new value via the
+    central writer inside a single transaction, preserving atomicity.
+
+    Owner-only authz gate (Clause 12a, Amendment 12a): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist, or if no active fact matching
+    ``(entity_id, predicate, value_hash)`` is found.
+
+    Returns 400 when *predicate* does not begin with ``'has-'``.
+
+    Returns 400 when ``new_value`` is empty or whitespace-only.
+
+    On success, returns HTTP 200 with the new active fact row and the
+    retracted fact UUID.
+
+    **Owner entity carve-out:** when the entity subject has role ``'owner'``,
+    the new-value assert is parked as a ``pending_actions`` row.  The old
+    fact is NOT retracted until the owner approves.  The endpoint returns
+    HTTP 202 with ``outcome='pending_approval'`` and ``action_id`` set;
+    ``fact`` and ``retracted_fact_id`` are both ``null``.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import (
+        AssertOutcome,
+        relationship_assert_fact,
+    )
+
+    pool = _pool(db)
+
+    # Validate that the predicate is a contact predicate.
+    if not predicate.startswith(_CONTACT_PREDICATE_PREFIX):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_predicate",
+                "message": (
+                    f"Predicate {predicate!r} is not a contact predicate. "
+                    "Contact predicates must start with 'has-'."
+                ),
+            },
+        )
+
+    # Validate new_value is non-empty.
+    new_value = body.new_value.strip()
+    if not new_value:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_value",
+                "message": "new_value must not be empty or whitespace-only.",
+            },
+        )
+
+    # Owner-only authz gate (Clause 12a — write surface).
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+
+    # Entity existence check.
+    await _assert_entity_exists(pool, entity_id)
+
+    # Find the active fact matching (subject, predicate, value_hash).
+    candidate_rows = await pool.fetch(
+        """
+        SELECT f.id, f.object
+        FROM relationship.entity_facts f
+        WHERE f.subject   = $1
+          AND f.predicate = $2
+          AND f.validity  = 'active'
+        """,
+        entity_id,
+        predicate,
+    )
+
+    target_row = None
+    for row in candidate_rows:
+        if _contact_value_hash(row["object"]) == value_hash:
+            target_row = row
+            break
+
+    if target_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "contact_fact_not_found",
+                "message": (
+                    f"No active contact fact found for entity {entity_id}, "
+                    f"predicate {predicate!r}, value_hash {value_hash!r}."
+                ),
+            },
+        )
+
+    old_fact_id: UUID = target_row["id"]
+    old_value: str = target_row["object"]
+
+    # If the new value is the same as the old, just update provenance fields
+    # via the central writer — retraction is not needed.
+    if new_value == old_value:
+        result = await relationship_assert_fact(
+            pool,
+            subject=entity_id,
+            predicate=predicate,
+            object=new_value,
+            src=body.src,
+            object_kind="literal",
+            conf=body.conf,
+            verified=body.verified,
+            primary=body.primary,
+        )
+        if result.outcome == AssertOutcome.pending_approval:
+            fastapi_response.status_code = 202
+            return UpdateContactResponse(
+                outcome=result.outcome.value,
+                retracted_fact_id=None,
+                fact=None,
+                action_id=result.action_id,
+            )
+        fact_row = await pool.fetchrow(
+            """
+            SELECT f.id, f.predicate, f.object, f.src, f.conf,
+                   f.last_seen, f.weight, f.verified, f."primary"
+            FROM relationship.entity_facts f WHERE f.id = $1
+            """,
+            result.fact_id,
+        )
+        if fact_row is None:
+            raise HTTPException(status_code=500, detail="Fact row not found after write")
+        return UpdateContactResponse(
+            outcome=result.outcome.value,
+            retracted_fact_id=None,
+            fact=_row_to_contact_fact(fact_row),
+        )
+
+    # New value differs from old: retract old fact + assert new fact atomically.
+    # We acquire a single connection and wrap both operations in one transaction
+    # so the triple store is never left in a state where both old and new are
+    # simultaneously absent or simultaneously active.
+    #
+    # Owner carve-out: when relationship_assert_fact returns pending_approval,
+    # the new value is parked for approval and must NOT be committed.  We raise
+    # _PendingApproval inside the transaction to force a rollback — the retract
+    # is rolled back too, so the old row stays active while the owner reviews.
+    class _PendingApproval(Exception):
+        """Sentinel: triggers rollback so retraction is never committed."""
+
+        def __init__(self, inner_result: object) -> None:
+            self.result = inner_result
+
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. Retract old row.
+                await conn.execute(
+                    """
+                    UPDATE relationship.entity_facts
+                    SET validity   = 'retracted',
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    old_fact_id,
+                )
+
+                # 2. Assert new row via central writer (pass conn= to avoid nested tx).
+                result = await relationship_assert_fact(
+                    pool,
+                    subject=entity_id,
+                    predicate=predicate,
+                    object=new_value,
+                    src=body.src,
+                    object_kind="literal",
+                    conf=body.conf,
+                    verified=body.verified,
+                    primary=body.primary,
+                    conn=conn,
+                )
+
+                if result.outcome == AssertOutcome.pending_approval:
+                    # Raise inside the transaction so both the retract and the
+                    # pending-approval write are rolled back atomically.
+                    raise _PendingApproval(result)
+    except _PendingApproval as exc:
+        # Owner carve-out: the entire transaction was rolled back.  The old
+        # fact row is still active.  Return 202 so the caller knows an approval
+        # is needed; fact and retracted_fact_id are both null.
+        result = exc.result
+        fastapi_response.status_code = 202
+        return UpdateContactResponse(
+            outcome=result.outcome.value,
+            retracted_fact_id=None,
+            fact=None,
+            action_id=result.action_id,
+        )
+
+    # Fetch the new active fact row.
+    fact_row = await pool.fetchrow(
+        """
+        SELECT f.id, f.predicate, f.object, f.src, f.conf,
+               f.last_seen, f.weight, f.verified, f."primary"
+        FROM relationship.entity_facts f WHERE f.id = $1
+        """,
+        result.fact_id,
+    )
+    if fact_row is None:
+        raise HTTPException(status_code=500, detail="Fact row not found after write")
+
+    return UpdateContactResponse(
+        outcome=result.outcome.value,
+        retracted_fact_id=old_fact_id,
+        fact=_row_to_contact_fact(fact_row),
+    )
 
 
 # ---------------------------------------------------------------------------

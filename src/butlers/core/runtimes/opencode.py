@@ -48,6 +48,17 @@ def _filtered_stderr_lines(stderr: str) -> list[str]:
     return [line for line in stderr_lines if line not in _BENIGN_STDERR_LINES]
 
 
+def _looks_like_completed_startup_migration(stdout: str, stderr: str) -> bool:
+    """Return True when OpenCode only reports a completed first-run DB migration."""
+    output = "\n".join(part for part in (stdout, stderr) if part)
+    output_lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not output_lines or _extract_stdout_error_detail(stdout):
+        return False
+    return _BENIGN_STDERR_LINES.issubset(output_lines) and all(
+        line in _BENIGN_STDERR_LINES for line in output_lines
+    )
+
+
 def _extract_stdout_error_detail(stdout: str) -> str | None:
     """Extract an actionable error detail from OpenCode JSONL stdout when present."""
     for line in reversed(stdout.strip().splitlines()):
@@ -977,99 +988,147 @@ class OpenCodeAdapter(RuntimeAdapter):
             logger.debug("Invoking OpenCode CLI: %s", cmd_for_log)
 
             proc: asyncio.subprocess.Process | None = None
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=subprocess_env,
-                    cwd=str(cwd) if cwd else None,
-                )
-
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=effective_timeout,
-                )
-
-                stdout = stdout_bytes.decode("utf-8", errors="replace")
-                stderr = stderr_bytes.decode("utf-8", errors="replace")
-
-                if stderr:
-                    logger.debug("OpenCode stderr: %s", stderr[:500])
-
-                returncode = proc.returncode if proc.returncode is not None else 0
-
-                self._last_process_info = {
-                    "pid": proc.pid,
-                    "exit_code": returncode,
-                    "command": cmd_for_log,
-                    "stderr": stderr,
-                    "runtime_type": "opencode",
-                }
-
-                if returncode != 0:
-                    error_detail = _select_error_detail(stderr, stdout, returncode)
-                    logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
-                    self._last_process_info["error_detail"] = error_detail
-                    # On non-zero exit the adapter raises immediately — no tool calls
-                    # were captured by the adapter itself, so this is pre-tool-call.
-                    # The spawner will layer in daemon-side tool-call capture.
-                    self._last_process_info["is_pre_tool_call"] = True
-                    raise RuntimeError(
-                        f"OpenCode CLI exited with code {returncode}: {error_detail}"
+            retry_attempted = False
+            attempt_infos: list[dict[str, Any]] = []
+            for _ in range(2):
+                attempt_index = len(attempt_infos)
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=subprocess_env,
+                        cwd=str(cwd) if cwd else None,
                     )
 
-                # OpenCode CLI exits 0 even on fatal errors like
-                # ProviderModelNotFoundError. Detect these via stderr.
-                if stderr and not stdout.strip():
-                    for pattern in (
-                        "ProviderModelNotFoundError",
-                        "Model not found:",
-                        "AuthenticationError",
-                    ):
-                        if pattern in stderr:
-                            logger.error(
-                                "OpenCode CLI exited 0 but stderr indicates failure: %s",
-                                stderr[:500],
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(),
+                        timeout=effective_timeout,
+                    )
+
+                    stdout = stdout_bytes.decode("utf-8", errors="replace")
+                    stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+                    if stderr:
+                        logger.debug("OpenCode stderr: %s", stderr[:500])
+
+                    returncode = proc.returncode if proc.returncode is not None else 0
+
+                    self._last_process_info = {
+                        "pid": proc.pid,
+                        "exit_code": returncode,
+                        "command": cmd_for_log,
+                        "stderr": stderr,
+                        "runtime_type": "opencode",
+                        "attempt_index": attempt_index,
+                    }
+                    attempt_infos.append(self._last_process_info)
+
+                    if returncode != 0:
+                        error_detail = _select_error_detail(stderr, stdout, returncode)
+                        if attempt_index == 0 and _looks_like_completed_startup_migration(
+                            stdout, stderr
+                        ):
+                            logger.info(
+                                "OpenCode CLI completed first-run database migration; "
+                                "retrying invocation once"
                             )
-                            error_detail = stderr.strip()[:300]
                             self._last_process_info["error_detail"] = error_detail
-                            # Auth/model-not-found failures detected via stderr before
-                            # any output — this is a pre-tool-call systemic failure.
                             self._last_process_info["is_pre_tool_call"] = True
-                            raise RuntimeError(f"OpenCode CLI error (exit 0): {error_detail}")
+                            self._last_process_info["retry_attempted"] = True
+                            self._last_process_info["retry_succeeded"] = None
+                            retry_attempted = True
+                            continue
 
-                result_text, tool_calls, usage = _parse_opencode_output(stdout, stderr, returncode)
-                if result_text is None and not tool_calls and usage is None and not stderr.strip():
-                    error_detail = (
-                        "OpenCode CLI returned no response: no result, tool calls, "
-                        "token usage, or stderr"
+                        logger.error(
+                            "OpenCode CLI exited with code %d: %s", returncode, error_detail
+                        )
+                        self._last_process_info["error_detail"] = error_detail
+                        # On non-zero exit the adapter raises immediately — no tool calls
+                        # were captured by the adapter itself, so this is pre-tool-call.
+                        # The spawner will layer in daemon-side tool-call capture.
+                        self._last_process_info["is_pre_tool_call"] = True
+                        if retry_attempted:
+                            self._last_process_info["retry_attempted"] = True
+                            self._last_process_info["retry_succeeded"] = False
+                        raise RuntimeError(
+                            f"OpenCode CLI exited with code {returncode}: {error_detail}"
+                        )
+
+                    # OpenCode CLI exits 0 even on fatal errors like
+                    # ProviderModelNotFoundError. Detect these via stderr.
+                    if stderr and not stdout.strip():
+                        for pattern in (
+                            "ProviderModelNotFoundError",
+                            "Model not found:",
+                            "AuthenticationError",
+                        ):
+                            if pattern in stderr:
+                                logger.error(
+                                    "OpenCode CLI exited 0 but stderr indicates failure: %s",
+                                    stderr[:500],
+                                )
+                                error_detail = stderr.strip()[:300]
+                                self._last_process_info["error_detail"] = error_detail
+                                # Auth/model-not-found failures detected via stderr before
+                                # any output — this is a pre-tool-call systemic failure.
+                                self._last_process_info["is_pre_tool_call"] = True
+                                if retry_attempted:
+                                    self._last_process_info["retry_attempted"] = True
+                                    self._last_process_info["retry_succeeded"] = False
+                                raise RuntimeError(f"OpenCode CLI error (exit 0): {error_detail}")
+
+                    result_text, tool_calls, usage = _parse_opencode_output(
+                        stdout, stderr, returncode
                     )
-                    logger.error(error_detail)
-                    self._last_process_info["error_detail"] = error_detail
-                    self._last_process_info["is_pre_tool_call"] = True
-                    raise RuntimeError(error_detail)
-                return result_text, tool_calls, usage
+                    if (
+                        result_text is None
+                        and not tool_calls
+                        and usage is None
+                        and not stderr.strip()
+                    ):
+                        error_detail = (
+                            "OpenCode CLI returned no response: no result, tool calls, "
+                            "token usage, or stderr"
+                        )
+                        logger.error(error_detail)
+                        self._last_process_info["error_detail"] = error_detail
+                        self._last_process_info["is_pre_tool_call"] = True
+                        if retry_attempted:
+                            self._last_process_info["retry_attempted"] = True
+                            self._last_process_info["retry_succeeded"] = False
+                        raise RuntimeError(error_detail)
+                    if retry_attempted:
+                        self._last_process_info["retry_attempted"] = True
+                        self._last_process_info["retry_succeeded"] = True
+                        self._last_process_info["result_source"] = "retry"
+                    return result_text, tool_calls, usage
 
-            except TimeoutError:
-                logger.error("OpenCode CLI timed out after %ds", effective_timeout)
-                self._last_process_info = {
-                    "pid": proc.pid if proc is not None else None,
-                    "exit_code": -1,
-                    "command": cmd_for_log,
-                    "stderr": "(timeout — process killed)",
-                    "runtime_type": "opencode",
-                    # Timeout fired before the adapter could confirm any tool calls —
-                    # the failover classifier treats this as pre-tool-call eligible.
-                    # The spawner will layer in daemon-side tool-call capture.
-                    "is_pre_tool_call": True,
-                }
-                if proc is not None:
-                    proc.kill()
-                    await proc.wait()
-                raise TimeoutError(
-                    f"OpenCode CLI timed out after {effective_timeout} seconds"
-                ) from None
+                except TimeoutError:
+                    logger.error("OpenCode CLI timed out after %ds", effective_timeout)
+                    self._last_process_info = {
+                        "pid": proc.pid if proc is not None else None,
+                        "exit_code": -1,
+                        "command": cmd_for_log,
+                        "stderr": "(timeout — process killed)",
+                        "runtime_type": "opencode",
+                        "attempt_index": attempt_index,
+                        # Timeout fired before the adapter could confirm any tool calls —
+                        # the failover classifier treats this as pre-tool-call eligible.
+                        # The spawner will layer in daemon-side tool-call capture.
+                        "is_pre_tool_call": True,
+                    }
+                    if retry_attempted:
+                        self._last_process_info["retry_attempted"] = True
+                        self._last_process_info["retry_succeeded"] = False
+                    if proc is not None:
+                        proc.kill()
+                        await proc.wait()
+                    raise TimeoutError(
+                        f"OpenCode CLI timed out after {effective_timeout} seconds"
+                    ) from None
+
+            raise RuntimeError("OpenCode CLI retry loop exhausted")
 
 
 # Register the OpenCode adapter
