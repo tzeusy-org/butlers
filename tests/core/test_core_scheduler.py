@@ -201,6 +201,27 @@ async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
     assert row2["enabled"] is False
 
 
+async def test_tick_tolerates_legacy_schema_without_until_at(pool):
+    """tick() does not crash on long-lived scheduled_tasks tables missing until_at."""
+    from butlers.core.scheduler import tick
+
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute(
+                "ALTER TABLE scheduled_tasks DROP CONSTRAINT IF EXISTS "
+                "scheduled_tasks_until_bounds_check"
+            )
+            await conn.execute("ALTER TABLE scheduled_tasks DROP COLUMN IF EXISTS until_at")
+
+            count = await tick(conn, _Dispatch())
+
+            assert count == 0
+        finally:
+            await tx.rollback()
+
+
 # ---------------------------------------------------------------------------
 # schedule_create / update / delete
 # ---------------------------------------------------------------------------

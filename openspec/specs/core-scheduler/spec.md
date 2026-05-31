@@ -3,10 +3,10 @@
 ## Purpose
 Provides cron-driven task dispatch for butlers, supporting TOML-configured and runtime-created scheduled tasks with deterministic staggering, dual dispatch modes (prompt and job), auto-disable boundaries, calendar projection fields, and a one-shot `remind` tool.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Cron Evaluation and next_run_at Computation
-All cron expressions are 5-field format (minute hour day month day-of-week) evaluated in UTC. The `croniter` library validates and computes next occurrences. The `timezone` field is informational for projection/display only and does not affect cron evaluation.
+All cron expressions SHALL use 5-field format (minute hour day month day-of-week) evaluated in UTC. The `croniter` library validates and computes next occurrences. The `timezone` field is informational for projection/display only and MUST NOT affect cron evaluation.
 
 #### Scenario: Valid cron expression
 - **WHEN** a schedule is created with a valid 5-field cron expression
@@ -17,7 +17,7 @@ All cron expressions are 5-field format (minute hour day month day-of-week) eval
 - **THEN** a `ValueError` is raised with a descriptive message
 
 ### Requirement: Dispatch Modes
-Scheduled tasks support two dispatch modes: `prompt` (sends text to the LLM CLI spawner) and `job` (sends a structured job name and optional arguments). Mode-specific constraints are enforced: prompt mode requires non-empty `prompt` and forbids `job_name`/`job_args`; job mode requires non-empty `job_name` and forbids `prompt`.
+Scheduled tasks SHALL support two dispatch modes: `prompt` (sends text to the LLM CLI spawner) and `job` (sends a structured job name and optional arguments). Mode-specific constraints are enforced: prompt mode requires non-empty `prompt` and forbids `job_name`/`job_args`; job mode requires non-empty `job_name` and forbids `prompt`.
 
 Prompt-mode dispatch SHALL pass the task's `complexity` field through to the spawner's `trigger()` call.
 
@@ -34,7 +34,7 @@ Prompt-mode dispatch SHALL pass the task's `complexity` field through to the spa
 - **THEN** a `ValueError` is raised requiring a non-empty prompt
 
 ### Requirement: Deterministic Staggering
-When multiple tasks share the same cron cadence, a deterministic hash-based offset disperses their dispatch times across the cron interval. The offset is computed via SHA-256 of the `stagger_key`, capped at `min(max_stagger_seconds, cadence - 1)`, defaulting to 900 seconds (15 minutes) maximum.
+When multiple tasks share the same cron cadence, a deterministic hash-based offset SHALL disperse their dispatch times across the cron interval. The offset is computed via SHA-256 of the `stagger_key`, capped at `min(max_stagger_seconds, cadence - 1)`, defaulting to 900 seconds (15 minutes) maximum.
 
 #### Scenario: Same key produces same offset
 - **WHEN** `_stagger_offset_seconds()` is called twice with the same `stagger_key` and cron
@@ -49,7 +49,7 @@ When multiple tasks share the same cron cadence, a deterministic hash-based offs
 - **THEN** no offset is applied to `next_run_at`
 
 ### Requirement: TOML-to-DB Schedule Synchronization
-At daemon startup, `sync_schedules()` reconciles `[[butler.schedule]]` TOML entries with the `scheduled_tasks` DB table. Matching is by `name` field. New entries are inserted with `source='toml'`, changed entries are updated, and TOML tasks removed from config are disabled (not deleted) to preserve history.
+At daemon startup, `sync_schedules()` SHALL reconcile `[[butler.schedule]]` TOML entries with the `scheduled_tasks` DB table. Matching is by `name` field. New entries are inserted with `source='toml'`, changed entries are updated, and TOML tasks removed from config are disabled (not deleted) to preserve history.
 
 The `complexity` field is included in the sync comparison and persisted alongside other schedule fields.
 
@@ -72,7 +72,7 @@ TOML schedule entries MAY now include `task_type = "deadline"` with associated d
 - **THEN** the row is set to `enabled=false` (not deleted)
 
 ### Requirement: Tick Handler
-The `tick()` function queries all due tasks (`enabled=true AND next_run_at <= now()`) ordered by `next_run_at`, dispatches each serially, and updates `next_run_at`, `last_run_at`, and `last_result` for every task regardless of success or failure. A telemetry span `butler.tick` is created with `tasks_due` and `tasks_run` attributes.
+The `tick()` function SHALL query all due tasks (`enabled=true AND next_run_at <= now()`) ordered by `next_run_at`, dispatch each serially, and update `next_run_at`, `last_run_at`, and `last_result` for every task regardless of success or failure. A telemetry span `butler.tick` is created with `tasks_due` and `tasks_run` attributes.
 
 Additionally, `tick()` SHALL perform three new evaluation passes:
 
@@ -111,15 +111,21 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** `get_active_seasons()` returns non-empty results
 - **THEN** the dispatch context includes `active_seasons` metadata
 
+#### Scenario: Legacy schema without until_at continues cron dispatch
+- **WHEN** `tick()` runs against a deployed legacy `scheduled_tasks` table that does not yet include the `until_at` column
+- **THEN** it logs a warning that `scheduled_tasks.until_at` is missing
+- **AND** the due-task query projects `NULL::timestamptz AS until_at`
+- **AND** due cron tasks continue dispatching without applying an auto-disable boundary until the schema is backfilled
+
 ### Requirement: Auto-Disable via until_at Boundary
-When a task has `until_at` set and the computed `next_run_at` exceeds it, the task is automatically set to `enabled=false` and `next_run_at=NULL` after its final dispatch.
+When a task has `until_at` set and the computed `next_run_at` exceeds it, the scheduler SHALL automatically set the task to `enabled=false` and `next_run_at=NULL` after its final dispatch.
 
 #### Scenario: Task auto-disables after boundary
 - **WHEN** a task fires and the next computed `next_run_at` is after `until_at`
 - **THEN** the task is set to `enabled=false` and `next_run_at=NULL`
 
 ### Requirement: Schedule CRUD API
-Runtime schedule management via `schedule_create`, `schedule_update`, `schedule_delete`, and `schedule_list`.
+Runtime schedule management SHALL be exposed via `schedule_create`, `schedule_update`, `schedule_delete`, and `schedule_list`.
 
 The CRUD API SHALL accept `task_type` as a parameter. When `task_type='deadline'`, deadline-specific fields (`target_date`, `lead_time_days`, `alert_thresholds`, `deadline_status`) are required on create and accepted on update. When `task_type='cron'` (default), existing behavior is unchanged.
 
@@ -152,7 +158,7 @@ The CRUD API SHALL accept `task_type` as a parameter. When `task_type='deadline'
 - **THEN** a `ValueError` is raised
 
 ### Requirement: Remind Tool
-The `remind` MCP tool creates one-shot scheduled tasks by generating a cron expression for a target time and setting `until_at` to auto-disable after firing. Supports `delay_minutes` (relative) and `remind_at` (absolute) timing with mutual exclusivity.
+The `remind` MCP tool SHALL create one-shot scheduled tasks by generating a cron expression for a target time and setting `until_at` to auto-disable after firing. It supports `delay_minutes` (relative) and `remind_at` (absolute) timing with mutual exclusivity.
 
 #### Scenario: Reminder created with delay
 - **WHEN** `remind(message, channel, delay_minutes=60)` is called
@@ -187,8 +193,14 @@ Scheduled tasks SHALL support an optional `complexity` field that specifies the 
 - **AND** valid values are: `trivial`, `medium`, `high`, `extra_high`
 
 ### Requirement: Calendar Projection Fields
-Scheduled tasks carry optional fields for calendar module integration: `timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`. These are validated on create/update (timezone-aware datetimes required, `end_at > start_at`, `until_at >= start_at`).
+Scheduled tasks SHALL carry optional fields for calendar module integration: `timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`. These are validated on create/update (timezone-aware datetimes required, `end_at > start_at`, `until_at >= start_at`).
 
 #### Scenario: Projection fields validated
 - **WHEN** a schedule is created with `start_at` as a naive (non-timezone-aware) datetime
 - **THEN** a `ValueError` is raised requiring timezone-aware datetimes
+
+#### Scenario: Existing scheduler tables backfill projection fields
+- **WHEN** core migrations run against an existing `scheduled_tasks` table that predates the calendar projection fields
+- **THEN** the table includes `timezone`, `start_at`, `end_at`, `until_at`, `display_title`, and `calendar_event_id`
+- **AND** the scheduler window and `until_at` bounds constraints are present
+- **AND** a partial unique index enforces non-null `calendar_event_id` uniqueness

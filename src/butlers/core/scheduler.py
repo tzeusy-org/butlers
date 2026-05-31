@@ -834,8 +834,14 @@ async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
 
 async def _has_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> bool:
     """Return True if *table* has every named column in the pool's current schema."""
+    found = await _existing_columns(pool, table, columns)
+    return columns.issubset(found)
+
+
+async def _existing_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> set[str]:
+    """Return the requested columns that exist in *table* within the current schema."""
     if not columns:
-        return True
+        return set()
     rows = await pool.fetch(
         """
         SELECT column_name
@@ -847,8 +853,7 @@ async def _has_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> boo
         table,
         sorted(columns),
     )
-    found = {row["column_name"] for row in rows}
-    return columns.issubset(found)
+    return {row["column_name"] for row in rows}
 
 
 async def _tick_deadline_pass(
@@ -1540,10 +1545,20 @@ async def tick(
     with tracer.start_as_current_span("butler.tick") as span:
         now = datetime.now(UTC)
 
-        # Hoist schema probe: both the deadline pass and cron filter need this result.
-        # A single check here avoids redundant information_schema round-trips per tick.
-        _has_task_type_col = await _has_column(pool, "scheduled_tasks", "task_type")
-        _has_budget_col = await _has_column(pool, "scheduled_tasks", "max_token_budget")
+        # Hoist schema probes: deadline and cron dispatch share these results.
+        scheduled_task_columns = await _existing_columns(
+            pool,
+            "scheduled_tasks",
+            {"task_type", "max_token_budget", "until_at"},
+        )
+        _has_task_type_col = "task_type" in scheduled_task_columns
+        _has_budget_col = "max_token_budget" in scheduled_task_columns
+        _has_until_at_col = "until_at" in scheduled_task_columns
+        if not _has_until_at_col:
+            logger.warning(
+                "scheduled_tasks.until_at column missing in current schema; "
+                "using NULL projection until core migrations are applied"
+            )
 
         # ------------------------------------------------------------------
         # Seasonal context — queried once per tick, injected into ALL dispatches
@@ -1583,10 +1598,11 @@ async def tick(
         else:
             cron_filter = ""
         _budget_col_select = ", max_token_budget" if _has_budget_col else ""
+        _until_at_select = ", until_at" if _has_until_at_col else ", NULL::timestamptz AS until_at"
         rows = await pool.fetch(
             f"""
             SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
-                   complexity, until_at{_budget_col_select}
+                   complexity{_until_at_select}{_budget_col_select}
             FROM scheduled_tasks
             WHERE enabled = true
               {cron_filter}

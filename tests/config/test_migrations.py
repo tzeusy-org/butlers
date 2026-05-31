@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import re
 import shutil
 from pathlib import Path
@@ -350,6 +351,103 @@ def test_core_scheduled_tasks_schema_and_constraints(postgres_container):
                 )
     finally:
         engine.dispose()
+
+
+def test_core_migration_backfills_scheduled_tasks_calendar_linkage_columns(postgres_container):
+    """Core head repairs existing schema-scoped scheduled_tasks tables missing linkage columns."""
+    from butlers.migrations import _build_alembic_config
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+
+    config = _build_alembic_config(db_url, chains=["core"], target_schema="messenger")
+    command.upgrade(config, "core_103")
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("DROP INDEX IF EXISTS messenger.ix_scheduled_tasks_calendar_event_id")
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE messenger.scheduled_tasks "
+                    "DROP CONSTRAINT IF EXISTS scheduled_tasks_until_bounds_check"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE messenger.scheduled_tasks "
+                    "DROP CONSTRAINT IF EXISTS scheduled_tasks_window_bounds_check"
+                )
+            )
+            for column in (
+                "calendar_event_id",
+                "display_title",
+                "until_at",
+                "end_at",
+                "start_at",
+                "timezone",
+            ):
+                conn.execute(text(f"ALTER TABLE messenger.scheduled_tasks DROP COLUMN {column}"))
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "core@head")
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'messenger' AND table_name = 'scheduled_tasks'"
+                )
+            )
+            columns = {str(row[0]) for row in rows}
+            assert {
+                "timezone",
+                "start_at",
+                "end_at",
+                "until_at",
+                "display_title",
+                "calendar_event_id",
+            }.issubset(columns)
+
+            constraints = conn.execute(
+                text(
+                    "SELECT conname FROM pg_constraint "
+                    "WHERE conrelid = 'messenger.scheduled_tasks'::regclass"
+                )
+            )
+            constraint_names = {str(row[0]) for row in constraints}
+            assert "scheduled_tasks_window_bounds_check" in constraint_names
+            assert "scheduled_tasks_until_bounds_check" in constraint_names
+
+            index_exists = conn.execute(
+                text("SELECT to_regclass('messenger.ix_scheduled_tasks_calendar_event_id')")
+            ).scalar_one()
+            assert index_exists == "messenger.ix_scheduled_tasks_calendar_event_id"
+    finally:
+        engine.dispose()
+
+
+def test_core_112_downgrade_preserves_baseline_scheduler_projection_columns(monkeypatch):
+    """The core_112 repair migration must not remove fields that core_001 now owns."""
+    migration_path = Path(
+        "alembic/versions/core/core_112_scheduled_tasks_calendar_linkage_backfill.py"
+    )
+    spec = importlib.util.spec_from_file_location("core_112_calendar_linkage", migration_path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    sql_statements: list[str] = []
+    monkeypatch.setattr(mod.op, "execute", sql_statements.append)
+
+    mod.downgrade()
+
+    assert sql_statements == []
 
 
 def test_core_calendar_tables_and_constraints(postgres_container):
