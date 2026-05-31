@@ -527,6 +527,68 @@ async def test_event_chain_pass_skips_calendar_projection_when_event_chains_tabl
     assert not any("FROM calendar_projection" in call for call in pool.fetch_calls)
 
 
+async def test_event_chain_pass_skips_malformed_deadline_trigger_references(caplog):
+    """Malformed deadline trigger refs must not abort the scheduler tick."""
+    import logging
+
+    from butlers.core.scheduler import _tick_event_chain_pass
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.fetch_calls: list[str] = []
+
+        async def fetchval(self, sql: str, *args):
+            if "information_schema.tables" in sql and args == ("event_chains",):
+                return True
+            if "information_schema.columns" in sql and args == (
+                "scheduled_tasks",
+                "deadline_status",
+            ):
+                return True
+            raise AssertionError(f"Unexpected fetchval: {sql!r} {args!r}")
+
+        async def fetch(self, sql: str, *args):
+            self.fetch_calls.append(sql)
+            if "information_schema.columns" in sql and args[0] == "calendar_projection":
+                return []
+            if "FROM event_chains" in sql and "deadline_passed" in sql:
+                return [
+                    {
+                        "chain_id": "bad-passed",
+                        "chain_name": "bad-passed",
+                        "actions": [],
+                        "trigger_reference": "not-a-uuid",
+                    }
+                ]
+            if "FROM event_chains" in sql and "deadline_threshold" in sql:
+                return [
+                    {
+                        "chain_id": "bad-threshold",
+                        "chain_name": "bad-threshold",
+                        "actions": [],
+                        "trigger_reference": "also-not-valid",
+                    }
+                ]
+            raise AssertionError(f"Unexpected fetch: {sql!r} {args!r}")
+
+        async def execute(self, sql: str, *args):
+            raise AssertionError(f"Unexpected execute: {sql!r} {args!r}")
+
+    pool = FakePool()
+
+    async def noop(**kwargs):
+        pass
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
+        assert await _tick_event_chain_pass(pool, noop, datetime.now(UTC)) == 0
+
+    assert "bad-passed" in caplog.text
+    assert "bad-threshold" in caplog.text
+    assert not any("trigger_reference::uuid" in call for call in pool.fetch_calls)
+    assert not any("id::text" in call for call in pool.fetch_calls)
+    assert not any("split_part(ec.trigger_reference" in call for call in pool.fetch_calls)
+
+
 # ---------------------------------------------------------------------------
 # 12.11 — tick() integration
 # ---------------------------------------------------------------------------

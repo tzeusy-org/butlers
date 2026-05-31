@@ -36,6 +36,29 @@ _DEFAULT_COMPLEXITY = Complexity.WORKHORSE.value
 _SKILL_NAME_PATTERN = re.compile(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b")
 
 
+def _parse_uuid_reference(value: Any) -> uuid.UUID | None:
+    """Parse a user-authored UUID reference, returning None for invalid text."""
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _parse_deadline_threshold_reference(value: Any) -> tuple[uuid.UUID, str] | None:
+    """Parse '<deadline-uuid>:<severity>' trigger references."""
+    if not isinstance(value, str):
+        return None
+    deadline_ref, separator, severity = value.partition(":")
+    if not separator or not severity.strip():
+        return None
+    deadline_id = _parse_uuid_reference(deadline_ref)
+    if deadline_id is None:
+        return None
+    return deadline_id, severity.strip()
+
+
 def _check_notify_reference(
     *,
     task_name: str,
@@ -1184,28 +1207,53 @@ async def _tick_event_chain_pass(
     # Guard: skip if scheduled_tasks lacks deadline columns (pre-migration schema).
     has_deadline_status_col = await _has_column(pool, "scheduled_tasks", "deadline_status")
     if has_deadline_status_col:
-        # Fetch active deadline_passed chains and join to deadline status in one query.
+        # Fetch deadline chains without casting trigger_reference in SQL.
+        # trigger_reference is user-authored text, and malformed rows must not
+        # abort the entire scheduler tick.
         deadline_passed_chains = await pool.fetch(
             """
-            SELECT ec.id       AS chain_id,
-                   ec.name     AS chain_name,
-                   ec.actions  AS actions,
-                   st.deadline_status AS dl_status
-            FROM event_chains ec
-            JOIN scheduled_tasks st
-              ON st.id = ec.trigger_reference::uuid
-             AND st.task_type = 'deadline'
-            WHERE ec.trigger_type = 'deadline_passed'
-              AND ec.status = 'active'
-              AND st.deadline_status IN ('expired', 'completed')
+            SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
+            FROM event_chains
+            WHERE trigger_type = 'deadline_passed'
+              AND status = 'active'
             """
         )
 
+        deadline_passed_refs: dict[Any, tuple[uuid.UUID, str, Any]] = {}
         for row in deadline_passed_chains:
             chain_id = row["chain_id"]
             chain_name = row["chain_name"]
-            dl_status = row["dl_status"]
-            actions = row["actions"]
+            trigger_ref = row["trigger_reference"]
+            deadline_id = _parse_uuid_reference(trigger_ref)
+            if deadline_id is None:
+                if trigger_ref is not None:
+                    logger.warning(
+                        "Event chain %r has invalid deadline_passed trigger_reference %r "
+                        "(expected '<deadline-uuid>'); skipping",
+                        chain_name,
+                        trigger_ref,
+                    )
+                continue
+            deadline_passed_refs[chain_id] = (deadline_id, chain_name, row["actions"])
+
+        deadline_passed_statuses: dict[uuid.UUID, str] = {}
+        if deadline_passed_refs:
+            status_rows = await pool.fetch(
+                """
+                SELECT id, deadline_status
+                FROM scheduled_tasks
+                WHERE id = ANY($1::uuid[])
+                  AND task_type = 'deadline'
+                  AND deadline_status IN ('expired', 'completed')
+                """,
+                list({deadline_id for deadline_id, _, _ in deadline_passed_refs.values()}),
+            )
+            deadline_passed_statuses = {row["id"]: row["deadline_status"] for row in status_rows}
+
+        for chain_id, (deadline_id, chain_name, actions) in deadline_passed_refs.items():
+            dl_status = deadline_passed_statuses.get(deadline_id)
+            if dl_status is None:
+                continue
             if isinstance(actions, str):
                 actions = _json.loads(actions)
 
@@ -1228,45 +1276,65 @@ async def _tick_event_chain_pass(
         # The chain fires when that severity appears in the deadline's fired_thresholds.
         deadline_threshold_chains = await pool.fetch(
             """
-            SELECT ec.id              AS chain_id,
-                   ec.name            AS chain_name,
-                   ec.actions         AS actions,
-                   ec.trigger_reference AS trigger_reference,
-                   st.fired_thresholds AS fired_thresholds
-            FROM event_chains ec
-            JOIN scheduled_tasks st
-              ON st.id = split_part(ec.trigger_reference, ':', 1)::uuid
-             AND st.task_type = 'deadline'
-            WHERE ec.trigger_type = 'deadline_threshold'
-              AND ec.status = 'active'
-              AND st.fired_thresholds IS NOT NULL
-              AND st.fired_thresholds != '[]'::jsonb
+            SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
+            FROM event_chains
+            WHERE trigger_type = 'deadline_threshold'
+              AND status = 'active'
             """
         )
 
+        deadline_threshold_refs: dict[Any, tuple[uuid.UUID, str, Any, str]] = {}
         for row in deadline_threshold_chains:
             chain_id = row["chain_id"]
             chain_name = row["chain_name"]
-            trigger_ref = row["trigger_reference"] or ""
-            actions = row["actions"]
+            trigger_ref = row["trigger_reference"]
+            parsed_ref = _parse_deadline_threshold_reference(trigger_ref)
+            if parsed_ref is None:
+                if trigger_ref is not None:
+                    logger.warning(
+                        "Event chain %r has invalid deadline_threshold trigger_reference %r "
+                        "(expected '<deadline-uuid>:<severity>'); skipping",
+                        chain_name,
+                        trigger_ref,
+                    )
+                continue
+            deadline_id, expected_severity = parsed_ref
+            deadline_threshold_refs[chain_id] = (
+                deadline_id,
+                expected_severity,
+                row["actions"],
+                chain_name,
+            )
+
+        deadline_fired_thresholds: dict[uuid.UUID, Any] = {}
+        if deadline_threshold_refs:
+            threshold_rows = await pool.fetch(
+                """
+                SELECT id, fired_thresholds
+                FROM scheduled_tasks
+                WHERE id = ANY($1::uuid[])
+                  AND task_type = 'deadline'
+                  AND fired_thresholds IS NOT NULL
+                  AND fired_thresholds != '[]'::jsonb
+                """,
+                list({deadline_id for deadline_id, _, _, _ in deadline_threshold_refs.values()}),
+            )
+            deadline_fired_thresholds = {
+                row["id"]: row["fired_thresholds"] for row in threshold_rows
+            }
+
+        for chain_id, (
+            deadline_id,
+            expected_severity,
+            actions,
+            chain_name,
+        ) in deadline_threshold_refs.items():
+            raw_fired = deadline_fired_thresholds.get(deadline_id)
+            if raw_fired is None:
+                continue
             if isinstance(actions, str):
                 actions = _json.loads(actions)
 
-            # Parse severity from trigger_reference: "<uuid>:<severity>"
-            parts = trigger_ref.split(":", 1)
-            if len(parts) != 2 or not parts[1]:
-                logger.warning(
-                    "Event chain %r has invalid deadline_threshold trigger_reference %r "
-                    "(expected '<deadline-uuid>:<severity>'); skipping",
-                    chain_name,
-                    trigger_ref,
-                )
-                continue
-
-            expected_severity = parts[1]
-
-            # Check if any fired threshold matches the expected severity
-            raw_fired = row["fired_thresholds"]
             fired_thresholds: list[dict] = (
                 raw_fired if isinstance(raw_fired, list) else _json.loads(raw_fired or "[]")
             )
