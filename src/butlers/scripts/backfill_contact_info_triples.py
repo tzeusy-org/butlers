@@ -75,6 +75,8 @@ from pathlib import Path
 
 import asyncpg
 
+from butlers.db import register_jsonb_codec
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -138,9 +140,22 @@ def _load_assert_fact():  # type: ignore[return]
 
 
 async def _create_pool() -> asyncpg.Pool:
+    # The central writer (relationship_assert_fact) uses unqualified references to
+    # ``pending_actions`` (owner carve-out path).  Set search_path to
+    # ``relationship,public`` so those references resolve correctly — matching the
+    # search_path the relationship butler itself uses at runtime.
+    #
+    # Also register the JSONB codec so Python dicts can be passed directly to
+    # JSONB-typed parameters (e.g. the ``@>`` containment operator in the
+    # dedup-match query of ``_create_pending_action``).
+    server_settings = {"search_path": "relationship,public"}
     database_url = os.environ.get("DATABASE_URL")
     if database_url:
-        pool = await asyncpg.create_pool(dsn=database_url)
+        pool = await asyncpg.create_pool(
+            dsn=database_url,
+            server_settings=server_settings,
+            init=register_jsonb_codec,
+        )
     else:
         pool = await asyncpg.create_pool(
             host=os.environ.get("POSTGRES_HOST", "localhost"),
@@ -148,6 +163,8 @@ async def _create_pool() -> asyncpg.Pool:
             user=os.environ.get("POSTGRES_USER", "butlers"),
             password=os.environ.get("POSTGRES_PASSWORD", "butlers"),
             database=os.environ.get("POSTGRES_DB", "butlers"),
+            server_settings=server_settings,
+            init=register_jsonb_codec,
         )
     assert pool is not None
     return pool
