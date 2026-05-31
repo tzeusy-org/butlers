@@ -60,6 +60,8 @@ def upgrade() -> None:
             decided_by TEXT,
             decided_at TIMESTAMPTZ,
             execution_result JSONB,
+            why TEXT,
+            evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
             approval_rule_id UUID REFERENCES approval_rules(id),
             why TEXT,
             evidence JSONB NOT NULL DEFAULT '[]'::jsonb,

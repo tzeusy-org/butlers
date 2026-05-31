@@ -33,7 +33,14 @@ The module wraps configured MCP tools at FastMCP registration time so that gated
 
 ### Requirement: Pending Actions Queue
 
-The `pending_actions` table is a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`.
+The `pending_actions` table is a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, and `evidence`.
+
+#### Scenario: Pending action rationale fields
+
+- **WHEN** the `pending_actions` table is migrated or created fresh
+- **THEN** nullable column `why TEXT` is available for human-readable rationale
+- **AND** non-null column `evidence JSONB DEFAULT '[]'::jsonb` is available for cited evidence
+- **AND** legacy rows without rationale data remain readable with `why = NULL` and `evidence = '[]'::jsonb`
 
 #### Scenario: List pending actions with status filter
 
