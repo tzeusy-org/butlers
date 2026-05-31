@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -272,4 +273,18 @@ def _get_db_dsn(db: Any) -> str | None:
         val = getattr(db, attr, None)
         if isinstance(val, str) and val:
             return val
-    return None
+
+    host = getattr(db, "host", None)
+    port = getattr(db, "port", None)
+    user = getattr(db, "user", None)
+    password = getattr(db, "password", None)
+    db_name = getattr(db, "db_name", None)
+    if not all(isinstance(val, str) and val for val in (host, user, password, db_name)):
+        return None
+    if not isinstance(port, int):
+        return None
+
+    return (
+        f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
+        f"@{host}:{port}/{quote(db_name, safe='')}"
+    )

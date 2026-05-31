@@ -24,6 +24,7 @@ from butlers.modules.whatsapp import (
     _SEND_DISABLED_ERROR,
     WhatsAppConfig,
     WhatsAppModule,
+    _get_db_dsn,
 )
 
 pytestmark = pytest.mark.unit
@@ -53,6 +54,21 @@ class TestWhatsAppConfig:
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
             WhatsAppConfig(unknown_field="x")
+
+
+class TestBridgeDsn:
+    def test_builds_dsn_from_database_connection_fields(self) -> None:
+        class DatabaseLike:
+            host = "db.example.test"
+            port = 5433
+            user = "butlers"
+            password = "p@ss word"
+            db_name = "butlers"
+
+        assert (
+            _get_db_dsn(DatabaseLike())
+            == "postgresql://butlers:p%40ss%20word@db.example.test:5433/butlers"
+        )
 
 
 class TestToolRegistration:

@@ -339,6 +339,9 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - `dev.sh` gate and runtime code both read from `public.contact_info` so shell gating and runtime behavior cannot drift.
 - `scripts/compose.sh`/`oauth-gate` only proves the refresh token row exists; a revoked/expired token still lets the stack start, then Google-backed connectors/modules log `invalid_grant`/`Token has been expired or revoked` until the account is reauthorized with forced consent.
 
+### WhatsApp module bridge DSN contract
+- The in-process `modules.whatsapp` bridge runs inside `butlers up` and receives the daemon `Database` object, not connector env vars; `_get_db_dsn` must build `WA_BRIDGE_DSN` from `Database` connection fields when no explicit DSN attr exists. The standalone `connector-whatsapp-user` still uses its separate env-based DSN helper.
+
 ### Chronicler day-close prose/provenance contract
 - `chronicler_day_close` should keep raw `source_ref`/connector IDs internal: `chronicler_day_close_bundle` returns citations for cache provenance/staleness, but the Telegram prose should cite only human-readable sources by default.
 - Day-close summaries should use the owner timezone from General settings; pass that IANA timezone into `chronicler_day_close_bundle` so the bundle includes local display timestamps and local day boundaries.
