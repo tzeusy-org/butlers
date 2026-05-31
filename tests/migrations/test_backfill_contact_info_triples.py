@@ -771,6 +771,11 @@ class TestMixedRows:
 
 
 class TestLoadAssertFactReal:
+    @pytest.fixture(autouse=True)
+    def _cleanup_sys_modules(self) -> Any:
+        with patch.dict(_sys.modules):
+            yield
+
     def test_load_assert_fact_returns_real_module(self) -> None:
         """_load_assert_fact() must succeed without any mocking.
 
@@ -804,8 +809,6 @@ class TestLoadAssertFactReal:
 
     def test_load_assert_fact_registers_in_sys_modules(self) -> None:
         """After calling _load_assert_fact(), the module must be in sys.modules."""
-        import sys
-
         mod = _load_module()
         mod_name = "relationship_assert_fact"
 
@@ -813,9 +816,9 @@ class TestLoadAssertFactReal:
         writer_mod = mod._load_assert_fact()
 
         # The module must be reachable via sys.modules under its spec name.
-        assert mod_name in sys.modules, (
+        assert mod_name in _sys.modules, (
             f"Module '{mod_name}' was not registered in sys.modules after _load_assert_fact()"
         )
-        assert sys.modules[mod_name] is writer_mod, (
+        assert _sys.modules[mod_name] is writer_mod, (
             "sys.modules entry must be the same object returned by _load_assert_fact()"
         )
