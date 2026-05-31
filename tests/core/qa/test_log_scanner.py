@@ -199,6 +199,60 @@ def test_codex_mcp_discovery_exhaustion_excluded_from_log_scanner():
     assert _should_include_entry(entry) is False
 
 
+def test_switchboard_classification_timeout_excluded_from_log_scanner():
+    """Expected switchboard classification caps are fallback telemetry, not QA cases."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: TimeoutError: Session timed out after 30s "
+            "(model=gpt-5.4-mini, butler=switchboard)"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+        exception="TimeoutError",
+        trigger_source="tick",
+        raw={"trigger_source": "tick", "timeout_s": 30},
+    )
+    assert _should_include_entry(entry) is False
+
+
+def test_legacy_switchboard_classification_timeout_uses_event_duration():
+    """Legacy spawner logs without timeout_s still suppress only short tick timeouts."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: TimeoutError: Session timed out after 30s "
+            "(model=gpt-5.4-mini, butler=switchboard)"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+        exception="TimeoutError",
+        trigger_source="tick",
+        raw={"trigger_source": "tick"},
+    )
+    assert _should_include_entry(entry) is False
+
+
+def test_non_classification_switchboard_timeout_still_included():
+    """Long switchboard runtime timeouts remain actionable."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: TimeoutError: Session timed out after 1800s "
+            "(model=gpt-5.4-mini, butler=switchboard)"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+        exception="TimeoutError",
+        trigger_source="trigger",
+        raw={"trigger_source": "trigger", "timeout_s": 1800},
+    )
+    assert _should_include_entry(entry) is True
+
+
 def test_codex_cli_timeout_included_without_session_records_coverage():
     """Codex timeout logs stay visible when session_records cannot cover them."""
     entry = LogEntry(
@@ -231,6 +285,24 @@ def test_spawner_runtime_timeout_included_without_session_records():
         timestamp=datetime.now(UTC),
         butler_name="switchboard",
         logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry) is True
+
+
+def test_manual_short_switchboard_timeout_still_included():
+    """Only tick-triggered classification timeouts are treated as fallback telemetry."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: TimeoutError: Session timed out after 30s "
+            "(model=gpt-5.4-mini, butler=switchboard)"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+        exception="TimeoutError",
+        trigger_source="trigger",
+        raw={"trigger_source": "trigger", "timeout_s": 30},
     )
     assert _should_include_entry(entry) is True
 

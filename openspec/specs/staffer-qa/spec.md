@@ -89,6 +89,7 @@ The QA Staffer SHALL ship with three discovery sources in v1.
 - **AND** extracts exception type, traceback, call site, and butler name from the session record
 - **AND** event summaries extracted from session records are passed through `anonymize()` before storage (session error messages may contain user data)
 - **AND** computes fingerprints using the same algorithm as log scanner findings
+- **AND** excludes only short (`<= 60s`) Switchboard mini-model classification timeout rows with `trigger_source = "tick"` as expected routing fallback telemetry; longer or non-`tick` Switchboard timeouts remain actionable
 
 #### Scenario: Butler report source (reactive relay via Switchboard)
 - **WHEN** the `butler_reports` source is enabled

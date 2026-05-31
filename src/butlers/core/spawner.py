@@ -2192,7 +2192,17 @@ class Spawner:
                 captured_on_failure = consume_runtime_session_tool_calls(runtime_session_id)
             duration_ms = int((time.monotonic() - t0) * 1000)
             error_msg = f"{type(exc).__name__}: {exc}"
-            logger.error("Runtime invocation failed: %s", error_msg, exc_info=True)
+            logger.error(
+                "Runtime invocation failed: %s",
+                error_msg,
+                exc_info=True,
+                extra={
+                    "butler_name": self._config.name,
+                    "trigger_source": trigger_source,
+                    "model": model,
+                    "timeout_s": timeout_s if "timeout_s" in locals() else None,
+                },
+            )
 
             # Record exception on span
             span.set_status(trace.StatusCode.ERROR, str(exc))

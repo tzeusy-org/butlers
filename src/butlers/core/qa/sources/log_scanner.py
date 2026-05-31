@@ -106,6 +106,17 @@ _DEFAULT_LOG_ROOT = "logs"
 #: Bytes to read from the end of a log file per chunk when scanning backwards.
 _TAIL_CHUNK_SIZE = 64 * 1024  # 64 KiB
 
+# Switchboard message classification is intentionally capped at a short
+# timeout and falls back to General when the routing LLM does not return.
+# Those timeout records are degradation telemetry, not actionable runtime bugs
+# for the autonomous QA loop.
+_SWITCHBOARD_CLASSIFICATION_TIMEOUT_RE = re.compile(
+    r"Runtime invocation failed:\s+TimeoutError:\s+Session timed out after (\d+)s "
+    r"\(model=[A-Za-z0-9._-]+mini,\s*butler=switchboard\)",
+    re.IGNORECASE,
+)
+_SWITCHBOARD_CLASSIFICATION_TIMEOUT_MAX_S = 60
+
 
 # ---------------------------------------------------------------------------
 # Internal data types
@@ -223,6 +234,9 @@ def _should_include_entry(
     entry: LogEntry, *, suppress_session_duplicate_timeouts: bool = False
 ) -> bool:
     """Return True if this log entry qualifies for finding extraction."""
+    if _is_switchboard_classification_timeout(entry):
+        return False
+
     # Codex adapter noise that should never reach the QA finding set:
     #   * "MCP discovery failed after ..." — better sourced from session_records.
     #     The runtime/session tables tell us whether the session actually
@@ -276,6 +290,29 @@ def _should_include_entry(
         text = (entry.event or "") + " " + (entry.exception or "")
         return bool(_CRASH_SENTINEL_PATTERNS.search(text))
     return False
+
+
+def _is_switchboard_classification_timeout(entry: LogEntry) -> bool:
+    if (
+        entry.butler_name != "switchboard"
+        or entry.logger != "butlers.core.spawner"
+        or entry.trigger_source != "tick"
+    ):
+        return False
+    match = _SWITCHBOARD_CLASSIFICATION_TIMEOUT_RE.search(entry.event or "")
+    if not match:
+        return False
+
+    raw_timeout_s = entry.raw.get("timeout_s")
+    try:
+        timeout_s = int(raw_timeout_s)
+    except (TypeError, ValueError):
+        try:
+            timeout_s = int(match.group(1))
+        except (IndexError, ValueError):
+            return False
+
+    return timeout_s <= _SWITCHBOARD_CLASSIFICATION_TIMEOUT_MAX_S
 
 
 def _level_to_severity(level: str, exception_type: str, call_site: str) -> int:

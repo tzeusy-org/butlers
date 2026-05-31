@@ -230,6 +230,87 @@ async def test_orphaned_daemon_restart_rows_are_not_actionable_findings():
 
 
 @pytest.mark.asyncio
+async def test_switchboard_classification_timeout_rows_are_not_actionable_findings():
+    """Switchboard classifier timeout rows already degrade through routing fallback."""
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_asyncpg_record(
+                source_butler="switchboard",
+                error=(
+                    "TimeoutError: Session timed out after 30s "
+                    "(model=gpt-5.4-mini, butler=switchboard)"
+                ),
+                status="timeout",
+                trigger_source="tick",
+                healing_fingerprint=None,
+            )
+        ]
+    )
+
+    findings = await SessionRecordsSource(pool=pool, repo_root=Path("/tmp")).discover(
+        lookback_minutes=15
+    )
+
+    assert findings == []
+
+
+@pytest.mark.asyncio
+async def test_non_classification_switchboard_timeout_rows_still_actionable():
+    """Manual switchboard runtime timeouts are not hidden by the classifier filter."""
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_asyncpg_record(
+                source_butler="switchboard",
+                error=(
+                    "TimeoutError: Session timed out after 1800s "
+                    "(model=gpt-5.4-mini, butler=switchboard)"
+                ),
+                status="timeout",
+                trigger_source="trigger",
+                healing_fingerprint=None,
+            )
+        ]
+    )
+
+    findings = await SessionRecordsSource(pool=pool, repo_root=Path("/tmp")).discover(
+        lookback_minutes=15
+    )
+
+    assert len(findings) == 1
+
+
+@pytest.mark.asyncio
+async def test_long_tick_switchboard_timeout_rows_still_actionable():
+    """The classifier suppression is capped to short routing timeouts."""
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_asyncpg_record(
+                source_butler="switchboard",
+                error=(
+                    "TimeoutError: Session timed out after 1800s "
+                    "(model=gpt-5.4-mini, butler=switchboard)"
+                ),
+                status="timeout",
+                trigger_source="tick",
+                healing_fingerprint=None,
+            )
+        ]
+    )
+
+    findings = await SessionRecordsSource(pool=pool, repo_root=Path("/tmp")).discover(
+        lookback_minutes=15
+    )
+
+    assert len(findings) == 1
+
+
+@pytest.mark.asyncio
 async def test_postgres_error_and_anonymization():
     """PostgresError from main query propagates; event_summary anonymized to strip PII."""
     # Error propagation

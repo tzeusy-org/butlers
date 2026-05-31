@@ -65,6 +65,17 @@ _MAX_EVIDENCE_SESSION_IDS = 5
 #: Synthetic session errors written by startup recovery rather than runtime failures.
 _NON_ACTIONABLE_SESSION_ERRORS = frozenset({"orphaned: daemon restart"})
 
+# Switchboard classification sessions use trigger_source="tick" and a short
+# timeout cap before the pipeline falls back to General. Keep those expected
+# degradation rows out of autonomous QA dispatch; persistent routing quality
+# should be monitored through switchboard routing telemetry instead.
+_SWITCHBOARD_CLASSIFICATION_TIMEOUT_RE = re.compile(
+    r"TimeoutError:\s+Session timed out after (\d+)s "
+    r"\(model=[A-Za-z0-9._-]+mini,\s*butler=switchboard\)",
+    re.IGNORECASE,
+)
+_SWITCHBOARD_CLASSIFICATION_TIMEOUT_MAX_S = 60
+
 #: Health-check query — validates view accessibility before processing rows.
 _HEALTH_CHECK_SQL = f"SELECT 1 FROM {_VIEW_NAME} LIMIT 0"
 
@@ -227,6 +238,13 @@ class SessionRecordsSource:
 
         if error_text in _NON_ACTIONABLE_SESSION_ERRORS:
             return None
+        if _is_switchboard_classification_timeout(
+            source_butler=source_butler,
+            status=status,
+            trigger_source=trigger_source,
+            error_text=error_text,
+        ):
+            return None
 
         # Use completed_at as timestamp; fall back to now
         ts = completed_at or now
@@ -298,6 +316,25 @@ def _status_to_exception_type(status: str, error_text: str | None) -> str:
         if match:
             return match.group(1)
     return "SessionError"
+
+
+def _is_switchboard_classification_timeout(
+    *,
+    source_butler: str,
+    status: str,
+    trigger_source: str | None,
+    error_text: str | None,
+) -> bool:
+    if source_butler != "switchboard" or status != "timeout" or trigger_source != "tick":
+        return False
+    match = _SWITCHBOARD_CLASSIFICATION_TIMEOUT_RE.search(error_text or "")
+    if not match:
+        return False
+    try:
+        timeout_s = int(match.group(1))
+    except (IndexError, ValueError):
+        return False
+    return timeout_s <= _SWITCHBOARD_CLASSIFICATION_TIMEOUT_MAX_S
 
 
 # ---------------------------------------------------------------------------

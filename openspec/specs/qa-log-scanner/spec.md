@@ -92,6 +92,14 @@ The scanner SHALL filter log entries by severity level, extracting entries at ER
 - **AND** the timeout remains discoverable through `session_records`, which carries structured session evidence
 - **AND** deployments that disable `session_records` intentionally opt out of structured session-timeout coverage
 
+#### Scenario: Expected Switchboard classification timeout excluded
+- **WHEN** a log entry is a `butlers.core.spawner` Switchboard runtime timeout
+- **AND** `trigger_source = "tick"`
+- **AND** the event has the Switchboard mini-model classification timeout signature
+- **AND** the timeout duration is no more than 60 seconds
+- **THEN** it is excluded from the finding set as expected routing fallback telemetry
+- **AND** longer or non-`tick` Switchboard timeouts remain included when their level otherwise qualifies
+
 #### Scenario: WARNING entries with crash patterns included
 - **WHEN** a log entry has `level = "warning"` and its `event` or `exception` field matches a crash sentinel pattern (e.g., `OOM`, `SIGKILL`, `ConnectionRefused`, `TimeoutError`, `deadlock`)
 - **THEN** it is included in the finding set
