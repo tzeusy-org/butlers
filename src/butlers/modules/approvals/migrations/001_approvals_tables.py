@@ -63,8 +63,6 @@ def upgrade() -> None:
             why TEXT,
             evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
             approval_rule_id UUID REFERENCES approval_rules(id),
-            why TEXT,
-            evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
             CONSTRAINT pending_actions_status_check
                 CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'))
         )

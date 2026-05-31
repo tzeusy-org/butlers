@@ -1,13 +1,14 @@
-"""pending_actions: ensure why/evidence columns exist.
+"""pending_actions dossier fields for module-created approvals tables.
 
 Revision ID: approvals_002
 Revises: approvals_001
 Create Date: 2026-05-25 00:00:00.000000
 
-The core chain added these columns to already-existing pending_actions tables
-in core_097, but daemon startup runs core migrations before module migrations.
-Schemas that first enabled the approvals module after core_097 therefore
-created pending_actions from approvals_001 without the dossier columns.
+The core migration ``core_097`` added ``why`` and ``evidence`` to every
+``pending_actions`` table that existed at the time it ran.  Core migrations run
+before module migrations on daemon startup, so schemas that first create the
+approvals module table afterward still need the module chain to own these
+columns directly.
 """
 
 from __future__ import annotations
@@ -30,8 +31,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("""
-        ALTER TABLE pending_actions
-            DROP COLUMN IF EXISTS why,
-            DROP COLUMN IF EXISTS evidence
-    """)
+    """No-op: approvals_001 now owns these columns for fresh installs."""
