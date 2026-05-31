@@ -28,6 +28,16 @@ class ContactInfoEntry(BaseModel):
     The ``value`` field is set to ``None`` when ``secured=True`` and the
     caller has not been granted reveal access (masked in list views).
     Use GET /contacts/{id}/secrets/{info_id} to retrieve the real value.
+
+    ``source`` discriminates the backing store for this entry:
+    - ``None`` / absent — legacy ``public.contact_info`` row (default; omitted
+      from serialised output for backward compatibility).
+    - ``"entity_facts"`` — the entry was synthesised from a
+      ``relationship.entity_facts`` has-* triple for the linked entity.
+
+    For ``source="entity_facts"`` entries, ``predicate`` and ``value_hash``
+    are populated to enable entity-keyed mutation (delete / retract).
+    They are absent (``None``) for legacy ``public.contact_info`` rows.
     """
 
     id: UUID
@@ -37,6 +47,11 @@ class ContactInfoEntry(BaseModel):
     secured: bool = False
     parent_id: UUID | None = None
     context: str | None = None  # personal | work | other | None (unclassified)
+    source: Literal["entity_facts"] | None = None
+    # Populated only for source="entity_facts" entries — used by the frontend
+    # to call DELETE /entities/{id}/contacts/{predicate}/{value_hash}.
+    predicate: str | None = None
+    value_hash: str | None = None
 
 
 class ContactSummary(BaseModel):
@@ -1158,6 +1173,41 @@ class DeleteContactResponse(BaseModel):
 
     deleted: bool
     fact_id: UUID
+
+
+class UpdateContactRequest(BaseModel):
+    """Request body for ``PUT /entities/{id}/contacts/{pred}/{valueHash}``.
+
+    ``new_value`` is the replacement contact object value (e.g. a new email address).
+    All provenance fields (``src``, ``verified``, ``primary``, ``conf``) are
+    optional and default to the same values used by the add endpoint when omitted.
+
+    The predicate is fixed by the URL path — the edit changes only the value.
+    """
+
+    new_value: str
+    src: str = "relationship"
+    verified: bool = False
+    primary: bool | None = None
+    conf: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class UpdateContactResponse(BaseModel):
+    """Response for ``PUT /entities/{id}/contacts/{pred}/{valueHash}``.
+
+    ``outcome`` is one of ``inserted``, ``unchanged``, ``superseded``, or
+    ``pending_approval``.  When ``outcome == 'pending_approval'``, ``fact``
+    is ``None`` and ``action_id`` carries the pending-actions row UUID;
+    the HTTP status is 202.
+
+    ``retracted_fact_id`` is the UUID of the old (retracted) row.
+    ``fact`` is the new active fact row (``None`` when pending_approval).
+    """
+
+    outcome: str
+    retracted_fact_id: UUID | None = None
+    fact: ContactFact | None = None
+    action_id: UUID | None = None
 
 
 # ---------------------------------------------------------------------------

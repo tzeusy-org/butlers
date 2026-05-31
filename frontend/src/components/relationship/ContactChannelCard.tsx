@@ -2,8 +2,8 @@
  * ContactChannelCard — entity detail contact-channel card.
  *
  * Renders one collapsed row per linked contact when an entity has linked
- * contacts. Expand-on-click shows full channel list with channel-specific
- * actions (edit, delete) via COMPAT-ONLY contact-keyed endpoints.
+ * contacts. Expand-on-click shows full channel list with edit/delete
+ * affordances for entity-facts-sourced entries.
  *
  * Data source:
  *   Primary:  GET /relationship/entities/{entityId}/linked-contacts
@@ -11,15 +11,30 @@
  *             labels[], and preferred_channel. No N+1 getContact() fanout
  *             is needed for the collapsed view.
  *
- * COMPAT-ONLY reads/writes (temporary, during migration window):
- *   - createContactInfo, patchContactInfo, deleteContactInfo — write to
- *     contact_keyed endpoints. Remove when bu-k9ylx (write-path cut-over)
- *     completes.
- *   - patchContact (preferred_channel) — contact-keyed write. Remove when
- *     bu-k9ylx completes.
- *   - revealContactSecret — contact-keyed reveal for secured=true entries
- *     that still live in contact_info. Remove when bu-pl8fy (secured
- *     migration to entity_info) completes.
+ * Migration status (bu-k9ylx write-path cut-over is COMPLETE as of PR #2021,
+ * display-layer unification is COMPLETE as of PR #2025,
+ * edit-in-place is COMPLETE as of bu-690xu):
+ *
+ *   deleteContactInfo — REMOVED. Replaced by useDeleteEntityContact for
+ *     entries with source="entity_facts". Legacy entries (source=null) are
+ *     shown read-only (see ExpandedContactInfoRow).
+ *
+ *   patchContactInfo — REMOVED. Replaced by useUpdateEntityContact for
+ *     entity_facts entries. Routes through entity-keyed
+ *     PUT /entities/{id}/contacts/{pred}/{hash}. Legacy entries are read-only.
+ *
+ *   createContactInfo (add new channel) — MIGRATED to useAddEntityContact.
+ *     Routes through entity-keyed POST /entities/{id}/contacts.
+ *
+ *   patchContact (preferred_channel) — COMPAT-ONLY. No entity-keyed endpoint
+ *     for preferred_channel exists. preferred_channel lives on contacts.preferred_channel;
+ *     it has no triple equivalent yet. Blocked on bu-uhjxr.
+ *
+ *   revealContactSecret — COMPAT-ONLY path is dead code in practice: the
+ *     list_entity_linked_contacts endpoint excludes secured=true contact_info
+ *     rows (WHERE secured = false), so no secured entries appear in this card.
+ *     The entity-keyed revealEntitySecret exists for entity_info secured rows
+ *     (bu-pl8fy migrates contact_info secured rows to entity_info).
  *
  * See: docs/reports/contact-detail-parity-inventory-2026-05-25.md
  */
@@ -29,6 +44,7 @@ import { Check, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucid
 import { toast } from "sonner";
 
 import type { ContactInfoEntry, Label, LinkedContactSummary } from "@/api/types";
+import type { AddEntityContactRequest, UpdateEntityContactRequest } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,12 +58,9 @@ import {
 } from "@/components/ui/select";
 import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
-import { useEntityLinkedContacts } from "@/hooks/use-entities";
+import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact } from "@/hooks/use-entities";
 import {
-  useCreateContactInfo,
-  useDeleteContactInfo,
   usePatchContact,
-  usePatchContactInfo,
   useRevealContactSecret,
 } from "@/hooks/use-contacts";
 
@@ -63,17 +76,30 @@ import {
  */
 const REVEAL_AUTO_HIDE_MS = 30_000;
 
-// COMPAT-ONLY: contact_info types currently writable via contact-keyed endpoints.
-// Will shrink as bu-k9ylx and bu-e2ja9 land.
+// Contact_info types available in the add-channel form. Only types with a
+// triple predicate mapping are included (telegram_chat_id has no predicate
+// and is excluded; home_assistant_url likewise has none).
 const CONTACT_INFO_TYPES = [
   "email",
   "phone",
   "telegram",
-  "telegram_chat_id",
   "website",
-  "home_assistant_url",
   "other",
 ] as const;
+
+type ContactInfoType = typeof CONTACT_INFO_TYPES[number];
+
+// Map contact_info type → entity_facts predicate (must-start-with "has-").
+// Mirrors the server-side _CI_TYPE_TO_PREDICATE in relationship_assert_fact.py.
+// Types not in this map have no triple predicate and are not addable via
+// the entity-keyed path.
+const CONTACT_TYPE_TO_PREDICATE: Record<ContactInfoType, string> = {
+  email: "has-email",
+  phone: "has-phone",
+  telegram: "has-handle",
+  website: "has-website",
+  other: "has-handle",
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,8 +122,7 @@ function inputPlaceholder(type: string): string {
   switch (type) {
     case "email": return "you@example.com";
     case "telegram": return "@handle";
-    case "telegram_chat_id": return "123456789";
-    case "home_assistant_url": return "http://homeassistant.local:8123";
+    case "website": return "https://example.com";
     default: return "";
   }
 }
@@ -125,8 +150,11 @@ function SecuredChannelEntry({
   const [isRevealing, setIsRevealing] = useState(false);
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // COMPAT-ONLY: revealContactSecret used for secured=true contact_info entries.
-  // After bu-pl8fy migrates these to entity_info, switch to revealEntitySecret.
+  // COMPAT-ONLY reveal path — effectively dead code in practice. The
+  // list_entity_linked_contacts endpoint excludes secured=true contact_info rows
+  // (WHERE secured = false), so no secured entries reach this component from the
+  // real API. The entity-keyed alternative (revealEntitySecret) exists for
+  // entity_info secured rows once bu-pl8fy migrates contact_info secured rows.
   const revealMutation = useRevealContactSecret();
 
   // Auto-hide the revealed secret 30s after it becomes visible.
@@ -233,185 +261,222 @@ function ChannelValue({ entry }: { entry: ContactInfoEntry }) {
 }
 
 // ---------------------------------------------------------------------------
-// ExpandedContactInfoRow — editable channel row with edit/delete actions
-// COMPAT-ONLY: mutations use contact-keyed endpoints per migration inventory.
+// ExpandedContactInfoRow — channel row with entity-keyed edit and delete.
+//
+// Mutation routing:
+//   source="entity_facts"  → Edit via useUpdateEntityContact (entity-keyed PUT).
+//                            Delete via useDeleteEntityContact (entity-keyed).
+//   source=null/absent     → Legacy public.contact_info row. Read-only.
+//                            Write-blocked (409) since PR #2021. Shown with a
+//                            tooltip so users understand why no edit/delete
+//                            affordance is present.
 // ---------------------------------------------------------------------------
 
-function ExpandedContactInfoRow({
+export function ExpandedContactInfoRow({
   entry,
   contactId,
+  entityId,
 }: {
   entry: ContactInfoEntry;
   contactId: string;
+  entityId: string;
 }) {
+  const deleteEntityContact = useDeleteEntityContact();
+  const updateEntityContact = useUpdateEntityContact();
   const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(entry.value ?? "");
+  const [editValue, setEditValue] = useState("");
 
-  // COMPAT-ONLY: patchContactInfo/deleteContactInfo via contact-keyed endpoints.
-  // Remove after bu-k9ylx (write-path cut-over) and bu-e2ja9 (drop) complete.
-  const patchInfo = usePatchContactInfo();
-  const deleteInfo = useDeleteContactInfo();
+  const isEntityFacts = entry.source === "entity_facts";
+  const canEdit = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.secured;
+  const canDelete = isEntityFacts && entry.predicate != null && entry.value_hash != null;
 
-  function handleDelete() {
-    if (!window.confirm(`Delete this ${contactInfoTypeLabel(entry.type)} entry?`)) return;
-    deleteInfo.mutate(
-      { contactId, infoId: entry.id },
-      {
-        onSuccess: () => toast.success(`Removed ${contactInfoTypeLabel(entry.type)} entry.`),
-        onError: (err) =>
-          toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`),
-      },
-    );
+  function handleEditStart() {
+    if (!canEdit) return;
+    setEditValue(entry.value ?? "");
+    setEditing(true);
   }
 
-  function handleSaveEdit() {
+  function handleEditCancel() {
+    setEditing(false);
+    setEditValue("");
+  }
+
+  async function handleEditSave() {
     const trimmed = editValue.trim();
     if (!trimmed) {
       toast.error("Value cannot be empty.");
       return;
     }
-    if (trimmed === entry.value) {
+    const request: UpdateEntityContactRequest = { new_value: trimmed, primary: entry.is_primary };
+    try {
+      await updateEntityContact.mutateAsync({
+        entityId,
+        predicate: entry.predicate!,
+        valueHash: entry.value_hash!,
+        request,
+      });
+      toast.success(`Updated ${contactInfoTypeLabel(entry.type)} entry.`);
       setEditing(false);
-      return;
+      setEditValue("");
+    } catch (err) {
+      toast.error(
+        `Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`,
+      );
     }
-    patchInfo.mutate(
-      { contactId, infoId: entry.id, request: { value: trimmed } },
+  }
+
+  function handleDelete() {
+    if (!canDelete || deleteEntityContact.isPending) return;
+    deleteEntityContact.mutate(
+      {
+        entityId,
+        predicate: entry.predicate!,
+        valueHash: entry.value_hash!,
+      },
       {
         onSuccess: () => {
-          toast.success(`Updated ${contactInfoTypeLabel(entry.type)} entry.`);
-          setEditing(false);
+          toast.success(`Deleted ${contactInfoTypeLabel(entry.type)} entry.`);
         },
-        onError: (err) =>
-          toast.error(`Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`),
+        onError: (err) => {
+          toast.error(
+            `Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`,
+          );
+        },
       },
     );
   }
 
+  // Inline edit form shown when editing is active.
+  if (editing) {
+    return (
+      <div className="flex items-center gap-2 py-1">
+        <span className="text-muted-foreground text-xs w-32 shrink-0">
+          {contactInfoTypeLabel(entry.type)}
+          {entry.is_primary && (
+            <span className="ml-1 text-blue-500">(primary)</span>
+          )}
+        </span>
+        <Input
+          className="h-6 text-sm flex-1"
+          type="text"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              void handleEditSave();
+            } else if (e.key === "Escape") {
+              handleEditCancel();
+            }
+          }}
+          disabled={updateEntityContact.isPending}
+          autoFocus
+          placeholder={inputPlaceholder(entry.type)}
+          data-testid="edit-contact-input"
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 shrink-0"
+          title="Save"
+          onClick={handleEditSave}
+          disabled={updateEntityContact.isPending}
+          data-testid="edit-contact-save"
+        >
+          <Check className="h-3 w-3" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 shrink-0"
+          title="Cancel"
+          onClick={handleEditCancel}
+          disabled={updateEntityContact.isPending}
+          data-testid="edit-contact-cancel"
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center gap-2 group py-1">
+    <div className="flex items-center gap-2 py-1">
       <span className="text-muted-foreground text-xs w-32 shrink-0">
         {contactInfoTypeLabel(entry.type)}
         {entry.is_primary && (
           <span className="ml-1 text-blue-500">(primary)</span>
         )}
       </span>
-      {editing ? (
-        <div className="flex items-center gap-1 flex-1">
-          <Input
-            className="h-7 text-sm flex-1"
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            disabled={patchInfo.isPending}
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSaveEdit();
-              if (e.key === "Escape") setEditing(false);
-            }}
-          />
+      <span className="flex-1">
+        {entry.secured ? (
+          <SecuredChannelEntry entry={entry} contactId={contactId} />
+        ) : (
+          <ChannelValue entry={entry} />
+        )}
+      </span>
+      {/* Edit/Delete affordances — entity_facts rows only (non-secured) */}
+      {isEntityFacts && (
+        <span className="flex items-center gap-1 shrink-0">
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 p-0"
-            onClick={handleSaveEdit}
-            disabled={patchInfo.isPending}
+            className="h-6 w-6 p-0 text-muted-foreground"
+            title={canEdit ? "Edit" : "Edit (secured values cannot be edited inline)"}
+            disabled={!canEdit || deleteEntityContact.isPending}
+            onClick={handleEditStart}
+            data-testid="edit-contact-btn"
           >
-            <Check className="h-3.5 w-3.5" />
+            <Pencil className="h-3 w-3" />
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 p-0"
-            onClick={() => {
-              setEditValue(entry.value ?? "");
-              setEditing(false);
-            }}
+            className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+            title="Delete"
+            onClick={handleDelete}
+            disabled={!canDelete || deleteEntityContact.isPending}
           >
-            <X className="h-3.5 w-3.5" />
+            <Trash2 className="h-3 w-3" />
           </Button>
-        </div>
-      ) : (
-        <>
-          <span className="flex-1">
-            {entry.secured ? (
-              <SecuredChannelEntry entry={entry} contactId={contactId} />
-            ) : (
-              <ChannelValue entry={entry} />
-            )}
-          </span>
-          <span className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            {!entry.secured && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0"
-                onClick={() => {
-                  setEditValue(entry.value ?? "");
-                  setEditing(true);
-                }}
-                title="Edit"
-              >
-                <Pencil className="h-3 w-3" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0 text-destructive hover:text-destructive"
-              onClick={handleDelete}
-              disabled={deleteInfo.isPending}
-              title="Delete"
-            >
-              <Trash2 className="h-3 w-3" />
-            </Button>
-          </span>
-        </>
+        </span>
+      )}
+      {/* Legacy contact_info row: read-only, write-blocked since PR #2021. */}
+      {!isEntityFacts && (
+        <span
+          className="text-xs text-muted-foreground shrink-0"
+          title="Legacy channel — no entity-keyed write path available (read-only)"
+        >
+          (legacy)
+        </span>
       )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// AddChannelInfoForm — inline add form for a linked contact
-// COMPAT-ONLY: createContactInfo uses contact-keyed endpoint.
-// Remove after bu-k9ylx (write-path cut-over) completes.
+// AddChannelInfoForm — inline add form for a linked contact.
+//
+// Routes through useAddEntityContact (entity-keyed POST /entities/{id}/contacts).
+// Maps contact_info type → has-* predicate via CONTACT_TYPE_TO_PREDICATE.
+// Types with no predicate mapping (telegram_chat_id, home_assistant_url) are
+// excluded from the form's type selector.
 // ---------------------------------------------------------------------------
 
 function AddChannelInfoForm({
-  contactId,
-  existingEntries,
+  entityId,
   onDone,
 }: {
-  contactId: string;
-  existingEntries: ContactInfoEntry[];
+  entityId: string;
   onDone: () => void;
 }) {
-  // COMPAT-ONLY: createContactInfo via contact-keyed endpoint.
-  const createInfo = useCreateContactInfo();
-  const [type, setType] = useState<string>("email");
+  const addEntityContact = useAddEntityContact();
+  const [type, setType] = useState<ContactInfoType>("email");
   const [value, setValue] = useState("");
   const [isPrimary, setIsPrimary] = useState(false);
 
-  // CHILD_TO_PARENT_TYPE: telegram handle is a child of telegram_chat_id
-  const CHILD_TO_PARENT_TYPE: Record<string, string> = {
-    telegram: "telegram_chat_id",
-  };
-
-  const parentType = CHILD_TO_PARENT_TYPE[type] ?? null;
-  const parentCandidates = parentType
-    ? existingEntries.filter((e) => e.type === parentType)
-    : [];
-  const [parentId, setParentId] = useState<string | null>(null);
-
   function handleTypeChange(newType: string) {
-    setType(newType);
+    setType(newType as ContactInfoType);
     setValue("");
-    const pt = CHILD_TO_PARENT_TYPE[newType] ?? null;
-    if (pt) {
-      const candidates = existingEntries.filter((e) => e.type === pt);
-      setParentId(candidates.length === 1 ? candidates[0].id : null);
-    } else {
-      setParentId(null);
-    }
   }
 
   async function handleSubmit() {
@@ -420,22 +485,14 @@ function AddChannelInfoForm({
       toast.error("Value cannot be empty.");
       return;
     }
-    // When there are multiple parent candidates (e.g. multiple Telegram chat
-    // IDs) the user must select one before submitting a child entry.
-    if (parentType !== null && parentCandidates.length > 1 && parentId === null) {
-      toast.error(`Select an account to attach this ${contactInfoTypeLabel(type)} entry to.`);
-      return;
-    }
+    const predicate = CONTACT_TYPE_TO_PREDICATE[type];
+    const request: AddEntityContactRequest = {
+      predicate,
+      value: trimmed,
+      primary: isPrimary || null,
+    };
     try {
-      await createInfo.mutateAsync({
-        contactId,
-        request: {
-          type,
-          value: trimmed,
-          is_primary: isPrimary,
-          ...(parentId ? { parent_id: parentId } : {}),
-        },
-      });
+      await addEntityContact.mutateAsync({ entityId, request });
       toast.success(`Added ${contactInfoTypeLabel(type)} entry.`);
       onDone();
     } catch (err) {
@@ -461,23 +518,6 @@ function AddChannelInfoForm({
           </SelectContent>
         </Select>
       </div>
-      {parentType && parentCandidates.length > 1 && (
-        <div className="space-y-1">
-          <FormLabel className="text-xs">Account</FormLabel>
-          <Select value={parentId ?? ""} onValueChange={(v) => setParentId(v || null)}>
-            <SelectTrigger className="h-8 w-44 text-xs">
-              <SelectValue placeholder="Select account..." />
-            </SelectTrigger>
-            <SelectContent>
-              {parentCandidates.map((c) => (
-                <SelectItem key={c.id} value={c.id} className="text-xs">
-                  {c.value ?? contactInfoTypeLabel(c.type)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      )}
       <div className="flex-1 space-y-1">
         <FormLabel className="text-xs">Value</FormLabel>
         <Input
@@ -486,7 +526,7 @@ function AddChannelInfoForm({
           placeholder={inputPlaceholder(type)}
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          disabled={createInfo.isPending}
+          disabled={addEntityContact.isPending}
           autoFocus
         />
       </div>
@@ -504,7 +544,7 @@ function AddChannelInfoForm({
         variant="ghost"
         className="h-8 w-8 p-0"
         onClick={handleSubmit}
-        disabled={createInfo.isPending}
+        disabled={addEntityContact.isPending}
       >
         <Check className="h-4 w-4" />
       </Button>
@@ -513,7 +553,7 @@ function AddChannelInfoForm({
         variant="ghost"
         className="h-8 w-8 p-0"
         onClick={onDone}
-        disabled={createInfo.isPending}
+        disabled={addEntityContact.isPending}
       >
         <X className="h-4 w-4" />
       </Button>
@@ -523,7 +563,10 @@ function AddChannelInfoForm({
 
 // ---------------------------------------------------------------------------
 // PreferredChannelSelector — COMPAT-ONLY write via patchContact
-// Remove after bu-k9ylx (write-path cut-over) completes.
+//
+// preferred_channel lives in contacts.preferred_channel (a CRM field, not a
+// triple). No entity-keyed endpoint exists for this field. Migration requires
+// bu-uhjxr to model preferred_channel as a fact in relationship.entity_facts.
 // ---------------------------------------------------------------------------
 
 function PreferredChannelSelector({
@@ -536,6 +579,8 @@ function PreferredChannelSelector({
   contactInfo: ContactInfoEntry[];
 }) {
   // COMPAT-ONLY: patchContact for preferred_channel — contact-keyed write.
+  // No entity-keyed alternative exists; preferred_channel is a CRM field on the
+  // contacts row, not yet modelled as an entity_facts triple (bu-uhjxr).
   const patchContact = usePatchContact();
 
   const hasTelegram = contactInfo.some((ci) => ci.type === "telegram_chat_id");
@@ -586,8 +631,10 @@ function PreferredChannelSelector({
 
 function ContactRow({
   contact,
+  entityId,
 }: {
   contact: LinkedContactSummary;
+  entityId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [addingInfo, setAddingInfo] = useState(false);
@@ -698,6 +745,7 @@ function ContactRow({
                   key={ci.id}
                   entry={ci}
                   contactId={contact.id}
+                  entityId={entityId}
                 />
               ))}
             </div>
@@ -717,8 +765,7 @@ function ContactRow({
           {/* Add channel info form */}
           {addingInfo ? (
             <AddChannelInfoForm
-              contactId={contact.id}
-              existingEntries={contact.contact_info}
+              entityId={entityId}
               onDone={() => setAddingInfo(false)}
             />
           ) : (
@@ -749,8 +796,14 @@ function ContactRow({
  *   GET /relationship/entities/{entityId}/linked-contacts which returns
  *   enriched LinkedContactSummary with contact_info[], labels[], and
  *   preferred_channel.
- * - For mutations, uses COMPAT-ONLY contact-keyed endpoints (see module
- *   docstring and individual component comments for migration gating info).
+ * - Mutations are entity-keyed:
+ *   - Add: useAddEntityContact (POST /entities/{id}/contacts)
+ *   - Edit of entity_facts rows: useUpdateEntityContact
+ *     (PUT /entities/{id}/contacts/{predicate}/{value_hash})
+ *   - Delete of entity_facts rows: useDeleteEntityContact
+ *     (DELETE /entities/{id}/contacts/{predicate}/{value_hash})
+ *   - Legacy contact_info rows: read-only (write-blocked since PR #2021)
+ *   - preferred_channel: COMPAT-ONLY patchContact (no entity-keyed path yet)
  * - onLinkContact: callback to open the existing link/unlink flow on the host
  *   page. The actual link/unlink UI is NOT moved into this card.
  */
@@ -791,6 +844,7 @@ export function ContactChannelCard({
             <ContactRow
               key={contact.id}
               contact={contact}
+              entityId={entityId}
             />
           ))}
         </div>

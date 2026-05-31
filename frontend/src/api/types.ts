@@ -741,6 +741,15 @@ export interface ContactInfoEntry {
   secured: boolean;
   parent_id: string | null;
   context: string | null; // personal | work | other | null (unclassified)
+  /** Backing store discriminator. Absent/null → legacy public.contact_info row.
+   * "entity_facts" → synthesised from relationship.entity_facts has-* triple. */
+  source?: "entity_facts" | null;
+  /** Populated only when source="entity_facts". The contact predicate (e.g. "has-email").
+   * Used by the delete mutation: DELETE /entities/{id}/contacts/{predicate}/{value_hash}. */
+  predicate?: string | null;
+  /** Populated only when source="entity_facts". SHA-256[:16] of the object value.
+   * Used as the stable URL segment in the entity-keyed delete endpoint. */
+  value_hash?: string | null;
 }
 
 /** Full contact detail with all fields including identity fields. */
@@ -5541,4 +5550,90 @@ export interface SecretsInventoryParams {
    * When omitted, the owner identity is used (projection-lens semantics).
    */
   identity?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Entity-contacts triple API (GET/POST/DELETE /entities/{id}/contacts)
+// Introduced by entity-redesign §9.4 (bu-u1w78). These types represent
+// contact-fact triples in relationship.entity_facts (has-* predicates).
+// ---------------------------------------------------------------------------
+
+/**
+ * One contact-fact triple from GET /entities/{id}/contacts.
+ *
+ * `id` is the fact UUID in relationship.entity_facts.
+ * `predicate` is the contact predicate (e.g. has-email, has-phone, has-handle).
+ * `object` is the fact value (e.g. "alice@example.com").
+ * `value_hash` is SHA-256[:16] of the object, used as the DELETE path segment.
+ */
+export interface ContactFact {
+  id: string;
+  predicate: string;
+  object: string;
+  value_hash: string;
+  src: string;
+  conf: number;
+  last_seen: string | null;
+  weight: number | null;
+  verified: boolean;
+  primary: boolean | null;
+}
+
+/** Response for GET /entities/{id}/contacts. */
+export interface EntityContactsResponse {
+  facts: ContactFact[];
+}
+
+/** Request body for POST /entities/{id}/contacts. */
+export interface AddEntityContactRequest {
+  predicate: string;
+  value: string;
+  src?: string;
+  verified?: boolean;
+  primary?: boolean | null;
+  conf?: number;
+}
+
+/**
+ * Response for POST /entities/{id}/contacts.
+ *
+ * `outcome` is one of "inserted", "unchanged", "superseded", or
+ * "pending_approval". When outcome == "pending_approval", `fact` is null
+ * and `action_id` carries the pending-actions UUID; HTTP status is 202.
+ */
+export interface AddEntityContactResponse {
+  outcome: string;
+  fact: ContactFact | null;
+  action_id: string | null;
+}
+
+/** Response for DELETE /entities/{id}/contacts/{predicate}/{value_hash}. */
+export interface DeleteEntityContactResponse {
+  deleted: boolean;
+  fact_id: string;
+}
+
+/** Request body for PUT /entities/{id}/contacts/{predicate}/{value_hash}. */
+export interface UpdateEntityContactRequest {
+  new_value: string;
+  src?: string;
+  verified?: boolean;
+  primary?: boolean | null;
+  conf?: number;
+}
+
+/**
+ * Response for PUT /entities/{id}/contacts/{predicate}/{value_hash}.
+ *
+ * `outcome` is one of "inserted", "unchanged", "superseded", or
+ * "pending_approval". When outcome == "pending_approval", `fact` is null
+ * and `action_id` carries the pending-actions UUID; HTTP status is 202.
+ * `retracted_fact_id` is the UUID of the old (retracted) row (null when
+ * same-value update or pending_approval).
+ */
+export interface UpdateEntityContactResponse {
+  outcome: string;
+  retracted_fact_id: string | null;
+  fact: ContactFact | null;
+  action_id: string | null;
 }

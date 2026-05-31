@@ -281,17 +281,15 @@ function setupWithData() {
     isLoading: false,
   } as ReturnType<typeof useFinanceUpcomingBills>);
 
-  // useFinanceSpendingSummary is called twice: once for monthly KPI, once for category chart.
-  // The mock returns different data based on the params passed.
-  vi.mocked(useFinanceSpendingSummary).mockImplementation((params) => {
-    if (params?.start_date && params.start_date.endsWith("-01")) {
-      return {
-        data: MONTHLY_SUMMARY,
-        isLoading: false,
-      } as ReturnType<typeof useFinanceSpendingSummary>;
-    }
+  // useFinanceSpendingSummary is called twice per render: once for monthly KPI,
+  // then once for the 30-day category chart. Do not key this off dates: on
+  // month-end, the rolling 30-day window can also start on YYYY-MM-01.
+  let spendingSummaryCall = 0;
+  vi.mocked(useFinanceSpendingSummary).mockImplementation(() => {
+    const data = spendingSummaryCall % 2 === 0 ? MONTHLY_SUMMARY : CATEGORY_SUMMARY;
+    spendingSummaryCall += 1;
     return {
-      data: CATEGORY_SUMMARY,
+      data,
       isLoading: false,
     } as ReturnType<typeof useFinanceSpendingSummary>;
   });

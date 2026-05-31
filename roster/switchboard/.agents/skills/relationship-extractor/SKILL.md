@@ -150,7 +150,9 @@ encounter with a named person.
 }
 ```
 
-**Tool signature:** `interaction_log(pool, contact_id: UUID, type: str, summary: str | None = None, occurred_at: datetime | None = None) -> dict`
+**Tool signature (MCP):** `interaction_log(contact_id: UUID, type: str, summary: str | None = None, occurred_at: datetime | None = None) -> dict`
+
+The MCP tool accepts `contact_id` and resolves it to the entity's `entity_id` internally. Facts are stored under `subject='entity:{entity_id}'` in the facts table.
 
 Common interaction types: `call`, `text`, `email`, `coffee`, `lunch`,
 `dinner`, `meeting`, `video_call`, `party`, `visit`.
@@ -653,7 +655,7 @@ Complete mapping of Relationship butler tools used by this skill:
 | `contact_create` | `(pool, name: str, details: dict \| None)` | New contact |
 | `contact_update` | `(pool, contact_id: UUID, **fields)` | Merge details into existing contact |
 | `contact_search` | `(pool, query: str)` | Deduplication lookup |
-| `interaction_log` | `(pool, contact_id: UUID, type: str, summary: str \| None, occurred_at: datetime \| None)` | Log interactions |
+| `interaction_log` | `(contact_id: UUID, type: str, summary: str \| None, occurred_at: datetime \| None)` | Log interactions (contact_id resolved to entity_id internally) |
 | `note_create` | `(pool, contact_id: UUID, content: str, emotion: str \| None)` | Life events and sentiments |
 | `date_add` | `(pool, contact_id: UUID, label: str, month: int, day: int, year: int \| None)` | Important dates |
 | `fact_set` | `(pool, contact_id: UUID, key: str, value: str)` | Quick facts |

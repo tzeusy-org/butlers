@@ -233,7 +233,7 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
             MAX(f.valid_at) AS last_interaction_at
         FROM contacts c
         LEFT JOIN facts f
-            ON  f.subject   = 'contact:' || c.id::text
+            ON  f.entity_id = c.entity_id
             AND f.predicate LIKE 'interaction_%'
             AND f.scope     = 'relationship'
             AND f.validity  = 'active'
@@ -904,11 +904,12 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
             END AS days_since_last_interaction
         FROM contacts c
         LEFT JOIN facts f
-            ON f.subject = 'contact:' || c.id::text
+            ON f.entity_id = c.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE c.listed = true
+          AND c.entity_id IS NOT NULL
         GROUP BY c.id
         ORDER BY c.first_name, c.last_name, c.nickname
         """

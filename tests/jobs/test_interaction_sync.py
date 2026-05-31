@@ -57,9 +57,9 @@ pytestmark = pytest.mark.unit
 _NOW = datetime(2026, 4, 16, 10, 0, 0, tzinfo=UTC)
 _TODAY = date(2026, 4, 16)
 
-_CONTACT_A = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-_CONTACT_B = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-_CONTACT_OWNER = uuid.UUID("00000000-0000-0000-0000-000000000001")
+_ENTITY_A = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+_ENTITY_B = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+_ENTITY_OWNER = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 _THREAD_1 = "thread-1"
 _CHANNEL = "telegram_user_client"
@@ -116,18 +116,21 @@ def _make_inbox_row(
     return mock_row
 
 
-def _make_contact_row(
+def _make_entity_row(
     *,
     ci_type: str = _CI_TYPE,
     ci_value: str,
-    contact_id: uuid.UUID,
+    entity_id: uuid.UUID,
     roles: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a dict mimicking a row from the contact_info batch-resolve query."""
+    """Build a dict mimicking a row from the entity_facts batch-resolve query.
+
+    The query now returns entity_id (= ef.subject) instead of contact_id.
+    """
     row: dict[str, Any] = {
         "ci_type": ci_type,
         "ci_value": ci_value,
-        "contact_id": contact_id,
+        "entity_id": entity_id,
         "roles": roles or [],
     }
     mock_row = MagicMock()
@@ -402,8 +405,8 @@ async def test_participant_count_gate_skips_large_groups():
         )
     ]
     contact_rows = [
-        _make_contact_row(ci_value="alice", contact_id=_CONTACT_A),
-        _make_contact_row(ci_value="bob", contact_id=_CONTACT_B),
+        _make_entity_row(ci_value="alice", entity_id=_ENTITY_A),
+        _make_entity_row(ci_value="bob", entity_id=_ENTITY_B),
     ]
     stats, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
@@ -422,7 +425,7 @@ async def test_participant_count_gate_boundary_20_is_allowed():
             participant_count=20,
         )
     ]
-    contact_rows = [_make_contact_row(ci_value="alice", contact_id=_CONTACT_A)]
+    contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     stats, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
     )
@@ -440,7 +443,7 @@ async def test_participant_count_falls_back_to_distinct_sender_count():
             participant_count=None,
         )
     ]
-    contact_rows = [_make_contact_row(ci_value="alice", contact_id=_CONTACT_A)]
+    contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     stats, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
     )
@@ -455,7 +458,7 @@ async def test_participant_count_fallback_triggers_gate():
     # 21 distinct senders, no participant_count in context
     senders = [f"sender-{i}" for i in range(21)]
     inbox_rows = [_make_inbox_row(sender_identities=senders, participant_count=None)]
-    contact_rows = [_make_contact_row(ci_value=s, contact_id=uuid.uuid4()) for s in senders]
+    contact_rows = [_make_entity_row(ci_value=s, entity_id=uuid.uuid4()) for s in senders]
     stats, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
     )
@@ -472,7 +475,7 @@ async def test_dm_group_size_is_1():
     """DM (single non-owner sender) must pass group_size=1 in metadata."""
     pool = _make_pool()
     inbox_rows = [_make_inbox_row(sender_identities=["alice"], participant_count=1)]
-    contact_rows = [_make_contact_row(ci_value="alice", contact_id=_CONTACT_A)]
+    contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
     )
@@ -495,7 +498,7 @@ async def test_incoming_only_when_owner_not_present():
             participant_count=1,
         )
     ]
-    contact_rows = [_make_contact_row(ci_value="alice", contact_id=_CONTACT_A)]
+    contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
     )
@@ -521,12 +524,12 @@ async def test_incoming_and_outgoing_when_owner_sent():
         )
     ]
     contact_rows = [
-        _make_contact_row(
+        _make_entity_row(
             ci_value="owner-handle",
-            contact_id=_CONTACT_OWNER,
+            entity_id=_ENTITY_OWNER,
             roles=["owner"],
         ),
-        _make_contact_row(ci_value="alice", contact_id=_CONTACT_A),
+        _make_entity_row(ci_value="alice", entity_id=_ENTITY_A),
     ]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
@@ -548,12 +551,12 @@ async def test_outgoing_uses_plus12_hour_offset():
         )
     ]
     contact_rows = [
-        _make_contact_row(
+        _make_entity_row(
             ci_value="owner-handle",
-            contact_id=_CONTACT_OWNER,
+            entity_id=_ENTITY_OWNER,
             roles=["owner"],
         ),
-        _make_contact_row(ci_value="alice", contact_id=_CONTACT_A),
+        _make_entity_row(ci_value="alice", entity_id=_ENTITY_A),
     ]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
@@ -580,12 +583,12 @@ async def test_group_size_in_metadata_for_group_chat():
         )
     ]
     contact_rows = [
-        _make_contact_row(
+        _make_entity_row(
             ci_value="owner-handle",
-            contact_id=_CONTACT_OWNER,
+            entity_id=_ENTITY_OWNER,
             roles=["owner"],
         ),
-        _make_contact_row(ci_value="alice", contact_id=_CONTACT_A),
+        _make_entity_row(ci_value="alice", entity_id=_ENTITY_A),
     ]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
@@ -609,9 +612,9 @@ async def test_owner_not_logged_as_contact():
         )
     ]
     contact_rows = [
-        _make_contact_row(
+        _make_entity_row(
             ci_value="owner-handle",
-            contact_id=_CONTACT_OWNER,
+            entity_id=_ENTITY_OWNER,
             roles=["owner"],
         ),
     ]
@@ -658,8 +661,8 @@ async def test_multiple_non_owner_senders_each_get_facts():
         )
     ]
     contact_rows = [
-        _make_contact_row(ci_value="alice", contact_id=_CONTACT_A),
-        _make_contact_row(ci_value="bob", contact_id=_CONTACT_B),
+        _make_entity_row(ci_value="alice", entity_id=_ENTITY_A),
+        _make_entity_row(ci_value="bob", entity_id=_ENTITY_B),
     ]
     stats, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
@@ -679,9 +682,9 @@ async def test_multiple_non_owner_senders_with_owner():
         )
     ]
     contact_rows = [
-        _make_contact_row(ci_value="owner-handle", contact_id=_CONTACT_OWNER, roles=["owner"]),
-        _make_contact_row(ci_value="alice", contact_id=_CONTACT_A),
-        _make_contact_row(ci_value="bob", contact_id=_CONTACT_B),
+        _make_entity_row(ci_value="owner-handle", entity_id=_ENTITY_OWNER, roles=["owner"]),
+        _make_entity_row(ci_value="alice", entity_id=_ENTITY_A),
+        _make_entity_row(ci_value="bob", entity_id=_ENTITY_B),
     ]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
@@ -699,7 +702,7 @@ async def test_duplicate_does_not_increment_logged():
     """When interaction_log returns skipped=duplicate, logged is NOT incremented."""
     pool = _make_pool()
     inbox_rows = [_make_inbox_row(sender_identities=["alice"], participant_count=1)]
-    contact_rows = [_make_contact_row(ci_value="alice", contact_id=_CONTACT_A)]
+    contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     stats, _ = await _run_with_mocked_deps(
         pool,
         inbox_rows=inbox_rows,
@@ -729,7 +732,7 @@ async def test_group_size_uses_participant_count_when_only_one_sender_resolves()
             participant_count=5,
         )
     ]
-    contact_rows = [_make_contact_row(ci_value="alice", contact_id=_CONTACT_A)]
+    contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows
     )
@@ -752,12 +755,12 @@ async def test_bidirectional_dm_group_size_is_1():
         )
     ]
     contact_rows = [
-        _make_contact_row(
+        _make_entity_row(
             ci_value="owner-handle",
-            contact_id=_CONTACT_OWNER,
+            entity_id=_ENTITY_OWNER,
             roles=["owner"],
         ),
-        _make_contact_row(ci_value="alice", contact_id=_CONTACT_A),
+        _make_entity_row(ci_value="alice", entity_id=_ENTITY_A),
     ]
     _, mock_log = await _run_with_mocked_deps(
         pool, inbox_rows=inbox_rows, contact_rows=contact_rows

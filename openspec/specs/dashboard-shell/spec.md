@@ -206,29 +206,45 @@ The router SHALL define all application routes as children of the root layout. A
 
 ### Requirement: Page Header with Breadcrumbs
 
-The page header SHALL render inside the shell's header bar and provide breadcrumb navigation, a search trigger, and a theme toggle.
+The `PageHeader` component SHALL render inside the shell's header bar and
+provide the breadcrumbs strip (populated by the active page), a command palette
+trigger, and a theme toggle. `PageHeader` is shell chrome only — it does not own
+page titles or generate breadcrumbs from the URL.
 
-#### Scenario: Auto-generated breadcrumbs
+#### Scenario: Breadcrumbs strip
 
-- **WHEN** the page header renders without explicit breadcrumb props
-- **THEN** breadcrumbs are auto-generated from the current URL pathname
-- **AND** the first crumb is always "Home" linking to `/`
-- **AND** each URL segment becomes a crumb with the segment name capitalized
-- **AND** the last crumb (current page) renders as plain text without a link
+- **WHEN** the active page supplies breadcrumbs via `<Page breadcrumbs=...>`
+- **THEN** `<Page>` renders the supplied breadcrumb trail using the shared
+  `<Breadcrumbs>` component (`frontend/src/components/ui/breadcrumbs.tsx`)
+  inside `<main>`, above the page's `<h1>`
+- **AND** `<Page>` signals `BreadcrumbsControlProvider` (via `useBreadcrumbsControl`)
+  so that `PageHeader` suppresses its URL-segment auto-builder
 - **AND** crumbs are separated by `/` characters
+- **AND** the final crumb (current page) renders as plain text without a link
+- **WHEN** the active page does not supply breadcrumbs (un-migrated pages)
+- **THEN** `PageHeader` renders URL-segment breadcrumbs auto-generated from
+  `location.pathname` as a legacy fallback; this is not the normative path for
+  pages that have adopted `<Page>`
 
-#### Scenario: Custom breadcrumbs and title
+#### Scenario: Page title ownership
 
-- **WHEN** the page header is provided explicit `breadcrumbs` and `title` props
-- **THEN** the custom breadcrumbs override auto-generation
-- **AND** the title renders as an `<h1>` with `text-lg font-semibold` styling below the breadcrumb trail
+- **WHEN** any page within the application renders its primary heading
+- **THEN** the `<h1>` is rendered by `<Page>`, not by `PageHeader`
+- **AND** the `<h1>` uses `text-3xl font-bold tracking-tight` — this is the
+  canonical operator-tool H1 size for all pages as shipped in
+  `frontend/src/components/ui/page.tsx`
+- **AND** `PageHeader` does NOT render an `<h1>` or accept a `title` prop as
+  a live contract; the `PageHeader.title` slot is removed from the normative
+  interface
 
 #### Scenario: Header action buttons
 
 - **WHEN** the page header renders
-- **THEN** a search icon button (magnifying glass) appears on the right side, triggering the command palette on click
+- **THEN** a search icon button (magnifying glass) appears on the right side,
+  triggering the command palette on click
 - **AND** a theme toggle button appears next to the search button
-- **AND** both buttons use the `ghost` variant at `sm` size with 32x32px dimensions
+- **AND** both buttons use the `ghost` variant at `sm` size with 32x32px
+  dimensions
 
 ### Requirement: Command Palette (Global Search)
 

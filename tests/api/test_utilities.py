@@ -81,6 +81,16 @@ class TestDatabaseAndDeps:
             "ghost" in msg and "butlers" in msg and "ghost" in msg for msg in warning_messages
         ), f"Expected butler name/db/schema in warning. Got: {warning_messages}"
 
+    def test_database_manager_uses_api_pool_size_overrides(self, monkeypatch):
+        """Dashboard pools can be capped independently from daemon pools."""
+        monkeypatch.setenv("BUTLERS_API_DB_POOL_MIN_SIZE", "0")
+        monkeypatch.setenv("BUTLERS_API_DB_POOL_MAX_SIZE", "2")
+
+        mgr = DatabaseManager(host="localhost", port=5432, user="pg", password="secret")
+
+        assert mgr._min_pool_size == 0
+        assert mgr._max_pool_size == 2
+
 
 # ---------------------------------------------------------------------------
 # Secrets API (happy path + 503 fallback)

@@ -304,11 +304,12 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             END AS days_since_last
         FROM contacts c
         LEFT JOIN facts f
-            ON f.subject = 'contact:' || c.id::text
+            ON f.entity_id = c.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE c.listed = true
+          AND c.entity_id IS NOT NULL
         GROUP BY c.id, c.entity_id, c.stay_in_touch_days, c.first_name, c.last_name, c.nickname
         ORDER BY c.first_name, c.last_name, c.nickname
         """
@@ -521,11 +522,12 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             MIN(f.valid_at) AS first_interaction_at
         FROM contacts c
         LEFT JOIN facts f
-            ON f.subject = 'contact:' || c.id::text
+            ON f.entity_id = c.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE c.listed = true
+          AND c.entity_id IS NOT NULL
         GROUP BY c.id, c.first_name, c.last_name, c.nickname
         HAVING COUNT(f.id) > 0
         ORDER BY c.first_name, c.last_name, c.nickname
@@ -863,12 +865,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             if sender_identity:
                 lookup_pairs.append((ci_type, sender_identity))
 
-    # Post bead-7 cut-over: resolved maps (ci_type, value) → contact_id for backward
-    # compat with interaction_log() which still uses contact_id in subject keys.
-    # The query now goes through relationship.entity_facts (triple store) joined back
-    # to public.contacts to retrieve the contact_id.
-    resolved: dict[tuple[str, str], uuid.UUID] = {}  # (ci_type, value) -> contact_id
-    owner_contact_ids: set[uuid.UUID] = set()
+    # Resolve (ci_type, value) → entity_id via relationship.entity_facts.
+    # interaction_log() now accepts entity_id directly, so the LEFT JOIN to
+    # public.contacts that previously bridged entity_id→contact_id is removed.
+    resolved: dict[tuple[str, str], uuid.UUID] = {}  # (ci_type, value) -> entity_id
+    owner_entity_ids: set[uuid.UUID] = set()
 
     if lookup_pairs:
         ci_types = [t for t, _ in lookup_pairs]
@@ -880,7 +881,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 SELECT
                     pairs.ci_type,
                     pairs.ci_value,
-                    c.id                        AS contact_id,
+                    ef.subject                  AS entity_id,
                     COALESCE(e.roles, '{}')     AS roles
                 FROM (
                     SELECT DISTINCT p.ci_type, p.ci_value
@@ -898,7 +899,6 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                  AND ef.object_kind = 'literal'
                  AND ef.validity    = 'active'
                 JOIN public.entities e ON e.id = ef.subject
-                LEFT JOIN public.contacts c ON c.entity_id = ef.subject
                 """,
                 ci_types,
                 ci_values,
@@ -909,19 +909,19 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             return stats
 
         for cr in contact_rows:
-            contact_id = cr["contact_id"]
-            if contact_id is None:
+            entity_id = cr["entity_id"]
+            if entity_id is None:
                 continue
-            if not isinstance(contact_id, uuid.UUID):
+            if not isinstance(entity_id, uuid.UUID):
                 try:
-                    contact_id = uuid.UUID(str(contact_id))
+                    entity_id = uuid.UUID(str(entity_id))
                 except (ValueError, AttributeError):
                     continue
             key = (cr["ci_type"], cr["ci_value"])
-            resolved[key] = contact_id
+            resolved[key] = entity_id
             roles: list[str] = list(cr["roles"] or [])
             if "owner" in roles:
-                owner_contact_ids.add(contact_id)
+                owner_entity_ids.add(entity_id)
 
     # -----------------------------------------------------------------------
     # Step 3: For each (chat, channel, date) group apply the group-aware logic:
@@ -940,12 +940,12 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not ci_type:
             continue
 
-        # Resolve each sender_identity → contact_id (may include owner).
-        sender_contacts: list[uuid.UUID] = []
+        # Resolve each sender_identity → entity_id (may include owner).
+        sender_entities: list[uuid.UUID] = []
         for si in sender_identities:
-            cid = resolved.get((ci_type, si))
-            if cid is not None:
-                sender_contacts.append(cid)
+            eid = resolved.get((ci_type, si))
+            if eid is not None:
+                sender_entities.append(eid)
 
         # --- participant count ---
         # Prefer the envelope-reported participant_count from request_context;
@@ -970,7 +970,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             continue
 
         # --- owner presence and group_size ---
-        owner_sent = any(c in owner_contact_ids for c in sender_contacts)
+        owner_sent = any(e in owner_entity_ids for e in sender_entities)
 
         # group_size = participant_count for group chats.
         # For DMs (only one non-owner participant), clamp to 1 so the
@@ -993,9 +993,9 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         for si in sender_identities:
             stats["processed"] += 1
 
-            cid = resolved.get((ci_type, si))
+            eid = resolved.get((ci_type, si))
 
-            if cid is None:
+            if eid is None:
                 logger.debug(
                     "interaction_sync: unresolved sender %s (channel=%s)",
                     si,
@@ -1004,7 +1004,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 stats["skipped_unresolved"] += 1
                 continue
 
-            if cid in owner_contact_ids:
+            if eid in owner_entity_ids:
                 # Owner's presence is used for direction detection, not logged as a contact.
                 stats["skipped_owner"] += 1
                 continue
@@ -1029,7 +1029,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             try:
                 result = await interaction_log(
                     db_pool,
-                    contact_id=cid,
+                    entity_id=eid,
                     type=source_channel,
                     direction="incoming",
                     occurred_at=incoming_occurred_at,
@@ -1038,24 +1038,23 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
                 if result.get("skipped") == "duplicate":
                     logger.debug(
-                        "interaction_sync: duplicate incoming skipped "
-                        "contact=%s channel=%s date=%s",
-                        cid,
+                        "interaction_sync: duplicate incoming skipped entity=%s channel=%s date=%s",
+                        eid,
                         source_channel,
                         interaction_date,
                     )
                 else:
                     stats["logged"] += 1
                     logger.debug(
-                        "interaction_sync: logged incoming contact=%s channel=%s date=%s",
-                        cid,
+                        "interaction_sync: logged incoming entity=%s channel=%s date=%s",
+                        eid,
                         source_channel,
                         interaction_date,
                     )
             except Exception:
                 logger.exception(
-                    "interaction_sync: error logging incoming for contact=%s channel=%s",
-                    cid,
+                    "interaction_sync: error logging incoming for entity=%s channel=%s",
+                    eid,
                     source_channel,
                 )
                 stats["errors"] += 1
@@ -1074,7 +1073,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 try:
                     result = await interaction_log(
                         db_pool,
-                        contact_id=cid,
+                        entity_id=eid,
                         type=source_channel,
                         direction="outgoing",
                         occurred_at=outgoing_occurred_at,
@@ -1084,23 +1083,23 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     if result.get("skipped") == "duplicate":
                         logger.debug(
                             "interaction_sync: duplicate outgoing skipped "
-                            "contact=%s channel=%s date=%s",
-                            cid,
+                            "entity=%s channel=%s date=%s",
+                            eid,
                             source_channel,
                             interaction_date,
                         )
                     else:
                         stats["logged"] += 1
                         logger.debug(
-                            "interaction_sync: logged outgoing contact=%s channel=%s date=%s",
-                            cid,
+                            "interaction_sync: logged outgoing entity=%s channel=%s date=%s",
+                            eid,
                             source_channel,
                             interaction_date,
                         )
                 except Exception:
                     logger.exception(
-                        "interaction_sync: error logging outgoing for contact=%s channel=%s",
-                        cid,
+                        "interaction_sync: error logging outgoing for entity=%s channel=%s",
+                        eid,
                         source_channel,
                     )
                     stats["errors"] += 1
@@ -1212,22 +1211,21 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         all_attendee_emails.update(attendee_emails)
 
     # Batch-resolve all attendee emails across all events in a single query.
-    email_to_contact: dict[str, uuid.UUID] = {}
-    calendar_owner_contact_ids: set[uuid.UUID] = set()
+    # interaction_log() now accepts entity_id directly, so we resolve to entity_id
+    # (= ef.subject) without joining to public.contacts.
+    email_to_entity: dict[str, uuid.UUID] = {}
+    calendar_owner_entity_ids: set[uuid.UUID] = set()
 
     if all_attendee_emails:
         try:
-            # Post bead-7 cut-over: resolve emails via relationship.entity_facts (has-email
-            # triple) joined back to public.contacts for backward compat with interaction_log().
             resolved_rows = await db_pool.fetch(
                 """
                 SELECT
-                    c.id                        AS contact_id,
+                    ef.subject                  AS entity_id,
                     LOWER(ef.object)            AS email,
                     COALESCE(e.roles, '{}')     AS roles
                 FROM relationship.entity_facts ef
                 JOIN public.entities e ON e.id = ef.subject
-                LEFT JOIN public.contacts c ON c.entity_id = ef.subject
                 WHERE ef.predicate   = 'has-email'
                   AND ef.object_kind = 'literal'
                   AND ef.validity    = 'active'
@@ -1241,24 +1239,24 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             resolved_rows = []
 
         for rr in resolved_rows:
-            cid = rr["contact_id"]
-            if cid is None:
+            eid = rr["entity_id"]
+            if eid is None:
                 continue
-            if not isinstance(cid, uuid.UUID):
+            if not isinstance(eid, uuid.UUID):
                 try:
-                    cid = uuid.UUID(str(cid))
+                    eid = uuid.UUID(str(eid))
                 except (ValueError, AttributeError):
                     continue
             email_key = rr["email"]
-            email_to_contact[email_key] = cid
+            email_to_entity[email_key] = eid
             roles: list[str] = list(rr["roles"] or [])
             if "owner" in roles:
-                calendar_owner_contact_ids.add(cid)
+                calendar_owner_entity_ids.add(eid)
 
     for event_id, event_title, event_starts_at, attendee_emails in event_tasks:
         for email in attendee_emails:
-            contact_id = email_to_contact.get(email)
-            if contact_id is None:
+            entity_id = email_to_entity.get(email)
+            if entity_id is None:
                 stats["skipped_unresolved"] += 1
                 logger.debug(
                     "interaction_sync: unresolved calendar attendee email=%s event=%s",
@@ -1267,11 +1265,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
                 continue
 
-            if contact_id in calendar_owner_contact_ids:
+            if entity_id in calendar_owner_entity_ids:
                 stats["skipped_owner"] += 1
                 logger.debug(
-                    "interaction_sync: skipping owner attendee contact=%s event=%s",
-                    contact_id,
+                    "interaction_sync: skipping owner attendee entity=%s event=%s",
+                    entity_id,
                     event_id,
                 )
                 continue
@@ -1279,7 +1277,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             try:
                 result = await interaction_log(
                     db_pool,
-                    contact_id=contact_id,
+                    entity_id=entity_id,
                     type="calendar_event",
                     direction="mutual",
                     occurred_at=event_starts_at,
@@ -1292,21 +1290,21 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
                 if result.get("skipped") == "duplicate":
                     logger.debug(
-                        "interaction_sync: duplicate calendar event skipped contact=%s event=%s",
-                        contact_id,
+                        "interaction_sync: duplicate calendar event skipped entity=%s event=%s",
+                        entity_id,
                         event_id,
                     )
                 else:
                     stats["logged"] += 1
                     logger.debug(
-                        "interaction_sync: logged calendar_event interaction contact=%s event=%s",
-                        contact_id,
+                        "interaction_sync: logged calendar_event interaction entity=%s event=%s",
+                        entity_id,
                         event_id,
                     )
             except Exception:
                 logger.exception(
-                    "interaction_sync: error logging calendar interaction contact=%s event=%s",
-                    contact_id,
+                    "interaction_sync: error logging calendar interaction entity=%s event=%s",
+                    entity_id,
                     event_id,
                 )
                 stats["errors"] += 1

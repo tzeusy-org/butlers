@@ -250,28 +250,34 @@ def patch_embedding_engine():
 
 
 async def test_interaction_log_idempotency(pool):
-    """interaction_log: first call inserts; same contact+type+date skips; different type/date inserts."""
+    """interaction_log: first call inserts; same entity+type+date skips; different type/date inserts.
+
+    interaction_log() now accepts entity_id (not contact_id).  contact_create()
+    always sets entity_id on the returned contact dict, so we pass c["entity_id"].
+    """
     from butlers.tools.relationship import contact_create, interaction_log
 
     c = await contact_create(pool, "Dedup-Interaction")
+    entity_id = c["entity_id"]
+    assert entity_id is not None, "contact_create must set entity_id"
     ts = datetime(2026, 3, 15, 10, 0, tzinfo=UTC)
     ts2 = datetime(2026, 3, 16, 10, 0, tzinfo=UTC)
 
     # First call inserts
-    first = await interaction_log(pool, c["id"], "call", summary="Catch-up", occurred_at=ts)
+    first = await interaction_log(pool, entity_id, "call", summary="Catch-up", occurred_at=ts)
     assert "id" in first and first["type"] == "call" and "skipped" not in first
 
     # Duplicate → skip
-    second = await interaction_log(pool, c["id"], "call", summary="Second", occurred_at=ts)
+    second = await interaction_log(pool, entity_id, "call", summary="Second", occurred_at=ts)
     assert second["skipped"] == "duplicate"
     assert second["existing_id"] == str(_extract_fact_id(first))
 
     # Different type → not a duplicate
-    diff_type = await interaction_log(pool, c["id"], "email", occurred_at=ts)
+    diff_type = await interaction_log(pool, entity_id, "email", occurred_at=ts)
     assert "skipped" not in diff_type and diff_type["type"] == "email"
 
     # Different date → not a duplicate
-    diff_date = await interaction_log(pool, c["id"], "call", occurred_at=ts2)
+    diff_date = await interaction_log(pool, entity_id, "call", occurred_at=ts2)
     assert "skipped" not in diff_date
 
 
