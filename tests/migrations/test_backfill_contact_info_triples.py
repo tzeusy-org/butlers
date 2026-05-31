@@ -64,6 +64,8 @@ _MAPPED_TYPES = {
     "email": "has-email",
     "phone": "has-phone",
     "telegram": "has-handle",
+    "telegram_user_id": "has-handle",
+    "telegram_username": "has-handle",
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",
@@ -71,8 +73,6 @@ _MAPPED_TYPES = {
 }
 
 _UNMAPPED_TYPES = {
-    "telegram_user_id",
-    "telegram_username",
     "telegram_chat_id",
     "google_health",
     "home_assistant_url",
@@ -413,13 +413,13 @@ class TestNullEntitySkip:
 class TestUnmappedTypeSkip:
     @pytest.mark.asyncio
     async def test_unmapped_type_not_asserted(self, tmp_path: Path) -> None:
-        """telegram_user_id and similar have no predicate mapping and must be skipped."""
+        """telegram_chat_id, google_health, home_assistant_url have no predicate mapping."""
         mod = _load_module()
         writer_mod = _make_writer_mod()
         ci_rows = [
-            _ci_row(ci_type="telegram_user_id", value="12345"),
-            _ci_row(ci_type="telegram_username", value="@bob"),
+            _ci_row(ci_type="telegram_chat_id", value="-1001234567890"),
             _ci_row(ci_type="google_health", value="gh-token"),
+            _ci_row(ci_type="home_assistant_url", value="http://ha.local"),
         ]
         pool = _make_pool(ci_rows=ci_rows, active_triples=[])
 
@@ -434,7 +434,7 @@ class TestUnmappedTypeSkip:
         """Unmapped types appear in the report table."""
         mod = _load_module()
         writer_mod = _make_writer_mod()
-        ci_rows = [_ci_row(ci_type="telegram_user_id", value="42")]
+        ci_rows = [_ci_row(ci_type="google_health", value="gh-token")]
         pool = _make_pool(ci_rows=ci_rows, active_triples=[])
         report_path = tmp_path / "r.md"
 
@@ -442,7 +442,7 @@ class TestUnmappedTypeSkip:
             await mod._run_backfill_with_pool(pool, apply=False, report_path=report_path)
 
         content = report_path.read_text()
-        assert "telegram_user_id" in content
+        assert "google_health" in content
 
     @pytest.mark.asyncio
     async def test_mapped_type_is_asserted(self, tmp_path: Path) -> None:
@@ -457,6 +457,68 @@ class TestUnmappedTypeSkip:
 
         assert rc == 0
         assert writer_mod.relationship_assert_fact.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_telegram_user_id_maps_to_has_handle(self, tmp_path: Path) -> None:
+        """telegram_user_id (bead bu-55ggu) maps to has-handle and is asserted.
+
+        These are the ~270 legacy rows that previously caused skipped_unmapped=496.
+        """
+        mod = _load_module()
+        writer_mod = _make_writer_mod(assert_outcome="inserted")
+        ci_rows = [_ci_row(ci_type="telegram_user_id", value="86807245")]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[False])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        writer_mod.relationship_assert_fact.assert_called_once()
+        call_args = writer_mod.relationship_assert_fact.call_args
+        assert call_args.args[2] == "has-handle"  # predicate
+        assert call_args.args[3] == "86807245"  # value
+
+    @pytest.mark.asyncio
+    async def test_telegram_username_maps_to_has_handle(self, tmp_path: Path) -> None:
+        """telegram_username (bead bu-55ggu) maps to has-handle and is asserted.
+
+        These are the ~224 legacy rows that previously caused skipped_unmapped=496.
+        """
+        mod = _load_module()
+        writer_mod = _make_writer_mod(assert_outcome="inserted")
+        ci_rows = [_ci_row(ci_type="telegram_username", value="alice_tg")]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[False])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        writer_mod.relationship_assert_fact.assert_called_once()
+        call_args = writer_mod.relationship_assert_fact.call_args
+        assert call_args.args[2] == "has-handle"  # predicate
+        assert call_args.args[3] == "alice_tg"  # value
+
+    @pytest.mark.asyncio
+    async def test_telegram_user_id_and_username_dry_run(self, tmp_path: Path) -> None:
+        """telegram_user_id and telegram_username appear in dry-run asserted predicates."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ci_rows = [
+            _ci_row(ci_type="telegram_user_id", value="12345"),
+            _ci_row(ci_type="telegram_username", value="bob_tg"),
+        ]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[False, False])
+        report_path = tmp_path / "r.md"
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=False, report_path=report_path)
+
+        assert rc == 0
+        # No actual writes (dry-run)
+        writer_mod.relationship_assert_fact.assert_not_called()
+        # Both rows are gap rows that would be asserted
+        content = report_path.read_text()
+        assert "has-handle" in content
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +803,7 @@ class TestMixedRows:
             _ci_row(ci_type="email", value="gap@example.com"),  # gap → should be asserted
             _ci_row(ci_type="phone", value="+1-555", secured=True),  # secured skip
             _ci_row(ci_type="email", entity_id=None),  # null entity skip
-            _ci_row(ci_type="telegram_user_id", value="111"),  # unmapped skip
+            _ci_row(ci_type="google_health", value="gh-token"),  # unmapped skip
             _ci_row(ci_type="phone", value="+1-999"),  # already present
         ]
         # active_triples: only applies to rows that pass all skips
@@ -756,7 +818,7 @@ class TestMixedRows:
         writer_mod.relationship_assert_fact.assert_called_once()
         content = report_path.read_text()
         assert "APPLY" in content
-        assert "telegram_user_id" in content
+        assert "google_health" in content
 
 
 # ---------------------------------------------------------------------------

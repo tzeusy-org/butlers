@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Channel-type → relationship.entity_facts predicate mapping (bead 7 cut-over)
 # Must stay in sync with
 # relationship_assert_fact._CI_TYPE_TO_PREDICATE
+# relationship_jobs._CI_TYPE_TO_PREDICATE (and its SQL CASE expression)
 # ---------------------------------------------------------------------------
 _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "email": "has-email",
@@ -44,6 +45,7 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "telegram": "has-handle",
     "telegram_user_id": "has-handle",
     "telegram_user_client": "has-handle",
+    "telegram_username": "has-handle",
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",

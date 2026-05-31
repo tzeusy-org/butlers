@@ -26,8 +26,9 @@ Skip rules
 2. ``entity_id IS NULL`` — the contact has no linked entity yet.  Logged and
    counted; requires the orphan-resolver to run first.
 3. Unmapped type — ``type`` is not in the ``_CI_TYPE_TO_PREDICATE`` mapping
-   (e.g. ``telegram_chat_id``, ``telegram_user_id``, ``telegram_username``,
-   ``google_health``, ``home_assistant_url``).  Logged and counted.
+   (e.g. ``telegram_chat_id``, ``google_health``, ``home_assistant_url``).
+   Logged and counted.  Note: ``telegram_user_id`` and ``telegram_username``
+   ARE mapped (both → ``has-handle``, bead bu-55ggu).
 
 Gap detection
 -------------
@@ -520,9 +521,10 @@ _REPORT_TEMPLATE = """\
 - **Null entity_id rows**: {skipped_null_entity} — contact has no linked entity;
   run `contact_orphan_resolver.py` first to mint entities for these contacts, then
   re-run this script.
-- **Unmapped types**: types such as `telegram_user_id`, `telegram_username`,
-  `telegram_chat_id`, `google_health` have no registered has-* predicate and were
-  not backfilled.
+- **Unmapped types**: types such as `telegram_chat_id`, `google_health`,
+  `home_assistant_url` have no registered has-* predicate and are intentionally
+  not backfilled.  `telegram_user_id` and `telegram_username` ARE mapped
+  (both → `has-handle`) since bead bu-55ggu.
 - **Idempotency**: re-running this script in --apply mode is safe; triples already
   present in `relationship.entity_facts` are counted as "already present" and
   skipped without writing.

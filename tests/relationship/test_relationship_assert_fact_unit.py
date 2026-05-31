@@ -12,11 +12,78 @@ from butlers.tools.relationship.relationship_assert_fact import (
     _assert_on_conn,
     _create_pending_action,
     _upsert_fact,
+    contact_info_type_to_predicate,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 _PRED_HAS_EMAIL = "has-email"
+
+
+# ---------------------------------------------------------------------------
+# contact_info_type_to_predicate — mapping contract (bead bu-55ggu)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_contact_info_type_to_predicate_known_types() -> None:
+    """All supported contact_info types map to the correct predicate."""
+    expected: dict[str, str] = {
+        "email": "has-email",
+        "phone": "has-phone",
+        "telegram": "has-handle",
+        "telegram_user_id": "has-handle",
+        "telegram_username": "has-handle",
+        "linkedin": "has-handle",
+        "twitter": "has-handle",
+        "website": "has-website",
+        "other": "has-handle",
+    }
+    for ci_type, expected_predicate in expected.items():
+        result = contact_info_type_to_predicate(ci_type)
+        assert result == expected_predicate, (
+            f"contact_info_type_to_predicate({ci_type!r}) returned {result!r}, "
+            f"expected {expected_predicate!r}"
+        )
+
+
+@pytest.mark.unit
+def test_contact_info_type_to_predicate_unmapped_returns_none() -> None:
+    """Types with no predicate home return None (callers must skip the triple write)."""
+    unmapped = [
+        "telegram_chat_id",  # group/channel routing key
+        "google_health",  # OAuth routing/credential identifier
+        "home_assistant_url",  # service URL, not a contact channel
+        "address",
+        "fax",
+        "unknown_type",
+    ]
+    for ci_type in unmapped:
+        result = contact_info_type_to_predicate(ci_type)
+        assert result is None, (
+            f"contact_info_type_to_predicate({ci_type!r}) should return None "
+            f"(unmapped type), but returned {result!r}"
+        )
+
+
+@pytest.mark.unit
+def test_telegram_user_id_maps_to_has_handle() -> None:
+    """telegram_user_id maps to has-handle (bead bu-55ggu: was previously unmapped).
+
+    identity._CHANNEL_TYPE_TO_PREDICATE already maps telegram_user_id → has-handle;
+    this test confirms the central writer mapping is now consistent with it.
+    """
+    assert contact_info_type_to_predicate("telegram_user_id") == "has-handle"
+
+
+@pytest.mark.unit
+def test_telegram_username_maps_to_has_handle() -> None:
+    """telegram_username maps to has-handle (bead bu-55ggu: was previously unmapped).
+
+    backfill.py already writes telegram_username → has-handle for new contacts;
+    this test confirms the central writer mapping is now consistent with it.
+    """
+    assert contact_info_type_to_predicate("telegram_username") == "has-handle"
 
 
 async def test_supersession_insert_is_conflict_safe() -> None:

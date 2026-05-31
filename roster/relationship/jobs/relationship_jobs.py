@@ -1358,8 +1358,13 @@ _RECONCILER_STATE_KEY = "contact_info_reconciler.last_run_at"
 
 # Mapping from contact_info.type → relationship.entity_facts predicate.
 # These map through the registered predicate catalog (migration rel_014). Types
-# without a 1-to-1 predicate (telegram, linkedin, twitter, other) all collapse
-# to the channel-scoped "has-handle" predicate.
+# without a 1-to-1 predicate (telegram, telegram_user_id, telegram_username,
+# linkedin, twitter, other) all collapse to the channel-scoped "has-handle"
+# predicate.
+#
+# Must stay in sync with:
+#   roster/relationship/tools/relationship_assert_fact._CI_TYPE_TO_PREDICATE
+#   src/butlers/identity._CHANNEL_TYPE_TO_PREDICATE
 #
 # IMPORTANT: the NOT EXISTS sweep clause in run_contact_info_reconciler must
 # use this same mapping (via a SQL CASE expression) so the idempotency check
@@ -1368,6 +1373,8 @@ _CI_TYPE_TO_PREDICATE: dict[str, str] = {
     "email": "has-email",
     "phone": "has-phone",
     "telegram": "has-handle",
+    "telegram_user_id": "has-handle",
+    "telegram_username": "has-handle",
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",
@@ -1526,13 +1533,15 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                   FROM relationship.entity_facts ef
                   WHERE ef.subject   = c.entity_id
                     AND ef.predicate = CASE ci.type
-                        WHEN 'email'    THEN 'has-email'
-                        WHEN 'phone'    THEN 'has-phone'
-                        WHEN 'website'  THEN 'has-website'
-                        WHEN 'telegram' THEN 'has-handle'
-                        WHEN 'linkedin' THEN 'has-handle'
-                        WHEN 'twitter'  THEN 'has-handle'
-                        WHEN 'other'    THEN 'has-handle'
+                        WHEN 'email'             THEN 'has-email'
+                        WHEN 'phone'             THEN 'has-phone'
+                        WHEN 'website'           THEN 'has-website'
+                        WHEN 'telegram'          THEN 'has-handle'
+                        WHEN 'telegram_user_id'  THEN 'has-handle'
+                        WHEN 'telegram_username' THEN 'has-handle'
+                        WHEN 'linkedin'          THEN 'has-handle'
+                        WHEN 'twitter'           THEN 'has-handle'
+                        WHEN 'other'             THEN 'has-handle'
                         ELSE 'has-' || ci.type
                     END
                     AND ef.object    = ci.value

@@ -58,17 +58,26 @@ _PENDING_ACTION_EXPIRY_HOURS = 72
 # ``roster/relationship/jobs/relationship_jobs.py`` and the channel-type mapping
 # in ``src/butlers/identity.py::_CHANNEL_TYPE_TO_PREDICATE``.
 #
-#     email    → has-email
-#     phone    → has-phone
-#     telegram → has-handle   (scoped handle)
-#     linkedin → has-handle
-#     twitter  → has-handle
-#     website  → has-website
-#     other    → has-handle
+#     email             → has-email
+#     phone             → has-phone
+#     telegram          → has-handle   (scoped handle)
+#     telegram_user_id  → has-handle   (numeric Telegram user ID, same predicate)
+#     telegram_username → has-handle   (Telegram @username, same predicate)
+#     linkedin          → has-handle
+#     twitter           → has-handle
+#     website           → has-website
+#     other             → has-handle
+#
+# Intentionally unmapped (no triple predicate home):
+#     telegram_chat_id   — group/channel routing key, not a contact identifier
+#     google_health      — OAuth routing/credential identifier (bu-k9ylx note)
+#     home_assistant_url — service URL, not a personal contact channel
 _CI_TYPE_TO_PREDICATE: dict[str, str] = {
     "email": "has-email",
     "phone": "has-phone",
     "telegram": "has-handle",
+    "telegram_user_id": "has-handle",
+    "telegram_username": "has-handle",
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",
