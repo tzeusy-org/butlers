@@ -16,7 +16,7 @@ Each message passes through the following stages, instrumented with OpenTelemetr
 3. **Policy Bypass**: If the ingest tool pre-resolved a triage decision via ingestion rules (e.g., `route_to`, `skip`, `metadata_only`), the pipeline honours it and skips LLM classification entirely.
 4. **Conversation History**: Load recent messages for context. Strategy varies by channel (see below).
 5. **Identity Resolution**: Optionally resolve the sender to a known contact and inject an identity preamble into the routing prompt.
-6. **LLM Classification**: Build a routing prompt listing available butlers and their capabilities, then spawn an ephemeral LLM session at `TRIVIAL` complexity. The LLM calls `route_to_butler` tool(s) to dispatch message segments.
+6. **LLM Classification**: Build a routing prompt listing available butlers and their capabilities, then spawn an ephemeral LLM session at `CHEAP` complexity. The LLM calls `route_to_butler` tool(s) to dispatch message segments.
 7. **Fallback**: If the LLM produces no tool calls, the pipeline infers a target from the LLM's text output or falls back to the `general` butler.
 8. **Lifecycle Update**: Write decomposition output, dispatch outcomes, and response summary back to the `message_inbox` table.
 
@@ -41,9 +41,11 @@ In `butler.toml`:
 ```toml
 [modules.pipeline]
 enable_ingress_dedupe = true
+# Optional. Leave unset so classification uses the model-catalog session timeout.
+# classification_timeout_s = 30
 ```
 
-The `PipelineModule` is typically enabled only on the Switchboard butler. The `MessagePipeline` instance is attached at daemon startup via `set_pipeline()`, which wires the Switchboard's DB pool, spawner dispatch function, and optional identity resolution and owner notification callbacks.
+The `PipelineModule` is typically enabled only on the Switchboard butler. The `MessagePipeline` instance is attached at daemon startup via `set_pipeline()`, which wires the Switchboard's DB pool, spawner dispatch function, and optional identity resolution and owner notification callbacks. By default, classification does not pass a timeout override; the spawner uses the session timeout resolved from `public.model_catalog`. Set `classification_timeout_s` only when Switchboard classification intentionally needs a shorter per-call cap.
 
 ## Concurrency and Telemetry
 

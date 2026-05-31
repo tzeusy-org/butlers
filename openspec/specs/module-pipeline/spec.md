@@ -66,6 +66,11 @@ The pipeline's sole responsibility is LLM-driven classification and routing for 
 - **AND** the `butler` argument is extracted and validated against registry-known butlers
 - **AND** if no tool call is found, a fallback inference from model text output is attempted (single unambiguous match only)
 
+#### Scenario: Classification timeout authority
+- **WHEN** the pipeline dispatches an LLM classification session with no explicit `classification_timeout_s` configured
+- **THEN** it omits `timeout_override` so the Spawner uses the session timeout resolved from `public.model_catalog`
+- **AND** if `classification_timeout_s` is configured, it is passed as the per-call `timeout_override`
+
 #### Scenario: Routing result
 - **WHEN** classification and routing complete
 - **THEN** a `RoutingResult` is returned with `target_butler`, `routed_targets`, `acked_targets`, and `failed_targets`

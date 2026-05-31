@@ -40,6 +40,9 @@ class FakeSpawnerResult:
     success: bool = True
     tool_calls: list[dict] = field(default_factory=list)
     error: str | None = None
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 _MOCK_BUTLERS = [
@@ -166,6 +169,38 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
+    async def test_explicit_classification_timeout_is_forwarded(self, mock_load):
+        captured_kwargs = {}
+
+        async def mock_dispatch(**kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeSpawnerResult(
+                output="Routed to health butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health", "prompt": "Track headache"},
+                        "result": {"status": "ok", "butler": "health"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+            source_butler="switchboard",
+            classification_timeout_s=7,
+        )
+        result = await pipeline.process("I have a headache")
+
+        assert result.target_butler == "health"
+        assert captured_kwargs["timeout_override"] == 7
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
     async def test_falls_back_to_general_when_no_tools(self, mock_load):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(output="No routing needed.", tool_calls=[])
@@ -193,6 +228,56 @@ class TestMessagePipelineProcess:
 
         assert result.target_butler == "general"
         assert result.classification_error is not None or result.target_butler == "general"
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_decomposition_empty_runtime_output_is_decomposed_empty(
+        self, mock_load, mock_history
+    ):
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output=None,
+                success=False,
+                error="TimeoutError: OpenCode CLI timed out after 30 seconds",
+                tool_calls=[],
+                model="opencode/test",
+                input_tokens=12,
+                output_tokens=0,
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000001",
+        )
+
+        assert result.target_butler == "decomposed_empty"
+        assert result.classification_error is None
+        assert result.route_result["reason"] == "no_signals_extracted"
+        pipeline._update_message_inbox_lifecycle.assert_awaited_once()
+        update_kwargs = pipeline._update_message_inbox_lifecycle.await_args.kwargs
+        assert update_kwargs["decomposition_output"]["model"] == "opencode/test"
+        assert update_kwargs["decomposition_output"]["token_usage"] == {
+            "input_tokens": 12,
+            "output_tokens": 0,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +354,4 @@ class TestPipelineConfig:
     def test_defaults(self):
         cfg = PipelineConfig()
         assert cfg.enable_ingress_dedupe is True
-
-    def test_ignores_removed_classification_timeout(self):
-        cfg = PipelineConfig(classification_timeout_s=30)
-        assert cfg.enable_ingress_dedupe is True
-        assert not hasattr(cfg, "classification_timeout_s")
+        assert cfg.classification_timeout_s is None

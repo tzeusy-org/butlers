@@ -219,7 +219,8 @@ class FakeSpawnerResult:
     tool_calls: list[dict] = field(default_factory=list)
     error: str | None = None
     model: str | None = None
-    usage: dict | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 _MOCK_BUTLERS = [
@@ -308,7 +309,8 @@ async def test_decomposition_flow_full_pipeline(pool):
         return FakeSpawnerResult(
             output=json.dumps(signals),
             model="claude-test-3-haiku",
-            usage={"input_tokens": 250, "output_tokens": 80},
+            input_tokens=250,
+            output_tokens=80,
         )
 
     route_call_log: list[dict] = []
@@ -431,7 +433,8 @@ async def test_decomposition_empty_signals_stores_decomposed_empty(pool):
         return FakeSpawnerResult(
             output="[]",
             model="claude-test-haiku",
-            usage={"input_tokens": 100, "output_tokens": 5},
+            input_tokens=100,
+            output_tokens=5,
         )
 
     with (

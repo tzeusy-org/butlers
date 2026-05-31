@@ -22,7 +22,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from opentelemetry import trace
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from butlers.core.model_routing import Complexity
 from butlers.core.utils import generate_uuid7_string
@@ -673,6 +673,7 @@ class MessagePipeline:
         enable_ingress_dedupe: bool = False,
         enable_identity_resolution: bool = False,
         notify_owner_fn: Callable[..., Coroutine] | None = None,
+        classification_timeout_s: int | None = None,
     ) -> None:
         self._pool = switchboard_pool
         self._dispatch_fn = dispatch_fn
@@ -682,6 +683,7 @@ class MessagePipeline:
         self._enable_ingress_dedupe = enable_ingress_dedupe
         self._enable_identity_resolution = enable_identity_resolution
         self._notify_owner_fn = notify_owner_fn
+        self._classification_timeout_s = classification_timeout_s
 
     def _set_routing_context(
         self,
@@ -1737,15 +1739,20 @@ class MessagePipeline:
                         attachments=attachments,
                     )
 
-                    # Spawn the routing classifier. Runtime session timeouts are
-                    # owned by the model catalog.
+                    # Spawn CC — it calls route_to_butler tool(s) directly.
+                    # Do not force a short runtime timeout here: catalog-resolved
+                    # sessions own their effective timeout through model_catalog.
+                    dispatch_kwargs: dict[str, Any] = {
+                        "prompt": routing_prompt,
+                        "trigger_source": "tick",
+                        "request_id": request_id,
+                        "complexity": Complexity.CHEAP,
+                    }
+                    if self._classification_timeout_s is not None:
+                        dispatch_kwargs["timeout_override"] = self._classification_timeout_s
+
                     with tracer.start_as_current_span("butlers.switchboard.routing.llm_decision"):
-                        spawn_result = await self._dispatch_fn(
-                            prompt=routing_prompt,
-                            trigger_source="tick",
-                            request_id=request_id,
-                            complexity=Complexity.CHEAP,
-                        )
+                        spawn_result = await self._dispatch_fn(**dispatch_kwargs)
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
                     telemetry.routing_decision_latency_ms.record(spawn_latency_ms, request_attrs)
@@ -1765,6 +1772,18 @@ class MessagePipeline:
                     # If the output is not valid JSON signals, fall through to
                     # the standard tool-call routing path.
                     _decomp_signals: list[dict[str, Any]] = []
+                    _spawn_model = (
+                        getattr(spawn_result, "model", None) if spawn_result is not None else None
+                    )
+                    _spawn_usage = None
+                    if spawn_result is not None:
+                        _input_tokens = getattr(spawn_result, "input_tokens", None)
+                        _output_tokens = getattr(spawn_result, "output_tokens", None)
+                        if _input_tokens is not None or _output_tokens is not None:
+                            _spawn_usage = {
+                                "input_tokens": _input_tokens,
+                                "output_tokens": _output_tokens,
+                            }
                     if _payload_type == "conversation_history" and cc_output.strip():
                         try:
                             _parsed = json.loads(cc_output)
@@ -1772,17 +1791,6 @@ class MessagePipeline:
                                 _decomp_signals = _parsed
                         except (json.JSONDecodeError, ValueError):
                             pass
-
-                        _spawn_model = (
-                            getattr(spawn_result, "model", None)
-                            if spawn_result is not None
-                            else None
-                        )
-                        _spawn_usage = (
-                            getattr(spawn_result, "usage", None)
-                            if spawn_result is not None
-                            else None
-                        )
 
                     if (
                         _payload_type == "conversation_history"
@@ -2153,6 +2161,9 @@ class PipelineConfig(BaseModel):
 
     enable_ingress_dedupe: bool = True
     """Whether to deduplicate incoming messages by idempotency key."""
+
+    classification_timeout_s: int | None = Field(default=None, ge=1)
+    """Optional runtime timeout override for classification; unset uses model_catalog."""
 
 
 class PipelineModule(Module):
