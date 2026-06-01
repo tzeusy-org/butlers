@@ -4487,20 +4487,23 @@ async def list_entity_linked_contacts(
 
     Each entry is enriched with:
     - ``email`` / ``phone`` — primary non-secured values for quick display.
-    - ``contact_info`` — all non-secured contact_info rows **plus** any
-      ``relationship.entity_facts`` ``has-*`` triples for the entity that are
-      not already present (de-duped on ``(type, value)``).  Entity-facts-sourced
-      entries carry ``source="entity_facts"``; legacy contact_info rows carry
-      ``source=null`` (unchanged for backward compatibility).
+    - ``contact_info`` — all ``relationship.entity_facts`` ``has-*`` triples for
+      the entity (non-secured, full value visible) **plus** any ``public.entity_info``
+      ``secured=true`` rows (value masked as ``None``).  Entity-facts-sourced entries
+      carry ``source="entity_facts"``; secured entity_info entries also carry
+      ``source="entity_facts"`` so the frontend routes reveal to the entity-keyed
+      endpoint (GET /entities/{id}/secrets/{info_id}).
     - ``labels`` — full label objects assigned to the contact.
     - ``preferred_channel`` — the contact's preferred outreach channel.
 
-    De-dup key: ``(type, value)`` where ``type`` is derived from the entity_facts
-    predicate by stripping the ``has-`` prefix (e.g. ``has-email`` → ``email``).
-    A channel present in both stores appears once, with the contact_info version
-    taking precedence.  Entity-facts-only channels are appended to the first
-    linked contact (by name order) because entity_facts are entity-level, not
-    per-contact.
+    SECURITY: secured entity_info values are never included in this response.
+    Only metadata (id, type, is_primary, secured=true, source) is surfaced so
+    the frontend can render a masked chip + reveal affordance.  The real value
+    is available only via the owner-only reveal endpoint
+    GET /entities/{entity_id}/secrets/{info_id}.
+
+    All entity-level entries (entity_facts + entity_info) are attached to the first
+    linked contact (by name order) because they are entity-level, not per-contact.
     """
     pool = _pool(db)
     await _assert_entity_exists(pool, entity_id)
@@ -4527,8 +4530,11 @@ async def list_entity_linked_contacts(
 
     contact_ids = [r["id"] for r in rows]
 
-    # Batch-fetch supplementary data (labels, entity_facts) in one round-trip.
-    label_rows, fact_rows = await asyncio.gather(
+    # Batch-fetch supplementary data (labels, entity_facts, entity_info) in one
+    # round-trip.  entity_info secured rows (credentials) are fetched separately
+    # from entity_facts non-secured channels; both belong to the entity and are
+    # attached to the first linked contact.
+    label_rows, fact_rows, entity_info_rows = await asyncio.gather(
         pool.fetch(
             """
             SELECT cl.contact_id, l.id, l.name, l.color
@@ -4551,6 +4557,16 @@ async def list_entity_linked_contacts(
             """,
             entity_id,
         ),
+        pool.fetch(
+            """
+            SELECT id, type, is_primary, secured
+            FROM public.entity_info
+            WHERE entity_id = $1
+              AND secured = true
+            ORDER BY type ASC, is_primary DESC
+            """,
+            entity_id,
+        ),
     )
 
     labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
@@ -4563,11 +4579,34 @@ async def list_entity_linked_contacts(
     # Attach them all to the first linked contact (by name order), consistent with
     # the pre-migration merge behaviour.
     contact_info_entries = [_ef_row_to_ci_entry(fr) for fr in fact_rows]
+
+    # Surface secured entity_info rows as masked ContactInfoEntry objects.
+    # SECURITY: value is deliberately excluded from this query; the actual secret is
+    # only available via the owner-only reveal endpoint GET /entities/{id}/secrets/{info_id}.
+    # source="entity_facts" routes the frontend reveal affordance to useRevealEntityContactSecret
+    # (entity-keyed endpoint) rather than the legacy contact-keyed path.
+    # predicate and value_hash are None because entity_info rows have no triple predicate —
+    # canEdit and canDelete checks in the frontend require both to be non-null, so secured
+    # credential rows correctly render as reveal-only (no inline edit/delete affordance).
+    secured_entries = [
+        ContactInfoEntry(
+            id=r["id"],
+            type=r["type"],
+            value=None,
+            is_primary=bool(r["is_primary"]),
+            secured=True,
+            source="entity_facts",
+            predicate=None,
+            value_hash=None,
+        )
+        for r in entity_info_rows
+    ]
+
     first_contact_id = contact_ids[0] if contact_ids else None
 
     ci_by_contact: dict[UUID, list[ContactInfoEntry]] = {cid: [] for cid in contact_ids}
     if first_contact_id is not None:
-        ci_by_contact[first_contact_id] = contact_info_entries
+        ci_by_contact[first_contact_id] = contact_info_entries + secured_entries
 
     # Derive quick-display email/phone from the same facts (ordered primary-first).
     email_val = _first_ef_value(fact_rows, predicate="has-email")

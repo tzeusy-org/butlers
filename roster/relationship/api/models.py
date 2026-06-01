@@ -595,9 +595,13 @@ class EntityTimelineItem(BaseModel):
 class LinkedContactSummary(BaseModel):
     """A contact linked to an entity, for the entity detail page linked-contacts section.
 
-    ``contact_info`` contains all non-secured contact_info rows for this contact
-    (secured=True rows are excluded).  The entity-card renders channel chips from
-    this list without needing a secondary ``getContact`` call per contact.
+    ``contact_info`` contains all non-secured ``relationship.entity_facts`` channel entries
+    **plus** masked (value=None) ``public.entity_info`` secured=true rows for the entity.
+    Secured rows carry ``secured=True``, ``value=None``, and ``source="entity_facts"``
+    so the frontend can render a masked chip + reveal affordance routed to the entity-keyed
+    reveal endpoint (GET /entities/{id}/secrets/{info_id}).
+    The entity-card renders channel chips from this list without needing a secondary
+    ``getContact`` call per contact.
 
     ``labels`` mirrors the ``labels`` field on ``ContactDetail`` — the full list
     of label objects assigned to the contact.
