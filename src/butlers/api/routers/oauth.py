@@ -324,9 +324,14 @@ SPOTIFY_SCOPE_SETS: dict[str, list[str]] = {
     "listening_history": [
         "user-read-recently-played",
         "user-top-read",
+        # user-read-playback-state is read-only state and belongs with listening rather
+        # than the write-capable 'playback' set.  It is included in the default scope
+        # composition so the scope surface never reports spurious drift for a freshly
+        # authorized Spotify connector.
+        "user-read-playback-state",
     ],
     "playback": [
-        "user-read-playback-state",
+        # Write-capable and currently-playing scopes — NOT included by default.
         "user-modify-playback-state",
         "user-read-currently-playing",
     ],
@@ -361,7 +366,11 @@ _PROVIDER_REGISTRY: dict[str, _ProviderConfig] = {
         auth_url=_SPOTIFY_AUTH_URL,
         token_url=_SPOTIFY_TOKEN_URL,
         scope_sets=SPOTIFY_SCOPE_SETS,
-        default_scope_sets=("base",),
+        # "base" + "listening_history" gives the five scopes declared as required in the
+        # oauth_scope_registry.py manifest: user-read-email, user-read-private,
+        # user-read-recently-played, user-top-read, user-read-playback-state.
+        # Keeping them aligned means a freshly-authorized connector shows no false drift.
+        default_scope_sets=("base", "listening_history"),
         default_redirect_uri=_DEFAULT_SPOTIFY_REDIRECT_URI,
         redirect_uri_env_var="SPOTIFY_OAUTH_REDIRECT_URI",
         client_id_key="SPOTIFY_OAUTH_CLIENT_ID",

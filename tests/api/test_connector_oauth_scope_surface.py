@@ -9,6 +9,7 @@ Covers:
 - Scope row construction (required/optional/sensitive/extra)
 - Per-connector applicability matrix completeness
 - Credential masking (no token values in scope/auth response fields)
+- Cross-module consistency: registry required ⊆ default OAuth flow scopes (catches drift)
 """
 
 from __future__ import annotations
@@ -425,3 +426,162 @@ class TestCredentialMasking:
             }
             findings = self._find_token_like_values(row_dict)
             assert not findings, f"Token-like value found in scope row: {findings}"
+
+
+# ---------------------------------------------------------------------------
+# Cross-module consistency: registry required ⊆ default OAuth flow scopes
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryOAuthFlowConsistency:
+    """Guard against future drift between oauth_scope_registry and oauth.py.
+
+    Invariant: for every OAuth provider in the scope registry, the manifest's
+    required scope set must be a subset of (or equal to) the scopes that the
+    default OAuth flow requests when no butler.toml override is present.
+
+    Violation means a freshly-authorized connector would immediately show
+    scope drift — the surface would report required scopes as missing even
+    though the connector was just authorized via the standard flow.
+
+    This test covers ALL OAuth providers in the registry so that new providers
+    added in the future are automatically checked for the same invariant.
+    """
+
+    # Maps connector_type → (oauth_provider, extra_scope_sets_or_None).
+    # extra_scope_sets: additional named scope sets beyond the provider default that
+    # the connector requires the user to authorize via ?scope_set=... at authorize time.
+    # None means the connector uses only the default scope composition.
+    #
+    # Connectors absent from this map have no oauth.py provider config and are skipped.
+    _CONNECTOR_OAUTH_CONFIG: dict[str, tuple[str, list[str] | None]] = {
+        "spotify": ("spotify", None),
+        "gmail": ("google", None),
+        "google_calendar": ("google", None),
+        "google_drive": ("google", None),
+        # google_health requires the RESTRICTED 'health' scope set — users must
+        # explicitly authorize via ?scope_set=health because Google classifies these
+        # scopes as RESTRICTED and requires a one-time privacy/security review.
+        # See oauth.py comment: "RESTRICTED scopes — require Google privacy/security review".
+        "google_health": ("google", ["health"]),
+        # discord and discord_user have no provider config in oauth.py yet — skipped.
+    }
+
+    def _authorized_oauth_scopes(self, connector_type: str) -> frozenset[str]:
+        """Return the full scope set a user receives when authorizing *connector_type*.
+
+        Uses an empty roster directory so no butler.toml overrides are applied.
+        For connectors that require extra scope sets (e.g. google_health → health),
+        the extra sets are included so the check reflects the actual authorize-time scopes.
+        """
+        import tempfile
+        from pathlib import Path
+
+        from butlers.api.routers.oauth import (
+            _PROVIDER_REGISTRY,
+            _clear_toml_scope_cache,
+            _compose_provider_default_scopes,
+            _compose_provider_scopes_from_sets,
+        )
+
+        cfg = self._CONNECTOR_OAUTH_CONFIG.get(connector_type)
+        if cfg is None:
+            return frozenset()
+
+        oauth_provider, extra_sets = cfg
+        if oauth_provider not in _PROVIDER_REGISTRY:
+            return frozenset()
+
+        provider_cfg = _PROVIDER_REGISTRY[oauth_provider]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _clear_toml_scope_cache()
+            try:
+                default_str = _compose_provider_default_scopes(
+                    provider_cfg, oauth_provider, roster_dir=Path(tmp)
+                )
+            finally:
+                _clear_toml_scope_cache()
+
+        scopes: dict[str, None] = dict.fromkeys(default_str.split())
+
+        if extra_sets:
+            # Union the extra (connector-specific) scope sets into the default.
+            extra_str = _compose_provider_scopes_from_sets(provider_cfg, extra_sets)
+            for s in extra_str.split():
+                scopes.setdefault(s, None)
+
+        return frozenset(scopes)
+
+    def test_registry_required_subset_of_authorized_oauth_scopes(self) -> None:
+        """For each OAuth connector in the registry, required ⊆ scopes-at-authorize-time.
+
+        This catches the class of bug where oauth_scope_registry.py declares
+        scopes as 'required' that the OAuth flow never requests for that connector
+        — causing every freshly-authorized connector to immediately show drift.
+
+        "scopes-at-authorize-time" means: the default OAuth flow scopes unioned
+        with any connector-specific scope sets (e.g. google_health adds 'health').
+
+        Connectors absent from _CONNECTOR_OAUTH_CONFIG (e.g. discord, which has no
+        provider config yet in oauth.py) are skipped rather than failed, since the
+        flow for those providers is not implemented.
+        """
+        from butlers.api.oauth_scope_registry import _OAUTH_MANIFESTS
+
+        skipped: list[str] = []
+        failed: list[str] = []
+
+        for connector_type, manifest in _OAUTH_MANIFESTS.items():
+            authorized_scopes = self._authorized_oauth_scopes(connector_type)
+
+            if not authorized_scopes:
+                # No oauth.py provider config for this connector — skip.
+                skipped.append(connector_type)
+                continue
+
+            required = manifest.required_names()
+            missing_from_authorized = required - authorized_scopes
+
+            if missing_from_authorized:
+                failed.append(
+                    f"{connector_type}: required scopes not in authorize-time OAuth scopes: "
+                    f"{sorted(missing_from_authorized)}"
+                )
+
+        assert not failed, (
+            "Registry required scopes are NOT a subset of the scopes the OAuth flow requests.\n"
+            "A freshly-authorized connector would immediately show drift.\n"
+            "Fix: either expand the scope sets in oauth.py, add an extra_sets entry to\n"
+            "_CONNECTOR_OAUTH_CONFIG in this test, or move the scope to 'optional' "
+            "in the manifest.\n\n"
+            + "\n".join(failed)
+            + (f"\n\n(Skipped — no oauth.py provider config: {skipped})" if skipped else "")
+        )
+
+    def test_spotify_required_exactly_equals_default_oauth_scopes(self) -> None:
+        """Spotify registry required set equals the default OAuth flow scopes exactly.
+
+        This is a tighter invariant than the subset check — for Spotify we know
+        the exact required set and can assert equality, not just subset.  If this
+        fails it means either:
+          (a) oauth.py requests extra scopes the registry doesn't declare, or
+          (b) the registry declares required scopes the flow doesn't request.
+        Both are bugs: (a) means unexpected grants, (b) means false drift reports.
+        """
+        from butlers.api.oauth_scope_registry import get_scope_manifest
+
+        manifest = get_scope_manifest("spotify")
+        assert manifest is not None
+
+        authorized_scopes = self._authorized_oauth_scopes("spotify")
+        assert authorized_scopes, "Spotify must have a registered OAuth provider config"
+
+        required = manifest.required_names()
+        assert required == authorized_scopes, (
+            f"Spotify required scopes in registry do not match default OAuth flow scopes.\n"
+            f"Registry required : {sorted(required)}\n"
+            f"Default OAuth flow: {sorted(authorized_scopes)}\n"
+            f"In required but not flow: {sorted(required - authorized_scopes)}\n"
+            f"In flow but not required: {sorted(authorized_scopes - required)}"
+        )
