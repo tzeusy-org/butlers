@@ -35,6 +35,7 @@ import { AttentionStrip } from './AttentionStrip'
 import { ConnectorRosterRow } from './ConnectorRosterRow'
 import { DormantList } from './DormantList'
 import { deriveConnectorDispatchInfo } from './connector-auth'
+import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
 // ---------------------------------------------------------------------------
 // Column headers
@@ -142,7 +143,7 @@ export function ConnectorsRoster() {
       {/* Column headers */}
       <div
         className="grid gap-x-4 py-2.5 border-b border-border"
-        style={{ gridTemplateColumns: '14px 180px 1fr 120px 120px 80px 64px 80px 24px' }}
+        style={{ gridTemplateColumns: CONNECTOR_ROSTER_GRID_COLUMNS }}
       >
         {COLUMN_LABELS.map((label, i) => (
           <span

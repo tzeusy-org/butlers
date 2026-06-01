@@ -29,6 +29,7 @@ import {
   authStatusColor,
   healthDotColor,
 } from './connector-auth'
+import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
 interface ConnectorRosterRowProps {
   connector: ConnectorSummary
@@ -93,7 +94,7 @@ export function ConnectorRosterRow({
   return (
     <div
       className="relative grid gap-x-4 py-4 border-b border-border/60 items-center hover:bg-foreground/[0.015] transition-colors"
-      style={{ gridTemplateColumns: '14px 180px 1fr 120px 120px 80px 64px 80px 24px' }}
+      style={{ gridTemplateColumns: CONNECTOR_ROSTER_GRID_COLUMNS }}
       data-testid={`connector-row-${c.connector_type}`}
     >
       {/* Left severity rail */}
