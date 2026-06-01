@@ -572,6 +572,29 @@ async def test_ingestion_window_rollup_cost_skips_unknown_model() -> None:
     assert abs(result["cost"] - 0.002) < 1e-9
 
 
+async def test_ingestion_window_rollup_cost_zero_all_unknown_models() -> None:
+    """When pricing is present and sessions exist but all models are unknown, cost is 0.0 not None.
+
+    None means "pricing unavailable"; 0.0 means "sessions found, nothing chargeable".
+    """
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pricing = _make_pricing("known-model", price_per_token=1e-6)
+
+    # All sessions have an unknown model (not in the pricing catalog)
+    session_rows = [
+        {"cnt": 2, "model": "unknown-model-xyz", "input_tokens": 2000, "output_tokens": 1000},
+    ]
+    db = _FakeDatabaseManager(results={"butler1": session_rows})
+    pool = _FakePoolForRollup(event_count=2)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
+
+    assert result["sessions"] == 2
+    # Pricing was available and sessions existed, so cost must not be None
+    assert result["cost"] == 0.0
+
+
 async def test_ingestion_window_rollup_cost_null_when_db_none() -> None:
     """When db=None, no fan-out runs; sessions=0 and cost=None."""
     from butlers.core.ingestion_events import ingestion_window_rollup

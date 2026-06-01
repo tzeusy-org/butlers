@@ -786,7 +786,7 @@ async def ingestion_window_rollup(
     # We fetch only the event IDs (not full rows) and cap the array to avoid
     # transferring unbounded data to the application layer.
     # A cap of 10,000 IDs is sufficient for rollup accuracy in typical windows;
-    # very large windows return an approximate count.
+    # very large windows return an approximate count and approximate cost.
     _SESSION_COUNT_ID_CAP = 10_000
     session_count = 0
     total_cost: float | None = None
@@ -833,6 +833,11 @@ async def ingestion_window_rollup(
                                 if total_cost is None:
                                     total_cost = 0.0
                                 total_cost += estimate_session_cost(pricing, model, in_tok, out_tok)
+                # Pricing present but all sessions have unknown/empty model or zero tokens:
+                # initialise to 0.0 so callers can distinguish "pricing unavailable" (None)
+                # from "sessions exist but zero chargeable tokens" (0.0).
+                if pricing is not None and session_count > 0 and total_cost is None:
+                    total_cost = 0.0
             except Exception:
                 logger.debug("ingestion_window_rollup: session fan-out failed", exc_info=True)
 
