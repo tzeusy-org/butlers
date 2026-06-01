@@ -173,7 +173,7 @@ function setupDefaultMocks() {
   // Default: no custom views, not loading
   vi.mocked(useTimelineSavedViews).mockReturnValue({
     data: { data: [], meta: {} },
-    isLoading: false,
+    isPending: false,
     isError: false,
   } as unknown as ReturnType<typeof useTimelineSavedViews>);
 
@@ -217,7 +217,7 @@ describe("TimelineTab — §2.8 custom saved views list", () => {
   it("renders custom views alongside built-in presets when available", () => {
     vi.mocked(useTimelineSavedViews).mockReturnValue({
       data: { data: [makeSavedViewEntry({ name: "My errors view" })], meta: {} },
-      isLoading: false,
+      isPending: false,
       isError: false,
     } as unknown as ReturnType<typeof useTimelineSavedViews>);
 
@@ -244,7 +244,7 @@ describe("TimelineTab — §2.8 custom saved views list", () => {
   it("shows loading skeleton while custom views are fetching", () => {
     vi.mocked(useTimelineSavedViews).mockReturnValue({
       data: undefined,
-      isLoading: true,
+      isPending: true,
       isError: false,
     } as unknown as ReturnType<typeof useTimelineSavedViews>);
 
@@ -283,7 +283,7 @@ describe("TimelineTab — §2.8 custom saved views list", () => {
     const viewId = "550e8400-e29b-41d4-a716-446655440000";
     vi.mocked(useTimelineSavedViews).mockReturnValue({
       data: { data: [makeSavedViewEntry({ id: viewId })], meta: {} },
-      isLoading: false,
+      isPending: false,
       isError: false,
     } as unknown as ReturnType<typeof useTimelineSavedViews>);
 
@@ -305,7 +305,7 @@ describe("TimelineTab — §2.8 custom saved views list", () => {
   it("toolbar still renders when custom-views endpoint errors (degraded mode)", () => {
     vi.mocked(useTimelineSavedViews).mockReturnValue({
       data: undefined,
-      isLoading: false,
+      isPending: false,
       isError: true,
     } as unknown as ReturnType<typeof useTimelineSavedViews>);
 
@@ -490,7 +490,7 @@ describe("TimelineTab — §2.8 apply custom view restores filter_spec", () => {
         })],
         meta: {},
       },
-      isLoading: false,
+      isPending: false,
       isError: false,
     } as unknown as ReturnType<typeof useTimelineSavedViews>);
 
@@ -551,7 +551,7 @@ describe("TimelineTab — §2.8 delete custom view", () => {
 
     vi.mocked(useTimelineSavedViews).mockReturnValue({
       data: { data: [makeSavedViewEntry({ id: viewId })], meta: {} },
-      isLoading: false,
+      isPending: false,
       isError: false,
     } as unknown as ReturnType<typeof useTimelineSavedViews>);
 

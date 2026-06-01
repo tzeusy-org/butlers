@@ -968,7 +968,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
   // Custom saved views from backend
   const {
     data: customViewsResp,
-    isLoading: customViewsLoading,
+    isPending: customViewsLoading,
   } = useTimelineSavedViews({ enabled: isActive });
   const customViews = useMemo(
     () => customViewsResp?.data ?? [],
@@ -1124,30 +1124,27 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
       }
       if (spec.range && (["1h", "24h", "7d"] as string[]).includes(spec.range)) {
         setRange(spec.range as IngestionRange);
-        setSearchParams((prev) => {
-          const next = new URLSearchParams(prev);
-          next.set("range", spec.range!);
-          return next;
-        });
       }
       if (typeof spec.q === "string") {
         setSearchInputValue(spec.q);
         setDebouncedQ(spec.q);
-        setSearchParams((prev) => {
-          const next = new URLSearchParams(prev);
+      }
+      // Batch all URL param changes into a single setSearchParams call
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (spec.range && (["1h", "24h", "7d"] as string[]).includes(spec.range)) {
+          next.set("range", spec.range);
+        }
+        if (typeof spec.q === "string") {
           if (spec.q) next.set("q", spec.q);
           else next.delete("q");
-          return next;
-        });
-      }
-      if (typeof spec.channels === "string") {
-        setSearchParams((prev) => {
-          const next = new URLSearchParams(prev);
+        }
+        if (typeof spec.channels === "string") {
           if (spec.channels) next.set("channels", spec.channels);
           else next.delete("channels");
-          return next;
-        });
-      }
+        }
+        return next;
+      });
     },
     [setSearchParams, setEnabledStatuses, setRange, setSearchInputValue, setDebouncedQ],
   );
@@ -1159,9 +1156,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     if (customView) {
       applyCustomViewFilterSpec(customView.filter_spec);
     }
-  // Re-run when the selected view ID changes or when custom views load
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeViewId, customViews.length]);
+  }, [activeViewId, customViews, applyCustomViewFilterSpec]);
 
   const handleSaveView = useCallback(() => {
     setSaveViewName("");
@@ -1170,7 +1165,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
 
   const handleSaveViewConfirm = useCallback(() => {
     const trimmedName = saveViewName.trim();
-    if (!trimmedName) return;
+    if (!trimmedName || createSavedView.isPending) return;
 
     const spec: TimelineSavedViewFilterSpec = {
       statuses: [...enabledStatuses],
