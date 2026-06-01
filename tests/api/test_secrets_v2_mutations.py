@@ -946,6 +946,15 @@ def test_rotate_github_calls_delete_revoke_endpoint(monkeypatch):
     assert json_body.get("access_token") == "old-gh-tok", (
         f"Expected old token in JSON body, got: {json_body}"
     )
+    # Verify required GitHub API headers are present (User-Agent is strictly required
+    # by GitHub to avoid 403; X-GitHub-Api-Version pins the API version).
+    headers = call["kwargs"].get("headers", {})
+    assert headers.get("User-Agent") == "ButlerSecretsManager/1.0", (
+        f"Expected User-Agent header, got: {headers}"
+    )
+    assert headers.get("X-GitHub-Api-Version") == "2022-11-28", (
+        f"Expected X-GitHub-Api-Version header, got: {headers}"
+    )
 
 
 def test_rotate_github_revoke_204_returns_succeeded(monkeypatch):

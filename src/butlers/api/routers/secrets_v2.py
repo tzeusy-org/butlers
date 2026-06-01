@@ -138,7 +138,7 @@ import secrets as _secrets_mod
 import time
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from uuid import UUID
 
 import httpx
@@ -1790,7 +1790,7 @@ async def _revoke_github_oauth_token(
         )
         return "skipped"
 
-    revoke_url = _GITHUB_REVOKE_URL_TEMPLATE.format(client_id=client_id)
+    revoke_url = _GITHUB_REVOKE_URL_TEMPLATE.format(client_id=quote(client_id))
 
     try:
         async with httpx.AsyncClient(timeout=_REVOKE_TIMEOUT_S) as client:
@@ -1798,7 +1798,11 @@ async def _revoke_github_oauth_token(
                 revoke_url,
                 auth=(client_id, client_secret),
                 json={"access_token": access_token},
-                headers={"Accept": "application/vnd.github+json"},
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "ButlerSecretsManager/1.0",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
             )
         # GitHub returns 204 No Content on successful grant deletion.
         if resp.status_code in {200, 204}:
