@@ -188,6 +188,8 @@ function DrawerSessionsTab({
   // Flamegraph
   const withTimes = sessionList.filter((s) => s.started_at)
   // Use completed_at if available; fall back to started_at + 1ms as a sentinel
+  // for in-progress sessions. maxTime is the visible window right edge — clamp
+  // in-progress spans to it so they never overflow 100% width.
   // (avoids calling Date.now() during render — ESLint rule: react-hooks/purity)
   const starts = withTimes.map((s) => new Date(s.started_at!).getTime())
   const ends = withTimes.map((s) =>
@@ -221,7 +223,11 @@ function DrawerSessionsTab({
                 <div key={butler} className="relative h-7 border-b last:border-0">
                   {laneSessions.map((s) => {
                     const sStart = new Date(s.started_at!).getTime()
-                    const sEnd = s.completed_at ? new Date(s.completed_at).getTime() : Date.now()
+                    // Clamp in-progress spans to maxTime (the visible window right
+                    // edge) so they don't overflow the flamegraph container.
+                    const sEnd = s.completed_at
+                      ? new Date(s.completed_at).getTime()
+                      : maxTime
                     const left = ((sStart - minTime) / span) * 100
                     const width = Math.max(((sEnd - sStart) / span) * 100, 1)
                     const dur = formatDuration(s.started_at, s.completed_at ?? new Date().toISOString())
@@ -504,6 +510,10 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
   const [rawEnabled, setRawEnabled] = useState(false)
   const [isReplaying, setIsReplaying] = useState(false)
 
+  // Track the session ID that should be scrolled to once the sessions tab is
+  // active and its content has rendered. Replaces the fragile setTimeout approach.
+  const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
+
   function handleTabChange(tab: DrawerTab) {
     setActiveTab(tab)
     try {
@@ -514,15 +524,19 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
     if (tab === 'raw') setRawEnabled(true)
   }
 
-  function scrollToSession(sessionId: string) {
-    const el = contentRef.current?.querySelector(`#session-${CSS.escape(sessionId)}`)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-  }
-
   const { sessions } = useIngestionEventLineage(event.id, { enabled: true })
   const sessionList = sessions.data?.data ?? []
+
+  // Scroll to the pending session once the sessions tab is rendered and the
+  // target element is in the DOM. Clears the pending ID after scrolling.
+  useEffect(() => {
+    if (!pendingScrollId || activeTab !== 'sessions') return
+    const el = contentRef.current?.querySelector(`#session-${CSS.escape(pendingScrollId)}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      setPendingScrollId(null)
+    }
+  }, [pendingScrollId, activeTab, sessionList])
 
   async function handleReplay() {
     setIsReplaying(true)
@@ -642,8 +656,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
                     type="button"
                     onClick={() => {
                       if (activeTab !== 'sessions') handleTabChange('sessions')
-                      // Defer scroll until after re-render
-                      setTimeout(() => scrollToSession(s.id), 50)
+                      setPendingScrollId(s.id)
                     }}
                     className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
                     data-testid={`drawer-session-index-item-${s.id}`}
