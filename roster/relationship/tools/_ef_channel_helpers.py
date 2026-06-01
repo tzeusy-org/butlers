@@ -82,10 +82,10 @@ def ef_object_to_display_value(predicate: str, object_val: str) -> str:
 async def entity_facts_channels_by_entity(
     pool: Any,
     entity_ids: list[UUID],
-) -> dict[UUID, list[dict]]:
+) -> dict[UUID, list[Any]]:
     """Batch-fetch active has-* triples from relationship.entity_facts.
 
-    Returns a dict mapping entity_id → list of asyncpg-like row dicts
+    Returns a dict mapping entity_id → list of asyncpg Row objects (mapping-like)
     with keys ``id``, ``predicate``, ``object``, ``primary``.
 
     Entity IDs with no facts map to an empty list.  Entity IDs with
@@ -106,7 +106,7 @@ async def entity_facts_channels_by_entity(
         """,
         entity_ids,
     )
-    result: dict[UUID, list[dict]] = {eid: [] for eid in entity_ids}
+    result: dict[UUID, list[Any]] = {eid: [] for eid in entity_ids}
     for r in rows:
         eid = r["entity_id"]
         if eid in result:

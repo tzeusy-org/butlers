@@ -44,7 +44,6 @@ from butlers.tools.relationship._ef_channel_helpers import (
 )
 from butlers.tools.relationship.contacts import _parse_contact
 from butlers.tools.relationship.relationship_assert_fact import (
-    _CI_TYPE_TO_PREDICATE,
     contact_info_type_to_predicate,
     relationship_assert_fact,
 )
@@ -233,9 +232,11 @@ async def contact_info_list(
     When *type* is provided it is mapped to the corresponding predicate
     (``has-email``, ``has-phone``, ``has-handle``, ``has-website``) and only
     facts with that predicate are returned.  Note that ``telegram``,
-    ``linkedin``, ``twitter`` and ``other`` all map to ``has-handle``; if you
-    need to distinguish them use ``contact_search_by_info`` with an explicit
-    type filter.
+    ``linkedin``, ``twitter`` and ``other`` all map to ``has-handle``; the
+    returned entry types are ``"telegram_user_id"`` (for prefixed handles) or
+    ``"handle"`` (for bare handles — linkedin, twitter, other).  Passing
+    ``type="telegram"`` will return both telegram and non-telegram handles
+    because they share the ``has-handle`` predicate.
     """
     entity_id = await _resolve_contact_entity(pool, contact_id)
     if entity_id is None:
@@ -245,7 +246,7 @@ async def contact_info_list(
     facts = facts_by_entity.get(entity_id, [])
 
     if type is not None:
-        target_predicate = _CI_TYPE_TO_PREDICATE.get(type)
+        target_predicate = contact_info_type_to_predicate(type)
         if target_predicate is not None:
             facts = [f for f in facts if f["predicate"] == target_predicate]
         else:
@@ -313,7 +314,7 @@ async def contact_search_by_info(
     # Map optional type to predicate filter
     predicate_filter: str | None = None
     if type is not None:
-        predicate_filter = _CI_TYPE_TO_PREDICATE.get(type)
+        predicate_filter = contact_info_type_to_predicate(type)
         if predicate_filter is None:
             # Unmapped type (e.g. 'address') — no triple predicate home
             return []
@@ -323,8 +324,7 @@ async def contact_search_by_info(
             """
             SELECT DISTINCT c.*
             FROM contacts c
-            JOIN public.entities e ON c.entity_id = e.id
-            JOIN relationship.entity_facts ef ON ef.subject = e.id
+            JOIN relationship.entity_facts ef ON ef.subject = c.entity_id
             WHERE ef.predicate = $1
               AND ef.object ILIKE '%' || $2 || '%'
               AND ef.validity = 'active'
@@ -340,8 +340,7 @@ async def contact_search_by_info(
             """
             SELECT DISTINCT c.*
             FROM contacts c
-            JOIN public.entities e ON c.entity_id = e.id
-            JOIN relationship.entity_facts ef ON ef.subject = e.id
+            JOIN relationship.entity_facts ef ON ef.subject = c.entity_id
             WHERE ef.predicate LIKE 'has-%%'
               AND ef.object ILIKE '%' || $1 || '%'
               AND ef.validity = 'active'
