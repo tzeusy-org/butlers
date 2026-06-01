@@ -291,6 +291,35 @@ async def _insert_legacy_contact_info(
     return dict(row)
 
 
+async def _insert_entity_fact(
+    pool,
+    entity_id: uuid.UUID,
+    predicate: str,
+    object_value: str,
+    *,
+    is_primary: bool = False,
+) -> dict[str, Any]:
+    """Insert a channel triple directly into relationship.entity_facts.
+
+    Use this helper to seed test data for the migrated read paths
+    (``contact_info_list``, ``contact_search_by_info``).  Mirrors what
+    ``contact_info_add`` asserts via the central writer.
+    """
+    row = await pool.fetchrow(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, validity, "primary")
+        VALUES ($1, $2, $3, 'literal', 'test', 'active', $4)
+        RETURNING *
+        """,
+        entity_id,
+        predicate,
+        object_value,
+        is_primary,
+    )
+    return dict(row)
+
+
 async def _fetch_contact_fact(pool, entity_id: uuid.UUID, type: str, value: str):
     return await pool.fetchrow(
         """
@@ -433,25 +462,25 @@ async def test_contact_info_add_all_types(pool):
 
 
 async def test_contact_info_list_all(pool):
-    """contact_info_list returns all info for a contact."""
+    """contact_info_list returns all info for a contact (reads entity_facts)."""
     from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "ListAll")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "list@example.com")
-    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-0200")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "list@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-0200")
 
     infos = await contact_info_list(pool, c["id"])
     assert len(infos) == 2
 
 
 async def test_contact_info_list_by_type(pool):
-    """contact_info_list filters by type when specified."""
+    """contact_info_list filters by type when specified (reads entity_facts)."""
     from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "ListByType")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "a@example.com")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "b@example.com")
-    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-0300")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "a@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "b@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-0300")
 
     emails = await contact_info_list(pool, c["id"], type="email")
     assert len(emails) == 2
@@ -462,13 +491,13 @@ async def test_contact_info_list_by_type(pool):
 
 
 async def test_contact_info_list_primary_first(pool):
-    """contact_info_list returns primary entries first."""
+    """contact_info_list returns primary entries first (reads entity_facts)."""
     from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "PrimaryFirst")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "secondary@example.com")
-    await _insert_legacy_contact_info(
-        pool, c["id"], "email", "primary@example.com", is_primary=True
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "secondary@example.com")
+    await _insert_entity_fact(
+        pool, c["entity_id"], "has-email", "primary@example.com", is_primary=True
     )
 
     emails = await contact_info_list(pool, c["id"], type="email")
@@ -512,17 +541,20 @@ async def test_contact_info_remove_nonexistent(pool):
 
 
 async def test_contact_info_remove_keeps_others(pool):
-    """contact_info_remove leaves legacy rows untouched because deletes are blocked."""
+    """contact_info_remove is blocked; entity_facts data is unaffected."""
     from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
     from butlers.tools.relationship import contact_create, contact_info_list, contact_info_remove
 
     c = await contact_create(pool, "KeepOthers")
-    info1 = await _insert_legacy_contact_info(pool, c["id"], "email", "keep1@example.com")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "keep2@example.com")
+    # Seed entity_facts — contact_info_list reads from here now
+    fact1 = await _insert_entity_fact(pool, c["entity_id"], "has-email", "keep1@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "keep2@example.com")
 
+    # Remove is blocked (uses a legacy contact_info_id — the UUID is arbitrary)
     with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
-        await contact_info_remove(pool, info1["id"])
+        await contact_info_remove(pool, fact1["id"])
 
+    # Both entity_facts rows remain; contact_info_list returns them
     infos = await contact_info_list(pool, c["id"])
     assert len(infos) == 2
 
@@ -533,14 +565,14 @@ async def test_contact_info_remove_keeps_others(pool):
 
 
 async def test_contact_search_by_info_exact(pool):
-    """contact_search_by_info finds a contact by exact email value."""
+    """contact_search_by_info finds a contact by exact email value (reads entity_facts)."""
     from butlers.tools.relationship import (
         contact_create,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "SearchExact")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "searchexact@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "searchexact@example.com")
 
     results = await contact_search_by_info(pool, "searchexact@example.com")
     assert len(results) >= 1
@@ -548,14 +580,14 @@ async def test_contact_search_by_info_exact(pool):
 
 
 async def test_contact_search_by_info_partial(pool):
-    """contact_search_by_info supports partial matching (ILIKE)."""
+    """contact_search_by_info supports partial matching (ILIKE) via entity_facts."""
     from butlers.tools.relationship import (
         contact_create,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "SearchPartial")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "partial_unique_xyz@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "partial_unique_xyz@example.com")
 
     results = await contact_search_by_info(pool, "partial_unique_xyz")
     assert len(results) >= 1
@@ -563,17 +595,17 @@ async def test_contact_search_by_info_partial(pool):
 
 
 async def test_contact_search_by_info_with_type_filter(pool):
-    """contact_search_by_info filters by type when specified."""
+    """contact_search_by_info filters by type (predicate) when specified."""
     from butlers.tools.relationship import (
         contact_create,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "SearchTyped")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "typed_search_unique@example.com")
-    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-9999")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "typed_search_unique@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-9999")
 
-    # Search by email type only
+    # Search by email type only (maps to has-email)
     results = await contact_search_by_info(pool, "typed_search_unique", type="email")
     assert len(results) >= 1
     assert any(r["id"] == c["id"] for r in results)
@@ -584,7 +616,7 @@ async def test_contact_search_by_info_with_type_filter(pool):
 
 
 async def test_contact_search_by_info_multiple_contacts(pool):
-    """contact_search_by_info finds multiple contacts sharing a domain."""
+    """contact_search_by_info finds multiple contacts sharing a domain (entity_facts)."""
     from butlers.tools.relationship import (
         contact_create,
         contact_search_by_info,
@@ -592,8 +624,8 @@ async def test_contact_search_by_info_multiple_contacts(pool):
 
     c1 = await contact_create(pool, "Multi-A")
     c2 = await contact_create(pool, "Multi-B")
-    await _insert_legacy_contact_info(pool, c1["id"], "email", "a@shareduniquedomain.com")
-    await _insert_legacy_contact_info(pool, c2["id"], "email", "b@shareduniquedomain.com")
+    await _insert_entity_fact(pool, c1["entity_id"], "has-email", "a@shareduniquedomain.com")
+    await _insert_entity_fact(pool, c2["entity_id"], "has-email", "b@shareduniquedomain.com")
 
     results = await contact_search_by_info(pool, "shareduniquedomain.com")
     found_ids = {r["id"] for r in results}
@@ -719,14 +751,14 @@ def test_classify_email_context_empty_env_disables_heuristic(monkeypatch):
 
 
 async def test_contact_search_by_info_case_insensitive(pool):
-    """contact_search_by_info is case-insensitive."""
+    """contact_search_by_info is case-insensitive (entity_facts ILIKE)."""
     from butlers.tools.relationship import (
         contact_create,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "CaseTest")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "CaseUnique@Example.COM")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "CaseUnique@Example.COM")
 
     results = await contact_search_by_info(pool, "caseunique@example.com")
     assert any(r["id"] == c["id"] for r in results)
@@ -741,7 +773,9 @@ async def test_contact_search_by_info_excludes_archived(pool):
     )
 
     c = await contact_create(pool, "ArchivedSearch")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "archivedsearch_unique@example.com")
+    await _insert_entity_fact(
+        pool, c["entity_id"], "has-email", "archivedsearch_unique@example.com"
+    )
     await contact_archive(pool, c["id"])
 
     results = await contact_search_by_info(pool, "archivedsearch_unique@example.com")
@@ -757,14 +791,14 @@ async def test_contact_search_by_info_no_results(pool):
 
 
 async def test_contact_search_by_info_phone(pool):
-    """contact_search_by_info works for phone lookups."""
+    """contact_search_by_info works for phone lookups (entity_facts)."""
     from butlers.tools.relationship import (
         contact_create,
         contact_search_by_info,
     )
 
     c = await contact_create(pool, "PhoneLookup")
-    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-7777-unique")
+    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-7777-unique")
 
     results = await contact_search_by_info(pool, "+1-555-7777-unique", type="phone")
     assert len(results) >= 1
@@ -777,14 +811,12 @@ async def test_contact_search_by_info_phone(pool):
 
 
 async def test_multiple_emails_per_contact(pool):
-    """A contact can have multiple email addresses."""
+    """A contact can have multiple email addresses (entity_facts)."""
     from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "MultiEmail")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "work@example.com", label="Work")
-    await _insert_legacy_contact_info(
-        pool, c["id"], "email", "personal@example.com", label="Personal"
-    )
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "work@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "personal@example.com")
 
     emails = await contact_info_list(pool, c["id"], type="email")
     assert len(emails) == 2
@@ -793,18 +825,24 @@ async def test_multiple_emails_per_contact(pool):
 
 
 async def test_multiple_types_per_contact(pool):
-    """A contact can have multiple types of contact info."""
+    """A contact can have multiple types of contact info (entity_facts).
+
+    Telegram stored as has-handle with 'telegram:<id>' prefix; the returned
+    type is 'telegram_user_id' (numeric id), not 'telegram'.
+    """
     from butlers.tools.relationship import contact_create, contact_info_list
 
     c = await contact_create(pool, "MultiType")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "multi@example.com")
-    await _insert_legacy_contact_info(pool, c["id"], "phone", "+1-555-0400")
-    await _insert_legacy_contact_info(pool, c["id"], "telegram", "@multitype")
+    await _insert_entity_fact(pool, c["entity_id"], "has-email", "multi@example.com")
+    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-0400")
+    # Telegram stored with prefix per the entity_facts convention
+    await _insert_entity_fact(pool, c["entity_id"], "has-handle", "telegram:12345678")
 
     infos = await contact_info_list(pool, c["id"])
     assert len(infos) == 3
     types = {i["type"] for i in infos}
-    assert types == {"email", "phone", "telegram"}
+    # has-handle with telegram: prefix → "telegram_user_id"; email → "email"; phone → "phone"
+    assert types == {"email", "phone", "telegram_user_id"}
 
 
 # ------------------------------------------------------------------
@@ -971,29 +1009,32 @@ async def test_contact_info_update_label(pool):
 
 
 async def test_contact_info_update_is_primary(pool):
-    """contact_info_update rejects legacy primary updates."""
+    """contact_info_update rejects legacy primary updates; entity_facts data unaffected."""
     from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
     from butlers.tools.relationship import contact_create, contact_info_list
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "UpdatePrimary")
-    i1 = await _insert_legacy_contact_info(
-        pool, c["id"], "email", "first@example.com", is_primary=True
+    # Seed via entity_facts — contact_info_list reads from here now
+    fact1 = await _insert_entity_fact(
+        pool, c["entity_id"], "has-email", "first@example.com", is_primary=True
     )
-    i2 = await _insert_legacy_contact_info(
-        pool, c["id"], "email", "second@example.com", is_primary=False
+    fact2 = await _insert_entity_fact(
+        pool, c["entity_id"], "has-email", "second@example.com", is_primary=False
     )
 
+    # contact_info_update is blocked regardless of which ID is passed
     with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
-        await contact_info_update(pool, i2["id"], is_primary=True)
+        await contact_info_update(pool, fact2["id"], is_primary=True)
 
+    # entity_facts data is unchanged — fact1 is still the primary entry
     emails = await contact_info_list(pool, c["id"], type="email")
     primary = [e for e in emails if e["is_primary"]]
     assert len(primary) == 1
-    assert primary[0]["id"] == i1["id"]
+    assert primary[0]["id"] == fact1["id"]
 
     # First entry is unchanged because update is blocked.
-    first = next(e for e in emails if e["id"] == i1["id"])
+    first = next(e for e in emails if e["id"] == fact1["id"])
     assert first["is_primary"] is True
 
 

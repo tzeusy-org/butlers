@@ -35,6 +35,21 @@ from butlers.contact_info_write_guard import (
     ContactInfoWriteBlockedError,
     assert_contact_info_writes_blocked,
 )
+from butlers.tools.relationship._ef_channel_helpers import (
+    TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
+)
+from butlers.tools.relationship._ef_channel_helpers import (
+    contact_entity_map as _contact_entity_map_shared,
+)
+from butlers.tools.relationship._ef_channel_helpers import (
+    ef_object_to_display_value as _ef_object_to_display_value_shared,
+)
+from butlers.tools.relationship._ef_channel_helpers import (
+    ef_predicate_to_ci_type as _ef_predicate_to_ci_type_shared,
+)
+from butlers.tools.relationship._ef_channel_helpers import (
+    entity_facts_channels_by_entity as _entity_facts_channels_by_entity_shared,
+)
 
 # Load local models module
 _api_dir = Path(__file__).parent
@@ -298,51 +313,18 @@ def _compute_warmth(
 
 
 # ---------------------------------------------------------------------------
-# entity_facts channel helpers — replaces public.contact_info reads (bu-6ioq3)
+# entity_facts channel helpers — shared with tools layer (bu-twbt0)
 # ---------------------------------------------------------------------------
+# The low-level predicate→type and object→display-value helpers now live in
+# butlers.tools.relationship._ef_channel_helpers (imported at the top of this
+# file).  Local aliases preserve the original call-site names throughout
+# this module.
 
-_TELEGRAM_HANDLE_PREFIX = "telegram:"
-
-
-def _ef_predicate_to_ci_type(predicate: str, object_val: str) -> str:
-    """Derive a legacy-compatible CI type string from an entity_facts row.
-
-    Mapping:
-    - ``has-email``   → ``"email"``
-    - ``has-phone``   → ``"phone"``
-    - ``has-website`` → ``"website"``
-    - ``has-handle``  with ``"telegram:"`` prefix → ``"telegram_user_id"``
-    - ``has-handle``  without prefix → ``"handle"``
-
-    The ``"telegram_user_id"`` type is used so callers can distinguish
-    Telegram entries (numeric id, stripped of the prefix) from bare handles
-    (linkedin, twitter, etc.).  Bare ``has-handle`` entries that lack the
-    prefix are typed as ``"handle"`` — a neutral label that avoids implying
-    any particular network.
-    """
-    if predicate == "has-email":
-        return "email"
-    if predicate == "has-phone":
-        return "phone"
-    if predicate == "has-website":
-        return "website"
-    # has-handle: distinguish telegram (prefixed) from other handles
-    if predicate == "has-handle":
-        if object_val.startswith(_TELEGRAM_HANDLE_PREFIX):
-            return "telegram_user_id"
-        return "handle"
-    # Fallback: strip the "has-" prefix for any future predicates
-    return predicate.removeprefix("has-")
-
-
-def _ef_object_to_display_value(predicate: str, object_val: str) -> str:
-    """Strip the ``telegram:`` prefix from telegram has-handle values.
-
-    For all other predicates the raw object string is returned as-is.
-    """
-    if predicate == "has-handle" and object_val.startswith(_TELEGRAM_HANDLE_PREFIX):
-        return object_val[len(_TELEGRAM_HANDLE_PREFIX) :]
-    return object_val
+_TELEGRAM_HANDLE_PREFIX = _EF_TELEGRAM_HANDLE_PREFIX
+_ef_predicate_to_ci_type = _ef_predicate_to_ci_type_shared
+_ef_object_to_display_value = _ef_object_to_display_value_shared
+_entity_facts_channels_by_entity = _entity_facts_channels_by_entity_shared
+_contact_entity_map = _contact_entity_map_shared
 
 
 def _ef_row_to_ci_entry(fr: Any) -> Any:
@@ -369,61 +351,6 @@ def _ef_row_to_ci_entry(fr: Any) -> Any:
         predicate=fr["predicate"],
         value_hash=_contact_value_hash(raw_obj),
     )
-
-
-async def _entity_facts_channels_by_entity(
-    pool: Any,
-    entity_ids: list[UUID],
-) -> dict[UUID, list[dict]]:
-    """Batch-fetch active has-* triples from relationship.entity_facts.
-
-    Returns a dict mapping entity_id → list of asyncpg-like row dicts
-    with keys ``id``, ``predicate``, ``object``, ``primary``.
-
-    Entity IDs with no facts map to an empty list.  Entity IDs with
-    ``entity_id IS NULL`` are not passed in and must be handled by the
-    caller (no facts → empty).
-    """
-    if not entity_ids:
-        return {}
-    rows = await pool.fetch(
-        """
-        SELECT ef.subject AS entity_id, ef.id, ef.predicate, ef.object, ef."primary"
-        FROM relationship.entity_facts ef
-        WHERE ef.subject = ANY($1)
-          AND ef.predicate LIKE 'has-%'
-          AND ef.validity = 'active'
-          AND ef.object_kind = 'literal'
-        ORDER BY ef.subject, ef."primary" DESC NULLS LAST, ef.created_at ASC
-        """,
-        entity_ids,
-    )
-    result: dict[UUID, list[dict]] = {eid: [] for eid in entity_ids}
-    for r in rows:
-        eid = r["entity_id"]
-        if eid in result:
-            result[eid].append(r)
-    return result
-
-
-async def _contact_entity_map(
-    pool: Any,
-    contact_ids: list[UUID],
-) -> dict[UUID, UUID | None]:
-    """Batch-fetch entity_id for a list of contact IDs.
-
-    Returns a dict mapping contact_id → entity_id (or None when unlinked).
-    """
-    if not contact_ids:
-        return {}
-    rows = await pool.fetch(
-        "SELECT id, entity_id FROM public.contacts WHERE id = ANY($1)",
-        contact_ids,
-    )
-    mapping: dict[UUID, UUID | None] = {cid: None for cid in contact_ids}
-    for r in rows:
-        mapping[r["id"]] = r["entity_id"]
-    return mapping
 
 
 def _first_ef_value(
