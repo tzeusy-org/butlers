@@ -504,3 +504,11 @@ def test_oauth_section_invalid_scope_item_not_string(tmp_path: Path):
     toml = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = [1, 2, 3]\n'
     with pytest.raises(ConfigError, match=r"\[oauth\.google\]\.scopes\[0\] must be a string"):
         load_config(_write_toml(tmp_path, toml))
+
+
+def test_oauth_top_level_not_table_raises(tmp_path: Path):
+    """Top-level oauth key set to a scalar raises ConfigError rather than silently skipping."""
+    # `oauth = "not-a-table"` at the top level is valid TOML but a misconfiguration.
+    toml = 'oauth = "not-a-table"\n\n[butler]\nname = "general"\nport = 41100\n'
+    with pytest.raises(ConfigError, match=r"\[oauth\] must be a table"):
+        load_config(_write_toml(tmp_path, toml))

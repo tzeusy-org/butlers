@@ -391,8 +391,9 @@ def _get_provider_config(provider: str) -> _ProviderConfig | None:
 
 _DEFAULT_ROSTER_DIR: Path = Path(__file__).resolve().parents[4] / "roster"
 
-# Module-level cache: maps roster_dir → provider → ordered-union scope list.
-# Populated lazily on first call per (roster_dir, provider) pair.
+# Module-level cache: maps roster_dir → {provider → ordered-union scope list}.
+# Populated lazily on first call per roster_dir: the entire roster is scanned
+# at once and all providers are cached together in a single pass.
 _TOML_SCOPE_CACHE: dict[str, dict[str, list[str]]] = {}
 
 
@@ -440,9 +441,10 @@ def collect_toml_scopes(provider: str, roster_dir: Path | None = None) -> list[s
         if not toml_path.exists():
             continue
         try:
-            data = tomllib.loads(toml_path.read_bytes().decode())
+            with toml_path.open("rb") as _f:
+                data = tomllib.load(_f)
         except Exception:  # noqa: BLE001
-            logger.debug("Skipping unreadable butler.toml at %s", toml_path)
+            logger.warning("Skipping unreadable butler.toml at %s", toml_path, exc_info=True)
             continue
 
         raw_oauth = data.get("oauth")
