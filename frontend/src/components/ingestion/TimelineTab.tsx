@@ -564,7 +564,6 @@ function LedgerRow({
     <div
       className={[
         "grid items-center px-3 py-2 border-b border-border/50 text-[13px] transition-colors",
-        "grid-cols-[20px_80px_auto_1fr_80px_60px_60px_80px_32px]",
         canExpand ? "cursor-pointer" : "",
         isExpanded ? "bg-muted/20" : "hover:bg-muted/10",
       ].join(" ")}

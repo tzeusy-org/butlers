@@ -230,7 +230,7 @@ function DrawerSessionsTab({
                       : maxTime
                     const left = ((sStart - minTime) / span) * 100
                     const width = Math.max(((sEnd - sStart) / span) * 100, 1)
-                    const dur = formatDuration(s.started_at, s.completed_at ?? new Date().toISOString())
+                    const dur = s.completed_at ? formatDuration(s.started_at, s.completed_at) : '--'
                     return (
                       <Link
                         key={s.id}
@@ -526,6 +526,9 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
 
   const { sessions } = useIngestionEventLineage(event.id, { enabled: true })
   const sessionList = sessions.data?.data ?? []
+  // Stable primitive: true once session data has loaded (avoids a new [] reference on each render
+  // during the loading state, which would cause the scroll effect to fire on every render).
+  const hasSessions = !!sessions.data
 
   // Scroll to the pending session once the sessions tab is rendered and the
   // target element is in the DOM. Clears the pending ID after scrolling.
@@ -536,7 +539,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
       el.scrollIntoView({ behavior: 'smooth', block: 'start' })
       setPendingScrollId(null)
     }
-  }, [pendingScrollId, activeTab, sessionList])
+  }, [pendingScrollId, activeTab, hasSessions])
 
   async function handleReplay() {
     setIsReplaying(true)
