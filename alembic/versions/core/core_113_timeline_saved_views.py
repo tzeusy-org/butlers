@@ -68,12 +68,20 @@ def _quote_ident(identifier: str) -> str:
 
 
 def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
-    """GRANT privilege ON table TO role; tolerate older DBs missing roles."""
+    """GRANT privilege ON table TO role; tolerate older DBs missing roles.
+
+    Uses pg_tables instead of to_regclass to safely check table existence
+    without risking an InvalidSchemaName exception when the schema is absent.
+    """
+    schema, table = table_fqn.split(".", 1)
     op.execute(
         f"""
         DO $$
         BEGIN
-            IF to_regclass('{table_fqn}') IS NOT NULL
+            IF EXISTS (
+                SELECT 1 FROM pg_tables
+                WHERE schemaname = '{schema}' AND tablename = '{table}'
+            )
                AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
             THEN
                 EXECUTE 'GRANT {privilege} ON TABLE {table_fqn} TO {_quote_ident(role)}';
@@ -82,7 +90,6 @@ def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
             WHEN insufficient_privilege THEN NULL;
             WHEN undefined_object THEN NULL;
             WHEN undefined_table THEN NULL;
-            WHEN invalid_schema_name THEN NULL;
         END
         $$;
         """

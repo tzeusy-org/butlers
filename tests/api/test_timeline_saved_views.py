@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -55,7 +54,7 @@ def _make_saved_view_row(
 def _make_record(row: dict) -> MagicMock:
     """Return a MagicMock that supports dict-style item access."""
     m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
+    m.__getitem__.side_effect = row.__getitem__
     return m
 
 
@@ -186,10 +185,10 @@ async def test_create_saved_view_default_filter_spec(app):
         resp = await client.post("/api/timeline/saved-views", json={"name": "My View"})
 
     assert resp.status_code == 201
-    # Verify the INSERT was called with "{}" as the filter_spec JSON.
-    # call_args[0] is the positional args tuple: (sql, name, filter_spec_json)
+    # Verify the INSERT was called with {} as the filter_spec dict directly.
+    # call_args[0] is the positional args tuple: (sql, name, filter_spec)
     call_args = pool.fetchrow.call_args[0]
-    assert json.loads(call_args[2]) == {}
+    assert call_args[2] == {}
 
 
 async def test_create_saved_view_400_on_empty_name(app):
@@ -402,8 +401,12 @@ async def test_filter_spec_complex_structure_preserved(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_create_passes_filter_spec_as_json_to_db(app):
-    """Confirm the INSERT call serialises filter_spec to a JSON string."""
+async def test_create_passes_filter_spec_as_dict_to_db(app):
+    """Confirm the INSERT call passes filter_spec as a dict (not a JSON string).
+
+    The asyncpg JSONB codec handles encoding; passing json.dumps() would
+    double-encode and store a JSONB string scalar instead of an object.
+    """
     view_id = uuid4()
     spec = {"statuses": ["ingested"]}
     inserted_row = _make_saved_view_row(view_id=view_id, name="Test", filter_spec=spec)
@@ -416,7 +419,7 @@ async def test_create_passes_filter_spec_as_json_to_db(app):
     ) as client:
         await client.post("/api/timeline/saved-views", json={"name": "Test", "filter_spec": spec})
 
-    # call_args[0] is the positional args tuple: (sql, name, filter_spec_json)
+    # call_args[0] is the positional args tuple: (sql, name, filter_spec)
     call_args = pool.fetchrow.call_args[0]
     assert call_args[1] == "Test"
-    assert json.loads(call_args[2]) == spec
+    assert call_args[2] == spec

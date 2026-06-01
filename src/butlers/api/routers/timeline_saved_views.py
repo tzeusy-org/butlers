@@ -25,7 +25,6 @@ Issue: bu-att72
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 from uuid import UUID
@@ -173,7 +172,9 @@ async def create_saved_view(
     """
     pool = _shared_pool(db)
 
-    row = await pool.fetchrow(_INSERT_SQL, body.name, json.dumps(body.filter_spec))
+    # Pass the dict directly — the asyncpg JSONB codec handles encoding.
+    # json.dumps() here would double-encode and store a JSONB string scalar.
+    row = await pool.fetchrow(_INSERT_SQL, body.name, body.filter_spec)
     return _row_to_entry(row)
 
 
@@ -218,7 +219,9 @@ async def update_saved_view(
 
     if body.filter_spec is not None:
         set_parts.append(f"filter_spec = ${idx}")
-        args.append(json.dumps(body.filter_spec))
+        # Pass the dict directly — the asyncpg JSONB codec handles encoding.
+        # json.dumps() here would double-encode and store a JSONB string scalar.
+        args.append(body.filter_spec)
         idx += 1
 
     args.append(view_id)
