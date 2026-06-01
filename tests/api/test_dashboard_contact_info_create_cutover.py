@@ -7,7 +7,8 @@ asserts the channel fact via the central writer ``relationship_assert_fact()``.
 
 Covers:
 - create_contact_info calls relationship_assert_fact (no contact_info INSERT).
-- Secured rows are rejected (HTTP 422) — credentials carve-out.
+- Secured rows (secured=True) are written to public.entity_info (bu-pl8fy) —
+  RFC 0004 Amendment 2 credential carve-out (NOT relationship.entity_facts).
 - Contact with no linked entity is rejected (HTTP 409).
 
 The pool/asyncpg layer is mocked; no DB or Docker required.
@@ -64,10 +65,45 @@ def _load_router():
     return router_mod
 
 
-def _make_pool(*, entity_id):
-    """Pool whose contact-exists check returns a row with the given entity_id."""
+def _make_pool(*, entity_id, entity_info_row=None):
+    """Pool whose contact-exists check returns a row with the given entity_id.
+
+    ``entity_info_row`` simulates the INSERT ... ON CONFLICT DO UPDATE ...
+    RETURNING result for the public.entity_info write path.  Pass a dict to
+    represent the row returned (either newly inserted or the existing row on
+    conflict — the DO UPDATE SET value = entity_info.value no-op always triggers
+    RETURNING).
+    """
     pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4(), "entity_id": entity_id})
+
+    # contact-exists check always returns the contact row
+    _contact_row = {"id": uuid.uuid4(), "entity_id": entity_id}
+    _ei_row = (
+        {
+            "id": entity_info_row["id"],
+            "entity_id": entity_id,
+            "type": entity_info_row["type"],
+            "value": entity_info_row["value"],
+            "label": None,
+            "is_primary": entity_info_row.get("is_primary", False),
+            "secured": True,
+        }
+        if entity_info_row is not None
+        else None
+    )
+
+    _fetchrow_calls = [0]
+
+    async def _fetchrow(sql, *args):
+        call_idx = _fetchrow_calls[0]
+        _fetchrow_calls[0] += 1
+        if call_idx == 0:
+            # First call: contact-exists check
+            return _contact_row
+        # Subsequent calls: entity_info INSERT ... RETURNING
+        return _ei_row
+
+    pool.fetchrow = _fetchrow
     pool.execute = AsyncMock()
     return pool
 
@@ -115,21 +151,81 @@ async def test_create_contact_info_asserts_triple(router_mod, monkeypatch):
     assert result.value == "alice@example.com"
 
 
-async def test_create_contact_info_secured_rejected(router_mod, monkeypatch):
-    """Secured rows are rejected with HTTP 422 (credentials carve-out)."""
-    pool = _make_pool(entity_id=uuid.uuid4())
+async def test_create_contact_info_secured_writes_to_entity_info(router_mod, monkeypatch):
+    """Secured rows (bu-pl8fy) are written to public.entity_info, not rejected.
+
+    RFC 0004 Amendment 2: secured=True credential rows must go to public.entity_info
+    (NOT relationship.entity_facts).  The endpoint returns HTTP 201 with the
+    credential entry reflected in the response.  relationship_assert_fact is NOT
+    called for secured rows.
+    """
+    entity_id = uuid.uuid4()
+    info_id = uuid.uuid4()
+    pool = _make_pool(
+        entity_id=entity_id,
+        entity_info_row={"id": info_id, "type": "telegram_session", "value": "secret-token"},
+    )
     monkeypatch.setattr(router_mod, "_pool", lambda db: pool)
+
+    async def _noop_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(router_mod, "emit_dashboard_audit", _noop_audit)
 
     mock_assert = AsyncMock()
     monkeypatch.setattr(_raf_module(), "relationship_assert_fact", mock_assert)
 
     req = router_mod.CreateContactInfoRequest(
-        type="telegram", value="secret-token", is_primary=True, secured=True
+        type="telegram_session", value="secret-token", is_primary=True, secured=True
     )
-    with pytest.raises(HTTPException) as exc:
-        await router_mod.create_contact_info(uuid.uuid4(), MagicMock(), req, MagicMock())
-    assert exc.value.status_code == 422
+    result = await router_mod.create_contact_info(uuid.uuid4(), MagicMock(), req, MagicMock())
+
+    # relationship_assert_fact must NOT be called for secured rows
     mock_assert.assert_not_awaited()
+    # Result reflects the credential entry
+    assert result.secured is True
+    assert result.type == "telegram_session"
+    assert result.value == "secret-token"
+
+
+async def test_create_contact_info_secured_idempotent_conflict(router_mod, monkeypatch):
+    """ON CONFLICT DO UPDATE on second run: returns 201 with the existing row's id.
+
+    When public.entity_info already has a row for (entity_id, type) the INSERT ...
+    ON CONFLICT DO UPDATE SET value = entity_info.value is a no-op update that still
+    triggers RETURNING, so the endpoint always gets the real persisted row and never
+    returns a synthesised UUID.
+    """
+    entity_id = uuid.uuid4()
+    existing_id = uuid.uuid4()
+    pool = _make_pool(
+        entity_id=entity_id,
+        entity_info_row={
+            "id": existing_id,
+            "type": "google_oauth_refresh",
+            "value": "existing-refresh-token",
+        },
+    )
+    monkeypatch.setattr(router_mod, "_pool", lambda db: pool)
+
+    async def _noop_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(router_mod, "emit_dashboard_audit", _noop_audit)
+
+    monkeypatch.setattr(_raf_module(), "relationship_assert_fact", AsyncMock())
+
+    req = router_mod.CreateContactInfoRequest(
+        type="google_oauth_refresh", value="new-refresh-token", is_primary=False, secured=True
+    )
+    # Must not raise — idempotent second-run path
+    result = await router_mod.create_contact_info(uuid.uuid4(), MagicMock(), req, MagicMock())
+    assert result.secured is True
+    assert result.type == "google_oauth_refresh"
+    # Returns the existing persisted row's id, not a synthesised uuid
+    assert result.id == existing_id
+    # Returns the existing persisted value (not overwritten), since DO UPDATE is a no-op
+    assert result.value == "existing-refresh-token"
 
 
 async def test_create_contact_info_no_entity_rejected(router_mod, monkeypatch):
