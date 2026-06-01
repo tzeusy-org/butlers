@@ -45,6 +45,7 @@ const BASE_CONNECTOR: ConnectorDetail = {
   last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
   first_seen_at: '2026-01-01T00:00:00Z',
   today: { messages_ingested: 24, messages_failed: 0, uptime_pct: 99 },
+  hourly_events: Array(24).fill(0),
   instance_id: 'inst-abc',
   registered_via: 'auto',
   checkpoint: { cursor: 'tok-xyz', updated_at: '2026-05-25T10:00:00Z' },

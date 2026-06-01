@@ -2033,6 +2033,12 @@ export interface ConnectorSummary {
   last_heartbeat_at: string | null;
   first_seen_at: string;
   today: ConnectorDaySummary | null;
+  /**
+   * 24-bucket hourly event counts for the last 24 hours (oldest hour first,
+   * newest last). Sourced from ingestion_events — always present, never null.
+   * Zero-filled for hours with no events.
+   */
+  hourly_events: number[];
 }
 
 /** Full connector detail (GET /api/connectors/:type/:identity). */

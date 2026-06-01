@@ -59,6 +59,7 @@ const BASE_CONNECTOR: ConnectorDetail = {
   last_heartbeat_at: "2025-01-15T10:00:00Z",
   first_seen_at: "2025-01-01T00:00:00Z",
   today: { uptime_pct: 99.5, messages_ingested: 50, messages_failed: 0 },
+  hourly_events: Array(24).fill(0),
   instance_id: "inst-abc",
   registered_via: "auto",
   checkpoint: { cursor: "token-xyz", updated_at: "2025-01-15T09:00:00Z" },

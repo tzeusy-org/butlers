@@ -166,6 +166,7 @@ export function ConnectorsRoster() {
             <ConnectorRosterRow
               key={`${c.connector_type}:${c.endpoint_identity}`}
               connector={c}
+              spark24h={c.hourly_events}
             />
           ))}
         </div>

@@ -39,6 +39,7 @@ function makeConnector(
     last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
     first_seen_at: "2026-01-01T00:00:00Z",
     today: { messages_ingested: 10, messages_failed: 0, uptime_pct: 100 },
+    hourly_events: Array(24).fill(0),
     instance_id: null,
     registered_via: "env",
     checkpoint: null,

@@ -3182,6 +3182,8 @@ interface _BackendConnectorEntry {
   checkpoint_cursor: string | null;
   checkpoint_updated_at: string | null;
   settings: Record<string, unknown> | null;
+  /** Present only on endpoints that compute hourly timeseries (e.g. /api/ingestion/connectors/summaries). */
+  hourly_events?: number[];
 }
 
 /** Raw aggregate summary from GET /api/switchboard/connectors/summary. */
@@ -3255,6 +3257,7 @@ function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
       messages_failed: entry.today_messages_failed,
       uptime_pct: null,
     },
+    hourly_events: entry.hourly_events ?? Array(24).fill(0),
   };
 }
 
