@@ -444,8 +444,10 @@ class TestRegistryOAuthFlowConsistency:
     scope drift — the surface would report required scopes as missing even
     though the connector was just authorized via the standard flow.
 
-    This test covers ALL OAuth providers in the registry so that new providers
-    added in the future are automatically checked for the same invariant.
+    Coverage: all connectors listed in _CONNECTOR_OAUTH_CONFIG below. Connectors
+    absent from that map (e.g. discord, discord_user) have no oauth.py provider
+    config yet and are skipped rather than failed. Add an entry to
+    _CONNECTOR_OAUTH_CONFIG once an oauth.py provider config is implemented.
     """
 
     # Maps connector_type → (oauth_provider, extra_scope_sets_or_None).
@@ -479,7 +481,6 @@ class TestRegistryOAuthFlowConsistency:
 
         from butlers.api.routers.oauth import (
             _PROVIDER_REGISTRY,
-            _clear_toml_scope_cache,
             _compose_provider_default_scopes,
             _compose_provider_scopes_from_sets,
         )
@@ -495,13 +496,9 @@ class TestRegistryOAuthFlowConsistency:
         provider_cfg = _PROVIDER_REGISTRY[oauth_provider]
 
         with tempfile.TemporaryDirectory() as tmp:
-            _clear_toml_scope_cache()
-            try:
-                default_str = _compose_provider_default_scopes(
-                    provider_cfg, oauth_provider, roster_dir=Path(tmp)
-                )
-            finally:
-                _clear_toml_scope_cache()
+            default_str = _compose_provider_default_scopes(
+                provider_cfg, oauth_provider, roster_dir=Path(tmp)
+            )
 
         scopes: dict[str, None] = dict.fromkeys(default_str.split())
 
