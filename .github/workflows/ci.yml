@@ -50,6 +50,28 @@ jobs:
       - name: Unit tests
         run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
 
+      - name: Free disk space before testcontainers
+        # ubuntu-latest runners arrive with ~14 GB free. Testcontainers pulls
+        # pgvector/pgvector:pg17 (~442 MB compressed) and multiple modules spin
+        # up independent containers concurrently under -n auto. Removing
+        # pre-installed tools that are unused by this job (Android SDK, .NET,
+        # Haskell, Swift, large apt caches) reclaims 10-15 GB and eliminates
+        # the intermittent "no space left on device" / asyncpg pool timeout
+        # failures seen in PRs #2052 and #2055.
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean -q
+          docker image prune -f --filter "until=1h" || true
+          echo "Disk usage after cleanup:"
+          df -h /
+
       - name: Integration tests (testcontainers)
         run: uv run pytest roster/ tests/integration/ tests/config/ tests/core/ tests/migrations/ -q --maxfail=5 --tb=short -m "integration and not nightly" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
         env:
