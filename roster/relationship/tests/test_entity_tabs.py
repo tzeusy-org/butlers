@@ -779,14 +779,16 @@ def _app_with_pool_linked_contacts(
     contact_rows: list | None = None,
     label_rows: list | None = None,
     fact_rows: list | None = None,
+    entity_info_rows: list | None = None,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app for the linked-contacts endpoint.
 
-    The endpoint makes three ``pool.fetch`` calls:
+    The endpoint makes four ``pool.fetch`` calls:
       1. contacts query (main rows)
       2. asyncio.gather → label batch query
       3. asyncio.gather → entity_facts has-* triples query
-         (calls 2 and 3 are concurrent via asyncio.gather)
+      4. asyncio.gather → entity_info secured=true rows (bu-gfzin)
+         (calls 2, 3, and 4 are concurrent via asyncio.gather)
 
     ``ci_rows`` was removed: channel identifiers now come exclusively from
     ``relationship.entity_facts`` has-* triples (bu-6ioq3 migration).
@@ -801,11 +803,12 @@ def _app_with_pool_linked_contacts(
     _contacts = contact_rows if contact_rows is not None else []
     _labels = label_rows if label_rows is not None else []
     _facts = fact_rows if fact_rows is not None else []
+    _entity_info = entity_info_rows if entity_info_rows is not None else []
 
-    # For non-empty contacts: 3 fetch calls in order (contacts, labels, facts).
+    # For non-empty contacts: 4 fetch calls in order (contacts, labels, facts, entity_info).
     # For empty contacts: only 1 fetch call (the contacts query).
     if _contacts:
-        mock_pool.fetch = AsyncMock(side_effect=[_contacts, _labels, _facts])
+        mock_pool.fetch = AsyncMock(side_effect=[_contacts, _labels, _facts, _entity_info])
     else:
         mock_pool.fetch = AsyncMock(return_value=_contacts)
 
