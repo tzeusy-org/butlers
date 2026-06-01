@@ -349,6 +349,9 @@ import type {
   UpdateEntityContactRequest,
   UpdateEntityContactResponse,
   EntityContactsResponse,
+  TimelineSavedViewEntry,
+  TimelineSavedViewCreateRequest,
+  TimelineSavedViewUpdateRequest,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -5244,4 +5247,61 @@ export function getSecretsInventory(
       ? `?identity=${encodeURIComponent(params.identity)}`
       : "";
   return apiFetch<SecretsInventoryResponse>(`/secrets/inventory${qs}`);
+}
+
+// ---------------------------------------------------------------------------
+// Timeline saved views (bu-vgj88)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/timeline/saved-views
+ *
+ * Returns all persisted custom saved views, newest first.
+ * Returns an empty list when none exist.
+ * Returns 503 when the shared database is unavailable.
+ */
+export function listTimelineSavedViews(): Promise<ApiResponse<TimelineSavedViewEntry[]>> {
+  return apiFetch<ApiResponse<TimelineSavedViewEntry[]>>("/timeline/saved-views");
+}
+
+/**
+ * POST /api/timeline/saved-views
+ *
+ * Creates a new saved view. Returns the created entry (HTTP 201).
+ */
+export function createTimelineSavedView(
+  body: TimelineSavedViewCreateRequest,
+): Promise<TimelineSavedViewEntry> {
+  return apiFetch<TimelineSavedViewEntry>("/timeline/saved-views", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * PATCH /api/timeline/saved-views/{id}
+ *
+ * Updates name and/or filter_spec of an existing saved view.
+ * Returns 404 when the view does not exist.
+ */
+export function updateTimelineSavedView(
+  id: string,
+  body: TimelineSavedViewUpdateRequest,
+): Promise<TimelineSavedViewEntry> {
+  return apiFetch<TimelineSavedViewEntry>(`/timeline/saved-views/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * DELETE /api/timeline/saved-views/{id}
+ *
+ * Deletes a saved view. Returns undefined on success (HTTP 204).
+ * Returns 404 when the view does not exist.
+ */
+export function deleteTimelineSavedView(id: string): Promise<void> {
+  return apiFetch<void>(`/timeline/saved-views/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }

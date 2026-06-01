@@ -1082,3 +1082,21 @@ export type {
   EntityFinderSearchResponse,
   EntityFinderSearchParams,
 } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Timeline saved views (bu-vgj88)
+// ---------------------------------------------------------------------------
+
+export {
+  listTimelineSavedViews,
+  createTimelineSavedView,
+  updateTimelineSavedView,
+  deleteTimelineSavedView,
+} from "./client.ts";
+
+export type {
+  TimelineSavedViewEntry,
+  TimelineSavedViewCreateRequest,
+  TimelineSavedViewFilterSpec,
+  TimelineSavedViewUpdateRequest,
+} from "./types.ts";
