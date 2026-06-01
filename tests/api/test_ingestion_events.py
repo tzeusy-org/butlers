@@ -707,7 +707,7 @@ async def test_rollup_503_on_db_unavailable(app):
 
 
 async def test_rollup_missing_cost_returns_null(app):
-    """GET /api/ingestion/rollup always returns null for cost field."""
+    """GET /api/ingestion/rollup passes null cost through when core returns None."""
     _app_with_mock_rollup_db(app)
 
     with patch(
