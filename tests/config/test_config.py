@@ -440,3 +440,75 @@ def test_resolve_env_vars(monkeypatch, tmp_path: Path):
     )
     cfg = load_config(_write_toml(tmp_path, email_toml))
     assert cfg.modules["email"]["password"] == "p@ssw0rd"
+
+
+# ---------------------------------------------------------------------------
+# OAuth scope declarations ([oauth.<provider>] sections)
+# ---------------------------------------------------------------------------
+
+
+def test_oauth_section_absent_defaults_to_empty(tmp_path: Path):
+    """Butler without [oauth.*] sections gets an empty oauth dict."""
+    cfg = load_config(_write_toml(tmp_path, MINIMAL_TOML))
+    assert cfg.oauth == {}
+
+
+def test_oauth_section_single_provider(tmp_path: Path):
+    """[oauth.google] with a scopes list is parsed correctly."""
+    toml = (
+        '[butler]\nname = "email"\nport = 41100\n\n'
+        "[oauth.google]\n"
+        "scopes = [\n"
+        '  "https://www.googleapis.com/auth/gmail.readonly",\n'
+        '  "https://www.googleapis.com/auth/calendar",\n'
+        "]\n"
+    )
+    cfg = load_config(_write_toml(tmp_path, toml))
+    assert "google" in cfg.oauth
+    assert cfg.oauth["google"] == [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/calendar",
+    ]
+
+
+def test_oauth_section_multiple_providers(tmp_path: Path):
+    """Multiple [oauth.<provider>] sections are each parsed into the oauth dict."""
+    toml = (
+        '[butler]\nname = "music"\nport = 41101\n\n'
+        "[oauth.spotify]\n"
+        'scopes = ["user-read-recently-played", "user-top-read"]\n\n'
+        "[oauth.google]\n"
+        'scopes = ["https://www.googleapis.com/auth/calendar"]\n'
+    )
+    cfg = load_config(_write_toml(tmp_path, toml))
+    assert set(cfg.oauth["spotify"]) == {"user-read-recently-played", "user-top-read"}
+    assert cfg.oauth["google"] == ["https://www.googleapis.com/auth/calendar"]
+
+
+def test_oauth_section_empty_scopes_list(tmp_path: Path):
+    """[oauth.google] with scopes = [] is valid and results in an empty list."""
+    toml = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = []\n'
+    cfg = load_config(_write_toml(tmp_path, toml))
+    assert cfg.oauth["google"] == []
+
+
+def test_oauth_section_invalid_scopes_not_list(tmp_path: Path):
+    """[oauth.google].scopes must be a list — a string raises ConfigError."""
+    toml = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = "openid email"\n'
+    with pytest.raises(ConfigError, match=r"\[oauth\.google\]\.scopes must be a list"):
+        load_config(_write_toml(tmp_path, toml))
+
+
+def test_oauth_section_invalid_scope_item_not_string(tmp_path: Path):
+    """Individual scope entries must be strings — an integer raises ConfigError."""
+    toml = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = [1, 2, 3]\n'
+    with pytest.raises(ConfigError, match=r"\[oauth\.google\]\.scopes\[0\] must be a string"):
+        load_config(_write_toml(tmp_path, toml))
+
+
+def test_oauth_top_level_not_table_raises(tmp_path: Path):
+    """Top-level oauth key set to a scalar raises ConfigError rather than silently skipping."""
+    # `oauth = "not-a-table"` at the top level is valid TOML but a misconfiguration.
+    toml = 'oauth = "not-a-table"\n\n[butler]\nname = "general"\nport = 41100\n'
+    with pytest.raises(ConfigError, match=r"\[oauth\] must be a table"):
+        load_config(_write_toml(tmp_path, toml))

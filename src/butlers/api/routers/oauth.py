@@ -73,6 +73,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -372,6 +373,105 @@ def _get_provider_config(provider: str) -> _ProviderConfig | None:
     return _PROVIDER_REGISTRY.get(provider)
 
 
+# ---------------------------------------------------------------------------
+# butler.toml OAuth scope resolution
+# ---------------------------------------------------------------------------
+#
+# Spec: "OAuth Per-Provider Generalisation §Provider scope resolution from
+# butler.toml" — when the OAuth begin endpoint is called for a provider whose
+# scopes are declared in one or more butler.toml files, the resolved scope-set
+# is the union of all scopes declared by butlers that consume the provider.
+#
+# Shape in butler.toml:
+#
+#   [oauth.<provider>]
+#   scopes = ["scope1", "scope2", ...]
+#
+# This is a TOP-LEVEL section (same level as [modules] and [butler]).
+
+_DEFAULT_ROSTER_DIR: Path = Path(__file__).resolve().parents[4] / "roster"
+
+# Module-level cache: maps roster_dir → {provider → ordered-union scope list}.
+# Populated lazily on first call per roster_dir: the entire roster is scanned
+# at once and all providers are cached together in a single pass.
+_TOML_SCOPE_CACHE: dict[str, dict[str, list[str]]] = {}
+
+
+def collect_toml_scopes(provider: str, roster_dir: Path | None = None) -> list[str]:
+    """Return the union of OAuth scopes declared for *provider* across all butler.toml files.
+
+    Scans every ``roster/<butler>/butler.toml`` for a top-level
+    ``[oauth.<provider>]`` table with a ``scopes`` list.  The returned list
+    is the ordered union (insertion order, duplicates removed) of all scopes
+    declared by any butler for this provider.
+
+    Returns an empty list when no butler declares scopes for the provider —
+    callers should fall back to the hardcoded ``_ProviderConfig.default_scope_sets``
+    in that case.
+
+    Results are cached in-process the first time a roster_dir is scanned so
+    subsequent calls are cheap.  Pass a fresh *roster_dir* in tests.
+
+    Parameters
+    ----------
+    provider:
+        OAuth provider name (e.g. ``"google"``, ``"spotify"``).
+    roster_dir:
+        Path to the roster directory.  Defaults to ``<repo>/roster/``.
+    """
+    import tomllib  # stdlib since 3.11; also available via tomli on 3.10
+
+    resolved = str(roster_dir) if roster_dir is not None else str(_DEFAULT_ROSTER_DIR)
+    cache_hit = _TOML_SCOPE_CACHE.get(resolved)
+    if cache_hit is not None:
+        return list(cache_hit.get(provider, []))
+
+    # Not yet cached — scan the entire roster and populate the cache entry.
+    scope_map: dict[str, dict[str, None]] = {}  # provider → ordered set of scopes
+
+    effective_dir = Path(resolved)
+    if not effective_dir.is_dir():
+        _TOML_SCOPE_CACHE[resolved] = {}
+        return []
+
+    for entry in sorted(effective_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        toml_path = entry / "butler.toml"
+        if not toml_path.exists():
+            continue
+        try:
+            with toml_path.open("rb") as _f:
+                data = tomllib.load(_f)
+        except Exception:  # noqa: BLE001
+            logger.warning("Skipping unreadable butler.toml at %s", toml_path, exc_info=True)
+            continue
+
+        raw_oauth = data.get("oauth")
+        if not isinstance(raw_oauth, dict):
+            continue
+
+        for prov_name, prov_cfg in raw_oauth.items():
+            if not isinstance(prov_cfg, dict):
+                continue
+            raw_scopes = prov_cfg.get("scopes")
+            if not isinstance(raw_scopes, list):
+                continue
+            bucket = scope_map.setdefault(prov_name, {})
+            for scope in raw_scopes:
+                if isinstance(scope, str) and scope.strip():
+                    bucket[scope.strip()] = None
+
+    # Convert ordered-set dicts to lists and store in module-level cache.
+    _TOML_SCOPE_CACHE[resolved] = {prov: list(scopes) for prov, scopes in scope_map.items()}
+    return list(_TOML_SCOPE_CACHE[resolved].get(provider, []))
+
+
+def _clear_toml_scope_cache() -> None:
+    """Clear the in-process butler.toml scope cache.  Intended for tests."""
+    _TOML_SCOPE_CACHE.clear()
+
+
 def _get_provider_redirect_uri(provider_cfg: _ProviderConfig) -> str:
     """Read the provider-specific redirect-URI env-var or use the default."""
     return os.environ.get(
@@ -413,8 +513,37 @@ async def _resolve_provider_credentials(
     return client_id, client_secret
 
 
-def _compose_provider_default_scopes(provider_cfg: _ProviderConfig) -> str:
-    """Build the default scope string for a provider from its default_scope_sets."""
+def _compose_provider_default_scopes(
+    provider_cfg: _ProviderConfig, provider: str, roster_dir: Path | None = None
+) -> str:
+    """Build the default scope string for a provider.
+
+    Resolution order (spec: "OAuth Per-Provider Generalisation §Provider scope
+    resolution from butler.toml"):
+
+    1. If one or more butler.toml files declare ``[oauth.<provider>]`` with a
+       ``scopes`` list, the scope string is the ordered union of all declared
+       scopes across all butlers.
+    2. Otherwise, fall back to the hardcoded ``provider_cfg.default_scope_sets``
+       so that existing providers (google, spotify) keep working unchanged when
+       no butler.toml explicitly declares their scopes.
+
+    Parameters
+    ----------
+    provider_cfg:
+        Static configuration for the provider (contains the named scope-set
+        registry and the default_scope_sets tuple used for fallback).
+    provider:
+        Provider name (e.g. ``"google"``, ``"spotify"``).  Used to look up
+        butler.toml declarations.
+    roster_dir:
+        Optional path to the roster directory; passed to ``collect_toml_scopes``
+        so tests can supply a temporary directory.
+    """
+    toml_scopes = collect_toml_scopes(provider, roster_dir=roster_dir)
+    if toml_scopes:
+        return " ".join(toml_scopes)
+    # Fallback: hardcoded default scope sets (preserves existing behavior).
     return " ".join(
         dict.fromkeys(
             scope
@@ -2339,7 +2468,7 @@ async def oauth_provider_start(
                 },
             )
     else:
-        scopes = _compose_provider_default_scopes(provider_cfg)
+        scopes = _compose_provider_default_scopes(provider_cfg, provider)
 
     # --- Google-specific: account limit check + scope-widening ---
     shared_pool = _get_shared_pool(db_manager)

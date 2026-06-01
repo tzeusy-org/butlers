@@ -262,6 +262,23 @@ class ButlerConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     buffer: BufferConfig = field(default_factory=BufferConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    # OAuth scope declarations keyed by provider name.
+    # Populated from top-level [oauth.<provider>] sections in butler.toml.
+    # Each value is a flat list of OAuth scope strings that this butler requires
+    # from the named provider.  Example:
+    #
+    #   [oauth.google]
+    #   scopes = [
+    #       "https://www.googleapis.com/auth/calendar",
+    #       "https://www.googleapis.com/auth/gmail.modify",
+    #   ]
+    #
+    #   [oauth.spotify]
+    #   scopes = ["user-read-recently-played", "user-top-read"]
+    #
+    # These declarations are read by the dashboard OAuth router to resolve the
+    # scope-set for each provider as the union of all butler declarations.
+    oauth: dict[str, list[str]] = field(default_factory=dict)
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -855,6 +872,37 @@ def load_config(config_dir: Path) -> ButlerConfig:
         modules[mod_name] = dict(mod_cfg) if isinstance(mod_cfg, dict) else {}
     _validate_messenger_requirements(name, modules)
 
+    # --- [oauth.<provider>] top-level sections ---
+    # Each [oauth.<provider>] table declares the OAuth scopes this butler
+    # requires from the named provider.  Consumers (e.g. the dashboard OAuth
+    # router) union all butler declarations to build the authorization URL.
+    oauth: dict[str, list[str]] = {}
+    raw_oauth = data.get("oauth", {})
+    if raw_oauth and not isinstance(raw_oauth, dict):
+        raise ConfigError(
+            f"[oauth] must be a table of provider sections, got {type(raw_oauth).__name__}"
+        )
+    if isinstance(raw_oauth, dict):
+        for provider_name, provider_cfg in raw_oauth.items():
+            if not isinstance(provider_cfg, dict):
+                raise ConfigError(
+                    f"[oauth.{provider_name}] must be a table, got {type(provider_cfg).__name__}"
+                )
+            raw_scopes = provider_cfg.get("scopes", [])
+            if not isinstance(raw_scopes, list):
+                raise ConfigError(f"[oauth.{provider_name}].scopes must be a list of strings")
+            validated: list[str] = []
+            for i, scope in enumerate(raw_scopes):
+                if not isinstance(scope, str):
+                    raise ConfigError(f"[oauth.{provider_name}].scopes[{i}] must be a string")
+                stripped = scope.strip()
+                if not stripped:
+                    raise ConfigError(
+                        f"[oauth.{provider_name}].scopes[{i}] must be a non-empty string"
+                    )
+                validated.append(stripped)
+            oauth[provider_name] = validated
+
     # --- Reject old section names with clear error messages ---
     # Unconditional: even if [butler.runtime_seed] is also present, having
     # [butler.runtime] around invites silent drift between the two.
@@ -908,4 +956,5 @@ def load_config(config_dir: Path) -> ButlerConfig:
         storage=storage_config,
         buffer=buffer_config,
         scheduler=scheduler_config,
+        oauth=oauth,
     )
