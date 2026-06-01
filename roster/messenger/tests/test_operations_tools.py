@@ -616,59 +616,92 @@ async def test_rate_limit_status_filtered_by_identity_scope():
 # Test messenger_queue_depth (requires DB)
 # ============================================================================
 
+# The _messenger_postgres_container fixture is module-scoped so that one
+# postgres:16 image is pulled and started once per pytest session for this
+# module. Each test function gets its own fresh database within that container
+# via the function-scoped delivery_pool / stats_pool fixtures below.
+#
+# Previously each fixture had function scope and created a whole new container
+# per test call, causing CI runners to exhaust disk space when multiple xdist
+# workers ran concurrently. See bu-g8rb0.
 
-@pytest.fixture
-async def delivery_pool():
-    """Create a PostgreSQL pool with delivery_requests table."""
+
+@pytest.fixture(scope="module")
+def _messenger_postgres_container():
+    """Single postgres:16 container shared by all DB-backed tests in this module."""
     from testcontainers.postgres import PostgresContainer
 
     with PostgresContainer("postgres:16") as postgres:
-        host = postgres.get_container_host_ip()
-        port = postgres.get_exposed_port(5432)
-        user = postgres.username
-        password = postgres.password
-        database = postgres.dbname
+        yield postgres
 
-        pool = await asyncpg.create_pool(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            min_size=1,
-            max_size=5,
+
+def _unique_db_name() -> str:
+    return f"test_{uuid.uuid4().hex[:12]}"
+
+
+@pytest.fixture
+async def delivery_pool(_messenger_postgres_container):
+    """Function-scoped pool backed by a fresh database within the module container.
+
+    Creates a unique database per test so table rows never leak between tests,
+    while reusing the already-running container.
+    """
+    postgres = _messenger_postgres_container
+    db_name = _unique_db_name()
+
+    # Create a fresh database for this test.
+    import asyncpg as _asyncpg
+
+    admin = await _asyncpg.connect(
+        host=postgres.get_container_host_ip(),
+        port=int(postgres.get_exposed_port(5432)),
+        user=postgres.username,
+        password=postgres.password,
+        database=postgres.dbname,
+    )
+    await admin.execute(f'CREATE DATABASE "{db_name}"')
+    await admin.close()
+
+    pool = await asyncpg.create_pool(
+        host=postgres.get_container_host_ip(),
+        port=int(postgres.get_exposed_port(5432)),
+        user=postgres.username,
+        password=postgres.password,
+        database=db_name,
+        min_size=1,
+        max_size=5,
+    )
+
+    # Create delivery_requests table
+    await pool.execute("""
+        CREATE TABLE delivery_requests (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            idempotency_key TEXT NOT NULL UNIQUE,
+            request_id UUID,
+            origin_butler TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            intent TEXT NOT NULL CHECK (intent IN ('send', 'reply')),
+            target_identity TEXT NOT NULL,
+            message_content TEXT NOT NULL,
+            subject TEXT,
+            request_envelope JSONB NOT NULL,
+            priority TEXT NOT NULL DEFAULT 'medium'
+                CHECK (priority IN ('high', 'medium', 'low')),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN (
+                    'pending', 'in_progress', 'delivered', 'failed', 'dead_lettered'
+                )),
+            terminal_error_class TEXT,
+            terminal_error_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            terminal_at TIMESTAMPTZ
         )
+    """)
 
-        # Create delivery_requests table
-        await pool.execute("""
-            CREATE TABLE delivery_requests (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                idempotency_key TEXT NOT NULL UNIQUE,
-                request_id UUID,
-                origin_butler TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                intent TEXT NOT NULL CHECK (intent IN ('send', 'reply')),
-                target_identity TEXT NOT NULL,
-                message_content TEXT NOT NULL,
-                subject TEXT,
-                request_envelope JSONB NOT NULL,
-                priority TEXT NOT NULL DEFAULT 'medium'
-                    CHECK (priority IN ('high', 'medium', 'low')),
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN (
-                        'pending', 'in_progress', 'delivered', 'failed', 'dead_lettered'
-                    )),
-                terminal_error_class TEXT,
-                terminal_error_message TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                terminal_at TIMESTAMPTZ
-            )
-        """)
+    yield pool
 
-        yield pool
-
-        await pool.close()
+    await pool.close()
 
 
 @pytest.mark.parametrize("mark", db_tests_mark)
@@ -730,77 +763,87 @@ async def test_queue_depth_filtered_by_channel(delivery_pool, mark):
 
 
 @pytest.fixture
-async def stats_pool():
-    """Create a PostgreSQL pool with delivery tables."""
-    from testcontainers.postgres import PostgresContainer
+async def stats_pool(_messenger_postgres_container):
+    """Function-scoped pool backed by a fresh database within the module container.
 
-    with PostgresContainer("postgres:16") as postgres:
-        host = postgres.get_container_host_ip()
-        port = postgres.get_exposed_port(5432)
-        user = postgres.username
-        password = postgres.password
-        database = postgres.dbname
+    Creates a unique database per test so rows never leak between tests,
+    while reusing the already-running container (see _messenger_postgres_container).
+    """
+    postgres = _messenger_postgres_container
+    db_name = _unique_db_name()
 
-        pool = await asyncpg.create_pool(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            min_size=1,
-            max_size=5,
-        )
+    import asyncpg as _asyncpg
 
-        # Create delivery_requests table
-        await pool.execute("""
-            CREATE TABLE delivery_requests (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                idempotency_key TEXT NOT NULL UNIQUE,
-                request_id UUID,
-                origin_butler TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                intent TEXT NOT NULL CHECK (intent IN ('send', 'reply')),
-                target_identity TEXT NOT NULL,
-                message_content TEXT NOT NULL,
-                subject TEXT,
-                request_envelope JSONB NOT NULL,
-                priority TEXT NOT NULL DEFAULT 'medium'
-                    CHECK (priority IN ('high', 'medium', 'low')),
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN (
-                        'pending', 'in_progress', 'delivered', 'failed', 'dead_lettered'
-                    )),
-                terminal_error_class TEXT,
-                terminal_error_message TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                terminal_at TIMESTAMPTZ
-            )
-        """)
+    admin = await _asyncpg.connect(
+        host=postgres.get_container_host_ip(),
+        port=int(postgres.get_exposed_port(5432)),
+        user=postgres.username,
+        password=postgres.password,
+        database=postgres.dbname,
+    )
+    await admin.execute(f'CREATE DATABASE "{db_name}"')
+    await admin.close()
 
-        # Create delivery_attempts table
-        await pool.execute("""
-            CREATE TABLE delivery_attempts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                delivery_request_id UUID NOT NULL
-                    REFERENCES delivery_requests(id) ON DELETE CASCADE,
-                attempt_number INTEGER NOT NULL,
-                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                completed_at TIMESTAMPTZ,
-                latency_ms INTEGER,
-                outcome TEXT NOT NULL CHECK (outcome IN (
-                    'success', 'retryable_error', 'non_retryable_error', 'timeout', 'in_progress'
+    pool = await asyncpg.create_pool(
+        host=postgres.get_container_host_ip(),
+        port=int(postgres.get_exposed_port(5432)),
+        user=postgres.username,
+        password=postgres.password,
+        database=db_name,
+        min_size=1,
+        max_size=5,
+    )
+
+    # Create delivery_requests table
+    await pool.execute("""
+        CREATE TABLE delivery_requests (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            idempotency_key TEXT NOT NULL UNIQUE,
+            request_id UUID,
+            origin_butler TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            intent TEXT NOT NULL CHECK (intent IN ('send', 'reply')),
+            target_identity TEXT NOT NULL,
+            message_content TEXT NOT NULL,
+            subject TEXT,
+            request_envelope JSONB NOT NULL,
+            priority TEXT NOT NULL DEFAULT 'medium'
+                CHECK (priority IN ('high', 'medium', 'low')),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN (
+                    'pending', 'in_progress', 'delivered', 'failed', 'dead_lettered'
                 )),
-                error_class TEXT,
-                error_message TEXT,
-                provider_response JSONB,
-                UNIQUE (delivery_request_id, attempt_number)
-            )
-        """)
+            terminal_error_class TEXT,
+            terminal_error_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            terminal_at TIMESTAMPTZ
+        )
+    """)
 
-        yield pool
+    # Create delivery_attempts table
+    await pool.execute("""
+        CREATE TABLE delivery_attempts (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            delivery_request_id UUID NOT NULL
+                REFERENCES delivery_requests(id) ON DELETE CASCADE,
+            attempt_number INTEGER NOT NULL,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            completed_at TIMESTAMPTZ,
+            latency_ms INTEGER,
+            outcome TEXT NOT NULL CHECK (outcome IN (
+                'success', 'retryable_error', 'non_retryable_error', 'timeout', 'in_progress'
+            )),
+            error_class TEXT,
+            error_message TEXT,
+            provider_response JSONB,
+            UNIQUE (delivery_request_id, attempt_number)
+        )
+    """)
 
-        await pool.close()
+    yield pool
+
+    await pool.close()
 
 
 @pytest.mark.parametrize("mark", db_tests_mark)
