@@ -314,3 +314,7 @@ async def test_hourly_events_empty_registry_returns_200(app: FastAPI) -> None:
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["connectors"] == []
+    # Hourly fetch is skipped when registry is empty (guarded by `if rows:`)
+    assert pool.fetch.call_count == 1, (
+        f"Expected exactly 1 fetch call (registry only), got {pool.fetch.call_count}"
+    )

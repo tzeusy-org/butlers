@@ -101,7 +101,8 @@ async def list_connector_summaries_with_aggregates(
     last).  This is sourced from ``public.ingestion_events`` (not Prometheus)
     so it is always populated regardless of ``aggregates_available``.
 
-    Always returns HTTP 200 — database errors fall back to an empty list.
+    Always returns HTTP 200 — connector registry errors fall back to an empty list.
+    Hourly timeseries errors fall back to all-zero ``hourly_events`` arrays per connector.
     """
     pool = _pool(db)
     aggregates_available = _get_prometheus_url() is not None
@@ -179,11 +180,14 @@ async def list_connector_summaries_with_aggregates(
                 SELECT
                     source_channel        AS connector_type,
                     source_endpoint_identity AS endpoint_identity,
-                    date_trunc('hour', received_at) AS hour_bucket,
+                    date_trunc('hour', received_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                        AS hour_bucket,
                     count(*)              AS event_count
                 FROM public.ingestion_events
                 WHERE received_at >= $1
-                GROUP BY source_channel, source_endpoint_identity, date_trunc('hour', received_at)
+                  AND status = 'ingested'
+                GROUP BY source_channel, source_endpoint_identity,
+                         date_trunc('hour', received_at AT TIME ZONE 'UTC')
                 """,
                 window_start,
             )
