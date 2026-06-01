@@ -22,15 +22,6 @@ def _unique_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
-
-
 @pytest.fixture
 async def pool(postgres_container):
     """Provision a fresh Switchboard database and return a pool."""

@@ -78,15 +78,6 @@ def patch_embedding_engine():
 
 
 @pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
-
-
-@pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
     """Provision a database with real Alembic migrations applied (once per module).
 

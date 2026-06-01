@@ -36,15 +36,6 @@ def _unique_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
-
-
 async def _make_pool(postgres_container, *chains: str):
     """Create a fresh database, run real Alembic migrations, and return a pool.
 

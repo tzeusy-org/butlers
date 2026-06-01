@@ -34,15 +34,6 @@ def _unique_db_name() -> str:
 
 
 @pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
-
-
-@pytest.fixture(scope="module")
 def switchboard_dsn(postgres_container):
     """Create a database, run switchboard migrations, return asyncpg DSN."""
     from alembic import command

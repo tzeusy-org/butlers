@@ -155,14 +155,6 @@ def _unique_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("pgvector/pgvector:pg17") as postgres:
-        yield postgres
-
-
 def _create_db(postgres_container, db_name: str) -> str:
     from sqlalchemy import create_engine, text
 

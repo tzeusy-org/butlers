@@ -19,14 +19,6 @@ def _unique_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("pgvector/pgvector:pg17") as postgres:
-        yield postgres
-
-
 @pytest.fixture
 def db_factory(postgres_container):
     from butlers.db import Database
