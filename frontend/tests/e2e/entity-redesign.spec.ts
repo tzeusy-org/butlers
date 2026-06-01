@@ -14,11 +14,12 @@
  *
  * DESIGN:
  * - All API calls are intercepted via page.route() — no real backend required.
- * - Tests skip gracefully when the preview/dev server is not reachable.
- * - HTTP 4xx/5xx responses are NOT skipped — they signal a broken build.
+ * - The preview server is managed by playwright.config.ts `webServer`; tests
+ *   rely on it being available and will fail hard (not skip) if it is not.
+ * - HTTP 4xx/5xx responses are NOT swallowed — they signal a broken build.
  *
  * Prerequisites:
- *   npm run preview    (or dev, set PLAYWRIGHT_BASE_URL)
+ *   npm run build && npm run preview    (or set PLAYWRIGHT_BASE_URL)
  *   npm run test:e2e:install  (once per machine for browser binaries)
  *
  * Run:
@@ -96,19 +97,6 @@ const MOCK_INTERACTION_ITEM = {
 };
 
 // ---------------------------------------------------------------------------
-// Helper: attempt navigation; return false if server unreachable
-// ---------------------------------------------------------------------------
-
-async function tryNavigate(page: Page, url: string): Promise<boolean> {
-  try {
-    await page.goto(url, { timeout: TIMEOUT_MS });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Helper: install base entity API stubs (empty state)
 // ---------------------------------------------------------------------------
 
@@ -170,17 +158,9 @@ test.describe("entity-redesign: entity detail page", () => {
   // Test 1: Route loads without error
   // -------------------------------------------------------------------------
 
-  test("smoke: /entities/:id route loads without error", async ({ page, baseURL }) => {
+  test("smoke: /entities/:id route loads without error", async ({ page }) => {
     await installEntityStubs(page);
-
-    const ok = await tryNavigate(page, `/entities/${ENTITY_ID}`);
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run preview`,
-      );
-      return;
-    }
+    await page.goto(`/entities/${ENTITY_ID}`, { timeout: TIMEOUT_MS });
 
     // URL must contain the entity ID (no redirect away)
     expect(page.url()).toContain(`/entities/${ENTITY_ID}`);
@@ -201,17 +181,9 @@ test.describe("entity-redesign: entity detail page", () => {
   // present and the empty-state message is shown.
   // -------------------------------------------------------------------------
 
-  test("activity filter pills render in empty state on a fresh entity", async ({ page, baseURL }) => {
+  test("activity filter pills render in empty state on a fresh entity", async ({ page }) => {
     await installEntityStubs(page);
-
-    const ok = await tryNavigate(page, `/entities/${ENTITY_ID}`);
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run preview`,
-      );
-      return;
-    }
+    await page.goto(`/entities/${ENTITY_ID}`, { timeout: TIMEOUT_MS });
 
     // The "Activity" section heading must be present
     await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
@@ -243,19 +215,11 @@ test.describe("entity-redesign: entity detail page", () => {
   // Test 3: Timeline includes dunbar_tier_override events
   // -------------------------------------------------------------------------
 
-  test("timeline includes dunbar_tier_override events", async ({ page, baseURL }) => {
+  test("timeline includes dunbar_tier_override events", async ({ page }) => {
     await installEntityStubs(page, {
       timeline: [MOCK_DUNBAR_TIER_OVERRIDE_ITEM, MOCK_INTERACTION_ITEM],
     });
-
-    const ok = await tryNavigate(page, `/entities/${ENTITY_ID}`);
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run preview`,
-      );
-      return;
-    }
+    await page.goto(`/entities/${ENTITY_ID}`, { timeout: TIMEOUT_MS });
 
     // The timeline renders with the "All" pill active by default.
     // Both items should be visible.
@@ -314,7 +278,7 @@ test.describe("entity-redesign: contact detail page", () => {
   // state ("Contact not linked to an entity") — the old tabbed layout is gone.
   // -------------------------------------------------------------------------
 
-  test("contact detail page does not render a tab block", async ({ page, baseURL }) => {
+  test("contact detail page does not render a tab block", async ({ page }) => {
     // Stub the entity-resolver sub-endpoint (unlinked: no entity_id)
     await page.route(`**/api/relationship/contacts/${CONTACT_ID}/entity**`, (route) => {
       route.fulfill({
@@ -324,14 +288,7 @@ test.describe("entity-redesign: contact detail page", () => {
       });
     });
 
-    const ok = await tryNavigate(page, `/contacts/${CONTACT_ID}`);
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run preview`,
-      );
-      return;
-    }
+    await page.goto(`/contacts/${CONTACT_ID}`, { timeout: TIMEOUT_MS });
 
     // Recovery state must be shown (contact not linked to entity)
     await expect(
@@ -349,7 +306,7 @@ test.describe("entity-redesign: contact detail page", () => {
   // performs a client-side navigate() to /entities/:entityId immediately.
   // -------------------------------------------------------------------------
 
-  test("entity link in contact header navigates to /entities/:id", async ({ page, baseURL }) => {
+  test("entity link in contact header navigates to /entities/:id", async ({ page }) => {
     // Stub the entity-resolver sub-endpoint (linked: has entity_id)
     await page.route(`**/api/relationship/contacts/${CONTACT_ID}/entity**`, (route) => {
       route.fulfill({
@@ -362,14 +319,7 @@ test.describe("entity-redesign: contact detail page", () => {
     // Stub the entity detail endpoints so the redirect destination renders
     await installEntityStubs(page);
 
-    const ok = await tryNavigate(page, `/contacts/${CONTACT_ID}`);
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run preview`,
-      );
-      return;
-    }
+    await page.goto(`/contacts/${CONTACT_ID}`, { timeout: TIMEOUT_MS });
 
     // ContactEntityRedirect navigates to /entities/:entityId immediately.
     await page.waitForURL(new RegExp(`/entities/${ENTITY_ID}`), { timeout: TIMEOUT_MS });
