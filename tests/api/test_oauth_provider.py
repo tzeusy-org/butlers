@@ -884,6 +884,34 @@ def test_validate_connector_detail_path_rejects_whitespace_in_path():
     assert _validate_connector_detail_path("google/alice example") is None
 
 
+def test_validate_connector_detail_path_rejects_dot_dot_traversal():
+    """Path traversal sequences (..) are rejected as defence-in-depth."""
+    assert _validate_connector_detail_path("google/a/../../../secrets") is None
+    assert _validate_connector_detail_path("google/a/..") is None
+    assert _validate_connector_detail_path("google/a/../..//evil.com") is None
+
+
+def test_validate_connector_detail_path_rejects_double_slash_in_identity():
+    """Double slashes in the identity segment are rejected."""
+    # The regex already blocks a leading '//', but inner '//' must also be blocked.
+    assert _validate_connector_detail_path("google/a//evil.com") is None
+
+
+def test_validate_connector_detail_path_rejects_backslash():
+    """Backslashes are rejected (browser normalisation risk)."""
+    assert _validate_connector_detail_path("google/a\\evil.com") is None
+
+
+def test_validate_connector_detail_path_rejects_query_string():
+    """Query-string injection is rejected."""
+    assert _validate_connector_detail_path("google/alice?foo=bar") is None
+
+
+def test_validate_connector_detail_path_rejects_fragment():
+    """Fragment injection is rejected."""
+    assert _validate_connector_detail_path("google/alice#section") is None
+
+
 # --- Redirect URL builder tests with connector_detail_path ---
 
 

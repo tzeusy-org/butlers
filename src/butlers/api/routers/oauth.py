@@ -607,9 +607,13 @@ def _validate_connector_detail_path(raw: str | None) -> str | None:
     and only accepted if it:
 
     - is non-empty after stripping whitespace,
-    - matches ``<connector_type>/<endpoint_identity>`` — two segments, no
-      leading '/', no protocol, no query string, no whitespace,
-    - contains exactly one internal '/' (type and identity segments).
+    - starts with ``<connector_type>/`` (alphanumeric/hyphen/underscore type segment
+      followed by '/'),
+    - the identity segment starts with a non-slash, non-whitespace character (prevents
+      protocol-relative paths like ``//evil.com``); the identity may contain additional
+      '/' characters (e.g. namespaced IDs like ``google/alice/sub-resource``),
+    - contains no path-traversal sequences (``..``), double slashes (``//``),
+      backslashes, query strings (``?``), or fragment markers (``#``).
 
     Returns the stripped, validated path on success.
     Returns ``None`` (and logs a warning) when the value is absent or invalid.
@@ -625,6 +629,18 @@ def _validate_connector_detail_path(raw: str | None) -> str | None:
             stripped,
         )
         return None
+    # Defence-in-depth: reject sequences that could cause path traversal or inject
+    # query/fragment components even though the regex + hardcoded prefix already
+    # prevent any off-origin redirect.
+    _FORBIDDEN = ("..", "//", "\\", "?", "#")
+    for seq in _FORBIDDEN:
+        if seq in stripped:
+            logger.warning(
+                "connector_detail_path %r rejected — contains forbidden sequence %r",
+                stripped,
+                seq,
+            )
+            return None
     return stripped
 
 

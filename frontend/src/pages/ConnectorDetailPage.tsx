@@ -86,12 +86,15 @@ export default function ConnectorDetailPage() {
   // so the callback deep-links back to this specific detail page.
   const handleReauth = useCallback(() => {
     if (!connectorType || !endpointIdentity) return
-    // The provider name maps to the connector_type for OAuth-backed connectors.
+    // Derive the OAuth provider name from connector_type.  The backend registry
+    // only accepts "google" and "spotify" as provider keys; connector_type values
+    // like "google_health" or "google_drive" must be mapped to "google".
+    const provider = connectorType.startsWith('google') ? 'google' : connectorType
     // connector_detail_path is "<type>/<identity>" — the backend validates the
     // format and silently ignores it if it doesn't match, falling back to the
     // roster.
     const connectorDetailPath = `${connectorType}/${endpointIdentity}`
-    const url = getProviderOAuthStartUrl(connectorType, {
+    const url = getProviderOAuthStartUrl(provider, {
       pageOfOrigin: 'ingestion',
       connectorDetailPath,
       forceConsent: true,
