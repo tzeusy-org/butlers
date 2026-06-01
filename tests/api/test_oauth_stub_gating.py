@@ -72,11 +72,11 @@ def _make_stub_app(app, *, client_id: str = "stub-client-id", client_secret: str
     async def _fetchrow(query, *args):
         if "google_accounts" in query:
             row = MagicMock()
-            row.__getitem__ = lambda self, k: uuid.uuid4() if k == "entity_id" else None
+            row.__getitem__.side_effect = lambda k: uuid.uuid4() if k == "entity_id" else None
             return row
         if "entities" in query:
             row = MagicMock()
-            row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
+            row.__getitem__.side_effect = lambda k: "owner-uuid" if k == "id" else None
             return row
         if "entity_info" in query:
             return None
@@ -161,6 +161,20 @@ def test_stub_off_when_env_prod_case_insensitive(monkeypatch):
     """HARD PRODUCTION GUARD: ENV=PROD (uppercase) is also treated as production."""
     monkeypatch.setenv(_OAUTH_STUB_ENV, "1")
     monkeypatch.setenv("ENV", "PROD")
+    assert _is_oauth_stub_active() is False
+
+
+def test_stub_off_when_env_is_production(monkeypatch):
+    """HARD PRODUCTION GUARD: ENV=production (long form) is also blocked."""
+    monkeypatch.setenv(_OAUTH_STUB_ENV, "1")
+    monkeypatch.setenv("ENV", "production")
+    assert _is_oauth_stub_active() is False
+
+
+def test_stub_off_when_env_is_production_uppercase(monkeypatch):
+    """HARD PRODUCTION GUARD: ENV=PRODUCTION (uppercase long form) is also blocked."""
+    monkeypatch.setenv(_OAUTH_STUB_ENV, "1")
+    monkeypatch.setenv("ENV", "PRODUCTION")
     assert _is_oauth_stub_active() is False
 
 

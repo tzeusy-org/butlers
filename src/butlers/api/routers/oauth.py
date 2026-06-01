@@ -687,11 +687,11 @@ def _is_oauth_stub_active() -> bool:
 
     Rules:
     1. TEST_MODE_OAUTH_STUB must be set to a truthy value (1/true/yes/on).
-    2. ENV must NOT equal "prod" (the codebase-wide production marker).
+    2. ENV must NOT start with "prod" (guards against "prod", "production", "PROD", etc.).
 
     When both (1) and (2) are satisfied, the stub is active.
-    When ENV=prod and TEST_MODE_OAUTH_STUB is set, the stub is forcibly disabled
-    and a loud WARNING is emitted — this is the hard production guard.
+    When ENV starts with "prod" and TEST_MODE_OAUTH_STUB is set, the stub is forcibly
+    disabled and a loud WARNING is emitted — this is the hard production guard.
 
     When TEST_MODE_OAUTH_STUB is absent or falsy, this function returns False
     immediately without checking ENV (fast path for the overwhelmingly common
@@ -702,11 +702,13 @@ def _is_oauth_stub_active() -> bool:
         return False
 
     # Stub is requested — apply the hard production guard.
+    # Use startswith("prod") to catch "prod", "production", "prod-us-east-1", etc.
     env = os.environ.get("ENV", "").strip().lower()
-    if env == "prod":
+    if env.startswith("prod"):
         logger.warning(
-            "TEST_MODE_OAUTH_STUB is set but ENV=prod — OAuth stub is DISABLED. "
-            "The stub cannot activate in production. Unset TEST_MODE_OAUTH_STUB."
+            "TEST_MODE_OAUTH_STUB is set but ENV=%r — OAuth stub is DISABLED. "
+            "The stub cannot activate in production. Unset TEST_MODE_OAUTH_STUB.",
+            env,
         )
         return False
 
