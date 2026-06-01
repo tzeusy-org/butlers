@@ -1640,14 +1640,28 @@ class ReauthorizeResponse(BaseModel):
 # OAuth provider token revocation
 # ---------------------------------------------------------------------------
 
+# butler_secrets key names for GitHub OAuth app credentials.
+# The repo owner must populate these in butler_secrets (or via the secrets dashboard)
+# before GitHub OAuth token revocation will be attempted.
+# Key names follow the GOOGLE_OAUTH_* convention established for Google.
+_GITHUB_OAUTH_CLIENT_ID_KEY = "GITHUB_OAUTH_CLIENT_ID"
+_GITHUB_OAUTH_CLIENT_SECRET_KEY = "GITHUB_OAUTH_CLIENT_SECRET"
+
+# GitHub DELETE endpoint for revoking an OAuth app grant.
+# Requires HTTP Basic auth with client_id:client_secret, and a JSON body
+# {"access_token": <token>} per the GitHub Apps API.
+# https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-grant
+_GITHUB_REVOKE_URL_TEMPLATE = "https://api.github.com/applications/{client_id}/grant"
+
 # Credential types that carry an OAuth token eligible for provider-side revocation.
-# Keys are provider slugs; values are the URL to POST to (or None = not implemented).
+# Keys are provider slugs; values are the URL template to call (or None = not implemented).
 # Only providers with a working implementation are listed.  Unlisted providers are
 # treated as "skipped" (log a warning, rotation still succeeds).
 _OAUTH_REVOKE_PROVIDERS: dict[str, str | None] = {
     "google": "https://oauth2.googleapis.com/revoke",
-    # GitHub revoke requires app credentials (client_id, client_secret) which are
-    # not stored server-side.  Tracked as a follow-up (file a beads issue).
+    # GitHub revocation uses DELETE /applications/{client_id}/grant with HTTP Basic auth.
+    # The client_id is substituted at call time from butler_secrets.
+    "github": _GITHUB_REVOKE_URL_TEMPLATE,
     # Spotify and others: add as follow-up issues.
 }
 
@@ -1658,7 +1672,12 @@ _OAUTH_TYPE_SUFFIXES = ("_oauth_refresh", "_oauth_access")
 _REVOKE_TIMEOUT_S = 5.0
 
 
-async def _revoke_oauth_token(provider: str, credential_type: str, old_value: str) -> str:
+async def _revoke_oauth_token(
+    provider: str,
+    credential_type: str,
+    old_value: str,
+    shared_pool: Any | None = None,
+) -> str:
     """Attempt to revoke an OAuth token at the provider after a successful local rotation.
 
     Returns a revoke_status string: ``"succeeded"``, ``"failed:<reason>"``, or ``"skipped"``.
@@ -1669,6 +1688,16 @@ async def _revoke_oauth_token(provider: str, credential_type: str, old_value: st
     - On HTTP 200, return ``"succeeded"``.
     - On any error (HTTP non-200, timeout, network failure), log at WARN level and return
       ``"failed:<reason>"``.  Caller must NOT propagate this as a rotation failure.
+
+    Provider-specific notes:
+    - Google: POST to revoke URL with form body ``{"token": old_value}``.  No app
+      credentials required.
+    - GitHub: DELETE to ``/applications/{client_id}/grant`` with HTTP Basic auth
+      (client_id:client_secret) and JSON body ``{"access_token": old_value}``.
+      Requires ``GITHUB_OAUTH_CLIENT_ID`` and ``GITHUB_OAUTH_CLIENT_SECRET`` to be
+      stored in ``butler_secrets`` (loaded via CredentialStore from *shared_pool*).
+      If those credentials are absent or *shared_pool* is None, the revoke is
+      skipped with a clear log message — rotation still succeeds.
     """
     # Only OAuth credential types trigger revoke.
     if not any(credential_type.endswith(suffix) for suffix in _OAUTH_TYPE_SUFFIXES):
@@ -1689,6 +1718,15 @@ async def _revoke_oauth_token(provider: str, credential_type: str, old_value: st
             )
         return "skipped"
 
+    # ------------------------------------------------------------------
+    # GitHub — DELETE /applications/{client_id}/grant with Basic auth
+    # ------------------------------------------------------------------
+    if provider == "github":
+        return await _revoke_github_oauth_token(old_value, shared_pool=shared_pool)
+
+    # ------------------------------------------------------------------
+    # Default path (e.g. Google) — POST with form body {"token": old_value}
+    # ------------------------------------------------------------------
     try:
         async with httpx.AsyncClient(timeout=_REVOKE_TIMEOUT_S) as client:
             # Send the token in the POST body (application/x-www-form-urlencoded)
@@ -1706,6 +1744,72 @@ async def _revoke_oauth_token(provider: str, credential_type: str, old_value: st
         logger.warning(
             "_revoke_oauth_token: provider=%s revoke error: %s", provider, exc, exc_info=True
         )
+        return f"failed:{reason}"
+
+
+async def _revoke_github_oauth_token(
+    access_token: str,
+    *,
+    shared_pool: Any | None,
+) -> str:
+    """Revoke a GitHub OAuth app grant via DELETE /applications/{client_id}/grant.
+
+    Loads GitHub app credentials (client_id, client_secret) from butler_secrets
+    via CredentialStore.  If those credentials are absent or the shared pool is
+    unavailable, the revoke is skipped with a clear log message — the caller's
+    rotation still succeeds.
+
+    Returns a revoke_status string: ``"succeeded"``, ``"failed:<reason>"``, or ``"skipped"``.
+
+    Owner action required: the repo owner must store ``GITHUB_OAUTH_CLIENT_ID``
+    and ``GITHUB_OAUTH_CLIENT_SECRET`` in butler_secrets before this revocation
+    path will be attempted.  Use the secrets dashboard or
+    ``CredentialStore.store()`` to provision these values.
+    """
+    if shared_pool is None:
+        logger.warning(
+            "_revoke_github_oauth_token: shared_pool not available; skipping GitHub revoke"
+        )
+        return "skipped"
+
+    # Load GitHub app credentials from butler_secrets.
+    cred_store = CredentialStore(shared_pool)
+    try:
+        client_id = await cred_store.load(_GITHUB_OAUTH_CLIENT_ID_KEY)
+        client_secret = await cred_store.load(_GITHUB_OAUTH_CLIENT_SECRET_KEY)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_revoke_github_oauth_token: failed to load GitHub app credentials: %s", exc)
+        return "skipped"
+
+    if not client_id or not client_secret:
+        logger.warning(
+            "_revoke_github_oauth_token: GitHub app credentials not configured "
+            "(set %s and %s in butler_secrets); skipping revoke",
+            _GITHUB_OAUTH_CLIENT_ID_KEY,
+            _GITHUB_OAUTH_CLIENT_SECRET_KEY,
+        )
+        return "skipped"
+
+    revoke_url = _GITHUB_REVOKE_URL_TEMPLATE.format(client_id=client_id)
+
+    try:
+        async with httpx.AsyncClient(timeout=_REVOKE_TIMEOUT_S) as client:
+            resp = await client.delete(
+                revoke_url,
+                auth=(client_id, client_secret),
+                json={"access_token": access_token},
+                headers={"Accept": "application/vnd.github+json"},
+            )
+        # GitHub returns 204 No Content on successful grant deletion.
+        if resp.status_code in {200, 204}:
+            logger.debug("_revoke_github_oauth_token: grant revoked (HTTP %s)", resp.status_code)
+            return "succeeded"
+        reason = f"HTTP {resp.status_code}"
+        logger.warning("_revoke_github_oauth_token: revoke failed: %s", reason)
+        return f"failed:{reason}"
+    except Exception as exc:  # noqa: BLE001
+        reason = type(exc).__name__
+        logger.warning("_revoke_github_oauth_token: revoke error: %s", exc, exc_info=True)
         return f"failed:{reason}"
 
 
@@ -2065,7 +2169,9 @@ async def rotate_user_credential(
     # and (c) the credential type is an OAuth type.
     revoke_status = "skipped"
     if old_raw_value is not None and old_raw_value != body.value:
-        revoke_status = await _revoke_oauth_token(provider, detail.type, old_raw_value)
+        revoke_status = await _revoke_oauth_token(
+            provider, detail.type, old_raw_value, shared_pool=shared_pool
+        )
 
     # Audit — fire-and-forget.
     await _write_credential_audit(

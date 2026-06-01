@@ -677,27 +677,32 @@ def test_rotate_non_oauth_provider_does_not_call_revoke(monkeypatch):
     )
 
 
-def test_rotate_unlisted_provider_does_not_call_revoke(monkeypatch):
-    """Rotation of an OAuth credential for an unlisted provider logs a warning and skips revoke.
+def test_rotate_github_skips_revoke_when_app_creds_absent(monkeypatch):
+    """GitHub revocation is skipped (not HTTP-called) when app credentials are not configured.
 
-    'github' with type 'github_oauth_refresh' would match the OAuth type suffix, but
-    'github' is not in _OAUTH_REVOKE_PROVIDERS (implementation pending), so revoke is skipped.
+    GitHub is now in _OAUTH_REVOKE_PROVIDERS.  When GITHUB_OAUTH_CLIENT_ID /
+    GITHUB_OAUTH_CLIENT_SECRET are absent from butler_secrets, the revoke helper
+    short-circuits and returns 'skipped' without making any HTTP call.
+    Rotation still returns 200.
     """
     import httpx
 
     row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-github-tok")
+    # The default _make_shared_pool returns None for butler_secrets fetches (cred store will
+    # find no rows for GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET).
     mock_db = _make_db(user_row=row)
 
-    revoke_calls: list[dict] = []
+    http_calls: list[dict] = []
 
-    async def _fake_post(url, **kwargs):
-        revoke_calls.append({"url": str(url)})
+    async def _fake_delete(url, **kwargs):
+        http_calls.append({"url": str(url), "method": "DELETE"})
         fake_resp = MagicMock(spec=httpx.Response)
-        fake_resp.status_code = 200
+        fake_resp.status_code = 204
         return fake_resp
 
     fake_client = AsyncMock()
-    fake_client.post = AsyncMock(side_effect=_fake_post)
+    fake_client.delete = AsyncMock(side_effect=_fake_delete)
+    fake_client.post = AsyncMock()
 
     async def _fake_aenter(self):
         return fake_client
@@ -712,8 +717,8 @@ def test_rotate_unlisted_provider_does_not_call_revoke(monkeypatch):
     resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-github-tok"})
 
     assert resp.status_code == 200
-    assert not revoke_calls, (
-        f"Expected no revoke HTTP calls for unlisted provider, got: {revoke_calls}"
+    assert not http_calls, (
+        f"Expected no HTTP revoke call when GitHub app creds absent, got: {http_calls}"
     )
 
 
@@ -800,3 +805,254 @@ def test_rotate_no_revoke_when_new_value_equals_old(monkeypatch):
     assert not revoke_calls, (
         f"Expected no revoke when new value equals old value, got: {revoke_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests: GitHub OAuth token revocation during rotate (bu-h7b8w)
+# ---------------------------------------------------------------------------
+
+
+def _make_db_with_github_creds(
+    *,
+    user_row: MagicMock,
+    client_id: str = "Iv1.abcdef123456",
+    client_secret: str = "gh_cs_secret",
+) -> MagicMock:
+    """Build a mock DatabaseManager where butler_secrets returns GitHub app creds.
+
+    The shared pool's acquire → conn.fetchrow is patched to return the GitHub
+    app credentials when queried by GITHUB_OAUTH_CLIENT_ID/_SECRET keys.
+    """
+    from contextlib import asynccontextmanager
+
+    shared_pool = AsyncMock()
+
+    async def _fetchrow(sql, *args):
+        # entity_info / entities lookup (for user credential fetch).
+        if "entity_info" in sql or "entities" in sql:
+            return user_row
+        # secret_probe_log lookup — return None (no probe history).
+        if "secret_probe_log" in sql:
+            return None
+        return None
+
+    # butler_secrets lookup for CredentialStore.load()
+    async def _conn_fetchrow(sql, *args):
+        # CredentialStore queries: SELECT secret_value FROM butler_secrets WHERE secret_key = $1
+        if "butler_secrets" in sql and args:
+            key = args[0]
+            if key == "GITHUB_OAUTH_CLIENT_ID":
+                row_mock = MagicMock()
+                row_mock.__getitem__ = MagicMock(
+                    side_effect=lambda k: client_id if k == "secret_value" else None
+                )
+                return row_mock
+            if key == "GITHUB_OAUTH_CLIENT_SECRET":
+                row_mock = MagicMock()
+                row_mock.__getitem__ = MagicMock(
+                    side_effect=lambda k: client_secret if k == "secret_value" else None
+                )
+                return row_mock
+        # entity_info / entities fallback
+        if "entity_info" in sql or "entities" in sql:
+            return user_row
+        return None
+
+    shared_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    shared_pool.fetch = AsyncMock(return_value=[])
+    shared_pool.execute = AsyncMock(return_value="UPDATE 1")
+
+    fake_conn = AsyncMock()
+    fake_conn.fetchrow = AsyncMock(side_effect=_conn_fetchrow)
+    fake_conn.fetch = AsyncMock(return_value=[])
+    fake_conn.execute = AsyncMock(return_value="UPDATE 1")
+    fake_conn.fetchval = AsyncMock(return_value=1)
+
+    @asynccontextmanager
+    async def _transaction():
+        yield
+
+    fake_conn.transaction = _transaction
+
+    @asynccontextmanager
+    async def _acquire():
+        yield fake_conn
+
+    shared_pool.acquire = _acquire
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=AsyncMock())
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+    return mock_db
+
+
+def test_rotate_github_calls_delete_revoke_endpoint(monkeypatch):
+    """GitHub rotation calls DELETE /applications/{client_id}/grant with Basic auth.
+
+    When GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET are configured in
+    butler_secrets, the revoke helper sends:
+    - DELETE https://api.github.com/applications/{client_id}/grant
+    - HTTP Basic auth (client_id:client_secret)
+    - JSON body {"access_token": old_token}
+    """
+    import httpx
+
+    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-gh-tok")
+    mock_db = _make_db_with_github_creds(
+        user_row=row,
+        client_id="Iv1.testclientid",
+        client_secret="gh_cs_testsecret",
+    )
+
+    http_calls: list[dict] = []
+
+    async def _fake_delete(url, **kwargs):
+        http_calls.append({"url": str(url), "kwargs": kwargs})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 204
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.delete = AsyncMock(side_effect=_fake_delete)
+    fake_client.post = AsyncMock()
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-gh-tok"})
+
+    assert resp.status_code == 200
+    assert http_calls, "Expected a DELETE call to GitHub revoke endpoint"
+
+    call = http_calls[0]
+    assert "api.github.com/applications/Iv1.testclientid/grant" in call["url"], (
+        f"Expected GitHub revoke URL with client_id, got: {call['url']}"
+    )
+    # Verify Basic auth credentials.
+    auth = call["kwargs"].get("auth")
+    assert auth == ("Iv1.testclientid", "gh_cs_testsecret"), (
+        f"Expected Basic auth (client_id, client_secret), got: {auth}"
+    )
+    # Verify JSON body contains the old access token.
+    json_body = call["kwargs"].get("json", {})
+    assert json_body.get("access_token") == "old-gh-tok", (
+        f"Expected old token in JSON body, got: {json_body}"
+    )
+
+
+def test_rotate_github_revoke_204_returns_succeeded(monkeypatch):
+    """GitHub revoke returning HTTP 204 is treated as success ('succeeded')."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-tok")
+    mock_db = _make_db_with_github_creds(user_row=row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
+    async def _fake_delete(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 204
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.delete = AsyncMock(side_effect=_fake_delete)
+    fake_client.post = AsyncMock()
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-tok"})
+
+    assert resp.status_code == 200
+    rotated = [c for c in audit_calls if c["action"] == "rotated"]
+    assert rotated, "Expected 'rotated' audit row"
+    note = rotated[0].get("note", "")
+    assert "revoke_status=succeeded" in note, (
+        f"Expected revoke_status=succeeded in audit note, got: {note!r}"
+    )
+
+
+def test_rotate_github_revoke_failure_does_not_fail_rotation(monkeypatch):
+    """GitHub revoke HTTP failure (non-200/204) does NOT fail the rotation (returns 200)."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-tok")
+    mock_db = _make_db_with_github_creds(user_row=row)
+
+    async def _fake_delete(url, **kwargs):
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 422
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.delete = AsyncMock(side_effect=_fake_delete)
+    fake_client.post = AsyncMock()
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-tok"})
+
+    # Rotation MUST succeed even when GitHub revoke returns non-200.
+    assert resp.status_code == 200
+    assert "data" in resp.json()
+
+
+def test_rotate_github_revoke_network_error_does_not_fail_rotation(monkeypatch):
+    """GitHub revoke network error does NOT fail the rotation (returns 200)."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-tok")
+    mock_db = _make_db_with_github_creds(user_row=row)
+
+    async def _fake_delete(url, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    fake_client = AsyncMock()
+    fake_client.delete = AsyncMock(side_effect=_fake_delete)
+    fake_client.post = AsyncMock()
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-tok"})
+
+    assert resp.status_code == 200
+    assert "data" in resp.json()
