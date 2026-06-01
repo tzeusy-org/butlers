@@ -31,6 +31,7 @@ import { useParams } from 'react-router'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchSurface } from '@/components/ingestion/dispatch'
 import { ConnectorDetailView } from '@/components/ingestion/connectors/ConnectorDetailView'
+import type { OAuthScope } from '@/components/ingestion/connectors/ScopeList'
 import {
   useConnectorDetail,
   useConnectorEvents,
@@ -38,7 +39,21 @@ import {
   useConnectorRoutingRules,
   useConnectorStats,
 } from '@/hooks/use-ingestion'
+import type { ConnectorScopeEntry } from '@/api/types'
 import { getProviderOAuthStartUrl } from '@/api/client'
+
+/** Map backend ConnectorScopeEntry[] to the OAuthScope[] shape ScopeList consumes. */
+function _toOAuthScopes(scopes: ConnectorScopeEntry[] | null | undefined): OAuthScope[] | null {
+  if (!scopes || scopes.length === 0) return null
+  return scopes
+    .filter((s) => s.status !== 'extra') // exclude extra-only scopes from the ScopeList display
+    .map((s) => ({
+      name: s.name,
+      granted: s.status === 'ok',
+      verdict: s.status === 'missing' ? 'denied' : s.status === 'ok' ? 'granted' : undefined,
+      note: s.serif_note || undefined,
+    }))
+}
 
 // ---------------------------------------------------------------------------
 // ConnectorDetailPage
@@ -114,10 +129,7 @@ export default function ConnectorDetailPage() {
           <ConnectorDetailView
             connector={connector}
             stats={stats}
-            // oauthScopes is intentionally null here — the connector-oauth-scope-surface
-            // backend capability is not yet implemented. ScopeList renders the
-            // explicit "unavailable" state (spec AC3 compliance).
-            oauthScopes={null}
+            oauthScopes={_toOAuthScopes(connector.scopes)}
             recentEvents={eventsResp ?? null}
             incidents={incidentsResp ?? null}
             routingRules={routingRulesResp ?? null}
