@@ -1126,3 +1126,163 @@ class TestLoadAssertFactReal:
         assert _sys.modules[mod_name] is writer_mod, (
             "sys.modules entry must be the same object returned by _load_assert_fact()"
         )
+
+
+# ---------------------------------------------------------------------------
+# 17. _create_pool / _db_name_from_env — POSTGRES_SSLMODE honoured (bu-dv1bg)
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePoolSsl:
+    """Verify that POSTGRES_SSLMODE is passed through to asyncpg.create_pool.
+
+    The fix (bu-dv1bg) unified _create_pool to use db_params_from_env() so
+    POSTGRES_SSLMODE is honoured on the discrete-params path, not only on the
+    DATABASE_URL path.
+    """
+
+    def _patch_create_pool(self):
+        """Return a context manager that patches asyncpg.create_pool."""
+        mock_pool = MagicMock()
+        mock_pool.__aenter__ = AsyncMock(return_value=mock_pool)
+        mock_pool.__aexit__ = AsyncMock(return_value=False)
+        create_pool_mock = AsyncMock(return_value=mock_pool)
+        return create_pool_mock, patch("asyncpg.create_pool", create_pool_mock)
+
+    @pytest.mark.asyncio
+    async def test_discrete_params_sslmode_require_passed_to_asyncpg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSTGRES_SSLMODE=require must result in ssl='require' in asyncpg.create_pool."""
+        mod = _load_module()
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("POSTGRES_HOST", "pghost")
+        monkeypatch.setenv("POSTGRES_PORT", "5432")
+        monkeypatch.setenv("POSTGRES_USER", "myuser")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "mypass")
+        monkeypatch.setenv("POSTGRES_DB", "mydb")
+        monkeypatch.setenv("POSTGRES_SSLMODE", "require")
+
+        create_pool_mock, ctx = self._patch_create_pool()
+        with ctx:
+            await mod._create_pool()
+
+        assert create_pool_mock.called
+        kwargs = create_pool_mock.call_args.kwargs
+        assert kwargs.get("ssl") == "require", f"Expected ssl='require', got {kwargs.get('ssl')!r}"
+        assert kwargs.get("host") == "pghost"
+        assert kwargs.get("database") == "mydb"
+
+    @pytest.mark.asyncio
+    async def test_discrete_params_no_sslmode_omits_ssl_kwarg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without POSTGRES_SSLMODE the ssl kwarg must be absent from asyncpg.create_pool."""
+        mod = _load_module()
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("POSTGRES_SSLMODE", raising=False)
+        monkeypatch.setenv("POSTGRES_HOST", "pghost")
+        monkeypatch.setenv("POSTGRES_PORT", "5432")
+        monkeypatch.setenv("POSTGRES_USER", "myuser")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "mypass")
+        monkeypatch.setenv("POSTGRES_DB", "mydb")
+
+        create_pool_mock, ctx = self._patch_create_pool()
+        with ctx:
+            await mod._create_pool()
+
+        assert create_pool_mock.called
+        kwargs = create_pool_mock.call_args.kwargs
+        assert "ssl" not in kwargs, (
+            f"ssl kwarg should be absent when POSTGRES_SSLMODE is unset, got {kwargs.get('ssl')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_discrete_params_sslmode_disable_passed_to_asyncpg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSTGRES_SSLMODE=disable must result in ssl='disable' in asyncpg.create_pool."""
+        mod = _load_module()
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("POSTGRES_HOST", "pghost")
+        monkeypatch.setenv("POSTGRES_PORT", "5432")
+        monkeypatch.setenv("POSTGRES_USER", "myuser")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "mypass")
+        monkeypatch.setenv("POSTGRES_DB", "mydb")
+        monkeypatch.setenv("POSTGRES_SSLMODE", "disable")
+
+        create_pool_mock, ctx = self._patch_create_pool()
+        with ctx:
+            await mod._create_pool()
+
+        assert create_pool_mock.called
+        kwargs = create_pool_mock.call_args.kwargs
+        assert kwargs.get("ssl") == "disable"
+
+    @pytest.mark.asyncio
+    async def test_database_url_sslmode_passed_to_asyncpg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DATABASE_URL with sslmode=verify-full must pass ssl='verify-full' to asyncpg."""
+        mod = _load_module()
+        monkeypatch.setenv(
+            "DATABASE_URL",
+            "postgres://user:pass@pghost:5432/mydb?sslmode=verify-full",
+        )
+        monkeypatch.delenv("POSTGRES_SSLMODE", raising=False)
+
+        create_pool_mock, ctx = self._patch_create_pool()
+        with ctx:
+            await mod._create_pool()
+
+        assert create_pool_mock.called
+        kwargs = create_pool_mock.call_args.kwargs
+        assert kwargs.get("ssl") == "verify-full"
+        assert kwargs.get("host") == "pghost"
+        assert kwargs.get("database") == "mydb"
+        # Must not use dsn= kwarg (avoids asyncpg conflict with explicit kwargs)
+        assert "dsn" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_database_url_no_sslmode_omits_ssl_kwarg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DATABASE_URL without sslmode must not pass ssl= to asyncpg."""
+        mod = _load_module()
+        monkeypatch.setenv("DATABASE_URL", "postgres://user:pass@pghost:5432/mydb")
+        monkeypatch.delenv("POSTGRES_SSLMODE", raising=False)
+
+        create_pool_mock, ctx = self._patch_create_pool()
+        with ctx:
+            await mod._create_pool()
+
+        assert create_pool_mock.called
+        kwargs = create_pool_mock.call_args.kwargs
+        assert "ssl" not in kwargs
+        assert "dsn" not in kwargs
+
+    def test_db_name_from_env_uses_postgres_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_db_name_from_env returns POSTGRES_DB when DATABASE_URL is absent."""
+        mod = _load_module()
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("POSTGRES_DB", "custom_db")
+        assert mod._db_name_from_env() == "custom_db"
+
+    def test_db_name_from_env_parses_database_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_db_name_from_env extracts the database name from DATABASE_URL path."""
+        mod = _load_module()
+        monkeypatch.setenv("DATABASE_URL", "postgres://u:p@host:5432/targetdb?sslmode=require")
+        assert mod._db_name_from_env() == "targetdb"
+
+    def test_db_name_from_env_strips_trailing_slash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_db_name_from_env strips trailing slashes from the DATABASE_URL path."""
+        mod = _load_module()
+        monkeypatch.setenv("DATABASE_URL", "postgres://u:p@host:5432/targetdb/")
+        assert mod._db_name_from_env() == "targetdb"
+
+    def test_db_name_from_env_defaults_when_no_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_db_name_from_env falls back to 'butlers' when neither var is set."""
+        mod = _load_module()
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("POSTGRES_DB", raising=False)
+        assert mod._db_name_from_env() == "butlers"
