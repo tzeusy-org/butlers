@@ -201,13 +201,9 @@ The `/butlers/:name` page is a tabbed detail view where each butler is treated a
 - **AND** when `tab` is absent or invalid, the default tab is `overview`
 - **AND** tab changes update the URL via `replaceState` (no history entry)
 
-#### Scenario: Breadcrumb navigation
-- **WHEN** the butler detail page renders
-- **THEN** a breadcrumb trail is shown: Overview > Butlers > {butler name}
-
-#### Scenario: Base tabs always present
-- **WHEN** any butler detail page loads
-- **THEN** the following tabs are always visible: Overview, Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory
+#### Scenario: Base tabs in operator mode
+- **WHEN** any butler detail page loads in operator mode
+- **THEN** the following tabs SHALL be visible: Overview, Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory
 
 #### Scenario: Conditionally shown tabs -- switchboard
 - **WHEN** the butler name is `switchboard`
@@ -219,7 +215,7 @@ The `/butlers/:name` page is a tabbed detail view where each butler is treated a
 
 #### Scenario: Conditionally shown tabs -- general
 - **WHEN** the butler name is `general`
-- **THEN** two additional tabs are shown: "Collections" and "Entities"
+- **THEN** one additional tab is shown: "Collections"
 
 #### Scenario: Lazy-loaded tabs for performance
 - **WHEN** a non-default tab is selected for the first time
@@ -229,111 +225,169 @@ The `/butlers/:name` page is a tabbed detail view where each butler is treated a
 #### Scenario: Tab URL semantics and deep-linking
 - **WHEN** the active tab is controlled by the `?tab=` query parameter
 - **THEN** `overview` is the default tab and removes the query parameter from the URL
-- **AND** accepted deep-link values include all base tab keys (`overview`, `sessions`, `config`, `skills`, `schedules`, `trigger`, `mcp`, `state`, `crm`, `memory`) plus conditional tab keys (`health`, `collections`, `entities`, `routing-log`, `registry`)
+- **AND** accepted deep-link values include all base tab keys for the active mode plus conditional tab keys for the specific butler
 - **AND** tab changes update the URL via `replaceState` without creating browser history entries
 
-### Requirement: Butler detail page outer chrome conforms to the detail-page archetype
+### Requirement: Butler detail page outer chrome uses status-board archetype
 
-The Butler detail page at `/butlers/:name` SHALL adopt `<Page archetype="detail">`
-for its outer chrome. The existing tab structure is the `primary` body slot; the inner
-tab content is NOT changed by this requirement.
+The Butler detail page at `/butlers/:name` SHALL use `<Page archetype="status-board">`
+as its outer chrome. The tab block is the sole page body content; no footer KPI band,
+no breadcrumbs prop, and no ButlerHeartbeatTile are rendered at the page layer.
 
-**Changes from the existing requirement (§Requirement: Butler Detail Page Structure):**
+**Shell contract:**
 
-1. **Shell adoption.** The page MUST use `<Page archetype="detail">` as its outer
-   shell. Breadcrumbs (currently "Overview > Butlers > {butler name}" via a standalone
-   `<Breadcrumbs>` component) MUST be passed via the `breadcrumbs` prop on `<Page>`.
-   The standalone `<Breadcrumbs>` component at the page layer MUST be removed.
+1. **Archetype.** The page MUST use `<Page archetype="status-board">` as its outer
+   shell. No `breadcrumbs` prop is passed; the butler detail page does not expose a
+   breadcrumb trail via the Page shell.
 
-2. **Title.** The `title` prop on `<Page>` MUST be the butler's name (`name` field
-   from the butler record), titleized (e.g., `"relationship"` → `"Relationship"`).
+2. **Title.** The `title` prop on `<Page>` MUST be the butler's name titleized
+   (e.g., `"relationship"` → `"Relationship"`).
 
-3. **Actions.** The `<ChatPanel />` button, currently pinned right alongside the H1
-   in the page header flex row, MUST be migrated to the `actions` prop on `<Page>`.
-   The `<ChatPanel />` component itself is unchanged; only its placement moves to the
-   shell's header action slot.
+3. **Description.** The `description` prop on `<Page>` MUST be sourced from
+   `ButlerSummary.description` when available and `undefined` otherwise.
 
-4. **Primary slot.** The `<Tabs>` block (containing the `BASE_TABS`, conditional
-   tabs, and `TabsContent` sections) becomes the `primary` body slot rendered inside
-   the shell's `children`. No content is removed; the tab structure is preserved
-   exactly.
+4. **Header slot.** The `header` prop on `<Page>` MUST be
+   `<ButlerDetailHeader butler={name} actions={<ButlerDetailActions butlerName={name} onModeChange={setMode} />} />`.
+   `ButlerDetailHeader` renders the butler identity block (name H1, description,
+   activity status, port, uptime) using `ButlerMark` for the hue mark.
+   `ButlerDetailActions` renders the page-level operational controls: Force Run
+   button, Logs link, Config link, Prompt (`<ChatPanel />`), and Pause/Resume button.
 
-5. **Loading state.** The existing per-tab `TabFallback` loading behavior is
-   preserved for lazy-loaded tabs. The shell's `loading` prop MUST reflect the top-level
-   butler record fetch status; when the butler record is loading, the shell shows
-   `DetailSkeleton` before any tab content renders.
+5. **No footer slot.** No footer KPI band (`ButlerDetailFooter` or equivalent) is
+   rendered. Identity and operational data live in the header slot and Overview tab
+   card respectively.
 
-6. **Error state.** When the butler record fetch fails (e.g., unknown butler name),
-   the `error` prop on `<Page>` MUST be set. The shell renders the destructive error
-   card. Individual tab errors remain tab-scoped.
+6. **Loading state.** The `loading` prop on `<Page>` MUST reflect the top-level
+   butler record fetch status. Per-tab `TabFallback` fallbacks handle lazy-tab loading
+   independently. The Page archetype's own loading state is distinct from tab-level
+   lazy loading.
 
-#### Scenario: Breadcrumbs via Page shell prop
+7. **Error state.** The `error` prop on `<Page>` MUST be set when the butler record
+   fetch fails. An `onRetry` callback MUST be wired to invalidate the butler query.
+   Individual tab errors remain tab-scoped.
 
-- **WHEN** the butler detail page renders for butler `"relationship"`
-- **THEN** breadcrumbs MUST be rendered via the `breadcrumbs` prop on `<Page>`:
-  `[{ label: "Overview", href: "/" }, { label: "Butlers", href: "/butlers" }, { label: "Relationship" }]`
-- **AND** no standalone `<Breadcrumbs>` component MUST be rendered at the page layer
+8. **Body.** The `<Tabs>` block (TabsList + all TabsContent entries) is rendered as
+   the direct child of `<Page>`. No additional wrapper is needed at the page layer.
+
+#### Scenario: Page shell uses status-board archetype
+
+- **WHEN** the butler detail page renders for any butler name
+- **THEN** `<Page archetype="status-board">` MUST be the outer shell
+- **AND** no `breadcrumbs` prop MUST be passed to `<Page>`
+- **AND** no `ButlerHeartbeatTile` MUST be rendered at the page layer
+- **AND** no footer KPI band MUST be rendered at the page layer
 
 #### Scenario: Butler name as page title
 
 - **WHEN** the butler detail page renders for butler `"relationship"`
-- **THEN** the `<h1>` rendered by the `<Page>` shell MUST read "Relationship"
-- **AND** it MUST NOT read "Butler" or "Butler Detail"
+- **THEN** the `title` prop on `<Page>` MUST be `"Relationship"` (titleized)
+- **AND** the `description` prop MUST be sourced from `ButlerSummary.description`
+  when available
 
-#### Scenario: ChatPanel in page header actions
+#### Scenario: Header slot composition
 
 - **WHEN** the butler detail page renders for a resolved butler
-- **THEN** the `<ChatPanel />` component MUST appear in the page header row (via the
-  `actions` prop), to the right of the title
-- **AND** it MUST NOT appear only as a sibling div to the page title at the page layer
+- **THEN** `<ButlerDetailHeader>` MUST be passed as the `header` prop on `<Page>`
+- **AND** `<ButlerDetailActions>` MUST be passed as the `actions` prop on
+  `<ButlerDetailHeader>` (NOT directly as the `actions` prop on `<Page>`)
+- **AND** `ButlerDetailActions` MUST render: Force Run button, Logs link, Config
+  link, Prompt button (`<ChatPanel />`), and Pause/Resume button
 
-#### Scenario: Tabs body is the primary slot
+#### Scenario: Tabs body is the page body
 
 - **WHEN** the butler detail page renders the tab group
 - **THEN** the complete `<Tabs>` block (TabsList + all TabsContent entries) MUST be
-  rendered as the top-level child inside the `<Page>` shell
+  rendered as the direct child inside `<Page>`
 - **AND** the tab structure, content, and behavior MUST be unchanged from the current
   implementation
 
-#### Scenario: Top-level loading shows shell skeleton
+#### Scenario: Top-level loading delegates to Page shell
 
-- **WHEN** the butler record fetch is in flight (before the butler name is resolved)
-- **THEN** the `<Page>` shell MUST show `DetailSkeleton`
-- **AND** no tab content MUST be rendered during this state
+- **WHEN** the butler record fetch is in flight
+- **THEN** the `loading` prop on `<Page>` MUST be `true`
+- **AND** the Page archetype MUST handle the loading state via its own built-in
+  mechanism; no `DetailSkeleton` is explicitly passed by the page component
 
 #### Scenario: Unknown butler shows shell error
 
 - **WHEN** a user navigates to `/butlers/nonexistent` and the butler record fetch
   returns 404 or an error
 - **THEN** the `error` prop on `<Page>` MUST be set
-- **AND** the shell MUST render the destructive error card with the butler name in
-  the breadcrumbs for navigation context
+- **AND** `onRetry` MUST be wired to invalidate the butler query and trigger a refetch
 
 ---
 
 ### Requirement: Butler detail page tab body vocabulary
 
-The Butler detail page tab body SHALL map to the four-tier archetype vocabulary as follows:
+The Butler detail page tab body SHALL use a mode-gated tab vocabulary controlled by
+an operator/resident toggle persisted in `localStorage`. The `<Tabs>` block is the
+sole page body content inside `<Page archetype="status-board">`.
 
-- **Primary slot:** The `<Tabs>` block, containing `TabsList` (all visible tab
-  triggers) and `TabsContent` for each tab. This is the entire interactive surface
-  for the butler workspace.
-- **No hero slot:** The butler identity (name, status, description, port) is rendered
-  inside the Overview tab's identity card, not in a page-level hero tier. The overview
-  tab IS the identity surface; no separate hero tier is needed at the page layer.
+**Slot mapping:**
+
+- **Body (Tabs block):** The `<Tabs>` block, containing `TabsList` (all visible tab
+  triggers for the active mode) and `TabsContent` for each tab. This is the entire
+  interactive surface for the butler workspace.
+- **No hero slot:** The butler identity (name, status, description, port, uptime) is
+  rendered in `ButlerDetailHeader` (the Page `header` slot) and inside the Overview
+  tab card. No separate page-level hero tier is needed.
 - **No drawer slot:** Credential and advanced configuration content lives inside
-  individual tabs (Config tab, State tab). No top-level practical drawer is needed.
-- **Tabs are NOT a candidate for page-level archetype expansion:** The eleven-plus
-  tabs are the correct answer for this workspace-grade record. Future tab
-  consolidation (if needed) is a separate audit concern, not a `<Page>` slot concern.
+  individual tabs (Config tab, State tab). No top-level drawer is rendered.
+- **Tabs are NOT a candidate for page-level archetype expansion:** The multi-tab
+  workspace is the correct answer for this record type. Future tab consolidation is
+  a separate audit concern.
 
-#### Scenario: Base tabs present on all butler pages
+**Mode vocabulary:**
 
-- **WHEN** any butler detail page loads
-- **THEN** the following ten tab triggers MUST be visible: Overview, Sessions, Config,
-  Skills, Schedules, Trigger, MCP, State, CRM, Memory
-- **AND** these are rendered inside the primary slot's `<TabsList>`, unchanged from
-  the current implementation
+- **Operator mode** (10 base tabs): Overview, Sessions, Config, Skills, Schedules,
+  Trigger, MCP, State, CRM, Memory. Extension tabs Models and Manage are also shown
+  in operator mode.
+- **Resident mode** (7 base tabs): Overview, Activity, Logs, Approvals, Spend,
+  Config, Memory. Default for first-time visitors.
+- A mode-toggle control (`DetailModeSwitch`) appears at the right end of the tab bar.
+  The selected mode is persisted in `localStorage` under `butlers.detail.mode`.
+- Deep-linking via `?tab=` MUST auto-promote the mode to the one that contains the
+  requested tab if the tab is exclusive to the other mode.
+
+**Butler-specific conditional tabs** (appended regardless of mode):
+
+| Butler | Additional tabs |
+|---|---|
+| `health` | Health |
+| `switchboard` | Routing Log, Registry |
+| `education` | Reviews |
+| `chronicler` | Timelines |
+| `finance` | Finances |
+| `general` | Collections |
+| `home` | Devices |
+| `lifestyle` | Taste |
+| `messenger` | Conversations |
+| `qa` | Investigations |
+| `relationship` | Contacts |
+| `travel` | Trips |
+
+#### Scenario: Operator mode base tabs
+
+- **WHEN** the butler detail page is in operator mode
+- **THEN** the following ten base tab triggers MUST be visible: Overview, Sessions,
+  Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory
+- **AND** Models and Manage extension tabs MUST also be visible
+- **AND** these are rendered inside the `<TabsList>` inside `<Page>`
+
+#### Scenario: Resident mode base tabs
+
+- **WHEN** the butler detail page is in resident mode
+- **THEN** the following seven base tab triggers MUST be visible: Overview, Activity,
+  Logs, Approvals, Spend, Config, Memory
+- **AND** operator-only tabs (Sessions, Skills, Schedules, Trigger, MCP, State, CRM,
+  Models, Manage) MUST NOT be visible
+
+#### Scenario: Mode toggle and persistence
+
+- **WHEN** a user clicks the mode toggle at the end of the tab bar
+- **THEN** the tab vocabulary MUST switch between operator and resident modes
+- **AND** the selected mode MUST be persisted in `localStorage` under
+  `butlers.detail.mode` so it survives page reloads
 
 ---
 
