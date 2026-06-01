@@ -875,6 +875,14 @@ def _get_rollup_db_manager() -> DatabaseManager:
 # ---------------------------------------------------------------------------
 
 
+def _get_pricing_optional() -> PricingConfig | None:
+    """Return the PricingConfig singleton, or None when not yet initialized."""
+    try:
+        return get_pricing()
+    except RuntimeError:
+        return None
+
+
 @rollup_router.get("", response_model=IngestionWindowRollup)
 async def get_ingestion_window_rollup(
     from_: str | None = Query(None, alias="from", description="ISO-8601 lower bound (inclusive)"),
@@ -891,12 +899,13 @@ async def get_ingestion_window_rollup(
         description="Freetext search (ILIKE %%q%%) against channel, sender, error_detail",
     ),
     db: DatabaseManager = Depends(_get_rollup_db_manager),
+    pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> IngestionWindowRollup:
     """Return aggregate event/session/cost counts for the active filter window.
 
-    Accepts the same filter shape as GET /api/ingestion/events.  The ``cost``
-    field is always ``null`` — cost-per-event aggregation is not yet available
-    at the window level (see follow-up bead for cost-per-event backend).
+    Accepts the same filter shape as GET /api/ingestion/events.  When pricing
+    data is available, ``cost`` is populated with the estimated USD total for
+    all sessions linked to matching events.
 
     Returns:
         200 — ``{events, sessions, cost, window: {from, to}}``
@@ -931,6 +940,7 @@ async def get_ingestion_window_rollup(
         statuses=status_list,
         q=q,
         db=db,
+        pricing=pricing,
     )
 
     return IngestionWindowRollup(

@@ -705,6 +705,7 @@ async def ingestion_window_rollup(
     statuses: list[str] | None = None,
     q: str | None = None,
     db: DatabaseManager | None = None,
+    pricing: PricingConfig | None = None,
 ) -> dict[str, Any]:
     """Return aggregate event/session counts for the active filter window.
 
@@ -713,8 +714,11 @@ async def ingestion_window_rollup(
     ingestion_events_list.  Session count is derived by summing sessions across
     all registered butler schemas (fan-out via db.fan_out).
 
-    The ``cost`` field is always ``None`` — cost aggregation requires per-event
-    pricing data that is not yet available at the window level.
+    When ``pricing`` is supplied, ``cost`` is populated by summing per-model
+    token counts across all matching sessions and estimating USD cost via
+    ``estimate_session_cost``.  Models not found in the pricing catalog
+    contribute $0.  When ``pricing`` is ``None``, ``cost`` is returned as
+    ``None``.
 
     Args:
         pool:      asyncpg pool for the shared credentials database.
@@ -725,13 +729,16 @@ async def ingestion_window_rollup(
         q:         Optional freetext search against source_channel + source_sender_identity +
                    error_detail (ILIKE %q%).  ``None`` = no text filter.
         db:        DatabaseManager for the cross-butler session fan-out.
-                   When ``None``, session count is omitted (returns 0).
+                   When ``None``, session count is omitted (returns 0) and cost is ``None``.
+        pricing:   Optional pricing config for cost estimation.  When provided, cost is
+                   computed by summing per-model token totals across all linked sessions.
+                   When ``None``, cost is returned as ``None``.
 
     Returns:
         Dict with:
         - ``events``:   int — total matching events
         - ``sessions``: int — total sessions linked to matching events
-        - ``cost``:     None — reserved; always null until cost-per-event is implemented
+        - ``cost``:     float | None — estimated USD cost, or None when pricing unavailable
         - ``window``:   dict with ``from`` (ISO str | None) and ``to`` (ISO str | None)
     """
     args: list[Any] = []
@@ -775,13 +782,14 @@ async def ingestion_window_rollup(
         logger.debug("ingestion_window_rollup: event count query failed", exc_info=True)
         event_count = 0
 
-    # Session count: fan-out to all registered butler schemas.
+    # Session count + cost: fan-out to all registered butler schemas.
     # We fetch only the event IDs (not full rows) and cap the array to avoid
     # transferring unbounded data to the application layer.
     # A cap of 10,000 IDs is sufficient for rollup accuracy in typical windows;
-    # very large windows return an approximate count.
+    # very large windows return an approximate count and approximate cost.
     _SESSION_COUNT_ID_CAP = 10_000
     session_count = 0
+    total_cost: float | None = None
     if db is not None and event_count > 0:
         id_sql = (
             f"SELECT id FROM ("
@@ -803,22 +811,40 @@ async def ingestion_window_rollup(
             try:
                 fan_results: dict[str, list] = await db.fan_out(
                     """
-                    SELECT COUNT(*) AS cnt
+                    SELECT
+                        COUNT(*) AS cnt,
+                        COALESCE(model, '') AS model,
+                        COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
                     FROM sessions
                     WHERE request_id = ANY($1::text[])
+                    GROUP BY model
                     """,
                     (event_ids,),
                 )
                 for rows in fan_results.values():
                     for row in rows:
                         session_count += int(row.get("cnt") or 0)
+                        if pricing is not None:
+                            model = row.get("model") or ""
+                            in_tok = int(row.get("input_tokens") or 0)
+                            out_tok = int(row.get("output_tokens") or 0)
+                            if model and (in_tok or out_tok):
+                                if total_cost is None:
+                                    total_cost = 0.0
+                                total_cost += estimate_session_cost(pricing, model, in_tok, out_tok)
+                # Pricing present but all sessions have unknown/empty model or zero tokens:
+                # initialise to 0.0 so callers can distinguish "pricing unavailable" (None)
+                # from "sessions exist but zero chargeable tokens" (0.0).
+                if pricing is not None and session_count > 0 and total_cost is None:
+                    total_cost = 0.0
             except Exception:
                 logger.debug("ingestion_window_rollup: session fan-out failed", exc_info=True)
 
     return {
         "events": event_count,
         "sessions": session_count,
-        "cost": None,
+        "cost": total_cost,
         "window": {
             "from": from_dt.isoformat() if from_dt is not None else None,
             "to": to_dt.isoformat() if to_dt is not None else None,

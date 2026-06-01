@@ -9,6 +9,7 @@ Covers:
 - ingestion_event_rollup: pure-function aggregation
 - ingestion_event_replay_request: atomic update + conflict/not-found outcomes
 - ingestion_event_get_inbox_lifecycle: lifecycle state lookup
+- ingestion_window_rollup: cost aggregation (pricing present → summed; absent → null)
 """
 
 from __future__ import annotations
@@ -456,3 +457,152 @@ async def test_ingestion_event_replay_history() -> None:
     assert len(result6) == 1
     assert result6[0]["result"] is None
     assert result6[0]["cost"] is None
+
+
+# ---------------------------------------------------------------------------
+# ingestion_window_rollup — cost aggregation
+# ---------------------------------------------------------------------------
+
+
+def _make_pricing(model_id: str = "claude-test", price_per_token: float = 1e-6):
+    """Build a minimal PricingConfig with a single model entry."""
+    from butlers.api.pricing import ModelPricing, PricingConfig
+
+    return PricingConfig({model_id: ModelPricing(price_per_token, price_per_token * 2)})
+
+
+class _FakePoolForRollup:
+    """Pool that returns a fixed event count and a fixed list of event ID rows."""
+
+    def __init__(self, event_count: int = 5, event_ids: list | None = None):
+        self._event_count = event_count
+        self._event_ids = (
+            event_ids if event_ids is not None else [{"id": uuid.uuid4()}] * event_count
+        )
+
+    async def fetchval(self, sql, *args):
+        return self._event_count
+
+    async def fetch(self, sql, *args):
+        return self._event_ids
+
+
+async def test_ingestion_window_rollup_cost_with_pricing() -> None:
+    """When pricing is supplied and sessions have token data, cost is summed correctly."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pricing = _make_pricing("claude-test", price_per_token=1e-6)
+
+    # Two model buckets across two butler schemas
+    session_rows_butler1 = [
+        # 1000 input tokens, 500 output tokens for claude-test
+        {"cnt": 3, "model": "claude-test", "input_tokens": 1000, "output_tokens": 500},
+    ]
+    session_rows_butler2 = [
+        {"cnt": 2, "model": "claude-test", "input_tokens": 600, "output_tokens": 300},
+    ]
+    db = _FakeDatabaseManager(
+        results={"butler1": session_rows_butler1, "butler2": session_rows_butler2}
+    )
+    pool = _FakePoolForRollup(event_count=5)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
+
+    # session_count: 3 + 2 = 5
+    assert result["sessions"] == 5
+    assert result["events"] == 5
+
+    # cost: estimate_session_cost sums both buckets
+    # butler1: 1000 * 1e-6 + 500 * 2e-6 = 0.001 + 0.001 = 0.002
+    # butler2: 600 * 1e-6 + 300 * 2e-6 = 0.0006 + 0.0006 = 0.0012
+    # total ≈ 0.0032
+    assert result["cost"] is not None
+    assert isinstance(result["cost"], float)
+    assert abs(result["cost"] - 0.0032) < 1e-9
+
+
+async def test_ingestion_window_rollup_cost_null_without_pricing() -> None:
+    """When pricing is None, cost is always None regardless of session token data."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    session_rows = [{"cnt": 3, "model": "claude-test", "input_tokens": 1000, "output_tokens": 500}]
+    db = _FakeDatabaseManager(results={"butler1": session_rows})
+    pool = _FakePoolForRollup(event_count=3)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=None)
+
+    assert result["sessions"] == 3
+    assert result["cost"] is None
+
+
+async def test_ingestion_window_rollup_cost_null_no_sessions() -> None:
+    """When no sessions exist (empty fan-out), cost is None even with pricing."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pricing = _make_pricing()
+    db = _FakeDatabaseManager(results={"butler1": []})
+    pool = _FakePoolForRollup(event_count=2)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
+
+    assert result["sessions"] == 0
+    assert result["cost"] is None
+
+
+async def test_ingestion_window_rollup_cost_skips_unknown_model() -> None:
+    """Sessions with a model not in the pricing catalog contribute $0; cost still populated."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pricing = _make_pricing("known-model", price_per_token=1e-6)
+
+    # One row with known model (has tokens), one with unknown model
+    session_rows = [
+        {"cnt": 1, "model": "known-model", "input_tokens": 1000, "output_tokens": 500},
+        {"cnt": 1, "model": "unknown-model-xyz", "input_tokens": 2000, "output_tokens": 1000},
+    ]
+    db = _FakeDatabaseManager(results={"butler1": session_rows})
+    pool = _FakePoolForRollup(event_count=2)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
+
+    assert result["sessions"] == 2
+    # Only known-model contributes cost; unknown model → 0
+    # known-model: 1000 * 1e-6 + 500 * 2e-6 = 0.001 + 0.001 = 0.002
+    assert result["cost"] is not None
+    assert abs(result["cost"] - 0.002) < 1e-9
+
+
+async def test_ingestion_window_rollup_cost_zero_all_unknown_models() -> None:
+    """When pricing is present and sessions exist but all models are unknown, cost is 0.0 not None.
+
+    None means "pricing unavailable"; 0.0 means "sessions found, nothing chargeable".
+    """
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pricing = _make_pricing("known-model", price_per_token=1e-6)
+
+    # All sessions have an unknown model (not in the pricing catalog)
+    session_rows = [
+        {"cnt": 2, "model": "unknown-model-xyz", "input_tokens": 2000, "output_tokens": 1000},
+    ]
+    db = _FakeDatabaseManager(results={"butler1": session_rows})
+    pool = _FakePoolForRollup(event_count=2)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
+
+    assert result["sessions"] == 2
+    # Pricing was available and sessions existed, so cost must not be None
+    assert result["cost"] == 0.0
+
+
+async def test_ingestion_window_rollup_cost_null_when_db_none() -> None:
+    """When db=None, no fan-out runs; sessions=0 and cost=None."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pricing = _make_pricing()
+    pool = _FakePoolForRollup(event_count=10)
+
+    result = await ingestion_window_rollup(pool, db=None, pricing=pricing)
+
+    assert result["sessions"] == 0
+    assert result["cost"] is None
