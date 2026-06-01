@@ -178,6 +178,7 @@ async def backfill_source(
         )
         return {"found": found, "updated": 0}
 
+    found_count = 0
     updated_count = 0
     batch_num = 0
 
@@ -189,7 +190,6 @@ async def backfill_source(
             WHERE source_name = $1
               AND entity_id IS NULL
               AND tombstone_at IS NULL
-            ORDER BY created_at ASC
             LIMIT $2
             """,
             source_name,
@@ -200,6 +200,7 @@ async def backfill_source(
 
         batch_num += 1
         chunk: list[UUID] = [r["id"] for r in rows]
+        found_count += len(chunk)
 
         # Update point_events.entity_id.
         result = await chronicler_pool.execute(
@@ -222,13 +223,13 @@ async def backfill_source(
             batch_num,
         )
 
-    if updated_count == 0 and batch_num == 0:
+    if found_count == 0:
         logger.info(
             "source_name=%r — no NULL entity_id point_events found; nothing to do.",
             source_name,
         )
 
-    return {"found": updated_count, "updated": updated_count}
+    return {"found": found_count, "updated": updated_count}
 
 
 async def run_backfill(
@@ -237,15 +238,18 @@ async def run_backfill(
     *,
     source_names: tuple[str, ...],
     dry_run: bool,
-) -> None:
-    """Resolve owner entity_id and backfill all target source names."""
+) -> bool:
+    """Resolve owner entity_id and backfill all target source names.
+
+    Returns True on success, False if the owner entity_id could not be resolved.
+    """
     owner_entity_id = await resolve_owner_entity_id(pool)
     if owner_entity_id is None:
         logger.error(
             "Cannot resolve owner entity_id from public.contacts. "
             "Ensure the owner contact exists and has an entity_id set."
         )
-        return
+        return False
 
     logger.info("Owner entity_id resolved: %s", owner_entity_id)
     logger.info("Mode: %s", "DRY RUN" if dry_run else "APPLY")
@@ -271,6 +275,8 @@ async def run_backfill(
         print(f"  Total point_events updated:     {total_updated}")
     else:
         print("  (dry-run: no rows updated)")
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -318,8 +324,9 @@ async def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: Failed to connect to database: {exc}", file=sys.stderr)
         return 1
 
+    success = False
     try:
-        await run_backfill(
+        success = await run_backfill(
             pool,
             chronicler_pool,
             source_names=target_sources,
@@ -330,7 +337,7 @@ async def main(argv: list[str] | None = None) -> int:
         if chronicler_pool is not pool:
             await chronicler_pool.close()
 
-    return 0
+    return 0 if success else 1
 
 
 if __name__ == "__main__":
