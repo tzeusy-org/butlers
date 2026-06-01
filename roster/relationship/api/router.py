@@ -2217,7 +2217,8 @@ async def create_contact_info(
                 INSERT INTO public.entity_info
                     (entity_id, type, value, label, is_primary, secured)
                 VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (entity_id, type) DO NOTHING
+                ON CONFLICT (entity_id, type) DO UPDATE
+                    SET value = entity_info.value
                 RETURNING id, entity_id, type, value, label, is_primary, secured
                 """,
                 entity_id,
@@ -2233,9 +2234,6 @@ async def create_contact_info(
                 detail=f"Failed to write credential to entity_info: {exc}",
             ) from exc
 
-        # ON CONFLICT DO NOTHING returns no row on conflict (idempotent).
-        info_id = row["id"] if row is not None else None
-
         await emit_dashboard_audit(
             db,
             butler="relationship",
@@ -2248,14 +2246,12 @@ async def create_contact_info(
             request=http_request,
         )
 
-        from uuid import uuid4
-
         return CreateContactInfoResponse(
-            id=info_id or uuid4(),
+            id=row["id"],
             contact_id=contact_id,
-            type=request.type,
-            value=request.value,
-            is_primary=request.is_primary,
+            type=row["type"],
+            value=row["value"],
+            is_primary=row["is_primary"],
             secured=True,
             parent_id=request.parent_id,
             context=request.context,

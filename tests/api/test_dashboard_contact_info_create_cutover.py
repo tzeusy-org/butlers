@@ -68,10 +68,11 @@ def _load_router():
 def _make_pool(*, entity_id, entity_info_row=None):
     """Pool whose contact-exists check returns a row with the given entity_id.
 
-    ``entity_info_row`` simulates the INSERT ... ON CONFLICT DO NOTHING ...
+    ``entity_info_row`` simulates the INSERT ... ON CONFLICT DO UPDATE ...
     RETURNING result for the public.entity_info write path.  Pass a dict to
-    represent a newly inserted row; pass ``None`` to simulate an ON CONFLICT
-    no-op (idempotent second run).
+    represent the row returned (either newly inserted or the existing row on
+    conflict — the DO UPDATE SET value = entity_info.value no-op always triggers
+    RETURNING).
     """
     pool = MagicMock()
 
@@ -188,16 +189,22 @@ async def test_create_contact_info_secured_writes_to_entity_info(router_mod, mon
 
 
 async def test_create_contact_info_secured_idempotent_conflict(router_mod, monkeypatch):
-    """ON CONFLICT DO NOTHING on second run: returns 201 with a synthesised id.
+    """ON CONFLICT DO UPDATE on second run: returns 201 with the existing row's id.
 
-    When public.entity_info already has a row for (entity_id, type) the INSERT
-    returns no row (ON CONFLICT DO NOTHING).  The endpoint must still return 201
-    rather than raising an error.
+    When public.entity_info already has a row for (entity_id, type) the INSERT ...
+    ON CONFLICT DO UPDATE SET value = entity_info.value is a no-op update that still
+    triggers RETURNING, so the endpoint always gets the real persisted row and never
+    returns a synthesised UUID.
     """
     entity_id = uuid.uuid4()
+    existing_id = uuid.uuid4()
     pool = _make_pool(
         entity_id=entity_id,
-        entity_info_row=None,  # simulate ON CONFLICT DO NOTHING (no row returned)
+        entity_info_row={
+            "id": existing_id,
+            "type": "google_oauth_refresh",
+            "value": "existing-refresh-token",
+        },
     )
     monkeypatch.setattr(router_mod, "_pool", lambda db: pool)
 
@@ -209,14 +216,16 @@ async def test_create_contact_info_secured_idempotent_conflict(router_mod, monke
     monkeypatch.setattr(_raf_module(), "relationship_assert_fact", AsyncMock())
 
     req = router_mod.CreateContactInfoRequest(
-        type="google_oauth_refresh", value="refresh-token", is_primary=False, secured=True
+        type="google_oauth_refresh", value="new-refresh-token", is_primary=False, secured=True
     )
     # Must not raise — idempotent second-run path
     result = await router_mod.create_contact_info(uuid.uuid4(), MagicMock(), req, MagicMock())
     assert result.secured is True
     assert result.type == "google_oauth_refresh"
-    # id is synthesised (uuid4) when INSERT returns no row
-    assert result.id is not None
+    # Returns the existing persisted row's id, not a synthesised uuid
+    assert result.id == existing_id
+    # Returns the existing persisted value (not overwritten), since DO UPDATE is a no-op
+    assert result.value == "existing-refresh-token"
 
 
 async def test_create_contact_info_no_entity_rejected(router_mod, monkeypatch):
