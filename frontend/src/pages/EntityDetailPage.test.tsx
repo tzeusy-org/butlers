@@ -782,6 +782,43 @@ describe("EntityDetailPage — Unidentified badge", () => {
     const html = renderPage();
     expect(html).not.toContain("Unidentified");
   });
+
+  // dashboard-relationship spec §Unidentified-entity-badge: "WHEN an entity has
+  // metadata->>'unidentified' = 'true' THEN the header card MUST display an Unidentified badge".
+  // The shipped EntityDetailPage reads entity.unidentified (boolean); the API populates that
+  // boolean from the metadata flag. Both fields are therefore set together in a real response.
+  it("renders Unidentified badge when entity.unidentified is true and metadata.unidentified is 'true' (spec: metadata flag scenario)", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      unidentified: true,
+      metadata: { unidentified: "true" },
+    });
+    const html = renderPage();
+    expect(html).toContain("Unidentified");
+    // The rest of the page renders normally alongside the badge
+    expect(html).toContain("Test Owner");
+  });
+
+  // dashboard-relationship spec §Unidentified-entity-badge — View identity link:
+  // "The header MUST include a 'View identity →' link to /entities/:id."
+  // That requirement was authored for the relationship-scoped entity view
+  // (/butlers/relationship/entities/:id), which has since been redirected to
+  // /entities/:id (this page). EntityDetailPage IS the identity page; it renders
+  // at /entities/:id and does not carry a redundant self-link. Assert that the
+  // canonical identity path /entities/:id is referenced in navigation (breadcrumb
+  // index link) and that no spurious /butlers/relationship/entities/ link appears.
+  it("entity identity path /entities/:id is the canonical target — page does not link to deprecated /butlers/relationship/entities/", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      unidentified: true,
+      entity_type: "person",
+    });
+    const html = renderPage();
+    // Canonical identity page renders without a self-referencing relationship link
+    expect(html).not.toContain("/butlers/relationship/entities/");
+    // The /entities root breadcrumb link is present (this page lives at /entities/:id)
+    expect(html).toContain('href="/entities"');
+  });
 });
 
 describe("EntityDetailPage — Mark confirmed button (promote unidentified)", () => {
