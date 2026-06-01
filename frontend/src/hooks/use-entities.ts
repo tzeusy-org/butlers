@@ -32,6 +32,7 @@ import {
   listRelationshipEntities,
   mergeRelationshipEntities,
   promoteRelationshipEntity,
+  revealEntitySecret,
   searchRelationshipEntities,
   updateEntityDunbarTier,
 } from "@/api/index.ts";
@@ -389,6 +390,25 @@ export function useDeleteEntityContact() {
       void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
     },
+  });
+}
+
+/**
+ * Reveal a secured entity_info value.
+ *
+ * Used by ContactChannelCard.SecuredChannelEntry for secured entries whose
+ * origin is entity_info (entry.source === "entity_facts" with secured=true).
+ * Routes to GET /relationship/entities/{entityId}/secrets/{infoId}.
+ *
+ * For migration dual-dispatch, prefer this over useRevealContactSecret whenever
+ * the entry originates from entity_info (not the legacy public.contact_info table).
+ * After bu-uhjxr completes the contacts-to-triples migration, the legacy
+ * useRevealContactSecret path in ContactChannelCard can be dropped.
+ */
+export function useRevealEntityContactSecret() {
+  return useMutation({
+    mutationFn: ({ entityId, infoId }: { entityId: string; infoId: string }) =>
+      revealEntitySecret(entityId, infoId),
   });
 }
 
