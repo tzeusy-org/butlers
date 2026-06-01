@@ -60,7 +60,7 @@ test.describe("ingestion sub-route redirects", () => {
     expect(page.url()).not.toContain("tab=");
   });
 
-  test("?tab= filter params are preserved during redirect", async ({ page }) => {
+  test("?tab=* filter params are preserved during redirect", async ({ page }) => {
     await page.goto("/ingestion?tab=connectors&period=7d&channel=gmail", { timeout: TIMEOUT_MS });
     await page.waitForURL(/\/ingestion\/connectors/, { timeout: TIMEOUT_MS });
     // Filter params period and channel must survive the redirect
