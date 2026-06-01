@@ -1,12 +1,15 @@
 """Contact info — structured contact details and addresses.
 
+Read-path cut-over (Migration bead 10, bu-twbt0)
+-------------------------------------------------
+``public.contact_info`` reads are fully replaced by ``relationship.entity_facts``
+queries.  The table can now be dropped.
+
 Write-path cut-over (Migration bead 8, bu-k9ylx)
 ------------------------------------------------
-``public.contact_info`` is now **read-only**.  Channel-identity writes go
+``public.contact_info`` is **read-only** since bead 8.  Channel-identity writes go
 through the central writer ``relationship_assert_fact()`` into
-``relationship.entity_facts`` ONLY.  Reads (``contact_info_list``,
-``contact_search_by_info``) still query ``public.contact_info`` until the table
-is dropped at Migration bead 10.
+``relationship.entity_facts`` ONLY.
 
 - ``contact_info_add`` resolves the contact's ``entity_id`` and asserts a
   channel triple via ``relationship_assert_fact()``.  Owner-entity writes are
@@ -17,6 +20,11 @@ is dropped at Migration bead 10.
   re-assert (update) or retract (remove) the channel fact via
   ``relationship_assert_fact()``.  These functions now fail fast via the
   contact_info write-block guard.
+- ``contact_info_list`` / ``contact_search_by_info`` read from
+  ``relationship.entity_facts`` (has-* predicates) via shared helpers in
+  ``_ef_channel_helpers``.  Telegram entries are stored as
+  ``has-handle`` with object ``"telegram:<numeric_id>"``; the prefix is
+  stripped on read so callers receive the bare numeric id.
 """
 
 from __future__ import annotations
@@ -29,8 +37,14 @@ from typing import Any
 import asyncpg
 
 from butlers.contact_info_write_guard import assert_contact_info_writes_blocked
+from butlers.tools.relationship._ef_channel_helpers import (
+    ef_object_to_display_value,
+    ef_predicate_to_ci_type,
+    entity_facts_channels_by_entity,
+)
 from butlers.tools.relationship.contacts import _parse_contact
 from butlers.tools.relationship.relationship_assert_fact import (
+    _CI_TYPE_TO_PREDICATE,
     contact_info_type_to_predicate,
     relationship_assert_fact,
 )
@@ -212,29 +226,52 @@ async def contact_info_list(
 ) -> list[dict[str, Any]]:
     """List contact info for a contact, optionally filtered by type.
 
-    READ path — still queries ``public.contact_info`` (reads remain allowed
-    after the cut-over until the table is dropped at Migration bead 10).
+    READ path — queries ``relationship.entity_facts`` (has-* predicates).
+    Contact is resolved to its linked entity via ``public.contacts.entity_id``;
+    contacts with no linked entity return an empty list.
+
+    When *type* is provided it is mapped to the corresponding predicate
+    (``has-email``, ``has-phone``, ``has-handle``, ``has-website``) and only
+    facts with that predicate are returned.  Note that ``telegram``,
+    ``linkedin``, ``twitter`` and ``other`` all map to ``has-handle``; if you
+    need to distinguish them use ``contact_search_by_info`` with an explicit
+    type filter.
     """
+    entity_id = await _resolve_contact_entity(pool, contact_id)
+    if entity_id is None:
+        return []
+
+    facts_by_entity = await entity_facts_channels_by_entity(pool, [entity_id])
+    facts = facts_by_entity.get(entity_id, [])
+
     if type is not None:
-        rows = await pool.fetch(
-            """
-            SELECT * FROM public.contact_info
-            WHERE contact_id = $1 AND type = $2
-            ORDER BY is_primary DESC, created_at
-            """,
-            contact_id,
-            type,
+        target_predicate = _CI_TYPE_TO_PREDICATE.get(type)
+        if target_predicate is not None:
+            facts = [f for f in facts if f["predicate"] == target_predicate]
+        else:
+            # Unmapped type (e.g. 'address') — no triple predicate home
+            facts = []
+
+    result: list[dict[str, Any]] = []
+    for fact in facts:
+        predicate: str = fact["predicate"]
+        raw_obj: str = fact["object"]
+        ci_type = ef_predicate_to_ci_type(predicate, raw_obj)
+        display_val = ef_object_to_display_value(predicate, raw_obj)
+        primary_raw = fact["primary"]
+        result.append(
+            {
+                "id": fact["id"],
+                "contact_id": contact_id,
+                "type": ci_type,
+                "value": display_val,
+                "is_primary": bool(primary_raw) if primary_raw is not None else False,
+                "label": None,
+                "context": None,
+                "source": "entity_facts",
+            }
         )
-    else:
-        rows = await pool.fetch(
-            """
-            SELECT * FROM public.contact_info
-            WHERE contact_id = $1
-            ORDER BY type, is_primary DESC, created_at
-            """,
-            contact_id,
-        )
-    return [dict(row) for row in rows]
+    return result
 
 
 async def contact_info_remove(
@@ -257,32 +294,58 @@ async def contact_search_by_info(
 ) -> list[dict[str, Any]]:
     """Search contacts by contact info value (reverse lookup).
 
-    READ path — still queries ``public.contact_info`` (reads remain allowed
-    after the cut-over). Finds all contacts that have a matching contact info
-    entry. Optionally filter by info type (email, phone, etc.). Uses ILIKE for
-    case-insensitive partial matching.
+    READ path — queries ``relationship.entity_facts`` (has-* predicates).
+    Finds all contacts that have a matching channel fact.  Optionally filter by
+    info type (email, phone, etc.).  Uses ILIKE for case-insensitive partial
+    matching against the stored object value.
+
+    Telegram search note: Telegram IDs are stored in entity_facts as
+    ``has-handle`` with object ``"telegram:<numeric_id>"``.  Searching for the
+    bare numeric ID (e.g. ``"210454304"``) still matches because the ILIKE
+    ``'%210454304%'`` pattern matches the stored ``"telegram:210454304"``
+    string.  Callers do NOT need to add the ``telegram:`` prefix themselves.
+
+    When *type* is provided it is mapped to the corresponding predicate before
+    filtering (e.g. ``"telegram"`` → ``"has-handle"``).  All handle types
+    (telegram, linkedin, twitter, other) share ``has-handle``; passing ``type``
+    narrows to that predicate but does not further discriminate within it.
     """
+    # Map optional type to predicate filter
+    predicate_filter: str | None = None
     if type is not None:
+        predicate_filter = _CI_TYPE_TO_PREDICATE.get(type)
+        if predicate_filter is None:
+            # Unmapped type (e.g. 'address') — no triple predicate home
+            return []
+
+    if predicate_filter is not None:
         rows = await pool.fetch(
             """
-            SELECT DISTINCT c.*, ci.type AS matched_type, ci.value AS matched_value
+            SELECT DISTINCT c.*
             FROM contacts c
-            JOIN public.contact_info ci ON c.id = ci.contact_id
-            WHERE ci.type = $1
-              AND ci.value ILIKE '%' || $2 || '%'
+            JOIN public.entities e ON c.entity_id = e.id
+            JOIN relationship.entity_facts ef ON ef.subject = e.id
+            WHERE ef.predicate = $1
+              AND ef.object ILIKE '%' || $2 || '%'
+              AND ef.validity = 'active'
+              AND ef.object_kind = 'literal'
               AND c.listed = true
             ORDER BY c.first_name, c.last_name, c.nickname
             """,
-            type,
+            predicate_filter,
             value,
         )
     else:
         rows = await pool.fetch(
             """
-            SELECT DISTINCT c.*, ci.type AS matched_type, ci.value AS matched_value
+            SELECT DISTINCT c.*
             FROM contacts c
-            JOIN public.contact_info ci ON c.id = ci.contact_id
-            WHERE ci.value ILIKE '%' || $1 || '%'
+            JOIN public.entities e ON c.entity_id = e.id
+            JOIN relationship.entity_facts ef ON ef.subject = e.id
+            WHERE ef.predicate LIKE 'has-%%'
+              AND ef.object ILIKE '%' || $1 || '%'
+              AND ef.validity = 'active'
+              AND ef.object_kind = 'literal'
               AND c.listed = true
             ORDER BY c.first_name, c.last_name, c.nickname
             """,
