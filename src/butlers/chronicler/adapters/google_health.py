@@ -714,9 +714,12 @@ class GoogleHealthStepsAdapter(ProjectionAdapter):
             )
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        entity_id = await resolve_owner_entity_id(pool)
+
         latest_watermark = since
         for row in rows:
-            event = await self._project_row(chronicler_pool, row)
+            event = await self._project_row(chronicler_pool, row, entity_id=entity_id)
             if event is None:
                 continue
             result.rows_projected += 1
@@ -732,6 +735,8 @@ class GoogleHealthStepsAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> PointEvent | None:
         occurred_at: datetime | None = row["valid_at"]
         if occurred_at is None:
@@ -776,6 +781,7 @@ class GoogleHealthStepsAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
+                    entity_id=entity_id,
                 ),
             )
 
@@ -809,9 +815,12 @@ class GoogleHealthHeartRateAdapter(ProjectionAdapter):
             )
             return result
 
+        # Resolve owner entity_id once per adapter run (not per row).
+        entity_id = await resolve_owner_entity_id(pool)
+
         latest_watermark = since
         for row in rows:
-            event = await self._project_row(chronicler_pool, row)
+            event = await self._project_row(chronicler_pool, row, entity_id=entity_id)
             if event is None:
                 continue
             result.rows_projected += 1
@@ -827,6 +836,8 @@ class GoogleHealthHeartRateAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        *,
+        entity_id: UUID | None = None,
     ) -> PointEvent | None:
         occurred_at: datetime | None = row["valid_at"]
         if occurred_at is None:
@@ -884,6 +895,7 @@ class GoogleHealthHeartRateAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
+                    entity_id=entity_id,
                 ),
             )
 

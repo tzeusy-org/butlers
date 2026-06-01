@@ -13,11 +13,10 @@ Covers:
 - Adapters covered: FocusInferredAdapter, CoreSessionsAdapter,
   SpotifySessionAdapter, SteamPlayAdapter, OwnTracksPointAdapter (movement),
   ReadingInferredAdapter, GoogleHealthSleepAdapter, GoogleHealthWorkoutAdapter.
-  (MealsAdapter, GoogleHealthStepsAdapter, GoogleHealthHeartRateAdapter produce
-  PointEvents only; entity_id not yet supported in that model — integration
-  tested via the resolve_owner_entity_id coverage in those project() calls.)
+- PointEvent adapters (bu-kihe8): MealsAdapter, GoogleHealthStepsAdapter,
+  GoogleHealthHeartRateAdapter now stamp entity_id on point events.
 
-Issue: bu-4c1ks
+Issue: bu-4c1ks / bu-kihe8
 """
 
 from __future__ import annotations
@@ -35,15 +34,18 @@ from butlers.chronicler.adapters._owner_entity import (
 )
 from butlers.chronicler.adapters.focus import FocusInferredAdapter
 from butlers.chronicler.adapters.google_health import (
+    GoogleHealthHeartRateAdapter,
     GoogleHealthSleepAdapter,
+    GoogleHealthStepsAdapter,
     GoogleHealthWorkoutAdapter,
 )
+from butlers.chronicler.adapters.meals import MealsAdapter
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
 from butlers.chronicler.adapters.reading import ReadingInferredAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.adapters.steam import SteamPlayAdapter
-from butlers.chronicler.models import Episode
+from butlers.chronicler.models import Episode, PointEvent
 
 _NOW = datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC)
 _OWNER_ENTITY_ID = uuid4()
@@ -805,3 +807,289 @@ async def test_sessions_adapter_stamps_entity_id_on_work_episode() -> None:
     assert work_episodes[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
+
+
+# ---------------------------------------------------------------------------
+# PointEvent adapters — entity_id stamped on point events (bu-kihe8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_meals_adapter_stamps_entity_id_on_point_event() -> None:
+    """MealsAdapter stamps entity_id on each eating_event point event."""
+    import uuid as _uuid
+
+    captured: list[PointEvent] = []
+
+    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
+        captured.append(ev)
+        return ev
+
+    cp = _chronicler_pool_simple()
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+
+    meal_row = MagicMock()
+    meal_row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "id": str(_uuid.uuid4()),
+            "type": "lunch",
+            "description": "Grilled chicken",
+            "nutrition": None,
+            "eaten_at": _NOW,
+            "notes": None,
+            "seq": 1,
+        }[k]
+    )
+
+    adapter = MealsAdapter()
+    with (
+        patch.object(adapter, "_fetch_meals", new=AsyncMock(return_value=[meal_row])),
+        patch("butlers.chronicler.adapters.meals.upsert_point_event", side_effect=_fake_upsert),
+        patch(
+            "butlers.chronicler.adapters.meals.resolve_owner_entity_id",
+            new=AsyncMock(return_value=_OWNER_ENTITY_ID),
+        ),
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert len(captured) == 1
+    assert captured[0].entity_id == _OWNER_ENTITY_ID
+
+
+@pytest.mark.unit
+async def test_meals_adapter_no_owner_fallback_for_point_event() -> None:
+    """MealsAdapter still projects with entity_id=None when no owner found."""
+    import uuid as _uuid
+
+    captured: list[PointEvent] = []
+
+    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
+        captured.append(ev)
+        return ev
+
+    cp = _chronicler_pool_simple()
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+
+    meal_row = MagicMock()
+    meal_row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "id": str(_uuid.uuid4()),
+            "type": "breakfast",
+            "description": "Oatmeal",
+            "nutrition": None,
+            "eaten_at": _NOW,
+            "notes": None,
+            "seq": 1,
+        }[k]
+    )
+
+    adapter = MealsAdapter()
+    with (
+        patch.object(adapter, "_fetch_meals", new=AsyncMock(return_value=[meal_row])),
+        patch("butlers.chronicler.adapters.meals.upsert_point_event", side_effect=_fake_upsert),
+        patch(
+            "butlers.chronicler.adapters.meals.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert captured[0].entity_id is None
+
+
+@pytest.mark.unit
+async def test_steps_adapter_stamps_entity_id_on_point_event() -> None:
+    """GoogleHealthStepsAdapter stamps entity_id on each daily_steps point event."""
+    captured: list[PointEvent] = []
+
+    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
+        captured.append(ev)
+        return ev
+
+    cp = _chronicler_pool_simple()
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+
+    steps_row = MagicMock()
+    steps_row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "id": uuid4(),
+            "subject": None,
+            "predicate": "daily_steps",
+            "content": None,
+            "metadata": {"value": 8500},
+            "valid_at": _NOW,
+            "created_at": _NOW,
+            "idempotency_key": "health:steps:2026-05-01",
+        }[k]
+    )
+
+    adapter = GoogleHealthStepsAdapter()
+    with (
+        patch(
+            "butlers.chronicler.adapters.google_health._fetch_fact_rows",
+            new=AsyncMock(return_value=[steps_row]),
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.upsert_point_event",
+            side_effect=_fake_upsert,
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.resolve_owner_entity_id",
+            new=AsyncMock(return_value=_OWNER_ENTITY_ID),
+        ),
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert len(captured) == 1
+    assert captured[0].entity_id == _OWNER_ENTITY_ID
+
+
+@pytest.mark.unit
+async def test_steps_adapter_no_owner_fallback_for_point_event() -> None:
+    """GoogleHealthStepsAdapter projects with entity_id=None when no owner found."""
+    captured: list[PointEvent] = []
+
+    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
+        captured.append(ev)
+        return ev
+
+    cp = _chronicler_pool_simple()
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+
+    steps_row = MagicMock()
+    steps_row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "id": uuid4(),
+            "subject": None,
+            "predicate": "daily_steps",
+            "content": None,
+            "metadata": {"value": 5000},
+            "valid_at": _NOW,
+            "created_at": _NOW,
+            "idempotency_key": "health:steps:2026-05-02",
+        }[k]
+    )
+
+    adapter = GoogleHealthStepsAdapter()
+    with (
+        patch(
+            "butlers.chronicler.adapters.google_health._fetch_fact_rows",
+            new=AsyncMock(return_value=[steps_row]),
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.upsert_point_event",
+            side_effect=_fake_upsert,
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert captured[0].entity_id is None
+
+
+@pytest.mark.unit
+async def test_heart_rate_adapter_stamps_entity_id_on_point_event() -> None:
+    """GoogleHealthHeartRateAdapter stamps entity_id on heart_rate_summary events."""
+    captured: list[PointEvent] = []
+
+    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
+        captured.append(ev)
+        return ev
+
+    cp = _chronicler_pool_simple()
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+
+    hr_row = MagicMock()
+    hr_row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "id": uuid4(),
+            "subject": None,
+            "predicate": "measurement_resting_hr",
+            "content": None,
+            "metadata": {"resting_hr": 58},
+            "valid_at": _NOW,
+            "created_at": _NOW,
+            "idempotency_key": "health:hr:2026-05-01",
+        }[k]
+    )
+
+    adapter = GoogleHealthHeartRateAdapter()
+    with (
+        patch(
+            "butlers.chronicler.adapters.google_health._fetch_fact_rows",
+            new=AsyncMock(return_value=[hr_row]),
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.upsert_point_event",
+            side_effect=_fake_upsert,
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.resolve_owner_entity_id",
+            new=AsyncMock(return_value=_OWNER_ENTITY_ID),
+        ),
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert len(captured) == 1
+    assert captured[0].entity_id == _OWNER_ENTITY_ID
+
+
+@pytest.mark.unit
+async def test_heart_rate_adapter_no_owner_fallback_for_point_event() -> None:
+    """GoogleHealthHeartRateAdapter projects with entity_id=None when no owner found."""
+    captured: list[PointEvent] = []
+
+    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
+        captured.append(ev)
+        return ev
+
+    cp = _chronicler_pool_simple()
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+
+    hr_row = MagicMock()
+    hr_row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "id": uuid4(),
+            "subject": None,
+            "predicate": "heart_rate_summary",
+            "content": None,
+            "metadata": {"avg_bpm": 72},
+            "valid_at": _NOW,
+            "created_at": _NOW,
+            "idempotency_key": "health:hr:2026-05-02",
+        }[k]
+    )
+
+    adapter = GoogleHealthHeartRateAdapter()
+    with (
+        patch(
+            "butlers.chronicler.adapters.google_health._fetch_fact_rows",
+            new=AsyncMock(return_value=[hr_row]),
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.upsert_point_event",
+            side_effect=_fake_upsert,
+        ),
+        patch(
+            "butlers.chronicler.adapters.google_health.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert captured[0].entity_id is None

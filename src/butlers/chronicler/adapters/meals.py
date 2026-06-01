@@ -72,9 +72,6 @@ class MealsAdapter(ProjectionAdapter):
             return result
 
         # Resolve owner entity_id once per adapter run (not per row).
-        # Note: the current PointEvent model and upsert_point_event do not carry
-        # entity_id or write to episode_entities. entity_id is resolved here so
-        # it is available when that infrastructure is added (bu-4c1ks follow-up).
         entity_id = await resolve_owner_entity_id(pool)
 
         latest_watermark = since
@@ -202,7 +199,7 @@ class MealsAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
         *,
-        entity_id: UUID | None = None,  # reserved for future point_events.entity_id support
+        entity_id: UUID | None = None,
     ) -> PointEvent:
         row_id = str(row["id"])
         source_ref = f"{_EVIDENCE_TABLE}:{row_id}"
@@ -241,6 +238,7 @@ class MealsAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
+                    entity_id=entity_id,
                 ),
             )
         return event

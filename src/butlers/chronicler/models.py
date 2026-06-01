@@ -120,6 +120,7 @@ class PointEvent:
     retention_days: int | None = None
     tombstone_at: datetime | None = None
     tombstone_reason: str | None = None
+    entity_id: UUID | None = None
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -202,6 +203,7 @@ class CorrectedPointEvent:
     correction_note: str | None
     created_at: datetime
     updated_at: datetime
+    entity_id: UUID | None = None
 
     @property
     def is_corrected(self) -> bool:
