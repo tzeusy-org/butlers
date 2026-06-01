@@ -172,8 +172,8 @@ def _db_name_from_env() -> str:
     database_url = os.environ.get("DATABASE_URL")
     if database_url:
         path = urlparse(database_url).path
-        # URL path is "/<dbname>"; strip the leading slash.
-        name = path.lstrip("/")
+        # URL path is "/<dbname>"; strip leading and trailing slashes.
+        name = path.strip("/")
         return name if name else "butlers"
     return os.environ.get("POSTGRES_DB", "butlers")
 

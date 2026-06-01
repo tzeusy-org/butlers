@@ -1274,6 +1274,12 @@ class TestCreatePoolSsl:
         monkeypatch.setenv("DATABASE_URL", "postgres://u:p@host:5432/targetdb?sslmode=require")
         assert mod._db_name_from_env() == "targetdb"
 
+    def test_db_name_from_env_strips_trailing_slash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_db_name_from_env strips trailing slashes from the DATABASE_URL path."""
+        mod = _load_module()
+        monkeypatch.setenv("DATABASE_URL", "postgres://u:p@host:5432/targetdb/")
+        assert mod._db_name_from_env() == "targetdb"
+
     def test_db_name_from_env_defaults_when_no_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """_db_name_from_env falls back to 'butlers' when neither var is set."""
         mod = _load_module()
