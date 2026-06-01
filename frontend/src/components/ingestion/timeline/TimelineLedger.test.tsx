@@ -691,6 +691,107 @@ describe("EventDrawer — raw payload tab gated state", () => {
 });
 
 // ---------------------------------------------------------------------------
+// bu-rncqs: Flamegraph in-progress span clamping
+// ---------------------------------------------------------------------------
+
+describe("EventDrawer — flamegraph in-progress span clamping (bu-rncqs)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  const EVENT_ID = "ffff0001-0000-0000-0000-000000000001";
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  it("renders flamegraph bars for in-progress sessions with width <= 100%", () => {
+    // A completed session and an in-progress session (completed_at = null).
+    // The in-progress session's bar must not overflow the flamegraph container.
+    const completedSession: IngestionEventSession = {
+      id: "sess-0001-0000-0000-0000-000000000001",
+      butler_name: "butler-a",
+      trigger_source: null,
+      started_at: "2026-05-17T10:30:00Z",
+      completed_at: "2026-05-17T10:30:30Z",
+      success: true,
+      input_tokens: 100,
+      output_tokens: 50,
+      cost: null,
+      trace_id: null,
+      model: "claude-sonnet",
+    };
+    const inProgressSession: IngestionEventSession = {
+      id: "sess-0002-0000-0000-0000-000000000002",
+      butler_name: "butler-a",
+      trigger_source: null,
+      started_at: "2026-05-17T10:30:05Z",
+      completed_at: null, // in-progress — no end time
+      success: null,
+      input_tokens: null,
+      output_tokens: null,
+      cost: null,
+      trace_id: null,
+      model: "claude-sonnet",
+    };
+
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: {
+        data: { data: [completedSession, inProgressSession] },
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useIngestionEventSessions>,
+      rollup: {
+        data: undefined,
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useIngestionEventRollup>,
+    });
+
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([
+        makeEvent({ id: EVENT_ID, received_at: "2026-05-17T10:30:00Z", status: "ingested" }),
+      ]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?event=${EVENT_ID}`]}>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // The drawer sessions tab should be visible
+    const sessionsContent = container.querySelector("[data-testid='sessions-tab-content']");
+    expect(sessionsContent).not.toBeNull();
+
+    // All flamegraph bar widths must be <= 100%
+    const flamegraphLinks = sessionsContent!.querySelectorAll(".absolute.rounded-sm");
+    expect(flamegraphLinks.length).toBeGreaterThan(0);
+    for (const link of Array.from(flamegraphLinks)) {
+      const width = parseFloat((link as HTMLElement).style.width ?? "0");
+      expect(width).toBeLessThanOrEqual(100);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // bu-mxtn2: Search input — toolbar renders search input and clear button
 // ---------------------------------------------------------------------------
 
