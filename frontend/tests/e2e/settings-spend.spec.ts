@@ -13,8 +13,11 @@
  *                        PUT was called with the right payload, mock the
  *                        re-fetch, assert KPI strip re-renders with new ceiling.
  *
+ * The preview server is managed by playwright.config.ts `webServer`; tests
+ * rely on it being available and will fail hard (not skip) if it is not.
+ *
  * Prerequisites:
- *   npm run dev          (in a separate terminal), or point PLAYWRIGHT_BASE_URL
+ *   npm run build && npm run preview  (or Playwright starts preview automatically)
  *   npm run test:e2e:install (once per machine to install Chromium)
  *
  * Mocking strategy:
@@ -145,31 +148,13 @@ async function installBaseMocks(page: Page) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: navigate to the spend page, skip gracefully if server is absent
-// ---------------------------------------------------------------------------
-
-async function gotoSpendPage(page: Page, baseURL: string | undefined): Promise<boolean> {
-  try {
-    await page.goto("/settings/spend", { timeout: 10_000 });
-  } catch {
-    test.skip(
-      true,
-      `Dev server not reachable at ${baseURL} -- start it with: npm run dev`,
-    );
-    return false;
-  }
-  return true;
-}
-
-// ---------------------------------------------------------------------------
 // Test 1: Happy path - page renders and KPI strip populates
 // ---------------------------------------------------------------------------
 
-test("spend: page renders and KPI strip shows spend totals", async ({ page, baseURL }) => {
+test("spend: page renders and KPI strip shows spend totals", async ({ page }) => {
   await installBaseMocks(page);
 
-  const reachable = await gotoSpendPage(page, baseURL);
-  if (!reachable) return;
+  await page.goto("/settings/spend", { timeout: 10_000 });
 
   // KPI strip cells — scope assertions to the individual testid cells so that
   // strict-mode locator violations are avoided when the same text appears
@@ -207,11 +192,10 @@ test("spend: page renders and KPI strip shows spend totals", async ({ page, base
 // Test 2: Chart render - SVG forecast chart is visible with data segments
 // ---------------------------------------------------------------------------
 
-test("spend: forecast chart is visible and contains actual + projected segments", async ({ page, baseURL }) => {
+test("spend: forecast chart is visible and contains actual + projected segments", async ({ page }) => {
   await installBaseMocks(page);
 
-  const reachable = await gotoSpendPage(page, baseURL);
-  if (!reachable) return;
+  await page.goto("/settings/spend", { timeout: 10_000 });
 
   // The hand-rolled SVG has aria-label="Spend forecast chart"
   const chart = page.getByRole("img", { name: /spend forecast chart/i });
@@ -236,7 +220,7 @@ test("spend: forecast chart is visible and contains actual + projected segments"
 // Test 3: Ceiling-update flow - open edit, submit, assert PUT, re-render
 // ---------------------------------------------------------------------------
 
-test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", async ({ page, baseURL }) => {
+test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", async ({ page }) => {
   // Track PUT /api/spend/ceiling calls
   let putCalled = false;
   let putBody: Record<string, unknown> | null = null;
@@ -282,8 +266,7 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
     }
   });
 
-  const reachable = await gotoSpendPage(page, baseURL);
-  if (!reachable) return;
+  await page.goto("/settings/spend", { timeout: 10_000 });
 
   // Initially the ceiling is null - button reads "Set ceiling"
   const setCeilingBtn = page.getByRole("button", { name: /set ceiling/i });

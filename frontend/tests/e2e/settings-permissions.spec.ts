@@ -12,8 +12,11 @@
  *                                   test-webhook button, assert the last-tested
  *                                   cell updates with a success indicator.
  *
+ * The preview server is managed by playwright.config.ts `webServer`; tests
+ * rely on it being available and will fail hard (not skip) if it is not.
+ *
  * Prerequisites:
- *   npm run dev          (in a separate terminal), or point PLAYWRIGHT_BASE_URL
+ *   npm run build && npm run preview  (or Playwright starts preview automatically)
  *   npm run test:e2e:install (once per machine to install Chromium)
  */
 
@@ -92,27 +95,10 @@ async function installBaseMocks(page: Page) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: navigate to the page, skip gracefully if server is absent
-// ---------------------------------------------------------------------------
-
-async function gotoPermissionsPage(page: Page, baseURL: string | undefined) {
-  try {
-    await page.goto("/settings/permissions", { timeout: 10_000 });
-  } catch {
-    test.skip(
-      true,
-      `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-    );
-    return false;
-  }
-  return true;
-}
-
-// ---------------------------------------------------------------------------
 // Test 1: Matrix flip with reason
 // ---------------------------------------------------------------------------
 
-test("permissions: matrix cell flip requires reason and calls PUT", async ({ page, baseURL }) => {
+test("permissions: matrix cell flip requires reason and calls PUT", async ({ page }) => {
   await installBaseMocks(page);
 
   // Track PUT call to assert it was made
@@ -157,8 +143,7 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
     }
   });
 
-  const reachable = await gotoPermissionsPage(page, baseURL);
-  if (!reachable) return;
+  await page.goto("/settings/permissions", { timeout: 10_000 });
 
   // Wait for the matrix to render
   const cellButton = page.getByTestId("perm-cell-inbox-email.read");
@@ -201,7 +186,7 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
 // Test 2: Wipe-phrase rejection keeps button disabled
 // ---------------------------------------------------------------------------
 
-test("permissions: wipe button stays disabled with wrong phrase", async ({ page, baseURL }) => {
+test("permissions: wipe button stays disabled with wrong phrase", async ({ page }) => {
   await installBaseMocks(page);
 
   // Guard: DELETE /api/data/wipe must never be called in this test
@@ -211,8 +196,7 @@ test("permissions: wipe button stays disabled with wrong phrase", async ({ page,
     route.fulfill({ status: 500, contentType: "application/json", body: '{"detail": "should not reach server"}' });
   });
 
-  const reachable = await gotoPermissionsPage(page, baseURL);
-  if (!reachable) return;
+  await page.goto("/settings/permissions", { timeout: 10_000 });
 
   // Locate the wipe input and button
   const wipeInput = page.locator("#wipe-phrase");
@@ -237,7 +221,7 @@ test("permissions: wipe button stays disabled with wrong phrase", async ({ page,
 // Test 3: Webhook test action updates last-tested cell
 // ---------------------------------------------------------------------------
 
-test("permissions: webhook test action updates last-tested indicator", async ({ page, baseURL }) => {
+test("permissions: webhook test action updates last-tested indicator", async ({ page }) => {
   await installBaseMocks(page);
 
   const testedAt = "2026-05-17T12:00:00.000Z";
@@ -286,8 +270,7 @@ test("permissions: webhook test action updates last-tested indicator", async ({ 
     }
   });
 
-  const reachable = await gotoPermissionsPage(page, baseURL);
-  if (!reachable) return;
+  await page.goto("/settings/permissions", { timeout: 10_000 });
 
   // Wait for webhook row to render
   const webhookRow = page.getByTestId(`webhook-row-${WEBHOOK_ID}`);

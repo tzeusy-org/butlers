@@ -18,6 +18,9 @@
  *   GET /api/secrets/inventory  — returns MOCK_INVENTORY data
  *   GET /api/secrets/breaks-catalogue  — returns empty list (no WhatBreaks load needed)
  *
+ * The preview server is managed by playwright.config.ts `webServer`; tests
+ * rely on it being available and will fail hard (not skip) if it is not.
+ *
  * Prerequisites:
  *   npm run test:e2e:install  (once)
  *   npm run build && npm run preview  (or Playwright starts preview automatically)
@@ -140,16 +143,11 @@ async function mockSecretsRoutes(page: ReturnType<typeof test.info> extends neve
 // 1. Page loads
 // ---------------------------------------------------------------------------
 
-test("secrets: page loads DirectionPassport", async ({ page, baseURL }) => {
+test("secrets: page loads DirectionPassport", async ({ page }) => {
   // Install mocks before navigation so all API calls are intercepted from the start.
   await mockSecretsRoutes(page);
 
-  try {
-    await page.goto("/secrets", { timeout: 10_000 });
-  } catch {
-    test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
-    return;
-  }
+  await page.goto("/secrets", { timeout: 10_000 });
 
   // DirectionPassport root element
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
@@ -159,16 +157,11 @@ test("secrets: page loads DirectionPassport", async ({ page, baseURL }) => {
 // 2. Deep-link routing
 // ---------------------------------------------------------------------------
 
-test("secrets: ?focus=u:google renders Google user page", async ({ page, baseURL }) => {
+test("secrets: ?focus=u:google renders Google user page", async ({ page }) => {
   // Install mocks before navigation so the inventory fetch is intercepted.
   await mockSecretsRoutes(page);
 
-  try {
-    await page.goto("/secrets?focus=u:google", { timeout: 10_000 });
-  } catch {
-    test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
-    return;
-  }
+  await page.goto("/secrets?focus=u:google", { timeout: 10_000 });
 
   // Wait for passport to render
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
@@ -187,16 +180,11 @@ test("secrets: ?focus=u:google renders Google user page", async ({ page, baseURL
 // 3. Identity switch
 // ---------------------------------------------------------------------------
 
-test("secrets: ?identity=wei shows wei identity chip", async ({ page, baseURL }) => {
+test("secrets: ?identity=wei shows wei identity chip", async ({ page }) => {
   // Install mocks before navigation.
   await mockSecretsRoutes(page);
 
-  try {
-    await page.goto("/secrets?identity=wei", { timeout: 10_000 });
-  } catch {
-    test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
-    return;
-  }
+  await page.goto("/secrets?identity=wei", { timeout: 10_000 });
 
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
 
@@ -211,16 +199,11 @@ test("secrets: ?identity=wei shows wei identity chip", async ({ page, baseURL })
 // 4. OAuth callback re-entry: ?toast=connected
 // ---------------------------------------------------------------------------
 
-test("secrets OAuth callback: ?toast=connected shows connected toast and strips param", async ({ page, baseURL }) => {
+test("secrets OAuth callback: ?toast=connected shows connected toast and strips param", async ({ page }) => {
   await mockSecretsRoutes(page);
 
-  try {
-    // Navigate directly to the post-OAuth callback URL
-    await page.goto("/secrets?focus=u:google&toast=connected", { timeout: 10_000 });
-  } catch {
-    test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
-    return;
-  }
+  // Navigate directly to the post-OAuth callback URL
+  await page.goto("/secrets?focus=u:google&toast=connected", { timeout: 10_000 });
 
   // Passport renders without crashing
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
@@ -239,15 +222,10 @@ test("secrets OAuth callback: ?toast=connected shows connected toast and strips 
 // 5. OAuth error re-entry: ?oauth_error=invalid_grant
 // ---------------------------------------------------------------------------
 
-test("secrets OAuth error: ?oauth_error=invalid_grant renders without crash", async ({ page, baseURL }) => {
+test("secrets OAuth error: ?oauth_error=invalid_grant renders without crash", async ({ page }) => {
   await mockSecretsRoutes(page);
 
-  try {
-    await page.goto("/secrets?oauth_error=invalid_grant", { timeout: 10_000 });
-  } catch {
-    test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
-    return;
-  }
+  await page.goto("/secrets?oauth_error=invalid_grant", { timeout: 10_000 });
 
   // Passport renders without crashing even with error param
   await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
@@ -262,17 +240,12 @@ test("secrets OAuth error: ?oauth_error=invalid_grant renders without crash", as
 // 6. Reveal-mode=never via localStorage
 // ---------------------------------------------------------------------------
 
-test("secrets: revealMode=never from localStorage hides reveal button on CLI page", async ({ page, baseURL }) => {
+test("secrets: revealMode=never from localStorage hides reveal button on CLI page", async ({ page }) => {
   // Install mocks before the first navigation so all API calls are intercepted.
   await mockSecretsRoutes(page);
 
   // First goto establishes the page origin so we can write to localStorage.
-  try {
-    await page.goto("/secrets", { timeout: 10_000 });
-  } catch {
-    test.skip(true, `Dev server not reachable at ${baseURL} — start with: npm run dev`);
-    return;
-  }
+  await page.goto("/secrets", { timeout: 10_000 });
 
   // Set revealMode=never in localStorage AFTER origin is established.
   await page.evaluate(() => {
