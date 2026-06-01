@@ -37,9 +37,10 @@ Secured rows (bu-krbqx)
       RETURNING …
 
   The ``ON CONFLICT (entity_id, type)`` matches the unique constraint
-  ``uq_shared_entity_info_entity_type`` — re-running the script is safe (the
-  existing value is preserved on conflict; the RETURNING clause still yields the
-  row, so the insert is counted as ``secured_already_present``).
+  ``uq_entity_info_entity_type`` (renamed from ``uq_shared_entity_info_entity_type``
+  by migration core_047) — re-running the script is safe (the existing value is
+  preserved on conflict; the RETURNING clause still yields the row, so the insert
+  is counted as ``secured_already_present``).
 
 Skip rules
 ----------
@@ -332,14 +333,15 @@ async def _backfill_secured_row(
     Re-running is safe: conflicting rows are counted as secured_already_present.
     """
     if not apply:
-        # Dry-run: count but do not write
+        # Dry-run: count but do not write.
+        # Do NOT log the value — secured rows are credentials; even a partial
+        # value could leak secrets into logs.
         stats.secured_inserted += 1
         stats.secured_inserted_by_type[ci_type] += 1
         logger.debug(
-            "[DRY-RUN] Would insert secured → entity_info: entity_id=%s type=%s value=%.40s",
+            "[DRY-RUN] Would insert secured → entity_info: entity_id=%s type=%s",
             entity_id,
             ci_type,
-            ci_value,
         )
         return
 
@@ -362,10 +364,17 @@ async def _backfill_secured_row(
             True,
         )
         if ei_row is not None:
-            # Distinguish new insert vs. conflict by checking if the returned value
-            # matches what we tried to insert.  If value differs this was a conflict
-            # where the existing row was preserved (no-op update).
-            # Both paths are idempotent; we track them separately for the report.
+            # Classify insert vs. already-present by comparing the returned value
+            # to what we attempted.  On a genuine conflict, DO UPDATE SET value =
+            # entity_info.value is a no-op; RETURNING yields the *existing* value,
+            # which differs from ci_value if the two copies diverged.  On a fresh
+            # insert, RETURNING yields ci_value exactly.
+            #
+            # Edge case: if the existing row's value already equals ci_value, the
+            # heuristic misclassifies it as a fresh insert (secured_inserted += 1
+            # instead of secured_already_present += 1).  This only affects stats
+            # counting — the data outcome is identical in both cases (value is
+            # preserved), so there is no correctness problem.
             if ei_row["value"] == ci_value:
                 stats.secured_inserted += 1
                 stats.secured_inserted_by_type[ci_type] += 1

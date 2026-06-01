@@ -171,7 +171,8 @@ def _make_pool(
     active_triples: list[bool] | None = None,
     # secured_insert_rows: list of dicts returned for each secured-path fetchrow
     # call (the INSERT ... ON CONFLICT ... RETURNING).  Pass None entries to
-    # simulate ON CONFLICT returning the same row (existing value preserved).
+    # simulate an unexpected non-return (should not happen in practice; DO UPDATE
+    # RETURNING always yields a row — None exercises the defensive fallback path).
     secured_insert_rows: list[dict[str, Any] | None] | None = None,
 ) -> MagicMock:
     """Build a mock asyncpg pool.
@@ -520,8 +521,13 @@ class TestSecuredBackfill:
 
         assert rc == 0
         content = report_path.read_text()
-        # secured_already_present should be 1, secured_inserted should be 0
-        assert "entity_info" in content
+        # secured_already_present=1, secured_inserted=0: the conflict row appears
+        # in the "Already present in entity_info" table row with count 1, and the
+        # "Inserted" row with count 0.
+        assert "Already present in entity_info (conflict no-op) | 1" in content
+        assert "Inserted" in content
+        # No secured_inserted_by_type rows in the per-type table (count was 0)
+        assert "_No secured rows inserted._" in content
 
     @pytest.mark.asyncio
     async def test_secured_idempotent_same_value(self, tmp_path: Path) -> None:
