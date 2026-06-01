@@ -2197,23 +2197,83 @@ async def create_contact_info(
             detail="Contact has no linked entity; cannot record a channel fact.",
         )
 
-    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only. The
-    # channel fact is written via the central writer relationship_assert_fact()
-    # into relationship.entity_facts. Secured (credential) rows and types with
-    # no triple predicate have no home after the cut-over and are rejected.
+    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only.
+    #
+    # Secured (credential) rows — bu-pl8fy:
+    #   RFC 0004 Amendment 2 mandates that secured=true rows go to
+    #   public.entity_info (the entity-level credential anchor), NOT
+    #   relationship.entity_facts.  We write them there and return 201.
+    #
+    # Non-secured rows with a known predicate:
+    #   Written via relationship_assert_fact() into relationship.entity_facts.
+    #
+    # Types with no triple predicate (non-secured):
+    #   Rejected with 422 — no home exists after the cut-over.
+    if request.secured:
+        # Credential write → public.entity_info (RFC 0004 Amendment 2, bu-pl8fy).
+        try:
+            row = await pool.fetchrow(
+                """
+                INSERT INTO public.entity_info
+                    (entity_id, type, value, label, is_primary, secured)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (entity_id, type) DO NOTHING
+                RETURNING id, entity_id, type, value, label, is_primary, secured
+                """,
+                entity_id,
+                request.type,
+                request.value,
+                None,  # label — contact_info had no label column
+                request.is_primary,
+                True,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to write credential to entity_info: {exc}",
+            ) from exc
+
+        # ON CONFLICT DO NOTHING returns no row on conflict (idempotent).
+        info_id = row["id"] if row is not None else None
+
+        await emit_dashboard_audit(
+            db,
+            butler="relationship",
+            operation="contact_info_create_credential",
+            method="POST",
+            path=f"/api/relationship/contacts/{contact_id}/contact-info",
+            path_params={"contact_id": str(contact_id)},
+            body={"type": request.type, "is_primary": request.is_primary, "secured": True},
+            response_status=201,
+            request=http_request,
+        )
+
+        from uuid import uuid4
+
+        return CreateContactInfoResponse(
+            id=info_id or uuid4(),
+            contact_id=contact_id,
+            type=request.type,
+            value=request.value,
+            is_primary=request.is_primary,
+            secured=True,
+            parent_id=request.parent_id,
+            context=request.context,
+        )
+
     from butlers.tools.relationship.relationship_assert_fact import (
         contact_info_type_to_predicate,
         relationship_assert_fact,
     )
 
     predicate = contact_info_type_to_predicate(request.type)
-    if request.secured or predicate is None:
+    if predicate is None:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Contact-info type '{request.type}' cannot be written after the "
                 "write-path cut-over: public.contact_info is read-only and this "
-                "type has no triple predicate (or is a secured credential row)."
+                "type has no triple predicate."
             ),
         )
 
