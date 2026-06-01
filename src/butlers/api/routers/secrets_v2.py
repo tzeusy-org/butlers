@@ -1849,7 +1849,8 @@ class _ProviderVerifyConfig:
         Tuple of ``entity_info.type`` suffixes that this provider config
         matches.  A credential type is accepted when it ends with one of
         these suffixes.  E.g. Google accepts ``_oauth_refresh``; GitHub
-        accepts ``_oauth_refresh`` (future OAuth flow) and ``_pat`` (PATs).
+        accepts ``_oauth_access`` (OAuth App user-access tokens), ``_pat`` (PATs),
+        and ``_oauth_refresh`` (back-compat alias for pre-existing stored rows).
     """
 
     def __init__(
@@ -1885,8 +1886,10 @@ _OAUTH_VERIFY_PROVIDERS: dict[str, _ProviderVerifyConfig] = {
         needs_token_exchange=False,
         auth_scheme="token",
         # Classic PATs use _pat; fine-grained PATs share the same endpoint.
-        # _oauth_refresh is included for future GitHub OAuth app support.
-        accepted_type_suffixes=("_pat", "_oauth_refresh"),
+        # _oauth_access is the canonical suffix for GitHub OAuth App user-access tokens.
+        # _oauth_refresh is kept as a back-compat alias for any rows stored under the
+        # old type name (github_oauth_refresh) before this rename.
+        accepted_type_suffixes=("_pat", "_oauth_access", "_oauth_refresh"),
     ),
 }
 
