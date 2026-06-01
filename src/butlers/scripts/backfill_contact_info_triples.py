@@ -101,7 +101,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.db import register_jsonb_codec
+from butlers.db import db_params_from_env, register_jsonb_codec
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -165,6 +165,19 @@ def _load_assert_fact():  # type: ignore[return]
 # ---------------------------------------------------------------------------
 
 
+def _db_name_from_env() -> str:
+    """Resolve the target database name from DATABASE_URL or POSTGRES_DB."""
+    from urllib.parse import urlparse
+
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        path = urlparse(database_url).path
+        # URL path is "/<dbname>"; strip the leading slash.
+        name = path.lstrip("/")
+        return name if name else "butlers"
+    return os.environ.get("POSTGRES_DB", "butlers")
+
+
 async def _create_pool() -> asyncpg.Pool:
     # The central writer (relationship_assert_fact) uses unqualified references to
     # ``pending_actions`` (owner carve-out path).  Set search_path to
@@ -174,24 +187,26 @@ async def _create_pool() -> asyncpg.Pool:
     # Also register the JSONB codec so Python dicts can be passed directly to
     # JSONB-typed parameters (e.g. the ``@>`` containment operator in the
     # dedup-match query of ``_create_pending_action``).
-    server_settings = {"search_path": "relationship,public"}
-    database_url = os.environ.get("DATABASE_URL")
-    if database_url:
-        pool = await asyncpg.create_pool(
-            dsn=database_url,
-            server_settings=server_settings,
-            init=register_jsonb_codec,
-        )
-    else:
-        pool = await asyncpg.create_pool(
-            host=os.environ.get("POSTGRES_HOST", "localhost"),
-            port=int(os.environ.get("POSTGRES_PORT", "5432")),
-            user=os.environ.get("POSTGRES_USER", "butlers"),
-            password=os.environ.get("POSTGRES_PASSWORD", "butlers"),
-            database=os.environ.get("POSTGRES_DB", "butlers"),
-            server_settings=server_settings,
-            init=register_jsonb_codec,
-        )
+    #
+    # Use db_params_from_env() for a unified connection-param source so that
+    # POSTGRES_SSLMODE is honoured on the discrete-params path (DATABASE_URL
+    # sslmode is extracted from the query string, POSTGRES_SSLMODE from the env).
+    # Build explicit kwargs for asyncpg rather than passing a DSN so that the
+    # ssl= parameter can always be set without triggering asyncpg's "cannot
+    # combine dsn= with connect kwargs" error.
+    params = db_params_from_env()
+    pool_kwargs: dict[str, Any] = {
+        "host": params["host"],
+        "port": params["port"],
+        "user": params["user"],
+        "password": params["password"],
+        "database": _db_name_from_env(),
+        "server_settings": {"search_path": "relationship,public"},
+        "init": register_jsonb_codec,
+    }
+    if params.get("ssl") is not None:
+        pool_kwargs["ssl"] = params["ssl"]
+    pool = await asyncpg.create_pool(**pool_kwargs)
     assert pool is not None
     return pool
 
