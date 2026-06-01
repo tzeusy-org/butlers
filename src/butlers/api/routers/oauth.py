@@ -638,6 +638,85 @@ def _clear_state_store() -> None:
 
 
 # ---------------------------------------------------------------------------
+# OAuth test-mode stub (SECURITY-CRITICAL gating)
+# ---------------------------------------------------------------------------
+#
+# TEST_MODE_OAUTH_STUB=1 enables a backend stub that returns a synthetic token
+# response instead of making real HTTP calls to the provider's token endpoint.
+# This makes the full OAuth roundtrip (start → redirect → callback → toast)
+# testable without real credentials.
+#
+# HARD PRODUCTION GUARD: the stub is UNCONDITIONALLY disabled when ENV=prod,
+# even if TEST_MODE_OAUTH_STUB is set.  The guard is intentionally fail-loud:
+# if both flags are set simultaneously, an explicit warning is emitted.
+#
+# When TEST_MODE_OAUTH_STUB is off (the default), _exchange_code_for_tokens
+# and _fetch_google_userinfo behave identically to before — the stub path is
+# never entered, and the real OAuth flow is byte-for-byte unchanged.
+
+_OAUTH_STUB_ENV = "TEST_MODE_OAUTH_STUB"
+_TRUTHY_ENV_VALUES: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+
+# Synthetic token payload returned by the stub.  Values are deliberately
+# non-real (no valid OAuth prefix) so they cannot be misused if exposed.
+_STUB_SYNTHETIC_TOKEN: dict[str, Any] = {
+    "access_token": "stub-access-token-not-real",
+    "refresh_token": "stub-refresh-token-not-real",
+    "scope": "openid email profile https://www.googleapis.com/auth/gmail.readonly",
+    "token_type": "Bearer",
+    "expires_in": 3600,
+}
+
+# Synthetic userinfo payload returned by the stub.
+_STUB_SYNTHETIC_USERINFO: dict[str, Any] = {
+    "email": "stub-user@stub.invalid",
+    "name": "Stub Test User",
+    "id": "stub-user-id-000000000001",
+}
+
+# Synthetic Spotify profile returned by the stub.
+_STUB_SYNTHETIC_SPOTIFY_PROFILE: dict[str, Any] = {
+    "email": "stub-user@stub.invalid",
+    "id": "stub-spotify-user-0001",
+    "display_name": "Stub Test User",
+}
+
+
+def _is_oauth_stub_active() -> bool:
+    """Return True when the OAuth test-mode stub is explicitly enabled AND the app is not in prod.
+
+    Rules:
+    1. TEST_MODE_OAUTH_STUB must be set to a truthy value (1/true/yes/on).
+    2. ENV must NOT start with "prod" (guards against "prod", "production", "PROD", etc.).
+
+    When both (1) and (2) are satisfied, the stub is active.
+    When ENV starts with "prod" and TEST_MODE_OAUTH_STUB is set, the stub is forcibly
+    disabled and a loud WARNING is emitted — this is the hard production guard.
+
+    When TEST_MODE_OAUTH_STUB is absent or falsy, this function returns False
+    immediately without checking ENV (fast path for the overwhelmingly common
+    production / dev case where the stub is off).
+    """
+    raw = os.environ.get(_OAUTH_STUB_ENV, "").strip().lower()
+    if raw not in _TRUTHY_ENV_VALUES:
+        return False
+
+    # Stub is requested — apply the hard production guard.
+    # Use startswith("prod") to catch "prod", "production", "prod-us-east-1", etc.
+    env = os.environ.get("ENV", "").strip().lower()
+    if env.startswith("prod"):
+        logger.warning(
+            "TEST_MODE_OAUTH_STUB is set but ENV=%r — OAuth stub is DISABLED. "
+            "The stub cannot activate in production. Unset TEST_MODE_OAUTH_STUB.",
+            env,
+        )
+        return False
+
+    logger.info("OAuth test-mode stub is ACTIVE (TEST_MODE_OAUTH_STUB=1, ENV=%r)", env or "unset")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
 
@@ -2017,7 +2096,23 @@ async def _exchange_code_for_tokens(
     ------
     _TokenExchangeError
         If the exchange fails for any reason (HTTP error, invalid code, network error).
+
+    Notes
+    -----
+    When TEST_MODE_OAUTH_STUB=1 and ENV != "prod", the real HTTP call is
+    replaced by a synthetic in-process response so the full OAuth roundtrip
+    can be exercised in tests without real provider credentials.  The stub
+    issues only non-real placeholder tokens and is completely inert when the
+    flag is off (which is the default).
     """
+    # --- Test-mode stub (only active when TEST_MODE_OAUTH_STUB=1 and not prod) ---
+    if _is_oauth_stub_active():
+        logger.debug(
+            "OAuth stub: returning synthetic tokens for code=%s (NOT a real token exchange)",
+            code[:8] if code else "",
+        )
+        return dict(_STUB_SYNTHETIC_TOKEN)
+
     payload = {
         "code": code,
         "client_id": client_id,
@@ -2059,7 +2154,19 @@ async def _fetch_google_userinfo(access_token: str) -> dict[str, Any]:
     ------
     _UserinfoError
         If the request fails for any reason (HTTP error, network error, JSON error).
+
+    Notes
+    -----
+    When TEST_MODE_OAUTH_STUB=1 and ENV != "prod", the real HTTP call is
+    replaced by a synthetic in-process response — same gating as
+    ``_exchange_code_for_tokens``.  When the stub is off (default), this
+    function is byte-for-byte unchanged.
     """
+    # --- Test-mode stub ---
+    if _is_oauth_stub_active():
+        logger.debug("OAuth stub: returning synthetic userinfo (NOT a real Google call)")
+        return dict(_STUB_SYNTHETIC_USERINFO)
+
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -2519,15 +2626,21 @@ async def oauth_provider_callback(
     # --- Fetch account identity via profile URL if available ---
     account_email: str | None = None
     if access_token and provider_cfg.profile_url:
-        try:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            async with httpx.AsyncClient(timeout=10.0) as http_client:
-                profile_resp = await http_client.get(provider_cfg.profile_url, headers=headers)
-            if profile_resp.status_code == 200:
-                profile_data = profile_resp.json()
-                account_email = profile_data.get("email") or profile_data.get("id")
-        except Exception:  # noqa: BLE001
-            logger.debug("Profile fetch failed for provider=%s (non-fatal)", provider)
+        # Test-mode stub: skip real HTTP call and return synthetic profile.
+        if _is_oauth_stub_active():
+            logger.debug("OAuth stub: returning synthetic profile for provider=%s", provider)
+            stub_profile = dict(_STUB_SYNTHETIC_SPOTIFY_PROFILE)
+            account_email = stub_profile.get("email") or stub_profile.get("id")
+        else:
+            try:
+                headers = {"Authorization": f"Bearer {access_token}"}
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    profile_resp = await http_client.get(provider_cfg.profile_url, headers=headers)
+                if profile_resp.status_code == 200:
+                    profile_data = profile_resp.json()
+                    account_email = profile_data.get("email") or profile_data.get("id")
+            except Exception:  # noqa: BLE001
+                logger.debug("Profile fetch failed for provider=%s (non-fatal)", provider)
 
     # --- Persist credentials in shared credential store ---
     cred_store = _make_credential_store(db_manager)
