@@ -96,6 +96,11 @@ async def list_connector_summaries_with_aggregates(
     ``aggregates_available`` is ``true`` when ``PROMETHEUS_URL`` is configured
     and the last pipeline cache entry was successful; ``false`` otherwise.
 
+    Each connector entry includes ``hourly_events`` — a 24-element array of
+    per-hour event counts for the last 24 hours (oldest bucket first, newest
+    last).  This is sourced from ``public.ingestion_events`` (not Prometheus)
+    so it is always populated regardless of ``aggregates_available``.
+
     Always returns HTTP 200 — database errors fall back to an empty list.
     """
     pool = _pool(db)
@@ -156,9 +161,49 @@ async def list_connector_summaries_with_aggregates(
             return "stale"
         return "offline"
 
+    # Build per-connector hourly timeseries from ingestion_events in one query.
+    # Returns a 24-element list (oldest hour first, newest last) — zero-filled for
+    # missing buckets.  Sourced from public.ingestion_events (not Prometheus) so
+    # it works regardless of aggregates_available.
+    hourly_map: dict[tuple[str, str], list[int]] = {}
+    if rows:
+        try:
+            now_utc = dt.datetime.now(dt.UTC)
+            # Truncate to the start of the current hour so bucket 23 is the most recent
+            # complete-or-in-progress hour.
+            window_start = now_utc.replace(minute=0, second=0, microsecond=0) - dt.timedelta(
+                hours=23
+            )
+            hourly_rows = await pool.fetch(
+                """
+                SELECT
+                    source_channel        AS connector_type,
+                    source_endpoint_identity AS endpoint_identity,
+                    date_trunc('hour', received_at) AS hour_bucket,
+                    count(*)              AS event_count
+                FROM public.ingestion_events
+                WHERE received_at >= $1
+                GROUP BY source_channel, source_endpoint_identity, date_trunc('hour', received_at)
+                """,
+                window_start,
+            )
+            # Populate bucket arrays for each connector key seen in hourly_rows
+            for hr in hourly_rows:
+                key = (hr["connector_type"], hr["endpoint_identity"])
+                if key not in hourly_map:
+                    hourly_map[key] = [0] * 24
+                # Determine which bucket index this hour falls into (0 = oldest, 23 = newest)
+                bucket_offset = int((hr["hour_bucket"] - window_start).total_seconds() // 3600)
+                if 0 <= bucket_offset < 24:
+                    hourly_map[key][bucket_offset] = int(hr["event_count"])
+        except Exception:
+            logger.warning("connector summaries: failed to fetch hourly timeseries", exc_info=True)
+            # hourly_map stays empty — connectors fall back to all-zeros below
+
     connectors = []
     for r in rows:
         liveness = _liveness(r["last_heartbeat_at"])
+        key = (r["connector_type"], r["endpoint_identity"])
         connectors.append(
             {
                 "connector_type": r["connector_type"],
@@ -176,6 +221,7 @@ async def list_connector_summaries_with_aggregates(
                     "messages_ingested": r["counter_messages_ingested"] or 0,
                     "messages_failed": r["counter_messages_failed"] or 0,
                 },
+                "hourly_events": hourly_map.get(key, [0] * 24),
             }
         )
 
