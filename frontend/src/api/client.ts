@@ -2541,20 +2541,58 @@ export function getOAuthStartUrl(): string {
  *   - ``"secrets"``     → /secrets?focus=u:google&toast=connected
  *   - ``"ingestion"``   → /ingestion/connectors (handled by ingestion spec)
  *   - omitted / null    → defaults to /secrets (backend default)
+ *
+ * ``connectorDetailPath`` enables deep-link redirect back to a specific
+ * connector after reauth. Format: ``"<connector_type>/<endpoint_identity>"``.
+ * When set, the callback redirects to /ingestion/connectors/<path> instead of
+ * the connectors roster. The backend validates the format and silently ignores
+ * invalid values (safe fallback). Takes priority over ``pageOfOrigin``.
  */
 export function getGoogleOAuthStartUrl(opts?: {
   accountHint?: string;
   forceConsent?: boolean;
   scopeSet?: string;
   pageOfOrigin?: "secrets" | "ingestion";
+  connectorDetailPath?: string;
 }): string {
   const params = new URLSearchParams();
   if (opts?.accountHint) params.set("account_hint", opts.accountHint);
   if (opts?.forceConsent) params.set("force_consent", "true");
   if (opts?.scopeSet) params.set("scope_set", opts.scopeSet);
   if (opts?.pageOfOrigin) params.set("page_of_origin", opts.pageOfOrigin);
+  if (opts?.connectorDetailPath) params.set("connector_detail_path", opts.connectorDetailPath);
   const qs = params.toString();
   return `${API_BASE_URL}/oauth/google/start${qs ? `?${qs}` : ""}`;
+}
+
+/** Build the URL to start an OAuth flow for any registered provider.
+ *
+ * Uses the generalised ``/{provider}/start`` endpoint.  All options are
+ * optional and forwarded as query parameters.
+ *
+ * ``connectorDetailPath`` enables deep-link redirect back to a specific
+ * connector after reauth. Format: ``"<connector_type>/<endpoint_identity>"``.
+ * When set, the callback redirects to /ingestion/connectors/<path>.
+ * Takes priority over ``pageOfOrigin``.
+ */
+export function getProviderOAuthStartUrl(
+  provider: string,
+  opts?: {
+    accountHint?: string;
+    forceConsent?: boolean;
+    scopeSet?: string;
+    pageOfOrigin?: "secrets" | "ingestion";
+    connectorDetailPath?: string;
+  },
+): string {
+  const params = new URLSearchParams();
+  if (opts?.accountHint) params.set("account_hint", opts.accountHint);
+  if (opts?.forceConsent) params.set("force_consent", "true");
+  if (opts?.scopeSet) params.set("scope_set", opts.scopeSet);
+  if (opts?.pageOfOrigin) params.set("page_of_origin", opts.pageOfOrigin);
+  if (opts?.connectorDetailPath) params.set("connector_detail_path", opts.connectorDetailPath);
+  const qs = params.toString();
+  return `${API_BASE_URL}/oauth/${encodeURIComponent(provider)}/start${qs ? `?${qs}` : ""}`;
 }
 
 /** Fetch all connected Google accounts. */

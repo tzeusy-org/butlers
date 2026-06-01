@@ -29,6 +29,7 @@ from butlers.api.routers.oauth import (
     _generate_state,
     _store_state,
     _validate_and_consume_state,
+    _validate_connector_detail_path,
 )
 from butlers.core.credential_keys import normalize_credential_key
 
@@ -811,3 +812,251 @@ async def test_spotify_unknown_scope_set_returns_400(app):
     assert resp.status_code == 400
     body = resp.json()
     assert body["error"] == "unknown_scope_set"
+
+
+# ===========================================================================
+# 12. connector_detail_path — validation, round-trip, and open-redirect guard
+# ===========================================================================
+
+
+# --- Validation unit tests ---
+
+
+def test_validate_connector_detail_path_valid():
+    """Well-formed <type>/<identity> paths are accepted."""
+    assert _validate_connector_detail_path("google/alice@example.com") == "google/alice@example.com"
+    assert _validate_connector_detail_path("spotify/spotify-user-01") == "spotify/spotify-user-01"
+    assert (
+        _validate_connector_detail_path("steam_connector/76561198000000001")
+        == "steam_connector/76561198000000001"
+    )
+
+
+def test_validate_connector_detail_path_strips_whitespace():
+    """Leading/trailing whitespace is stripped before validation."""
+    assert (
+        _validate_connector_detail_path("  google/alice@example.com  ")
+        == "google/alice@example.com"
+    )
+
+
+def test_validate_connector_detail_path_none_returns_none():
+    """None input returns None (absent → no deep-link)."""
+    assert _validate_connector_detail_path(None) is None
+
+
+def test_validate_connector_detail_path_empty_returns_none():
+    """Empty string returns None."""
+    assert _validate_connector_detail_path("") is None
+    assert _validate_connector_detail_path("   ") is None
+
+
+def test_validate_connector_detail_path_rejects_absolute_url():
+    """Absolute URLs (with protocol) are rejected to prevent open redirect."""
+    assert _validate_connector_detail_path("https://evil.example.com/path") is None
+    assert _validate_connector_detail_path("http://evil.example.com") is None
+
+
+def test_validate_connector_detail_path_rejects_protocol_relative():
+    """Protocol-relative URLs starting with // are rejected."""
+    assert _validate_connector_detail_path("//evil.example.com") is None
+
+
+def test_validate_connector_detail_path_rejects_leading_slash():
+    """Paths with a leading slash are rejected (would build //ingestion/connectors//<path>)."""
+    assert _validate_connector_detail_path("/google/alice") is None
+
+
+def test_validate_connector_detail_path_allows_slash_in_identity():
+    """Endpoint identities that contain slashes are accepted (e.g. namespaced IDs)."""
+    # The connector type is the first segment; identity may contain slashes.
+    result = _validate_connector_detail_path("google/alice/sub-resource")
+    assert result == "google/alice/sub-resource"
+
+
+def test_validate_connector_detail_path_rejects_type_only():
+    """A single segment with no '/' is rejected (no identity present)."""
+    assert _validate_connector_detail_path("google") is None
+
+
+def test_validate_connector_detail_path_rejects_whitespace_in_path():
+    """Paths with internal whitespace are rejected."""
+    assert _validate_connector_detail_path("google/alice example") is None
+
+
+# --- Redirect URL builder tests with connector_detail_path ---
+
+
+def test_build_success_redirect_connector_detail_path():
+    """When connector_detail_path is set the URL deep-links to the connector page."""
+    url = _build_success_redirect_url("google", "ingestion", "google/alice@example.com")
+    assert url == "/ingestion/connectors/google/alice@example.com"
+
+
+def test_build_success_redirect_connector_detail_path_takes_priority_over_page_of_origin():
+    """connector_detail_path takes priority over page_of_origin."""
+    url = _build_success_redirect_url("google", "secrets", "spotify/my-spotify-id")
+    assert url == "/ingestion/connectors/spotify/my-spotify-id"
+
+
+def test_build_success_redirect_no_connector_detail_path_falls_back():
+    """Without connector_detail_path the existing page_of_origin routing is unchanged."""
+    assert _build_success_redirect_url("google", "ingestion") == "/ingestion/connectors"
+    assert _build_success_redirect_url("google", None) == "/secrets?focus=u:google&toast=connected"
+
+
+def test_build_error_redirect_connector_detail_path():
+    """Error redirect with connector_detail_path appends oauth_error to the detail URL."""
+    url = _build_error_redirect_url(
+        "google", "ingestion", "provider_error", "google/alice@example.com"
+    )
+    assert url == "/ingestion/connectors/google/alice@example.com?oauth_error=provider_error"
+
+
+def test_build_error_redirect_no_connector_detail_path_unchanged():
+    """Without connector_detail_path the error redirect falls back as before."""
+    assert (
+        _build_error_redirect_url("google", "ingestion", "provider_error")
+        == "/ingestion/connectors?oauth_error=provider_error"
+    )
+
+
+# --- State store round-trip test ---
+
+
+def test_state_entry_carries_connector_detail_path():
+    """_store_state persists connector_detail_path; _validate_and_consume_state returns it."""
+    state = _generate_state()
+    _store_state(
+        state,
+        page_of_origin="ingestion",
+        provider="google",
+        connector_detail_path="google/alice@example.com",
+    )
+    entry = _validate_and_consume_state(state)
+    assert entry is not None
+    assert entry.connector_detail_path == "google/alice@example.com"
+    assert entry.page_of_origin == "ingestion"
+
+
+def test_state_entry_connector_detail_path_defaults_to_none():
+    """When connector_detail_path is not passed it is None on the entry."""
+    state = _generate_state()
+    _store_state(state, page_of_origin="ingestion", provider="google")
+    entry = _validate_and_consume_state(state)
+    assert entry is not None
+    assert entry.connector_detail_path is None
+
+
+# --- HTTP round-trip tests ---
+
+
+async def test_generalised_start_connector_detail_path_round_trips(app):
+    """connector_detail_path passed to /{provider}/start is stored in the CSRF state."""
+    _make_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/oauth/spotify/start",
+            params={
+                "redirect": "false",
+                "page_of_origin": "ingestion",
+                "connector_detail_path": "spotify/my-spotify-id",
+            },
+        )
+    assert resp.status_code == 200
+    state_token = resp.json()["data"]["state"]
+    entry = _validate_and_consume_state(state_token)
+    assert entry is not None
+    assert entry.connector_detail_path == "spotify/my-spotify-id"
+    assert entry.page_of_origin == "ingestion"
+
+
+async def test_generalised_start_invalid_connector_detail_path_is_ignored(app):
+    """An invalid connector_detail_path (open redirect attempt) is silently ignored."""
+    _make_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/oauth/spotify/start",
+            params={
+                "redirect": "false",
+                "connector_detail_path": "https://evil.example.com/steal-tokens",
+            },
+        )
+    assert resp.status_code == 200
+    state_token = resp.json()["data"]["state"]
+    entry = _validate_and_consume_state(state_token)
+    assert entry is not None
+    # Invalid path must be stripped — connector_detail_path is None, not the attacker URL.
+    assert entry.connector_detail_path is None
+
+
+async def test_spotify_callback_redirects_to_connector_detail_page(app):
+    """When state carries connector_detail_path the callback deep-links to the connector."""
+    app_with_pool, pool = _make_app(app)
+
+    state = _generate_state()
+    _store_state(
+        state,
+        page_of_origin="ingestion",
+        provider="spotify",
+        connector_detail_path="spotify/my-spotify-id",
+    )
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app_with_pool),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback",
+                params={"code": "test-code", "state": state},
+            )
+
+    assert resp.status_code == 302
+    location = resp.headers["location"]
+    assert location == "/ingestion/connectors/spotify/my-spotify-id"
+
+
+async def test_spotify_callback_without_connector_detail_path_falls_back_to_roster(app):
+    """Without connector_detail_path the callback redirects to the roster (existing behaviour)."""
+    app_with_pool, pool = _make_app(app)
+
+    state = _generate_state()
+    _store_state(state, page_of_origin="ingestion", provider="spotify")
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app_with_pool),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback",
+                params={"code": "test-code", "state": state},
+            )
+
+    assert resp.status_code == 302
+    location = resp.headers["location"]
+    # Must land on the roster, NOT a detail page.
+    assert location == "/ingestion/connectors"
