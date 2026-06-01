@@ -87,9 +87,11 @@ async def _apply_chronicler_schema(pool) -> None:
     - 005_tuple_watermark: watermark_id column on projection_checkpoints
     - 006_checkpoint_carryover: carryover JSONB column on projection_checkpoints
     - 013_episodes_entity_id: entity_id column on episodes + v_episodes_corrected update
+    - 015_point_events_entity_id: entity_id column on point_events + v_point_events_corrected update
 
     Tables intentionally omitted (not needed by storage integration tests):
     - ``tier2_cache`` (migration 004)
+    - ``episode_entities`` (migration 014)
     """
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS source_adapter_state (
@@ -149,6 +151,7 @@ async def _apply_chronicler_schema(pool) -> None:
             retention_days INTEGER,
             tombstone_at TIMESTAMPTZ,
             tombstone_reason TEXT,
+            entity_id UUID,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref)
@@ -287,7 +290,8 @@ async def _apply_chronicler_schema(pool) -> None:
             o.corrected_at,
             o.note AS correction_note,
             p.created_at,
-            p.updated_at
+            p.updated_at,
+            p.entity_id
         FROM point_events p
         LEFT JOIN v_latest_overrides o
             ON o.target_kind = 'point_event' AND o.target_id = p.id
@@ -1082,4 +1086,108 @@ async def test_upsert_episode_entity_id_updates_on_replay(chronicler_pool) -> No
     ep.entity_id = eid_2
     second = await upsert_episode(chronicler_pool, ep)
     assert second.id == first.id  # same row
+    assert second.entity_id == eid_2
+
+
+# ── point_events entity_id (bu-kihe8) ────────────────────────────────────
+
+
+async def test_upsert_point_event_with_entity_id(chronicler_pool) -> None:
+    """Point events can be written and read back with entity_id set."""
+    from uuid import uuid4
+
+    from butlers.chronicler.models import PointEvent, Precision, Privacy
+
+    eid = uuid4()
+    now = datetime.now(UTC)
+    ev = PointEvent(
+        source_name="health.meals",
+        source_ref="entity-pe-test-1",
+        event_type="eating_event",
+        occurred_at=now,
+        precision=Precision.EXACT,
+        privacy=Privacy.SENSITIVE,
+        entity_id=eid,
+    )
+    stored = await upsert_point_event(chronicler_pool, ev)
+    assert stored.entity_id == eid
+
+    # Also verify via list_point_events (reads from v_point_events_corrected).
+    events = await list_point_events(chronicler_pool, source_name="health.meals")
+    matching = [e for e in events if e.source_ref == "entity-pe-test-1"]
+    assert len(matching) == 1
+    assert matching[0].entity_id == eid
+
+
+async def test_upsert_point_event_entity_id_null_by_default(chronicler_pool) -> None:
+    """Point events without entity_id default to NULL."""
+    from butlers.chronicler.models import PointEvent, Precision, Privacy
+
+    now = datetime.now(UTC)
+    ev = PointEvent(
+        source_name="health.meals",
+        source_ref="entity-pe-null-1",
+        event_type="eating_event",
+        occurred_at=now,
+        precision=Precision.EXACT,
+        privacy=Privacy.SENSITIVE,
+    )
+    stored = await upsert_point_event(chronicler_pool, ev)
+    assert stored.entity_id is None
+
+
+async def test_list_point_events_entity_id_filter(chronicler_pool) -> None:
+    """list_point_events(entity_id=) filters to point events for that entity only."""
+    from uuid import uuid4
+
+    from butlers.chronicler.models import PointEvent, Precision
+
+    entity_a = uuid4()
+    entity_b = uuid4()
+    now = datetime.now(UTC)
+
+    for i, eid in enumerate([entity_a, entity_a, entity_b, None]):
+        ev = PointEvent(
+            source_name="health.steps",
+            source_ref=f"entity-pe-filter-{i}",
+            event_type="daily_steps",
+            occurred_at=now - timedelta(hours=i),
+            precision=Precision.DAY,
+            entity_id=eid,
+        )
+        await upsert_point_event(chronicler_pool, ev)
+
+    results_a = await list_point_events(chronicler_pool, entity_id=entity_a)
+    assert len(results_a) == 2
+    assert all(e.entity_id == entity_a for e in results_a)
+
+    results_b = await list_point_events(chronicler_pool, entity_id=entity_b)
+    assert len(results_b) == 1
+    assert results_b[0].entity_id == entity_b
+
+
+async def test_upsert_point_event_entity_id_updates_on_replay(chronicler_pool) -> None:
+    """Replaying a point event with a new entity_id updates the stored entity_id."""
+    from uuid import uuid4
+
+    from butlers.chronicler.models import PointEvent, Precision, Privacy
+
+    eid_1 = uuid4()
+    eid_2 = uuid4()
+    now = datetime.now(UTC)
+    ev = PointEvent(
+        source_name="health.heart_rate",
+        source_ref="entity-pe-replay-hr",
+        event_type="heart_rate_summary",
+        occurred_at=now,
+        precision=Precision.DAY,
+        privacy=Privacy.SENSITIVE,
+        entity_id=eid_1,
+    )
+    first = await upsert_point_event(chronicler_pool, ev)
+    assert first.entity_id == eid_1
+
+    ev.entity_id = eid_2
+    second = await upsert_point_event(chronicler_pool, ev)
+    assert second.id == first.id  # same row via ON CONFLICT
     assert second.entity_id == eid_2

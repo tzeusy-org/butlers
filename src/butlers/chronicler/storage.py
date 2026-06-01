@@ -53,6 +53,7 @@ def _coerce_payload(value: Any) -> dict[str, Any]:
 
 
 def _row_to_point_event(row: asyncpg.Record) -> PointEvent:
+    keys = row.keys()
     return PointEvent(
         id=row["id"],
         source_name=row["source_name"],
@@ -66,6 +67,7 @@ def _row_to_point_event(row: asyncpg.Record) -> PointEvent:
         retention_days=row["retention_days"],
         tombstone_at=row["tombstone_at"],
         tombstone_reason=row["tombstone_reason"],
+        entity_id=row["entity_id"] if "entity_id" in keys else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -131,6 +133,7 @@ def _row_to_corrected_episode(row: asyncpg.Record) -> CorrectedEpisode:
 
 
 def _row_to_corrected_point_event(row: asyncpg.Record) -> CorrectedPointEvent:
+    keys = row.keys()
     return CorrectedPointEvent(
         id=row["id"],
         source_name=row["source_name"],
@@ -150,6 +153,7 @@ def _row_to_corrected_point_event(row: asyncpg.Record) -> CorrectedPointEvent:
         correction_note=row["correction_note"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        entity_id=row["entity_id"] if "entity_id" in keys else None,
     )
 
 
@@ -443,16 +447,17 @@ async def upsert_point_event(
     """Idempotent upsert on ``(source_name, source_ref)``.
 
     Updates mutable fields (title, payload, precision, privacy,
-    retention, tombstone, occurred_at) so replays with corrected source
-    data are reflected.
+    retention, tombstone, occurred_at, entity_id) so replays with
+    corrected source data are reflected.
     """
     row = await conn.fetchrow(
         """
         INSERT INTO point_events (
             source_name, source_ref, event_type, occurred_at, precision,
-            title, payload, privacy, retention_days, tombstone_at, tombstone_reason
+            title, payload, privacy, retention_days, tombstone_at, tombstone_reason,
+            entity_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             event_type = EXCLUDED.event_type,
             occurred_at = EXCLUDED.occurred_at,
@@ -463,6 +468,7 @@ async def upsert_point_event(
             retention_days = EXCLUDED.retention_days,
             tombstone_at = EXCLUDED.tombstone_at,
             tombstone_reason = EXCLUDED.tombstone_reason,
+            entity_id = EXCLUDED.entity_id,
             updated_at = now()
         RETURNING *
         """,
@@ -477,6 +483,7 @@ async def upsert_point_event(
         event.retention_days,
         event.tombstone_at,
         event.tombstone_reason,
+        event.entity_id,
     )
     return _row_to_point_event(row)
 
@@ -655,6 +662,7 @@ async def list_point_events(
     occurred_to: datetime | None = None,
     source_name: str | None = None,
     event_type: str | None = None,
+    entity_id: UUID | None = None,
     include_tombstoned: bool = False,
     limit: int = 200,
     offset: int = 0,
@@ -675,6 +683,9 @@ async def list_point_events(
     if event_type is not None:
         args.append(event_type)
         clauses.append(f"event_type = ${len(args)}")
+    if entity_id is not None:
+        args.append(entity_id)
+        clauses.append(f"entity_id = ${len(args)}")
     where_clause = " AND ".join(clauses) if clauses else "TRUE"
     args.append(limit)
     args.append(offset)
