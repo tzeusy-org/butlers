@@ -193,7 +193,7 @@ band composition addendum and visually in each cell's `ButlerMark` component.
     which aligns to the next minute boundary then fires a 60-second interval
 
 ### Requirement: Butler Detail Page Structure
-The `/butlers/:name` page is a tabbed detail view where each butler is treated as a first-class navigable entity.
+The `/butlers/:name` page SHALL be a tabbed detail view where each butler is treated as a first-class navigable entity.
 
 #### Scenario: URL-driven tab routing
 - **WHEN** a user navigates to `/butlers/:name?tab=<value>`
@@ -393,7 +393,7 @@ sole page body content inside `<Page archetype="status-board">`.
 
 ### Requirement: Tab Structures Reference (Non-Butler Pages)
 
-The following tab structures exist on pages outside the butler detail view. They are documented here as a consolidated reference.
+The following tab structures exist on pages outside the butler detail view and SHALL be documented here as a consolidated reference.
 
 #### Scenario: Memory browser tabs
 - **WHEN** the `/memory` page or the butler detail Memory tab is active
@@ -512,7 +512,7 @@ sources with a logical OR.
   (`frontend/src/hooks/use-general.ts:24-53`)
 
 ### Requirement: Sessions Tab
-The sessions tab shows paginated session history for the butler with drill-down capability, including model resolution metadata.
+The sessions tab SHALL show paginated session history for the butler with drill-down capability, including model resolution metadata.
 
 #### Scenario: Paginated session table
 - **WHEN** the sessions tab is active
@@ -531,7 +531,7 @@ The sessions tab shows paginated session history for the butler with drill-down 
 - **AND** "Previous" is disabled on the first page and "Next" is disabled when `has_more` is false
 
 ### Requirement: Config Tab
-The config tab provides full transparency into a butler's configuration files.
+The config tab SHALL provide full transparency into a butler's configuration files.
 
 #### Scenario: butler.toml display with format toggle
 - **WHEN** the config tab loads successfully
@@ -549,7 +549,7 @@ The config tab provides full transparency into a butler's configuration files.
 - **AND** when the response has no config data, a "No configuration data available" message is displayed
 
 ### Requirement: Skills Tab
-The skills tab shows all skills available to a butler with drill-down and trigger integration.
+The skills tab SHALL show all skills available to a butler with drill-down and trigger integration.
 
 #### Scenario: Skill card grid
 - **WHEN** skills are loaded
@@ -564,7 +564,7 @@ The skills tab shows all skills available to a butler with drill-down and trigge
 - **THEN** the tab switches to the Trigger tab with the prompt pre-filled as "Use the {skill name} skill to "
 
 ### Requirement: Schedules Tab (CRUD)
-The schedules tab provides full CRUD management of a butler's scheduled tasks, including complexity tier configuration.
+The schedules tab SHALL provide full CRUD management of a butler's scheduled tasks, including complexity tier configuration.
 
 #### Scenario: Schedule table columns
 - **WHEN** schedules are loaded
@@ -596,7 +596,7 @@ The schedules tab provides full CRUD management of a butler's scheduled tasks, i
 - **THEN** schedule data is polled every 30 seconds
 
 ### Requirement: Trigger Tab (Manual Session Invocation)
-The trigger tab allows operators to manually spawn a session for a butler with complexity-aware model selection.
+The trigger tab SHALL allow operators to manually spawn a session for a butler with complexity-aware model selection.
 
 #### Scenario: Prompt input and submission
 - **WHEN** the trigger tab is active
@@ -624,7 +624,7 @@ The trigger tab allows operators to manually spawn a session for a butler with c
 - **AND** this history is not persisted and resets on page reload
 
 ### Requirement: MCP Debug Tab
-The MCP tab provides a debugging interface for directly invoking MCP tools on a butler.
+The MCP tab SHALL provide a debugging interface for directly invoking MCP tools on a butler.
 
 #### Scenario: Tool enumeration
 - **WHEN** the MCP tab loads
@@ -650,7 +650,7 @@ The MCP tab provides a debugging interface for directly invoking MCP tools on a 
 - **THEN** the error message is displayed inline without crashing the tab
 
 ### Requirement: State Tab (CRUD)
-The state tab provides a browser and editor for the butler's key-value state store.
+The state tab SHALL provide a browser and editor for the butler's key-value state store.
 
 #### Scenario: State browser table
 - **WHEN** state entries are loaded
@@ -682,7 +682,7 @@ The state tab provides a browser and editor for the butler's key-value state sto
 - **THEN** state entries are polled every 30 seconds
 
 ### Requirement: Memory Tab
-The memory tab shows the three-tier memory system health and a browsable memory store.
+The memory tab SHALL show the three-tier memory system health and a browsable memory store.
 
 #### Scenario: Memory tier summary cards
 - **WHEN** the memory tab loads
@@ -696,7 +696,7 @@ The memory tab shows the three-tier memory system health and a browsable memory 
 - **THEN** a tabbed memory browser appears below, scoped to the current butler, allowing navigation between episodes, facts, and rules with pagination and search
 
 ### Requirement: CRM Tab (Butler-Specific)
-The CRM tab shows relationship management features scoped to the relationship butler.
+The CRM tab SHALL show relationship management features scoped to the relationship butler.
 
 #### Scenario: Relationship butler context
 - **WHEN** the CRM tab is viewed for the `relationship` butler
@@ -709,7 +709,7 @@ The CRM tab shows relationship management features scoped to the relationship bu
 - **THEN** a centered message states "CRM features are only available for the relationship butler."
 
 ### Requirement: Health Tab (Butler-Specific)
-The health tab shows navigation to health management sub-pages, available only for the health butler.
+The health tab SHALL show navigation to health management sub-pages, available only for the health butler.
 
 #### Scenario: Health butler context
 - **WHEN** the Health tab is viewed for the `health` butler
@@ -721,7 +721,7 @@ The health tab shows navigation to health management sub-pages, available only f
 - **THEN** a centered message states "Health features are only available for the health butler."
 
 ### Requirement: Switchboard Registry Tab
-The registry tab (switchboard-only) shows the authoritative butler registry with liveness information.
+The registry tab (switchboard-only) SHALL show the authoritative butler registry with liveness information.
 
 #### Scenario: Registry table columns
 - **WHEN** the registry tab loads on the switchboard butler
@@ -736,7 +736,7 @@ The registry tab (switchboard-only) shows the authoritative butler registry with
 - **THEN** a centered empty state message is shown
 
 ### Requirement: Switchboard Routing Log Tab
-The routing log tab (switchboard-only) shows inter-butler request routing activity.
+The routing log tab (switchboard-only) SHALL show inter-butler request routing activity.
 
 #### Scenario: Routing log table columns
 - **WHEN** the routing log tab loads
@@ -753,7 +753,7 @@ The routing log tab (switchboard-only) shows inter-butler request routing activi
 
 ### Requirement: Switchboard Triage Filters
 
-The filters surface (accessible from the ingestion page at `/ingestion?tab=filters`) manages unified ingestion rules, thread affinity settings, and Gmail label filters. It replaces the previous dual-model UI (triage rules table + ManageSourceFiltersPanel sheet) with a single rules table.
+The filters surface (accessible from the ingestion page at `/ingestion?tab=filters`) SHALL manage unified ingestion rules, thread affinity settings, and Gmail label filters. It replaces the previous dual-model UI (triage rules table + ManageSourceFiltersPanel sheet) with a single rules table.
 
 #### Scenario: Unified rules table with CRUD
 - **WHEN** the user navigates to `/ingestion?tab=filters`
@@ -786,7 +786,7 @@ The filters surface (accessible from the ingestion page at `/ingestion?tab=filte
 - **THEN** the page shows a rules section listing only rules with `scope = 'connector:gmail:gmail:user:dev'`, with an "+ Add Rule" button that pre-fills the scope
 
 ### Requirement: Switchboard Backfill Management
-The backfill surface manages historical replay jobs across connectors.
+The backfill surface SHALL manage historical replay jobs across connectors.
 
 #### Scenario: Backfill job list with live polling
 - **WHEN** the backfill history tab loads
@@ -820,7 +820,7 @@ The backfill surface manages historical replay jobs across connectors.
 - **AND** the cost/cap display shows both the spent amount and the cap limit
 
 ### Requirement: Data Fetching Architecture
-All butler management surfaces use TanStack Query for data fetching with consistent patterns.
+All butler management surfaces SHALL use TanStack Query for data fetching with consistent patterns.
 
 #### Scenario: Query key hierarchy
 - **WHEN** butler-scoped data is fetched
@@ -841,7 +841,7 @@ All butler management surfaces use TanStack Query for data fetching with consist
 - **THEN** the query is disabled (`enabled: false`) when the butler name is empty or undefined
 
 ### Requirement: Loading and Error State Consistency
-All butler management tabs follow consistent loading and error patterns.
+All butler management tabs SHALL follow consistent loading and error patterns.
 
 #### Scenario: Skeleton loading states
 - **WHEN** any tab's data is loading
