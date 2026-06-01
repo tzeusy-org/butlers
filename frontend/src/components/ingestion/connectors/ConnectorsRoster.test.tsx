@@ -58,6 +58,7 @@ const HEALTHY_CONNECTOR: ConnectorSummary = {
   last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
   first_seen_at: '2026-01-01T00:00:00Z',
   today: { messages_ingested: 42, messages_failed: 0, uptime_pct: 99.9 },
+  hourly_events: Array(24).fill(0),
 }
 
 const REAUTH_CONNECTOR: ConnectorSummary = {
@@ -71,6 +72,7 @@ const REAUTH_CONNECTOR: ConnectorSummary = {
   last_heartbeat_at: new Date(Date.now() - 3_600_000).toISOString(),
   first_seen_at: '2026-01-01T00:00:00Z',
   today: { messages_ingested: 0, messages_failed: 8, uptime_pct: null },
+  hourly_events: Array(24).fill(0),
 }
 
 const STALE_CONNECTOR: ConnectorSummary = {
@@ -84,6 +86,7 @@ const STALE_CONNECTOR: ConnectorSummary = {
   last_heartbeat_at: new Date(Date.now() - 900_000).toISOString(), // 15 min ago
   first_seen_at: '2026-01-01T00:00:00Z',
   today: { messages_ingested: 5, messages_failed: 0, uptime_pct: 85 },
+  hourly_events: Array(24).fill(0),
 }
 
 const DORMANT_PROFILE: ConnectorProfile = {

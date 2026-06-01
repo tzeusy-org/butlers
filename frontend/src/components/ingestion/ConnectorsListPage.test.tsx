@@ -79,6 +79,7 @@ const MOCK_CONNECTOR: ConnectorSummary = {
   last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
   first_seen_at: "2026-01-01T00:00:00Z",
   today: { messages_ingested: 42, messages_failed: 1, uptime_pct: 99.5 },
+  hourly_events: Array(24).fill(0),
 };
 
 const MOCK_PROFILES: ConnectorProfile[] = [
