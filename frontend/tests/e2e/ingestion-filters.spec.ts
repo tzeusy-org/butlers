@@ -7,32 +7,20 @@
  * catch-alls FIRST, specific routes LAST. All mocks must be installed
  * BEFORE any page.goto().
  *
- * This test skips gracefully when the dev/preview server is not reachable,
- * following the same convention as smoke.spec.ts.
+ * The preview server is managed by playwright.config.ts `webServer`; tests
+ * rely on it being available and will fail hard (not skip) if it is not.
+ *
+ * Note: Requires VITE_INGESTION_DISPATCH_CONSOLE=true at build time
+ * (set automatically in CI) for the /ingestion/filters route to be active.
  */
 
 import { test, expect } from "@playwright/test";
 
 const TIMEOUT_MS = 10_000;
 
-async function tryNavigate(
-  page: Parameters<typeof test>[1] extends (...args: infer P) => unknown
-    ? P[0]
-    : never,
-  url: string,
-) {
-  try {
-    await page.goto(url, { timeout: TIMEOUT_MS });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 test.describe("ingestion filters pipeline", () => {
   test("smoke: /ingestion/filters loads without error", async ({
     page,
-    baseURL,
   }) => {
     // --- Catch-all API mock (register FIRST per LIFO rule) ---
     await page.route("**/api/**", async (route) => {
@@ -92,14 +80,7 @@ test.describe("ingestion filters pipeline", () => {
       await route.continue();
     });
 
-    const ok = await tryNavigate(page, "/ingestion/filters");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await page.goto("/ingestion/filters", { timeout: TIMEOUT_MS });
 
     // The five-gate diagram should be present
     const diagram = page.locator('[data-testid="pipeline-gate-diagram"]');
@@ -116,7 +97,7 @@ test.describe("ingestion filters pipeline", () => {
     await expect(funnel).toBeVisible({ timeout: TIMEOUT_MS });
   });
 
-  test("filters pipeline shows gate sections", async ({ page, baseURL }) => {
+  test("filters pipeline shows gate sections", async ({ page }) => {
     // Catch-all mock (FIRST)
     await page.route("**/api/**", async (route) => {
       if (route.request().url().includes("/ingestion/pipeline")) {
@@ -149,14 +130,7 @@ test.describe("ingestion filters pipeline", () => {
       await route.continue();
     });
 
-    const ok = await tryNavigate(page, "/ingestion/filters");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
+    await page.goto("/ingestion/filters", { timeout: TIMEOUT_MS });
 
     // Gate sections must render
     for (const gate of ["accept", "dedupe", "tier", "route", "execute"]) {

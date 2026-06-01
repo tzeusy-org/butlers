@@ -8,7 +8,8 @@
  * 4. Closing the drawer removes the ?event param from the URL
  *
  * Design:
- * - Tests skip gracefully when the dev server is unreachable.
+ * - The preview server is managed by playwright.config.ts `webServer`; tests
+ *   rely on it being available and will fail hard (not skip) if it is not.
  * - HTTP errors from the server are NOT skipped — they signal a broken app.
  * - All mocking is done via route interception (page.route) so the test
  *   doesn't depend on a live backend.
@@ -23,22 +24,6 @@
 import { test, expect } from "@playwright/test";
 
 const TIMEOUT_MS = 10_000;
-
-// ---------------------------------------------------------------------------
-// Server reachability helper
-// ---------------------------------------------------------------------------
-
-async function tryNavigate(
-  page: Parameters<typeof test>[1] extends (...args: infer P) => unknown ? P[0] : never,
-  url: string,
-): Promise<boolean> {
-  try {
-    await page.goto(url, { timeout: TIMEOUT_MS });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Mock API responses for the Timeline
@@ -183,20 +168,9 @@ async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...ar
 test.describe("ingestion Timeline ledger and drawer", () => {
   test("smoke: /ingestion loads and Timeline ledger is visible", async ({
     page,
-    baseURL,
   }) => {
-    // Install mocks before any navigation so that all API requests — including
-    // those fired during the initial reachability check — are intercepted.
+    // Install mocks before any navigation so that all API requests are intercepted.
     await mockIngestionApis(page);
-
-    const ok = await tryNavigate(page, "/ingestion");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
 
     await page.goto("/ingestion", { waitUntil: "networkidle" });
 
@@ -213,18 +187,8 @@ test.describe("ingestion Timeline ledger and drawer", () => {
 
   test("status filter: 'error' chip narrows event list to error events", async ({
     page,
-    baseURL,
   }) => {
     await mockIngestionApis(page);
-
-    const ok = await tryNavigate(page, "/ingestion");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
 
     await page.goto("/ingestion", { waitUntil: "networkidle" });
 
@@ -250,18 +214,8 @@ test.describe("ingestion Timeline ledger and drawer", () => {
 
   test("?event deep link: opens drawer for the specified event", async ({
     page,
-    baseURL,
   }) => {
     await mockIngestionApis(page);
-
-    const ok = await tryNavigate(page, "/ingestion");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
 
     // Navigate with ?event=<id> to trigger drawer on page load
     const eventId = "aabbccdd-0000-0000-0000-000000000001";
@@ -273,17 +227,8 @@ test.describe("ingestion Timeline ledger and drawer", () => {
     });
   });
 
-  test("drawer close: removes ?event from URL", async ({ page, baseURL }) => {
+  test("drawer close: removes ?event from URL", async ({ page }) => {
     await mockIngestionApis(page);
-
-    const ok = await tryNavigate(page, "/ingestion");
-    if (!ok) {
-      test.skip(
-        true,
-        `Dev server not reachable at ${baseURL} — start it with: npm run dev`,
-      );
-      return;
-    }
 
     const eventId = "aabbccdd-0000-0000-0000-000000000001";
     await page.goto(`/ingestion?event=${eventId}`, { waitUntil: "networkidle" });
