@@ -1009,29 +1009,32 @@ async def test_contact_info_update_label(pool):
 
 
 async def test_contact_info_update_is_primary(pool):
-    """contact_info_update rejects legacy primary updates."""
+    """contact_info_update rejects legacy primary updates; entity_facts data unaffected."""
     from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
     from butlers.tools.relationship import contact_create, contact_info_list
     from butlers.tools.relationship.contact_info import contact_info_update
 
     c = await contact_create(pool, "UpdatePrimary")
-    i1 = await _insert_legacy_contact_info(
-        pool, c["id"], "email", "first@example.com", is_primary=True
+    # Seed via entity_facts — contact_info_list reads from here now
+    fact1 = await _insert_entity_fact(
+        pool, c["entity_id"], "has-email", "first@example.com", is_primary=True
     )
-    i2 = await _insert_legacy_contact_info(
-        pool, c["id"], "email", "second@example.com", is_primary=False
+    fact2 = await _insert_entity_fact(
+        pool, c["entity_id"], "has-email", "second@example.com", is_primary=False
     )
 
+    # contact_info_update is blocked regardless of which ID is passed
     with pytest.raises(ContactInfoWriteBlockedError, match="read-only table public.contact_info"):
-        await contact_info_update(pool, i2["id"], is_primary=True)
+        await contact_info_update(pool, fact2["id"], is_primary=True)
 
+    # entity_facts data is unchanged — fact1 is still the primary entry
     emails = await contact_info_list(pool, c["id"], type="email")
     primary = [e for e in emails if e["is_primary"]]
     assert len(primary) == 1
-    assert primary[0]["id"] == i1["id"]
+    assert primary[0]["id"] == fact1["id"]
 
     # First entry is unchanged because update is blocked.
-    first = next(e for e in emails if e["id"] == i1["id"])
+    first = next(e for e in emails if e["id"] == fact1["id"])
     assert first["is_primary"] is True
 
 
