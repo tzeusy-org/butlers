@@ -149,34 +149,73 @@ async def search(
         logger.warning("Entity search failed", exc_info=True)
 
     # --- Contacts search (shared schema) ---
+    # Channel identifiers now come from relationship.entity_facts (bu-hjo3i).
+    # Phase 1: find contacts matching by name OR entity_facts object value.
+    # Phase 2: fetch email/phone for snippet display from entity_facts.
     try:
         pool = _any_pool(db)
+        # Find contacts: name match OR entity_facts channel-value match.
         contact_rows = await pool.fetch(
-            "SELECT DISTINCT ON (c.id) c.id, c.name,"
-            "  (SELECT ci.value FROM public.contact_info ci"
-            "   WHERE ci.contact_id = c.id AND ci.type = 'email'"
-            "     AND NOT ci.secured"
-            "   ORDER BY ci.is_primary DESC LIMIT 1) AS email,"
-            "  (SELECT ci.value FROM public.contact_info ci"
-            "   WHERE ci.contact_id = c.id AND ci.type = 'phone'"
-            "     AND NOT ci.secured"
-            "   ORDER BY ci.is_primary DESC LIMIT 1) AS phone"
-            " FROM public.contacts c"
-            " LEFT JOIN public.contact_info ci"
-            "   ON ci.contact_id = c.id AND NOT ci.secured"
-            " WHERE c.archived_at IS NULL"
-            "   AND (c.name ILIKE $1 OR ci.value ILIKE $1)"
-            " ORDER BY c.id, c.name"
-            " LIMIT $2",
+            """
+            SELECT DISTINCT ON (c.id) c.id, c.name, c.entity_id
+            FROM public.contacts c
+            WHERE c.archived_at IS NULL
+              AND (
+                c.name ILIKE $1
+                OR (
+                  c.entity_id IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM relationship.entity_facts ef
+                    WHERE ef.subject     = c.entity_id
+                      AND ef.predicate  LIKE 'has-%'
+                      AND ef.validity    = 'active'
+                      AND ef.object_kind = 'literal'
+                      AND ef.object ILIKE $1
+                  )
+                )
+              )
+            ORDER BY c.id, c.name
+            LIMIT $2
+            """,
             pattern,
             limit,
         )
+
+        # Batch-fetch email and phone snippets from entity_facts.
+        entity_ids_for_snippet: list[object] = list(
+            {row["entity_id"] for row in contact_rows if row["entity_id"] is not None}
+        )
+        email_by_entity: dict[object, str] = {}
+        phone_by_entity: dict[object, str] = {}
+        if entity_ids_for_snippet:
+            ef_rows = await pool.fetch(
+                """
+                SELECT ef.subject AS entity_id, ef.predicate, ef.object
+                FROM relationship.entity_facts ef
+                WHERE ef.subject = ANY($1)
+                  AND ef.predicate IN ('has-email', 'has-phone')
+                  AND ef.validity    = 'active'
+                  AND ef.object_kind = 'literal'
+                ORDER BY ef.subject, ef."primary" DESC NULLS LAST, ef.created_at ASC
+                """,
+                entity_ids_for_snippet,
+            )
+            for efr in ef_rows:
+                eid = efr["entity_id"]
+                if efr["predicate"] == "has-email" and eid not in email_by_entity:
+                    email_by_entity[eid] = efr["object"]
+                elif efr["predicate"] == "has-phone" and eid not in phone_by_entity:
+                    phone_by_entity[eid] = efr["object"]
+
         for row in contact_rows:
+            eid = row["entity_id"]
             parts = []
-            if row["email"]:
-                parts.append(row["email"])
-            if row["phone"]:
-                parts.append(row["phone"])
+            if eid is not None:
+                if eid in email_by_entity:
+                    parts.append(email_by_entity[eid])
+                if eid in phone_by_entity:
+                    parts.append(phone_by_entity[eid])
             snippet = " · ".join(parts) if parts else ""
             contact_results.append(
                 SearchResult(

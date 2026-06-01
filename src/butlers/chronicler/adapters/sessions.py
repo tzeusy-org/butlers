@@ -287,16 +287,18 @@ class CoreSessionsAdapter(ProjectionAdapter):
 
         For sessions with ``trigger_source='route'`` and a non-NULL
         ``ingestion_event_id``, joins ``public.ingestion_events`` →
-        ``public.contact_info`` → ``public.contacts`` to fetch the sender's
-        display name and channel.
+        ``relationship.entity_facts`` → ``public.entities`` to fetch the
+        sender's display name and channel.  The JOIN uses a SQL CASE expression
+        to map ``source_channel`` to the correct ``has-*`` predicate
+        (bu-hjo3i — replaces the old ``public.contact_info`` JOIN).
 
         Returns a mapping ``{session_id: (display_name, channel)}``.
         Sessions that cannot be resolved get ``(None, channel)`` when the
-        channel is known but the contact is not registered, or ``(None, None)``
+        channel is known but the entity is not registered, or ``(None, None)``
         when the ingestion event is absent.
 
         The JOIN is guarded against missing tables (``public.ingestion_events``
-        or ``public.contact_info`` / ``public.contacts``) by catching
+        or ``relationship.entity_facts`` / ``public.entities``) by catching
         ``asyncpg.PostgresError`` and degrading to an empty dict.
         """
         # Collect ingestion_event_ids for route-triggered rows only.
@@ -321,13 +323,30 @@ class CoreSessionsAdapter(ProjectionAdapter):
                     """
                     SELECT ie.id                     AS event_id,
                            ie.source_channel         AS channel,
-                           c.name                    AS display_name
+                           e.canonical_name          AS display_name
                     FROM   public.ingestion_events ie
-                    LEFT JOIN public.contact_info ci
-                           ON ci.type  = ie.source_channel
-                          AND ci.value = ie.source_sender_identity
-                    LEFT JOIN public.contacts c
-                           ON c.id = ci.contact_id
+                    LEFT JOIN relationship.entity_facts ef
+                           ON ef.predicate = CASE ie.source_channel
+                                  WHEN 'email'                THEN 'has-email'
+                                  WHEN 'phone'                THEN 'has-phone'
+                                  WHEN 'telegram'             THEN 'has-handle'
+                                  WHEN 'telegram_user_id'     THEN 'has-handle'
+                                  WHEN 'telegram_user_client' THEN 'has-handle'
+                                  WHEN 'telegram_username'    THEN 'has-handle'
+                                  WHEN 'whatsapp_jid'         THEN 'has-handle'
+                                  ELSE 'has-handle'
+                              END
+                          AND (
+                              ef.object = ie.source_sender_identity
+                              OR (
+                                  ie.source_channel = 'telegram_user_client'
+                                  AND ie.source_sender_identity NOT LIKE 'telegram:%'
+                                  AND ef.object = 'telegram:' || ie.source_sender_identity
+                              )
+                          )
+                          AND ef.object_kind  = 'literal'
+                          AND ef.validity     = 'active'
+                    LEFT JOIN public.entities e ON e.id = ef.subject
                     WHERE  ie.id = ANY($1::uuid[])
                     """,
                     event_ids,
