@@ -737,26 +737,6 @@ def _make_linked_contact_row(**kwargs) -> MagicMock:
     return row
 
 
-def _make_ci_row(contact_id, **kwargs) -> MagicMock:
-    """Build a MagicMock like an asyncpg Record for a contact_info row."""
-    from uuid import uuid4 as _uuid4
-
-    data = {
-        "id": _uuid4(),
-        "contact_id": contact_id,
-        "type": "email",
-        "value": "alice@example.com",
-        "is_primary": True,
-        "secured": False,
-        "parent_id": None,
-        "context": None,
-        **kwargs,
-    }
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
-    return row
-
-
 def _make_label_row(contact_id, **kwargs) -> MagicMock:
     """Build a MagicMock like an asyncpg Record for a contact_labels/labels join row."""
     from uuid import uuid4 as _uuid4
@@ -773,40 +753,59 @@ def _make_label_row(contact_id, **kwargs) -> MagicMock:
     return row
 
 
+def _make_ef_fact_row(**kwargs) -> MagicMock:
+    """Build a MagicMock like an asyncpg Record for a relationship.entity_facts row.
+
+    Expected keys consumed by ``_ef_row_to_ci_entry``:
+    ``id``, ``predicate`` (e.g. ``has-email``), ``object`` (the raw value), ``primary``.
+    """
+    from uuid import uuid4 as _uuid4
+
+    data = {
+        "id": _uuid4(),
+        "predicate": "has-email",
+        "object": "alice@example.com",
+        "primary": True,
+        **kwargs,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
 def _app_with_pool_linked_contacts(
     *,
     entity_exists: bool = True,
     contact_rows: list | None = None,
-    ci_rows: list | None = None,
     label_rows: list | None = None,
     fact_rows: list | None = None,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app for the linked-contacts endpoint.
 
-    The endpoint makes four ``pool.fetch`` calls:
+    The endpoint makes three ``pool.fetch`` calls:
       1. contacts query (main rows)
-      2. asyncio.gather → contact_info batch query
-      3. asyncio.gather → label batch query
-      4. asyncio.gather → entity_facts has-* triples query
-         (calls 2, 3, and 4 are concurrent via asyncio.gather)
+      2. asyncio.gather → label batch query
+      3. asyncio.gather → entity_facts has-* triples query
+         (calls 2 and 3 are concurrent via asyncio.gather)
 
-    ``side_effect`` threads them in the order they are issued.
+    ``ci_rows`` was removed: channel identifiers now come exclusively from
+    ``relationship.entity_facts`` has-* triples (bu-6ioq3 migration).
+
+    ``side_effect`` threads calls in the order they are issued.
     When ``contact_rows`` is empty the handler returns early; the supplementary
-    queries are never called so ``ci_rows`` / ``label_rows`` / ``fact_rows``
-    are irrelevant.
+    queries are never called so ``label_rows`` / ``fact_rows`` are irrelevant.
     """
     mock_pool = AsyncMock()
     mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
 
     _contacts = contact_rows if contact_rows is not None else []
-    _ci = ci_rows if ci_rows is not None else []
     _labels = label_rows if label_rows is not None else []
     _facts = fact_rows if fact_rows is not None else []
 
-    # For non-empty contacts: 4 fetch calls in order (contacts, ci, labels, facts).
+    # For non-empty contacts: 3 fetch calls in order (contacts, labels, facts).
     # For empty contacts: only 1 fetch call (the contacts query).
     if _contacts:
-        mock_pool.fetch = AsyncMock(side_effect=[_contacts, _ci, _labels, _facts])
+        mock_pool.fetch = AsyncMock(side_effect=[_contacts, _labels, _facts])
     else:
         mock_pool.fetch = AsyncMock(return_value=_contacts)
 
@@ -841,15 +840,16 @@ class TestEntityLinkedContacts:
 
     async def test_linked_contact_fields_populated(self):
         contact_id = uuid4()
-        rows = [
-            _make_linked_contact_row(
-                id=contact_id,
-                full_name="Alice Example",
-                email="alice@example.com",
-                phone="+44-20-1234",
-            )
-        ]
-        app, _ = _app_with_pool_linked_contacts(contact_rows=rows)
+        rows = [_make_linked_contact_row(id=contact_id, full_name="Alice Example")]
+        # email and phone are now derived exclusively from entity_facts has-* triples.
+        ef_email = _make_ef_fact_row(
+            predicate="has-email", object="alice@example.com", primary=True
+        )
+        ef_phone = _make_ef_fact_row(predicate="has-phone", object="+44-20-1234", primary=True)
+        app, _ = _app_with_pool_linked_contacts(
+            contact_rows=rows,
+            fact_rows=[ef_email, ef_phone],
+        )
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
         item = resp.json()[0]
@@ -880,20 +880,15 @@ class TestEntityLinkedContacts:
         assert resp.status_code == 404
 
     async def test_enriched_response_includes_contact_info(self):
-        """contact_info[] is populated from the batch CI query (non-secured rows only)."""
+        """contact_info[] is populated from entity_facts has-* triples (bu-6ioq3 migration)."""
         contact_id = uuid4()
-        contact_row = _make_linked_contact_row(
-            id=contact_id,
-            full_name="Alice Example",
-            email="alice@example.com",
-            phone=None,
-        )
-        ci = _make_ci_row(contact_id, type="email", value="alice@example.com", is_primary=True)
+        contact_row = _make_linked_contact_row(id=contact_id, full_name="Alice Example")
+        ef = _make_ef_fact_row(predicate="has-email", object="alice@example.com", primary=True)
 
         app, _ = _app_with_pool_linked_contacts(
             contact_rows=[contact_row],
-            ci_rows=[ci],
             label_rows=[],
+            fact_rows=[ef],
         )
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
@@ -913,7 +908,6 @@ class TestEntityLinkedContacts:
 
         app, _ = _app_with_pool_linked_contacts(
             contact_rows=[contact_row],
-            ci_rows=[],
             label_rows=[label],
         )
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
@@ -936,7 +930,6 @@ class TestEntityLinkedContacts:
 
         app, _ = _app_with_pool_linked_contacts(
             contact_rows=[contact_row],
-            ci_rows=[],
             label_rows=[],
         )
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
@@ -945,14 +938,13 @@ class TestEntityLinkedContacts:
         item = resp.json()[0]
         assert item["preferred_channel"] == "telegram"
 
-    async def test_enriched_contact_info_empty_when_no_ci_rows(self):
-        """contact_info defaults to [] when no CI rows exist for the contact."""
+    async def test_enriched_contact_info_empty_when_no_fact_rows(self):
+        """contact_info defaults to [] when no entity_facts has-* rows exist."""
         contact_id = uuid4()
         contact_row = _make_linked_contact_row(id=contact_id, full_name="Dave")
 
         app, _ = _app_with_pool_linked_contacts(
             contact_rows=[contact_row],
-            ci_rows=[],
             label_rows=[],
         )
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
@@ -963,20 +955,26 @@ class TestEntityLinkedContacts:
         assert item["preferred_channel"] is None
 
     async def test_multiple_contacts_ci_and_labels_correctly_bucketed(self):
-        """contact_info and labels are correctly bucketed per-contact when multiple contacts."""
+        """entity_facts CI goes to first contact (entity-level); labels bucket per-contact.
+
+        Since bu-6ioq3, channel identifiers come from relationship.entity_facts which are
+        entity-level (not per-contact). All CI entries are therefore attached to the first
+        linked contact by name order. Labels remain per-contact as before.
+        """
         cid_a = uuid4()
         cid_b = uuid4()
         contact_a = _make_linked_contact_row(id=cid_a, full_name="Alice")
         contact_b = _make_linked_contact_row(id=cid_b, full_name="Bob")
 
-        ci_a = _make_ci_row(cid_a, type="email", value="alice@example.com")
-        ci_b = _make_ci_row(cid_b, type="phone", value="+1-555-9999")
+        ef_email = _make_ef_fact_row(
+            predicate="has-email", object="alice@example.com", primary=True
+        )
         label_b = _make_label_row(cid_b, name="colleague")
 
         app, _ = _app_with_pool_linked_contacts(
             contact_rows=[contact_a, contact_b],
-            ci_rows=[ci_a, ci_b],
             label_rows=[label_b],
+            fact_rows=[ef_email],
         )
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
@@ -987,12 +985,13 @@ class TestEntityLinkedContacts:
         alice = next(item for item in body if item["full_name"] == "Alice")
         bob = next(item for item in body if item["full_name"] == "Bob")
 
+        # All entity_facts CI entries go to the first contact (Alice, by name order).
         assert len(alice["contact_info"]) == 1
         assert alice["contact_info"][0]["value"] == "alice@example.com"
         assert alice["labels"] == []
 
-        assert len(bob["contact_info"]) == 1
-        assert bob["contact_info"][0]["value"] == "+1-555-9999"
+        # Bob has no CI (entity_facts are not per-contact), but has his label.
+        assert bob["contact_info"] == []
         assert len(bob["labels"]) == 1
         assert bob["labels"][0]["name"] == "colleague"
 
