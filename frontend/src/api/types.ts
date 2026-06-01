@@ -5637,3 +5637,46 @@ export interface UpdateEntityContactResponse {
   fact: ContactFact | null;
   action_id: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Timeline saved views (bu-vgj88)
+// ---------------------------------------------------------------------------
+
+/**
+ * Filter state captured in a saved view's filter_spec.
+ *
+ * Keys are frontend-driven and may evolve without a schema migration.
+ * Unknown keys are preserved on round-trip.
+ */
+export interface TimelineSavedViewFilterSpec {
+  /** Active status filters (array of IngestionEventStatus). */
+  statuses?: string[];
+  /** Time-range selection: "1h" | "24h" | "7d". */
+  range?: string;
+  /** Search query string. */
+  q?: string;
+  /** Channel filter (comma-separated). */
+  channels?: string;
+  [key: string]: unknown;
+}
+
+/** A single persisted saved view returned from GET /api/timeline/saved-views. */
+export interface TimelineSavedViewEntry {
+  id: string;
+  name: string;
+  filter_spec: TimelineSavedViewFilterSpec;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Request body for POST /api/timeline/saved-views. */
+export interface TimelineSavedViewCreateRequest {
+  name: string;
+  filter_spec: TimelineSavedViewFilterSpec;
+}
+
+/** Request body for PATCH /api/timeline/saved-views/{id}. */
+export interface TimelineSavedViewUpdateRequest {
+  name?: string;
+  filter_spec?: TimelineSavedViewFilterSpec;
+}

@@ -21,21 +21,33 @@
  * - GET /api/ingestion/events/{id}/payload   (drawer raw tab, audit-gated)
  * - POST /api/ingestion/events/{id}/replay   (replay action)
  * - POST /api/ingestion/events/retry/bulk    (bulk replay action)
+ * - GET/POST/PATCH/DELETE /api/timeline/saved-views  (custom saved views; bu-vgj88)
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline Ledger"
  * Reference: pr/overview/ingestion-redesign/INGESTION_HANDOFF.md §1a
  *
- * §2.8 Saved Views: client-side localStorage key `ingestion-saved-views`.
+ * §2.8 Saved Views: built-in presets + custom views persisted via backend API.
+ *   Built-in active selection persisted to localStorage key `ingestion-saved-views`.
+ *   Custom views stored in public.timeline_saved_views.
  * §2.9 Connector Attention Strip: highlights connectors with degraded health.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { AlertTriangle, Loader2, RotateCw, Search, X } from "lucide-react";
+import { AlertTriangle, BookmarkPlus, Loader2, RotateCw, Search, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   useIngestionEvents,
@@ -44,9 +56,16 @@ import {
   useIngestionWindowRollup,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
+import {
+  useTimelineSavedViews,
+  useCreateTimelineSavedView,
+  useDeleteTimelineSavedView,
+} from "@/hooks/use-timeline-saved-views";
 import type {
   IngestionEventSummary,
   IngestionEventStatus,
+  TimelineSavedViewEntry,
+  TimelineSavedViewFilterSpec,
 } from "@/api/index.ts";
 import { bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
 import { StatusBadge } from "./StatusBadge";
@@ -116,10 +135,17 @@ function hourGroupKey(receivedAt: string | null): string {
 
 const SAVED_VIEWS_STORAGE_KEY = "ingestion-saved-views";
 
-type ViewId = "all" | "errors" | "priority" | "spend";
+/** Built-in view IDs. */
+type BuiltInViewId = "all" | "errors" | "priority" | "spend";
+
+/**
+ * Active view ID — either a built-in preset or a custom view's UUID string.
+ * Custom UUIDs always contain a hyphen, built-in IDs never do; no collision.
+ */
+type ViewId = BuiltInViewId | string;
 
 interface SavedView {
-  id: ViewId;
+  id: BuiltInViewId;
   label: string;
   statuses: IngestionEventStatus[] | null;
 }
@@ -146,6 +172,12 @@ const BUILT_IN_VIEWS: SavedView[] = [
     statuses: ["ingested", "replay_complete"],
   },
 ];
+
+const BUILT_IN_IDS = new Set<string>(BUILT_IN_VIEWS.map((v) => v.id));
+
+function isBuiltInViewId(id: string): id is BuiltInViewId {
+  return BUILT_IN_IDS.has(id);
+}
 
 function readPersistedView(): ViewId {
   try {
@@ -215,6 +247,14 @@ interface ToolbarProps {
   onSearchChange: (q: string) => void;
   activeChannels: string[];
   onChannelRemove: (channel: string) => void;
+  /** Custom saved views from the backend (undefined = loading/unavailable). */
+  customViews?: TimelineSavedViewEntry[];
+  /** Whether the custom-views list is loading. */
+  customViewsLoading?: boolean;
+  /** Called when the user wants to save the current filter combination. */
+  onSaveView: () => void;
+  /** Called to delete a custom saved view by UUID. */
+  onDeleteCustomView: (id: string) => void;
 }
 
 function Toolbar({
@@ -228,6 +268,10 @@ function Toolbar({
   onSearchChange,
   activeChannels,
   onChannelRemove,
+  customViews,
+  customViewsLoading,
+  onSaveView,
+  onDeleteCustomView,
 }: ToolbarProps) {
   return (
     <div className="flex flex-col gap-0 border-b border-border" data-testid="timeline-toolbar">
@@ -283,8 +327,9 @@ function Toolbar({
           )}
         </div>
 
-        {/* Saved views */}
+        {/* Saved views: built-in presets + custom views */}
         <div className="flex items-center gap-1" data-testid="saved-view-selector">
+          {/* Built-in presets */}
           {BUILT_IN_VIEWS.map((view) => (
             <button
               key={view.id}
@@ -309,6 +354,69 @@ function Toolbar({
               )}
             </button>
           ))}
+
+          {/* Separator between built-ins and custom views */}
+          {(customViewsLoading || (customViews && customViews.length > 0)) && (
+            <div className="w-px h-4 bg-border/60 mx-0.5" aria-hidden />
+          )}
+
+          {/* Custom views from backend */}
+          {customViewsLoading && (
+            <Skeleton className="h-6 w-16 rounded" data-testid="custom-views-loading" />
+          )}
+          {!customViewsLoading && customViews?.map((view) => (
+            <div key={view.id} className="relative flex items-center group">
+              <button
+                type="button"
+                onClick={() => onViewSelect(view.id)}
+                className={[
+                  "rounded px-2.5 py-1 font-mono text-[11px] transition-colors pr-6",
+                  activeViewId === view.id
+                    ? "bg-foreground/10 text-foreground border border-border"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                ].join(" ")}
+                data-view={view.id}
+                data-testid={`custom-view-${view.id}`}
+                aria-pressed={activeViewId === view.id}
+                title={view.name}
+              >
+                {view.name}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteCustomView(view.id);
+                }}
+                className={[
+                  "absolute right-0.5 p-0.5 rounded transition-colors",
+                  "text-muted-foreground/40 hover:text-destructive",
+                  "opacity-0 group-hover:opacity-100 focus:opacity-100",
+                ].join(" ")}
+                aria-label={`Delete saved view: ${view.name}`}
+                data-testid={`custom-view-delete-${view.id}`}
+                title={`Delete "${view.name}"`}
+              >
+                <Trash2 className="size-2.5" aria-hidden />
+              </button>
+            </div>
+          ))}
+
+          {/* Save current view button */}
+          <button
+            type="button"
+            onClick={onSaveView}
+            className={[
+              "rounded px-2 py-1 font-mono text-[11px] transition-colors",
+              "text-muted-foreground hover:bg-muted hover:text-foreground",
+              "flex items-center gap-1",
+            ].join(" ")}
+            aria-label="Save current view"
+            data-testid="save-view-button"
+            title="Save current filter combination as a named view"
+          >
+            <BookmarkPlus className="size-3" aria-hidden />
+          </button>
         </div>
 
         {/* Status filter chips */}
@@ -857,12 +965,38 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     () => defaultViewId ?? readPersistedView(),
   );
 
+  // Custom saved views from backend
+  const {
+    data: customViewsResp,
+    isPending: customViewsLoading,
+  } = useTimelineSavedViews({ enabled: isActive });
+  const customViews = useMemo(
+    () => customViewsResp?.data ?? [],
+    [customViewsResp?.data],
+  );
+
+  const createSavedView = useCreateTimelineSavedView();
+  const deleteSavedView = useDeleteTimelineSavedView();
+
+  // "Save current view" dialog state
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveViewName, setSaveViewName] = useState("");
+
   const viewStatuses = useMemo((): Set<IngestionEventStatus> => {
     if (defaultStatuses) return new Set(defaultStatuses);
-    const view = BUILT_IN_VIEWS.find((v) => v.id === activeViewId);
-    if (!view || view.statuses === null) return new Set(DEFAULT_STATUSES);
-    return new Set(view.statuses);
-  }, [activeViewId, defaultStatuses]);
+    // Check built-in views first
+    if (isBuiltInViewId(activeViewId)) {
+      const view = BUILT_IN_VIEWS.find((v) => v.id === activeViewId);
+      if (!view || view.statuses === null) return new Set(DEFAULT_STATUSES);
+      return new Set(view.statuses);
+    }
+    // Custom view — apply filter_spec.statuses if present
+    const customView = customViews.find((v) => v.id === activeViewId);
+    if (customView?.filter_spec.statuses) {
+      return new Set(customView.filter_spec.statuses as IngestionEventStatus[]);
+    }
+    return new Set(DEFAULT_STATUSES);
+  }, [activeViewId, defaultStatuses, customViews]);
 
   const [enabledStatuses, setEnabledStatuses] = useState<Set<IngestionEventStatus>>(
     () => viewStatuses,
@@ -976,6 +1110,106 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     [activeChannels, setSearchParams],
   );
 
+  // ---------------------------------------------------------------------------
+  // Custom saved views — apply filter_spec, save, delete
+  // All handlers are defined here so that search/channel state setters are
+  // already declared above.
+  // ---------------------------------------------------------------------------
+
+  // Apply a custom view's filter_spec to the toolbar state
+  const applyCustomViewFilterSpec = useCallback(
+    (spec: TimelineSavedViewFilterSpec) => {
+      if (spec.statuses) {
+        setEnabledStatuses(new Set(spec.statuses as IngestionEventStatus[]));
+      }
+      if (spec.range && (["1h", "24h", "7d"] as string[]).includes(spec.range)) {
+        setRange(spec.range as IngestionRange);
+      }
+      if (typeof spec.q === "string") {
+        setSearchInputValue(spec.q);
+        setDebouncedQ(spec.q);
+      }
+      // Batch all URL param changes into a single setSearchParams call
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (spec.range && (["1h", "24h", "7d"] as string[]).includes(spec.range)) {
+          next.set("range", spec.range);
+        }
+        if (typeof spec.q === "string") {
+          if (spec.q) next.set("q", spec.q);
+          else next.delete("q");
+        }
+        if (typeof spec.channels === "string") {
+          if (spec.channels) next.set("channels", spec.channels);
+          else next.delete("channels");
+        }
+        return next;
+      });
+    },
+    [setSearchParams, setEnabledStatuses, setRange, setSearchInputValue, setDebouncedQ],
+  );
+
+  // When a custom view is selected, apply its filter_spec
+  useEffect(() => {
+    if (isBuiltInViewId(activeViewId)) return;
+    const customView = customViews.find((v) => v.id === activeViewId);
+    if (customView) {
+      applyCustomViewFilterSpec(customView.filter_spec);
+    }
+  }, [activeViewId, customViews, applyCustomViewFilterSpec]);
+
+  const handleSaveView = useCallback(() => {
+    setSaveViewName("");
+    setSaveDialogOpen(true);
+  }, []);
+
+  const handleSaveViewConfirm = useCallback(() => {
+    const trimmedName = saveViewName.trim();
+    if (!trimmedName || createSavedView.isPending) return;
+
+    const spec: TimelineSavedViewFilterSpec = {
+      statuses: [...enabledStatuses],
+      range,
+      ...(debouncedQ ? { q: debouncedQ } : {}),
+      ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
+    };
+
+    createSavedView.mutate(
+      { name: trimmedName, filter_spec: spec },
+      {
+        onSuccess: (created) => {
+          setSaveDialogOpen(false);
+          setSaveViewName("");
+          setActiveViewId(created.id);
+          persistView(created.id);
+          toast.success(`Saved view "${created.name}" created`);
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "Failed to save view");
+        },
+      },
+    );
+  }, [saveViewName, enabledStatuses, range, debouncedQ, activeChannels, createSavedView]);
+
+  const handleDeleteCustomView = useCallback(
+    (id: string) => {
+      deleteSavedView.mutate(id, {
+        onSuccess: () => {
+          // If the deleted view was active, fall back to "all"
+          if (activeViewId === id) {
+            setActiveViewId("all");
+            persistView("all");
+          }
+          toast.success("Saved view deleted");
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "Failed to delete view");
+        },
+      });
+    },
+    [activeViewId, deleteSavedView],
+  );
+
   // Compute ISO-8601 bounds from the range picker selection.
   // The rollup band uses these to scope its aggregate; the events list is
   // not time-bounded (it fetches newest-first and the user loads more pages).
@@ -1086,7 +1320,57 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
         onSearchChange={handleSearchChange}
         activeChannels={activeChannels}
         onChannelRemove={handleChannelRemove}
+        customViews={customViewsLoading ? undefined : customViews}
+        customViewsLoading={customViewsLoading}
+        onSaveView={handleSaveView}
+        onDeleteCustomView={handleDeleteCustomView}
       />
+
+      {/* Save view dialog */}
+      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+        <DialogContent data-testid="save-view-dialog">
+          <DialogHeader>
+            <DialogTitle>Save current view</DialogTitle>
+            <DialogDescription>
+              Name this filter combination to restore it later.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Input
+              value={saveViewName}
+              onChange={(e) => setSaveViewName(e.target.value)}
+              placeholder="View name…"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveViewConfirm();
+              }}
+              data-testid="save-view-name-input"
+              autoFocus
+              maxLength={100}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSaveDialogOpen(false)}
+              data-testid="save-view-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSaveViewConfirm}
+              disabled={!saveViewName.trim() || createSavedView.isPending}
+              data-testid="save-view-confirm"
+            >
+              {createSavedView.isPending ? (
+                <Loader2 className="size-3 mr-1 animate-spin" />
+              ) : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Bulk action bar */}
       <BulkActionBar
