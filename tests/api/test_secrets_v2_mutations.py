@@ -687,7 +687,7 @@ def test_rotate_github_skips_revoke_when_app_creds_absent(monkeypatch):
     """
     import httpx
 
-    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-github-tok")
+    row = _make_entity_info_row(info_type="github_oauth_access", value="old-github-tok")
     # The default _make_shared_pool returns None for butler_secrets fetches (cred store will
     # find no rows for GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET).
     mock_db = _make_db(user_row=row)
@@ -898,7 +898,7 @@ def test_rotate_github_calls_delete_revoke_endpoint(monkeypatch):
     """
     import httpx
 
-    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-gh-tok")
+    row = _make_entity_info_row(info_type="github_oauth_access", value="old-gh-tok")
     mock_db = _make_db_with_github_creds(
         user_row=row,
         client_id="Iv1.testclientid",
@@ -961,7 +961,7 @@ def test_rotate_github_revoke_204_returns_succeeded(monkeypatch):
     """GitHub revoke returning HTTP 204 is treated as success ('succeeded')."""
     import httpx
 
-    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-tok")
+    row = _make_entity_info_row(info_type="github_oauth_access", value="old-tok")
     mock_db = _make_db_with_github_creds(user_row=row)
 
     audit_calls: list[dict] = []
@@ -1008,7 +1008,7 @@ def test_rotate_github_revoke_failure_does_not_fail_rotation(monkeypatch):
     """GitHub revoke HTTP failure (non-200/204) does NOT fail the rotation (returns 200)."""
     import httpx
 
-    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-tok")
+    row = _make_entity_info_row(info_type="github_oauth_access", value="old-tok")
     mock_db = _make_db_with_github_creds(user_row=row)
 
     async def _fake_delete(url, **kwargs):
@@ -1041,7 +1041,7 @@ def test_rotate_github_revoke_network_error_does_not_fail_rotation(monkeypatch):
     """GitHub revoke network error does NOT fail the rotation (returns 200)."""
     import httpx
 
-    row = _make_entity_info_row(info_type="github_oauth_refresh", value="old-tok")
+    row = _make_entity_info_row(info_type="github_oauth_access", value="old-tok")
     mock_db = _make_db_with_github_creds(user_row=row)
 
     async def _fake_delete(url, **kwargs):
