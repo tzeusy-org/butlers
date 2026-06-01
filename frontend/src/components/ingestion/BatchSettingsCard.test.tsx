@@ -45,6 +45,8 @@ function makeConnector(
     checkpoint: null,
     counters: null,
     settings: null,
+    auth: null,
+    scopes: null,
     ...overrides,
   };
 }

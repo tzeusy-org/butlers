@@ -71,6 +71,8 @@ const BASE_CONNECTOR: ConnectorDetail = {
     dedupe_accepted: 10,
   },
   settings: null,
+  auth: null,
+  scopes: null,
 };
 
 const REAUTH_CONNECTOR: ConnectorDetail = {
