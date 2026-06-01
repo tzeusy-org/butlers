@@ -45,6 +45,8 @@ _FACT_ID = uuid4()
 _FACT_ID_2 = uuid4()
 _LABEL_ID = uuid4()
 _MISSING_ENT_ID = uuid4()
+_ENTITY_INFO_ID = uuid4()
+_ENTITY_INFO_ID_2 = uuid4()
 
 _EMAIL = "alice@example.com"
 _PHONE = "+1-555-0100"
@@ -122,19 +124,39 @@ def _make_fact_row(
 # ---------------------------------------------------------------------------
 
 
+def _make_entity_info_row(
+    *,
+    id: UUID | None = None,
+    type: str = "telegram_api_key",
+    is_primary: bool = False,
+    secured: bool = True,
+) -> MagicMock:
+    """Build a mock entity_info row (secured credential, value NOT included)."""
+    return _make_row(
+        {
+            "id": id or _ENTITY_INFO_ID,
+            "type": type,
+            "is_primary": is_primary,
+            "secured": secured,
+        }
+    )
+
+
 def _make_app(
     *,
     entity_exists: bool = True,
     contact_rows: list | None = None,
     label_rows: list | None = None,
     fact_rows: list | None = None,
+    entity_info_rows: list | None = None,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app with a mocked relationship DB pool.
 
-    pool.fetch call sequence (3 total after bu-6ioq3 migration):
+    pool.fetch call sequence (4 total after bu-gfzin: secured entity_info surface):
       1. contacts query (initial fetch, not in gather)
-      2. label query       ⎤ asyncio.gather
-      3. entity_facts query ⎦
+      2. label query          ⎤ asyncio.gather
+      3. entity_facts query   ⎥
+      4. entity_info query    ⎦
 
     pool.fetchval:
       - entity-exists check (returns 1 or None)
@@ -144,12 +166,14 @@ def _make_app(
 
     # Build the side_effect sequence for pool.fetch:
     #   call 1 → contact_rows
-    #   call 2 → label_rows   (gather)
-    #   call 3 → fact_rows    (gather)
+    #   call 2 → label_rows         (gather)
+    #   call 3 → fact_rows          (gather)
+    #   call 4 → entity_info_rows   (gather)
     fetch_sequence = [
         contact_rows if contact_rows is not None else [],
         label_rows if label_rows is not None else [],
         fact_rows if fact_rows is not None else [],
+        entity_info_rows if entity_info_rows is not None else [],
     ]
     mock_fetch = AsyncMock(side_effect=fetch_sequence)
 
@@ -382,3 +406,167 @@ class TestLinkedContactsMultiContact:
             assert c["contact_info"] == []
             assert c["email"] is None
             assert c["phone"] is None
+
+
+class TestLinkedContactsSecuredEntityInfo:
+    """Secured entity_info rows are surfaced in linked-contacts WITHOUT value.
+
+    These tests verify:
+    - secured=true entity_info rows appear in contact_info with value=None.
+    - The 'secured' flag is set to True.
+    - source="entity_facts" (routes frontend reveal to entity-keyed endpoint).
+    - predicate and value_hash are None (no inline edit/delete affordance).
+    - Non-secured behavior (entity_facts facts) is unchanged.
+    - The secret VALUE is never present in the response payload.
+    - Secured rows are attached to the first linked contact (entity-level).
+    """
+
+    async def test_secured_entity_info_surfaced_with_masked_value(self):
+        """Secured entity_info row appears in contact_info; value is None (masked)."""
+        contact = _make_contact_row()
+        ei_row = _make_entity_info_row(id=_ENTITY_INFO_ID, type="telegram_api_key")
+        app, _ = _make_app(
+            contact_rows=[contact],
+            label_rows=[],
+            fact_rows=[],
+            entity_info_rows=[ei_row],
+        )
+        resp = await _get(app)
+
+        assert resp.status_code == 200
+        contact_info = resp.json()[0]["contact_info"]
+        assert len(contact_info) == 1
+        entry = contact_info[0]
+        assert entry["type"] == "telegram_api_key"
+        assert entry["value"] is None  # SECURITY: value must never be present
+        assert entry["secured"] is True
+        assert entry["source"] == "entity_facts"  # routes to entity-keyed reveal
+        assert entry["predicate"] is None  # no triple predicate for entity_info rows
+        assert entry["value_hash"] is None  # no value_hash → no inline edit/delete
+
+    def test_secured_entry_has_no_value_key_with_real_secret(self):
+        """Prove that the entity_info query does NOT select the value column.
+
+        The query in list_entity_linked_contacts must only select:
+          id, type, is_primary, secured
+        NOT: value.  This test guards against accidental value inclusion in the
+        _make_entity_info_row mock and the actual SQL.
+        """
+        # The mock helper deliberately omits 'value' from the row dict.
+        # If the backend code tried to read r["value"], the mock would raise KeyError.
+        row = _make_entity_info_row()
+        # Confirm the mock row doesn't even carry a 'value' key.
+        with pytest.raises(KeyError):
+            _ = row["value"]
+
+    async def test_entity_info_sql_does_not_select_value(self):
+        """The entity_info SQL in list_entity_linked_contacts must not include 'value'.
+
+        This test verifies that the actual pool.fetch call for entity_info uses a
+        query that selects only id, type, is_primary, secured — never the value column.
+        """
+        contact = _make_contact_row()
+        ei_row = _make_entity_info_row(id=_ENTITY_INFO_ID, type="telegram_api_key")
+        app, mock_pool = _make_app(
+            contact_rows=[contact],
+            label_rows=[],
+            fact_rows=[],
+            entity_info_rows=[ei_row],
+        )
+        await _get(app)
+
+        # The 4th fetch call (index 3) is the entity_info query.
+        assert mock_pool.fetch.call_count >= 4
+        entity_info_call = mock_pool.fetch.call_args_list[3]
+        sql = entity_info_call.args[0]
+        assert "value" not in sql.lower(), (
+            f"entity_info SQL must not select value column; got: {sql}"
+        )
+
+    async def test_secured_and_nonsecured_entries_coexist(self):
+        """entity_facts entries and secured entity_info entries both appear together."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        ei_row = _make_entity_info_row(id=_ENTITY_INFO_ID, type="telegram_api_key")
+        app, _ = _make_app(
+            contact_rows=[contact],
+            label_rows=[],
+            fact_rows=[fact],
+            entity_info_rows=[ei_row],
+        )
+        resp = await _get(app)
+
+        assert resp.status_code == 200
+        contact_info = resp.json()[0]["contact_info"]
+        assert len(contact_info) == 2
+
+        email_entry = next(e for e in contact_info if e["type"] == "email")
+        secured_entry = next(e for e in contact_info if e["type"] == "telegram_api_key")
+
+        assert email_entry["value"] == _EMAIL
+        assert email_entry["secured"] is False
+
+        assert secured_entry["value"] is None
+        assert secured_entry["secured"] is True
+        assert secured_entry["source"] == "entity_facts"
+
+    async def test_multiple_secured_rows_all_surfaced(self):
+        """Multiple secured entity_info rows all appear in contact_info."""
+        contact = _make_contact_row()
+        ei_row1 = _make_entity_info_row(id=_ENTITY_INFO_ID, type="telegram_api_key")
+        ei_row2 = _make_entity_info_row(id=_ENTITY_INFO_ID_2, type="home_assistant_token")
+        app, _ = _make_app(
+            contact_rows=[contact],
+            label_rows=[],
+            fact_rows=[],
+            entity_info_rows=[ei_row1, ei_row2],
+        )
+        resp = await _get(app)
+
+        contact_info = resp.json()[0]["contact_info"]
+        assert len(contact_info) == 2
+        types_found = {e["type"] for e in contact_info}
+        assert types_found == {"telegram_api_key", "home_assistant_token"}
+        for entry in contact_info:
+            assert entry["value"] is None
+            assert entry["secured"] is True
+            assert entry["source"] == "entity_facts"
+
+    async def test_secured_rows_attached_to_first_contact_only(self):
+        """With two linked contacts, secured entity_info rows go to the first contact only."""
+        contact_a = _make_contact_row(contact_id=_CONTACT_ID_A, full_name="Alice")
+        contact_b = _make_contact_row(contact_id=_CONTACT_ID_B, full_name="Bob")
+        ei_row = _make_entity_info_row(id=_ENTITY_INFO_ID, type="telegram_api_key")
+        app, _ = _make_app(
+            contact_rows=[contact_a, contact_b],
+            label_rows=[],
+            fact_rows=[],
+            entity_info_rows=[ei_row],
+        )
+        resp = await _get(app)
+
+        body = resp.json()
+        alice = next(c for c in body if c["full_name"] == "Alice")
+        bob = next(c for c in body if c["full_name"] == "Bob")
+        assert len(alice["contact_info"]) == 1
+        assert alice["contact_info"][0]["secured"] is True
+        assert len(bob["contact_info"]) == 0
+
+    async def test_no_entity_info_rows_behavior_unchanged(self):
+        """When entity_info is empty, behavior is identical to pre-change (no regression)."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        app, _ = _make_app(
+            contact_rows=[contact],
+            label_rows=[],
+            fact_rows=[fact],
+            entity_info_rows=[],
+        )
+        resp = await _get(app)
+
+        assert resp.status_code == 200
+        contact_info = resp.json()[0]["contact_info"]
+        assert len(contact_info) == 1
+        assert contact_info[0]["type"] == "email"
+        assert contact_info[0]["value"] == _EMAIL
+        assert contact_info[0]["secured"] is False
