@@ -97,6 +97,7 @@ from butlers.api.routers.steam import router as steam_router
 from butlers.api.routers.system import router as system_router
 from butlers.api.routers.telegram_auth import router as telegram_auth_router
 from butlers.api.routers.timeline import router as timeline_router
+from butlers.api.routers.timeline_saved_views import router as timeline_saved_views_router
 from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
 
@@ -287,6 +288,7 @@ def create_app(
     app.include_router(channel_defaults_router)
     app.include_router(ingestion_connectors_router)
     app.include_router(timeline_router)
+    app.include_router(timeline_saved_views_router)
     app.include_router(calendar_workspace_router)
     app.include_router(search_router)
     app.include_router(audit_router)
