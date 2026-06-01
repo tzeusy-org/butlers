@@ -34,9 +34,9 @@
  *   revealContactSecret — DUAL-DISPATCH (bu-6m9an): secured entries now route
  *     to the correct endpoint based on entry.source:
  *       source="entity_facts" → useRevealEntityContactSecret (entity-keyed,
- *         GET /entities/{entityId}/secrets/{infoId}, added in PR #2043).
+ *         GET /relationship/entities/{entityId}/secrets/{infoId}, added in PR #2043).
  *       source=null (legacy) → useRevealContactSecret (contact-keyed COMPAT,
- *         GET /contacts/{contactId}/secrets/{infoId}, remove after bu-uhjxr).
+ *         GET /relationship/contacts/{contactId}/secrets/{infoId}, remove after bu-uhjxr).
  *     NOTE: list_entity_linked_contacts currently excludes secured=true rows
  *     (WHERE secured = false), so the dual-dispatch is dormant until bu-pl8fy
  *     completes. After bu-uhjxr the legacy contact-keyed path can be removed.
@@ -201,6 +201,7 @@ function SecuredChannelEntry({
     };
     const onError = () => {
       setIsRevealing(false);
+      toast.error("Failed to reveal secret.");
     };
 
     if (entry.source === "entity_facts") {
