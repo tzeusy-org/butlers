@@ -11,7 +11,6 @@ Tests the 6 tools from docs/roles/messenger_butler.md sections 5.1.3-5.1.4:
 
 from __future__ import annotations
 
-import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -41,13 +40,6 @@ from butlers.tools.messenger.reliability import (
 # InterfaceError failures under pytest-xdist.
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
-]
-
-# Skip DB tests if Docker is not available
-docker_available = shutil.which("docker") is not None
-db_tests_mark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
 
@@ -740,8 +732,7 @@ async def delivery_pool(_messenger_postgres_container):
         yield pool
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_queue_depth_empty(delivery_pool, mark):
+async def test_queue_depth_empty(delivery_pool):
     """Queue depth with no deliveries."""
     result = await messenger_queue_depth(delivery_pool)
 
@@ -750,8 +741,7 @@ async def test_queue_depth_empty(delivery_pool, mark):
     assert result["by_channel"] == {}
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_queue_depth_with_deliveries(delivery_pool, mark):
+async def test_queue_depth_with_deliveries(delivery_pool):
     """Queue depth with in-flight deliveries."""
     # Insert test deliveries
     await delivery_pool.execute("""
@@ -774,8 +764,7 @@ async def test_queue_depth_with_deliveries(delivery_pool, mark):
     assert result["by_channel"]["email"] == 1
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_queue_depth_filtered_by_channel(delivery_pool, mark):
+async def test_queue_depth_filtered_by_channel(delivery_pool):
     """Queue depth filtered by channel."""
     await delivery_pool.execute("""
         INSERT INTO delivery_requests
@@ -812,8 +801,7 @@ async def stats_pool(_messenger_postgres_container):
         yield pool
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_delivery_stats_empty(stats_pool, mark):
+async def test_delivery_stats_empty(stats_pool):
     """Delivery stats with no deliveries."""
     result = await messenger_delivery_stats(stats_pool)
 
@@ -822,8 +810,7 @@ async def test_delivery_stats_empty(stats_pool, mark):
     assert result["success_rate"] == 0.0
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_delivery_stats_with_deliveries(stats_pool, mark):
+async def test_delivery_stats_with_deliveries(stats_pool):
     """Delivery stats with successful and failed deliveries."""
     now = datetime.now(UTC)
 
@@ -865,8 +852,7 @@ async def test_delivery_stats_with_deliveries(stats_pool, mark):
     assert result["p95_latency_ms"] is not None
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_delivery_stats_with_time_window(stats_pool, mark):
+async def test_delivery_stats_with_time_window(stats_pool):
     """Delivery stats filtered by time window."""
     now = datetime.now(UTC)
     one_hour_ago = now - timedelta(hours=1)
@@ -903,8 +889,7 @@ async def test_delivery_stats_with_time_window(stats_pool, mark):
     assert result["total_deliveries"] == 1  # Only recent one
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_delivery_stats_grouped_by_channel(stats_pool, mark):
+async def test_delivery_stats_grouped_by_channel(stats_pool):
     """Delivery stats grouped by channel."""
     now = datetime.now(UTC)
 
@@ -942,8 +927,7 @@ async def test_delivery_stats_grouped_by_channel(stats_pool, mark):
     assert result["groups"]["email"]["total_deliveries"] == 1
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_delivery_stats_invalid_group_by(stats_pool, mark):
+async def test_delivery_stats_invalid_group_by(stats_pool):
     """Delivery stats with invalid group_by returns error."""
     result = await messenger_delivery_stats(stats_pool, group_by="invalid")
 
@@ -951,8 +935,7 @@ async def test_delivery_stats_invalid_group_by(stats_pool, mark):
     assert "Invalid group_by" in result["error"]
 
 
-@pytest.mark.parametrize("mark", db_tests_mark)
-async def test_delivery_stats_invalid_timestamp(stats_pool, mark):
+async def test_delivery_stats_invalid_timestamp(stats_pool):
     """Delivery stats with invalid timestamp returns error."""
     result = await messenger_delivery_stats(stats_pool, since="not-a-timestamp")
 
