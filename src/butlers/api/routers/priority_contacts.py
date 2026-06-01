@@ -33,6 +33,70 @@ from butlers.api.models.ingestion_event import (
 )
 from butlers.api.routers.audit import append as _audit_append
 
+# ---------------------------------------------------------------------------
+# entity_facts helpers (bu-hjo3i — replaces public.contact_info reads)
+# ---------------------------------------------------------------------------
+
+_TELEGRAM_HANDLE_PREFIX = "telegram:"
+
+
+def _ef_display_value(predicate: str, obj: str) -> str:
+    """Strip the ``telegram:`` prefix for display; passthrough for all others."""
+    if predicate == "has-handle" and obj.startswith(_TELEGRAM_HANDLE_PREFIX):
+        return obj[len(_TELEGRAM_HANDLE_PREFIX) :]
+    return obj
+
+
+async def _entity_facts_values_by_contact(
+    pool: object,
+    contact_entity_pairs: list[tuple[UUID, UUID]],
+) -> dict[UUID, list[str]]:
+    """Batch-fetch active channel values from relationship.entity_facts.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool with access to relationship.entity_facts.
+    contact_entity_pairs:
+        List of ``(contact_id, entity_id)`` pairs for the contacts to look up.
+
+    Returns
+    -------
+    dict mapping contact_id → list of display-ready channel value strings.
+    Contacts with no linked entity or no facts map to an empty list.
+    """
+    if not contact_entity_pairs:
+        return {}
+
+    entity_to_contact: dict[UUID, UUID] = {eid: cid for cid, eid in contact_entity_pairs}
+    entity_ids = list(entity_to_contact)
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT ef.subject AS entity_id, ef.predicate, ef.object
+            FROM relationship.entity_facts ef
+            WHERE ef.subject = ANY($1)
+              AND ef.predicate LIKE 'has-%'
+              AND ef.validity = 'active'
+              AND ef.object_kind = 'literal'
+            ORDER BY ef.subject, ef."primary" DESC NULLS LAST, ef.created_at ASC
+            """,
+            entity_ids,
+        )
+    except Exception:  # noqa: BLE001
+        return {cid: [] for cid, _ in contact_entity_pairs}
+
+    result: dict[UUID, list[str]] = {cid: [] for cid, _ in contact_entity_pairs}
+    for r in rows:
+        eid = r["entity_id"]
+        cid = entity_to_contact.get(eid)
+        if cid is None:
+            continue
+        result[cid].append(_ef_display_value(r["predicate"], r["object"]))
+    return result
+
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/priority-contacts", tags=["ingestion"])
@@ -57,8 +121,10 @@ async def list_priority_contacts(
 ) -> PaginatedResponse[PriorityContactEntry]:
     """List priority contact assignments, optionally filtered by butler.
 
-    Joins through public.contacts for canonical contact name and public.contact_info
-    for non-sensitive channel identifiers (secured=false rows only).
+    Joins through public.contacts for canonical contact name.  Channel
+    identifiers (email, phone, handles) are fetched from
+    relationship.entity_facts via the contact's linked entity (bu-hjo3i —
+    replaces the old public.contact_info LEFT JOIN).
 
     Returns paginated list of priority contact entries.
     """
@@ -81,28 +147,31 @@ async def list_priority_contacts(
     count_sql = f"SELECT count(*) FROM public.priority_contacts pc{where_clause}"
     total = await pool.fetchval(count_sql, *args) or 0
 
-    # Main query: join contacts for name + contact_info for non-sensitive identifiers
+    # Main query: join contacts for name; channel identifiers fetched separately
+    # from relationship.entity_facts (bu-hjo3i).
     data_sql = f"""
         SELECT
             pc.contact_id,
             pc.butler,
             pc.added_at,
             pc.added_by,
-            c.name AS contact_name,
-            array_agg(ci.value ORDER BY ci.type, ci.value) FILTER (
-                WHERE ci.value IS NOT NULL AND ci.secured = false
-            ) AS contact_info_values
+            c.name    AS contact_name,
+            c.entity_id AS entity_id
         FROM public.priority_contacts pc
         LEFT JOIN public.contacts c ON c.id = pc.contact_id
-        LEFT JOIN public.contact_info ci ON ci.contact_id = pc.contact_id
         {where_clause}
-        GROUP BY pc.contact_id, pc.butler, pc.added_at, pc.added_by, c.name
         ORDER BY pc.added_at DESC
         OFFSET ${idx} LIMIT ${idx + 1}
     """
     args.extend([offset, limit])
 
     rows = await pool.fetch(data_sql, *args)
+
+    # Batch-fetch channel values from relationship.entity_facts.
+    contact_entity_pairs: list[tuple[UUID, UUID]] = [
+        (row["contact_id"], row["entity_id"]) for row in rows if row["entity_id"] is not None
+    ]
+    ef_values_by_contact = await _entity_facts_values_by_contact(pool, contact_entity_pairs)
 
     entries = [
         PriorityContactEntry(
@@ -111,7 +180,7 @@ async def list_priority_contacts(
             added_at=row["added_at"],
             added_by=row["added_by"],
             name=row["contact_name"],
-            contact_info_values=list(row["contact_info_values"] or []),
+            contact_info_values=ef_values_by_contact.get(row["contact_id"], []),
         )
         for row in rows
     ]

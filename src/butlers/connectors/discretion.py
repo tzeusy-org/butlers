@@ -21,6 +21,8 @@ from typing import Literal, Protocol, runtime_checkable
 
 from prometheus_client import Counter
 
+from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE, _resolve_entity_by_triple
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -215,21 +217,19 @@ class ContactWeightResolver:
         return weight
 
     async def _query(self, channel_type: str, channel_value: str) -> float:
-        """Look up contact roles from the shared schema."""
+        """Look up contact roles from relationship.entity_facts (bu-hjo3i).
+
+        Resolves the sender's entity via the triple store using the canonical
+        predicate for the given channel type, then reads roles from
+        public.entities.  Falls back to ``tiers.unknown`` on DB error or when
+        no matching triple is found.
+        """
+        predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+        if predicate is None:
+            return self._tiers.unknown
+
         try:
-            row = await self._pool.fetchrow(
-                """
-                SELECT COALESCE(e.roles, '{}') AS roles
-                FROM   public.contact_info ci
-                JOIN   public.contacts c  ON c.id = ci.contact_id
-                LEFT JOIN public.entities e ON e.id = c.entity_id
-                WHERE  ci.type = $1
-                  AND  ci.value = $2
-                LIMIT  1
-                """,
-                channel_type,
-                channel_value,
-            )
+            row = await _resolve_entity_by_triple(self._pool, predicate, channel_value)
         except Exception:  # noqa: BLE001
             logger.debug(
                 "ContactWeightResolver DB error for %s:%s — defaulting unknown",

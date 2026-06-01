@@ -35,16 +35,20 @@ def _make_priority_contact_row(
     butler: str = "gmail",
     added_by: str | None = "dashboard",
     contact_name: str | None = "Alice",
-    contact_info_values=None,
+    entity_id=None,
 ):
-    """Build a mock asyncpg Record-like dict for priority_contacts queries."""
+    """Build a mock asyncpg Record-like dict for priority_contacts queries.
+
+    After bu-hjo3i, the main SQL returns entity_id (not contact_info_values);
+    channel identifiers are fetched in a separate entity_facts round-trip.
+    """
     return {
         "contact_id": contact_id or uuid4(),
         "butler": butler,
         "added_at": _NOW,
         "added_by": added_by,
         "contact_name": contact_name,
-        "contact_info_values": contact_info_values or ["alice@example.com"],
+        "entity_id": entity_id,  # None → no entity_facts lookup
     }
 
 
