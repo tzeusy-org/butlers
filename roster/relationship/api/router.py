@@ -4135,7 +4135,7 @@ async def reveal_entity_secret(
 
     Credential rows written via the contact_info write-path cut-over
     (secured=True) land in ``public.entity_info`` per RFC 0004 Amendment 2.
-    This endpoint is the sole authorised reveal path for those rows.
+    This endpoint is the sole authorized reveal path for those rows.
 
     **Authorization**: owner-only gate — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.

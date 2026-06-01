@@ -1,4 +1,4 @@
-"""Integration tests for GET /entities/{entity_id}/secrets/{info_id}.
+"""Unit tests for GET /entities/{entity_id}/secrets/{info_id}.
 
 Covers the secured credential reveal endpoint for ``public.entity_info`` rows
 written via the contact_info write-path cut-over (RFC 0004 Amendment 2, bu-fa5ex).
@@ -15,7 +15,7 @@ All tests are unit-level (mock pool — no Postgres or Docker required).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -56,8 +56,7 @@ def _make_row(data: dict) -> MagicMock:
 def _make_owner_row(roles: list[str] | None = None) -> MagicMock:
     """Simulate a row returned by the owner-entity roles query.
 
-    ``_get_owner_roles`` in the router accesses both ``row['id']`` and
-    ``row['roles']``.
+    ``_get_owner_roles`` in the router accesses ``row['roles']``.
     """
     return _make_row(
         {
@@ -126,6 +125,12 @@ def _make_reveal_app(
             router_mod = router_module
             break
 
+    if router_mod is None:
+        raise RuntimeError(
+            "Relationship router not found by router discovery. "
+            "Cannot wire dependency overrides for reveal endpoint tests."
+        )
+
     return app, mock_pool, router_mod
 
 
@@ -160,9 +165,8 @@ class TestRevealEntitySecret:
         """Owner present + secured entry → 200 with plaintext credential value."""
         app, _, router_mod = _make_reveal_app(owner_exists=True, entry_exists=True, secured=True)
 
-        noop_audit = AsyncMock()
-        router_mod.emit_dashboard_audit = noop_audit
-        resp = await _get(app)
+        with patch.object(router_mod, "emit_dashboard_audit", new_callable=AsyncMock):
+            resp = await _get(app)
 
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         body = resp.json()
@@ -184,8 +188,8 @@ class TestRevealEntitySecret:
     async def test_missing_entry_returns_404(self):
         """Owner present but info_id not found → 404."""
         app, _, router_mod = _make_reveal_app(owner_exists=True, entry_exists=False)
-        router_mod.emit_dashboard_audit = AsyncMock()
-        resp = await _get(app)
+        with patch.object(router_mod, "emit_dashboard_audit", new_callable=AsyncMock):
+            resp = await _get(app)
         assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
         assert "not found" in resp.json().get("detail", "").lower()
 
@@ -196,8 +200,8 @@ class TestRevealEntitySecret:
         detail endpoint; no reveal is needed and the endpoint enforces this.
         """
         app, _, router_mod = _make_reveal_app(owner_exists=True, entry_exists=True, secured=False)
-        router_mod.emit_dashboard_audit = AsyncMock()
-        resp = await _get(app)
+        with patch.object(router_mod, "emit_dashboard_audit", new_callable=AsyncMock):
+            resp = await _get(app)
         assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
         detail = resp.json().get("detail", "")
         assert "not secured" in detail.lower(), f"Expected 'not secured' in detail: {detail}"
@@ -209,9 +213,8 @@ class TestRevealEntitySecret:
         """
         app, _, router_mod = _make_reveal_app(owner_exists=True, entry_exists=True, secured=True)
         mock_audit = AsyncMock()
-        router_mod.emit_dashboard_audit = mock_audit
-
-        resp = await _get(app)
+        with patch.object(router_mod, "emit_dashboard_audit", mock_audit):
+            resp = await _get(app)
 
         assert resp.status_code == 200
         mock_audit.assert_awaited_once()
@@ -226,9 +229,8 @@ class TestRevealEntitySecret:
         """403 (owner gate) does not emit an audit event."""
         app, _, router_mod = _make_reveal_app(owner_exists=False)
         mock_audit = AsyncMock()
-        router_mod.emit_dashboard_audit = mock_audit
-
-        resp = await _get(app)
+        with patch.object(router_mod, "emit_dashboard_audit", mock_audit):
+            resp = await _get(app)
 
         assert resp.status_code == 403
         mock_audit.assert_not_awaited()

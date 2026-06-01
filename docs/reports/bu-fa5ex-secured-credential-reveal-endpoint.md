@@ -40,7 +40,7 @@ owner-only authz gate.
 
 ### Authorization model
 
-**Owner-only gate** via `_assert_owner_role(pool)` — identical to the gate
+**Owner-only gate** via `_assert_owner_role(pool)`, identical to the gate
 applied to other PII-bearing read surfaces in this router (Amendment 12b,
 entity-redesign Phase 2).
 
@@ -62,7 +62,7 @@ presence is the caller-identity proxy.
 
 Every successful 200 reveal emits a `reveal_entity_secret` dashboard audit
 event via `emit_dashboard_audit`. GETs bypass the middleware-level audit hook,
-so this explicit call is required — matching the same pattern in
+so this explicit call is required, matching the same pattern in
 `reveal_contact_secret`.
 
 ### RFC 0004 Amendment 2 carve-out preserved
@@ -70,14 +70,14 @@ so this explicit call is required — matching the same pattern in
 Non-secured channel identifiers live in `relationship.entity_facts` (RDF triple
 store). Those rows carry `secured=False` by design and are returned in plain
 view by the entity detail endpoint. The reveal endpoint is only relevant for
-`public.entity_info` rows where `secured=True` — that is, the credential
-carve-out population defined by RFC 0004 Amendment 2.
+`public.entity_info` rows where `secured=True` (the credential
+carve-out population defined by RFC 0004 Amendment 2).
 
 ## Files Changed
 
-- `roster/relationship/api/router.py` — added owner-only authz gate to
+- `roster/relationship/api/router.py`: added owner-only authz gate to
   `reveal_entity_secret` handler; expanded docstring to document authz model
   and credential-carve-out semantics.
-- `tests/api/test_relationship_entity_info_reveal.py` — integration tests:
+- `tests/api/test_relationship_entity_info_reveal.py`: unit tests for
   authorized success, unauthorized rejection (403), 404 for missing entry,
   400 for non-secured entry, and audit emission.
