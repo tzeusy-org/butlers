@@ -195,14 +195,29 @@ class TestContactInfoReadsAllowed:
     async def test_list_reads_contact_info(self):
         from butlers.tools.relationship.contact_info import contact_info_list
 
+        fact_id = uuid.uuid4()
         pool = MagicMock()
+        # fetchrow is used by _resolve_contact_entity (SELECT entity_id FROM public.contacts)
+        pool.fetchrow = AsyncMock(return_value={"entity_id": _ENTITY_ID})
+        # fetch is used by entity_facts_channels_by_entity (SELECT from relationship.entity_facts)
         pool.fetch = AsyncMock(
-            return_value=[{"id": uuid.uuid4(), "type": "email", "value": "a@b.com"}]
+            return_value=[
+                {
+                    "entity_id": _ENTITY_ID,
+                    "id": fact_id,
+                    "predicate": "has-email",
+                    "object": "a@b.com",
+                    "primary": True,
+                }
+            ]
         )
         rows = await contact_info_list(pool, _CONTACT_ID)
         assert len(rows) == 1
         assert rows[0]["type"] == "email"
-        # Read used pool.fetch (SELECT), not a write path.
+        assert rows[0]["value"] == "a@b.com"
+        assert rows[0]["source"] == "entity_facts"
+        # Read path used both pool.fetchrow (contact→entity) and pool.fetch (entity_facts).
+        pool.fetchrow.assert_awaited_once()
         pool.fetch.assert_awaited_once()
 
 
