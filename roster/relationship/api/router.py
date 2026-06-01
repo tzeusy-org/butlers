@@ -4133,10 +4133,25 @@ async def reveal_entity_secret(
 ) -> dict[str, Any]:
     """Reveal the actual value of a secured entity_info entry.
 
+    Credential rows written via the contact_info write-path cut-over
+    (secured=True) land in ``public.entity_info`` per RFC 0004 Amendment 2.
+    This endpoint is the sole authorized reveal path for those rows.
+
+    **Authorization**: owner-only gate — returns HTTP 403 with
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+    This mirrors the gate applied to other PII-bearing read surfaces
+    (Amendment 12b).
+
     Returns the real value for a secured entity_info row. Returns 404 if
     the info_id does not exist OR does not belong to the given entity_id.
+    Returns 400 if the entry exists but is not secured (value is already
+    available in the entity detail response).
     """
     pool = _pool(db)
+
+    # Owner-only gate (Amendment 12b) — credential reveal is owner-only.
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
 
     row = await pool.fetchrow(
         """
