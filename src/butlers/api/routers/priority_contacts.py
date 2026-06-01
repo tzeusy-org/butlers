@@ -68,8 +68,10 @@ async def _entity_facts_values_by_contact(
     if not contact_entity_pairs:
         return {}
 
-    entity_to_contact: dict[UUID, UUID] = {eid: cid for cid, eid in contact_entity_pairs}
-    entity_ids = list(entity_to_contact)
+    entity_to_contacts: dict[UUID, list[UUID]] = {}
+    for cid, eid in contact_entity_pairs:
+        entity_to_contacts.setdefault(eid, []).append(cid)
+    entity_ids = list(entity_to_contacts)
 
     try:
         rows = await pool.fetch(
@@ -90,10 +92,12 @@ async def _entity_facts_values_by_contact(
     result: dict[UUID, list[str]] = {cid: [] for cid, _ in contact_entity_pairs}
     for r in rows:
         eid = r["entity_id"]
-        cid = entity_to_contact.get(eid)
-        if cid is None:
+        cids = entity_to_contacts.get(eid)
+        if not cids:
             continue
-        result[cid].append(_ef_display_value(r["predicate"], r["object"]))
+        display_val = _ef_display_value(r["predicate"], r["object"])
+        for cid in cids:
+            result[cid].append(display_val)
     return result
 
 

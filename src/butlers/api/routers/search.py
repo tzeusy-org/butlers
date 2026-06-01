@@ -183,9 +183,9 @@ async def search(
         )
 
         # Batch-fetch email and phone snippets from entity_facts.
-        entity_ids_for_snippet: list[object] = [
-            row["entity_id"] for row in contact_rows if row["entity_id"] is not None
-        ]
+        entity_ids_for_snippet: list[object] = list(
+            {row["entity_id"] for row in contact_rows if row["entity_id"] is not None}
+        )
         email_by_entity: dict[object, str] = {}
         phone_by_entity: dict[object, str] = {}
         if entity_ids_for_snippet:

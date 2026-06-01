@@ -336,7 +336,14 @@ class CoreSessionsAdapter(ProjectionAdapter):
                                   WHEN 'whatsapp_jid'         THEN 'has-handle'
                                   ELSE 'has-handle'
                               END
-                          AND ef.object       = ie.source_sender_identity
+                          AND (
+                              ef.object = ie.source_sender_identity
+                              OR (
+                                  ie.source_channel = 'telegram_user_client'
+                                  AND ie.source_sender_identity NOT LIKE 'telegram:%'
+                                  AND ef.object = 'telegram:' || ie.source_sender_identity
+                              )
+                          )
                           AND ef.object_kind  = 'literal'
                           AND ef.validity     = 'active'
                     LEFT JOIN public.entities e ON e.id = ef.subject

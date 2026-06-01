@@ -109,6 +109,33 @@ async def test_entity_facts_values_strips_telegram_prefix_in_batch() -> None:
     assert result == {contact_id: ["987654321"]}
 
 
+async def test_entity_facts_values_multiple_contacts_share_entity() -> None:
+    """Two contacts sharing the same entity_id both receive the entity's facts."""
+    contact_id_a = uuid4()
+    contact_id_b = uuid4()
+    entity_id = uuid4()
+
+    ef_row = MagicMock()
+    ef_row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "entity_id": entity_id,
+            "predicate": "has-email",
+            "object": "shared@example.com",
+        }[k]
+    )
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[ef_row])
+
+    result = await _entity_facts_values_by_contact(
+        pool, [(contact_id_a, entity_id), (contact_id_b, entity_id)]
+    )
+    assert result == {
+        contact_id_a: ["shared@example.com"],
+        contact_id_b: ["shared@example.com"],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Integration tests for list endpoint
 # ---------------------------------------------------------------------------

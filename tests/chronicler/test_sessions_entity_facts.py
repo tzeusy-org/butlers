@@ -213,3 +213,19 @@ async def test_resolve_contacts_uuid_coercion() -> None:
     result = await _adapter._resolve_contacts(pool, rows)
     assert session_id in result
     assert result[session_id] == ("Bob", "email")
+
+
+async def test_resolve_contacts_sql_has_telegram_prefix_fallback() -> None:
+    """SQL must include OR branch for telegram_user_client 'telegram:' prefix."""
+    event_id = uuid4()
+    rows = [_make_row(**_session_row(ingestion_event_id=event_id))]
+
+    conn = _make_conn(contact_rows=[])
+    pool = _make_pool(conn)
+
+    await _adapter._resolve_contacts(pool, rows)
+
+    sql: str = conn.fetch.call_args[0][0]
+    assert "telegram_user_client" in sql
+    assert "telegram:" in sql
+    assert "NOT LIKE" in sql
