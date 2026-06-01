@@ -92,7 +92,7 @@ describe("adaptInventoryResponse: user provider derivation", () => {
     github: {
       id: "github",
       label: "GitHub",
-      glyph: "G",
+      glyph: "#",
       kind: "token",
       authority: "api.github.com",
       brief: "Repo access via Personal Access Token.",

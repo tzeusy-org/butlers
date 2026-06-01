@@ -128,7 +128,7 @@ PROVIDER_CATALOG: dict[str, ProviderMetadata] = {
     "github": ProviderMetadata(
         id="github",
         label="GitHub",
-        glyph="G",
+        glyph="#",
         kind="token",
         authority="api.github.com",
         brief="Repo access via Personal Access Token.",
