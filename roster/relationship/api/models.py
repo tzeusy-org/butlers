@@ -600,6 +600,10 @@ class LinkedContactSummary(BaseModel):
     Secured rows carry ``secured=True``, ``value=None``, and ``source="entity_facts"``
     so the frontend can render a masked chip + reveal affordance routed to the entity-keyed
     reveal endpoint (GET /entities/{id}/secrets/{info_id}).
+
+    Note: entity_facts and secured entity_info entries are entity-level (not per-contact).
+    They are attached to the *first* linked contact only (by name order).  Other contacts
+    in the same list will have an empty ``contact_info``.
     The entity-card renders channel chips from this list without needing a secondary
     ``getContact`` call per contact.
 

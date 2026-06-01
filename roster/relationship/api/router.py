@@ -4530,10 +4530,10 @@ async def list_entity_linked_contacts(
 
     contact_ids = [r["id"] for r in rows]
 
-    # Batch-fetch supplementary data (labels, entity_facts, entity_info) in one
-    # round-trip.  entity_info secured rows (credentials) are fetched separately
-    # from entity_facts non-secured channels; both belong to the entity and are
-    # attached to the first linked contact.
+    # Batch-fetch supplementary data (labels, entity_facts, entity_info) concurrently.
+    # entity_info secured rows (credentials) are fetched separately from entity_facts
+    # non-secured channels; both belong to the entity and are attached to the first
+    # linked contact.
     label_rows, fact_rows, entity_info_rows = await asyncio.gather(
         pool.fetch(
             """
@@ -4563,7 +4563,7 @@ async def list_entity_linked_contacts(
             FROM public.entity_info
             WHERE entity_id = $1
               AND secured = true
-            ORDER BY type ASC, is_primary DESC
+            ORDER BY type ASC, is_primary DESC NULLS LAST
             """,
             entity_id,
         ),
@@ -4594,7 +4594,7 @@ async def list_entity_linked_contacts(
             type=r["type"],
             value=None,
             is_primary=bool(r["is_primary"]),
-            secured=True,
+            secured=bool(r["secured"]),
             source="entity_facts",
             predicate=None,
             value_hash=None,

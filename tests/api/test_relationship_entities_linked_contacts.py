@@ -456,8 +456,32 @@ class TestLinkedContactsSecuredEntityInfo:
         # If the backend code tried to read r["value"], the mock would raise KeyError.
         row = _make_entity_info_row()
         # Confirm the mock row doesn't even carry a 'value' key.
-        with pytest.raises((KeyError, Exception)):
+        with pytest.raises(KeyError):
             _ = row["value"]
+
+    async def test_entity_info_sql_does_not_select_value(self):
+        """The entity_info SQL in list_entity_linked_contacts must not include 'value'.
+
+        This test verifies that the actual pool.fetch call for entity_info uses a
+        query that selects only id, type, is_primary, secured — never the value column.
+        """
+        contact = _make_contact_row()
+        ei_row = _make_entity_info_row(id=_ENTITY_INFO_ID, type="telegram_api_key")
+        app, mock_pool = _make_app(
+            contact_rows=[contact],
+            label_rows=[],
+            fact_rows=[],
+            entity_info_rows=[ei_row],
+        )
+        await _get(app)
+
+        # The 4th fetch call (index 3) is the entity_info query.
+        assert mock_pool.fetch.call_count >= 4
+        entity_info_call = mock_pool.fetch.call_args_list[3]
+        sql = entity_info_call.args[0]
+        assert "value" not in sql.lower(), (
+            f"entity_info SQL must not select value column; got: {sql}"
+        )
 
     async def test_secured_and_nonsecured_entries_coexist(self):
         """entity_facts entries and secured entity_info entries both appear together."""
