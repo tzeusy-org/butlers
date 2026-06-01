@@ -20,7 +20,7 @@ Legacy Google-specific routes (preserved unchanged for backward compatibility):
 Generalised per-provider routes (RFC 0007 ApiResponse<T> envelope):
   GET /api/oauth/{provider}/start
       ?redirect_uri=<uri>&account_hint=<hint>&force_consent=<bool>
-      &page_of_origin=<page>&scope_set=<sets>
+      &page_of_origin=<page>&scope_set=<sets>&connector_detail_path=<path>
   GET /api/oauth/{provider}/callback
       ?code=<code>&state=<state>[&error=<err>]
 
@@ -28,14 +28,17 @@ The bootstrap flow:
   1. GET /api/oauth/{provider}/start
      - Generates a cryptographically random CSRF state token.
      - Stores state in the in-memory store (TTL 10 min) carrying
-       ``page_of_origin`` for cross-page reauth bookkeeping.
+       ``page_of_origin`` and optional ``connector_detail_path`` for
+       cross-page reauth bookkeeping.
      - Writes an ``attempted`` audit row to ``public.audit_log`` BEFORE redirect.
      - Returns ApiResponse<{ authorization_url }> or 302.
 
   2. GET /api/oauth/{provider}/callback
      - Validates state, exchanges code for tokens.
      - Persists credentials; writes ``connected`` (success) or ``failed`` audit row.
-     - Redirects based on ``state.page_of_origin``:
+     - Redirects based on ``state.connector_detail_path`` (when present) or
+       ``state.page_of_origin``:
+         connector_detail_path present → /ingestion/connectors/<type>/<identity>
          "secrets"   → /secrets?focus=u:<provider>&toast=connected
          "ingestion" → /ingestion/connectors
          (default)   → /secrets?focus=u:<provider>&toast=connected
@@ -69,6 +72,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -583,15 +587,83 @@ def _compose_provider_scopes_from_sets(provider_cfg: _ProviderConfig, set_names:
 
 _PAGE_OF_ORIGIN_DEFAULT = "secrets"
 
+# Connector detail path: two URL-safe path segments separated by a single slash.
+# Pattern: <connector_type>/<endpoint_identity>
+# - connector_type: lowercase letters, digits, underscores, hyphens.
+# - endpoint_identity: any printable non-whitespace characters except '/' (one or more).
+# Both must be present.  Leading '/' is forbidden (value must not start with '/').
+# This prevents open-redirect: the value is appended after the known prefix
+# /ingestion/connectors/ so it can never escape to an absolute URL or a
+# protocol-relative URL.
+_CONNECTOR_DETAIL_PATH_RE = re.compile(r"^[a-z0-9_-]+/[^\s/][^\s]*$")
 
-def _build_success_redirect_url(provider: str, page_of_origin: str | None) -> str:
+
+def _validate_connector_detail_path(raw: str | None) -> str | None:
+    """Validate and return *raw* as a safe connector detail relative path.
+
+    The value is stored in the OAuth CSRF state token and re-used at callback
+    time to build the redirect URL ``/ingestion/connectors/<path>``.  To
+    prevent open-redirect attacks the value is validated here (at store time)
+    and only accepted if it:
+
+    - is non-empty after stripping whitespace,
+    - starts with ``<connector_type>/`` (alphanumeric/hyphen/underscore type segment
+      followed by '/'),
+    - the identity segment starts with a non-slash, non-whitespace character (prevents
+      protocol-relative paths like ``//evil.com``); the identity may contain additional
+      '/' characters (e.g. namespaced IDs like ``google/alice/sub-resource``),
+    - contains no path-traversal sequences (``..``), double slashes (``//``),
+      backslashes, query strings (``?``), or fragment markers (``#``).
+
+    Returns the stripped, validated path on success.
+    Returns ``None`` (and logs a warning) when the value is absent or invalid.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    if not _CONNECTOR_DETAIL_PATH_RE.fullmatch(stripped):
+        logger.warning(
+            "connector_detail_path %r rejected — does not match <type>/<identity> format",
+            stripped,
+        )
+        return None
+    # Defence-in-depth: reject sequences that could cause path traversal or inject
+    # query/fragment components even though the regex + hardcoded prefix already
+    # prevent any off-origin redirect.
+    _FORBIDDEN = ("..", "//", "\\", "?", "#")
+    for seq in _FORBIDDEN:
+        if seq in stripped:
+            logger.warning(
+                "connector_detail_path %r rejected — contains forbidden sequence %r",
+                stripped,
+                seq,
+            )
+            return None
+    return stripped
+
+
+def _build_success_redirect_url(
+    provider: str,
+    page_of_origin: str | None,
+    connector_detail_path: str | None = None,
+) -> str:
     """Compute the post-OAuth-success redirect destination.
 
-    Routing table:
+    Routing table (evaluated in order):
+      connector_detail_path present → /ingestion/connectors/<type>/<identity>
       "secrets"    → /secrets?focus=u:<provider>&toast=connected
       "ingestion"  → /ingestion/connectors
       (None / any) → /secrets?focus=u:<provider>&toast=connected  (default)
+
+    ``connector_detail_path`` takes priority over ``page_of_origin`` when set,
+    enabling reauth initiated from a connector detail page to deep-link back to
+    that specific connector.  The value MUST already be validated via
+    ``_validate_connector_detail_path`` before being passed here.
     """
+    if connector_detail_path:
+        return f"/ingestion/connectors/{connector_detail_path}"
     resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
     if resolved_page == "ingestion":
         return "/ingestion/connectors"
@@ -599,8 +671,19 @@ def _build_success_redirect_url(provider: str, page_of_origin: str | None) -> st
     return f"/secrets?focus={cred_key}&toast=connected"
 
 
-def _build_error_redirect_url(provider: str, page_of_origin: str | None, error_code: str) -> str:
-    """Compute the post-OAuth-error redirect destination."""
+def _build_error_redirect_url(
+    provider: str,
+    page_of_origin: str | None,
+    error_code: str,
+    connector_detail_path: str | None = None,
+) -> str:
+    """Compute the post-OAuth-error redirect destination.
+
+    When ``connector_detail_path`` is set the error redirects back to the
+    specific connector detail page with the oauth_error param appended.
+    """
+    if connector_detail_path:
+        return f"/ingestion/connectors/{connector_detail_path}?oauth_error={error_code}"
     resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
     if resolved_page == "ingestion":
         return f"/ingestion/connectors?oauth_error={error_code}"
@@ -708,6 +791,16 @@ class _StateEntry:
     provider: str = field(default="google")
     """OAuth provider identifier (e.g. ``"google"``, ``"spotify"``)."""
 
+    connector_detail_path: str | None = None
+    """Validated relative path for the connector detail deep-link redirect.
+
+    When set, the callback redirects to ``/ingestion/connectors/<path>`` instead
+    of the connectors roster.  The value is validated before storage via
+    ``_validate_connector_detail_path`` to prevent open-redirect attacks — only
+    paths that match the ``<type>/<identity>`` shape (two path segments, no
+    protocol, no leading ``//``) are accepted.
+    """
+
 
 # Maps state token → _StateEntry
 # NOTE: This store is process-local. Do not run multiple worker processes
@@ -727,6 +820,7 @@ def _store_state(
     force_consent: bool = False,
     page_of_origin: str | None = None,
     provider: str = "google",
+    connector_detail_path: str | None = None,
 ) -> None:
     """Store a state token with an expiry timestamp and optional account context."""
     _state_store[state] = _StateEntry(
@@ -735,6 +829,7 @@ def _store_state(
         force_consent=force_consent,
         page_of_origin=page_of_origin,
         provider=provider,
+        connector_detail_path=connector_detail_path,
     )
     _evict_expired_states()
 
@@ -1000,6 +1095,13 @@ async def oauth_google_start(
         "can route the user back to the originating page. "
         "Missing or empty is treated as the 'secrets' default at callback time.",
     ),
+    connector_detail_path: str | None = Query(
+        default=None,
+        description="Optional connector detail path (<type>/<identity>) for deep-link redirect. "
+        "When set, the callback redirects to /ingestion/connectors/<path> instead of the "
+        "connectors roster. Must match <connector_type>/<endpoint_identity> format. "
+        "Invalid values are silently ignored (fallback to page_of_origin routing).",
+    ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Begin the Google OAuth authorization flow.
@@ -1016,6 +1118,11 @@ async def oauth_google_start(
     actionable JSON error. Omitting ``scope_set`` is identical to the
     pre-change behaviour so existing Calendar/Drive/Gmail callers are
     not broken.
+
+    The ``connector_detail_path`` parameter enables deep-link redirect back to
+    a specific connector detail page after reauth.  The value must be in
+    ``<connector_type>/<endpoint_identity>`` format; invalid values are
+    silently ignored (safe fallback to page_of_origin routing).
     """
     # --- Resolve scope composition ---
     # scope_set is parsed BEFORE the account limit check so unknown-set errors
@@ -1098,11 +1205,13 @@ async def oauth_google_start(
 
     state = _generate_state()
     page_of_origin = (page_of_origin or "").strip() or None
+    _safe_connector_detail_path = _validate_connector_detail_path(connector_detail_path)
     _store_state(
         state,
         account_hint=account_hint,
         force_consent=force_consent,
         page_of_origin=page_of_origin,
+        connector_detail_path=_safe_connector_detail_path,
     )
 
     params: dict[str, str] = {
@@ -2433,13 +2542,24 @@ async def oauth_provider_start(
         "Known values: 'secrets' (default), 'ingestion'. "
         "Threaded through state token; callback uses it for return routing.",
     ),
+    connector_detail_path: str | None = Query(
+        default=None,
+        description="Optional connector detail path (<type>/<identity>) for deep-link redirect. "
+        "When set, the callback redirects to /ingestion/connectors/<path> instead of the "
+        "connectors roster. Must match <connector_type>/<endpoint_identity> format. "
+        "Invalid values are silently ignored (fallback to page_of_origin routing).",
+    ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Begin the OAuth authorization flow for *provider*.
 
     Resolves scope-sets from the provider registry, checks account limits
-    (Google only), stores the CSRF state token carrying ``page_of_origin``,
-    writes an ``attempted`` audit row, and returns a redirect or JSON response.
+    (Google only), stores the CSRF state token carrying ``page_of_origin``
+    and optional ``connector_detail_path``, writes an ``attempted`` audit row,
+    and returns a redirect or JSON response.
+
+    When ``connector_detail_path`` is supplied and valid, the callback will
+    deep-link to the specific connector detail page instead of the roster.
     """
     provider_cfg = _get_provider_config(provider)
     if provider_cfg is None:
@@ -2521,12 +2641,14 @@ async def oauth_provider_start(
 
     # --- Build authorization URL ---
     state = _generate_state()
+    _safe_connector_detail_path = _validate_connector_detail_path(connector_detail_path)
     _store_state(
         state,
         account_hint=account_hint,
         force_consent=force_consent,
         page_of_origin=page_of_origin,
         provider=provider,
+        connector_detail_path=_safe_connector_detail_path,
     )
 
     params: dict[str, str] = {
@@ -2636,8 +2758,10 @@ async def oauth_provider_callback(
         if state:
             state_entry = _validate_and_consume_state(state)
             _page_of_origin = state_entry.page_of_origin if state_entry else None
+            _connector_detail_path = state_entry.connector_detail_path if state_entry else None
         else:
             _page_of_origin = None
+            _connector_detail_path = None
 
         await _emit_oauth_audit(
             shared_pool,
@@ -2652,8 +2776,10 @@ async def oauth_provider_callback(
                 url=f"{dashboard_url}?oauth_error=provider_error",
                 status_code=302,
             )
-        error_redirect = _build_error_redirect_url(provider, _page_of_origin, "provider_error")
-        if _page_of_origin:
+        error_redirect = _build_error_redirect_url(
+            provider, _page_of_origin, "provider_error", _connector_detail_path
+        )
+        if _page_of_origin or _connector_detail_path:
             return RedirectResponse(url=error_redirect, status_code=302)
         return JSONResponse(
             status_code=400,
@@ -2705,6 +2831,7 @@ async def oauth_provider_callback(
         )
 
     page_of_origin = state_entry.page_of_origin
+    connector_detail_path = state_entry.connector_detail_path
 
     # --- For provider=google, delegate to the existing callback logic ---
     if provider == "google":
@@ -2715,6 +2842,7 @@ async def oauth_provider_callback(
             state_entry=state_entry,
             db_manager=db_manager,
             page_of_origin=page_of_origin,
+            connector_detail_path=connector_detail_path,
         )
 
     # --- Generic provider path ---
@@ -2815,10 +2943,10 @@ async def oauth_provider_callback(
     )
 
     # --- Redirect ---
-    # Always redirect based on page_of_origin (default → /secrets).
+    # Priority: connector_detail_path (deep-link) > page_of_origin > default (/secrets).
     # _build_success_redirect_url resolves None to "secrets" so the
     # missing/default case is handled identically to an explicit "secrets" value.
-    success_url = _build_success_redirect_url(provider, page_of_origin)
+    success_url = _build_success_redirect_url(provider, page_of_origin, connector_detail_path)
     if dashboard_url:
         return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
     return RedirectResponse(url=success_url, status_code=302)
@@ -2835,6 +2963,7 @@ async def _google_callback_from_state(
     state_entry: _StateEntry,
     db_manager: Any,
     page_of_origin: str | None,
+    connector_detail_path: str | None = None,
 ) -> Response:
     """Run the full Google OAuth callback using an already-validated state entry.
 
@@ -2842,6 +2971,9 @@ async def _google_callback_from_state(
     generalised route reuses the existing credential persistence logic without
     duplicating it.  The CSRF state has already been validated and consumed by
     the caller.
+
+    When ``connector_detail_path`` is set the success redirect deep-links to the
+    specific connector detail page instead of the roster.
     """
     shared_pool = _get_shared_pool(db_manager)
     dashboard_url = _get_dashboard_url()
@@ -3039,10 +3171,10 @@ async def _google_callback_from_state(
         ),
     )
 
-    # Always redirect based on page_of_origin (default → /secrets).
+    # Priority: connector_detail_path (deep-link) > page_of_origin > default (/secrets).
     # _build_success_redirect_url resolves None to "secrets" so the
     # missing/default case is handled identically to an explicit "secrets" value.
-    success_url = _build_success_redirect_url("google", page_of_origin)
+    success_url = _build_success_redirect_url("google", page_of_origin, connector_detail_path)
     if dashboard_url:
         return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
     return RedirectResponse(url=success_url, status_code=302)

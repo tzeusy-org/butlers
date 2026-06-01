@@ -18,10 +18,15 @@
  * guaranteeing consistent auth label/color treatment across all three surfaces
  * (spec AC2).
  *
+ * OAuth reauth deep-link: when the user clicks re-authorize on this page, the
+ * OAuth start URL includes connector_detail_path so the callback redirects back
+ * to this specific connector detail page instead of the connectors roster.
+ *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector Detail"
  */
 
+import { useCallback } from 'react'
 import { useParams } from 'react-router'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchSurface } from '@/components/ingestion/dispatch'
@@ -33,6 +38,7 @@ import {
   useConnectorRoutingRules,
   useConnectorStats,
 } from '@/hooks/use-ingestion'
+import { getProviderOAuthStartUrl } from '@/api/client'
 
 // ---------------------------------------------------------------------------
 // ConnectorDetailPage
@@ -75,6 +81,27 @@ export default function ConnectorDetailPage() {
   const connector = detailResp?.data
   const stats = statsResp?.data
 
+  // Build the onReauth handler: initiates OAuth reauth for this connector's
+  // provider (derived from connector_type) and carries connector_detail_path
+  // so the callback deep-links back to this specific detail page.
+  const handleReauth = useCallback(() => {
+    if (!connectorType || !endpointIdentity) return
+    // Derive the OAuth provider name from connector_type.  The backend registry
+    // only accepts "google" and "spotify" as provider keys; connector_type values
+    // like "google_health" or "google_drive" must be mapped to "google".
+    const provider = connectorType.startsWith('google') ? 'google' : connectorType
+    // connector_detail_path is "<type>/<identity>" — the backend validates the
+    // format and silently ignores it if it doesn't match, falling back to the
+    // roster.
+    const connectorDetailPath = `${connectorType}/${endpointIdentity}`
+    const url = getProviderOAuthStartUrl(provider, {
+      pageOfOrigin: 'ingestion',
+      connectorDetailPath,
+      forceConsent: true,
+    })
+    window.location.href = url
+  }, [connectorType, endpointIdentity])
+
   return (
     <DispatchLayout>
       <IngestionSubNav />
@@ -94,6 +121,7 @@ export default function ConnectorDetailPage() {
             recentEvents={eventsResp ?? null}
             incidents={incidentsResp ?? null}
             routingRules={routingRulesResp ?? null}
+            onReauth={handleReauth}
           />
         ) : (
           <NotFoundState connectorType={connectorType} endpointIdentity={endpointIdentity} />
