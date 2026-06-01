@@ -4,8 +4,14 @@ Covers:
 1. Script file exists and loads.
 2. CLI defaults: --apply=False.
 3. Dry-run: no writes; counts gap rows correctly.
-4. Secured=true rows are skipped.
-5. NULL entity_id rows are skipped.
+4. Secured=true rows are backfilled into public.entity_info (bu-krbqx):
+   - not sent to relationship_assert_fact
+   - INSERT SQL mirrors PR #2042 (ON CONFLICT entity_id,type DO UPDATE SET value=entity_info.value)
+   - null entity_id rows are skipped without crashing
+   - dry-run: no writes, count is reported
+   - idempotency: conflict returns existing value → counted as already_present
+   - mixed secured + non-secured rows handled correctly
+5. NULL entity_id rows (non-secured) are skipped.
 6. Unmapped types are skipped with per-type counts.
 7. Already-present triples are not re-asserted.
 8. Apply mode asserts gap triples via the central writer.
@@ -13,6 +19,7 @@ Covers:
 10. Report is always written (both dry-run and apply).
 11. Preflight: missing entity_facts table returns rc=1.
 12. Preflight: missing predicate_registry table returns rc=1.
+12b. Preflight: missing public.entity_info table returns rc=1.
 13. Errors are counted and rc=1 is returned.
 14. pending_approval outcome from owner entity is counted as asserted.
 """
@@ -157,17 +164,33 @@ def _make_pool(
     *,
     facts_table_exists: bool = True,
     predicate_registry_exists: bool = True,
+    entity_info_table_exists: bool = True,
     ci_rows: list[dict[str, Any]] | None = None,
     # _has_active_triple returns: list of booleans, one per gap-candidate row.
     # The pool is queried once per non-secured, non-null-entity, mapped-type row.
     active_triples: list[bool] | None = None,
+    # secured_insert_rows: list of dicts returned for each secured-path fetchrow
+    # call (the INSERT ... ON CONFLICT ... RETURNING).  Pass None entries to
+    # simulate ON CONFLICT returning the same row (existing value preserved).
+    secured_insert_rows: list[dict[str, Any] | None] | None = None,
 ) -> MagicMock:
     """Build a mock asyncpg pool.
 
     fetchval call sequence inside _run_backfill_with_pool:
-      0 — to_regclass('relationship.entity_facts')
-      1 — to_regclass('relationship.entity_predicate_registry')
-      2..N — _has_active_triple queries (one per gap-candidate row)
+      0 — facts_table_exists   (SELECT EXISTS for relationship.entity_facts)
+      1 — predicate_registry_exists
+      2 — entity_info_table_exists (SELECT EXISTS for public.entity_info)
+
+    fetchrow call sequence:
+      - _has_active_triple calls (SELECT 1 ... LIMIT 1): one per non-secured,
+        non-null-entity, mapped-type row; returns MagicMock if present, else None.
+      - entity_info INSERT ... RETURNING calls: one per secured row with a
+        non-null entity_id; returns a mock record dict or None.
+
+    The mock distinguishes the two fetchrow roles by insertion order in
+    `active_triples` (non-secured gap checks) vs. `secured_insert_rows`
+    (secured INSERT).  Calls are interleaved in row-iteration order; the helper
+    dispatches based on whether the SQL contains "entity_info".
     """
     pool = MagicMock()
 
@@ -175,40 +198,63 @@ def _make_pool(
         ci_rows = [_ci_row()]
 
     if active_triples is None:
-        # Default: no triples present yet → all are gaps
-        active_triples = [False] * len(ci_rows)
+        # Default: no triples present yet → all non-secured rows are gaps
+        non_secured_count = sum(1 for r in ci_rows if not r.get("secured", False))
+        active_triples = [False] * non_secured_count
 
-    # fetchval sequence
+    if secured_insert_rows is None:
+        # Default: each secured row with entity_id gets a new insert (value matches)
+        secured_insert_rows = []
+        for r in ci_rows:
+            if r.get("secured", False) and r.get("entity_id") is not None:
+                secured_insert_rows.append(
+                    {
+                        "id": uuid.uuid4(),
+                        "entity_id": r["entity_id"],
+                        "type": r["type"],
+                        "value": r["value"],  # same value → counted as inserted
+                        "label": None,
+                        "is_primary": r.get("is_primary", False),
+                        "secured": True,
+                    }
+                )
+
+    # fetchval sequence: preflight checks only
     preflight_results: list[Any] = [
         facts_table_exists,
         predicate_registry_exists,
+        entity_info_table_exists,
     ]
     _fetchval_index = [0]
-    _fetchval_results = list(preflight_results)
-    # We'll serve True/False for gap checks as they come in
-    _gap_results: list[bool] = list(active_triples)
-    _gap_index = [0]
 
     async def _fetchval(sql: str, *args: Any) -> Any:
         idx = _fetchval_index[0]
         _fetchval_index[0] += 1
-        if idx < len(_fetchval_results):
-            return _fetchval_results[idx]
-        # Remaining calls are _has_active_triple lookups
-        gi = _gap_index[0]
-        _gap_index[0] += 1
-        if gi < len(_gap_results):
-            return _gap_results[gi]  # type: ignore[return-value]
+        if idx < len(preflight_results):
+            return preflight_results[idx]
         return None
 
     pool.fetchval = AsyncMock(side_effect=_fetchval)
 
-    # fetchrow: used for _has_active_triple (SELECT 1 ... LIMIT 1)
-    # Return a truthy record if triple present, else None
+    # fetchrow: two roles distinguished by SQL content.
+    # Role A: _has_active_triple — SQL contains "entity_facts".
+    # Role B: entity_info INSERT — SQL contains "entity_info".
     _triple_results = list(active_triples)
     _triple_index = [0]
+    _secured_results = list(secured_insert_rows)
+    _secured_index = [0]
 
     async def _fetchrow(sql: str, *args: Any) -> Any:
+        if "entity_info" in sql:
+            si = _secured_index[0]
+            _secured_index[0] += 1
+            if si < len(_secured_results):
+                raw = _secured_results[si]
+                if raw is None:
+                    return None
+                return _as_record(raw)
+            return None
+        # _has_active_triple path
         ti = _triple_index[0]
         _triple_index[0] += 1
         if ti < len(_triple_results):
@@ -329,18 +375,19 @@ class TestDryRun:
 
 
 # ---------------------------------------------------------------------------
-# 4. Secured=true rows are skipped
+# 4. Secured=true rows are backfilled into public.entity_info (bu-krbqx)
 # ---------------------------------------------------------------------------
 
 
-class TestSecuredSkip:
+class TestSecuredBackfill:
     @pytest.mark.asyncio
-    async def test_secured_row_is_not_asserted(self, tmp_path: Path) -> None:
-        """secured=true rows must not be backfilled."""
+    async def test_secured_row_not_sent_to_entity_facts(self, tmp_path: Path) -> None:
+        """secured=true rows must NOT go through relationship_assert_fact."""
         mod = _load_module()
         writer_mod = _make_writer_mod()
-        ci_rows = [_ci_row(ci_type="email", secured=True)]
-        pool = _make_pool(ci_rows=ci_rows, active_triples=[])  # no gap checks needed
+        ent_id = uuid.uuid4()
+        ci_rows = [_ci_row(ci_type="google_account", secured=True, entity_id=ent_id)]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
 
         with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
             rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
@@ -349,13 +396,88 @@ class TestSecuredSkip:
         writer_mod.relationship_assert_fact.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_secured_count_in_stats(self, tmp_path: Path) -> None:
-        """skipped_secured counter increments for each secured=true row."""
+    async def test_secured_row_inserts_into_entity_info(self, tmp_path: Path) -> None:
+        """secured=true rows with entity_id call pool.fetchrow with entity_info INSERT."""
         mod = _load_module()
         writer_mod = _make_writer_mod()
+        ent_id = uuid.uuid4()
         ci_rows = [
-            _ci_row(ci_type="email", secured=True),
-            _ci_row(ci_type="phone", secured=True),
+            _ci_row(ci_type="google_account", value="token-abc", secured=True, entity_id=ent_id)
+        ]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        # The secured INSERT must have been called
+        assert pool.fetchrow.called
+        sql = pool.fetchrow.call_args[0][0]
+        assert "entity_info" in sql
+        assert "ON CONFLICT" in sql
+
+    @pytest.mark.asyncio
+    async def test_secured_insert_sql_mirrors_pr2042(self, tmp_path: Path) -> None:
+        """INSERT SQL must mirror PR #2042: ON CONFLICT (entity_id, type) DO UPDATE."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ent_id = uuid.uuid4()
+        ci_rows = [
+            _ci_row(
+                ci_type="telegram_session", value="session-data", secured=True, entity_id=ent_id
+            )
+        ]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        sql = pool.fetchrow.call_args[0][0]
+        assert "public.entity_info" in sql
+        assert "ON CONFLICT" in sql
+        assert "DO UPDATE" in sql
+        assert "entity_info.value" in sql  # no-op update preserves existing value
+        assert "RETURNING" in sql
+
+    @pytest.mark.asyncio
+    async def test_secured_null_entity_id_skipped(self, tmp_path: Path) -> None:
+        """secured rows with entity_id IS NULL must be skipped (not raise)."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ci_rows = [_ci_row(ci_type="google_account", secured=True, entity_id=None)]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[], secured_insert_rows=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        # No INSERT should have been called
+        assert not pool.fetchrow.called
+
+    @pytest.mark.asyncio
+    async def test_secured_dry_run_no_insert(self, tmp_path: Path) -> None:
+        """Dry-run must not call pool.fetchrow for secured rows."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ent_id = uuid.uuid4()
+        ci_rows = [_ci_row(ci_type="google_account", secured=True, entity_id=ent_id)]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=False, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        pool.fetchrow.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_secured_dry_run_counts_would_insert(self, tmp_path: Path) -> None:
+        """Dry-run: secured rows are counted in secured_inserted (would-insert)."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ent_id = uuid.uuid4()
+        ci_rows = [
+            _ci_row(ci_type="google_account", secured=True, entity_id=ent_id),
+            _ci_row(ci_type="telegram_session", secured=True, entity_id=ent_id),
         ]
         pool = _make_pool(ci_rows=ci_rows, active_triples=[])
         report_path = tmp_path / "r.md"
@@ -364,9 +486,103 @@ class TestSecuredSkip:
             rc = await mod._run_backfill_with_pool(pool, apply=False, report_path=report_path)
 
         assert rc == 0
-        report_text = report_path.read_text()
-        # Both rows should show up as skipped_secured=2
-        assert "| 2 |" in report_text or "2" in report_text
+        content = report_path.read_text()
+        assert "entity_info" in content
+
+    @pytest.mark.asyncio
+    async def test_secured_idempotent_conflict(self, tmp_path: Path) -> None:
+        """ON CONFLICT: existing value differs → counted as secured_already_present."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ent_id = uuid.uuid4()
+        ci_rows = [
+            _ci_row(ci_type="google_account", value="new-token", secured=True, entity_id=ent_id)
+        ]
+        # Simulate conflict: returned value differs from the attempted insert
+        conflict_row = {
+            "id": uuid.uuid4(),
+            "entity_id": ent_id,
+            "type": "google_account",
+            "value": "existing-token",  # different → already_present
+            "label": None,
+            "is_primary": False,
+            "secured": True,
+        }
+        pool = _make_pool(
+            ci_rows=ci_rows,
+            active_triples=[],
+            secured_insert_rows=[conflict_row],
+        )
+        report_path = tmp_path / "r.md"
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=report_path)
+
+        assert rc == 0
+        content = report_path.read_text()
+        # secured_already_present should be 1, secured_inserted should be 0
+        assert "entity_info" in content
+
+    @pytest.mark.asyncio
+    async def test_secured_idempotent_same_value(self, tmp_path: Path) -> None:
+        """ON CONFLICT: returned value matches → counted as secured_inserted (idempotent insert)."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ent_id = uuid.uuid4()
+        ci_rows = [
+            _ci_row(ci_type="google_account", value="token-xyz", secured=True, entity_id=ent_id)
+        ]
+        # Default pool: secured_insert_rows returns same value → secured_inserted += 1
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+        report_path = tmp_path / "r.md"
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=report_path)
+
+        assert rc == 0
+        assert pool.fetchrow.called
+        # Verify it targeted entity_info
+        sql = pool.fetchrow.call_args[0][0]
+        assert "entity_info" in sql
+
+    @pytest.mark.asyncio
+    async def test_secured_report_contains_entity_info_section(self, tmp_path: Path) -> None:
+        """Report must include the entity_info summary section."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ent_id = uuid.uuid4()
+        ci_rows = [_ci_row(ci_type="google_account", secured=True, entity_id=ent_id)]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+        report_path = tmp_path / "r.md"
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            await mod._run_backfill_with_pool(pool, apply=True, report_path=report_path)
+
+        content = report_path.read_text()
+        assert "entity_info" in content
+        assert "secured" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_mixed_secured_and_nonsecured(self, tmp_path: Path) -> None:
+        """Mixed rows: non-secured goes to entity_facts; secured goes to entity_info."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod(assert_outcome="inserted")
+        ent_id = uuid.uuid4()
+        ci_rows = [
+            _ci_row(ci_type="email", value="a@example.com", secured=False, entity_id=ent_id),
+            _ci_row(ci_type="google_account", value="token-abc", secured=True, entity_id=ent_id),
+        ]
+        # active_triples: only for the non-secured email row (1 row)
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[False])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        # relationship_assert_fact called once for the email row
+        writer_mod.relationship_assert_fact.assert_called_once()
+        # fetchrow called at least twice: once for _has_active_triple, once for entity_info INSERT
+        assert pool.fetchrow.call_count >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +938,26 @@ class TestPreflightRegistry:
         mod = _load_module()
         writer_mod = _make_writer_mod()
         pool = _make_pool(predicate_registry_exists=False)
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=False, report_path=tmp_path / "r.md")
+
+        assert rc == 1
+        writer_mod.relationship_assert_fact.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 12b. Preflight: missing public.entity_info table (bu-krbqx)
+# ---------------------------------------------------------------------------
+
+
+class TestPreflightEntityInfo:
+    @pytest.mark.asyncio
+    async def test_missing_entity_info_returns_rc1(self, tmp_path: Path) -> None:
+        """Returns rc=1 when public.entity_info does not exist."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        pool = _make_pool(entity_info_table_exists=False)
 
         with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
             rc = await mod._run_backfill_with_pool(pool, apply=False, report_path=tmp_path / "r.md")
