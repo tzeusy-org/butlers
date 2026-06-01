@@ -31,6 +31,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.oauth_scope_registry import (
+    build_scope_rows,
+    compute_auth_status,
+    get_applicability,
+    get_scope_manifest,
+)
 from butlers.config import load_config
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.modules.metrics.prometheus import async_query, async_query_range
@@ -50,6 +56,8 @@ if _spec is not None and _spec.loader is not None:
     SetEligibilityRequest = _models.SetEligibilityRequest
     SetEligibilityResponse = _models.SetEligibilityResponse
     ConnectorEntry = _models.ConnectorEntry
+    ConnectorAuthBlock = _models.ConnectorAuthBlock
+    ConnectorScopeRow = _models.ConnectorScopeRow
     ConnectorSummary = _models.ConnectorSummary
     ConnectorStatsHourly = _models.ConnectorStatsHourly
     ConnectorStatsDaily = _models.ConnectorStatsDaily
@@ -793,10 +801,87 @@ async def get_eligibility_history(
     )
 
 
+def _build_connector_auth_blocks(
+    connector_type: str,
+    observed_scopes: list[str] | None,
+    required_scopes_version: int | None,
+) -> tuple[Any, list[Any] | None]:
+    """Compute the (auth, scopes) blocks for a connector-detail response.
+
+    Returns (ConnectorAuthBlock, list[ConnectorScopeRow] | None).
+
+    Spec: openspec/changes/add-connector-oauth-scope-surface/
+          specs/connector-oauth-scope-surface/spec.md
+    """
+    applicability = get_applicability(connector_type)
+    manifest = get_scope_manifest(connector_type)
+
+    if not applicability.oauth_supported or manifest is None:
+        # Non-OAuth connector: return unsupported auth block with alt_surface.
+        auth_block = ConnectorAuthBlock(
+            status="unsupported",
+            type=applicability.credential_model,
+            note=applicability.note,
+            alt_surface={
+                "kind": applicability.alt_surface_kind or "static-token",
+                "validity_known": False,
+                "validity_expires_at": None,
+                "remediation_path": (
+                    applicability.alt_surface_remediation_path or "/settings/connectors"
+                ),
+            },
+        )
+        return auth_block, []
+
+    # OAuth connector: compute auth_status and scopes block.
+    auth_status = compute_auth_status(
+        connector_type=connector_type,
+        manifest=manifest,
+        observed_scopes=observed_scopes,
+        required_scopes_version=required_scopes_version,
+    )
+
+    auth_block = ConnectorAuthBlock(
+        status=auth_status,
+        type="oauth",
+        note=f"{applicability.credential_model} · oauth refresh",
+        required_scopes_version=required_scopes_version,
+        manifest_version=manifest.version,
+    )
+
+    scope_rows_raw = build_scope_rows(manifest, observed_scopes)
+    scope_rows = [
+        ConnectorScopeRow(
+            name=sr.name,
+            category=sr.category,
+            status=sr.status,
+            sensitive_granted=sr.sensitive_granted,
+            granted_at=sr.granted_at,
+            required_since=sr.required_since,
+            serif_note=sr.serif_note,
+        )
+        for sr in scope_rows_raw
+    ]
+
+    return auth_block, scope_rows
+
+
 def _row_to_connector_entry(r: dict) -> Any:
     """Convert a connector_registry asyncpg row dict to ConnectorEntry."""
+    connector_type = r["connector_type"]
+
+    # OAuth scope surface: read the columns added by core_114 migration.
+    # Fall back gracefully to None when columns are absent (pre-migration rows
+    # or list endpoints that do not SELECT these columns).
+    observed_scopes: list[str] | None = r.get("observed_scopes")
+    required_scopes_version: int | None = r.get("required_scopes_version")
+
+    auth_block, scope_rows = _build_connector_auth_blocks(
+        connector_type, observed_scopes, required_scopes_version
+    )
+
     return ConnectorEntry(
-        connector_type=r["connector_type"],
+        connector_type=connector_type,
         endpoint_identity=r["endpoint_identity"],
         instance_id=str(r["instance_id"]) if r.get("instance_id") else None,
         version=r.get("version"),
@@ -818,6 +903,8 @@ def _row_to_connector_entry(r: dict) -> Any:
         if r.get("checkpoint_updated_at")
         else None,
         settings=r.get("settings"),
+        auth=auth_block,
+        scopes=scope_rows,
     )
 
 
@@ -850,6 +937,7 @@ async def list_connectors(
             " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
             " cr.counter_dedupe_accepted,"
             " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
+            " cr.observed_scopes, cr.required_scopes_version,"
             " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
             " COALESCE(ts.today_failed, 0) AS today_messages_failed"
             " FROM connector_registry cr"
@@ -971,6 +1059,7 @@ async def get_connector_detail(
             " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
             " cr.counter_dedupe_accepted,"
             " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
+            " cr.observed_scopes, cr.required_scopes_version,"
             " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
             " COALESCE(ts.today_failed, 0) AS today_messages_failed"
             " FROM connector_registry cr"

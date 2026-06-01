@@ -3110,6 +3110,7 @@ export function getEducationMindMapStrugglingNodes(
 // ---------------------------------------------------------------------------
 
 import type {
+  ConnectorAuthBlock,
   ConnectorCheckpoint,
   ConnectorCounters,
   ConnectorCrossSummaryResponse,
@@ -3120,6 +3121,7 @@ import type {
   ConnectorFanoutEntry,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
+  ConnectorScopeEntry,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
@@ -3134,11 +3136,13 @@ import type {
 
 // Re-export the types so they are accessible from this module too.
 export type {
+  ConnectorAuthBlock,
   ConnectorCheckpoint,
   ConnectorCrossSummaryResponse,
   ConnectorCounters,
   ConnectorDaySummary,
   ConnectorDetail,
+  ConnectorScopeEntry,
   ConnectorEventsResponse,
   ConnectorFanout,
   ConnectorFanoutEntry,
@@ -3182,6 +3186,10 @@ interface _BackendConnectorEntry {
   checkpoint_cursor: string | null;
   checkpoint_updated_at: string | null;
   settings: Record<string, unknown> | null;
+  /** OAuth scope surface — connector-oauth-scope-surface capability. */
+  auth?: ConnectorAuthBlock | null;
+  /** OAuth scopes — connector-oauth-scope-surface capability. */
+  scopes?: ConnectorScopeEntry[] | null;
   /** Present only on endpoints that compute hourly timeseries (e.g. /api/ingestion/connectors/summaries). */
   hourly_events?: number[];
 }
@@ -3282,6 +3290,8 @@ function _toConnectorDetail(entry: _BackendConnectorEntry): ConnectorDetail {
       dedupe_accepted: entry.counter_dedupe_accepted,
     },
     settings: entry.settings,
+    auth: entry.auth ?? null,
+    scopes: entry.scopes ?? null,
   };
 }
 

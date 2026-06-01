@@ -86,6 +86,64 @@ class SetEligibilityResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ConnectorScopeRow(BaseModel):
+    """One entry in the scopes[] block of a connector-detail response.
+
+    Spec: openspec/changes/add-connector-oauth-scope-surface/
+          specs/connector-oauth-scope-surface/spec.md §Scopes block shape
+    """
+
+    name: str
+    """Provider scope string, e.g. 'user-read-recently-played'."""
+
+    category: str
+    """'required' | 'optional' | 'sensitive' | 'extra'."""
+
+    status: str
+    """'ok' | 'missing' | 'extra'."""
+
+    sensitive_granted: bool = False
+    """True when this scope is sensitive AND currently granted."""
+
+    granted_at: str | None = None
+    """ISO8601 timestamp when the scope was first granted; NULL in v1."""
+
+    required_since: str | None = None
+    """ISO8601 timestamp when this scope became required; NULL in v1."""
+
+    serif_note: str = ""
+    """Single sentence explaining the scope's purpose (no trailing period)."""
+
+
+class ConnectorAuthBlock(BaseModel):
+    """The 'auth' block in a connector-detail response.
+
+    Spec: openspec/changes/add-connector-oauth-scope-surface/
+          specs/connector-oauth-scope-surface/spec.md §Auth block
+    """
+
+    status: str
+    """ok | degraded | expired | rotation-needed | unsupported | unconfigured."""
+
+    type: str
+    """'oauth' for OAuth connectors; credential model string for non-OAuth."""
+
+    note: str | None = None
+    """Provider-specific summary copy."""
+
+    expires_at: str | None = None
+    """Access token expiry (ISO8601) or null."""
+
+    required_scopes_version: int | None = None
+    """Manifest version captured at last reauth; OAuth connectors only."""
+
+    manifest_version: int | None = None
+    """Current manifest version; OAuth connectors only."""
+
+    alt_surface: dict | None = None
+    """For non-OAuth connectors: alternative credential surface block."""
+
+
 class ConnectorEntry(BaseModel):
     """A connector entry from the connector_registry table.
 
@@ -117,6 +175,10 @@ class ConnectorEntry(BaseModel):
     checkpoint_updated_at: str | None = None
     # Runtime-configurable settings (e.g. discretion thresholds)
     settings: dict | None = None
+    # OAuth scope surface (connector-oauth-scope-surface capability)
+    # Both fields are None when the capability data is not yet available.
+    auth: ConnectorAuthBlock | None = None
+    scopes: list[ConnectorScopeRow] | None = None
 
 
 class ConnectorSummary(BaseModel):

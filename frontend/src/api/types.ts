@@ -2041,6 +2041,33 @@ export interface ConnectorSummary {
   hourly_events: number[];
 }
 
+/** One OAuth scope entry from connector-oauth-scope-surface backend. */
+export interface ConnectorScopeEntry {
+  name: string;
+  category: "required" | "optional" | "sensitive" | "extra";
+  status: "ok" | "missing" | "extra";
+  sensitive_granted: boolean;
+  granted_at: string | null;
+  required_since: string | null;
+  serif_note: string;
+}
+
+/** Auth block from connector-oauth-scope-surface backend. */
+export interface ConnectorAuthBlock {
+  status: "ok" | "degraded" | "expired" | "rotation-needed" | "unsupported" | "unconfigured";
+  type: string;
+  note: string | null;
+  expires_at: string | null;
+  required_scopes_version: number | null;
+  manifest_version: number | null;
+  alt_surface: {
+    kind: "session-validity" | "static-token" | "device-pairing";
+    validity_known: boolean;
+    validity_expires_at: string | null;
+    remediation_path: string;
+  } | null;
+}
+
 /** Full connector detail (GET /api/connectors/:type/:identity). */
 export interface ConnectorDetail extends ConnectorSummary {
   instance_id: string | null;
@@ -2048,6 +2075,10 @@ export interface ConnectorDetail extends ConnectorSummary {
   checkpoint: ConnectorCheckpoint | null;
   counters: ConnectorCounters | null;
   settings: Record<string, unknown> | null;
+  /** OAuth scope surface from connector-oauth-scope-surface capability. Null when not yet available. */
+  auth: ConnectorAuthBlock | null;
+  /** OAuth scopes from connector-oauth-scope-surface capability. Null when not yet available. */
+  scopes: ConnectorScopeEntry[] | null;
 }
 
 export interface ConnectorCheckpoint {
