@@ -34,7 +34,7 @@ Source: `docs/redesigns/2026-05-25-secrets-brief.md §0`
 | No brand-coloured "Connect" / "Reauthorize" CTAs | **COMPLIANT** | `pages.tsx` uses `PillBtn` commit-variant; provider names appear in mono via `ProviderMark.tsx`. |
 | No "Connected" / "Active" / "Linked" status words | **COMPLIANT** | `StateLabel.tsx` uses only `{ok, expired, revoked, expiring_soon, scope_mismatch, failed, never_set}`. No prose status words in any passport component. |
 | No stacked bespoke provider Setup cards | **COMPLIANT** | Deleted in PR #1976. All components under `frontend/src/components/settings/` replaced with one row-template + drawer pattern. |
-| No making the reveal-eye disappear | **COMPLIANT** | Reveal stays as Tweak default `eye`; `TweaksPanel.tsx:213` exposes `eye / hover / never`. |
+| No making the reveal-eye disappear | **COMPLIANT** | Superseded by the 2026-06-02 product decision removing Tweaks chrome; explicit reveal actions remain visible where credential pages support reveal. |
 | No LLM-narrated UI on `/secrets` surfaces | **COMPLIANT** | No LLM calls in any passport component. ESLint rule (`eslint.config.js:35–56`) enforces this at lint time. Probe error tails are verbatim provider strings. |
 
 ---
@@ -108,8 +108,7 @@ Source: `docs/redesigns/2026-05-25-secrets-brief.md §0`
 | Chip hidden when only owner in scope | `IdentityChip.tsx:55–62` — renders `null` when `identities.length <= 1` | **SHIPPED** |
 | `?focus=<key>` deep-link routing | `DirectionPassport.tsx` — `parseFocus` / `encodeFocus` utilities; URL-safe colons | **SHIPPED** |
 | Unknown focus key shows amber toast (no LLM) | `DirectionPassport.tsx` — static templated string | **SHIPPED** |
-| Tweaks panel: 4 toggles (reveal-mode, default-sort, show-verify-cmd, voice-paragraph) | `TweaksPanel.tsx:170–255` | **SHIPPED** |
-| Tweaks persist via `localStorage` keyed `secrets.tweaks.*` | `TweaksPanel.tsx:22–36` — `localStorage.getItem/setItem` | **SHIPPED** |
+| Prototype Tweaks chrome absent | `DirectionPassport.tsx` renders no Tweaks trigger or panel; stale `secrets.tweaks.*` localStorage is ignored | **SUPERSEDED 2026-06-02** |
 | No-LLM-Narration Invariant (binding spec invariant) | `eslint.config.js:35–56` — `no-restricted-imports` forbids `@anthropic-ai/sdk` in secrets surfaces | **SHIPPED** |
 | Voice paragraph is stored prose (templated, no LLM) | `DirectionPassport.tsx` — `{kpi.summary}` string interpolation | **SHIPPED** |
 | WhatBreaks list sourced from `GET /api/secrets/breaks-catalogue` | `WhatBreaks.tsx` — fetches `breaks-catalogue`; `pages.tsx` passes `breaks` array from API | **SHIPPED** |
@@ -136,7 +135,7 @@ Source: `openspec/changes/redesign-secrets-passport/design.md §Open Questions`
 | Q6 | Per-kind PageUser field deltas (oauth / token / apikey / webhook) | **resolved-in-spec** | `UserSecret` shape covers all; per-kind variants populate/omit fields by `kind`. Implemented: `secrets_v2.py:235–290`. |
 | Q7 | Spine `needs-hand` pin: backend tag vs client-side compute | **defer-to-implementation → resolved-in-code** | Per-row `needs_hand` is client-derived from `state != ok`. `meta.needs_hand_count` IS server-computed: `secrets_v2.py:798–813`. |
 | Q8 | WhatBreaks empty-state when `state=never_set` | **defer-to-implementation → resolved-in-code** | Block omitted entirely when catalogue returns zero rows. `WhatBreaks.tsx` returns `null` on empty `breaks`. |
-| Q9 | Tweaks persistence mechanism | **defer-to-implementation → resolved-in-code** | `localStorage` keyed `secrets.tweaks.*` — no ingestion/entity precedent was shipped first. `TweaksPanel.tsx:22–36`. |
+| Q9 | Tweaks persistence mechanism | **superseded** | Product decision on 2026-06-02 removed the Tweaks panel; stale `secrets.tweaks.*` localStorage is ignored. |
 | Q10 | Font verification (Inter Tight / Source Serif 4 / JetBrains Mono) | **defer-to-implementation → resolved-in-code** | Verified + added in PR #1972 (bu-p54ry). `frontend/src/index.css` imports confirmed. |
 | Q11 | Color-token reconciliation (`--bg/--fg/--mfg/--dim/--border`) | **defer-to-implementation → resolved-in-code** | Reconciled in PR #1972 and #1973. Dispatch tokens added to `index.css`. |
 | Q12 | Member-view access control implementation | **resolved-in-spec** | Projection-lens semantics: no backend auth boundary. `secrets_v2.py` mutation endpoints do not check identity-scoped permission. |

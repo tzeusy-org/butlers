@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
-// Passport constants — state catalog, tweaks keys, spine helpers [bu-qu8v8]
+// Passport constants — state catalog and spine helpers [bu-qu8v8]
 // ---------------------------------------------------------------------------
 
-import type { CredentialState, StateMeta, SecretsTweaks } from "./types.ts";
+import type { CredentialState, StateMeta } from "./types.ts";
 
 // ── State catalog ────────────────────────────────────────────────────────────
 // rank: severity sort order. 0 = most urgent, 99 = quietest.
@@ -30,23 +30,6 @@ export function needsHand(state: CredentialState): boolean {
 export function severityRank(state: CredentialState): number {
   return STATE_CATALOG[state]?.rank ?? 99;
 }
-
-// ── localStorage keys ────────────────────────────────────────────────────────
-// Keyed by `secrets.tweaks.*` per spec §Tweaks-Panel State Persistence.
-
-export const TWEAKS_KEYS = {
-  revealMode:    "secrets.tweaks.revealMode",
-  defaultSort:   "secrets.tweaks.defaultSort",
-  showVerifyCmd: "secrets.tweaks.showVerifyCmd",
-  voiceParagraph:"secrets.tweaks.voiceParagraph",
-} as const;
-
-export const TWEAKS_DEFAULTS: SecretsTweaks = {
-  revealMode:    "eye",
-  defaultSort:   "severity",
-  showVerifyCmd: false,
-  voiceParagraph: true,
-};
 
 // ── Focus key helpers ────────────────────────────────────────────────────────
 

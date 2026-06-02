@@ -99,13 +99,12 @@ function HeadingBand({
         </div>
       </div>
 
-      {/* State plaque — rotated stamp */}
+      {/* State plaque */}
       <div
         className="flex flex-col gap-0.5 items-end shrink-0 p-2"
         style={{
           border: `1.5px solid ${stateColor}`,
           color: stateColor,
-          transform: "rotate(1.5deg)",
         }}
         data-state-plaque="true"
       >

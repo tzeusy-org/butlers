@@ -142,14 +142,6 @@ export interface Identity {
   hue?: string;
 }
 
-/** Tweaks panel state. */
-export interface SecretsTweaks {
-  revealMode: RevealMode;
-  defaultSort: SpineSortMode;
-  showVerifyCmd: boolean;
-  voiceParagraph: boolean;
-}
-
 /** Inventory response shape (mocked for B3). */
 export interface InventoryResponse {
   user: UserCredential[];
