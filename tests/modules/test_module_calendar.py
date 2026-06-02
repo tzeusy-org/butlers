@@ -49,11 +49,15 @@ from butlers.modules.calendar import (
     CalendarModule,
     CalendarProvider,
     CalendarRequestError,
+    CalendarTokenRefreshError,
     _coerce_expires_in_seconds,
     _extract_google_credential_value,
     _extract_google_private_metadata,
     _google_event_to_calendar_event,
     _google_rfc3339,
+    _GoogleOAuthClient,
+    _GoogleOAuthCredentials,
+    _GoogleProvider,
     _parse_google_datetime,
     _safe_google_error_message,
 )
@@ -696,6 +700,75 @@ class TestGoogleHelpers:
         generated, name = _extract_google_private_metadata(extended)
         assert generated is True
         assert name == "general"
+
+    async def test_oauth_invalid_grant_marks_revoked_and_skips_retries(self):
+        requests: list[httpx.Request] = []
+
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                400,
+                json={"error": "invalid_grant", "error_description": "revoked"},
+                request=request,
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        on_revoked = AsyncMock()
+        oauth = _GoogleOAuthClient(
+            _GoogleOAuthCredentials(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+            ),
+            client,
+            on_token_revoked=on_revoked,
+        )
+
+        try:
+            with pytest.raises(CalendarTokenRefreshError, match="invalid_grant"):
+                await oauth.get_access_token()
+        finally:
+            await client.aclose()
+
+        assert len(requests) == 1
+        on_revoked.assert_awaited_once()
+
+    async def test_google_provider_marks_configured_account_revoked_on_invalid_grant(self):
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"error": "invalid_grant", "error_description": "revoked"},
+                request=request,
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        pool = MagicMock()
+        pool.execute = AsyncMock()
+        provider = _GoogleProvider(
+            CalendarConfig(provider="google", account="account@example.test"),
+            _GoogleOAuthCredentials(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+            ),
+            http_client=client,
+            pool=pool,
+        )
+
+        try:
+            with pytest.raises(CalendarTokenRefreshError):
+                await provider._oauth.get_access_token()
+        finally:
+            await provider.shutdown()
+
+        revoked_calls = [
+            call
+            for call in pool.execute.await_args_list
+            if "SET status = 'revoked'" in " ".join(call.args[0].split())
+        ]
+        assert len(revoked_calls) == 1
+        assert "WHERE email = $1" in " ".join(revoked_calls[0].args[0].split())
+        assert revoked_calls[0].args[1] == "account@example.test"
 
 
 # ---------------------------------------------------------------------------
