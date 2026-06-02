@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { SpineRow, Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli } from "./pages.tsx";
@@ -42,10 +43,15 @@ import { buildSpineEntries } from "./spine-builder.ts";
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function renderInRouter(element: React.ReactElement): string {
+  // DirectionPassport renders PageCliConnected, which reads CLI auth providers
+  // via react-query; a client must be present even though no fetch fires here.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return renderToStaticMarkup(
-    <MemoryRouter>
-      {element}
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{element}</MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

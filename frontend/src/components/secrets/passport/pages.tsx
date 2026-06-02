@@ -40,6 +40,7 @@ import {
 } from "./atoms.tsx";
 import type { Identity } from "./types.ts";
 import { reauthorizeUserCredential } from "@/api/client.ts";
+import { useCliDeviceAuth, type CliDeviceAuthState } from "@/hooks/use-cli-auth.ts";
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
@@ -760,24 +761,126 @@ export function PageSystem({
 // ── PageCli ──────────────────────────────────────────────────────────────────
 
 /**
+ * CliDeviceAuthPanel — device-code reauth surface for a CLI runtime.
+ *
+ * Renders the verification URL + one-time code while a session awaits
+ * authorization, and a status line for the other session states. Stays silent
+ * (renders nothing) until a session is started.
+ */
+function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
+  const session = auth.session;
+  if (!session && !auth.error) return null;
+
+  const statusLabel: Record<string, string> = {
+    starting: "starting…",
+    awaiting_auth: "waiting for authorization",
+    success: "connected",
+    failed: "failed",
+    expired: "expired",
+  };
+  const statusColor =
+    session?.state === "success"
+      ? "var(--green)"
+      : session?.state === "failed" || session?.state === "expired"
+        ? "var(--red)"
+        : "var(--amber)";
+
+  const showCode =
+    session?.state === "awaiting_auth" && !!session.auth_url && !!session.device_code;
+
+  return (
+    <div
+      className="flex flex-col gap-3 p-3.5"
+      style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+      data-cli-device-auth="true"
+    >
+      {auth.error && (
+        <Mono size={11} color="var(--red)">
+          {auth.error}
+        </Mono>
+      )}
+      {session && (
+        <div className="flex items-center gap-2.5">
+          <Mono size={11} upper tracking="0.16em" color={statusColor} weight={500}>
+            {statusLabel[session.state] ?? session.state}
+          </Mono>
+          {session.message && session.state !== "awaiting_auth" && (
+            <Mono size={11} color="var(--mfg)">
+              {session.message}
+            </Mono>
+          )}
+        </div>
+      )}
+      {showCode && (
+        <div className="flex flex-col gap-2">
+          <Voice size={13} maxWidth="60ch">
+            Open{" "}
+            <a
+              href={session!.auth_url!}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: "var(--fg)",
+                textDecoration: "underline",
+                textUnderlineOffset: 3,
+              }}
+            >
+              {session!.auth_url}
+            </a>{" "}
+            and enter this code:
+          </Voice>
+          <div className="flex items-center gap-3">
+            <span
+              className="px-3 py-1.5 tabular-nums"
+              style={{
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: 22,
+                fontWeight: 600,
+                letterSpacing: "0.18em",
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+              }}
+            >
+              {session!.device_code}
+            </span>
+            <PillBtn onClick={() => navigator.clipboard?.writeText(session!.device_code!)}>
+              copy
+            </PillBtn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * PageCli — CLI runtime credential page.
  *
  * Supports rotate-with-reveal flow: rotate returns the raw value once.
  * How-to-use snippet rendered as static literal (no LLM).
+ *
+ * When `deviceAuth` is supplied (by `PageCliConnected`) and the provider uses
+ * the device-code flow, the footer surfaces a connect / re-authorize button and
+ * the body renders the verification URL + one-time code.
  */
 export function PageCli({
   credential,
   showVerifyCmd = false,
   revealMode = "eye",
+  deviceAuth,
 }: {
   credential: CliCredential;
   showVerifyCmd?: boolean;
   /** Controls the reveal-token eye button. "never" hides it. */
   revealMode?: RevealMode;
+  /** Device-code reauth state; omit to disable the flow (e.g. in unit tests). */
+  deviceAuth?: CliDeviceAuthState;
 }) {
   const meta = STATE_CATALOG[credential.state] ?? STATE_CATALOG.never_set;
   const color = toneColor(meta.tone);
   const isMissing = credential.state === "never_set";
+  const sick = credential.state !== "ok" && credential.state !== "never_set";
   const stateLines: string[] = [];
   if (credential.state === "expiring" && credential.expires) {
     stateLines.push(`expires ${credential.expires}`);
@@ -920,10 +1023,32 @@ export function PageCli({
         ]}
       />
 
-      {/* Footer — rotate-with-reveal flow */}
+      {/* Device-code reauth panel (verification URL + one-time code) */}
+      {deviceAuth?.supported && <CliDeviceAuthPanel auth={deviceAuth} />}
+
+      {/* Footer — device-code flow when supported, else rotate-with-reveal */}
       <CommitFooter
         left={
-          isMissing ? (
+          deviceAuth?.supported ? (
+            deviceAuth.inProgress ? (
+              <PillBtn onClick={deviceAuth.cancel}>cancel</PillBtn>
+            ) : (
+              <>
+                <PillBtn
+                  variant={isMissing || sick ? "commit" : "pill"}
+                  onClick={deviceAuth.start}
+                  disabled={deviceAuth.starting}
+                >
+                  {deviceAuth.starting
+                    ? "starting…"
+                    : isMissing
+                      ? "connect"
+                      : "re-authorize"}
+                </PillBtn>
+                {!isMissing && <PillBtn>test</PillBtn>}
+              </>
+            )
+          ) : isMissing ? (
             <PillBtn variant="commit">set token</PillBtn>
           ) : (
             <>
@@ -942,6 +1067,32 @@ export function PageCli({
         }
       />
     </div>
+  );
+}
+
+/**
+ * PageCliConnected — wires the live device-code reauth flow into PageCli.
+ *
+ * Kept separate from PageCli so the presentational component stays free of
+ * react-query hooks (unit tests render PageCli directly without a provider).
+ */
+export function PageCliConnected({
+  credential,
+  showVerifyCmd = false,
+  revealMode = "eye",
+}: {
+  credential: CliCredential;
+  showVerifyCmd?: boolean;
+  revealMode?: RevealMode;
+}) {
+  const deviceAuth = useCliDeviceAuth(credential.id);
+  return (
+    <PageCli
+      credential={credential}
+      showVerifyCmd={showVerifyCmd}
+      revealMode={revealMode}
+      deviceAuth={deviceAuth}
+    />
   );
 }
 

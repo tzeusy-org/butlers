@@ -20,7 +20,7 @@ import type { InventoryResponse, SpineSortMode } from "./types.ts";
 import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine } from "./Spine.tsx";
-import { PageUser, PageSystem, PageCli, PassportEmptyState } from "./pages.tsx";
+import { PageUser, PageSystem, PageCliConnected, PassportEmptyState } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
 import { needsHand } from "./constants.ts";
 
@@ -319,7 +319,7 @@ export function DirectionPassport({
               />
             )}
             {resolved.kind === "cli" && (
-              <PageCli
+              <PageCliConnected
                 credential={resolved.credential}
               />
             )}
