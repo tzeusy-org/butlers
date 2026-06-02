@@ -7,21 +7,20 @@
 //   - PageUser renders against mocked User credential
 //   - PageSystem renders against mocked System credential
 //   - PageCli renders against mocked CLI credential
-//   - TweaksPanel: localStorage persistence
+//   - DirectionPassport does not expose prototype tweaks chrome
 //   - ONE-ROW-TEMPLATE UNIFORMITY: System/User/CLI spine rows have identical
 //     HTML structure modulo data-* attrs and text content
 //   - Empty needs-hand group hidden on calm day (all-ok)
 //   - Identity switcher shows only when multiple identities present
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
 
 import { SpineRow, Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli } from "./pages.tsx";
-import { TweaksPanel } from "./TweaksPanel.tsx";
 import { DirectionPassport } from "./DirectionPassport.tsx";
 import {
   Fingerprint,
@@ -39,7 +38,6 @@ import {
 } from "./mock-data.ts";
 import type { SpineEntry } from "./types.ts";
 import { buildSpineEntries } from "./spine-builder.ts";
-import { TWEAKS_DEFAULTS } from "./constants.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -421,6 +419,19 @@ describe("PageSystem: renders against mocked data", () => {
     expect(html).toContain("not set");
   });
 
+  it("renders system state plaques without rotated-stamp styling", () => {
+    const credentials = [
+      MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "BUTLER_TELEGRAM_TOKEN")!,
+      MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "OWNTRACKS_WEBHOOK_TOKEN")!,
+    ];
+
+    for (const credential of credentials) {
+      const html = renderToStaticMarkup(<PageSystem credential={credential} />);
+      expect(html).toContain('data-state-plaque="true"');
+      expect(html).not.toContain("rotate(");
+    }
+  });
+
   it("renders plain-value credential (email address)", () => {
     const gmail = MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "GMAIL_SENDER_ADDRESS")!;
     const html = renderToStaticMarkup(<PageSystem credential={gmail} />);
@@ -467,72 +478,6 @@ describe("PageCli: renders against mocked data", () => {
   });
 });
 
-// ── TweaksPanel ──────────────────────────────────────────────────────────────
-
-describe("TweaksPanel", () => {
-  afterEach(() => {
-    // Clean up localStorage after each test.
-    try { localStorage.clear(); } catch { /* no-op */ }
-  });
-
-  it("renders tweaks trigger button", () => {
-    const html = renderToStaticMarkup(
-      <TweaksPanel
-        tweaks={TWEAKS_DEFAULTS}
-        onTweak={() => {}}
-        open={false}
-        onOpenChange={() => {}}
-      />,
-    );
-    expect(html).toContain('data-tweaks-trigger="true"');
-  });
-
-  it("renders panel when open=true", () => {
-    const html = renderToStaticMarkup(
-      <TweaksPanel
-        tweaks={TWEAKS_DEFAULTS}
-        onTweak={() => {}}
-        open={true}
-        onOpenChange={() => {}}
-      />,
-    );
-    expect(html).toContain('data-tweaks-panel="true"');
-  });
-
-  it("does not render panel when open=false", () => {
-    const html = renderToStaticMarkup(
-      <TweaksPanel
-        tweaks={TWEAKS_DEFAULTS}
-        onTweak={() => {}}
-        open={false}
-        onOpenChange={() => {}}
-      />,
-    );
-    expect(html).not.toContain('data-tweaks-panel="true"');
-  });
-
-  it("renders four toggle controls when open", () => {
-    const html = renderToStaticMarkup(
-      <TweaksPanel
-        tweaks={TWEAKS_DEFAULTS}
-        onTweak={() => {}}
-        open={true}
-        onOpenChange={() => {}}
-      />,
-    );
-    // reveal mode radio options
-    expect(html).toContain('data-tweak-option="eye"');
-    expect(html).toContain('data-tweak-option="hover"');
-    expect(html).toContain('data-tweak-option="never"');
-    // default sort options
-    expect(html).toContain('data-tweak-option="severity"');
-    expect(html).toContain('data-tweak-option="recency"');
-    expect(html).toContain('data-tweak-option="alpha"');
-    // toggles
-    expect(html).toContain("data-tweak-toggle");
-  });
-});
-
 // ── DirectionPassport ────────────────────────────────────────────────────────
 
 describe("DirectionPassport: renders against mocked inventory", () => {
@@ -542,7 +487,7 @@ describe("DirectionPassport: renders against mocked inventory", () => {
     expect(html).toContain('data-spine-row');
   });
 
-  it("renders voice paragraph when tweaks.voiceParagraph=true (default)", () => {
+  it("renders the voice paragraph when credentials need attention", () => {
     const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
     // The header voice paragraph appears when needsAttention > 0
     // We have sick credentials in mock data, so this should appear.
@@ -553,6 +498,13 @@ describe("DirectionPassport: renders against mocked inventory", () => {
     const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
     // The eyebrow text "secrets" appears in the header
     expect(html).toContain("secrets");
+  });
+
+  it("does not render a tweaks trigger or panel", () => {
+    const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
+    expect(html).not.toContain('data-tweaks-trigger="true"');
+    expect(html).not.toContain('data-tweaks-panel="true"');
+    expect(html).not.toContain("tweaks");
   });
 });
 

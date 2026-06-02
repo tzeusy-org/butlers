@@ -25,10 +25,9 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
 ];
 
 /**
- * Owner identity credentials (Telegram API keys, user session, HA token,
- * Google OAuth refresh) are now managed as entity_info entries
- * on the owner entity. Configure them at /entities/{owner_entity_id} via the
- * "Credentials & Info" section.
+ * Owner identity credentials are surfaced from /settings/owner for setup and
+ * /secrets for inventory. Google app credentials remain shared system secrets;
+ * Google account refresh tokens live on companion entity_info rows.
  *
  * Contact-level channel identifiers (Telegram chat ID, email address, phone)
  * remain on the contact at /contacts/{owner_id}.

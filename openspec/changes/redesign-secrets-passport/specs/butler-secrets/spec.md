@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Passport-Book Information Architecture
-The dashboard SHALL replace the existing 3-tab `/secrets` shell with a single passport-book route at `/secrets` consisting of a left **spine** index, a right **page** editorial body, and a top-right **tweaks** panel. The page SHALL NOT render any of the deprecated patterns: tab strip, `SecretsTable` (`••••••••` row with eye-toggle as the primary affordance), six bespoke provider Setup cards, separate `CLIAuthCard`, or embedded `EntityPicker` in the page header.
+The dashboard SHALL replace the existing 3-tab `/secrets` shell with a single passport-book route at `/secrets` consisting of a left **spine** index and a right **page** editorial body. The page SHALL NOT render any of the deprecated patterns: tab strip, `SecretsTable` (`••••••••` row with eye-toggle as the primary affordance), six bespoke provider Setup cards, separate `CLIAuthCard`, embedded `EntityPicker` in the page header, or prototype tweaks chrome.
 
 The page is rendered in the binding **Dispatch** design language captured at `pr/overview/secrets-redesign/DESIGN_LANGUAGE.md`. Every visual decision in the spec MUST preserve that language — typography (Inter Tight 500 display, Source Serif 4 voice, JetBrains Mono code/eyebrow), spacing (4px multiples; 48px × 56px page padding; 56px section gutter; `1.4fr 1fr` two-column editorial grid), colour (oklch tokens; `--red/--amber/--green` only when state demands), motion (briefing cross-fade, sidebar chevron, theme fade, tooltip; nothing else).
 
@@ -11,7 +11,7 @@ The page is rendered in the binding **Dispatch** design language captured at `pr
 - **WHEN** a user navigates to `/secrets`
 - **THEN** the page renders a two-column layout: left spine (sticky, scrollable index), right page (editorial body for the focused credential)
 - **AND** there is no tab strip, no `<Tabs>` shell, and no horizontal navigation between System / User / CLI families
-- **AND** the page header contains the title "Secrets", a mono eyebrow, the identity chip (when more than one identity is in scope), and the tweaks panel trigger
+- **AND** the page header contains the title "Secrets", a mono eyebrow, and the identity chip (when more than one identity is in scope)
 
 #### Scenario: Spine grouping order
 - **WHEN** the spine renders
@@ -20,13 +20,13 @@ The page is rendered in the binding **Dispatch** design language captured at `pr
 - **AND** group eyebrows render in mono 10px uppercase with tracking 0.14em
 
 #### Scenario: Empty `needs-hand` group
-- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring_soon`})
+- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `warn`, `scope_mismatch`, `expiring_soon`})
 - **THEN** the spine omits the `needs-hand` group entirely (no empty-state stub) and the page renders **zero red and zero amber pixels**
 
 ### Requirement: Evidence-Over-Value Affordance Contract
 Each credential row in the spine SHALL surface a 6px state dot, a 2px left-edge sliver (coloured only when state demands), a mono label, and a mono subline. The masked-value blob (`••••••••`) is FORBIDDEN as the only proof a credential exists. Each credential page SHALL render the following evidence — in order — without any LLM-generated text:
 
-1. **Heading + state plaque** — credential title, state label (one of {`ok`, `expired`, `revoked`, `expiring_soon`, `scope_mismatch`, `failed`, `never_set`}), fingerprint pill (`sha256:7a3f…`, mono 11px).
+1. **Heading + state plaque** — credential title, state label (one of {`ok`, `warn`, `expired`, `revoked`, `expiring_soon`, `scope_mismatch`, `failed`, `never_set`}), fingerprint pill (`sha256:7a3f…`, mono 11px).
 2. **Dense KV band** — issued / expires / last verified / last used / source / target / category, all in mono with tabular numerals.
 3. **Scopes inventory** (when applicable) — granted vs required scopes; missing scopes called out in `--amber`; over-grant noted dim.
 4. **WhatBreaks list** — butler features that will silently fail if the credential is sick; severity pip per row; rendered from `public.provider_feature_catalogue` server-side, never from a static frontend JSON.
@@ -35,7 +35,7 @@ Each credential row in the spine SHALL surface a 6px state dot, a 2px left-edge 
 7. **Cross-references** — for OAuth credentials, a link to the same provider on `/ingestion/connectors` (channel-side view) and an `Reauthorize` commit-pill button.
 8. **Commit footer** — primary action (`Reauthorize`, `Rotate`, `Probe`, `Disconnect`, `Set`, `Override`, `Revoke`) rendered as the Dispatch commit-pill (foreground-on-background, never brand-coloured).
 
-The reveal-eye SHALL ship and remain available but SHALL be reclassified as a Tweak (default `eye`, alternatives `hover` / `never`). Removing the eye from a row MUST NOT impair the owner's ability to assess that row.
+Explicit reveal actions SHALL ship and remain available where credential pages support value reveal. Removing prototype tweak controls MUST NOT impair the owner's ability to assess a row.
 
 #### Scenario: Fingerprint never persisted
 - **WHEN** any credential read endpoint returns a fingerprint
@@ -70,6 +70,11 @@ The User-tab's six bespoke provider Setup cards SHALL be replaced by one row tem
 - **WHEN** the spine renders any credential from any family
 - **THEN** the row has the same vertical rhythm (10px vertical padding), same column layout (sliver | dot | label | subline | right-aligned glyph), and same hairline separators
 - **AND** the rendered HTML structure of a System row is identical (modulo `data-*` attributes and content) to the rendered HTML structure of a User row or CLI row
+
+#### Scenario: One spine row per credential concept
+- **WHEN** the inventory contains multiple raw rows that resolve to the same credential concept, such as multiple `entity_info.type` rows for one User provider or the same System `key` across butler schemas
+- **THEN** the spine renders exactly one row for that credential concept
+- **AND** the row preserves the highest-severity state and the relevant shared/local source-target provenance
 
 #### Scenario: Provider drawer for oddities
 - **WHEN** a User OAuth row for `owntracks` is expanded
@@ -120,15 +125,16 @@ Focus keys SHALL be URL-safe (no encoded colons; the `:` separator is permitted 
 - **AND** the right page renders the empty-state serif line (no LLM call; static literal)
 - **AND** a `--amber` toast surfaces with a templated message (no LLM elaboration)
 
-### Requirement: Tweaks-Panel State Persistence
-The tweaks panel SHALL expose four toggles: `reveal-mode` (default `eye`, alternatives `hover` / `never`), `default-sort` (default `severity`, alternatives `recency` / `alpha`), `show-verify-cmd` (default `off`), `voice-paragraph` (default `on`). Tweak state SHALL persist via the same mechanism used by the in-flight ingestion-redesign and entity-redesign tweaks panels; if neither has shipped a persistence pattern by the time this change implements, `localStorage` keyed by `secrets.tweaks.*` is the default. (Resolution of brief §5 Q9 is deferred to design.md.)
+### Requirement: No Prototype Tweaks Chrome
+The `/secrets` page SHALL NOT render a Tweaks button, Tweaks panel, or localStorage-backed `secrets.tweaks.*` preference surface. Default behavior is fixed in product code: spine sort defaults to `severity`, `?sort=` may still update the current URL-backed sort mode, verify commands remain hidden by default, reveal actions remain visible where credential pages support explicit reveal, and the voice paragraph renders when credentials need attention.
 
-#### Scenario: Tweak persists across sessions
-- **WHEN** the owner sets `reveal-mode = never` and reloads the page
-- **THEN** the tweak panel renders with `reveal-mode = never` and the eye-toggle is hidden from every row
+#### Scenario: Stale tweak storage is ignored
+- **WHEN** a browser has stale `secrets.tweaks.revealMode = never` localStorage from an older build
+- **THEN** `/secrets` does not render any Tweaks trigger or panel
+- **AND** the stale localStorage value does not hide explicit reveal actions
 
 ### Requirement: No-LLM-Narration Invariant on `/secrets` Surfaces (binding)
-The `/secrets` surfaces (spine, page, tweaks, drawers, modals, toasts) MUST NOT trigger LLM inference. Every text fragment rendered on these surfaces SHALL be one of:
+The `/secrets` surfaces (spine, page, drawers, modals, toasts) MUST NOT trigger LLM inference. Every text fragment rendered on these surfaces SHALL be one of:
 
 1. **Stored prose** — a static catalogue entry (e.g. `provider.brief` from `public.provider_feature_catalogue`).
 2. **Templated string** — a template interpolating server-data values (e.g. `"Feeds the {feeds} butler"`, `"{kpi.healthy} healthy, {kpi.expiring} expiring"`).

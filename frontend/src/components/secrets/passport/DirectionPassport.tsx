@@ -4,7 +4,6 @@
 // Spec: butler-secrets §Passport-Book Information Architecture
 //       §Deep-Link Focus Routing  (?focus=u:<p>|s:<K>|c:<id>)
 //       §Projection-Lens Identity Switcher  (?identity=<id>)
-//       §Tweaks-Panel State Persistence
 //
 // URL state:
 //   ?focus=<key>    — open credential detail
@@ -22,8 +21,8 @@ import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli, PassportEmptyState } from "./pages.tsx";
-import { TweaksPanel, useTweaks } from "./TweaksPanel.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
+import { needsHand } from "./constants.ts";
 
 // ── KPI cell ─────────────────────────────────────────────────────────────────
 
@@ -82,7 +81,7 @@ function KpiSep() {
 
 /**
  * DirectionPassport — renders the full /secrets passport book:
- * page header + spine + page body + tweaks trigger.
+ * page header + spine + page body.
  *
  * Receives inventory as a prop. Data fetching is handled by the parent
  * (SecretsPage) via useSecretsInventory, which calls GET /api/secrets/inventory.
@@ -114,12 +113,7 @@ export function DirectionPassport({
     ? focusParam
     : pickDefaultKey(entries);
 
-  // ── Tweaks ──────────────────────────────────────────────────────────────
-  const [tweaks, setTweak] = useTweaks();
-  const [tweaksPanelOpen, setTweaksPanelOpen] = React.useState(false);
-
-  // Effective sort: URL param overrides tweak default.
-  const sortMode: SpineSortMode = sortParam ?? tweaks.defaultSort;
+  const sortMode: SpineSortMode = sortParam ?? "severity";
 
   // ── Search ──────────────────────────────────────────────────────────────
   const [search, setSearch] = React.useState("");
@@ -142,7 +136,6 @@ export function DirectionPassport({
   }
 
   function handleSortChange(m: SpineSortMode) {
-    setTweak("defaultSort", m);
     const params = new URLSearchParams(searchParams);
     params.set("sort", m);
     setSearchParams(params, { replace: true });
@@ -182,7 +175,7 @@ export function DirectionPassport({
     integrations: {
       total:    userForIdentity.length,
       healthy:  userForIdentity.filter((x) => x.state === "ok").length,
-      needsHand:userForIdentity.filter((x) => ["expired","revoked","scope_mismatch","expiring","rotating","failed"].includes(x.state)).length,
+      needsHand:userForIdentity.filter((x) => needsHand(x.state)).length,
     },
     system: {
       total:      inventory.system.length,
@@ -192,7 +185,7 @@ export function DirectionPassport({
     cli: {
       total:     inventory.cli.length,
       ok:        inventory.cli.filter((x) => x.state === "ok").length,
-      attention: inventory.cli.filter((x) => ["expired","revoked","expiring"].includes(x.state)).length,
+      attention: inventory.cli.filter((x) => needsHand(x.state)).length,
     },
   };
   const needsAttention = kpis.integrations.needsHand + kpis.cli.attention;
@@ -236,7 +229,7 @@ export function DirectionPassport({
                     : `${needsAttention} credentials need attention.`}
               </h1>
             </div>
-            {needsAttention > 0 && tweaks.voiceParagraph && (
+            {needsAttention > 0 && (
               <div className="mt-2.5">
                 <Voice maxWidth="60ch">
                   {kpis.integrations.needsHand > 0 && (
@@ -268,12 +261,6 @@ export function DirectionPassport({
                   onClick={() => {/* handled via spine */}}
                 />
               )}
-              <TweaksPanel
-                tweaks={tweaks}
-                onTweak={setTweak}
-                open={tweaksPanelOpen}
-                onOpenChange={setTweaksPanelOpen}
-              />
             </div>
             <div className="flex gap-3.5 items-baseline">
               <KpiCell
@@ -324,22 +311,16 @@ export function DirectionPassport({
                 credential={resolved.credential}
                 provider={inventory.providers[resolved.credential.provider]!}
                 identities={inventory.identities}
-                showVerifyCmd={tweaks.showVerifyCmd}
-                voiceParagraph={tweaks.voiceParagraph}
               />
             )}
             {resolved.kind === "system" && (
               <PageSystem
                 credential={resolved.credential}
-                showVerifyCmd={tweaks.showVerifyCmd}
-                voiceParagraph={tweaks.voiceParagraph}
               />
             )}
             {resolved.kind === "cli" && (
               <PageCli
                 credential={resolved.credential}
-                showVerifyCmd={tweaks.showVerifyCmd}
-                revealMode={tweaks.revealMode}
               />
             )}
             {resolved.kind === null && <PassportEmptyState />}
@@ -351,7 +332,7 @@ export function DirectionPassport({
 }
 
 // Re-export types needed by the page route and tests.
-export type { InventoryResponse, SecretsTweaks } from "./types.ts";
+export type { InventoryResponse } from "./types.ts";
 
 // Default export for the page route integration.
 export default DirectionPassport;

@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
-// Passport constants — state catalog, tweaks keys, spine helpers [bu-qu8v8]
+// Passport constants — state catalog and spine helpers [bu-qu8v8]
 // ---------------------------------------------------------------------------
 
-import type { CredentialState, StateMeta, SecretsTweaks } from "./types.ts";
+import type { CredentialState, StateMeta } from "./types.ts";
 
 // ── State catalog ────────────────────────────────────────────────────────────
 // rank: severity sort order. 0 = most urgent, 99 = quietest.
@@ -12,6 +12,7 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
   revoked:       { label: "revoked",        tone: "red",   sliver: true,  rank: 1 },
   scope_mismatch:{ label: "scope mismatch", tone: "amber", sliver: true,  rank: 2 },
   expiring:      { label: "expiring",       tone: "amber", sliver: true,  rank: 3 },
+  warn:          { label: "needs probe",    tone: "amber", sliver: true,  rank: 4 },
   rotating:      { label: "rotating…", tone: "amber", sliver: false, rank: 4 },
   ok:            { label: "healthy",        tone: "ok",    sliver: false, rank: 5 },
   failed:        { label: "failed",         tone: "red",   sliver: true,  rank: 1 },
@@ -20,7 +21,7 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
 
 /** States that are "needs hand" — pinned at the top of the spine. */
 export const NEEDS_HAND_STATES = new Set<CredentialState>([
-  "expired", "revoked", "scope_mismatch", "expiring", "rotating", "failed",
+  "expired", "revoked", "scope_mismatch", "expiring", "warn", "rotating", "failed",
 ]);
 
 export function needsHand(state: CredentialState): boolean {
@@ -30,23 +31,6 @@ export function needsHand(state: CredentialState): boolean {
 export function severityRank(state: CredentialState): number {
   return STATE_CATALOG[state]?.rank ?? 99;
 }
-
-// ── localStorage keys ────────────────────────────────────────────────────────
-// Keyed by `secrets.tweaks.*` per spec §Tweaks-Panel State Persistence.
-
-export const TWEAKS_KEYS = {
-  revealMode:    "secrets.tweaks.revealMode",
-  defaultSort:   "secrets.tweaks.defaultSort",
-  showVerifyCmd: "secrets.tweaks.showVerifyCmd",
-  voiceParagraph:"secrets.tweaks.voiceParagraph",
-} as const;
-
-export const TWEAKS_DEFAULTS: SecretsTweaks = {
-  revealMode:    "eye",
-  defaultSort:   "severity",
-  showVerifyCmd: false,
-  voiceParagraph: true,
-};
 
 // ── Focus key helpers ────────────────────────────────────────────────────────
 

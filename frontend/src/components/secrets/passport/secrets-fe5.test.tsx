@@ -7,13 +7,11 @@
 //      and assert no Sliver is colored (calm-by-default surface regression).
 //   2. Identity-switch projection test: pick an identity in the switcher, assert
 //      rendered rows are filtered to that identity.
-//   3. Reveal-mode=never tweak test: set revealMode="never" on PageCli, assert
-//      the "reveal token" eye button is absent.
+//   3. Removed tweaks regression: stale localStorage tweak state no longer
+//      controls the passport surface.
 //   4. Snapshot test for the full DirectionPassport page rendered with rich mock data.
 //
 // Spec anchor: butler-secrets §No-LLM-Narration Invariant
-//              butler-secrets §Tweaks-Panel State Persistence ("reveal-mode=never
-//              hides the eye-toggle from every row")
 //              butler-secrets §Projection-Lens Identity Switcher
 // ---------------------------------------------------------------------------
 
@@ -25,8 +23,6 @@ import { MemoryRouter } from "react-router";
 import { Spine } from "./Spine.tsx";
 import { PageCli } from "./pages.tsx";
 import { DirectionPassport } from "./DirectionPassport.tsx";
-import { TweaksPanel } from "./TweaksPanel.tsx";
-import { TWEAKS_DEFAULTS } from "./constants.ts";
 import {
   MOCK_INVENTORY,
   MOCK_IDENTITIES,
@@ -236,15 +232,13 @@ describe("Identity-switch projection (§Projection-Lens Identity Switcher)", () 
   });
 });
 
-// ── 3. Reveal-mode=never tweak test ──────────────────────────────────────────
+// ── 3. Removed tweaks regression ─────────────────────────────────────────────
 
-describe("Reveal-mode=never: eye button hidden (§Tweaks-Panel State Persistence)", () => {
+describe("DirectionPassport: removed tweaks chrome", () => {
   /**
-   * Per spec: "WHEN the owner sets reveal-mode = never …
-   * THEN … the eye-toggle is hidden from every row"
-   *
-   * Implementation: PageCli accepts revealMode prop. When revealMode="never",
-   * the "reveal token" button is suppressed.
+   * Product decision: /secrets no longer exposes prototype tweaks chrome.
+   * Stale browser localStorage under secrets.tweaks.* must not change the
+   * rendered passport surface after the panel is removed.
    */
 
   const claudeCred = MOCK_CLI_CREDENTIALS.find((c) => c.id === "claude-cli")!;
@@ -281,24 +275,7 @@ describe("Reveal-mode=never: eye button hidden (§Tweaks-Panel State Persistence
     expect(html).not.toContain("reveal token");
   });
 
-  it("revealMode=never: TweaksPanel renders the never option as selected", () => {
-    // Verify the panel still renders the "never" button when it's the active value
-    const neverTweaks = { ...TWEAKS_DEFAULTS, revealMode: "never" as const };
-    const html = renderToStaticMarkup(
-      <TweaksPanel
-        tweaks={neverTweaks}
-        onTweak={() => {}}
-        open={true}
-        onOpenChange={() => {}}
-      />,
-    );
-    // The "never" option button is present in the panel
-    expect(html).toContain('data-tweak-option="never"');
-  });
-
-  it("DirectionPassport passes revealMode=never through to PageCli (integration)", () => {
-    // Set localStorage to persist revealMode=never before rendering
-    // (DirectionPassport reads tweaks from localStorage via useTweaks hook)
+  it("ignores stale secrets.tweaks.revealMode localStorage", () => {
     try {
       localStorage.setItem("secrets.tweaks.revealMode", "never");
     } catch { /* no-op in environments without localStorage */ }
@@ -309,8 +286,8 @@ describe("Reveal-mode=never: eye button hidden (§Tweaks-Panel State Persistence
     );
     // CLI page rendered (claude-cli has fingerprint and is navigated to)
     expect(html).toContain('data-page="cli"');
-    // Reveal token button must be absent when revealMode=never
-    expect(html).not.toContain("reveal token");
+    expect(html).toContain("reveal token");
+    expect(html).not.toContain('data-tweaks-trigger="true"');
 
     try {
       localStorage.removeItem("secrets.tweaks.revealMode");

@@ -49,7 +49,7 @@ Track B is `blocked-by` Track A: frontend cannot land until backend contracts la
 ### B0 — Stack preparation
 - [ ] Verify fonts (Inter Tight / Source Serif 4 / JetBrains Mono) are loaded by prior Dispatch rollouts (`frontend/src/index.css`). Add `@import` only if missing. (brief §5 Q10)
 - [ ] Verify oklch token names (`--bg`, `--fg`, `--mfg`, `--dim`, `--border`, etc.) against the binding `pr/overview/secrets-redesign/DESIGN_LANGUAGE.md`. Reconcile any naming mismatch. (brief §5 Q11)
-- [ ] Decide tweaks-persistence mechanism per design.md Q9 default (match ingestion/entity redesign pattern if shipped; else `localStorage`).
+- [ ] Confirm `/secrets` does not expose prototype tweaks chrome and ignores stale `secrets.tweaks.*` localStorage.
 
 ### B1 — Primitives extraction (reusable shadcn-aligned components)
 - [ ] Extract `Eyebrow` to `frontend/src/components/ui/Eyebrow.tsx` (mono 10px, tracking 0.14em).
@@ -65,7 +65,7 @@ Track B is `blocked-by` Track A: frontend cannot land until backend contracts la
 - [ ] `Sliver` — 2px vertical rail; coloured only when `state` demands.
 - [ ] `StateLabel` — mono 10px lowercase state label.
 - [ ] `Fingerprint` — hash display with scheme/hash split (`sha256:7a3f…`).
-- [ ] `FingerprintRow` — two-line stack: scheme·hash + verify command (toggled by tweak).
+- [ ] `FingerprintRow` — two-line stack: scheme·hash + verify command hidden by default.
 - [ ] `KV` — generic label + mono value pair.
 - [ ] `BlockHead` — mono eyebrow with optional right caption.
 - [ ] `StampGlyph` — 1-char mono shape per audit action (one of `✓ verified`, `↻ rotated`, `✕ failed`, `⊘ revoked`, `⊕ connected`, `! warned`, `⤳ overrode`, `▷ attempted`, `⊙ set`).
@@ -82,7 +82,6 @@ Track B is `blocked-by` Track A: frontend cannot land until backend contracts la
 - [ ] `PageUser` — replaces Integrations section + SecretsTable (user mode). Per-kind variants (oauth / token / apikey / webhook) with shared row template + per-provider drawer.
 - [ ] `PageSystem` — replaces SystemSecretsSection + SecretsTable (system mode). Single system secret on page; shared vs local row state; override affordance; plain-text-value branch.
 - [ ] `PageCli` — replaces `CLIAuthCard`. CLI runtime detail; how-to-use snippet; rotate-with-reveal flow.
-- [ ] `TweaksPanel` — reveal mode, default sort, show-verify-cmd, voice-paragraph toggles.
 - [ ] `DirectionPassport` — top-level orchestrator; holds identity / focus / sort / search state; URL-syncs via `useSearchParams()`.
 
 ### B4 — Routing + integration
@@ -101,7 +100,7 @@ Track B is `blocked-by` Track A: frontend cannot land until backend contracts la
 - [ ] Component test: spine renders empty `needs-hand` group correctly (zero red/amber pixels on all-`ok` day).
 - [ ] Component test: identity-switch re-projects User group; CLI + System unchanged.
 - [ ] Component test: deep-link `/secrets?focus=u:google` renders the User page for `google` with the spine row highlighted.
-- [ ] Component test: tweak `reveal-mode=never` hides eye-toggle from all rows.
+- [ ] Component test: stale `secrets.tweaks.revealMode=never` localStorage is ignored and no Tweaks trigger renders.
 - [ ] Snapshot test: full passport-book page renders with the binding Dispatch design language (typography, spacing, colour tokens).
 - [ ] E2E test (playwright): OAuth round-trip — click reauthorize, mock provider, return to `/secrets?focus=u:<p>&toast=connected`.
 - [ ] Lint rule (if feasible): forbid LLM-related imports (`@anthropic-ai/sdk`, etc.) from any file under `frontend/src/pages/secrets/`. Enforces `butler-secrets §No-LLM-Narration Invariant`.

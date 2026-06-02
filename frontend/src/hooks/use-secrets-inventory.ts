@@ -35,6 +35,18 @@ import type {
   TestResult,
 } from "@/components/secrets/passport/types.ts";
 
+const STATE_RANK: Record<CredentialState, number> = {
+  expired: 0,
+  revoked: 1,
+  failed: 1,
+  scope_mismatch: 2,
+  expiring: 3,
+  warn: 4,
+  rotating: 4,
+  ok: 5,
+  never_set: 9,
+};
+
 // ---------------------------------------------------------------------------
 // Static provider catalog (fallback)
 //
@@ -99,6 +111,46 @@ function genericProvider(providerId: string, type: string): SecretsProviderInfo 
   };
 }
 
+function normalizeCredentialState(state: string): CredentialState {
+  switch (state) {
+    case "ok":
+    case "expired":
+    case "revoked":
+    case "expiring":
+    case "scope_mismatch":
+    case "warn":
+    case "rotating":
+    case "never_set":
+    case "failed":
+      return state;
+    case "failing":
+      return "failed";
+    case "shared":
+    case "local":
+      return "ok";
+    case "missing":
+      return "never_set";
+    default:
+      return "warn";
+  }
+}
+
+function moreSevereState(a: CredentialState, b: CredentialState): CredentialState {
+  return STATE_RANK[b] < STATE_RANK[a] ? b : a;
+}
+
+function mergeFingerprints(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a === b ? a : null;
+}
+
+function rowStateFromSystemRaw(raw: SecretsSystemRaw): SystemCredential["rowState"] {
+  if (raw.state === "missing" || raw.state === "never_set") return "missing";
+  if (raw.state === "shared" || raw.state === "local") return raw.state;
+  return raw.butler && !["shared", "switchboard"].includes(raw.butler) ? "local" : "shared";
+}
+
 /**
  * Extract the provider slug from an entity_info.type string.
  *
@@ -149,7 +201,7 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
   return {
     provider:       extractProvider(raw.type, providers),
     identity:       raw.entity_id,
-    state:          raw.state as CredentialState,
+    state:          normalizeCredentialState(raw.state),
     fingerprint:    raw.fingerprint ?? null,
     issued:         null,
     expires:        null,
@@ -165,14 +217,16 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
 }
 
 function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
+  const rowState = rowStateFromSystemRaw(raw);
   return {
     key:          raw.key,
     category:     raw.category,
-    rowState:     raw.state as "shared" | "local" | "missing",
+    state:        normalizeCredentialState(raw.state),
+    rowState,
     fingerprint:  raw.fingerprint ?? null,
     description:  raw.description ?? null,
-    source:       raw.butler,
-    target:       "",
+    source:       rowState === "shared" ? raw.butler : "",
+    target:       rowState === "local" ? raw.butler : "shared",
     lastVerified: raw.last_verified ?? null,
     usedBy:       [],
     breaks:       [],
@@ -186,7 +240,7 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
     id:             raw.key,
     label:          raw.description ?? raw.key,
     fingerprint:    raw.fingerprint ?? null,
-    state:          raw.state as CredentialState,
+    state:          normalizeCredentialState(raw.state),
     lastUsed:       null,
     issued:         null,
     expires:        null,
@@ -194,6 +248,83 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
     scopesRequired: [],
     test:           adaptProbeResult(raw.test),
   };
+}
+
+function groupUserCredentials(credentials: UserCredential[]): UserCredential[] {
+  const grouped = new Map<string, UserCredential>();
+
+  for (const credential of credentials) {
+    const key = `${credential.identity}\u0000${credential.provider}`;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, credential);
+      continue;
+    }
+
+    grouped.set(key, {
+      ...existing,
+      state: moreSevereState(existing.state, credential.state),
+      fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
+      lastVerified: existing.lastVerified ?? credential.lastVerified,
+      lastUsed: existing.lastUsed ?? credential.lastUsed,
+      scopesRequired: Array.from(new Set([...existing.scopesRequired, ...credential.scopesRequired])),
+      scopesGranted: Array.from(new Set([...existing.scopesGranted, ...credential.scopesGranted])),
+      feeds: Array.from(new Set([...existing.feeds, ...credential.feeds])),
+      breaks: [...existing.breaks, ...credential.breaks],
+      test: existing.test ?? credential.test,
+      audit: [...existing.audit, ...credential.audit],
+      failureTail: existing.failureTail ?? credential.failureTail,
+      webhook: existing.webhook ?? credential.webhook,
+    });
+  }
+
+  return Array.from(grouped.values());
+}
+
+function groupSystemCredentials(credentials: SystemCredential[]): SystemCredential[] {
+  const grouped = new Map<string, SystemCredential>();
+
+  for (const credential of credentials) {
+    const existing = grouped.get(credential.key);
+    if (!existing) {
+      grouped.set(credential.key, credential);
+      continue;
+    }
+
+    const rowState: SystemCredential["rowState"] =
+      existing.rowState === "local" || credential.rowState === "local"
+        ? "local"
+        : existing.rowState === "shared" || credential.rowState === "shared"
+          ? "shared"
+          : "missing";
+    const sharedSource =
+      [existing, credential].find((item) => item.rowState === "shared")?.source
+      ?? existing.source
+      ?? credential.source;
+    const localTarget =
+      [existing, credential].find((item) => item.rowState === "local")?.target
+      ?? existing.target
+      ?? credential.target;
+
+    grouped.set(credential.key, {
+      ...existing,
+      category: existing.category || credential.category,
+      description: existing.description ?? credential.description,
+      state: moreSevereState(existing.state ?? "ok", credential.state ?? "ok"),
+      rowState,
+      fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
+      source: sharedSource,
+      target: rowState === "local" ? localTarget : "shared",
+      lastVerified: existing.lastVerified ?? credential.lastVerified,
+      usedBy: Array.from(new Set([...existing.usedBy, ...credential.usedBy])),
+      breaks: [...existing.breaks, ...credential.breaks],
+      test: existing.test ?? credential.test,
+      audit: [...existing.audit, ...credential.audit],
+      plainValue: existing.plainValue ?? credential.plainValue,
+    });
+  }
+
+  return Array.from(grouped.values());
 }
 
 /**
@@ -233,8 +364,8 @@ export function adaptInventoryResponse(data: {
     return credential;
   });
   return {
-    user,
-    system:     data.system.map(adaptSystemCredential),
+    user:       groupUserCredentials(user),
+    system:     groupSystemCredentials(data.system.map(adaptSystemCredential)),
     cli:        data.cli.map(adaptCliCredential),
     identities: mapIdentities(data.identities),
     providers,

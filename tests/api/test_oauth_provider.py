@@ -192,6 +192,11 @@ def test_build_success_redirect_ingestion():
     assert url == "/ingestion/connectors"
 
 
+def test_build_success_redirect_settings_owner():
+    url = _build_success_redirect_url("google", "settings_owner")
+    assert url == "/settings/owner?toast=connected&provider=google"
+
+
 def test_build_success_redirect_spotify():
     url = _build_success_redirect_url("spotify", "secrets")
     assert url == "/secrets?focus=u:spotify&toast=connected"
@@ -947,6 +952,11 @@ def test_build_error_redirect_no_connector_detail_path_unchanged():
         _build_error_redirect_url("google", "ingestion", "provider_error")
         == "/ingestion/connectors?oauth_error=provider_error"
     )
+
+
+def test_build_error_redirect_settings_owner():
+    url = _build_error_redirect_url("google", "settings_owner", "provider_error")
+    assert url == "/settings/owner?oauth_error=provider_error&provider=google"
 
 
 # --- State store round-trip test ---
