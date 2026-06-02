@@ -113,6 +113,14 @@ def _extract_scope_param(authorization_url: str) -> list[str]:
     return raw.split() if raw else []
 
 
+def _extract_query_param(authorization_url: str, name: str) -> str | None:
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(authorization_url)
+    qs = parse_qs(parsed.query)
+    return qs.get(name, [None])[0]
+
+
 # ---------------------------------------------------------------------------
 # State store (unit)
 # ---------------------------------------------------------------------------
@@ -206,6 +214,20 @@ async def test_start_returns_json_when_redirect_false(app):
         resp = await client.get("/api/oauth/google/start", params={"redirect": "false"})
     assert resp.status_code == 200
     assert "authorization_url" in resp.json()
+
+
+async def test_start_select_account_and_force_consent_emit_google_prompt(app):
+    _make_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/oauth/google/start",
+            params={"redirect": "false", "force_consent": "true", "select_account": "true"},
+        )
+    assert resp.status_code == 200
+    prompt = _extract_query_param(resp.json()["authorization_url"], "prompt")
+    assert prompt == "consent select_account"
 
 
 async def test_start_missing_credentials_returns_503(app):

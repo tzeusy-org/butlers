@@ -1098,6 +1098,11 @@ async def oauth_google_start(
         description="When true, adds prompt=consent to the authorization URL to force "
         "Google to return a new refresh token (useful for scope upgrades or re-authorization).",
     ),
+    select_account: bool = Query(
+        default=False,
+        description="When true, adds select_account to the Google prompt so the user can "
+        "choose a different Google identity instead of reusing the active browser session.",
+    ),
     scope_set: str | None = Query(
         default=None,
         description="Optional named scope set(s) to include in the authorization URL. "
@@ -1243,11 +1248,15 @@ async def oauth_google_start(
         "state": state,
     }
 
-    # Add prompt=consent when explicitly requested (scope upgrades, forced re-auth).
-    # When force_consent=False (default), omit the prompt parameter so Google decides
-    # whether to show the consent screen (skips it for re-auths without scope changes).
+    # Add prompt values when explicitly requested. When neither flag is present,
+    # omit prompt so Google decides whether to show the consent screen.
+    prompt_values: list[str] = []
     if force_consent:
-        params["prompt"] = "consent"
+        prompt_values.append("consent")
+    if select_account:
+        prompt_values.append("select_account")
+    if prompt_values:
+        params["prompt"] = " ".join(prompt_values)
 
     if account_hint:
         params["login_hint"] = account_hint
