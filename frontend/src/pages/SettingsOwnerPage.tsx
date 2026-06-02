@@ -50,6 +50,10 @@ function GoogleHealthBadge({ state }: { state: GoogleCredentialStatusResponse["o
   return <Badge variant="destructive">{googleStatusCopy[state]}</Badge>;
 }
 
+function googleOAuthActionLabel(status: GoogleCredentialStatusResponse | undefined): string {
+  return status?.oauth_health === "connected" ? "Re-authorize Google" : "Connect Google";
+}
+
 function PresenceRow({
   label,
   present,
@@ -185,7 +189,7 @@ export default function SettingsOwnerPage() {
                   disabled={isPending}
                 >
                   <RefreshCw className="h-4 w-4" />
-                  Re-authorize Google
+                  {googleOAuthActionLabel(googleStatus)}
                 </Button>
               </div>
             </form>

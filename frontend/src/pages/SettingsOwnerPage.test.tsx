@@ -94,9 +94,26 @@ describe("SettingsOwnerPage", () => {
     renderPage();
 
     await screen.findByRole("heading", { name: "Owner Config" });
+    expect(screen.getByRole("button", { name: "Connect Google" })).toBeTruthy();
     expect(getGoogleOAuthStartUrl).toHaveBeenCalledWith({
       forceConsent: true,
       pageOfOrigin: "settings_owner",
     });
+  });
+
+  it("labels the OAuth action as reauthorization when Google is already connected", async () => {
+    vi.mocked(getGoogleCredentialStatus).mockResolvedValue({
+      client_id_configured: true,
+      client_secret_configured: true,
+      refresh_token_present: true,
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+      oauth_health: "connected",
+      oauth_health_remediation: null,
+      oauth_health_detail: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: "Re-authorize Google" })).toBeTruthy();
   });
 });
