@@ -84,6 +84,7 @@ export default function SettingsOwnerPage() {
     () =>
       getGoogleOAuthStartUrl({
         forceConsent: true,
+        selectAccount: true,
         pageOfOrigin: "settings_owner",
       }),
     [],

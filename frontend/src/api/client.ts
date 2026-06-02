@@ -2550,10 +2550,15 @@ export function getOAuthStartUrl(): string {
  * When set, the callback redirects to /ingestion/connectors/<path> instead of
  * the connectors roster. The backend validates the format and silently ignores
  * invalid values (safe fallback). Takes priority over ``pageOfOrigin``.
+ *
+ * ``selectAccount`` requests Google's account chooser. Use it for "connect
+ * another account" flows where the active browser Google session may already
+ * be authorized.
  */
 export function getGoogleOAuthStartUrl(opts?: {
   accountHint?: string;
   forceConsent?: boolean;
+  selectAccount?: boolean;
   scopeSet?: string;
   pageOfOrigin?: "secrets" | "ingestion" | "settings_owner";
   connectorDetailPath?: string;
@@ -2561,6 +2566,7 @@ export function getGoogleOAuthStartUrl(opts?: {
   const params = new URLSearchParams();
   if (opts?.accountHint) params.set("account_hint", opts.accountHint);
   if (opts?.forceConsent) params.set("force_consent", "true");
+  if (opts?.selectAccount) params.set("select_account", "true");
   if (opts?.scopeSet) params.set("scope_set", opts.scopeSet);
   if (opts?.pageOfOrigin) params.set("page_of_origin", opts.pageOfOrigin);
   if (opts?.connectorDetailPath) params.set("connector_detail_path", opts.connectorDetailPath);

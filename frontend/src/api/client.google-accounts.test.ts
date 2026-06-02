@@ -164,12 +164,19 @@ describe("getGoogleOAuthStartUrl", () => {
     expect(url).toContain("force_consent=true");
   });
 
+  it("appends select_account=true when requested", () => {
+    const url = getGoogleOAuthStartUrl({ selectAccount: true });
+    expect(url).toContain("select_account=true");
+  });
+
   it("appends both params when both provided", () => {
     const url = getGoogleOAuthStartUrl({
       accountHint: "user@example.com",
       forceConsent: true,
+      selectAccount: true,
     });
     expect(url).toContain("account_hint=");
     expect(url).toContain("force_consent=true");
+    expect(url).toContain("select_account=true");
   });
 });

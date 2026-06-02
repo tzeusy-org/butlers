@@ -49,7 +49,9 @@ beforeEach(() => {
     oauth_health_remediation: "Connect Google.",
     oauth_health_detail: null,
   });
-  vi.mocked(getGoogleOAuthStartUrl).mockReturnValue("/api/oauth/google/start?page_of_origin=settings_owner");
+  vi.mocked(getGoogleOAuthStartUrl).mockReturnValue(
+    "/api/oauth/google/start?force_consent=true&select_account=true&page_of_origin=settings_owner",
+  );
   vi.mocked(upsertGoogleCredentials).mockResolvedValue({
     success: true,
     message: "Google app credentials stored.",
@@ -97,6 +99,7 @@ describe("SettingsOwnerPage", () => {
     expect(screen.getByRole("button", { name: "Connect Google" })).toBeTruthy();
     expect(getGoogleOAuthStartUrl).toHaveBeenCalledWith({
       forceConsent: true,
+      selectAccount: true,
       pageOfOrigin: "settings_owner",
     });
   });
