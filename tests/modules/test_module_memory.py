@@ -370,6 +370,7 @@ class TestToolDelegation:
     async def test_memory_store_fact_delegates(self):
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         writing.memory_store_fact = AsyncMock(return_value={"id": "abc"})
         entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
         await tools["memory_store_fact"](
@@ -399,6 +400,7 @@ class TestToolDelegation:
     async def test_memory_store_fact_delegates_with_valid_at(self):
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         writing.memory_store_fact = AsyncMock(return_value={"id": "abc", "superseded_id": None})
         entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
         await tools["memory_store_fact"](
@@ -432,6 +434,7 @@ class TestToolDelegation:
     async def test_memory_context_delegates(self):
         mod, tools, pool, _, _, _, _, context_mod, _ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         context_mod.memory_context = AsyncMock(return_value="# Memory Context\n")
         await tools["memory_context"](trigger_prompt="test prompt", butler="memory")
         context_mod.memory_context.assert_called_once_with(
@@ -447,6 +450,7 @@ class TestToolDelegation:
     async def test_memory_search_delegates(self):
         mod, tools, pool, _, reading, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         reading.memory_search = AsyncMock(return_value=[])
         await tools["memory_search"](query="test query")
         reading.memory_search.assert_called_once_with(
@@ -483,6 +487,7 @@ class TestToolDelegation:
         """Custom retention_class and sensitivity are passed through to writing layer."""
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         writing.memory_store_fact = AsyncMock(return_value={"id": "abc"})
         entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
         await tools["memory_store_fact"](
@@ -518,6 +523,7 @@ class TestToolDelegation:
         """memory_store_rule passes retention_class='rule' by default."""
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         writing.memory_store_rule = AsyncMock(return_value={"id": "rule-abc"})
         await tools["memory_store_rule"](content="Always be polite")
         writing.memory_store_rule.assert_called_once_with(
@@ -536,6 +542,7 @@ class TestToolDelegation:
         """Custom retention_class is forwarded when provided."""
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         writing.memory_store_rule = AsyncMock(return_value={"id": "rule-xyz"})
         await tools["memory_store_rule"](
             content="Escalate budget queries",
@@ -599,6 +606,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         mock_writing.memory_store_fact = AsyncMock(return_value={"id": "xyz"})
         return mod, registered_tools["memory_store_fact"], fake_db.pool, mock_writing
 
