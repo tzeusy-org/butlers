@@ -205,6 +205,6 @@ Report:
 - each handled thread URL or ID with its final outcome
 - commit hashes added during review
 - isolated worktree path used for branch-local fixes, if any
-- alignment subagent findings, including doctrine/craft/spec blockers and their dispositions
+- alignment subagent findings, including doctrine/craft/spec blockers and th1eir dispositions
 - final GitHub quality gate status
 - any threads that could not be resolved due to permission or tooling limits
