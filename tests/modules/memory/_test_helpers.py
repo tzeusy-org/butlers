@@ -19,19 +19,22 @@ def make_embedding_engine_mock(model_name: str = "all-MiniLM-L6-v2") -> MagicMoc
 
     This factory always sets ``_model_name`` to the supplied ``model_name`` so
     that the guard accepts the mock and never falls through to the real engine.
-    The ``encode`` method is stubbed to return a deterministic fake vector of 384
-    floats (matching the all-MiniLM-L6-v2 dimension) so callers that pass the
-    engine to embedding-aware functions don't error on missing methods.
+    The public ``EmbeddingEngine`` interface (``embed``, ``embed_batch``, and
+    ``model_name``) is stubbed so that callers exercising embedding-aware code
+    paths receive well-typed return values instead of bare ``MagicMock`` objects.
 
     Args:
         model_name: The model name the mock should claim.  Pass the same value
             as ``MemoryModuleConfig.embedding_model`` (default: "all-MiniLM-L6-v2").
 
     Returns:
-        A ``MagicMock`` with ``_model_name`` set and ``encode`` stubbed.
+        A ``MagicMock`` with ``_model_name`` set and the public
+        ``EmbeddingEngine`` interface stubbed.
     """
     engine = MagicMock(name=f"embedding-engine[{model_name}]")
     engine._model_name = model_name
-    # Stub encode to return a deterministic zero-vector of the standard dimension.
-    engine.encode.return_value = [0.0] * 384
+    # Mirror the public EmbeddingEngine interface used by storage.py.
+    engine.model_name = model_name
+    engine.embed.return_value = [0.0] * 384
+    engine.embed_batch.side_effect = lambda texts: [[0.0] * 384 for _ in texts]
     return engine
