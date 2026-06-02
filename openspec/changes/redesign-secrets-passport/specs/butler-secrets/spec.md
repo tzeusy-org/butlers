@@ -20,13 +20,13 @@ The page is rendered in the binding **Dispatch** design language captured at `pr
 - **AND** group eyebrows render in mono 10px uppercase with tracking 0.14em
 
 #### Scenario: Empty `needs-hand` group
-- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring_soon`})
+- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `warn`, `scope_mismatch`, `expiring_soon`})
 - **THEN** the spine omits the `needs-hand` group entirely (no empty-state stub) and the page renders **zero red and zero amber pixels**
 
 ### Requirement: Evidence-Over-Value Affordance Contract
 Each credential row in the spine SHALL surface a 6px state dot, a 2px left-edge sliver (coloured only when state demands), a mono label, and a mono subline. The masked-value blob (`••••••••`) is FORBIDDEN as the only proof a credential exists. Each credential page SHALL render the following evidence — in order — without any LLM-generated text:
 
-1. **Heading + state plaque** — credential title, state label (one of {`ok`, `expired`, `revoked`, `expiring_soon`, `scope_mismatch`, `failed`, `never_set`}), fingerprint pill (`sha256:7a3f…`, mono 11px).
+1. **Heading + state plaque** — credential title, state label (one of {`ok`, `warn`, `expired`, `revoked`, `expiring_soon`, `scope_mismatch`, `failed`, `never_set`}), fingerprint pill (`sha256:7a3f…`, mono 11px).
 2. **Dense KV band** — issued / expires / last verified / last used / source / target / category, all in mono with tabular numerals.
 3. **Scopes inventory** (when applicable) — granted vs required scopes; missing scopes called out in `--amber`; over-grant noted dim.
 4. **WhatBreaks list** — butler features that will silently fail if the credential is sick; severity pip per row; rendered from `public.provider_feature_catalogue` server-side, never from a static frontend JSON.
@@ -70,6 +70,11 @@ The User-tab's six bespoke provider Setup cards SHALL be replaced by one row tem
 - **WHEN** the spine renders any credential from any family
 - **THEN** the row has the same vertical rhythm (10px vertical padding), same column layout (sliver | dot | label | subline | right-aligned glyph), and same hairline separators
 - **AND** the rendered HTML structure of a System row is identical (modulo `data-*` attributes and content) to the rendered HTML structure of a User row or CLI row
+
+#### Scenario: One spine row per credential concept
+- **WHEN** the inventory contains multiple raw rows that resolve to the same credential concept, such as multiple `entity_info.type` rows for one User provider or the same System `key` across butler schemas
+- **THEN** the spine renders exactly one row for that credential concept
+- **AND** the row preserves the highest-severity state and the relevant shared/local source-target provenance
 
 #### Scenario: Provider drawer for oddities
 - **WHEN** a User OAuth row for `owntracks` is expanded

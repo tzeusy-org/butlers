@@ -84,6 +84,20 @@ describe("adaptInventoryResponse: user credential state", () => {
     });
     expect(result.user[0].state).toBe("ok");
   });
+
+  it("normalizes backend warning states into passport states", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({ id: "u-warn", entity_id: "tze", state: "warn" }),
+        makeUser({ id: "u-failing", entity_id: "wei", state: "failing" }),
+      ],
+      identities: [],
+    });
+
+    expect(result.user.map((credential) => credential.state)).toEqual(["warn", "failed"]);
+  });
 });
 
 describe("adaptInventoryResponse: user provider derivation", () => {
@@ -139,6 +153,60 @@ describe("adaptInventoryResponse: user provider derivation", () => {
       id: "custom",
       label: "Custom",
       kind: "token",
+    });
+  });
+
+  it("groups multiple raw credential components into one provider row per identity", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({ id: "tg-hash", entity_id: "tze", state: "warn", type: "telegram_api_hash" }),
+        makeUser({ id: "tg-session", entity_id: "tze", state: "warn", type: "telegram_user_session" }),
+        makeUser({ id: "google", entity_id: "tze", state: "ok", type: "google_oauth_refresh" }),
+      ],
+      identities: [],
+      providers: PROVIDER_CATALOG,
+    });
+
+    expect(result.user.map((credential) => credential.provider)).toEqual(["telegram_bot", "google"]);
+    expect(result.user.filter((credential) => credential.provider === "telegram_bot")).toHaveLength(1);
+    expect(result.user[0].state).toBe("warn");
+  });
+});
+
+describe("adaptInventoryResponse: system credential grouping", () => {
+  it("groups duplicate system keys across butler schemas into one row", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({
+          key: "cli-auth/codex",
+          category: "cli-auth",
+          state: "warn",
+          butler: "lifestyle",
+          description: "CLI auth token for Codex (OpenAI)",
+        }),
+        makeSystem({
+          key: "cli-auth/codex",
+          category: "cli-auth",
+          state: "warn",
+          butler: "switchboard",
+          description: "CLI auth token for Codex (OpenAI)",
+        }),
+      ],
+      user: [],
+      identities: [],
+    });
+
+    expect(result.system).toHaveLength(1);
+    expect(result.system[0]).toMatchObject({
+      key: "cli-auth/codex",
+      category: "cli-auth",
+      state: "warn",
+      rowState: "local",
+      source: "switchboard",
+      target: "lifestyle",
     });
   });
 });

@@ -9,6 +9,7 @@ export type CredentialState =
   | "revoked"
   | "expiring"
   | "scope_mismatch"
+  | "warn"
   | "rotating"
   | "never_set"
   | "failed";
@@ -95,6 +96,7 @@ export interface UserCredential {
 export interface SystemCredential {
   key: string;
   category: string;
+  state?: CredentialState;
   rowState: "shared" | "local" | "missing";
   fingerprint: string | null;
   description: string | null;

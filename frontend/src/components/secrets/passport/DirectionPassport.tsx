@@ -22,6 +22,7 @@ import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli, PassportEmptyState } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
+import { needsHand } from "./constants.ts";
 
 // ── KPI cell ─────────────────────────────────────────────────────────────────
 
@@ -174,7 +175,7 @@ export function DirectionPassport({
     integrations: {
       total:    userForIdentity.length,
       healthy:  userForIdentity.filter((x) => x.state === "ok").length,
-      needsHand:userForIdentity.filter((x) => ["expired","revoked","scope_mismatch","expiring","rotating","failed"].includes(x.state)).length,
+      needsHand:userForIdentity.filter((x) => needsHand(x.state)).length,
     },
     system: {
       total:      inventory.system.length,
@@ -184,7 +185,7 @@ export function DirectionPassport({
     cli: {
       total:     inventory.cli.length,
       ok:        inventory.cli.filter((x) => x.state === "ok").length,
-      attention: inventory.cli.filter((x) => ["expired","revoked","expiring"].includes(x.state)).length,
+      attention: inventory.cli.filter((x) => needsHand(x.state)).length,
     },
   };
   const needsAttention = kpis.integrations.needsHand + kpis.cli.attention;

@@ -12,6 +12,7 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
   revoked:       { label: "revoked",        tone: "red",   sliver: true,  rank: 1 },
   scope_mismatch:{ label: "scope mismatch", tone: "amber", sliver: true,  rank: 2 },
   expiring:      { label: "expiring",       tone: "amber", sliver: true,  rank: 3 },
+  warn:          { label: "needs probe",    tone: "amber", sliver: true,  rank: 4 },
   rotating:      { label: "rotating…", tone: "amber", sliver: false, rank: 4 },
   ok:            { label: "healthy",        tone: "ok",    sliver: false, rank: 5 },
   failed:        { label: "failed",         tone: "red",   sliver: true,  rank: 1 },
@@ -20,7 +21,7 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
 
 /** States that are "needs hand" — pinned at the top of the spine. */
 export const NEEDS_HAND_STATES = new Set<CredentialState>([
-  "expired", "revoked", "scope_mismatch", "expiring", "rotating", "failed",
+  "expired", "revoked", "scope_mismatch", "expiring", "warn", "rotating", "failed",
 ]);
 
 export function needsHand(state: CredentialState): boolean {

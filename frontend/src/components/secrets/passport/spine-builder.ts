@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { SpineEntry, InventoryResponse } from "./types.ts";
+import { severityRank } from "./constants.ts";
 
 /**
  * Build the flat list of spine entries from inventory data.
@@ -25,6 +26,8 @@ export function buildSpineEntries(
     subline:
       r.state === "never_set"
         ? "not set"
+        : r.state === "warn"
+          ? "needs probe"
         : r.state === "expiring" && r.expires
           ? `expires ${r.expires}`
           : `used ${r.lastUsed ?? "—"}`,
@@ -34,7 +37,7 @@ export function buildSpineEntries(
     key: `s:${s.key}`,
     family: "system" as const,
     label: s.key,
-    state: s.rowState === "missing" ? "never_set" : "ok",
+    state: s.rowState === "missing" ? "never_set" : (s.state ?? "ok"),
     mono: true,
     lastTouchOrder: s.rowState === "missing" ? 900 : i,
     subline:
@@ -60,6 +63,8 @@ export function buildSpineEntries(
           ? `expires ${s.expires}`
           : s.state === "scope_mismatch"
             ? "1 scope missing"
+            : s.state === "warn"
+              ? "needs probe"
             : s.state === "never_set"
               ? "not connected"
               : `verified ${s.lastVerified ?? "—"}`,
@@ -72,14 +77,7 @@ export function buildSpineEntries(
 export function pickDefaultKey(entries: SpineEntry[]): string {
   if (entries.length === 0) return "";
   const sorted = [...entries].sort((a, b) => {
-    // Sort by severity rank (lower = more urgent)
-    const rankA = (a.state === "ok" ? 5 : a.state === "never_set" ? 9 :
-      a.state === "expired" || a.state === "revoked" ? 0 :
-      a.state === "scope_mismatch" ? 2 : a.state === "expiring" ? 3 : 4);
-    const rankB = (b.state === "ok" ? 5 : b.state === "never_set" ? 9 :
-      b.state === "expired" || b.state === "revoked" ? 0 :
-      b.state === "scope_mismatch" ? 2 : b.state === "expiring" ? 3 : 4);
-    return rankA - rankB;
+    return severityRank(a.state) - severityRank(b.state);
   });
   return sorted[0]?.key ?? entries[0]?.key ?? "";
 }
