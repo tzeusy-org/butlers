@@ -27,7 +27,7 @@ ix_secret_probe_log_lookup) and is noted here as a static-check only.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -55,6 +55,11 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 _NOW = datetime.now(tz=UTC)
+
+# Fixed noon-UTC instant used to freeze time in _format_probe_time tests.
+# Using noon UTC (12:00) guarantees "today"/"yesterday" transitions never
+# land near a calendar-day boundary regardless of when CI runs.
+_FROZEN_NOW = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def _make_row(**kwargs) -> MagicMock:
@@ -255,15 +260,25 @@ def test_derive_state(is_set, last_test_ok, expires_at, expected):
 
 
 def test_format_probe_time_today():
-    recent = datetime.now(tz=UTC) - timedelta(hours=1)
-    result = _format_probe_time(recent)
+    # Freeze the formatter's clock to noon UTC so 1h-ago is always "today"
+    # regardless of when CI runs.
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        recent = _FROZEN_NOW - timedelta(hours=1)
+        result = _format_probe_time(recent)
     assert result is not None
     assert "today" in result
 
 
 def test_format_probe_time_yesterday():
-    yesterday = datetime.now(tz=UTC) - timedelta(days=1, hours=2)
-    result = _format_probe_time(yesterday)
+    # Freeze the formatter's clock to noon UTC so previous-calendar-day stamps
+    # reliably produce "yesterday" regardless of when CI runs.
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        yesterday = _FROZEN_NOW - timedelta(days=1, hours=2)
+        result = _format_probe_time(yesterday)
     assert result is not None
     assert "yesterday" in result
 
@@ -273,30 +288,38 @@ def test_format_probe_time_yesterday_midnight_boundary():
 
     This test guards the calendar-day comparison fix: delta.days-based calculation
     would return 0 (< 24h elapsed) and wrongly say 'today'.
+
+    The formatter's clock is frozen to 00:30 UTC so that 23:55 the previous
+    calendar day is always < 24h ago *and* on the previous calendar day — the
+    exact edge that exposed the original bug.  Freezing removes wall-clock
+    sensitivity so the test is deterministic regardless of when CI runs.
     """
-    now = datetime.now(tz=UTC)
-    # Construct a datetime that is on the previous calendar day but < 24h ago.
-    # Use noon of the previous calendar day (guaranteed < 24h at any time of day).
     from datetime import date
 
-    prev_day = date(now.year, now.month, now.day) - timedelta(days=1)
-    # 23:55 previous calendar day = < 25 minutes ago if it is currently 00:00-00:05
-    # or up to 24h05m ago otherwise — always previous calendar day.
+    frozen_now = datetime(2024, 6, 15, 0, 30, 0, tzinfo=UTC)  # just after midnight
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=frozen_now)
+
+    prev_day = date(frozen_now.year, frozen_now.month, frozen_now.day) - timedelta(days=1)
+    # 23:55 of the previous calendar day — only 35 minutes before frozen_now
     prev_day_late = datetime(prev_day.year, prev_day.month, prev_day.day, 23, 55, tzinfo=UTC)
-    elapsed = (now - prev_day_late).total_seconds()
-    if elapsed > 0 and elapsed < 86400:
-        # Only assert when the probe really is < 24h ago (proves delta.days == 0 path)
+
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
         result = _format_probe_time(prev_day_late)
-        assert result is not None
-        assert "yesterday" in result, (
-            f"Expected 'yesterday' for probe at {prev_day_late} "
-            f"(now={now}, elapsed={elapsed:.0f}s), got {result!r}"
-        )
+
+    assert result is not None
+    assert "yesterday" in result, (
+        f"Expected 'yesterday' for probe at {prev_day_late} "
+        f"(frozen_now={frozen_now}), got {result!r}"
+    )
 
 
 def test_format_probe_time_older():
-    old = datetime.now(tz=UTC) - timedelta(days=5)
-    result = _format_probe_time(old)
+    old = _FROZEN_NOW - timedelta(days=5)
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        result = _format_probe_time(old)
     assert result is not None
     # Should include a date component
     assert len(result) > 5
@@ -949,9 +972,13 @@ def test_inventory_providers_is_additive():
 
 def test_row_to_test_result_maps_fields_correctly():
     """_row_to_test_result maps ok/code/message/recorded_at to TestResult."""
-    _now = datetime.now(tz=UTC)
-    row = _make_row(ok=True, code=200, message="all good", recorded_at=_now)
-    result = _row_to_test_result(row)
+    # Freeze the formatter's clock so "now" and recorded_at are on the same
+    # calendar day regardless of when CI runs.
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
+    row = _make_row(ok=True, code=200, message="all good", recorded_at=_FROZEN_NOW)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        result = _row_to_test_result(row)
     assert result.ok is True
     assert result.code == 200
     assert result.message == "all good"

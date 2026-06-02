@@ -19,7 +19,7 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -39,6 +39,11 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 _NOW = datetime.now(tz=UTC)
+
+# Fixed noon-UTC instant for freezing the formatter's clock in tests that
+# assert "today"/"yesterday".  Noon UTC means no calendar-day boundary
+# ambiguity regardless of when CI runs.
+_FROZEN_NOW = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def _make_row(**kwargs) -> MagicMock:
@@ -690,13 +695,21 @@ def test_cli_credential_no_probe_test_is_null():
 
 
 def test_probe_at_field_is_human_friendly():
-    """Probe log at field is formatted as a human-friendly relative timestamp."""
+    """Probe log at field is formatted as a human-friendly relative timestamp.
+
+    The formatter's clock is frozen to noon UTC so a 2h-ago probe timestamp is
+    always on the same calendar day ("today"), regardless of when CI runs.
+    """
     row = _make_entity_info_row()
-    probe = _make_probe_row(ok=True, recorded_at=datetime.now(tz=UTC) - timedelta(hours=2))
+    # Anchor the probe time relative to _FROZEN_NOW so "today" is always correct.
+    probe = _make_probe_row(ok=True, recorded_at=_FROZEN_NOW - timedelta(hours=2))
     mock_db = _make_db_manager_for_per_credential(user_row=row, probe_row=probe)
     client = _build_app(mock_db)
 
-    resp = client.get("/api/secrets/user/google")
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        resp = client.get("/api/secrets/user/google")
     test = resp.json()["data"]["test"]
     assert test is not None
     assert test["at"] is not None
