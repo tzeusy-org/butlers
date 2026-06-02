@@ -18,6 +18,7 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -44,6 +45,20 @@ _NOW = datetime.now(tz=UTC)
 # assert "today"/"yesterday".  Noon UTC means no calendar-day boundary
 # ambiguity regardless of when CI runs.
 _FROZEN_NOW = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
+
+
+@contextmanager
+def _freeze_time(frozen_now: datetime = _FROZEN_NOW):
+    """Freeze ``butlers.api.routers.secrets_v2.datetime.now`` to *frozen_now*.
+
+    Wraps ``datetime`` so all construction/comparison helpers remain intact;
+    only ``.now()`` is replaced.  Use this in tests that assert
+    ``'today'``/``'yesterday'`` labels from ``_format_probe_time``.
+    """
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=frozen_now)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        yield frozen_now
 
 
 def _make_row(**kwargs) -> MagicMock:
@@ -706,9 +721,7 @@ def test_probe_at_field_is_human_friendly():
     mock_db = _make_db_manager_for_per_credential(user_row=row, probe_row=probe)
     client = _build_app(mock_db)
 
-    frozen_dt = MagicMock(wraps=datetime)
-    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
-    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+    with _freeze_time():
         resp = client.get("/api/secrets/user/google")
     test = resp.json()["data"]["test"]
     assert test is not None

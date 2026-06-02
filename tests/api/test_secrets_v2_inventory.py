@@ -26,6 +26,7 @@ ix_secret_probe_log_lookup) and is noted here as a static-check only.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -60,6 +61,20 @@ _NOW = datetime.now(tz=UTC)
 # Using noon UTC (12:00) guarantees "today"/"yesterday" transitions never
 # land near a calendar-day boundary regardless of when CI runs.
 _FROZEN_NOW = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
+
+
+@contextmanager
+def _freeze_time(frozen_now: datetime = _FROZEN_NOW):
+    """Freeze ``butlers.api.routers.secrets_v2.datetime.now`` to *frozen_now*.
+
+    Wraps ``datetime`` so all construction/comparison helpers remain intact;
+    only ``.now()`` is replaced.  Use this in tests that assert
+    ``'today'``/``'yesterday'`` labels from ``_format_probe_time``.
+    """
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=frozen_now)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        yield frozen_now
 
 
 def _make_row(**kwargs) -> MagicMock:
@@ -262,9 +277,7 @@ def test_derive_state(is_set, last_test_ok, expires_at, expected):
 def test_format_probe_time_today():
     # Freeze the formatter's clock to noon UTC so 1h-ago is always "today"
     # regardless of when CI runs.
-    frozen_dt = MagicMock(wraps=datetime)
-    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
-    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+    with _freeze_time():
         recent = _FROZEN_NOW - timedelta(hours=1)
         result = _format_probe_time(recent)
     assert result is not None
@@ -274,9 +287,7 @@ def test_format_probe_time_today():
 def test_format_probe_time_yesterday():
     # Freeze the formatter's clock to noon UTC so previous-calendar-day stamps
     # reliably produce "yesterday" regardless of when CI runs.
-    frozen_dt = MagicMock(wraps=datetime)
-    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
-    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+    with _freeze_time():
         yesterday = _FROZEN_NOW - timedelta(days=1, hours=2)
         result = _format_probe_time(yesterday)
     assert result is not None
@@ -297,14 +308,11 @@ def test_format_probe_time_yesterday_midnight_boundary():
     from datetime import date
 
     frozen_now = datetime(2024, 6, 15, 0, 30, 0, tzinfo=UTC)  # just after midnight
-    frozen_dt = MagicMock(wraps=datetime)
-    frozen_dt.now = MagicMock(return_value=frozen_now)
-
     prev_day = date(frozen_now.year, frozen_now.month, frozen_now.day) - timedelta(days=1)
     # 23:55 of the previous calendar day — only 35 minutes before frozen_now
     prev_day_late = datetime(prev_day.year, prev_day.month, prev_day.day, 23, 55, tzinfo=UTC)
 
-    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+    with _freeze_time(frozen_now):
         result = _format_probe_time(prev_day_late)
 
     assert result is not None
@@ -316,9 +324,7 @@ def test_format_probe_time_yesterday_midnight_boundary():
 
 def test_format_probe_time_older():
     old = _FROZEN_NOW - timedelta(days=5)
-    frozen_dt = MagicMock(wraps=datetime)
-    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
-    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+    with _freeze_time():
         result = _format_probe_time(old)
     assert result is not None
     # Should include a date component
@@ -974,10 +980,8 @@ def test_row_to_test_result_maps_fields_correctly():
     """_row_to_test_result maps ok/code/message/recorded_at to TestResult."""
     # Freeze the formatter's clock so "now" and recorded_at are on the same
     # calendar day regardless of when CI runs.
-    frozen_dt = MagicMock(wraps=datetime)
-    frozen_dt.now = MagicMock(return_value=_FROZEN_NOW)
     row = _make_row(ok=True, code=200, message="all good", recorded_at=_FROZEN_NOW)
-    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+    with _freeze_time():
         result = _row_to_test_result(row)
     assert result.ok is True
     assert result.code == 200
