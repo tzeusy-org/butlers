@@ -237,6 +237,7 @@ class TestMemoryStoreFactStructuredErrors:
             await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
         mod._embedding_engine = MagicMock(name="embedding")
+        mod._embedding_engine._model_name = mod._config.embedding_model
         return mod, registered_tools["memory_store_fact"], fake_db.pool, mock_writing
 
     def _patch_routing(self, entity_id: str):
