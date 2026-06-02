@@ -70,7 +70,7 @@ export default function SettingsOwnerPage() {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
 
-  const { data: googleStatus, isLoading, isError, refetch } = useQuery({
+  const { data: googleStatus, isPending, isError, refetch } = useQuery({
     queryKey: ["settings-owner", "google-oauth"],
     queryFn: getGoogleCredentialStatus,
     retry: false,
@@ -182,7 +182,7 @@ export default function SettingsOwnerPage() {
                   type="button"
                   variant="outline"
                   onClick={handleReauthorize}
-                  disabled={isLoading}
+                  disabled={isPending}
                 >
                   <RefreshCw className="h-4 w-4" />
                   Re-authorize Google
@@ -198,7 +198,7 @@ export default function SettingsOwnerPage() {
             <CardDescription>Presence and token health without exposing secret values.</CardDescription>
           </CardHeader>
           <CardContent>
-            {isLoading ? (
+            {isPending ? (
               <div className="space-y-3">
                 <Skeleton className="h-8 w-32" />
                 <Skeleton className="h-10 w-full" />
