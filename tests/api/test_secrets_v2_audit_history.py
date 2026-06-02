@@ -17,8 +17,9 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,6 +41,25 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 _NOW = datetime.now(tz=UTC)
+
+# Fixed noon-UTC instant for freezing the formatter's clock in tests that
+# assert "today"/"yesterday".  Noon UTC means no calendar-day boundary
+# ambiguity regardless of when CI runs.
+_FROZEN_NOW = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
+
+
+@contextmanager
+def _freeze_time(frozen_now: datetime = _FROZEN_NOW):
+    """Freeze ``butlers.api.routers.secrets_v2.datetime.now`` to *frozen_now*.
+
+    Wraps ``datetime`` so all construction/comparison helpers remain intact;
+    only ``.now()`` is replaced.  Use this in tests that assert
+    ``'today'``/``'yesterday'`` labels from ``_format_probe_time``.
+    """
+    frozen_dt = MagicMock(wraps=datetime)
+    frozen_dt.now = MagicMock(return_value=frozen_now)
+    with patch("butlers.api.routers.secrets_v2.datetime", frozen_dt):
+        yield frozen_now
 
 
 def _make_audit_row(
@@ -105,9 +125,13 @@ def test_max_limit_is_50():
 
 
 def test_audit_history_hit_returns_rows_desc():
-    """Rows returned for a known key, newest first."""
-    older = _NOW - timedelta(hours=2)
-    newer = _NOW - timedelta(minutes=5)
+    """Rows returned for a known key, newest first.
+
+    The formatter's clock is frozen to noon UTC so both timestamps are
+    on the same calendar day and the 'today' assertion is always correct.
+    """
+    older = _FROZEN_NOW - timedelta(hours=2)
+    newer = _FROZEN_NOW - timedelta(minutes=5)
 
     rows = [
         _make_audit_row(ts=newer, actor="owner", action="rotated"),
@@ -116,7 +140,8 @@ def test_audit_history_hit_returns_rows_desc():
     mock_db = _make_db_manager_with_audit_rows(rows)
     client = _build_app(mock_db)
 
-    resp = client.get("/api/secrets/audit/system/SOME_KEY")
+    with _freeze_time():
+        resp = client.get("/api/secrets/audit/system/SOME_KEY")
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
@@ -431,13 +456,18 @@ def test_audit_history_valid_scopes_accepted(valid_scope: str):
 
 
 def test_audit_history_timestamp_formatted_as_today():
-    """A row recorded recently has 'today' in its ts field."""
-    recent = _NOW - timedelta(minutes=15)
+    """A row recorded recently has 'today' in its ts field.
+
+    The formatter's clock is frozen to noon UTC so the 15-minutes-ago
+    timestamp is always on the same calendar day.
+    """
+    recent = _FROZEN_NOW - timedelta(minutes=15)
     rows = [_make_audit_row(ts=recent)]
     mock_db = _make_db_manager_with_audit_rows(rows)
     client = _build_app(mock_db)
 
-    resp = client.get("/api/secrets/audit/system/KEY")
+    with _freeze_time():
+        resp = client.get("/api/secrets/audit/system/KEY")
     assert resp.status_code == 200
     body = resp.json()
     ts = body["data"][0]["ts"]
@@ -446,13 +476,18 @@ def test_audit_history_timestamp_formatted_as_today():
 
 
 def test_audit_history_timestamp_formatted_as_yesterday():
-    """A row recorded yesterday has 'yesterday' in its ts field."""
-    yesterday = _NOW - timedelta(days=1, hours=2)
+    """A row recorded yesterday has 'yesterday' in its ts field.
+
+    The formatter's clock is frozen to noon UTC so the previous-calendar-day
+    timestamp is reliably "yesterday" regardless of when CI runs.
+    """
+    yesterday = _FROZEN_NOW - timedelta(days=1, hours=2)
     rows = [_make_audit_row(ts=yesterday)]
     mock_db = _make_db_manager_with_audit_rows(rows)
     client = _build_app(mock_db)
 
-    resp = client.get("/api/secrets/audit/system/KEY")
+    with _freeze_time():
+        resp = client.get("/api/secrets/audit/system/KEY")
     assert resp.status_code == 200
     body = resp.json()
     ts = body["data"][0]["ts"]
