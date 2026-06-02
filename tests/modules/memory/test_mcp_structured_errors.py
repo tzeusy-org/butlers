@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.modules.memory import MemoryModule, _infer_recovery_steps
+from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
 pytestmark = pytest.mark.unit
 
@@ -236,8 +237,7 @@ class TestMemoryStoreFactStructuredErrors:
         ):
             await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
-        mod._embedding_engine = MagicMock(name="embedding")
-        mod._embedding_engine._model_name = mod._config.embedding_model
+        mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
         return mod, registered_tools["memory_store_fact"], fake_db.pool, mock_writing
 
     def _patch_routing(self, entity_id: str):
