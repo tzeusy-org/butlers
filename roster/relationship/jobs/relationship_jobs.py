@@ -1485,6 +1485,7 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "rows_skipped_credential": 0,
         "rows_skipped_orphan": 0,
         "rows_skipped_no_predicate": 0,
+        "rows_skipped_empty_value": 0,
     }
 
     registered_predicates = await _registered_contact_info_predicates(db_pool)
@@ -1615,6 +1616,20 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 unregistered_warned.add(predicate)
             continue
 
+        # Belt-and-suspenders: skip rows whose value is empty or whitespace-only.
+        # DB NOT NULL prevents NULL, but an empty string could slip through and
+        # produce a degenerate object like "telegram:" after encoding.
+        if not (ci_value or "").strip():
+            stats["rows_skipped_empty_value"] += 1
+            logger.warning(
+                "contact_info_reconciler: empty ci_value for ci_id=%s ci_type=%s entity=%s; "
+                "skipping to avoid degenerate triple",
+                ci_id,
+                ci_type,
+                entity_id,
+            )
+            continue
+
         # Provenance fields.
         last_seen: datetime | None = row.get("ci_created_at")
         is_primary: bool = row["is_primary"]
@@ -1713,7 +1728,7 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info(
         "contact_info_reconciler complete: scanned=%d reconciled=%d skipped=%d "
         "carveout=%d errors=%d skipped_credential=%d skipped_orphan=%d "
-        "skipped_no_predicate=%d",
+        "skipped_no_predicate=%d skipped_empty_value=%d",
         stats["rows_scanned"],
         stats["rows_reconciled"],
         stats["rows_skipped"],
@@ -1722,5 +1737,6 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["rows_skipped_credential"],
         stats["rows_skipped_orphan"],
         stats["rows_skipped_no_predicate"],
+        stats["rows_skipped_empty_value"],
     )
     return stats

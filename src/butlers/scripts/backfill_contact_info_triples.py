@@ -283,6 +283,7 @@ class BackfillStats:
     already_present: int = 0  # rows whose triple already exists (idempotent)
     skipped_null_entity: int = 0  # entity_id IS NULL — orphan, needs resolver first
     skipped_unmapped_type: int = 0  # type not in predicate map
+    skipped_empty_value: int = 0  # value is None/empty/whitespace-only — belt-and-suspenders
     errors: int = 0
 
     # Secured path (→ public.entity_info, bu-krbqx)
@@ -550,6 +551,20 @@ async def _run_backfill_with_pool(
             )
             continue
 
+        # --- Belt-and-suspenders: skip rows with empty/whitespace-only value ---
+        # ci_value is already coerced to "" via `row["value"] or ""`, but an empty
+        # string would produce a degenerate triple like "telegram:" after encoding.
+        if not ci_value.strip():
+            stats.skipped_empty_value += 1
+            logger.warning(
+                "skip empty_value: ci_id=%s type=%s entity_id=%s — "
+                "empty value would produce a degenerate triple; skipping",
+                row["ci_id"],
+                ci_type,
+                entity_id,
+            )
+            continue
+
         # --- Encode the object value for entity_facts storage ---
         # Telegram types (telegram, telegram_user_id, telegram_username) must be stored
         # with a "telegram:" prefix in entity_facts so the read path can distinguish them
@@ -657,7 +672,7 @@ async def _run_backfill_with_pool(
     # --- Summary log ---
     logger.info(
         "[%s] Done: ci_total=%d asserted=%d already_present=%d "
-        "skipped_null_entity=%d skipped_unmapped=%d errors=%d "
+        "skipped_null_entity=%d skipped_unmapped=%d skipped_empty_value=%d errors=%d "
         "secured_inserted=%d secured_already_present=%d "
         "secured_skipped_null_entity=%d secured_errors=%d",
         mode_label,
@@ -666,6 +681,7 @@ async def _run_backfill_with_pool(
         stats.already_present,
         stats.skipped_null_entity,
         stats.skipped_unmapped_type,
+        stats.skipped_empty_value,
         stats.errors,
         stats.secured_inserted,
         stats.secured_already_present,
@@ -723,6 +739,7 @@ _REPORT_TEMPLATE = """\
 | Already present in entity_facts (idempotent) | {already_present} |
 | Skipped — null entity_id (orphan contact) | {skipped_null_entity} |
 | Skipped — unmapped type | {skipped_unmapped_type} |
+| Skipped — empty/whitespace value | {skipped_empty_value} |
 | Errors | {errors} |
 
 ---
@@ -820,6 +837,7 @@ def _render_report(*, stats: BackfillStats, apply: bool) -> str:
         already_present=stats.already_present,
         skipped_null_entity=stats.skipped_null_entity,
         skipped_unmapped_type=stats.skipped_unmapped_type,
+        skipped_empty_value=stats.skipped_empty_value,
         errors=stats.errors,
         secured_inserted=stats.secured_inserted,
         secured_already_present=stats.secured_already_present,

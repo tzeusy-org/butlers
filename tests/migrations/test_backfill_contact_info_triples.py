@@ -1291,3 +1291,108 @@ class TestCreatePoolSsl:
         monkeypatch.delenv("DATABASE_URL", raising=False)
         monkeypatch.delenv("POSTGRES_DB", raising=False)
         assert mod._db_name_from_env() == "butlers"
+
+
+# ---------------------------------------------------------------------------
+# 19. Empty/whitespace value guard (belt-and-suspenders, bead bu-36c3w)
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyValueGuard:
+    """Empty or whitespace-only ci_value rows are skipped before encode_handle_object.
+
+    An empty value would produce a degenerate triple like 'telegram:' after
+    encoding, so the backfill loop must skip-and-warn rather than store it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_string_telegram_not_asserted(self, tmp_path: Path) -> None:
+        """Empty ci_value for telegram_user_id must not reach relationship_assert_fact."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ci_rows = [_ci_row(ci_type="telegram_user_id", value="")]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        writer_mod.relationship_assert_fact.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_not_asserted(self, tmp_path: Path) -> None:
+        """Whitespace-only ci_value (e.g. '  ') must also be skipped."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ci_rows = [_ci_row(ci_type="telegram_username", value="   ")]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        writer_mod.relationship_assert_fact.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_value_non_telegram_not_asserted(self, tmp_path: Path) -> None:
+        """Empty ci_value for a non-telegram type (e.g. email) is also skipped."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ci_rows = [_ci_row(ci_type="email", value="")]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        writer_mod.relationship_assert_fact.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_value_counted_in_stats(self, tmp_path: Path) -> None:
+        """Empty-value rows increment skipped_empty_value in BackfillStats."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ci_rows = [
+            _ci_row(ci_type="telegram_user_id", value=""),
+            _ci_row(ci_type="email", value="  "),
+        ]
+        report_path = tmp_path / "r.md"
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=report_path)
+
+        assert rc == 0
+        writer_mod.relationship_assert_fact.assert_not_called()
+        # The report must record skipped_empty_value = 2
+        content = report_path.read_text()
+        assert "| Skipped — empty/whitespace value | 2 |" in content
+
+    @pytest.mark.asyncio
+    async def test_empty_value_in_report(self, tmp_path: Path) -> None:
+        """The backfill report includes a 'Skipped — empty/whitespace value' row."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod()
+        ci_rows = [_ci_row(ci_type="telegram_user_id", value="")]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[])
+        report_path = tmp_path / "r.md"
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            await mod._run_backfill_with_pool(pool, apply=False, report_path=report_path)
+
+        content = report_path.read_text()
+        assert "empty" in content.lower() or "whitespace" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_nonempty_value_not_affected(self, tmp_path: Path) -> None:
+        """A valid non-empty ci_value passes through the guard normally."""
+        mod = _load_module()
+        writer_mod = _make_writer_mod(assert_outcome="inserted")
+        ci_rows = [_ci_row(ci_type="telegram_user_id", value="86807245")]
+        pool = _make_pool(ci_rows=ci_rows, active_triples=[False])
+
+        with patch.object(mod, "_load_assert_fact", return_value=writer_mod):
+            rc = await mod._run_backfill_with_pool(pool, apply=True, report_path=tmp_path / "r.md")
+
+        assert rc == 0
+        writer_mod.relationship_assert_fact.assert_called_once()
