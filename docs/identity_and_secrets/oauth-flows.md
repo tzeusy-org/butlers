@@ -69,9 +69,9 @@ A soft limit of 10 active accounts (configurable via `GOOGLE_MAX_ACCOUNTS` env v
 
 ## OAuth Bootstrap Flow
 
-The dashboard provides a web-based OAuth bootstrap:
+The dashboard provides a web-based OAuth bootstrap from `/settings/owner`:
 
-1. User navigates to `GET /api/oauth/google/start` in the dashboard.
+1. User opens Settings → Owner Config and navigates to `GET /api/oauth/google/start` in the dashboard.
 2. The dashboard initiates the OAuth authorization code flow with Google.
 3. User authorizes in the browser and Google redirects back with an authorization code.
 4. The callback endpoint exchanges the code for tokens.

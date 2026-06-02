@@ -105,11 +105,11 @@ The Secrets page (`/secrets`) is the operator's primary surface for provisioning
 
 ### Requirement: Google OAuth Bootstrap Flow
 
-The Google OAuth section of the Secrets page provides the only mechanism to bootstrap Google OAuth tokens. The flow requires browser interaction (redirect to Google's consent screen) and cannot be performed through MCP tools or CLI. The frontend drives a two-leg authorization code flow: it initiates the redirect to Google, the backend handles the callback, exchanges the code for tokens, and persists credentials to the database.
+The Owner Config section under Settings provides the primary mechanism to configure Google OAuth app credentials and bootstrap or refresh Google OAuth tokens. The Secrets page remains the credential inventory and audit surface, not the only setup surface. The flow requires browser interaction (redirect to Google's consent screen) and cannot be performed through MCP tools or CLI. The frontend drives a two-leg authorization code flow: it initiates the redirect to Google, the backend handles the callback, exchanges the code for tokens, and persists credentials to the database.
 
 #### Scenario: OAuth credential status display
 
-- **WHEN** the Google OAuth section loads
+- **WHEN** the Google OAuth owner-config section loads
 - **THEN** the credential status card displays presence indicators (boolean, never raw values) for: client_id configured, client_secret configured, refresh_token present
 - **AND** an OAuth health badge shows the current connection state using color-coded variants: `connected` (default/green), `not_configured` (outline), `expired` (destructive), `missing_scope` (destructive), `redirect_uri_mismatch` (destructive), `unapproved_tester` (destructive), `unknown_error` (destructive)
 - **AND** granted scopes are displayed when available
@@ -125,7 +125,7 @@ The Google OAuth section of the Secrets page provides the only mechanism to boot
 - **WHEN** the operator clicks "Connect Google" (or "Re-connect Google" if already connected)
 - **THEN** the browser navigates to the backend's `/api/oauth/google/start` endpoint
 - **AND** the backend generates a cryptographically random CSRF state token, stores it in an in-memory store with 10-minute TTL, and redirects to Google's authorization URL with parameters: client_id (from DB), redirect_uri (from env or default `http://localhost:41200/api/oauth/google/callback`), response_type=code, scope (gmail.readonly, gmail.modify, calendar, contacts, contacts.readonly, contacts.other.readonly, directory.readonly), access_type=offline, prompt=consent, state
-- **AND** the "Connect Google" button is disabled until both client_id and client_secret are configured in the Secrets table
+- **AND** the "Connect Google" button is disabled until both client_id and client_secret are configured in the owner-config Google OAuth app form
 
 #### Scenario: OAuth callback processing
 
@@ -133,7 +133,8 @@ The Google OAuth section of the Secrets page provides the only mechanism to boot
 - **THEN** the backend validates the state parameter against the stored token (one-time-use, consumed on validation)
 - **AND** exchanges the authorization code for tokens via Google's token endpoint
 - **AND** extracts the refresh token (raises an error if absent)
-- **AND** persists all credentials (client_id, client_secret, refresh_token, scope) to `butler_secrets` via the CredentialStore
+- **AND** persists Google app credentials (`client_id`, `client_secret`, `scope`) to `butler_secrets` via the CredentialStore
+- **AND** persists the account refresh token to the Google account companion entity's `entity_info`
 - **AND** redirects to the dashboard URL if `OAUTH_DASHBOARD_URL` is configured, otherwise returns a JSON success payload
 - **AND** secret material (client_secret, refresh_token) is never logged in plaintext
 
@@ -448,6 +449,7 @@ Several operations are intentionally restricted to the dashboard frontend as a s
 - **THEN** the flow requires browser-based redirect to Google's consent screen
 - **AND** this is architecturally impossible without the dashboard frontend
 - **AND** the backend's `/api/oauth/google/start` endpoint generates CSRF-protected redirect URLs that must be followed in a browser context
+- **AND** when the flow is initiated with `page_of_origin=settings_owner`, successful callbacks return to `/settings/owner?toast=connected&provider=google` and failed callbacks return to `/settings/owner?oauth_error=<code>&provider=google`
 
 #### Scenario: Approval decisions via dashboard as primary surface
 

@@ -2555,7 +2555,7 @@ export function getGoogleOAuthStartUrl(opts?: {
   accountHint?: string;
   forceConsent?: boolean;
   scopeSet?: string;
-  pageOfOrigin?: "secrets" | "ingestion";
+  pageOfOrigin?: "secrets" | "ingestion" | "settings_owner";
   connectorDetailPath?: string;
 }): string {
   const params = new URLSearchParams();
@@ -2584,7 +2584,7 @@ export function getProviderOAuthStartUrl(
     accountHint?: string;
     forceConsent?: boolean;
     scopeSet?: string;
-    pageOfOrigin?: "secrets" | "ingestion";
+    pageOfOrigin?: "secrets" | "ingestion" | "settings_owner";
     connectorDetailPath?: string;
   },
 ): string {
