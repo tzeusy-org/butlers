@@ -901,6 +901,10 @@ class ButlerDaemon:
                 # Step 2: query entity_facts for the active triple.
                 # For telegram, filter to entries with the "telegram:" prefix
                 # to avoid ambiguity with other has-handle entries (linkedin, etc.).
+                # Backward-compat: also accept verbatim (unprefixed) all-numeric rows
+                # written before the bu-wni4z encoding fix so delivery works during the
+                # transition period.  The numeric-only restriction limits the risk of
+                # misclassifying a linkedin/twitter/other handle as a telegram ID.
                 if channel == "telegram" and predicate == "has-handle":
                     row = await conn.fetchrow(
                         """
@@ -918,14 +922,40 @@ class ButlerDaemon:
                         predicate,
                         self._TELEGRAM_HANDLE_PREFIX + "%",
                     )
-                    if row is None:
+                    if row is not None:
+                        raw = row["object"]
+                        if raw and raw.startswith(self._TELEGRAM_HANDLE_PREFIX):
+                            # Strip prefix; return the numeric Telegram user/chat ID.
+                            numeric = raw[len(self._TELEGRAM_HANDLE_PREFIX) :].strip()
+                            return numeric or None
+
+                    # Backward-compat fallback: no prefixed row found.  Look for a
+                    # verbatim all-numeric has-handle entry — a strong signal it is a
+                    # legacy telegram_user_id written before the bu-wni4z fix.
+                    # Telegram user IDs are always positive integers; linkedin/twitter
+                    # handles are not all-numeric, so the regex limits false positives.
+                    # This fallback will be retired once the data-migration is complete.
+                    row_verbatim = await conn.fetchrow(
+                        r"""
+                        SELECT ef.object
+                        FROM relationship.entity_facts ef
+                        WHERE ef.subject    = $1
+                          AND ef.predicate  = $2
+                          AND ef.object     ~ '^\d+$'
+                          AND ef.object_kind = 'literal'
+                          AND ef.validity   = 'active'
+                        ORDER BY ef."primary" DESC NULLS LAST, ef.created_at ASC
+                        LIMIT 1
+                        """,
+                        entity_id,
+                        predicate,
+                    )
+                    if row_verbatim is None:
                         return None
-                    raw = row["object"]
-                    if not raw or not raw.startswith(self._TELEGRAM_HANDLE_PREFIX):
+                    verbatim = row_verbatim["object"]
+                    if not verbatim:
                         return None
-                    # Strip prefix; return the numeric Telegram user/chat ID.
-                    numeric = raw[len(self._TELEGRAM_HANDLE_PREFIX) :].strip()
-                    return numeric or None
+                    return verbatim.strip() or None
                 else:
                     row = await conn.fetchrow(
                         """

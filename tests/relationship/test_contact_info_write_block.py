@@ -142,6 +142,38 @@ class TestContactInfoAddUsesCentralWriter:
         assert result["status"] == "pending_approval"
         assert result["action_id"] == str(action_id)
 
+    async def test_telegram_maps_to_has_handle_with_prefix(self):
+        """contact_info_add('telegram', ...) must store 'telegram:<value>' in entity_facts.
+
+        The 'telegram:' prefix disambiguates telegram entries from linkedin/twitter/other
+        has-handle entries on the read side (bu-wni4z encoding fix).
+        """
+        from butlers.tools.relationship.contact_info import contact_info_add
+
+        pool, _ = _pool_with_entity()
+        with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
+            writer.return_value = _result("inserted", fact_id=uuid.uuid4())
+            result = await contact_info_add(pool, _CONTACT_ID, "telegram", "210454304")
+
+        writer.assert_awaited_once()
+        call = writer.call_args
+        assert call.args[2] == "has-handle"  # predicate
+        assert call.args[3] == "telegram:210454304"  # object: prefixed (bu-wni4z)
+        # The response value shows the user-supplied input (without prefix)
+        assert result["value"] == "210454304"
+
+    async def test_telegram_prefix_idempotent_in_add(self):
+        """contact_info_add must not double-prefix if value already has 'telegram:'."""
+        from butlers.tools.relationship.contact_info import contact_info_add
+
+        pool, _ = _pool_with_entity()
+        with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
+            writer.return_value = _result("inserted", fact_id=uuid.uuid4())
+            await contact_info_add(pool, _CONTACT_ID, "telegram", "telegram:210454304")
+
+        call = writer.call_args
+        assert call.args[3] == "telegram:210454304"  # not 'telegram:telegram:210454304'
+
     async def test_unmapped_type_rejected(self):
         from butlers.tools.relationship.contact_info import contact_info_add
 

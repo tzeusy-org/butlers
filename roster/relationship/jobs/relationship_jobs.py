@@ -1465,6 +1465,7 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
     Returns:
         Dictionary with the metric keys listed above plus ``interval_minutes``.
     """
+    from butlers.tools.relationship._ef_channel_helpers import encode_handle_object
     from butlers.tools.relationship.relationship_assert_fact import (
         AssertOutcome,
         relationship_assert_fact,
@@ -1544,7 +1545,19 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         WHEN 'other'             THEN 'has-handle'
                         ELSE 'has-' || ci.type
                     END
-                    AND ef.object    = ci.value
+                    -- Telegram types are stored with a "telegram:" prefix in entity_facts
+                    -- (canonical encoding, bead bu-wni4z).  Check both the prefixed form
+                    -- (new canonical) and the verbatim ci.value (legacy rows written before
+                    -- the fix) so already-written rows are not re-reconciled a second time.
+                    AND ef.object IN (
+                        ci.value,
+                        CASE ci.type
+                            WHEN 'telegram'          THEN 'telegram:' || ci.value
+                            WHEN 'telegram_user_id'  THEN 'telegram:' || ci.value
+                            WHEN 'telegram_username' THEN 'telegram:' || ci.value
+                            ELSE ci.value
+                        END
+                    )
                     AND ef.validity  = 'active'
               )
             ORDER BY ci.created_at ASC NULLS LAST
@@ -1606,6 +1619,11 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
         last_seen: datetime | None = row.get("ci_created_at")
         is_primary: bool = row["is_primary"]
 
+        # Encode the object value: telegram types must carry the "telegram:" prefix
+        # so the read path (daemon._resolve_contact_channel_identifier, ef_predicate_to_ci_type)
+        # can distinguish them from linkedin/twitter/other has-handle entries.
+        ef_object = encode_handle_object(ci_type, ci_value)
+
         # Owner-facing rationale + evidence.  These surface in the approvals
         # UI when the writer hits the owner carve-out.  Without them the
         # dossier shows blank cells for every reconciler-generated approval.
@@ -1634,7 +1652,7 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 db_pool,
                 entity_id,
                 predicate,
-                ci_value,
+                ef_object,
                 src="reconciler",
                 object_kind="literal",
                 conf=1.0,
@@ -1660,7 +1678,7 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     "outcome=%s",
                     entity_id,
                     predicate,
-                    ci_value[:80],
+                    ef_object[:80],
                     result.outcome.value,
                 )
             else:

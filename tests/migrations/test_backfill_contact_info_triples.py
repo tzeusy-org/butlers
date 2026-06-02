@@ -682,9 +682,12 @@ class TestUnmappedTypeSkip:
 
     @pytest.mark.asyncio
     async def test_telegram_user_id_maps_to_has_handle(self, tmp_path: Path) -> None:
-        """telegram_user_id (bead bu-55ggu) maps to has-handle and is asserted.
+        """telegram_user_id (bead bu-55ggu) maps to has-handle with 'telegram:' prefix (bu-wni4z).
 
         These are the ~270 legacy rows that previously caused skipped_unmapped=496.
+        The object written to entity_facts must carry the 'telegram:' prefix so the
+        read path (daemon._resolve_contact_channel_identifier) can distinguish it from
+        linkedin/twitter/other has-handle entries.
         """
         mod = _load_module()
         writer_mod = _make_writer_mod(assert_outcome="inserted")
@@ -698,13 +701,15 @@ class TestUnmappedTypeSkip:
         writer_mod.relationship_assert_fact.assert_called_once()
         call_args = writer_mod.relationship_assert_fact.call_args
         assert call_args.args[2] == "has-handle"  # predicate
-        assert call_args.args[3] == "86807245"  # value
+        assert call_args.args[3] == "telegram:86807245"  # object with canonical prefix (bu-wni4z)
 
     @pytest.mark.asyncio
     async def test_telegram_username_maps_to_has_handle(self, tmp_path: Path) -> None:
-        """telegram_username (bead bu-55ggu) maps to has-handle and is asserted.
+        """telegram_username (bead bu-55ggu) maps to has-handle with 'telegram:' prefix (bu-wni4z).
 
         These are the ~224 legacy rows that previously caused skipped_unmapped=496.
+        The object written to entity_facts must carry the 'telegram:' prefix so the
+        read path can classify the entry as 'telegram_user_id' via ef_predicate_to_ci_type.
         """
         mod = _load_module()
         writer_mod = _make_writer_mod(assert_outcome="inserted")
@@ -718,7 +723,7 @@ class TestUnmappedTypeSkip:
         writer_mod.relationship_assert_fact.assert_called_once()
         call_args = writer_mod.relationship_assert_fact.call_args
         assert call_args.args[2] == "has-handle"  # predicate
-        assert call_args.args[3] == "alice_tg"  # value
+        assert call_args.args[3] == "telegram:alice_tg"  # object with canonical prefix (bu-wni4z)
 
     @pytest.mark.asyncio
     async def test_telegram_user_id_and_username_dry_run(self, tmp_path: Path) -> None:

@@ -22,6 +22,32 @@ from uuid import UUID
 
 TELEGRAM_HANDLE_PREFIX = "telegram:"
 
+# CI types that use the ``has-handle`` predicate and require a ``telegram:`` prefix
+# on the stored object value for disambiguation from linkedin/twitter/other handles.
+_TELEGRAM_CI_TYPES = frozenset({"telegram", "telegram_user_id", "telegram_username"})
+
+
+# ---------------------------------------------------------------------------
+# Object encoding helper (write side)
+# ---------------------------------------------------------------------------
+
+
+def encode_handle_object(ci_type: str, value: str) -> str:
+    """Return the canonical ``has-handle`` object string for *ci_type* and *value*.
+
+    Telegram types (``telegram``, ``telegram_user_id``, ``telegram_username``)
+    are stored with a ``"telegram:"`` prefix so the read path can distinguish
+    them from other ``has-handle`` entries (linkedin, twitter, etc.).
+
+    Non-telegram types are returned unchanged.
+
+    Idempotent: if *value* already carries the prefix it is not added again.
+    """
+    if ci_type in _TELEGRAM_CI_TYPES:
+        if not value.startswith(TELEGRAM_HANDLE_PREFIX):
+            return TELEGRAM_HANDLE_PREFIX + value
+    return value
+
 
 # ---------------------------------------------------------------------------
 # Predicate → CI type
@@ -43,6 +69,12 @@ def ef_predicate_to_ci_type(predicate: str, object_val: str) -> str:
     (linkedin, twitter, etc.).  Bare ``has-handle`` entries that lack the
     prefix are typed as ``"handle"`` — a neutral label that avoids implying
     any particular network.
+
+    Backward-compat note: legacy rows written before bu-wni4z may store telegram
+    handles verbatim (no prefix).  Those rows are classified as ``"handle"``
+    until a data migration prefixes them.  The read path in
+    ``daemon._resolve_contact_channel_identifier`` accepts both prefixed and
+    verbatim forms during the transition period.
     """
     if predicate == "has-email":
         return "email"
