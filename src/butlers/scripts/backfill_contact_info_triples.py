@@ -160,6 +160,32 @@ def _load_assert_fact():  # type: ignore[return]
     return mod
 
 
+def _load_ef_channel_helpers():  # type: ignore[return]
+    """Lazy-import _ef_channel_helpers from the roster tools package."""
+    repo = _repo_root()
+    helpers_path = repo / "roster" / "relationship" / "tools" / "_ef_channel_helpers.py"
+    if not helpers_path.exists():
+        raise FileNotFoundError(
+            f"Channel helpers not found at {helpers_path}. "
+            "Run from the repository root with `uv run python -m butlers.scripts...`"
+        )
+    import importlib.util
+
+    module_name = "_ef_channel_helpers"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, helpers_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    try:
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    except Exception:
+        sys.modules.pop(spec.name, None)
+        raise
+    return mod
+
+
 # ---------------------------------------------------------------------------
 # DB connection
 # ---------------------------------------------------------------------------
@@ -459,6 +485,10 @@ async def _run_backfill_with_pool(
     contact_info_type_to_predicate = writer_mod.contact_info_type_to_predicate
     AssertOutcome = writer_mod.AssertOutcome
 
+    # Lazy import of channel helpers for telegram object encoding
+    helpers_mod = _load_ef_channel_helpers()
+    encode_handle_object = helpers_mod.encode_handle_object
+
     stats = BackfillStats()
     mode_label = "APPLY" if apply else "DRY-RUN"
     logger.info("[%s] Starting contact_info → entity_facts / entity_info backfill", mode_label)
@@ -520,15 +550,26 @@ async def _run_backfill_with_pool(
             )
             continue
 
-        # --- Gap check: does this triple already exist? ---
-        already_present = await _has_active_triple(pool, entity_id, predicate, ci_value)
+        # --- Encode the object value for entity_facts storage ---
+        # Telegram types (telegram, telegram_user_id, telegram_username) must be stored
+        # with a "telegram:" prefix in entity_facts so the read path can distinguish them
+        # from linkedin/twitter/other has-handle entries.  encode_handle_object() is
+        # idempotent (no double-prefix if already encoded).
+        ef_object = encode_handle_object(ci_type, ci_value)
+
+        # --- Gap check: does this triple already exist (in canonical encoded form)? ---
+        # Also check the verbatim ci_value for backward compat with rows written before
+        # the bu-wni4z fix (those rows lack the "telegram:" prefix).
+        already_present = await _has_active_triple(pool, entity_id, predicate, ef_object) or (
+            ef_object != ci_value and await _has_active_triple(pool, entity_id, predicate, ci_value)
+        )
         if already_present:
             stats.already_present += 1
             logger.debug(
                 "already present: entity_id=%s predicate=%s value=%.60s",
                 entity_id,
                 predicate,
-                ci_value,
+                ef_object,
             )
             continue
 
@@ -541,7 +582,7 @@ async def _run_backfill_with_pool(
                 "[DRY-RUN] Would assert: entity_id=%s predicate=%s value=%.60s",
                 entity_id,
                 predicate,
-                ci_value,
+                ef_object,
             )
             continue
 
@@ -554,7 +595,7 @@ async def _run_backfill_with_pool(
                 pool,
                 entity_id,
                 predicate,
-                ci_value,
+                ef_object,
                 src="migration",
                 object_kind="literal",
                 conf=1.0,
@@ -564,7 +605,7 @@ async def _run_backfill_with_pool(
                 why=(
                     f"Backfill of legacy contact_info row (ci_id={row['ci_id']}) "
                     f"that predates the write-path cut-over. "
-                    f"Approve to record `{predicate} = {ci_value}` on this entity."
+                    f"Approve to record `{predicate} = {ef_object}` on this entity."
                 ),
                 evidence=[
                     f"ci_id={row['ci_id']}",

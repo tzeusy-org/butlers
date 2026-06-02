@@ -597,29 +597,28 @@ class TestPredicateMapping:
 
 
 # ---------------------------------------------------------------------------
-# Telegram parity — reconciler maps both telegram_user_id and telegram_username
-# to has-handle with the raw ci.value as the object (no prefix encoding).
+# Telegram encoding — reconciler maps telegram_user_id and telegram_username
+# to has-handle WITH the "telegram:" prefix (bead bu-wni4z).
 #
-# Parity contract (bead bu-8qma8 / bu-55ggu):
+# Canonical encoding (bead bu-wni4z):
 #   Both the backfill script (backfill_contact_info_triples.py) and this
-#   reconciler call relationship_assert_fact() with object=ci.value verbatim.
-#   No "telegram:" prefix is added.  The read-side prefix stripping in
-#   _ef_channel_helpers.ef_object_to_display_value is unrelated to how
-#   telegram_user_id and telegram_username are stored — it applies only to
-#   the base "telegram" type written with the prefix by telegram_chat_id
-#   enrichment (Group C).
+#   reconciler call relationship_assert_fact() with object="telegram:<ci_value>".
+#   The prefix disambiguates telegram entries from linkedin/twitter/other
+#   has-handle entries so the daemon read path can find the right row.
+#
+# Previously (before bu-wni4z) these were stored verbatim (no prefix), which
+# silently broke notify(channel='telegram') via contact_id resolution.
 # ---------------------------------------------------------------------------
 
 
-class TestTelegramTypesReconcilerParity:
-    """telegram_user_id and telegram_username reach has-handle with raw object values."""
+class TestTelegramTypesReconcilerEncoding:
+    """telegram_user_id and telegram_username are stored as has-handle with 'telegram:' prefix."""
 
-    async def test_telegram_user_id_reconciles_to_has_handle(self):
-        """telegram_user_id rows produce a has-handle triple with the raw numeric string as object.
+    async def test_telegram_user_id_reconciles_with_prefix(self):
+        """telegram_user_id rows produce a has-handle triple with 'telegram:<id>' as object.
 
-        Parity check: matches the backfill script's object-encoding
-        (backfill_contact_info_triples.py passes ci_value verbatim to
-        relationship_assert_fact()).
+        The 'telegram:' prefix is required so the daemon resolver can filter
+        telegram entries from linkedin/twitter/other has-handle rows via LIKE.
         """
         from butlers.tools.relationship.relationship_assert_fact import AssertOutcome, AssertResult
         from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
@@ -643,19 +642,18 @@ class TestTelegramTypesReconcilerParity:
         args = mock_writer.call_args[0]
         assert args[1] == entity_id, "subject must be the resolved entity_id"
         assert args[2] == "has-handle", "telegram_user_id must map to has-handle"
-        # Object is the raw ci.value — no "telegram:" prefix (parity with backfill).
-        assert args[3] == numeric_id, (
-            f"object must be the raw ci.value {numeric_id!r}; got {args[3]!r}"
+        # Object must carry the 'telegram:' prefix (bu-wni4z canonical encoding).
+        expected_object = f"telegram:{numeric_id}"
+        assert args[3] == expected_object, (
+            f"object must be {expected_object!r} (prefixed); got {args[3]!r}"
         )
         assert mock_writer.call_args[1]["src"] == "reconciler"
 
-    async def test_telegram_username_reconciles_to_has_handle(self):
-        """telegram_username rows produce a has-handle triple with the raw username as object.
+    async def test_telegram_username_reconciles_with_prefix(self):
+        """telegram_username rows produce a has-handle triple with 'telegram:<username>' as object.
 
-        Parity check: matches the backfill script's object-encoding.
-        contacts/backfill.py strips the leading '@' before storing;
-        the reconciler passes ci.value verbatim (callers are responsible for
-        stripping before inserting into contact_info).
+        The prefix is required for disambiguation; the read path's ef_predicate_to_ci_type
+        checks startswith('telegram:') to classify the entry as 'telegram_user_id'.
         """
         from butlers.tools.relationship.relationship_assert_fact import AssertOutcome, AssertResult
         from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
@@ -679,7 +677,34 @@ class TestTelegramTypesReconcilerParity:
         args = mock_writer.call_args[0]
         assert args[1] == entity_id, "subject must be the resolved entity_id"
         assert args[2] == "has-handle", "telegram_username must map to has-handle"
-        assert args[3] == username, f"object must be the raw ci.value {username!r}; got {args[3]!r}"
+        expected_object = f"telegram:{username}"
+        assert args[3] == expected_object, (
+            f"object must be {expected_object!r} (prefixed); got {args[3]!r}"
+        )
+
+    async def test_telegram_prefix_is_idempotent(self):
+        """If ci_value already has 'telegram:' prefix, it must not be double-prefixed."""
+        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome, AssertResult
+        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
+
+        already_prefixed = "telegram:86807245"
+        entity_id = uuid4()
+        row = _ci_row(ci_type="telegram_user_id", ci_value=already_prefixed, entity_id=entity_id)
+        pool = _make_pool(rows=[row])
+
+        inserted_result = AssertResult(outcome=AssertOutcome.inserted, fact_id=uuid4())
+
+        with patch(
+            _WRITER_PATCH_TARGET, new_callable=AsyncMock, return_value=inserted_result
+        ) as mock_writer:
+            result = await run_contact_info_reconciler(pool)
+
+        assert result["rows_reconciled"] == 1
+        args = mock_writer.call_args[0]
+        # Must not double-prefix: 'telegram:86807245' stays 'telegram:86807245'
+        assert args[3] == already_prefixed, (
+            f"already-prefixed value must not be re-prefixed; got {args[3]!r}"
+        )
 
     async def test_telegram_types_not_skipped_as_unmapped(self):
         """Neither telegram_user_id nor telegram_username falls through to rows_skipped_no_predicate.
@@ -704,6 +729,31 @@ class TestTelegramTypesReconcilerParity:
             "telegram_user_id and telegram_username must not be skipped as unmapped"
         )
         assert result["rows_reconciled"] == 2
+
+    async def test_non_telegram_has_handle_not_prefixed(self):
+        """linkedin and twitter has-handle entries must NOT get the 'telegram:' prefix."""
+        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome, AssertResult
+        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
+
+        rows = [
+            _ci_row(ci_type="linkedin", ci_value="alice-smith"),
+            _ci_row(ci_type="twitter", ci_value="@alice"),
+            _ci_row(ci_type="other", ci_value="somehandle"),
+        ]
+        pool = _make_pool(rows=rows)
+        inserted_result = AssertResult(outcome=AssertOutcome.inserted, fact_id=uuid4())
+
+        with patch(
+            _WRITER_PATCH_TARGET, new_callable=AsyncMock, return_value=inserted_result
+        ) as mock_writer:
+            result = await run_contact_info_reconciler(pool)
+
+        assert result["rows_reconciled"] == 3
+        for call in mock_writer.call_args_list:
+            obj = call[0][3]
+            assert not obj.startswith("telegram:"), (
+                f"non-telegram handle must not be prefixed; got {obj!r}"
+            )
 
 
 # ---------------------------------------------------------------------------

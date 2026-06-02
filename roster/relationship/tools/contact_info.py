@@ -40,6 +40,7 @@ from butlers.contact_info_write_guard import assert_contact_info_writes_blocked
 from butlers.tools.relationship._ef_channel_helpers import (
     ef_object_to_display_value,
     ef_predicate_to_ci_type,
+    encode_handle_object,
     entity_facts_channels_by_entity,
 )
 from butlers.tools.relationship.contacts import _parse_contact
@@ -170,11 +171,15 @@ async def contact_info_add(
             "Use contact_search(query=<name>) to find the correct contact ID."
         )
 
+    # Encode the stored object: telegram types must carry the "telegram:" prefix so
+    # the daemon read path can distinguish them from linkedin/twitter/other has-handle rows.
+    ef_object = encode_handle_object(type, value)
+
     result = await relationship_assert_fact(
         pool,
         entity_id,
         predicate,
-        value,
+        ef_object,
         src="relationship",
         object_kind="literal",
         primary=is_primary,
