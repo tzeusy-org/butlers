@@ -239,9 +239,15 @@ def test_compose_provider_default_scopes_fallback_spotify(tmp_path: Path):
     """When no butler.toml declares spotify scopes, hardcoded Spotify defaults are used."""
     provider_cfg = _PROVIDER_REGISTRY["spotify"]
     result = _compose_provider_default_scopes(provider_cfg, "spotify", roster_dir=tmp_path)
-    # Spotify default is the 'base' set: user-read-email, user-read-private.
+    # Spotify default is 'base' + 'listening_history':
+    #   user-read-email, user-read-private (base)
+    #   user-read-recently-played, user-top-read, user-read-playback-state (listening_history)
+    # This matches the five scopes declared as required in oauth_scope_registry.py.
     assert "user-read-email" in result
     assert "user-read-private" in result
+    assert "user-read-recently-played" in result
+    assert "user-top-read" in result
+    assert "user-read-playback-state" in result
 
 
 def test_compose_provider_default_scopes_toml_overrides_spotify(tmp_path: Path):
@@ -350,9 +356,12 @@ async def test_start_falls_back_to_hardcoded_scopes_without_toml(app, tmp_path: 
         auth_url = resp.json()["data"]["authorization_url"]
         qs = parse_qs(urlparse(auth_url).query)
         scope_str = qs.get("scope", [""])[0]
-        # Hardcoded Spotify base defaults should be present.
+        # Hardcoded Spotify defaults (base + listening_history) should be present.
         assert "user-read-email" in scope_str
         assert "user-read-private" in scope_str
+        assert "user-read-recently-played" in scope_str
+        assert "user-top-read" in scope_str
+        assert "user-read-playback-state" in scope_str
     finally:
         oauth_module.collect_toml_scopes = _original
         _clear_toml_scope_cache()
