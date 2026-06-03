@@ -341,14 +341,12 @@ async def test_reembed_pending_400_on_bad_tier(app, monkeypatch):
 async def test_reembed_post_dry_run_returns_result(app, monkeypatch):
     """POST with dry_run=true returns ReembedResult without writing to DB."""
     from butlers.modules.memory import reembedding as _reembedding
-    from butlers.modules.memory.tools import _helpers as _helpers_mod
 
     _make_reembed_db(app)
 
-    # Stub embedding engine — avoids loading sentence-transformers in tests.
-    mock_engine = MagicMock()
-    mock_engine.model_name = "all-MiniLM-L6-v2"
-    monkeypatch.setattr(_helpers_mod, "get_embedding_engine", lambda model_name: mock_engine)
+    # The _fake_embedding_engine autouse fixture (root conftest.py) already
+    # prevents any real sentence-transformers model load.  No extra engine stub
+    # is required here; the reembedding.run stub below never uses the engine.
 
     dry_run_result = _reembedding.ReembedResult(
         dry_run=True,
@@ -383,13 +381,11 @@ async def test_reembed_post_dry_run_returns_result(app, monkeypatch):
 async def test_reembed_post_live_run_passes_correct_args(app, monkeypatch):
     """POST with dry_run=false passes correct params to reembedding.run()."""
     from butlers.modules.memory import reembedding as _reembedding
-    from butlers.modules.memory.tools import _helpers as _helpers_mod
 
     _make_reembed_db(app)
 
-    mock_engine = MagicMock()
-    mock_engine.model_name = "all-MiniLM-L6-v2"
-    monkeypatch.setattr(_helpers_mod, "get_embedding_engine", lambda model_name: mock_engine)
+    # _fake_embedding_engine autouse fixture (root conftest.py) prevents real
+    # model loads; no extra engine stub needed here.
 
     captured: list[dict] = []
 
@@ -429,13 +425,11 @@ async def test_reembed_post_live_run_passes_correct_args(app, monkeypatch):
 async def test_reembed_post_400_on_invalid_tier(app, monkeypatch):
     """POST returns 400 when reembedding.run raises ValueError for invalid tiers."""
     from butlers.modules.memory import reembedding as _reembedding
-    from butlers.modules.memory.tools import _helpers as _helpers_mod
 
     _make_reembed_db(app)
 
-    mock_engine = MagicMock()
-    mock_engine.model_name = "all-MiniLM-L6-v2"
-    monkeypatch.setattr(_helpers_mod, "get_embedding_engine", lambda model_name: mock_engine)
+    # _fake_embedding_engine autouse fixture (root conftest.py) prevents real
+    # model loads; no extra engine stub needed here.
 
     async def _fake_run(pool, engine, *, dry_run, tiers, batch_size):
         raise ValueError("Unknown tiers: ['bogus']")

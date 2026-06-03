@@ -67,6 +67,88 @@ def _mock_s3_startup_check(monkeypatch):
     monkeypatch.setattr(S3BlobStore, "startup_check", _noop_startup_check)
 
 
+@pytest.fixture(autouse=True)
+def _fake_embedding_engine(monkeypatch):
+    """Globally replace the real sentence-transformers model with a deterministic fake.
+
+    The real ``EmbeddingEngine`` loads ``all-MiniLM-L6-v2`` from HuggingFace at
+    construction time.  In CI this triggers an HTTP 429 rate-limit on fresh
+    runners that have no local model cache, causing random test failures.
+
+    This fixture replaces ``EmbeddingEngine`` in the helpers module with a fake
+    class that produces 384-dimensional vectors seeded deterministically by the
+    hash of the input text — no network access, no model files, reproducible
+    across runs.
+
+    Tests that specifically exercise the caching/singleton behaviour of
+    ``get_embedding_engine()`` already patch ``EmbeddingEngine`` locally inside a
+    ``unittest.mock.patch`` context manager; those local patches take precedence
+    over this fixture and are unaffected.
+
+    The ``_embedding_engines`` singleton cache is cleared before each test and
+    restored afterwards so that tests cannot accidentally share a stale real
+    engine that was constructed before this fixture applied.
+    """
+    import hashlib
+
+    class _FakeEmbeddingEngine:
+        """Deterministic drop-in for EmbeddingEngine — no model/network needed."""
+
+        _DIMENSION = 384
+
+        def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+            self._model_name = model_name
+            self._dim = self._DIMENSION
+
+        @property
+        def model_name(self) -> str:
+            return self._model_name
+
+        @property
+        def dimension(self) -> int:
+            return self._dim
+
+        def embed(self, text: str) -> list[float]:
+            return self._hash_vec(text or " ")
+
+        def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            return [self.embed(t) for t in texts]
+
+        def _hash_vec(self, text: str) -> list[float]:
+            """Seed a 384-float vector from the SHA-256 digest of *text*.
+
+            Each dimension is derived from a different 4-byte slice of a
+            sequence of SHA-256 digests (re-hashing as needed), normalised to
+            the range [-1, 1].  The result is stable across Python versions and
+            OS platforms.
+            """
+            raw = hashlib.sha256(text.encode()).digest()
+            # Extend to cover 384 * 4 bytes = 1536 bytes (6 rounds of 256 bits).
+            while len(raw) < self._DIMENSION * 4:
+                raw += hashlib.sha256(raw).digest()
+            import struct
+
+            floats: list[float] = []
+            for i in range(self._DIMENSION):
+                (uint,) = struct.unpack_from(">I", raw, i * 4)
+                floats.append((uint / 0xFFFF_FFFF) * 2.0 - 1.0)
+            return floats
+
+    # Patch the class used by get_embedding_engine() to construct new instances.
+    from butlers.modules.memory.tools import _helpers
+
+    monkeypatch.setattr(_helpers, "EmbeddingEngine", _FakeEmbeddingEngine)
+
+    # Clear the singleton cache so no test inherits a stale real engine that was
+    # constructed before this fixture applied.  Restore the original entries on
+    # teardown so other fixtures/tests are not affected by cross-test state.
+    saved_cache = dict(_helpers._embedding_engines)
+    _helpers._embedding_engines.clear()
+    yield
+    _helpers._embedding_engines.clear()
+    _helpers._embedding_engines.update(saved_cache)
+
+
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
     from testcontainers.postgres import PostgresContainer
