@@ -1481,15 +1481,17 @@ export function PageSystem({
           )}
         </div>
         <div className="flex flex-col gap-4.5">
-          <div>
-            <BlockHead
-              eyebrow="probe · last test"
-              right={liveTest ? (liveTest.ok ? "ok" : "failed") : "never"}
-            />
-            <div className="mt-2.5 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-              <ProbeResult test={liveTest} onProbe={!isMissing ? handleProbe : undefined} />
+          {!isPlain && (
+            <div>
+              <BlockHead
+                eyebrow="probe · last test"
+                right={liveTest ? (liveTest.ok ? "ok" : "failed") : "never"}
+              />
+              <div className="mt-2.5 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+                <ProbeResult test={liveTest} onProbe={!isMissing ? handleProbe : undefined} />
+              </div>
             </div>
-          </div>
+          )}
           <div>
             <BlockHead
               eyebrow="stamps · audit"
@@ -1735,12 +1737,14 @@ export function PageSystem({
             </PillBtn>
           ) : (
             <>
-              <PillBtn
-                onClick={handleProbe}
-                disabled={probeMutation.isPending}
-              >
-                {probeMutation.isPending ? "testing…" : "test"}
-              </PillBtn>
+              {!isPlain && (
+                <PillBtn
+                  onClick={handleProbe}
+                  disabled={probeMutation.isPending}
+                >
+                  {probeMutation.isPending ? "testing…" : "test"}
+                </PillBtn>
+              )}
               <PillBtn
                 onClick={handleSetValueOpen}
                 disabled={setValueOpen}

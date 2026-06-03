@@ -346,6 +346,11 @@ describe("PageSystem: test button (probe)", () => {
     expect(queryBtn("test")).toBeNull()
   })
 
+  it("test button is absent for plainValue credentials", () => {
+    renderInProvider(<PageSystem credential={PLAIN} />)
+    expect(queryBtn("test")).toBeNull()
+  })
+
   it("handles HTTP 429 rate-limit gracefully — shows hint, does not crash", async () => {
     mockProbe.mockRejectedValue(new ApiError("RATE_LIMITED", "Too Many Requests", 429))
     renderTelegram()
