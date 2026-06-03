@@ -83,6 +83,11 @@ import {
   GOOGLE_HEALTH_SCOPES,
 } from "@/api/client.ts";
 import type { GoogleAccount } from "@/api/types.ts";
+import {
+  HomeAssistantDrawer,
+  OwnTracksDrawer,
+  SteamDrawer,
+} from "./ProviderConfigDrawer.tsx";
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
@@ -957,6 +962,21 @@ export function PageUser({
       {/* Google-specific multi-account management surface [bu-ayp6v.7] */}
       {provider.id === "google" && (
         <PageGoogleAccounts />
+      )}
+
+      {/* Provider-specific config drawers [bu-ayp6v.8] — surfaced inline for
+          already-connected providers so the owner can reconfigure without leaving
+          the credential page. WhatsApp/Spotify use the OAuth flow (not these drawers).
+          inline=true omits the standalone heading and dismiss button — the content
+          is always visible within PageUser's own layout. */}
+      {provider.id === "homeassistant" && (
+        <HomeAssistantDrawer onClose={() => undefined} inline />
+      )}
+      {provider.id === "owntracks" && (
+        <OwnTracksDrawer onClose={() => undefined} inline />
+      )}
+      {provider.id === "steam" && (
+        <SteamDrawer onClose={() => undefined} inline />
       )}
 
       {/* Cross-references */}
@@ -2557,10 +2577,14 @@ export function PassportAddPanel({
 
   // ── CONNECT PROVIDER sub-form ─────────────────────────────────────────────
   // Providers with live OAuth: google, spotify → reauthorizeUserCredential redirect
-  // Others: leave integration point stub with C8/C9-DRAWER comment
+  // HA/OwnTracks/Steam → per-provider config drawer (bu-ayp6v.8)
+  // WhatsApp → still stubbed (bu-ayp6v.9)
   const [providerSlug, setProviderSlug] = React.useState<string | null>(null);
   const [oauthPending, setOauthPending] = React.useState(false);
   const [oauthError, setOauthError] = React.useState<string | null>(null);
+
+  // Providers served by the real provider-config drawers (bu-ayp6v.8)
+  const DRAWER_PROVIDER_SLUGS = new Set(["homeassistant", "owntracks", "steam"]);
 
   const OAUTH_PROVIDERS = [
     { slug: "google",  label: "Google"  },
@@ -2590,9 +2614,8 @@ export function PassportAddPanel({
   }
 
   function handleStubConnect(slug: string) {
-    // C8/C9-DRAWER: once bu-ayp6v.8 / bu-ayp6v.9 drawers are built, route
-    // into the provider-specific configuration drawer instead of this stub.
-    // For now, show an info line directing the owner to the credential page.
+    // Route HA/OwnTracks/Steam to their real provider-config drawers [bu-ayp6v.8].
+    // WhatsApp remains stubbed until bu-ayp6v.9.
     setProviderSlug(slug);
   }
 
@@ -2912,7 +2935,8 @@ export function PassportAddPanel({
             )}
           </div>
 
-          {/* Stub providers (C8/C9 drawer) */}
+          {/* Other integrations — HA/OwnTracks/Steam use real drawers [bu-ayp6v.8];
+              WhatsApp still stubbed until bu-ayp6v.9. */}
           <div>
             <Mono size={9} upper tracking="0.14em" color="var(--dim)">
               other integrations
@@ -2928,15 +2952,30 @@ export function PassportAddPanel({
                 </PillBtn>
               ))}
             </div>
-            {providerSlug !== null && (
+
+            {/* Real provider-config drawers for HA / OwnTracks / Steam */}
+            {providerSlug !== null && DRAWER_PROVIDER_SLUGS.has(providerSlug) && (
+              <div className="mt-3" data-provider-connect-drawer={providerSlug}>
+                {providerSlug === "homeassistant" && (
+                  <HomeAssistantDrawer onClose={() => setProviderSlug(null)} />
+                )}
+                {providerSlug === "owntracks" && (
+                  <OwnTracksDrawer onClose={() => setProviderSlug(null)} />
+                )}
+                {providerSlug === "steam" && (
+                  <SteamDrawer onClose={() => setProviderSlug(null)} />
+                )}
+              </div>
+            )}
+
+            {/* WhatsApp stub — bu-ayp6v.9 will replace this */}
+            {providerSlug !== null && !DRAWER_PROVIDER_SLUGS.has(providerSlug) && (
               <div
                 className="flex flex-col gap-2 p-3.5 mt-2"
                 style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
                 data-stub-drawer="true"
               >
-                {/* C8/C9-DRAWER: bu-ayp6v.8 (HA/OwnTracks) / bu-ayp6v.9 (Steam/WhatsApp)
-                    will replace this stub with a full provider configuration drawer.
-                    For now, surface a placeholder directing the owner to the credential page. */}
+                {/* C9-DRAWER: bu-ayp6v.9 will replace this with WhatsApp/Spotify drawers */}
                 <Mono size={11} color="var(--mfg)">
                   {providerSlug} setup coming soon · the credential page shows current status
                 </Mono>
