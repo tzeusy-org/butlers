@@ -87,6 +87,8 @@ import {
   HomeAssistantDrawer,
   OwnTracksDrawer,
   SteamDrawer,
+  SpotifyDrawer,
+  WhatsAppDrawer,
 } from "./ProviderConfigDrawer.tsx";
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
@@ -964,11 +966,10 @@ export function PageUser({
         <PageGoogleAccounts />
       )}
 
-      {/* Provider-specific config drawers [bu-ayp6v.8] — surfaced inline for
+      {/* Provider-specific config drawers [bu-ayp6v.8/.9] — surfaced inline for
           already-connected providers so the owner can reconfigure without leaving
-          the credential page. WhatsApp/Spotify use the OAuth flow (not these drawers).
-          inline=true omits the standalone heading and dismiss button — the content
-          is always visible within PageUser's own layout. */}
+          the credential page. inline=true omits the standalone heading and dismiss
+          button — the content is always visible within PageUser's own layout. */}
       {provider.id === "homeassistant" && (
         <HomeAssistantDrawer onClose={() => undefined} inline />
       )}
@@ -977,6 +978,12 @@ export function PageUser({
       )}
       {provider.id === "steam" && (
         <SteamDrawer onClose={() => undefined} inline />
+      )}
+      {provider.id === "spotify" && (
+        <SpotifyDrawer onClose={() => undefined} inline />
+      )}
+      {provider.id === "whatsapp" && (
+        <WhatsAppDrawer onClose={() => undefined} inline />
       )}
 
       {/* Cross-references */}
@@ -2472,7 +2479,7 @@ export function PassportEmptyState() {
  * Step 1: choose family (system / user / provider)
  * Step 2a SYSTEM: key + value + category + target → useSetSystemSecret
  * Step 2b USER: type + value + label → useCreateUserSecret (entity_info)
- * Step 2c CONNECT: OAuth start (google/spotify) or C8/C9 stub for others
+ * Step 2c CONNECT: OAuth start (google) or per-provider drawers for others
  *
  * Design-language rules: no cards; commit-pill actions; inline panels.
  * Template suggestions sourced from SECRET_TEMPLATES (system) and
@@ -2576,25 +2583,24 @@ export function PassportAddPanel({
   }
 
   // ── CONNECT PROVIDER sub-form ─────────────────────────────────────────────
-  // Providers with live OAuth: google, spotify → reauthorizeUserCredential redirect
-  // HA/OwnTracks/Steam → per-provider config drawer (bu-ayp6v.8)
-  // WhatsApp → still stubbed (bu-ayp6v.9)
+  // Providers with live OAuth: google → reauthorizeUserCredential redirect
+  // HA/OwnTracks/Steam/Spotify/WhatsApp → per-provider config drawers
   const [providerSlug, setProviderSlug] = React.useState<string | null>(null);
   const [oauthPending, setOauthPending] = React.useState(false);
   const [oauthError, setOauthError] = React.useState<string | null>(null);
 
-  // Providers served by the real provider-config drawers (bu-ayp6v.8)
-  const DRAWER_PROVIDER_SLUGS = new Set(["homeassistant", "owntracks", "steam"]);
+  // Providers served by real provider-config drawers (bu-ayp6v.8/.9)
+  const DRAWER_PROVIDER_SLUGS = new Set(["homeassistant", "owntracks", "steam", "spotify", "whatsapp"]);
 
   const OAUTH_PROVIDERS = [
-    { slug: "google",  label: "Google"  },
-    { slug: "spotify", label: "Spotify" },
+    { slug: "google", label: "Google" },
   ];
 
   const STUB_PROVIDERS = [
     { slug: "homeassistant", label: "Home Assistant" },
     { slug: "owntracks",     label: "OwnTracks"      },
     { slug: "steam",         label: "Steam"           },
+    { slug: "spotify",       label: "Spotify"         },
     { slug: "whatsapp",      label: "WhatsApp"        },
   ];
 
@@ -2606,7 +2612,7 @@ export function PassportAddPanel({
       const resolvedIdentity = identity ?? ownerEntityId ?? "owner";
       const resp = await reauthorizeUserCredential(slug, resolvedIdentity);
       if (!resp?.data?.redirect_url) throw new Error("No redirect URL returned.");
-      window.location.href = resp.data.redirect_url;
+      window.location.assign(resp.data.redirect_url);
     } catch (err) {
       setOauthError(err instanceof Error ? err.message : "Connection failed.");
       setOauthPending(false);
@@ -2614,8 +2620,7 @@ export function PassportAddPanel({
   }
 
   function handleStubConnect(slug: string) {
-    // Route HA/OwnTracks/Steam to their real provider-config drawers [bu-ayp6v.8].
-    // WhatsApp remains stubbed until bu-ayp6v.9.
+    // Route to real provider-config drawers (bu-ayp6v.8/.9).
     setProviderSlug(slug);
   }
 
@@ -2935,8 +2940,7 @@ export function PassportAddPanel({
             )}
           </div>
 
-          {/* Other integrations — HA/OwnTracks/Steam use real drawers [bu-ayp6v.8];
-              WhatsApp still stubbed until bu-ayp6v.9. */}
+          {/* Other integrations — all use real provider-config drawers [bu-ayp6v.8/.9]. */}
           <div>
             <Mono size={9} upper tracking="0.14em" color="var(--dim)">
               other integrations
@@ -2953,7 +2957,7 @@ export function PassportAddPanel({
               ))}
             </div>
 
-            {/* Real provider-config drawers for HA / OwnTracks / Steam */}
+            {/* Real provider-config drawers for HA / OwnTracks / Steam / Spotify / WhatsApp */}
             {providerSlug !== null && DRAWER_PROVIDER_SLUGS.has(providerSlug) && (
               <div className="mt-3" data-provider-connect-drawer={providerSlug}>
                 {providerSlug === "homeassistant" && (
@@ -2965,21 +2969,12 @@ export function PassportAddPanel({
                 {providerSlug === "steam" && (
                   <SteamDrawer onClose={() => setProviderSlug(null)} />
                 )}
-              </div>
-            )}
-
-            {/* WhatsApp stub — bu-ayp6v.9 will replace this */}
-            {providerSlug !== null && !DRAWER_PROVIDER_SLUGS.has(providerSlug) && (
-              <div
-                className="flex flex-col gap-2 p-3.5 mt-2"
-                style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
-                data-stub-drawer="true"
-              >
-                {/* C9-DRAWER: bu-ayp6v.9 will replace this with WhatsApp/Spotify drawers */}
-                <Mono size={11} color="var(--mfg)">
-                  {providerSlug} setup coming soon · the credential page shows current status
-                </Mono>
-                <PillBtn onClick={() => setProviderSlug(null)}>dismiss</PillBtn>
+                {providerSlug === "spotify" && (
+                  <SpotifyDrawer onClose={() => setProviderSlug(null)} />
+                )}
+                {providerSlug === "whatsapp" && (
+                  <WhatsAppDrawer onClose={() => setProviderSlug(null)} />
+                )}
               </div>
             )}
           </div>
