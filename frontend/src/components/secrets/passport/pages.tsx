@@ -303,7 +303,7 @@ function GoogleAccountRow({
       forceConsent: true,
       pageOfOrigin: "secrets",
     });
-    window.location.href = url;
+    window.location.assign(url);
   }
 
   function handleSetPrimary() {
@@ -446,7 +446,7 @@ function ScopeSetPicker({ grantedScopes }: { grantedScopes: string[] }) {
       forceConsent: true,
       pageOfOrigin: "secrets",
     });
-    window.location.href = url;
+    window.location.assign(url);
   }
 
   function handleRevokeHealth() {
@@ -547,7 +547,7 @@ export function PageGoogleAccounts() {
       selectAccount: true,
       pageOfOrigin: "secrets",
     });
-    window.location.href = url;
+    window.location.assign(url);
   }
 
   if (isLoading) {
