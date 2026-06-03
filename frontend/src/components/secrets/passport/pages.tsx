@@ -41,6 +41,11 @@ import {
 import type { Identity } from "./types.ts";
 import { reauthorizeUserCredential } from "@/api/client.ts";
 import { useCliDeviceAuth, type CliDeviceAuthState } from "@/hooks/use-cli-auth.ts";
+import {
+  useProbeUserSecret,
+  useRotateUserSecret,
+  useDisconnectUserSecret,
+} from "@/hooks/use-secrets-mutations.ts";
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
@@ -199,6 +204,14 @@ function ActionArrow({
  *
  * Per-kind variants via the same template. Provider-specific oddities (OwnTracks
  * webhook URL, etc.) live in a per-provider drawer dispatched by provider slug.
+ *
+ * Wired actions [bu-ayp6v.3]:
+ *   re-authorize / connect — reauthorizeUserCredential → redirect to OAuth dance
+ *   rotate                 — value-entry inline panel → useRotateUserSecret
+ *   test                   — useProbeUserSecret; result surfaces in ProbeResult
+ *   disconnect             — danger confirm inline panel → useDisconnectUserSecret
+ *   reveal value           — REMOVED: OAuth refresh tokens are never returned by
+ *                            the backend. There is no user-secret reveal path.
  */
 export function PageUser({
   credential,
@@ -223,7 +236,10 @@ export function PageUser({
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
 
-  // ── Reauthorize ─────────────────────────────────────────────────────────────
+  // ── Reauthorize / Connect ───────────────────────────────────────────────────
+  // Both "re-authorize" (expired/revoked) and "connect" (never_set) flow through
+  // the same endpoint — POST /api/secrets/user/<provider>/reauthorize — which
+  // initiates the OAuth dance and returns a redirect_url.
   const [reauthPending, setReauthPending] = React.useState(false);
   const [reauthError, setReauthError] = React.useState<string | null>(null);
 
@@ -242,6 +258,69 @@ export function PageUser({
       setReauthError(err instanceof Error ? err.message : "Reauthorization failed.");
       setReauthPending(false);
     }
+  }
+
+  // ── Probe ───────────────────────────────────────────────────────────────────
+  const probeMutation = useProbeUserSecret();
+
+  function handleProbe() {
+    if (probeMutation.isPending) return;
+    probeMutation.mutate({ provider: credential.provider, identity: credential.identity });
+  }
+
+  // Merge the optimistic probe result back into the ProbeResult display.
+  // The mutation hook invalidates the query cache on success, but while we wait
+  // for the parent to re-render with fresh data we show the mutation result directly.
+  const liveTest: typeof credential.test = (() => {
+    if (probeMutation.data?.data) {
+      const d = probeMutation.data.data;
+      return {
+        ok: d.ok,
+        code: d.code ?? null,
+        latencyMs: 0,
+        at: d.at ?? "just now",
+        message: d.message ?? undefined,
+      };
+    }
+    return credential.test;
+  })();
+
+  // ── Rotate ──────────────────────────────────────────────────────────────────
+  const [rotateOpen, setRotateOpen] = React.useState(false);
+  const [rotateValue, setRotateValue] = React.useState("");
+  const rotateMutation = useRotateUserSecret();
+
+  function handleRotateSubmit() {
+    if (!rotateValue.trim() || rotateMutation.isPending) return;
+    rotateMutation.mutate(
+      { provider: credential.provider, body: { value: rotateValue.trim() }, identity: credential.identity },
+      {
+        onSuccess: () => {
+          setRotateOpen(false);
+          setRotateValue("");
+        },
+      },
+    );
+  }
+
+  function handleRotateCancel() {
+    setRotateOpen(false);
+    setRotateValue("");
+    rotateMutation.reset();
+  }
+
+  // ── Disconnect ─────────────────────────────────────────────────────────────
+  const [disconnectConfirm, setDisconnectConfirm] = React.useState(false);
+  const disconnectMutation = useDisconnectUserSecret();
+
+  function handleDisconnectConfirm() {
+    if (disconnectMutation.isPending) return;
+    disconnectMutation.mutate({ provider: credential.provider, identity: credential.identity });
+  }
+
+  function handleDisconnectCancel() {
+    setDisconnectConfirm(false);
+    disconnectMutation.reset();
   }
 
   const stateLines: string[] = [];
@@ -407,10 +486,10 @@ export function PageUser({
           <div>
             <BlockHead
               eyebrow="probe · last test"
-              right={credential.test ? (credential.test.ok ? "ok" : "failed") : "never"}
+              right={liveTest ? (liveTest.ok ? "ok" : "failed") : "never"}
             />
             <div className="mt-2.5 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-              <ProbeResult test={credential.test} />
+              <ProbeResult test={liveTest} onProbe={!isMissing ? handleProbe : undefined} />
             </div>
           </div>
           <div>
@@ -492,6 +571,81 @@ export function PageUser({
         ]}
       />
 
+      {/* Rotate inline panel — value entry */}
+      {rotateOpen && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-rotate-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">new credential value</Mono>
+          <textarea
+            rows={3}
+            value={rotateValue}
+            onChange={(e) => setRotateValue(e.target.value)}
+            placeholder="paste token here"
+            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            style={{
+              border: "1px solid var(--border-strong)",
+              background: "var(--bg)",
+              color: "var(--fg)",
+              borderRadius: 3,
+            }}
+          />
+          {rotateMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {rotateMutation.error instanceof Error
+                ? rotateMutation.error.message
+                : "Rotate failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={handleRotateSubmit}
+              disabled={!rotateValue.trim() || rotateMutation.isPending}
+            >
+              {rotateMutation.isPending ? "saving…" : "save"}
+            </PillBtn>
+            <PillBtn onClick={handleRotateCancel} disabled={rotateMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Disconnect inline confirm */}
+      {disconnectConfirm && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-disconnect-confirm="true"
+        >
+          <Mono size={11} color="var(--red)">
+            Remove this credential? This cannot be undone.
+          </Mono>
+          {disconnectMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {disconnectMutation.error instanceof Error
+                ? disconnectMutation.error.message
+                : "Disconnect failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={handleDisconnectConfirm}
+              disabled={disconnectMutation.isPending}
+            >
+              {disconnectMutation.isPending ? "removing…" : "yes, disconnect"}
+            </PillBtn>
+            <PillBtn onClick={handleDisconnectCancel} disabled={disconnectMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
       {reauthError && (
         <Mono size={11} color="var(--red)" className="mt-1">
@@ -510,16 +664,55 @@ export function PageUser({
                 {reauthPending ? "redirecting…" : "re-authorize"}
               </PillBtn>
             )}
-            {credential.state === "expiring" && <PillBtn variant="commit">rotate</PillBtn>}
-            {isMissing && <PillBtn variant="commit">connect</PillBtn>}
-            {!isMissing && <PillBtn>test</PillBtn>}
-            {!isMissing && !sick && <PillBtn>rotate</PillBtn>}
+            {credential.state === "expiring" && (
+              <PillBtn
+                variant="commit"
+                onClick={() => { setRotateOpen(true); setDisconnectConfirm(false); }}
+                disabled={rotateOpen}
+              >
+                rotate
+              </PillBtn>
+            )}
+            {isMissing && (
+              <PillBtn
+                variant="commit"
+                onClick={handleReauthorize}
+                disabled={reauthPending}
+              >
+                {reauthPending ? "redirecting…" : "connect"}
+              </PillBtn>
+            )}
+            {!isMissing && (
+              <PillBtn
+                onClick={handleProbe}
+                disabled={probeMutation.isPending}
+              >
+                {probeMutation.isPending ? "testing…" : "test"}
+              </PillBtn>
+            )}
+            {!isMissing && !sick && (
+              <PillBtn
+                onClick={() => { setRotateOpen(true); setDisconnectConfirm(false); }}
+                disabled={rotateOpen}
+              >
+                rotate
+              </PillBtn>
+            )}
           </>
         }
         right={
           <>
-            {credential.fingerprint && <PillBtn>reveal value</PillBtn>}
-            {!isMissing && <PillBtn variant="danger">disconnect</PillBtn>}
+            {/* reveal value is omitted for user secrets: OAuth refresh tokens are
+                never returned by the backend — there is no user-secret reveal path. */}
+            {!isMissing && (
+              <PillBtn
+                variant="danger"
+                onClick={() => { setDisconnectConfirm(true); setRotateOpen(false); }}
+                disabled={disconnectConfirm}
+              >
+                disconnect
+              </PillBtn>
+            )}
           </>
         }
       />

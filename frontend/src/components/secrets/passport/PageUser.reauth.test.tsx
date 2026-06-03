@@ -10,17 +10,30 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 // ---------------------------------------------------------------------------
-// Mock the API client — must appear before component import
+// Mock the API client — must appear before component import.
+// Use importOriginal to preserve module shape; PageUser now also uses
+// useProbeUserSecret/useRotateUserSecret/useDisconnectUserSecret which import
+// from "@/api/client.ts" at module init time.
 // ---------------------------------------------------------------------------
 
-vi.mock("@/api/client", () => ({
-  reauthorizeUserCredential: vi.fn(),
-}))
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>()
+  return {
+    ...actual,
+    reauthorizeUserCredential: vi.fn(),
+    probeUserCredential: vi.fn(),
+    rotateUserCredential: vi.fn(),
+    disconnectUserCredential: vi.fn(),
+  }
+})
 
-import { reauthorizeUserCredential } from "@/api/client"
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+
+import { reauthorizeUserCredential } from "@/api/client.ts"
 const mockReauth = vi.mocked(reauthorizeUserCredential)
 
 // ---------------------------------------------------------------------------
@@ -38,8 +51,11 @@ const SPOTIFY = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!
 const SPOTIFY_PROVIDER = MOCK_PROVIDERS.spotify
 
 function renderPageUser() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
-    <PageUser credential={SPOTIFY} provider={SPOTIFY_PROVIDER} />,
+    <QueryClientProvider client={client}>
+      <PageUser credential={SPOTIFY} provider={SPOTIFY_PROVIDER} />
+    </QueryClientProvider>,
   )
 }
 
@@ -49,6 +65,7 @@ function renderPageUser() {
 
 afterEach(() => {
   vi.clearAllMocks()
+  cleanup()
 })
 
 describe("PageUser: re-authorize button (expired credential)", () => {
