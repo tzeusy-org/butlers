@@ -241,7 +241,13 @@ upstream references in the beads graph; tasks 10.3, 10.7 above carry the corresp
 
 ## 12. Documentation
 
-- [ ] 12.1 RFC 0004 amendment (per task 10.6). Effort: **S**.
+- [x] 12.1 RFC 0004 amendment (per task 10.6). Effort: **S**.
+  <!-- Applied 2026-05-19 via PR #1791 (bu-u8xq2): Amendment 2 text in
+  rfc-amendments/0004-amendment-2-contacts-as-triples.md applied to
+  about/legends-and-lore/rfcs/0004-identity-and-contact-resolution.md — contacts collapsed
+  to RDF triples, public.contacts section superseded, resolve_contact_by_channel() re-pointed
+  to triple store, ResolvedContact simplified (entity_id only), identity preamble updated.
+  Amendment archival confirmed 2026-06-03 (bu-ixb3p). -->
 - [x] 12.2 RFC 0007 namespace note: confirm all new endpoints live under
   `/api/butlers/relationship/entities/*` per Phase 1 Amendment 2; no RFC 0007 amendment
   needed (existing auto-discovery prefix per `rfcs/0007:31` already covers them). Effort: **XS**.
