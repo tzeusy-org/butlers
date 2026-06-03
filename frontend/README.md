@@ -184,7 +184,6 @@ frontend/
 │   │   ├── ButlersPage.tsx
 │   │   ├── CollectionsPage.tsx
 │   │   ├── ConditionsPage.tsx
-│   │   ├── ContactDetailPage.tsx
 │   │   ├── ContactsPage.tsx
 │   │   ├── CostsPage.tsx
 │   │   ├── DashboardPage.tsx
