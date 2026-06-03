@@ -148,9 +148,9 @@ class PriorityContactEntry(BaseModel):
     None if the contact has no display name set.
 
     ``contact_info_values`` is a list of non-sensitive channel identifiers
-    (email addresses, Telegram handles, etc.) derived from public.contact_info
-    rows where ``secured = false``.  Credential-bearing rows (secured = true)
-    are excluded.
+    (email addresses, Telegram handles, etc.) derived from active
+    ``relationship.entity_facts`` triples (migration bead bu-hjo3i).
+    Credential-bearing entries (secured triples) are excluded.
     """
 
     contact_id: UUID

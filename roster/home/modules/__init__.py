@@ -181,7 +181,7 @@ class HomeAssistantModule(Module):
     """Home Assistant module providing smart-home MCP tools.
 
     Credentials (long-lived access token) are resolved from the owner
-    contact's ``public.contact_info`` (type ``'home_assistant_token'``)
+    entity's ``public.entity_info`` (type ``'home_assistant_token'``)
     at startup.  The token is never written to logs in full — only the
     first 8 characters appear in debug output.
 
@@ -286,8 +286,8 @@ class HomeAssistantModule(Module):
         ------
         RuntimeError
             When the Home Assistant token cannot be resolved from
-            ``public.contact_info`` (the owner contact must have a
-            ``home_assistant_token`` contact_info entry).
+            ``public.entity_info`` (the owner entity must have a
+            ``home_assistant_token`` entity_info entry).
         """
         import httpx
 

@@ -5,7 +5,7 @@ Wraps gated tools at MCP registration time so that:
 2. Target contact resolution: extract channel identifier from tool_args and
    resolve via ``resolve_contact_by_channel()``.  If the target has the
    ``'owner'`` role AND the targeted channel address is the primary entry for
-   that channel type in ``public.contact_info``, the action is auto-approved
+   that channel type in ``relationship.entity_facts``, the action is auto-approved
    with no standing rule required.  Non-primary owner addresses (e.g. a work
    Telegram chat ID) fall through to the rules/parking flow.
    ``contact_id`` dispatch is exempt from the primacy check — the system
@@ -177,8 +177,8 @@ async def _resolve_target_contact(
     """Resolve the target contact for an outbound tool call.
 
     Uses :func:`_extract_channel_identity` to determine the channel type and
-    value, then queries ``public.contact_info`` via
-    :func:`resolve_contact_by_channel`.
+    value, then queries ``relationship.entity_facts`` via
+    :func:`resolve_contact_by_channel` (migration bead 7).
 
     For ``contact_id`` extractions (explicit contact reference), queries
     ``public.contacts`` directly by UUID.
@@ -339,7 +339,7 @@ def _make_gate_wrapper(
     1. Resolves the target contact from tool_args using channel identity
        extraction and ``resolve_contact_by_channel()``.
     2. If the target has the ``'owner'`` role AND the targeted channel address
-       is the primary entry for that channel type in ``public.contact_info``:
+       is the primary entry for that channel type in ``relationship.entity_facts``:
        auto-approve immediately (no standing rule required).
        Non-primary owner addresses (e.g. a work Telegram chat ID alongside the
        personal one) fall through to the rules/parking flow so they appear in

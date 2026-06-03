@@ -95,7 +95,7 @@ async def search(
 
     Searches:
     - **entities** — canonical name and aliases in ``public.entities``
-    - **contacts** — name, email, and phone in ``public.contacts`` / ``public.contact_info``
+    - **contacts** — name, email, and phone via ``public.contacts`` / ``relationship.entity_facts``
     - **sessions** — prompt and result columns across all butler databases
     - **state** — key and value columns across all butler databases
 

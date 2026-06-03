@@ -462,8 +462,8 @@ class GmailPolicyEvaluator:
     """DB-backed priority contact evaluator with 15-minute TTL cache.
 
     Loads priority contacts for ``butler='gmail'`` from ``public.priority_contacts``
-    joined to ``public.contact_info`` to resolve email addresses.  The cache
-    refreshes automatically when it is older than 15 minutes.
+    joined to ``relationship.entity_facts`` to resolve email addresses (migration
+    bead bu-hjo3i).  The cache refreshes automatically when it is older than 15 minutes.
 
     If the DB is unreachable during a cache refresh, the evaluator retains its
     previous cache and logs a warning.  On the very first call, if the DB is
