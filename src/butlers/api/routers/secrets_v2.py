@@ -5,6 +5,23 @@ the audit-history endpoint that back the redesigned /secrets page.  This router
 owns the new /api/secrets/* namespace defined in the redesign-secrets-passport
 OpenSpec change.
 
+Live credential probes
+----------------------
+The probe endpoints make LIVE calls to the provider's verify endpoint for
+supported providers (Google, GitHub, Home Assistant, Steam).  For OwnTracks
+the system probe runs a local presence/format check — there is no remote to
+call, per the bead specification.  Unsupported providers fall back to a
+local-state check.
+
+Provider         | Probe type | Verify call
+---------------- | ---------- | -----------
+google           | user       | Token exchange → GET /oauth2/v1/userinfo
+github           | user       | GET https://api.github.com/user
+home_assistant   | user       | GET {configured_url}/api/ (Bearer token)
+steam            | user       | GET ISteamUser/GetPlayerSummaries/v2
+owntracks_webhook_token | system | presence + 64-char hex format check
+spotify          | user       | tracked separately by bu-xfq4r (unchanged)
+
 The existing /api/butlers/{name}/secrets/* CRUD surface in secrets.py is
 preserved unchanged per the compatibility requirement.
 
@@ -1844,6 +1861,14 @@ _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # GitHub user endpoint — works for both classic PATs and fine-grained PATs.
 _GITHUB_USER_URL = "https://api.github.com/user"
 
+# Steam Web API base URL and GetPlayerSummaries endpoint.
+_STEAM_API_BASE = "https://api.steampowered.com"
+_STEAM_GET_PLAYER_SUMMARIES_URL = f"{_STEAM_API_BASE}/ISteamUser/GetPlayerSummaries/v2/"
+
+# OwnTracks webhook token is a 64-character lowercase hex string (32 random bytes).
+_OWNTRACKS_TOKEN_RE_LENGTH = 64
+_OWNTRACKS_SYSTEM_KEY = "owntracks_webhook_token"
+
 
 class _ProviderVerifyConfig:
     """Per-provider live-verify configuration.
@@ -1906,6 +1931,169 @@ _OAUTH_VERIFY_PROVIDERS: dict[str, _ProviderVerifyConfig] = {
 }
 
 
+async def _verify_home_assistant_credential(
+    token: str,
+    shared_pool: Any,
+) -> tuple[str, int | None, str | None]:
+    """Live-probe a Home Assistant long-lived access token.
+
+    Looks up the configured HA base URL from ``public.entity_info`` (type=
+    ``home_assistant_url``, owner entity), then calls ``GET {url}/api/`` with
+    a ``Bearer`` authorization header.  HTTP 200 → ``live_ok``.
+
+    Graceful-fallback rules (NEVER raises):
+    - URL not configured in entity_info → ``skipped_local_check``
+    - Network error / timeout                → ``skipped_local_check``
+    - HTTP 401/403 (bad token)               → ``live_failed:<code>``
+    - Any other non-200 status               → ``live_failed:<code>``
+    """
+    # Resolve the stored HA base URL from entity_info.
+    ha_url: str | None = None
+    try:
+        row = await shared_pool.fetchrow(
+            """
+            SELECT ei.value
+            FROM public.entity_info ei
+            JOIN public.entities e ON e.id = ei.entity_id
+            WHERE 'owner' = ANY(e.roles)
+              AND ei.type = 'home_assistant_url'
+            ORDER BY ei.created_at DESC
+            LIMIT 1
+            """,
+        )
+        if row is not None:
+            ha_url = row["value"]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_verify_home_assistant_credential: URL lookup failed: %s", exc)
+
+    if not ha_url:
+        logger.debug(
+            "_verify_home_assistant_credential: home_assistant_url not configured; skipping"
+        )
+        return "skipped_local_check", None, None
+
+    probe_url = f"{ha_url.rstrip('/')}/api/"
+    try:
+        async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+            resp = await client.get(
+                probe_url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "_verify_home_assistant_credential: network error probing %s: %s", probe_url, exc
+        )
+        return "skipped_local_check", None, None
+
+    if resp.status_code == 200:
+        logger.debug("_verify_home_assistant_credential: live_ok (HTTP 200)")
+        return "live_ok", None, None
+
+    reason = f"GET /api/ HTTP {resp.status_code}"
+    logger.debug("_verify_home_assistant_credential: live_failed: %s", reason)
+    return f"live_failed:{resp.status_code}", resp.status_code, reason
+
+
+async def _verify_steam_credential(
+    api_key: str,
+    shared_pool: Any,
+) -> tuple[str, int | None, str | None]:
+    """Live-probe a Steam Web API key using ISteamUser/GetPlayerSummaries.
+
+    Looks up the primary Steam account's ``steam_id`` from
+    ``public.steam_accounts``, then calls
+    ``GET /ISteamUser/GetPlayerSummaries/v2/?key=<key>&steamids=<steamid>``.
+    A 200 response with a non-empty ``players`` array → ``live_ok``.
+
+    Graceful-fallback rules (NEVER raises):
+    - No primary steam account configured     → ``skipped_local_check``
+    - Network error / timeout                 → ``skipped_local_check``
+    - HTTP 401/403 (bad key)                  → ``live_failed:<code>``
+    - 200 but empty players                   → ``live_failed:no_players``
+    """
+    # Resolve the primary Steam account's steam_id.
+    steam_id: str | None = None
+    try:
+        row = await shared_pool.fetchrow(
+            """
+            SELECT steam_id
+            FROM public.steam_accounts
+            WHERE is_primary = true
+            LIMIT 1
+            """,
+        )
+        if row is not None:
+            steam_id = str(row["steam_id"])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_verify_steam_credential: steam_id lookup failed: %s", exc)
+
+    if not steam_id:
+        logger.debug("_verify_steam_credential: no primary Steam account configured; skipping")
+        return "skipped_local_check", None, None
+
+    try:
+        async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+            resp = await client.get(
+                _STEAM_GET_PLAYER_SUMMARIES_URL,
+                params={"key": api_key, "steamids": steam_id},
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_verify_steam_credential: network error probing Steam API: %s", exc)
+        return "skipped_local_check", None, None
+
+    if resp.status_code != 200:
+        reason = f"GetPlayerSummaries HTTP {resp.status_code}"
+        logger.debug("_verify_steam_credential: live_failed: %s", reason)
+        return f"live_failed:{resp.status_code}", resp.status_code, reason
+
+    # A valid key + valid steamid returns {"response": {"players": [...]}}
+    try:
+        body = resp.json()
+        players = body.get("response", {}).get("players", [])
+    except Exception as exc:  # noqa: BLE001
+        reason = f"invalid JSON response: {exc}"
+        logger.warning("_verify_steam_credential: %s", reason)
+        return "skipped_local_check", None, None
+
+    if not players:
+        reason = "no players returned (invalid key or steamid)"
+        logger.debug("_verify_steam_credential: live_failed: %s", reason)
+        return "live_failed:no_players", None, reason
+
+    logger.debug("_verify_steam_credential: live_ok")
+    return "live_ok", None, None
+
+
+def _verify_owntracks_token_format(token: str) -> tuple[str, int | None, str | None]:
+    """Validate an OwnTracks webhook token by presence and format (no remote call).
+
+    The token is a 64-character lowercase hex string generated by
+    ``secrets.token_hex(32)``.  Since OwnTracks is a self-hosted inbound
+    webhook with no remote verification endpoint, this function confirms
+    the token is present and well-formed — sufficient to confirm it was
+    generated by this system and is usable.
+
+    Returns:
+    - ``("live_ok", None, None)``        — token is present and 64-char hex
+    - ``("live_failed:bad_format", None, message)`` — token present but wrong
+    """
+    if not token:
+        return "live_failed:missing", None, "OwnTracks webhook token is not set"
+
+    if len(token) != _OWNTRACKS_TOKEN_RE_LENGTH:
+        reason = (
+            f"token length {len(token)} != {_OWNTRACKS_TOKEN_RE_LENGTH} "
+            "(expected 64-char hex from secrets.token_hex(32))"
+        )
+        return "live_failed:bad_format", None, reason
+
+    if not all(c in "0123456789abcdef" for c in token):
+        reason = "token contains non-hex characters (expected lowercase hex)"
+        return "live_failed:bad_format", None, reason
+
+    return "live_ok", None, None
+
+
 async def _verify_oauth_credential(
     provider: str,
     credential_type: str,
@@ -1933,9 +2121,25 @@ async def _verify_oauth_credential(
     - For PAT providers (GitHub):
       - Calls the verify URL directly with the stored value as the auth header.
       - No token exchange, no app credentials required.
+    - Home Assistant: looks up the configured HA URL from entity_info and calls
+      GET {url}/api/ with a Bearer token.  Network error → skipped_local_check.
+    - Steam: looks up the primary SteamID from steam_accounts and calls
+      ISteamUser/GetPlayerSummaries.  Network error → skipped_local_check.
     - Network errors → ``"skipped_local_check"`` (cannot distinguish bad cred from bad network).
     - Token-exchange non-200 → ``"live_failed:<code>"`` (this IS a credential failure).
     """
+    # ------------------------------------------------------------------
+    # Home Assistant: dispatch to custom handler
+    # ------------------------------------------------------------------
+    if provider == "home_assistant" and credential_type == "home_assistant_token":
+        return await _verify_home_assistant_credential(refresh_token, shared_pool)
+
+    # ------------------------------------------------------------------
+    # Steam: dispatch to custom handler
+    # ------------------------------------------------------------------
+    if provider == "steam" and credential_type.endswith("_api_key"):
+        return await _verify_steam_credential(refresh_token, shared_pool)
+
     provider_config = _OAUTH_VERIFY_PROVIDERS.get(provider)
     if provider_config is None:
         logger.debug(
@@ -2861,13 +3065,6 @@ async def probe_system_credential(
     if found_pool is None or found_butler is None or detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    # Derive probe outcome from current state.
-    probe_ok = detail.state == "ok"
-    probe_code: int | None = None
-    probe_message: str | None = None
-    if not probe_ok and detail.test is not None:
-        probe_message = detail.test.message
-
     # Use the shared pool for probe_log (cross-butler public table).
     try:
         shared_pool = db.credential_shared_pool()
@@ -2876,6 +3073,47 @@ async def probe_system_credential(
             status_code=503,
             detail="Shared credential pool unavailable for probe_log write",
         ) from exc
+
+    # ---------------------------------------------------------------------------
+    # Live probe for supported system credentials (OwnTracks webhook token).
+    # The raw value is read directly here — it is used only for the format check
+    # and never returned to the caller.  Falls back to local-state on any error.
+    # ---------------------------------------------------------------------------
+    probe_status_system: str = "skipped_local_check"
+    probe_ok_live: bool | None = None
+    probe_code_live: int | None = None
+    probe_message_live: str | None = None
+
+    if key == _OWNTRACKS_SYSTEM_KEY:
+        raw_value: str | None = None
+        try:
+            _raw_row = await found_pool.fetchrow(
+                "SELECT secret_value FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+            if _raw_row is not None:
+                raw_value = _raw_row["secret_value"]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("probe_system_credential: could not read raw value key=%s: %s", key, exc)
+
+        if raw_value:
+            probe_status_system, probe_code_live, probe_message_live = (
+                _verify_owntracks_token_format(raw_value)
+            )
+            probe_ok_live = probe_status_system == "live_ok"
+
+    # Derive probe outcome: live result (if available) takes precedence over local state.
+    if probe_ok_live is not None:
+        probe_ok = probe_ok_live
+        probe_code = probe_code_live
+        probe_message = probe_message_live
+    else:
+        # Fallback: derive from local state.
+        probe_ok = detail.state == "ok"
+        probe_code = None
+        probe_message = None
+        if not probe_ok and detail.test is not None:
+            probe_message = detail.test.message
 
     # Execute probe_log insert + butler_secrets cache update in one transaction.
     # probe_log INSERT goes to the shared pool (public schema).
@@ -2933,7 +3171,11 @@ async def probe_system_credential(
 
     # Audit — fire-and-forget.
     audit_action = "verified" if probe_ok else "failed"
-    note = "Probe ok" if probe_ok else f"Probe failed: {probe_message or 'unknown error'}"
+    if probe_ok:
+        note = f"Probe ok; probe_status={probe_status_system}"
+    else:
+        _fail_msg = probe_message or "unknown error"
+        note = f"Probe failed: {_fail_msg}; probe_status={probe_status_system}"
     await _write_system_audit(found_pool, action=audit_action, key=key, note=note)
 
     result = TestResult(
