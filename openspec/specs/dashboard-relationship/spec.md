@@ -263,33 +263,49 @@ password", "Telegram API ID", "Telegram API hash", "Telegram chat ID").
 
 ### Requirement: Owner identity setup banner
 
-The dashboard SHALL display a persistent banner on the entity index page
-(`/entities?has=contact`) when the owner contact is missing key identity
-fields (name, email, telegram handle, or telegram chat ID). The banner
-provides a one-time onboarding dialog as a convenience; the entity detail
-contact-channel card at `/entities/:entityId` is the canonical location for
-ongoing identity and credential management.
+The dashboard SHALL display a persistent banner on the entity detail page
+(`/entities/:entityId`) when the owner entity is missing key identity
+fields (name, telegram handle, or telegram chat ID). The banner appears
+inside the practical drawer, which is forced open when the owner has not
+completed identity setup. The entity detail contact-channel card at
+`/entities/:entityId` is the canonical location for ongoing identity and
+credential management.
+
+> **Placement rationale (deliberate product decision):** An earlier revision of
+> this spec placed the banner on the entity index page (`/entities?has=contact`)
+> as a "convenience" onboarding shortcut. The shipped implementation places it on
+> the entity detail page inside the practical drawer (forced open when setup is
+> incomplete), co-located with the canonical identity management surface. This is
+> the correct placement because: (1) the detail page is the spec's own canonical
+> location for identity management, (2) `forceOpen` ensures the banner is
+> prominently surfaced without requiring a separate index-level data fetch, and
+> (3) the reconciliation of bu-m8gb6 explicitly recommended updating the spec
+> rather than changing the UI code.
 
 #### Scenario: Banner shown when owner has missing identity fields
 
-- **WHEN** a user navigates to `/entities?has=contact` and the owner contact
-  is missing any of: name, email, telegram handle, or telegram chat ID
-- **THEN** a banner MUST be displayed indicating which fields are missing
+- **WHEN** a user navigates to `/entities/:entityId` for the owner entity and
+  the owner is missing any of: name, telegram handle, or telegram chat ID
+- **THEN** a banner MUST be displayed inside the practical drawer indicating
+  which fields are missing
+- **AND** the practical drawer MUST be forced open when the banner is active
 - **AND** a "Set Up Identity" button MUST open a dialog for filling in missing
   fields
 
 #### Scenario: Banner hidden when all identity fields are configured
 
-- **WHEN** the owner contact has name, email, telegram handle, and telegram
-  chat ID configured
+- **WHEN** the owner entity has name, telegram handle, and telegram chat ID
+  configured
 - **THEN** the setup banner MUST NOT be displayed
 
 #### Scenario: Banner dialog includes credentials section
 
 - **WHEN** the owner setup dialog is opened
 - **THEN** a collapsible "Credentials" section MUST be available for
-  optionally setting email password, Telegram API ID, and Telegram API hash
-- **AND** these credential fields MUST create secured `contact_info` entries
+  optionally setting Telegram API ID, Telegram API hash, Home Assistant URL,
+  and Home Assistant token
+- **AND** credential fields (API hash, API ID, Home Assistant token) MUST
+  create secured `entity_info` entries
 
 ---
 
