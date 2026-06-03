@@ -110,6 +110,27 @@ vi.mock("@/hooks/use-steam.ts", () => ({
   useSteamConnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
   useSteamDisconnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
 }))
+// Provider-config drawer hooks [bu-ayp6v.9]
+vi.mock("@/hooks/use-spotify.ts", () => ({
+  useSpotifyStatus: vi.fn(() => ({
+    data: { state: "connected", connected: true, spotify_user_id: "testuser", display_name: "Test User", account_type: "premium", last_sync_at: null, error: null, needs_reauth: false, missing_scopes: [] },
+    isLoading: false,
+    error: null,
+  })),
+  useSpotifyConfig: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useSpotifyOAuthStart: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useSpotifyDisconnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
+vi.mock("@/hooks/use-whatsapp.ts", () => ({
+  useWhatsAppStatus: vi.fn(() => ({
+    data: { state: "connected", phone: "+1 *** *** 7890", paired_at: "2026-01-01T00:00:00Z", last_sync_at: null, bridge_running: true },
+    isLoading: false,
+    error: null,
+  })),
+  useWhatsAppPairStart: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useWhatsAppPairPoll: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useWhatsAppDisconnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
 
 import { SpineRow, Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli, PageGoogleAccounts } from "./pages.tsx";
@@ -122,6 +143,10 @@ import {
   OwnTracksDrawerContent,
   SteamDrawer,
   SteamDrawerContent,
+  SpotifyDrawer,
+  SpotifyDrawerContent,
+  WhatsAppDrawer,
+  WhatsAppDrawerContent,
 } from "./ProviderConfigDrawer.tsx";
 import {
   Fingerprint,
@@ -1210,13 +1235,124 @@ describe("PageUser: renders provider config drawers for HA/OwnTracks/Steam", () 
     expect(html).toContain('data-steam-drawer-content="true"');
   });
 
-  it("does NOT render HA drawer for non-HA provider (e.g. spotify)", () => {
-    const spotify = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!;
+  it("does NOT render HA drawer for non-HA provider (e.g. whatsapp)", () => {
+    const whatsapp = MOCK_USER_CREDENTIALS.find((u) => u.provider === "whatsapp")!;
     const html = renderInRouter(
-      <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} />,
+      <PageUser credential={whatsapp} provider={MOCK_PROVIDERS.whatsapp} />,
     );
     expect(html).not.toContain('data-provider-config-drawer="homeassistant"');
     expect(html).not.toContain('data-provider-config-drawer="owntracks"');
     expect(html).not.toContain('data-provider-config-drawer="steam"');
+  });
+
+  it("renders Spotify drawer inline inside PageUser for spotify provider", () => {
+    const spotify = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!;
+    const html = renderInRouter(
+      <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} identities={MOCK_IDENTITIES} />,
+    );
+    expect(html).toContain('data-provider-config-drawer="spotify"');
+    expect(html).toContain('data-spotify-drawer-content="true"');
+  });
+
+  it("renders WhatsApp drawer inline inside PageUser for whatsapp provider", () => {
+    const whatsapp = MOCK_USER_CREDENTIALS.find((u) => u.provider === "whatsapp")!;
+    const html = renderInRouter(
+      <PageUser credential={whatsapp} provider={MOCK_PROVIDERS.whatsapp} identities={MOCK_IDENTITIES} />,
+    );
+    expect(html).toContain('data-provider-config-drawer="whatsapp"');
+    expect(html).toContain('data-whatsapp-drawer-content="true"');
+  });
+});
+
+// ── SpotifyDrawer [bu-ayp6v.9] ───────────────────────────────────────────────
+
+describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
+  it("renders data-provider-config-drawer=spotify", () => {
+    const html = renderInRouter(<SpotifyDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-provider-config-drawer="spotify"');
+  });
+
+  it("renders Spotify drawer content", () => {
+    const html = renderInRouter(<SpotifyDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-spotify-drawer-content="true"');
+  });
+
+  it("renders status dot (not a word) for connection state", () => {
+    const html = renderInRouter(<SpotifyDrawerContent />);
+    expect(html).toContain('data-spotify-status-dot="true"');
+  });
+
+  it("renders display name when connected", () => {
+    const html = renderInRouter(<SpotifyDrawerContent />);
+    expect(html).toContain("Test User");
+  });
+
+  it("renders configure/reconfigure action", () => {
+    const html = renderInRouter(<SpotifyDrawerContent />);
+    expect(html).toContain("reconfigure");
+  });
+
+  it("renders re-authorize action when connected", () => {
+    const html = renderInRouter(<SpotifyDrawerContent />);
+    expect(html).toContain("re-authorize");
+  });
+
+  it("renders disconnect action when configured", () => {
+    const html = renderInRouter(<SpotifyDrawerContent />);
+    expect(html).toContain("disconnect");
+  });
+
+  it("renders dismiss button in standalone mode", () => {
+    const html = renderInRouter(<SpotifyDrawer onClose={() => undefined} />);
+    expect(html).toContain("dismiss");
+  });
+
+  it("omits dismiss button in inline mode", () => {
+    const html = renderInRouter(<SpotifyDrawer onClose={() => undefined} inline />);
+    expect(html).not.toContain("dismiss");
+  });
+});
+
+// ── WhatsAppDrawer [bu-ayp6v.9] ──────────────────────────────────────────────
+
+describe("WhatsAppDrawer: QR pairing + status + disconnect", () => {
+  it("renders data-provider-config-drawer=whatsapp", () => {
+    const html = renderInRouter(<WhatsAppDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-provider-config-drawer="whatsapp"');
+  });
+
+  it("renders WhatsApp drawer content", () => {
+    const html = renderInRouter(<WhatsAppDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-whatsapp-drawer-content="true"');
+  });
+
+  it("renders status dot (not a word) for connection state", () => {
+    const html = renderInRouter(<WhatsAppDrawerContent />);
+    expect(html).toContain('data-whatsapp-status-dot="true"');
+  });
+
+  it("renders masked phone number when connected", () => {
+    const html = renderInRouter(<WhatsAppDrawerContent />);
+    expect(html).toContain("+1 *** *** 7890");
+  });
+
+  it("renders pair device / re-pair action", () => {
+    const html = renderInRouter(<WhatsAppDrawerContent />);
+    expect(html).toContain("re-pair");
+  });
+
+  it("renders disconnect action when connected", () => {
+    const html = renderInRouter(<WhatsAppDrawerContent />);
+    expect(html).toContain("disconnect");
+  });
+
+  it("renders dismiss button in standalone mode", () => {
+    const html = renderInRouter(<WhatsAppDrawer onClose={() => undefined} />);
+    expect(html).toContain("dismiss");
+  });
+
+  it("omits dismiss button in inline mode", () => {
+    const html = renderInRouter(<WhatsAppDrawer onClose={() => undefined} inline />);
+    expect(html).not.toContain("dismiss");
   });
 });

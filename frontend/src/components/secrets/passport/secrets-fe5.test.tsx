@@ -71,6 +71,62 @@ vi.mock("@/hooks/use-google-health.ts", async (importOriginal) => {
     useDisconnectGoogleHealth: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
   }
 })
+// Provider-config drawer hooks [bu-ayp6v.8/.9]
+vi.mock("@/hooks/use-home-assistant.ts", () => ({
+  useHomeAssistantStatus: vi.fn(() => ({
+    data: { state: "connected", url_configured: true, token_configured: true, masked_url: "http://ha.local:8123" },
+    isLoading: false,
+    error: null,
+  })),
+  useConfigureHomeAssistant: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null, data: null })),
+  useDeleteHomeAssistantConfig: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
+vi.mock("@/hooks/use-owntracks.ts", () => ({
+  useOwnTracksStatus: vi.fn(() => ({
+    data: { state: "active", last_event_at: "2026-06-01T10:00:00Z", events_today: 5, token_configured: true },
+    isLoading: false,
+    error: null,
+  })),
+  useOwnTracksConfig: vi.fn(() => ({
+    data: { webhook_url: "https://butlers.example.com/api/connectors/owntracks/webhook", host: "butlers.example.com" },
+    isLoading: false,
+    error: null,
+  })),
+  useOwnTracksGenerateToken: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
+vi.mock("@/hooks/use-steam.ts", () => ({
+  useSteamAccounts: vi.fn(() => ({
+    data: {
+      accounts: [
+        { id: "steam-1", steam_id: "76561198000000001", display_name: "TestUser", profile_url: null, avatar_url: null, is_primary: true, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null },
+      ],
+    },
+    isLoading: false,
+    error: null,
+  })),
+  useSteamConnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useSteamDisconnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
+vi.mock("@/hooks/use-spotify.ts", () => ({
+  useSpotifyStatus: vi.fn(() => ({
+    data: { state: "connected", connected: true, spotify_user_id: "testuser", display_name: "Test User", account_type: "premium", last_sync_at: null, error: null, needs_reauth: false, missing_scopes: [] },
+    isLoading: false,
+    error: null,
+  })),
+  useSpotifyConfig: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useSpotifyOAuthStart: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useSpotifyDisconnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
+vi.mock("@/hooks/use-whatsapp.ts", () => ({
+  useWhatsAppStatus: vi.fn(() => ({
+    data: { state: "connected", phone: "+1 *** *** 7890", paired_at: "2026-01-01T00:00:00Z", last_sync_at: null, bridge_running: true },
+    isLoading: false,
+    error: null,
+  })),
+  useWhatsAppPairStart: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useWhatsAppPairPoll: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useWhatsAppDisconnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
 
 import { Spine } from "./Spine.tsx";
 import { PageCli } from "./pages.tsx";

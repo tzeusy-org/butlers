@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------
 // ProviderConfigDrawer — reusable provider configuration drawer framework
-// plus three concrete provider drawers: HomeAssistant, OwnTracks, Steam.
+// plus five concrete provider drawers: HomeAssistant, OwnTracks, Steam,
+// Spotify, and WhatsApp.
 //
 // Spec: butler-secrets §per-provider oddities
 //
@@ -19,8 +20,19 @@
 //                   (useOwnTracksGenerateToken, useOwnTracksStatus, useOwnTracksConfig)
 //   Steam:          POST /api/steam/accounts, DELETE /api/steam/accounts/:id
 //                   (useSteamConnect, useSteamDisconnect, useSteamAccounts)
+//   Spotify:        POST /api/connectors/spotify/config (client_id),
+//                   POST /api/connectors/spotify/oauth/start (OAuth PKCE),
+//                   POST /api/connectors/spotify/disconnect
+//                   (useSpotifyStatus, useSpotifyConfig, useSpotifyOAuthStart,
+//                    useSpotifyDisconnect)
+//   WhatsApp:       POST /api/connectors/whatsapp/pair/start (QR pairing),
+//                   GET  /api/connectors/whatsapp/pair/poll (poll pair status),
+//                   GET  /api/connectors/whatsapp/status,
+//                   POST /api/connectors/whatsapp/disconnect
+//                   (useWhatsAppStatus, useWhatsAppPairStart, useWhatsAppPairPoll,
+//                    useWhatsAppDisconnect)
 //
-// bu-ayp6v.8
+// bu-ayp6v.8 (HA/OwnTracks/Steam), bu-ayp6v.9 (Spotify/WhatsApp)
 // ---------------------------------------------------------------------------
 
 import * as React from "react";
@@ -42,6 +54,18 @@ import {
   useSteamDisconnect,
 } from "@/hooks/use-steam.ts";
 import type { SteamConnectRequest } from "@/api/index.ts";
+import {
+  useSpotifyStatus,
+  useSpotifyConfig,
+  useSpotifyOAuthStart,
+  useSpotifyDisconnect,
+} from "@/hooks/use-spotify.ts";
+import {
+  useWhatsAppStatus,
+  useWhatsAppPairStart,
+  useWhatsAppPairPoll,
+  useWhatsAppDisconnect,
+} from "@/hooks/use-whatsapp.ts";
 
 // ---------------------------------------------------------------------------
 // ProviderConfigDrawer — generic drawer shell
@@ -914,6 +938,614 @@ export function SteamDrawer({
   return (
     <ProviderConfigDrawer provider="steam" label="Steam" onClose={onClose} inline={inline}>
       <SteamDrawerContent />
+    </ProviderConfigDrawer>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Spotify drawer
+// ---------------------------------------------------------------------------
+
+/**
+ * SpotifyDrawerContent — client_id config + OAuth PKCE connect + status + disconnect.
+ *
+ * Endpoints: POST /api/connectors/spotify/config (save client_id),
+ *            POST /api/connectors/spotify/oauth/start (OAuth PKCE flow),
+ *            POST /api/connectors/spotify/disconnect.
+ * Hooks: useSpotifyStatus, useSpotifyConfig, useSpotifyOAuthStart, useSpotifyDisconnect.
+ *
+ * Flow:
+ *   1. If client_id not configured → show configure panel (commit).
+ *   2. If configured but not connected → show "connect via Spotify" OAuth button.
+ *   3. If connected → show status dot + account info + disconnect.
+ */
+export function SpotifyDrawerContent() {
+  const statusQuery = useSpotifyStatus();
+  const configMutation = useSpotifyConfig();
+  const oauthStartMutation = useSpotifyOAuthStart();
+  const disconnectMutation = useSpotifyDisconnect();
+
+  const [configureOpen, setConfigureOpen] = React.useState(false);
+  const [clientId, setClientId] = React.useState("");
+  const [disconnectOpen, setDisconnectOpen] = React.useState(false);
+
+  const status = statusQuery.data;
+  const isConnected = status?.state === "connected";
+  const isNotConfigured = status?.state === "not_configured";
+  const needsAuth = status?.state === "needs_auth" || status?.state === "needs_reauth";
+
+  function handleConfigureOpen() {
+    setConfigureOpen(true);
+    setDisconnectOpen(false);
+    configMutation.reset();
+    setClientId("");
+  }
+
+  function handleConfigureCancel() {
+    setConfigureOpen(false);
+    setClientId("");
+    configMutation.reset();
+  }
+
+  function handleConfigureSubmit() {
+    if (!clientId.trim() || configMutation.isPending) return;
+    configMutation.mutate(
+      { client_id: clientId.trim() },
+      {
+        onSuccess: () => {
+          setConfigureOpen(false);
+          setClientId("");
+        },
+      },
+    );
+  }
+
+  function handleOAuthConnect() {
+    if (oauthStartMutation.isPending) return;
+    oauthStartMutation.mutate(undefined, {
+      onSuccess: (data) => {
+        window.location.assign(data.authorization_url);
+      },
+    });
+  }
+
+  function handleDisconnectConfirm() {
+    if (disconnectMutation.isPending) return;
+    disconnectMutation.mutate();
+  }
+
+  function handleDisconnectCancel() {
+    setDisconnectOpen(false);
+    disconnectMutation.reset();
+  }
+
+  if (statusQuery.isLoading) {
+    return (
+      <div data-spotify-drawer-content="true">
+        <Mono size={11} color="var(--dim)">loading…</Mono>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4" data-spotify-drawer-content="true">
+      {/* Status row — dot only, never a word in the main flow */}
+      <div className="flex items-center gap-2.5">
+        <span
+          className="inline-block shrink-0 rounded-full"
+          style={{
+            width: 6,
+            height: 6,
+            backgroundColor: isConnected
+              ? "var(--green)"
+              : isNotConfigured
+                ? "var(--dim)"
+                : needsAuth
+                  ? "var(--amber)"
+                  : "var(--amber)",
+          }}
+          aria-label={isConnected ? "connected" : isNotConfigured ? "not configured" : "needs auth"}
+          data-spotify-status-dot="true"
+        />
+        {status?.display_name && (
+          <Mono size={11} color="var(--mfg)">{status.display_name}</Mono>
+        )}
+        {status?.spotify_user_id && !status.display_name && (
+          <Mono size={11} color="var(--mfg)">{status.spotify_user_id}</Mono>
+        )}
+      </div>
+
+      {/* KV band */}
+      <div
+        className="grid gap-5 py-3"
+        style={{
+          borderTop: "1px solid var(--border)",
+          borderBottom: "1px solid var(--border)",
+          gridTemplateColumns: "130px 130px",
+        }}
+      >
+        <div>
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">client id</Mono>
+          <Mono size={11} className="mt-1 block">
+            {isNotConfigured ? "—" : "configured"}
+          </Mono>
+        </div>
+        <div>
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">account</Mono>
+          <Mono size={11} className="mt-1 block">
+            {isConnected ? (status?.account_type ?? "free") : "—"}
+          </Mono>
+        </div>
+      </div>
+
+      {/* Configure client_id inline panel */}
+      {configureOpen && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-spotify-configure-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            spotify · client id
+          </Mono>
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">client id</Mono>
+            <input
+              type="text"
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              placeholder="Spotify app client_id"
+              className="font-mono text-[11px] p-2 outline-none w-full"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+              data-spotify-client-id-input="true"
+            />
+            <Mono size={9} color="var(--dim)">
+              from developer.spotify.com/dashboard
+            </Mono>
+          </div>
+          {configMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {configMutation.error instanceof Error
+                ? configMutation.error.message
+                : "Configure failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={handleConfigureSubmit}
+              disabled={!clientId.trim() || configMutation.isPending}
+            >
+              {configMutation.isPending ? "saving…" : "save"}
+            </PillBtn>
+            <PillBtn onClick={handleConfigureCancel} disabled={configMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Disconnect confirm */}
+      {disconnectOpen && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-spotify-disconnect-confirm="true"
+        >
+          <Mono size={11} color="var(--red)">
+            Disconnect Spotify? Removes client ID, access token, and refresh token.
+          </Mono>
+          {disconnectMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {disconnectMutation.error instanceof Error
+                ? disconnectMutation.error.message
+                : "Disconnect failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={handleDisconnectConfirm}
+              disabled={disconnectMutation.isPending}
+            >
+              {disconnectMutation.isPending ? "disconnecting…" : "yes, disconnect"}
+            </PillBtn>
+            <PillBtn onClick={handleDisconnectCancel} disabled={disconnectMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* OAuth start error */}
+      {oauthStartMutation.error && (
+        <Mono size={11} color="var(--red)">
+          {oauthStartMutation.error instanceof Error
+            ? oauthStartMutation.error.message
+            : "OAuth start failed."}
+        </Mono>
+      )}
+
+      {statusQuery.error && (
+        <Mono size={11} color="var(--red)">
+          {statusQuery.error instanceof Error
+            ? statusQuery.error.message
+            : "Status unavailable."}
+        </Mono>
+      )}
+
+      {/* Footer */}
+      <div
+        className="flex justify-between items-center pt-3.5 flex-wrap gap-2"
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <div className="flex gap-2 flex-wrap">
+          <PillBtn
+            variant={isNotConfigured ? "commit" : "pill"}
+            onClick={handleConfigureOpen}
+            disabled={configureOpen}
+          >
+            {isNotConfigured ? "configure" : "reconfigure"}
+          </PillBtn>
+          {!isNotConfigured && (isConnected || needsAuth) && (
+            <PillBtn
+              variant={needsAuth ? "commit" : "pill"}
+              onClick={handleOAuthConnect}
+              disabled={oauthStartMutation.isPending}
+            >
+              {oauthStartMutation.isPending
+                ? "redirecting…"
+                : isConnected
+                  ? "re-authorize"
+                  : "connect via spotify"}
+            </PillBtn>
+          )}
+          {!isNotConfigured && !isConnected && !needsAuth && (
+            <PillBtn
+              variant="commit"
+              onClick={handleOAuthConnect}
+              disabled={oauthStartMutation.isPending}
+            >
+              {oauthStartMutation.isPending ? "redirecting…" : "connect via spotify"}
+            </PillBtn>
+          )}
+        </div>
+        {!isNotConfigured && (
+          <PillBtn
+            variant="danger"
+            onClick={() => { setDisconnectOpen(true); setConfigureOpen(false); }}
+            disabled={disconnectOpen}
+          >
+            disconnect
+          </PillBtn>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * SpotifyDrawer — full drawer: shell + content.
+ *
+ * Pass `inline` when embedding inside PageUser's own layout.
+ */
+export function SpotifyDrawer({
+  onClose,
+  inline = false,
+}: {
+  onClose: () => void;
+  inline?: boolean;
+}) {
+  return (
+    <ProviderConfigDrawer provider="spotify" label="Spotify" onClose={onClose} inline={inline}>
+      <SpotifyDrawerContent />
+    </ProviderConfigDrawer>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp drawer (QR pairing)
+// ---------------------------------------------------------------------------
+
+/**
+ * WhatsAppPairModal — QR code pairing surface displayed inside the WhatsApp
+ * drawer when pairing is initiated.
+ *
+ * Polls pair status every 2 s (useWhatsAppPairPoll) while QR is visible.
+ * Calls onPaired() when the poll reports status === "paired".
+ * Calls onExpired() when the poll reports status === "expired".
+ */
+function WhatsAppPairModal({
+  qrDataUri,
+  expiresAt,
+  onPaired,
+  onExpired,
+  onCancel,
+}: {
+  qrDataUri: string;
+  expiresAt: string;
+  onPaired: (phone: string | null) => void;
+  onExpired: () => void;
+  onCancel: () => void;
+}) {
+  const pollQuery = useWhatsAppPairPoll({ enabled: true });
+
+  React.useEffect(() => {
+    if (!pollQuery.data) return;
+    if (pollQuery.data.status === "paired") {
+      onPaired(pollQuery.data.phone);
+    } else if (pollQuery.data.status === "expired") {
+      onExpired();
+    }
+  }, [pollQuery.data, onPaired, onExpired]);
+
+  return (
+    <div
+      className="flex flex-col gap-3 p-3.5"
+      style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+      data-whatsapp-pair-modal="true"
+    >
+      <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+        whatsapp · scan qr code to pair
+      </Mono>
+
+      {/* QR image */}
+      <img
+        src={qrDataUri}
+        alt="WhatsApp pairing QR code"
+        width={200}
+        height={200}
+        style={{ imageRendering: "pixelated" }}
+        data-whatsapp-qr-image="true"
+      />
+
+      <Mono size={9} color="var(--dim)">
+        open whatsapp → linked devices → link a device · expires {expiresAt}
+      </Mono>
+
+      {pollQuery.data?.status === "paired" && (
+        <Mono size={11} color="var(--green)">paired successfully</Mono>
+      )}
+      {pollQuery.data?.status === "expired" && (
+        <Mono size={11} color="var(--amber)">qr code expired — try again</Mono>
+      )}
+
+      <PillBtn onClick={onCancel}>cancel</PillBtn>
+    </div>
+  );
+}
+
+/**
+ * WhatsAppDrawerContent — QR pairing modal + status + re-pair + disconnect.
+ *
+ * Endpoints: POST /api/connectors/whatsapp/pair/start (QR pairing),
+ *            GET  /api/connectors/whatsapp/pair/poll,
+ *            GET  /api/connectors/whatsapp/status,
+ *            POST /api/connectors/whatsapp/disconnect.
+ * Hooks: useWhatsAppStatus, useWhatsAppPairStart, useWhatsAppPairPoll,
+ *        useWhatsAppDisconnect.
+ */
+export function WhatsAppDrawerContent() {
+  const statusQuery = useWhatsAppStatus();
+  const pairStartMutation = useWhatsAppPairStart();
+  const disconnectMutation = useWhatsAppDisconnect();
+
+  const [pairingQr, setPairingQr] = React.useState<{ qrDataUri: string; expiresAt: string } | null>(null);
+  const [pairedPhone, setPairedPhone] = React.useState<string | null>(null);
+  const [disconnectOpen, setDisconnectOpen] = React.useState(false);
+
+  const status = statusQuery.data;
+  const isConnected = status?.state === "connected";
+  const isPairRequired = status?.state === "pair_required";
+
+  function handlePairStart() {
+    if (pairStartMutation.isPending) return;
+    setPairingQr(null);
+    setPairedPhone(null);
+    pairStartMutation.reset();
+    pairStartMutation.mutate(undefined, {
+      onSuccess: (data) => {
+        setPairingQr({ qrDataUri: data.qr_data_uri, expiresAt: data.expires_at });
+      },
+    });
+  }
+
+  function handlePaired(phone: string | null) {
+    setPairingQr(null);
+    setPairedPhone(phone);
+    // Refresh status after pairing
+    statusQuery.refetch();
+  }
+
+  function handlePairExpired() {
+    setPairingQr(null);
+    pairStartMutation.reset();
+  }
+
+  function handlePairCancel() {
+    setPairingQr(null);
+    pairStartMutation.reset();
+  }
+
+  function handleDisconnectConfirm() {
+    if (disconnectMutation.isPending) return;
+    disconnectMutation.mutate();
+  }
+
+  function handleDisconnectCancel() {
+    setDisconnectOpen(false);
+    disconnectMutation.reset();
+  }
+
+  if (statusQuery.isLoading) {
+    return (
+      <div data-whatsapp-drawer-content="true">
+        <Mono size={11} color="var(--dim)">loading…</Mono>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4" data-whatsapp-drawer-content="true">
+      {/* Status row — dot only */}
+      <div className="flex items-center gap-2.5">
+        <span
+          className="inline-block shrink-0 rounded-full"
+          style={{
+            width: 6,
+            height: 6,
+            backgroundColor: isConnected
+              ? "var(--green)"
+              : isPairRequired
+                ? "var(--amber)"
+                : "var(--dim)",
+          }}
+          aria-label={isConnected ? "connected" : isPairRequired ? "pair required" : "not configured"}
+          data-whatsapp-status-dot="true"
+        />
+        {status?.phone && (
+          <Mono size={11} color="var(--mfg)">{status.phone}</Mono>
+        )}
+        {pairedPhone && !status?.phone && (
+          <Mono size={11} color="var(--green)">{pairedPhone}</Mono>
+        )}
+      </div>
+
+      {/* KV band */}
+      <div
+        className="grid gap-5 py-3"
+        style={{
+          borderTop: "1px solid var(--border)",
+          borderBottom: "1px solid var(--border)",
+          gridTemplateColumns: "130px 130px",
+        }}
+      >
+        <div>
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">paired</Mono>
+          <Mono size={11} className="mt-1 block">
+            {status?.paired_at ? status.paired_at : "—"}
+          </Mono>
+        </div>
+        <div>
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">last sync</Mono>
+          <Mono size={11} className="mt-1 block">
+            {status?.last_sync_at ? status.last_sync_at : "—"}
+          </Mono>
+        </div>
+      </div>
+
+      {/* Pair modal — shown while QR is live */}
+      {pairingQr !== null && (
+        <WhatsAppPairModal
+          qrDataUri={pairingQr.qrDataUri}
+          expiresAt={pairingQr.expiresAt}
+          onPaired={handlePaired}
+          onExpired={handlePairExpired}
+          onCancel={handlePairCancel}
+        />
+      )}
+
+      {/* Pair start error */}
+      {pairStartMutation.error && !pairingQr && (
+        <Mono size={11} color="var(--red)">
+          {pairStartMutation.error instanceof Error
+            ? pairStartMutation.error.message
+            : "Pairing start failed."}
+        </Mono>
+      )}
+
+      {/* Disconnect confirm */}
+      {disconnectOpen && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-whatsapp-disconnect-confirm="true"
+        >
+          <Mono size={11} color="var(--red)">
+            Disconnect WhatsApp? Removes pairing and all stored credentials.
+          </Mono>
+          {disconnectMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {disconnectMutation.error instanceof Error
+                ? disconnectMutation.error.message
+                : "Disconnect failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={handleDisconnectConfirm}
+              disabled={disconnectMutation.isPending}
+            >
+              {disconnectMutation.isPending ? "disconnecting…" : "yes, disconnect"}
+            </PillBtn>
+            <PillBtn onClick={handleDisconnectCancel} disabled={disconnectMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {statusQuery.error && (
+        <Mono size={11} color="var(--red)">
+          {statusQuery.error instanceof Error
+            ? statusQuery.error.message
+            : "Status unavailable."}
+        </Mono>
+      )}
+
+      {/* Footer */}
+      <div
+        className="flex justify-between items-center pt-3.5 flex-wrap gap-2"
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <div className="flex gap-2 flex-wrap">
+          <PillBtn
+            variant={!isConnected ? "commit" : "pill"}
+            onClick={handlePairStart}
+            disabled={pairStartMutation.isPending || pairingQr !== null}
+          >
+            {pairStartMutation.isPending
+              ? "starting…"
+              : isConnected
+                ? "re-pair"
+                : "pair device"}
+          </PillBtn>
+        </div>
+        {(isConnected || isPairRequired) && (
+          <PillBtn
+            variant="danger"
+            onClick={() => { setDisconnectOpen(true); setPairingQr(null); }}
+            disabled={disconnectOpen}
+          >
+            disconnect
+          </PillBtn>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * WhatsAppDrawer — full drawer: shell + content.
+ *
+ * Pass `inline` when embedding inside PageUser's own layout.
+ */
+export function WhatsAppDrawer({
+  onClose,
+  inline = false,
+}: {
+  onClose: () => void;
+  inline?: boolean;
+}) {
+  return (
+    <ProviderConfigDrawer provider="whatsapp" label="WhatsApp" onClose={onClose} inline={inline}>
+      <WhatsAppDrawerContent />
     </ProviderConfigDrawer>
   );
 }
