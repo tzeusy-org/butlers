@@ -906,6 +906,8 @@ export function getAuditLog(
   if (params?.operation) sp.set("operation", params.operation);
   if (params?.since) sp.set("since", params.since);
   if (params?.until) sp.set("until", params.until);
+  if (params?.key) sp.set("key", params.key);
+  if (params?.actor) sp.set("actor", params.actor);
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<AuditEntry>>(qs ? `/audit-log?${qs}` : "/audit-log");
 }
