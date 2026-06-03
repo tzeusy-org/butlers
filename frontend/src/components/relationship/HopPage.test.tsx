@@ -29,8 +29,6 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityNeighbours: vi.fn(),
   // Re-export everything else as passthrough stubs
   useEntityLinkedContacts: vi.fn(),
-  useEntityNotes: vi.fn(),
-  useEntityInteractions: vi.fn(),
   useEntityGifts: vi.fn(),
   useEntityLoans: vi.fn(),
   useEntityTimeline: vi.fn(),

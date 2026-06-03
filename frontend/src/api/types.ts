@@ -4225,25 +4225,6 @@ export interface ChroniclerEpisodeExplainResponse {
 // Relationship butler: entity-level tab types
 // ---------------------------------------------------------------------------
 
-/** A note fact for a relationship entity (predicate='contact_note'). */
-export interface EntityNote {
-  id: string;
-  content: string;
-  emotion: string | null;
-  created_at: string | null;
-}
-
-/** An interaction fact for a relationship entity (predicate LIKE 'interaction_%'). */
-export interface EntityInteraction {
-  id: string;
-  /** Predicate suffix, e.g. 'meeting' from 'interaction_meeting'. */
-  type: string;
-  summary: string | null;
-  occurred_at: string | null;
-  direction: string | null;
-  group_size: string | null;
-}
-
 /** A gift fact for a relationship entity (predicate='gift'). */
 export interface EntityGift {
   id: string;

@@ -21,12 +21,10 @@ import {
   getEntityDates,
   getEntityFacts,
   getEntityGifts,
-  getEntityInteractions,
   getEntityLinkedContacts,
   getEntityLoans,
   getEntityMessageThreads,
   getEntityNeighbours,
-  getEntityNotes,
   getEntityTimeline,
   getRelationshipEntityQueue,
   listRelationshipEntities,
@@ -50,24 +48,6 @@ export function useEntityLinkedContacts(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-linked-contacts", entityId],
     queryFn: () => getEntityLinkedContacts(entityId!),
-    enabled: !!entityId,
-  });
-}
-
-/** Fetch notes tab data for a relationship entity. */
-export function useEntityNotes(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["entity-notes", entityId],
-    queryFn: () => getEntityNotes(entityId!),
-    enabled: !!entityId,
-  });
-}
-
-/** Fetch interactions tab data for a relationship entity. */
-export function useEntityInteractions(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["entity-interactions", entityId],
-    queryFn: () => getEntityInteractions(entityId!),
     enabled: !!entityId,
   });
 }
