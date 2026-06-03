@@ -15,7 +15,7 @@
  *   GET /api/relationship/entities/concentration?pred=<predicate>
  *     — returns items[], rollup{}, predicate_tabs[], predicate, total
  *
- * Spec: openspec/changes/relationship-tabs-to-entities tasks.md §8.4
+ * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.4
  *       specs/dashboard-relationship/spec.md §"Concentration"
  */
 

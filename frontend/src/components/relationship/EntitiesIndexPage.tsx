@@ -13,7 +13,7 @@
  *
  * Renders inside <Page archetype="overview"> with breadcrumb "Entities".
  *
- * Spec: openspec/changes/relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
+ * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md
  *       §Requirement: Entity index page
  */
 

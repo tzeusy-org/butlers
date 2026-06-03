@@ -9,7 +9,7 @@
  * is a React Router <NavLink> so active styling is applied automatically.
  * Renders inside the Page shell (archetype="overview") above the main content.
  *
- * Spec: openspec/changes/relationship-tabs-to-entities tasks.md §8.6
+ * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.6
  */
 
 import { NavLink } from "react-router";
