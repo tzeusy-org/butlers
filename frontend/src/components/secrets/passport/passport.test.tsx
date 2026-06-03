@@ -21,8 +21,9 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
-// Mock API client — PageUser now uses TanStack Query mutation hooks which call
-// useQueryClient() at render time; even renderToStaticMarkup triggers the hook.
+// Mock API client — PageUser/PageSystem now use TanStack Query mutation hooks
+// which call useQueryClient() at render time; even renderToStaticMarkup
+// triggers the hook.
 // ---------------------------------------------------------------------------
 vi.mock("@/api/client.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client.ts")>()
@@ -32,9 +33,18 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     probeUserCredential: vi.fn(),
     rotateUserCredential: vi.fn(),
     disconnectUserCredential: vi.fn(),
+    setSystemCredential: vi.fn(),
+    probeSystemCredential: vi.fn(),
+    deleteSystemCredential: vi.fn(),
+    revealSecret: vi.fn(),
   }
 })
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+// PageSystem calls useButlers() to populate the override butler-picker.
+// Provide an empty butler list so tests render without hitting the API.
+vi.mock("@/hooks/use-butlers", () => ({
+  useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
+}))
 
 import { SpineRow, Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli } from "./pages.tsx";
@@ -428,9 +438,12 @@ describe("PageUser: renders against mocked data", () => {
 // ── PageSystem ───────────────────────────────────────────────────────────────
 
 describe("PageSystem: renders against mocked data", () => {
+  // PageSystem now uses TanStack Query hooks (useSetSystemSecret, useButlers, etc.);
+  // use renderInRouter to supply the required QueryClientProvider.
+
   it("renders shared credential", () => {
     const telegram = MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "BUTLER_TELEGRAM_TOKEN")!;
-    const html = renderToStaticMarkup(<PageSystem credential={telegram} />);
+    const html = renderInRouter(<PageSystem credential={telegram} />);
     expect(html).toContain('data-page="system"');
     expect(html).toContain("BUTLER_TELEGRAM_TOKEN");
     expect(html).toContain("shared default");
@@ -438,7 +451,7 @@ describe("PageSystem: renders against mocked data", () => {
 
   it("renders missing credential with set-value button", () => {
     const owntracks = MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "OWNTRACKS_WEBHOOK_TOKEN")!;
-    const html = renderToStaticMarkup(<PageSystem credential={owntracks} />);
+    const html = renderInRouter(<PageSystem credential={owntracks} />);
     expect(html).toContain("set value");
     expect(html).toContain("not set");
   });
@@ -450,7 +463,7 @@ describe("PageSystem: renders against mocked data", () => {
     ];
 
     for (const credential of credentials) {
-      const html = renderToStaticMarkup(<PageSystem credential={credential} />);
+      const html = renderInRouter(<PageSystem credential={credential} />);
       expect(html).toContain('data-state-plaque="true"');
       expect(html).not.toContain("rotate(");
     }
@@ -458,14 +471,14 @@ describe("PageSystem: renders against mocked data", () => {
 
   it("renders plain-value credential (email address)", () => {
     const gmail = MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "GMAIL_SENDER_ADDRESS")!;
-    const html = renderToStaticMarkup(<PageSystem credential={gmail} />);
+    const html = renderInRouter(<PageSystem credential={gmail} />);
     expect(html).toContain("tze@lim.house");
     expect(html).toContain("value");
   });
 
   it("shows data-page attribute", () => {
     const telegram = MOCK_SYSTEM_CREDENTIALS[0]!;
-    const html = renderToStaticMarkup(<PageSystem credential={telegram} />);
+    const html = renderInRouter(<PageSystem credential={telegram} />);
     expect(html).toContain('data-page="system"');
   });
 });

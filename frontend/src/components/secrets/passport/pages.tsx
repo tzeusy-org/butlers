@@ -39,13 +39,18 @@ import {
   IdentityChip,
 } from "./atoms.tsx";
 import type { Identity } from "./types.ts";
-import { reauthorizeUserCredential } from "@/api/client.ts";
+import { reauthorizeUserCredential, ApiError } from "@/api/client.ts";
 import { useCliDeviceAuth, type CliDeviceAuthState } from "@/hooks/use-cli-auth.ts";
 import {
   useProbeUserSecret,
   useRotateUserSecret,
   useDisconnectUserSecret,
+  useSetSystemSecret,
+  useProbeSystemSecret,
+  useDeleteSystemSecret,
+  useRevealSystemSecret,
 } from "@/hooks/use-secrets-mutations.ts";
+import { useButlers } from "@/hooks/use-butlers";
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
@@ -726,16 +731,24 @@ export function PageUser({
  * PageSystem — system credential page (butler_secrets).
  *
  * Supports shared / local override / missing row states.
- * Override modal triggered from footer.
+ * Actions wired [bu-ayp6v.4]:
+ *   set value / rotate  — value-entry inline panel → useSetSystemSecret target="shared"
+ *   override · per butler — butler-picker inline panel → useSetSystemSecret target="<butler>"
+ *   test                — useProbeSystemSecret; 429 rate-limit surfaced as non-blocking hint
+ *   reveal value        — useRevealSystemSecret; honors revealMode prop
+ *   delete              — danger confirm inline panel → useDeleteSystemSecret (correct target)
  */
 export function PageSystem({
   credential,
   showVerifyCmd = false,
   voiceParagraph = true,
+  revealMode = "eye",
 }: {
   credential: SystemCredential;
   showVerifyCmd?: boolean;
   voiceParagraph?: boolean;
+  /** Controls the reveal-value eye button. "never" hides it. */
+  revealMode?: RevealMode;
 }) {
   const isMissing = credential.rowState === "missing";
   const isLocal = credential.rowState === "local";
@@ -745,6 +758,163 @@ export function PageSystem({
   const stateLines: string[] = [];
   if (isLocal) stateLines.push(`target · ${credential.target}`);
   else if (!isMissing && credential.lastVerified) stateLines.push(`verified ${credential.lastVerified}`);
+
+  // ── Set value / Rotate ─────────────────────────────────────────────────────
+  // "set value" (missing) and "rotate" (present, shared) both open the same
+  // value-entry inline panel and write target="shared".
+  const [setValueOpen, setSetValueOpen] = React.useState(false);
+  const [setValue, setSetValue] = React.useState("");
+  const setMutation = useSetSystemSecret();
+
+  function handleSetValueOpen() {
+    setSetValueOpen(true);
+    setOverrideOpen(false);
+    setDeleteConfirm(false);
+  }
+
+  function handleSetValueCancel() {
+    setSetValueOpen(false);
+    setSetValue("");
+    setMutation.reset();
+  }
+
+  function handleSetValueSubmit() {
+    if (!setValue.trim() || setMutation.isPending) return;
+    setMutation.mutate(
+      { key: credential.key, body: { value: setValue.trim(), target: "shared" } },
+      {
+        onSuccess: () => {
+          setSetValueOpen(false);
+          setSetValue("");
+        },
+      },
+    );
+  }
+
+  // ── Override · per butler ──────────────────────────────────────────────────
+  // Opens a butler-picker inline panel: select a butler, enter value, write
+  // target="<butler>", creating (or replacing) a per-butler override row.
+  const [overrideOpen, setOverrideOpen] = React.useState(false);
+  const [overrideButler, setOverrideButler] = React.useState("");
+  const [overrideValue, setOverrideValue] = React.useState("");
+  const overrideMutation = useSetSystemSecret();
+  const butlersQuery = useButlers();
+  const butlerNames: string[] = React.useMemo(
+    () => (butlersQuery.data?.data ?? []).map((b) => b.name).sort(),
+    [butlersQuery.data],
+  );
+
+  function handleOverrideOpen() {
+    setOverrideOpen(true);
+    setSetValueOpen(false);
+    setDeleteConfirm(false);
+    setOverrideButler(butlerNames[0] ?? "");
+    setOverrideValue("");
+    overrideMutation.reset();
+  }
+
+  function handleOverrideCancel() {
+    setOverrideOpen(false);
+    setOverrideValue("");
+    setOverrideButler("");
+    overrideMutation.reset();
+  }
+
+  function handleOverrideSubmit() {
+    if (!overrideButler || !overrideValue.trim() || overrideMutation.isPending) return;
+    overrideMutation.mutate(
+      { key: credential.key, body: { value: overrideValue.trim(), target: overrideButler } },
+      {
+        onSuccess: () => {
+          setOverrideOpen(false);
+          setOverrideValue("");
+          setOverrideButler("");
+        },
+      },
+    );
+  }
+
+  // ── Probe ──────────────────────────────────────────────────────────────────
+  // Rate-limited at 5 s / key on the backend (HTTP 429). Show a non-blocking
+  // hint line instead of an error toast when rate-limited.
+  const probeMutation = useProbeSystemSecret();
+  const [probeRateLimited, setProbeRateLimited] = React.useState(false);
+
+  function handleProbe() {
+    if (probeMutation.isPending) return;
+    setProbeRateLimited(false);
+    probeMutation.mutate(
+      { key: credential.key },
+      {
+        onError: (err: Error) => {
+          if (err instanceof ApiError && err.status === 429) {
+            setProbeRateLimited(true);
+          }
+          // Non-429 errors are already surfaced as a toast by the hook.
+        },
+      },
+    );
+  }
+
+  // Merge the optimistic probe result back into the ProbeResult display.
+  const liveTest: typeof credential.test = (() => {
+    if (probeMutation.data?.data) {
+      const d = probeMutation.data.data;
+      return {
+        ok: d.ok,
+        code: d.code ?? null,
+        latencyMs: 0,
+        at: d.at ?? "just now",
+        message: d.message ?? undefined,
+      };
+    }
+    return credential.test;
+  })();
+
+  // ── Reveal value ───────────────────────────────────────────────────────────
+  // System secrets CAN be revealed (unlike user secrets).
+  // Plain-value credentials skip the eye button — the value is already shown.
+  const revealMutation = useRevealSystemSecret();
+  const [revealedValue, setRevealedValue] = React.useState<string | null>(null);
+
+  function handleReveal() {
+    if (revealMutation.isPending) return;
+    const butler = credential.target || "shared";
+    revealMutation.mutate(
+      { butler, key: credential.key },
+      {
+        onSuccess: (data) => {
+          const val = (data as { data?: { value?: string } })?.data?.value ?? null;
+          setRevealedValue(val);
+        },
+      },
+    );
+  }
+
+  // ── Delete ─────────────────────────────────────────────────────────────────
+  // Passes the correct ?target= depending on whether this is a shared or local row.
+  const [deleteConfirm, setDeleteConfirm] = React.useState(false);
+  const deleteMutation = useDeleteSystemSecret();
+
+  // The delete target: shared rows delete the shared row; local overrides delete
+  // the butler-specific row (use credential.target which holds the butler name).
+  const deleteTarget = isLocal ? credential.target : "shared";
+
+  function handleDeleteOpen() {
+    setDeleteConfirm(true);
+    setSetValueOpen(false);
+    setOverrideOpen(false);
+  }
+
+  function handleDeleteConfirm() {
+    if (deleteMutation.isPending) return;
+    deleteMutation.mutate({ key: credential.key, target: deleteTarget });
+  }
+
+  function handleDeleteCancel() {
+    setDeleteConfirm(false);
+    deleteMutation.reset();
+  }
 
   return (
     <div
@@ -859,10 +1029,10 @@ export function PageSystem({
           <div>
             <BlockHead
               eyebrow="probe · last test"
-              right={credential.test ? (credential.test.ok ? "ok" : "failed") : "never"}
+              right={liveTest ? (liveTest.ok ? "ok" : "failed") : "never"}
             />
             <div className="mt-2.5 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-              <ProbeResult test={credential.test} />
+              <ProbeResult test={liveTest} onProbe={!isMissing ? handleProbe : undefined} />
             </div>
           </div>
           <div>
@@ -927,23 +1097,231 @@ export function PageSystem({
         ]}
       />
 
+      {/* Set value inline panel — shared write (missing → set value, present → rotate) */}
+      {setValueOpen && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-set-value-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            {isMissing ? "new value" : "replacement value (shared)"}
+          </Mono>
+          <textarea
+            rows={3}
+            value={setValue}
+            onChange={(e) => setSetValue(e.target.value)}
+            placeholder="paste value here"
+            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            style={{
+              border: "1px solid var(--border-strong)",
+              background: "var(--bg)",
+              color: "var(--fg)",
+              borderRadius: 3,
+            }}
+          />
+          {setMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {setMutation.error instanceof Error
+                ? setMutation.error.message
+                : "Save failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={handleSetValueSubmit}
+              disabled={!setValue.trim() || setMutation.isPending}
+            >
+              {setMutation.isPending ? "saving…" : "save"}
+            </PillBtn>
+            <PillBtn onClick={handleSetValueCancel} disabled={setMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Override inline panel — butler-picker + value entry */}
+      {overrideOpen && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-override-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            per-butler override
+          </Mono>
+          {/* Butler picker */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">butler</Mono>
+            {butlersQuery.isLoading ? (
+              <Mono size={11} color="var(--dim)">loading butlers…</Mono>
+            ) : butlerNames.length === 0 ? (
+              <Mono size={11} color="var(--dim)">no registered butlers</Mono>
+            ) : (
+              <select
+                value={overrideButler}
+                onChange={(e) => setOverrideButler(e.target.value)}
+                className="font-mono text-[11px] p-1.5 outline-none"
+                style={{
+                  border: "1px solid var(--border-strong)",
+                  background: "var(--bg)",
+                  color: "var(--fg)",
+                  borderRadius: 3,
+                }}
+                data-butler-picker="true"
+              >
+                {butlerNames.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+          <textarea
+            rows={3}
+            value={overrideValue}
+            onChange={(e) => setOverrideValue(e.target.value)}
+            placeholder="paste override value here"
+            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            style={{
+              border: "1px solid var(--border-strong)",
+              background: "var(--bg)",
+              color: "var(--fg)",
+              borderRadius: 3,
+            }}
+          />
+          {overrideMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {overrideMutation.error instanceof Error
+                ? overrideMutation.error.message
+                : "Override failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={handleOverrideSubmit}
+              disabled={!overrideButler || !overrideValue.trim() || overrideMutation.isPending}
+            >
+              {overrideMutation.isPending ? "saving…" : "save override"}
+            </PillBtn>
+            <PillBtn onClick={handleOverrideCancel} disabled={overrideMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Delete inline confirm */}
+      {deleteConfirm && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-delete-confirm="true"
+        >
+          <Mono size={11} color="var(--red)">
+            {isLocal
+              ? `Remove per-butler override for ${deleteTarget}? This cannot be undone.`
+              : "Remove this shared credential? This cannot be undone."}
+          </Mono>
+          {deleteMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {deleteMutation.error instanceof Error
+                ? deleteMutation.error.message
+                : "Delete failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={handleDeleteConfirm}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "deleting…" : isLocal ? "yes, remove override" : "yes, delete"}
+            </PillBtn>
+            <PillBtn onClick={handleDeleteCancel} disabled={deleteMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Revealed value display */}
+      {revealedValue !== null && (
+        <div
+          className="flex flex-col gap-2 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-revealed-value="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">revealed value</Mono>
+          <Mono size={12}>{revealedValue}</Mono>
+          <PillBtn onClick={() => setRevealedValue(null)}>dismiss</PillBtn>
+        </div>
+      )}
+
+      {/* Rate-limit hint for probe */}
+      {probeRateLimited && (
+        <Mono size={11} color="var(--dim)" className="mt-1" data-probe-rate-limited="true">
+          try again in a moment
+        </Mono>
+      )}
+
       {/* Footer */}
       <CommitFooter
         left={
           isMissing ? (
-            <PillBtn variant="commit">set value</PillBtn>
+            <PillBtn
+              variant="commit"
+              onClick={handleSetValueOpen}
+              disabled={setValueOpen}
+            >
+              set value
+            </PillBtn>
           ) : (
             <>
-              <PillBtn>test</PillBtn>
-              <PillBtn>rotate</PillBtn>
-              {!isLocal && <PillBtn>override · per butler</PillBtn>}
+              <PillBtn
+                onClick={handleProbe}
+                disabled={probeMutation.isPending}
+              >
+                {probeMutation.isPending ? "testing…" : "test"}
+              </PillBtn>
+              <PillBtn
+                onClick={handleSetValueOpen}
+                disabled={setValueOpen}
+              >
+                rotate
+              </PillBtn>
+              {!isLocal && (
+                <PillBtn
+                  onClick={handleOverrideOpen}
+                  disabled={overrideOpen}
+                >
+                  override · per butler
+                </PillBtn>
+              )}
             </>
           )
         }
         right={
           <>
-            {credential.fingerprint && !isPlain && <PillBtn>reveal value</PillBtn>}
-            {!isMissing && <PillBtn variant="danger">delete</PillBtn>}
+            {credential.fingerprint && !isPlain && revealMode !== "never" && (
+              <PillBtn
+                onClick={handleReveal}
+                disabled={revealMutation.isPending || revealedValue !== null}
+              >
+                {revealMutation.isPending ? "revealing…" : "reveal value"}
+              </PillBtn>
+            )}
+            {!isMissing && (
+              <PillBtn
+                variant="danger"
+                onClick={handleDeleteOpen}
+                disabled={deleteConfirm}
+              >
+                delete
+              </PillBtn>
+            )}
           </>
         }
       />
