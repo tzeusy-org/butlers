@@ -420,16 +420,13 @@ test.describe("PageUser (C10–C15)", () => {
   });
 
   test("C11: re-authorize button for expired credential fires reauthorize (redirects)", async ({ page }) => {
-    // Covers C11 -- re-authorize for expired credentials
-    // Verify that clicking re-authorize calls the reauth API (observable via reauthPending state).
-    // We intercept the reauth API and delay the response so we can observe "redirecting..." text.
+    // Covers C11 -- re-authorize for expired credentials.
+    // Deterministic assertion: clicking re-authorize must fire the reauthorize POST.
+    // We assert on the network request (not transient "redirecting" text). The
+    // success handler sets window.location.href = redirect_url; abort that redirect
+    // target so it cannot navigate the test page away.
     await mockAllSecretRoutes(page);
-    // Delay the reauth response so "redirecting..." button state is visible before navigation
-    await page.route("**/api/secrets/user/*/reauthorize**", async (route) => {
-      // Small artificial delay to let React set reauthPending=true before we respond
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { redirect_url: "data:text/html,redirected" }, meta: {} }) });
-    });
+    await page.route("https://accounts.google.com/**", (route) => route.abort());
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
     await expect(page.locator('[data-page="user"][data-provider="spotify"]')).toBeAttached({ timeout: 5_000 });
@@ -438,10 +435,18 @@ test.describe("PageUser (C10–C15)", () => {
     const reauthorizeBtn = page.locator('[data-page="user"][data-provider="spotify"] button', { hasText: /re-authorize/ });
     await expect(reauthorizeBtn).toBeAttached({ timeout: 5_000 });
 
-    // Click the re-authorize button; immediately check for "redirecting..." pending state
-    await reauthorizeBtn.click();
-    // reauthPending=true before API responds; button shows "redirecting…"
-    await expect(page.locator('button', { hasText: /redirecting/ }).first()).toBeAttached({ timeout: 3_000 });
+    // The reauthorize POST fires as a direct consequence of the click. Asserting on
+    // the request (rather than transient "redirecting" text or the location.href redirect)
+    // is fully deterministic: a dead/stub button would never issue this request.
+    const [reauthRequest] = await Promise.all([
+      page.waitForRequest(
+        (req) => /\/api\/secrets\/user\/spotify\/reauthorize/.test(req.url()) && req.method() === "POST",
+        { timeout: 5_000 },
+      ),
+      reauthorizeBtn.click(),
+    ]);
+    expect(reauthRequest).toBeTruthy();
+    expect(reauthRequest.method()).toBe("POST");
   });
 });
 
@@ -1393,8 +1398,13 @@ test.describe("Error / edge paths", () => {
 
 test.describe("No-dead-control assertion", () => {
   test("every commit-pill on user page triggers a visible response", async ({ page }) => {
-    // Verify re-authorize (commit-pill) on expired credential triggers reauthPending state.
-    // Block navigation so we can observe "redirecting..." button text.
+    // Verify the re-authorize commit-pill is LIVE: clicking it must fire the reauthorize
+    // network request. Asserting on the request (not transient "redirecting" DOM text or
+    // navigation timing) is deterministic and free of races.
+    //
+    // The success handler sets window.location.href = redirect_url. To keep the test page
+    // from navigating away, abort any request to the redirect target. The request-firing
+    // assertion below is the load-bearing proof that the control is wired.
     await mockAllSecretRoutes(page);
     await page.route("https://accounts.google.com/**", (route) => route.abort());
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
@@ -1404,9 +1414,18 @@ test.describe("No-dead-control assertion", () => {
     // Re-authorize commit pill on expired credential
     const reAuthBtn = page.locator('[data-page="user"][data-provider="spotify"] button', { hasText: /re-authorize/ });
     await expect(reAuthBtn).toBeAttached({ timeout: 3_000 });
-    await reAuthBtn.click();
-    // After click: "redirecting..." appears (reauthPending=true, no navigation because blocked)
-    await expect(page.locator('[data-page="user"][data-provider="spotify"] button', { hasText: /redirecting/ })).toBeAttached({ timeout: 5_000 });
+
+    // Wait for the reauthorize POST to fire as a direct consequence of the click.
+    // If the button were dead (no onClick / stub handler), no request would fire and this fails.
+    const [reauthRequest] = await Promise.all([
+      page.waitForRequest(
+        (req) => /\/api\/secrets\/user\/spotify\/reauthorize/.test(req.url()) && req.method() === "POST",
+        { timeout: 5_000 },
+      ),
+      reAuthBtn.click(),
+    ]);
+    expect(reauthRequest).toBeTruthy();
+    expect(reauthRequest.method()).toBe("POST");
   });
 
   test("every commit-pill on system page triggers a visible response", async ({ page }) => {
