@@ -6,7 +6,7 @@
  * file aligned with the §8.x SubpageTabs pattern (EntitiesIndexPage, HopPage,
  * ColumnsPage, ConcentrationPage).
  *
- * Spec: openspec/changes/relationship-tabs-to-entities tasks.md §8.5
+ * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.5
  */
 
 import { Page } from "@/components/ui/page";

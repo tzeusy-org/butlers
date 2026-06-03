@@ -20,7 +20,7 @@
  * Design: header above canvas, no border/card wrapper around the canvas,
  * legend inside the header area. Follows the dashboard's existing layout.
  *
- * Spec: openspec/changes/relationship-tabs-to-entities tasks.md §8.5
+ * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.5
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";

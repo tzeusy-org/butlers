@@ -13,7 +13,7 @@
  *   GET /api/relationship/entities/{id}                    — anchor name card
  *   GET /api/relationship/entities/{id}/neighbours         — predicate-grouped fan-out
  *
- * Spec: openspec/changes/relationship-tabs-to-entities tasks.md §8.2
+ * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.2
  *       specs/dashboard-relationship/spec.md §"Requirement: Entity Hop view"
  */
 

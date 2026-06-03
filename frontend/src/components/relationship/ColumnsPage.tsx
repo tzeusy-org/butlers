@@ -17,7 +17,7 @@
  * No new server endpoint is required (resolves Phase 1 Open Question 15).
  * All cascade is client-side via chained useEntityNeighbours calls.
  *
- * Spec: openspec/changes/relationship-tabs-to-entities tasks.md §8.3
+ * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.3
  *       specs/dashboard-relationship/spec.md §"Requirement: Entity Columns view"
  */
 
