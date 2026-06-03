@@ -656,6 +656,10 @@ export interface AuditLogParams {
   operation?: string;
   since?: string;
   until?: string;
+  /** Filter by canonical credential key (e.g. "u:google"). Forwarded as ?key= to GET /api/audit-log. */
+  key?: string;
+  /** Filter by actor identity (e.g. a CLI credential id). Forwarded as ?actor= to GET /api/audit-log. */
+  actor?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 
 import type { AuditLogParams } from "@/api/types";
 import AuditLogTable from "@/components/audit/AuditLogTable";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -70,11 +71,17 @@ function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
 // ---------------------------------------------------------------------------
 
 export default function AuditLogPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [filters, setFilters] = useState<FilterState>(() =>
     filtersFromSearchParams(searchParams),
   );
   const [page, setPage] = useState(0);
+
+  // Deep-link filters from URL: ?key= and ?actor= are read directly from URL
+  // and forwarded to the backend. They are not part of the mutable FilterState
+  // because they originate from passport deep-links, not the filter bar UI.
+  const keyFilter = searchParams.get("key") ?? undefined;
+  const actorFilter = searchParams.get("actor") ?? undefined;
 
   // Fetch butler names for the dropdown
   const { data: butlersResponse } = useButlers();
@@ -88,6 +95,8 @@ export default function AuditLogPage() {
     ...(filters.operation !== "all" ? { operation: filters.operation } : {}),
     ...(filters.since ? { since: filters.since } : {}),
     ...(filters.until ? { until: filters.until } : {}),
+    ...(keyFilter ? { key: keyFilter } : {}),
+    ...(actorFilter ? { actor: actorFilter } : {}),
   };
 
   const { data: auditResponse, isLoading } = useAuditLog(params);
@@ -110,6 +119,24 @@ export default function AuditLogPage() {
     setPage(0);
   }
 
+  function handleClearKeyFilter() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("key");
+      return next;
+    });
+    setPage(0);
+  }
+
+  function handleClearActorFilter() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("actor");
+      return next;
+    });
+    setPage(0);
+  }
+
   const hasActiveFilters =
     filters.butler !== "all" ||
     filters.operation !== "all" ||
@@ -125,6 +152,46 @@ export default function AuditLogPage() {
           Browse audit log entries across all butlers.
         </p>
       </div>
+
+      {/* Deep-link filter chips — shown when ?key= or ?actor= are present */}
+      {(keyFilter || actorFilter) && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="deep-link-filters">
+          {keyFilter && (
+            <Badge
+              variant="secondary"
+              className="gap-1.5 py-1 pl-2.5 pr-1.5 text-xs"
+              data-testid="key-filter-chip"
+            >
+              key: {keyFilter}
+              <button
+                type="button"
+                aria-label={`Remove key filter ${keyFilter}`}
+                className="hover:text-foreground text-muted-foreground ml-0.5 rounded-sm text-xs leading-none"
+                onClick={handleClearKeyFilter}
+              >
+                &times;
+              </button>
+            </Badge>
+          )}
+          {actorFilter && (
+            <Badge
+              variant="secondary"
+              className="gap-1.5 py-1 pl-2.5 pr-1.5 text-xs"
+              data-testid="actor-filter-chip"
+            >
+              actor: {actorFilter}
+              <button
+                type="button"
+                aria-label={`Remove actor filter ${actorFilter}`}
+                className="hover:text-foreground text-muted-foreground ml-0.5 rounded-sm text-xs leading-none"
+                onClick={handleClearActorFilter}
+              >
+                &times;
+              </button>
+            </Badge>
+          )}
+        </div>
+      )}
 
       {/* Filter bar */}
       <Card>
