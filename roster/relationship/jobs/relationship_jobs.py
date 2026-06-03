@@ -698,7 +698,9 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     **Calendar-based sync:** Queries ``public.calendar_events`` for confirmed
     events within the scan window.  For each event, extracts the
     ``metadata->'attendees'`` JSONB array, resolves attendee emails to
-    contact_ids via ``public.contact_info(type='email')``, and calls
+    contact_ids via ``relationship.entity_facts`` (``has-email`` →
+    ``public.contacts.entity_id``; ``public.contact_info`` was dropped in
+    bead 10 / core_115), and calls
     ``interaction_log()`` with ``type='calendar_event'``.  Events where the
     owner's RSVP is ``declined`` are skipped entirely.  The owner's own
     attendee entry (``self=true``) is excluded from attendee resolution.
@@ -1431,6 +1433,12 @@ def _reconciler_interval_minutes() -> int:
 async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Sweep public.contact_info for rows missing a matching active triple.
 
+    RETIRED (migration bead 10, bu-e2ja9 / core_115): ``public.contact_info`` is
+    dropped, so this reconciler is no longer wired into the job registry or
+    ``butler.toml``. The body is retained for historical reference and exercised
+    by unit tests against fixture tables; a runtime guard below makes it a
+    crash-safe no-op if a stale schedule ever dispatches it.
+
     Implements the Amendment 14 safety net: EVENTUAL parity (within 24h) between
     ``public.contact_info`` (the legacy contact store) and
     ``relationship.entity_facts`` (the new triple store).
@@ -1487,6 +1495,17 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "rows_skipped_no_predicate": 0,
         "rows_skipped_empty_value": 0,
     }
+
+    # Retired guard (bu-e2ja9 / core_115): if public.contact_info has been
+    # dropped there is nothing to sweep. Return crash-safe instead of letting the
+    # sweep raise UndefinedTableError.
+    if await db_pool.fetchval("SELECT to_regclass('public.contact_info')") is None:
+        logger.info(
+            "contact_info_reconciler: public.contact_info no longer exists "
+            "(retired, bu-e2ja9); nothing to reconcile"
+        )
+        stats["retired"] = True
+        return stats
 
     registered_predicates = await _registered_contact_info_predicates(db_pool)
     if registered_predicates is None:

@@ -1,5 +1,11 @@
 """Backfill secured contact_info rows → relationship.credentials.
 
+SUPERSEDED (migration bead 10, bu-e2ja9 / core_115): the secured-row carve-out
+shipped to ``public.entity_info`` instead (bu-pl8fy / #2042); the
+``relationship.credentials`` destination referenced here was never created (stale
+naming). This script reads pre-migration *snapshots* only and is retained as
+historical record of the credentials carve-out design.
+
 Migration bead bu-5oci9 — credentials carve-out backfill.
 
 Reads every ``secured = true`` row from the pre-migration snapshot tables created by

@@ -42,6 +42,8 @@ Safety
 
 from __future__ import annotations
 
+import sqlalchemy as sa
+
 from alembic import op
 
 revision = "rel_019"
@@ -53,8 +55,24 @@ depends_on = None
 _TELEGRAM_CI_TYPES = ("telegram", "telegram_user_id", "telegram_username")
 
 
+def _contact_info_present() -> bool:
+    """True if public.contact_info still exists.
+
+    On a fresh provision this relationship migration may be scheduled after
+    core_115 (bu-e2ja9) drops public.contact_info; the alembic chains have no
+    guaranteed cross-chain ordering. There is nothing to prefix once the legacy
+    table is gone, so this guard lets the migration no-op instead of failing on
+    the missing table. Already-migrated databases recorded rel_019 long ago and
+    never re-run it.
+    """
+    bind = op.get_bind()
+    return bind.execute(sa.text("SELECT to_regclass('public.contact_info')")).scalar() is not None
+
+
 def upgrade() -> None:
     """Prefix verbatim telegram has-handle objects with 'telegram:'."""
+    if not _contact_info_present():
+        return
     types_sql = ", ".join(f"'{t}'" for t in _TELEGRAM_CI_TYPES)
     op.execute(f"""
         UPDATE relationship.entity_facts ef
@@ -77,6 +95,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Strip the 'telegram:' prefix added by upgrade() (best-effort; may not be exact)."""
+    if not _contact_info_present():
+        return
     types_sql = ", ".join(f"'{t}'" for t in _TELEGRAM_CI_TYPES)
     op.execute(f"""
         UPDATE relationship.entity_facts ef

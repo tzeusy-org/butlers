@@ -109,7 +109,10 @@ def _make_pool(*, ci_rows: list[MagicMock]) -> MagicMock:
         return ci_rows
 
     pool.fetch = AsyncMock(side_effect=_fetch)
-    pool.fetchval = AsyncMock(return_value=None)
+    # fetchval is used by the reconciler's retirement guard to check whether
+    # public.contact_info still exists (bu-e2ja9). These tests exercise the sweep,
+    # so the table must read as present.
+    pool.fetchval = AsyncMock(return_value="public.contact_info")
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock()
     return pool

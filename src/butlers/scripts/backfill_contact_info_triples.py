@@ -1,5 +1,10 @@
 """Backfill legacy contact_info rows into entity_facts / entity_info.
 
+SUPERSEDED (migration bead 10, bu-e2ja9 / core_115): ``public.contact_info`` has
+been dropped. This one-shot backfill read the *live* legacy table and is retained
+only as the historical record of the contacts → triples cut-over. Do not run it
+against a post-drop database — there is nothing left to read.
+
 Bead: bu-q8rro — Contact-info legacy backfill job.
 Bead: bu-krbqx — Secured-row backfill into public.entity_info.
 

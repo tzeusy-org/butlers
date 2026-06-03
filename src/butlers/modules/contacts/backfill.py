@@ -79,9 +79,14 @@ class ContactBackfillResolver:
 
     Resolution order:
     1. Existing contacts_source_links match (provider + account + external_id)
-    2. Primary email exact match in contact_info (type='email')
-    3. Phone exact/e164 match in contact_info (type='phone')
+    2. Primary email exact match via relationship.entity_facts (has-email)
+    3. Phone exact/e164 match via relationship.entity_facts (has-phone)
     4. Conservative name match (manual-review flag when ambiguous)
+
+    Channel matching reads ``relationship.entity_facts`` (subject = entity_id)
+    and maps back to a local contact via ``public.contacts.entity_id``; the
+    legacy ``public.contact_info`` table was dropped in migration bead 10
+    (bu-e2ja9 / core_115).
     """
 
     def __init__(self, pool: asyncpg.Pool, *, provider: str, account_id: str) -> None:
@@ -150,33 +155,53 @@ class ContactBackfillResolver:
         return uuid.UUID(str(local_id)) if local_id is not None else None
 
     async def _match_email(self, email_value: str) -> uuid.UUID | None:
+        # Resolve via the triple store (migration bead 10, bu-e2ja9): a
+        # ``has-email`` fact's subject is the entity; map back to a local contact
+        # through ``public.contacts.entity_id``. ``public.contact_info`` is dropped.
         normalized = email_value.strip().lower()
-        row = await self._pool.fetchrow(
-            """
-            SELECT ci.contact_id FROM public.contact_info ci
-            WHERE ci.type = 'email'
-              AND lower(ci.value) = $1
-            LIMIT 1
-            """,
-            normalized,
-        )
+        try:
+            row = await self._pool.fetchrow(
+                """
+                SELECT c.id AS contact_id
+                FROM relationship.entity_facts ef
+                JOIN public.contacts c ON c.entity_id = ef.subject
+                WHERE ef.predicate    = 'has-email'
+                  AND ef.object_kind  = 'literal'
+                  AND ef.validity     = 'active'
+                  AND lower(ef.object) = $1
+                ORDER BY c.created_at ASC NULLS LAST
+                LIMIT 1
+                """,
+                normalized,
+            )
+        except Exception:  # noqa: BLE001 — degrade to "no match" if facts unreadable
+            return None
         if row is None:
             return None
         return uuid.UUID(str(row["contact_id"]))
 
     async def _match_phone(self, phone_value: str) -> uuid.UUID | None:
         normalized = phone_value.strip()
-        row = await self._pool.fetchrow(
-            """
-            SELECT ci.contact_id FROM public.contact_info ci
-            WHERE ci.type = 'phone'
-              AND (ci.value = $1 OR ci.value = $2)
-            LIMIT 1
-            """,
-            normalized,
-            # Fallback: strip non-digits for loose match
-            "".join(c for c in normalized if c.isdigit() or c in "+"),
-        )
+        # Fallback: strip non-digits for loose match
+        digits = "".join(c for c in normalized if c.isdigit() or c in "+")
+        try:
+            row = await self._pool.fetchrow(
+                """
+                SELECT c.id AS contact_id
+                FROM relationship.entity_facts ef
+                JOIN public.contacts c ON c.entity_id = ef.subject
+                WHERE ef.predicate   = 'has-phone'
+                  AND ef.object_kind = 'literal'
+                  AND ef.validity    = 'active'
+                  AND (ef.object = $1 OR ef.object = $2)
+                ORDER BY c.created_at ASC NULLS LAST
+                LIMIT 1
+                """,
+                normalized,
+                digits,
+            )
+        except Exception:  # noqa: BLE001 — degrade to "no match" if facts unreadable
+            return None
         if row is None:
             return None
         return uuid.UUID(str(row["contact_id"]))

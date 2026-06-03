@@ -1,5 +1,10 @@
 """Pre-migration snapshot: public.contacts + public.contact_info.
 
+SUPERSEDED (migration bead 10, bu-e2ja9 / core_115): ``public.contact_info`` has
+been dropped. This one-shot snapshot tool read the *live* legacy table before the
+cut-over and is retained only as historical record. The drop migration (core_115)
+takes its own ``contact_info_dropbak_core_115`` snapshot at drop time.
+
 Creates date-stamped snapshot tables and emits a baseline row-count report.
 
 This script is meant to be run by an operator **before** the contacts →

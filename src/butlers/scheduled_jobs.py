@@ -481,20 +481,9 @@ async def _run_relationship_interaction_sync_job(
     return await mod.run_interaction_sync(pool)
 
 
-async def _run_relationship_contact_info_reconciler_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run relationship butler dual-write reconciler job (Amendment 14).
-
-    Sweeps public.contact_info for rows missing a matching active triple in
-    relationship.entity_facts and emits them via relationship_assert_fact().
-    """
-    del job_args
-    from butlers.jobs._roster_loader import load_roster_jobs
-
-    mod = load_roster_jobs("relationship")
-    return await mod.run_contact_info_reconciler(pool)
+# NOTE: _run_relationship_contact_info_reconciler_job was retired in migration
+# bead 10 (bu-e2ja9 / core_115). public.contact_info is dropped, so the
+# dual-write reconciler has nothing to sweep and is no longer dispatched.
 
 
 async def _run_education_briefing_contribution_job(
@@ -865,7 +854,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "daily_briefing_contribution": _run_relationship_briefing_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
-            "contact_info_reconciler": _run_relationship_contact_info_reconciler_job,
+            # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
         },
         "travel": {
             "daily_briefing_contribution": _run_travel_briefing_contribution_job,

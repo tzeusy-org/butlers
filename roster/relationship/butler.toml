@@ -96,11 +96,9 @@ cron = "30 6 * * *"
 dispatch_mode = "job"
 job_name = "interaction_sync"
 
-[[butler.schedule]]
-name = "contact-info-reconciler"
-cron = "*/30 * * * *"
-dispatch_mode = "job"
-job_name = "contact_info_reconciler"
+# contact-info-reconciler retired in migration bead 10 (bu-e2ja9 / core_115):
+# public.contact_info is dropped, so the dual-write reconciler has nothing to
+# sweep. Re-adding it would throw UndefinedTableError every 30 minutes.
 
 [modules.calendar]
 provider = "google"

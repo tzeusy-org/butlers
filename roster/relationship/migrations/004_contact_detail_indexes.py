@@ -12,6 +12,8 @@ Create Date: 2026-03-31 00:00:00.000000
 
 from __future__ import annotations
 
+import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -30,11 +32,17 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_important_dates_contact_id
             ON important_dates (contact_id)
     """)
-    # Compound index for the email/phone correlated subqueries
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_contact_info_contact_type
-            ON public.contact_info (contact_id, type)
-    """)
+    # Compound index for the email/phone correlated subqueries.
+    # public.contact_info may already be dropped (core_115 / bu-e2ja9) on a fresh
+    # provision where the core chain runs to head before this relationship
+    # migration; the alembic chains have no guaranteed cross-chain ordering. Skip
+    # the index in that case rather than failing on the missing table.
+    bind = op.get_bind()
+    if bind.execute(sa.text("SELECT to_regclass('public.contact_info')")).scalar() is not None:
+        op.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_info_contact_type
+                ON public.contact_info (contact_id, type)
+        """)
 
 
 def downgrade() -> None:

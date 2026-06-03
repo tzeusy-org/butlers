@@ -493,10 +493,11 @@ def test_set_role_allows_public_table_writes(postgres_container):
 
 
 def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
-    """SET ROLE butler_general_rw: INSERT into protected public tables is denied.
+    """SET ROLE butler_general_rw: INSERT into migration-owned public tables is denied.
 
-    alembic_version is migration-owned metadata, and contact_info is read-only
-    after the entity-redesign write-path cut-over.
+    alembic_version is migration-owned metadata and must never be writable by a
+    runtime role. (The former public.contact_info probe was removed: that table is
+    dropped by migration bead 10 / core_115, bu-e2ja9.)
     """
     from butlers.migrations import run_migrations
 
@@ -505,27 +506,11 @@ def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
     asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
-    seed_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with seed_engine.connect() as conn:
-            conn.execute(text("INSERT INTO public.contacts (name) VALUES ('acl-probe-contact')"))
-    finally:
-        seed_engine.dispose()
-
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
             db_url,
             _RUNTIME_ROLES["general"],
             "INSERT INTO public.alembic_version (version_num) VALUES ('acl-probe-version')",
-        )
-
-    with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(
-            db_url,
-            _RUNTIME_ROLES["general"],
-            "INSERT INTO public.contact_info (contact_id, type, value)"
-            " SELECT id, 'email', 'acl-probe@example.com' FROM public.contacts"
-            " WHERE name = 'acl-probe-contact' LIMIT 1",
         )
 
 

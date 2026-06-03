@@ -757,17 +757,19 @@ class TestTelegramTypesReconcilerEncoding:
 
 
 # ---------------------------------------------------------------------------
-# Job registry — verify reconciler is wired into scheduled_jobs
+# Job registry — reconciler retired in migration bead 10 (bu-e2ja9 / core_115)
 # ---------------------------------------------------------------------------
 
 
 class TestJobRegistration:
-    def test_reconciler_registered_in_job_registry(self):
-        """The contact_info_reconciler job must appear in the relationship job registry."""
+    def test_reconciler_retired_from_job_registry(self):
+        """contact_info_reconciler is retired: public.contact_info is dropped, so
+        it must NOT be wired into the relationship job registry (re-adding it would
+        throw UndefinedTableError every 30 minutes)."""
         from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
 
         registry = get_deterministic_schedule_job_registry()
         assert "relationship" in registry
-        assert "contact_info_reconciler" in registry["relationship"], (
-            "contact_info_reconciler is not registered in the relationship job registry"
+        assert "contact_info_reconciler" not in registry["relationship"], (
+            "contact_info_reconciler must be retired from the registry (bu-e2ja9)"
         )

@@ -44,7 +44,7 @@ _TRUNCATE_TABLES = [
     # facts (no FK parent, but seeded predicate_registry rows are kept)
     "public.facts",
     # public identity tables (contacts references entities)
-    "public.contact_info",
+    # public.contact_info dropped in migration bead 10 (core_115 / bu-e2ja9)
     "public.contacts",
     "public.entities",
 ]
@@ -82,7 +82,7 @@ def migrated_db_url(postgres_container) -> str:
     """Provision a database with real Alembic migrations applied (once per module).
 
     Runs three chains in order:
-    - ``core``       — public.entities, public.contacts, public.contact_info, …
+    - ``core``       — public.entities, public.contacts, … (contact_info dropped by core_115)
     - ``memory``     — facts, predicate_registry, memory_links, … (public schema)
     - ``relationship`` — relationship tables (no schema override; all land in public)
 

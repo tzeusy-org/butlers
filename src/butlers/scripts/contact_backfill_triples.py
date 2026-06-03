@@ -1,5 +1,11 @@
 """Backfill triples from public.contact_info snapshots into relationship.entity_facts.
 
+SUPERSEDED (migration bead 10, bu-e2ja9 / core_115): the contacts → triples
+cut-over is complete and ``public.contact_info`` is dropped. This script reads
+pre-migration *snapshots* (not the live table), so it remains runnable for
+forensic re-backfill from a retained snapshot, but is no longer part of the
+active migration path.
+
 Migration bead 5 — entity-redesign contacts → triples migration.
 
 Reads every existing row from the pre-migration snapshot tables created by
