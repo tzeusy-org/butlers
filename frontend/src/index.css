@@ -142,7 +142,7 @@
    * --role-default  Blue — neutral default role. Fallback badge color for any
    *                 role that is not owner or admin.
    *
-   * Sources: ContactDetailView.tsx inline hex — #7c3aed, #b45309, #0369a1.
+   * Sources: role badge components — #7c3aed, #b45309, #0369a1.
    * Consumers should migrate to CSS variables; inline hex is a token leak.
    * ---------------------------------------------------------------------------
    *

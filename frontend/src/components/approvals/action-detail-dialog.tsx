@@ -28,7 +28,7 @@ interface ActionDetailDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-/** Role badge inline styles, consistent with action-table and ContactDetailView. */
+/** Role badge inline styles, consistent with action-table. */
 function roleBadgeStyle(role: string): React.CSSProperties {
   switch (role.toLowerCase()) {
     case "owner":
