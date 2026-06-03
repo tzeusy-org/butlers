@@ -42,7 +42,7 @@ import { buildSpineEntries } from "./spine-builder.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function renderInRouter(element: React.ReactElement): string {
+function renderInRouter(element: React.ReactElement, initialEntries: string[] = ["/secrets"]): string {
   // DirectionPassport renders PageCliConnected, which reads CLI auth providers
   // via react-query; a client must be present even though no fetch fires here.
   const queryClient = new QueryClient({
@@ -50,7 +50,7 @@ function renderInRouter(element: React.ReactElement): string {
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>{element}</MemoryRouter>
+      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -511,6 +511,33 @@ describe("DirectionPassport: renders against mocked inventory", () => {
     expect(html).not.toContain('data-tweaks-trigger="true"');
     expect(html).not.toContain('data-tweaks-panel="true"');
     expect(html).not.toContain("tweaks");
+  });
+
+  it("maps legacy s:cli-auth focus URLs to the CLI runtime page", () => {
+    const inventory = {
+      ...MOCK_INVENTORY,
+      cli: [
+        {
+          id: "cli-auth/codex",
+          label: "Codex (OpenAI)",
+          fingerprint: null,
+          state: "warn" as const,
+          lastUsed: null,
+          issued: null,
+          expires: null,
+          scopesGranted: [],
+          scopesRequired: [],
+          test: null,
+        },
+      ],
+    };
+    const html = renderInRouter(
+      <DirectionPassport inventory={inventory} />,
+      ["/secrets?focus=s%3Acli-auth%2Fcodex"],
+    );
+
+    expect(html).toContain('data-page="cli"');
+    expect(html).toContain('data-cli-id="cli-auth/codex"');
   });
 });
 

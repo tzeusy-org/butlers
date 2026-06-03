@@ -109,9 +109,22 @@ export function DirectionPassport({
   );
 
   // Focus key: derived from URL param — URL is the single source of truth.
-  const activeKey = (focusParam && entries.some((e) => e.key === focusParam))
-    ? focusParam
-    : pickDefaultKey(entries);
+  //
+  // Legacy deep links addressed CLI runtime auth tokens with the system prefix
+  // (e.g. `s:cli-auth/codex`); the spine now keys them under the CLI family
+  // (`c:cli-auth/codex`). Canonicalize the stale `s:` form to the matching CLI
+  // entry so those bookmarks still land on the runtime page.
+  const activeKey = React.useMemo(() => {
+    if (focusParam) {
+      if (entries.some((e) => e.key === focusParam)) return focusParam;
+      const parsedFocus = parseFocus(focusParam);
+      if (parsedFocus?.family === "s") {
+        const cliKey = `c:${parsedFocus.id}`;
+        if (entries.some((e) => e.key === cliKey)) return cliKey;
+      }
+    }
+    return pickDefaultKey(entries);
+  }, [focusParam, entries]);
 
   const sortMode: SpineSortMode = sortParam ?? "severity";
 
