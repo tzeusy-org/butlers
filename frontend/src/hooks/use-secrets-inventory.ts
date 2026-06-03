@@ -250,6 +250,52 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
   };
 }
 
+function isCliAuthSystemCredential(credential: SystemCredential): boolean {
+  return credential.category === "cli-auth" || credential.key.startsWith("cli-auth/");
+}
+
+function systemCliAuthToCliCredential(credential: SystemCredential): CliCredential {
+  return {
+    id:             credential.key,
+    label:          credential.description ?? credential.key,
+    fingerprint:    credential.fingerprint,
+    state:          credential.state ?? "ok",
+    lastUsed:       null,
+    issued:         null,
+    expires:        null,
+    scopesGranted:  [],
+    scopesRequired: [],
+    test:           credential.test,
+  };
+}
+
+function groupCliCredentials(credentials: CliCredential[]): CliCredential[] {
+  const grouped = new Map<string, CliCredential>();
+
+  for (const credential of credentials) {
+    const existing = grouped.get(credential.id);
+    if (!existing) {
+      grouped.set(credential.id, credential);
+      continue;
+    }
+
+    grouped.set(credential.id, {
+      ...existing,
+      label: existing.label || credential.label,
+      fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
+      state: moreSevereState(existing.state, credential.state),
+      lastUsed: existing.lastUsed ?? credential.lastUsed,
+      issued: existing.issued ?? credential.issued,
+      expires: existing.expires ?? credential.expires,
+      scopesGranted: Array.from(new Set([...existing.scopesGranted, ...credential.scopesGranted])),
+      scopesRequired: Array.from(new Set([...existing.scopesRequired, ...credential.scopesRequired])),
+      test: existing.test ?? credential.test,
+    });
+  }
+
+  return Array.from(grouped.values());
+}
+
 function groupUserCredentials(credentials: UserCredential[]): UserCredential[] {
   const grouped = new Map<string, UserCredential>();
 
@@ -363,10 +409,17 @@ export function adaptInventoryResponse(data: {
     providers[credential.provider] ??= genericProvider(credential.provider, raw.type);
     return credential;
   });
+  const system = groupSystemCredentials(data.system.map(adaptSystemCredential));
+  const cliFromSystem = system
+    .filter(isCliAuthSystemCredential)
+    .map(systemCliAuthToCliCredential);
   return {
     user:       groupUserCredentials(user),
-    system:     groupSystemCredentials(data.system.map(adaptSystemCredential)),
-    cli:        data.cli.map(adaptCliCredential),
+    system:     system.filter((credential) => !isCliAuthSystemCredential(credential)),
+    cli:        groupCliCredentials([
+      ...data.cli.map(adaptCliCredential),
+      ...cliFromSystem,
+    ]),
     identities: mapIdentities(data.identities),
     providers,
   };

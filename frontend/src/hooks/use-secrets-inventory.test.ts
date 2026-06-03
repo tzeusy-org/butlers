@@ -176,7 +176,7 @@ describe("adaptInventoryResponse: user provider derivation", () => {
 });
 
 describe("adaptInventoryResponse: system credential grouping", () => {
-  it("groups duplicate system keys across butler schemas into one row", () => {
+  it("groups duplicate cli-auth system keys into one CLI row", () => {
     const result = adaptInventoryResponse({
       cli: [],
       system: [
@@ -199,14 +199,39 @@ describe("adaptInventoryResponse: system credential grouping", () => {
       identities: [],
     });
 
-    expect(result.system).toHaveLength(1);
-    expect(result.system[0]).toMatchObject({
-      key: "cli-auth/codex",
-      category: "cli-auth",
+    expect(result.system.find((credential) => credential.key === "cli-auth/codex")).toBeUndefined();
+    expect(result.cli).toHaveLength(1);
+    expect(result.cli[0]).toMatchObject({
+      id: "cli-auth/codex",
+      label: "CLI auth token for Codex (OpenAI)",
       state: "warn",
-      rowState: "local",
-      source: "switchboard",
-      target: "lifestyle",
+    });
+  });
+
+  it("promotes cli-auth system rows into CLI runtime credentials", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({
+          key: "cli-auth/codex",
+          category: "cli-auth",
+          state: "warn",
+          butler: "lifestyle",
+          description: "CLI auth token for Codex (OpenAI)",
+          fingerprint: "abc12345",
+        }),
+      ],
+      user: [],
+      identities: [],
+    });
+
+    expect(result.system.find((credential) => credential.key === "cli-auth/codex")).toBeUndefined();
+    expect(result.cli).toHaveLength(1);
+    expect(result.cli[0]).toMatchObject({
+      id: "cli-auth/codex",
+      label: "CLI auth token for Codex (OpenAI)",
+      state: "warn",
+      fingerprint: "abc12345",
     });
   });
 });
