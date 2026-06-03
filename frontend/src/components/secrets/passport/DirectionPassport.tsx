@@ -20,7 +20,7 @@ import type { InventoryResponse, SpineSortMode } from "./types.ts";
 import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine } from "./Spine.tsx";
-import { PageUser, PageSystem, PageCliConnected, PassportEmptyState } from "./pages.tsx";
+import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
 import { needsHand } from "./constants.ts";
 
@@ -130,6 +130,9 @@ export function DirectionPassport({
 
   // ── Search ──────────────────────────────────────────────────────────────
   const [search, setSearch] = React.useState("");
+
+  // ── Add panel ────────────────────────────────────────────────────────────
+  const [addOpen, setAddOpen] = React.useState(false);
 
   // ── URL writers ─────────────────────────────────────────────────────────
   function handleSelectKey(key: string) {
@@ -316,27 +319,43 @@ export function DirectionPassport({
             activeIdentityId={identityId}
             onIdentityChange={handleIdentityChange}
             providers={inventory.providers}
+            onAdd={() => setAddOpen(true)}
+            addOpen={addOpen}
           />
 
           <div className="overflow-y-auto min-w-0">
-            {resolved.kind === "user" && (
-              <PageUser
-                credential={resolved.credential}
-                provider={inventory.providers[resolved.credential.provider]!}
-                identities={inventory.identities}
+            {addOpen ? (
+              <PassportAddPanel
+                ownerEntityId={inventory.ownerEntityId}
+                onClose={() => setAddOpen(false)}
+                onSystemCreated={(key) => {
+                  setAddOpen(false);
+                  // Navigate to the newly created system credential
+                  handleSelectKey(`s:${key}`);
+                }}
               />
+            ) : (
+              <>
+                {resolved.kind === "user" && (
+                  <PageUser
+                    credential={resolved.credential}
+                    provider={inventory.providers[resolved.credential.provider]!}
+                    identities={inventory.identities}
+                  />
+                )}
+                {resolved.kind === "system" && (
+                  <PageSystem
+                    credential={resolved.credential}
+                  />
+                )}
+                {resolved.kind === "cli" && (
+                  <PageCliConnected
+                    credential={resolved.credential}
+                  />
+                )}
+                {resolved.kind === null && <PassportEmptyState />}
+              </>
             )}
-            {resolved.kind === "system" && (
-              <PageSystem
-                credential={resolved.credential}
-              />
-            )}
-            {resolved.kind === "cli" && (
-              <PageCliConnected
-                credential={resolved.credential}
-              />
-            )}
-            {resolved.kind === null && <PassportEmptyState />}
           </div>
         </div>
       </div>

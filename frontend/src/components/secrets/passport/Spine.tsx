@@ -280,6 +280,37 @@ export function SpineGroup({
   );
 }
 
+// ── SpineAddButton ────────────────────────────────────────────────────────────
+
+/**
+ * Single commit-pill affordance in the spine footer for creating new credentials.
+ * Opens the PassportAddPanel when clicked.
+ */
+export function SpineAddButton({
+  onClick,
+  active,
+}: {
+  onClick: () => void;
+  active: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={active}
+      data-spine-add="true"
+      aria-label="Add credential or connect provider"
+      className={cn(
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight",
+        "disabled:pointer-events-none disabled:opacity-40",
+        "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)]",
+      )}
+    >
+      + add
+    </button>
+  );
+}
+
 // ── Spine ──────────────────────────────────────────────────────────────────
 
 export function Spine({
@@ -294,6 +325,8 @@ export function Spine({
   activeIdentityId,
   onIdentityChange,
   providers,
+  onAdd,
+  addOpen,
 }: {
   entries: SpineEntry[];
   activeKey: string;
@@ -306,6 +339,10 @@ export function Spine({
   activeIdentityId: string;
   onIdentityChange: (id: string) => void;
   providers?: Record<string, { glyph: string; label: string }>;
+  /** Called when the + add commit-pill is clicked. */
+  onAdd?: () => void;
+  /** Whether the add panel is currently open (disables the button). */
+  addOpen?: boolean;
 }) {
   const cmp = SORTERS[sortMode] ?? SORTERS.severity;
 
@@ -444,6 +481,9 @@ export function Spine({
         <Mono size={9} color="var(--dim)">
           {filtered.length} of {entries.length}
         </Mono>
+        {onAdd && (
+          <SpineAddButton onClick={onAdd} active={addOpen ?? false} />
+        )}
       </div>
     </nav>
   );

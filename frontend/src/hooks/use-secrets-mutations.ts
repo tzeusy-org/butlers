@@ -17,6 +17,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
+  createEntityInfo,
   deleteSystemCredential,
   disconnectUserCredential,
   probeSystemCredential,
@@ -28,6 +29,7 @@ import {
   setSystemCredential,
 } from "@/api/client.ts";
 import type {
+  CreateEntityInfoRequest,
   SecretsRotateUserRequest,
   SecretsSystemSetRequest,
 } from "@/api/types.ts";
@@ -277,5 +279,35 @@ export function useRevealSystemSecret() {
   return useMutation({
     mutationFn: ({ butler, key }: { butler: string; key: string }) =>
       revealSecret(butler, key),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Create credential mutations (bu-ayp6v.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new user credential (entity_info row) on the owner entity.
+ *
+ * Wraps POST /relationship/entities/{entityId}/info. Invalidates the
+ * secrets inventory so the new entry appears in the spine immediately.
+ */
+export function useCreateUserSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      request,
+    }: {
+      entityId: string;
+      request: CreateEntityInfoRequest;
+    }) => createEntityInfo(entityId, request),
+    onSuccess: () => {
+      toast.success("Credential saved");
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+    },
+    onError: (error: Error) => {
+      toast.error(`Save failed: ${error.message}`);
+    },
   });
 }

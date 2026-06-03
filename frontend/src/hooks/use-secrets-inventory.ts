@@ -413,15 +413,18 @@ export function adaptInventoryResponse(data: {
   const cliFromSystem = system
     .filter(isCliAuthSystemCredential)
     .map(systemCliAuthToCliCredential);
+  const identities = mapIdentities(data.identities);
+  const ownerEntityId = identities.find((i) => i.role === "owner")?.id;
   return {
-    user:       groupUserCredentials(user),
-    system:     system.filter((credential) => !isCliAuthSystemCredential(credential)),
-    cli:        groupCliCredentials([
+    user:          groupUserCredentials(user),
+    system:        system.filter((credential) => !isCliAuthSystemCredential(credential)),
+    cli:           groupCliCredentials([
       ...data.cli.map(adaptCliCredential),
       ...cliFromSystem,
     ]),
-    identities: mapIdentities(data.identities),
+    identities,
     providers,
+    ownerEntityId,
   };
 }
 

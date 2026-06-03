@@ -41,6 +41,17 @@ import {
 import type { Identity } from "./types.ts";
 import { reauthorizeUserCredential, ApiError } from "@/api/client.ts";
 import {
+  SECRET_TEMPLATES,
+  SECRET_CATEGORIES,
+  categoryFromKey,
+  type SecretCategory,
+} from "@/lib/secret-templates.ts";
+import {
+  USER_SECRET_TEMPLATES,
+  ENTITY_INFO_TYPES,
+  entityInfoTypeLabel,
+} from "@/lib/user-secret-templates.ts";
+import {
   useCliDeviceAuth,
   useSaveCLIAuthApiKey,
   useDeleteCLIAuthApiKey,
@@ -58,6 +69,7 @@ import {
   useRevealSystemSecret,
   useRotateCliRuntime,
   useRevokeCliRuntime,
+  useCreateUserSecret,
 } from "@/hooks/use-secrets-mutations.ts";
 import { useButlers } from "@/hooks/use-butlers";
 
@@ -2021,6 +2033,528 @@ export function PassportEmptyState() {
       >
         No page selected.
       </span>
+    </div>
+  );
+}
+
+// ── PassportAddPanel ──────────────────────────────────────────────────────────
+
+/**
+ * PassportAddPanel — creation flow for new credentials (bu-ayp6v.6).
+ *
+ * Step 1: choose family (system / user / provider)
+ * Step 2a SYSTEM: key + value + category + target → useSetSystemSecret
+ * Step 2b USER: type + value + label → useCreateUserSecret (entity_info)
+ * Step 2c CONNECT: OAuth start (google/spotify) or C8/C9 stub for others
+ *
+ * Design-language rules: no cards; commit-pill actions; inline panels.
+ * Template suggestions sourced from SECRET_TEMPLATES (system) and
+ * USER_SECRET_TEMPLATES / ENTITY_INFO_TYPES (user).
+ */
+export function PassportAddPanel({
+  ownerEntityId,
+  onClose,
+  onSystemCreated,
+}: {
+  /** Owner entity UUID — required for user credential creation. */
+  ownerEntityId?: string;
+  /** Called when the panel should close (cancel or success). */
+  onClose: () => void;
+  /**
+   * Called after a system secret is successfully created.
+   * Parent can use this to navigate to the newly created credential.
+   */
+  onSystemCreated?: (key: string) => void;
+}) {
+  type AddFamily = "system" | "user" | "provider" | null;
+  const [family, setFamily] = React.useState<AddFamily>(null);
+
+  // ── Step reset ───────────────────────────────────────────────────────────
+  function handleFamilySelect(f: AddFamily) {
+    setFamily(f);
+    // Reset sub-form state when switching families
+    setSystemKey("");
+    setSystemValue("");
+    setSystemCategory("general");
+    setSystemTarget("shared");
+    setUserType(ENTITY_INFO_TYPES[0] as string);
+    setUserValue("");
+    setUserLabel("");
+    setProviderSlug(null);
+  }
+
+  // ── SYSTEM sub-form ──────────────────────────────────────────────────────
+  const [systemKey, setSystemKey] = React.useState("");
+  const [systemValue, setSystemValue] = React.useState("");
+  const [systemCategory, setSystemCategory] = React.useState<SecretCategory>("general");
+  const [systemTarget, setSystemTarget] = React.useState("shared");
+  const systemMutation = useSetSystemSecret();
+
+  // Suggest category from key when key changes
+  function handleSystemKeyChange(k: string) {
+    setSystemKey(k);
+    // Auto-fill category from template or key heuristic
+    const tpl = SECRET_TEMPLATES.find((t) => t.key === k.toUpperCase());
+    setSystemCategory(tpl?.category ?? categoryFromKey(k));
+  }
+
+  function handleSystemSubmit() {
+    if (!systemKey.trim() || !systemValue.trim() || systemMutation.isPending) return;
+    systemMutation.mutate(
+      { key: systemKey.trim().toUpperCase(), body: { value: systemValue.trim(), target: systemTarget || "shared" } },
+      {
+        onSuccess: () => {
+          const createdKey = systemKey.trim().toUpperCase();
+          onSystemCreated?.(createdKey);
+          onClose();
+        },
+      },
+    );
+  }
+
+  // ── USER sub-form ─────────────────────────────────────────────────────────
+  const [userType, setUserType] = React.useState<string>(ENTITY_INFO_TYPES[0] as string);
+  const [userValue, setUserValue] = React.useState("");
+  const [userLabel, setUserLabel] = React.useState("");
+  const userMutation = useCreateUserSecret();
+
+  // Auto-fill label from type template suggestion
+  function handleUserTypeChange(t: string) {
+    setUserType(t);
+    const tpl = USER_SECRET_TEMPLATES.find((tmpl) => tmpl.type === t);
+    if (tpl) setUserLabel(tpl.label);
+  }
+
+  function handleUserSubmit() {
+    if (!userType || !userValue.trim() || userMutation.isPending) return;
+    if (!ownerEntityId) {
+      // No owner entity — degrade gracefully with an error hint
+      return;
+    }
+    const tpl = USER_SECRET_TEMPLATES.find((t) => t.type === userType);
+    userMutation.mutate(
+      {
+        entityId: ownerEntityId,
+        request: {
+          type: userType,
+          value: userValue.trim(),
+          label: userLabel.trim() || null,
+          secured: tpl?.secured ?? false,
+        },
+      },
+      {
+        onSuccess: () => { onClose(); },
+      },
+    );
+  }
+
+  // ── CONNECT PROVIDER sub-form ─────────────────────────────────────────────
+  // Providers with live OAuth: google, spotify → reauthorizeUserCredential redirect
+  // Others: leave integration point stub with C8/C9-DRAWER comment
+  const [providerSlug, setProviderSlug] = React.useState<string | null>(null);
+  const [oauthPending, setOauthPending] = React.useState(false);
+  const [oauthError, setOauthError] = React.useState<string | null>(null);
+
+  const OAUTH_PROVIDERS = [
+    { slug: "google",  label: "Google"  },
+    { slug: "spotify", label: "Spotify" },
+  ];
+
+  const STUB_PROVIDERS = [
+    { slug: "homeassistant", label: "Home Assistant" },
+    { slug: "owntracks",     label: "OwnTracks"      },
+    { slug: "steam",         label: "Steam"           },
+    { slug: "whatsapp",      label: "WhatsApp"        },
+  ];
+
+  async function handleOAuthConnect(slug: string, identity?: string) {
+    setOauthPending(true);
+    setOauthError(null);
+    try {
+      // Use the owner entity ID as identity, falling back to "owner" sentinel.
+      const resolvedIdentity = identity ?? ownerEntityId ?? "owner";
+      const resp = await reauthorizeUserCredential(slug, resolvedIdentity);
+      if (!resp?.data?.redirect_url) throw new Error("No redirect URL returned.");
+      window.location.href = resp.data.redirect_url;
+    } catch (err) {
+      setOauthError(err instanceof Error ? err.message : "Connection failed.");
+      setOauthPending(false);
+    }
+  }
+
+  function handleStubConnect(slug: string) {
+    // C8/C9-DRAWER: once bu-ayp6v.8 / bu-ayp6v.9 drawers are built, route
+    // into the provider-specific configuration drawer instead of this stub.
+    // For now, show an info line directing the owner to the credential page.
+    setProviderSlug(slug);
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-4.5 p-7"
+      data-passport-add-panel="true"
+    >
+      {/* Heading */}
+      <div>
+        <Eyebrow>add credential</Eyebrow>
+        <div className="mt-2.5 flex items-center justify-between">
+          <h1
+            className="m-0"
+            style={{
+              fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+              fontSize: 28,
+              fontWeight: 500,
+              letterSpacing: "-0.025em",
+              lineHeight: 1.08,
+              color: "var(--fg)",
+            }}
+          >
+            What would you like to add?
+          </h1>
+        </div>
+      </div>
+
+      {/* Step 1 — family chooser */}
+      {family === null && (
+        <div
+          className="flex flex-col gap-3 pt-3"
+          style={{ borderTop: "1px solid var(--border)" }}
+          data-add-family-chooser="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            credential family
+          </Mono>
+          <div className="flex gap-2 flex-wrap">
+            <PillBtn
+              variant="commit"
+              onClick={() => handleFamilySelect("system")}
+            >
+              system secret
+            </PillBtn>
+            <PillBtn
+              variant="commit"
+              onClick={() => handleFamilySelect("user")}
+              disabled={!ownerEntityId}
+            >
+              user credential
+            </PillBtn>
+            <PillBtn
+              variant="commit"
+              onClick={() => handleFamilySelect("provider")}
+            >
+              connect provider
+            </PillBtn>
+          </div>
+          {!ownerEntityId && (
+            <Mono size={11} color="var(--dim)">
+              user credential creation requires the owner entity to be set up
+            </Mono>
+          )}
+        </div>
+      )}
+
+      {/* Step 2a — SYSTEM secret form */}
+      {family === "system" && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-add-system-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            new system secret
+          </Mono>
+
+          {/* Key field with template suggestions */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">key</Mono>
+            <input
+              type="text"
+              value={systemKey}
+              onChange={(e) => handleSystemKeyChange(e.target.value)}
+              placeholder="SECRET_KEY_NAME"
+              list="system-key-suggestions"
+              className="font-mono text-[11px] p-2 outline-none w-full"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+              data-system-key-input="true"
+            />
+            <datalist id="system-key-suggestions">
+              {SECRET_TEMPLATES.map((t) => (
+                <option key={t.key} value={t.key}>{t.description}</option>
+              ))}
+            </datalist>
+          </div>
+
+          {/* Value field */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">value</Mono>
+            <textarea
+              rows={3}
+              value={systemValue}
+              onChange={(e) => setSystemValue(e.target.value)}
+              placeholder="paste value here"
+              className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+            />
+          </div>
+
+          {/* Category */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">category</Mono>
+            <select
+              value={systemCategory}
+              onChange={(e) => setSystemCategory(e.target.value as SecretCategory)}
+              className="font-mono text-[11px] p-1.5 outline-none"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+            >
+              {SECRET_CATEGORIES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Target */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">target</Mono>
+            <input
+              type="text"
+              value={systemTarget}
+              onChange={(e) => setSystemTarget(e.target.value)}
+              placeholder="shared"
+              className="font-mono text-[11px] p-2 outline-none w-full"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+            />
+            <Mono size={9} color="var(--dim)">
+              "shared" for global · butler name for per-butler override
+            </Mono>
+          </div>
+
+          {systemMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {systemMutation.error instanceof Error
+                ? systemMutation.error.message
+                : "Save failed."}
+            </Mono>
+          )}
+
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={handleSystemSubmit}
+              disabled={!systemKey.trim() || !systemValue.trim() || systemMutation.isPending}
+            >
+              {systemMutation.isPending ? "saving…" : "create"}
+            </PillBtn>
+            <PillBtn onClick={() => handleFamilySelect(null)}>
+              back
+            </PillBtn>
+            <PillBtn onClick={onClose}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2b — USER credential form */}
+      {family === "user" && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-add-user-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            new user credential
+          </Mono>
+
+          {/* Type with template suggestions */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">type</Mono>
+            <select
+              value={userType}
+              onChange={(e) => handleUserTypeChange(e.target.value)}
+              className="font-mono text-[11px] p-1.5 outline-none"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+              data-user-type-select="true"
+            >
+              {ENTITY_INFO_TYPES.map((t) => (
+                <option key={t} value={t}>{entityInfoTypeLabel(t)}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Value */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">value</Mono>
+            <textarea
+              rows={3}
+              value={userValue}
+              onChange={(e) => setUserValue(e.target.value)}
+              placeholder={USER_SECRET_TEMPLATES.find((t) => t.type === userType)?.description ?? "credential value"}
+              className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+            />
+          </div>
+
+          {/* Label */}
+          <div className="flex flex-col gap-1">
+            <Mono size={9} upper tracking="0.12em" color="var(--dim)">label (optional)</Mono>
+            <input
+              type="text"
+              value={userLabel}
+              onChange={(e) => setUserLabel(e.target.value)}
+              placeholder="human-readable label"
+              className="font-mono text-[11px] p-2 outline-none w-full"
+              style={{
+                border: "1px solid var(--border-strong)",
+                background: "var(--bg)",
+                color: "var(--fg)",
+                borderRadius: 3,
+              }}
+            />
+          </div>
+
+          {!ownerEntityId && (
+            <Mono size={11} color="var(--red)">
+              owner entity ID not available — cannot create user credential
+            </Mono>
+          )}
+
+          {userMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {userMutation.error instanceof Error
+                ? userMutation.error.message
+                : "Save failed."}
+            </Mono>
+          )}
+
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={handleUserSubmit}
+              disabled={!userType || !userValue.trim() || userMutation.isPending || !ownerEntityId}
+            >
+              {userMutation.isPending ? "saving…" : "create"}
+            </PillBtn>
+            <PillBtn onClick={() => handleFamilySelect(null)}>
+              back
+            </PillBtn>
+            <PillBtn onClick={onClose}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2c — CONNECT PROVIDER */}
+      {family === "provider" && (
+        <div
+          className="flex flex-col gap-3"
+          style={{ borderTop: "1px solid var(--border)" }}
+          data-add-provider-panel="true"
+        >
+          {/* OAuth providers (wired now) */}
+          <div className="pt-3">
+            <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+              oauth · connect now
+            </Mono>
+            <div className="flex gap-2 flex-wrap mt-2">
+              {OAUTH_PROVIDERS.map(({ slug, label }) => (
+                <PillBtn
+                  key={slug}
+                  variant="commit"
+                  onClick={() => handleOAuthConnect(slug)}
+                  disabled={oauthPending}
+                >
+                  {oauthPending ? "redirecting…" : `connect ${label}`}
+                </PillBtn>
+              ))}
+            </div>
+            {oauthError && (
+              <Mono size={11} color="var(--red)" className="mt-2">
+                {oauthError}
+              </Mono>
+            )}
+          </div>
+
+          {/* Stub providers (C8/C9 drawer) */}
+          <div>
+            <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+              other integrations
+            </Mono>
+            <div className="flex gap-2 flex-wrap mt-2">
+              {STUB_PROVIDERS.map(({ slug, label }) => (
+                <PillBtn
+                  key={slug}
+                  onClick={() => handleStubConnect(slug)}
+                  disabled={providerSlug === slug}
+                >
+                  {label}
+                </PillBtn>
+              ))}
+            </div>
+            {providerSlug !== null && (
+              <div
+                className="flex flex-col gap-2 p-3.5 mt-2"
+                style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+                data-stub-drawer="true"
+              >
+                {/* C8/C9-DRAWER: bu-ayp6v.8 (HA/OwnTracks) / bu-ayp6v.9 (Steam/WhatsApp)
+                    will replace this stub with a full provider configuration drawer.
+                    For now, surface a placeholder directing the owner to the credential page. */}
+                <Mono size={11} color="var(--mfg)">
+                  {providerSlug} setup coming soon · the credential page shows current status
+                </Mono>
+                <PillBtn onClick={() => setProviderSlug(null)}>dismiss</PillBtn>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <PillBtn onClick={() => handleFamilySelect(null)}>
+              back
+            </PillBtn>
+            <PillBtn onClick={onClose}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Footer cancel (when family is null) */}
+      {family === null && (
+        <div className="flex gap-2 pt-1">
+          <PillBtn onClick={onClose}>cancel</PillBtn>
+        </div>
+      )}
     </div>
   );
 }
