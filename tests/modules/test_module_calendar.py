@@ -53,6 +53,7 @@ from butlers.modules.calendar import (
     _coerce_expires_in_seconds,
     _extract_google_credential_value,
     _extract_google_private_metadata,
+    _google_error_code,
     _google_event_to_calendar_event,
     _google_rfc3339,
     _GoogleOAuthClient,
@@ -683,6 +684,15 @@ class TestGoogleHelpers:
         )
         assert len(_safe_google_error_message(response)) == 200
 
+    def test_google_error_code_preserves_scalar_values(self):
+        response = httpx.Response(
+            400,
+            json={"error": {"code": 401, "message": "auth failed"}},
+            request=httpx.Request("GET", "https://example.com"),
+        )
+
+        assert _google_error_code(response) == "401"
+
     def test_google_rfc3339_utc(self):
         dt = datetime(2026, 2, 15, 9, 30, 0, tzinfo=UTC)
         assert _google_rfc3339(dt) == "2026-02-15T09:30:00Z"
@@ -760,6 +770,7 @@ class TestGoogleHelpers:
                 await provider._oauth.get_access_token()
         finally:
             await provider.shutdown()
+            await client.aclose()
 
         revoked_calls = [
             call

@@ -296,7 +296,7 @@ class _GoogleOAuthClient:
                 await self._on_token_refreshed()
             except Exception:
                 logger.debug(
-                    "CalendarModule: on_token_refreshed callback failed (non-blocking)",
+                    "CalendarModule: on_token_refreshed callback failed (best-effort)",
                     exc_info=True,
                 )
 
@@ -307,7 +307,7 @@ class _GoogleOAuthClient:
             await self._on_token_revoked()
         except Exception:
             logger.debug(
-                "CalendarModule: on_token_revoked callback failed (non-blocking)",
+                "CalendarModule: on_token_revoked callback failed (best-effort)",
                 exc_info=True,
             )
 
@@ -443,8 +443,10 @@ def _google_error_code(response: httpx.Response) -> str | None:
     if isinstance(error_payload, dict):
         for key in ("code", "status", "reason"):
             value = error_payload.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+            if isinstance(value, str | int | float | bool):
+                value_text = str(value).strip()
+                if value_text:
+                    return value_text
     return None
 
 
