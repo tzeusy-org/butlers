@@ -575,6 +575,23 @@ describe("PageSystem: renders against mocked data", () => {
     expect(html).toContain("value");
   });
 
+  it("hides probe/test action for plainValue credentials", () => {
+    const gmail = MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "GMAIL_SENDER_ADDRESS")!;
+    const html = renderInRouter(<PageSystem credential={gmail} />);
+    // plainValue credential: no test button and no probe section in body
+    expect(html).not.toContain("probe · last test");
+    expect(html).not.toContain(">test<");
+    expect(html).not.toContain("run probe");
+  });
+
+  it("keeps probe/test action for non-plainValue credentials", () => {
+    const telegram = MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "BUTLER_TELEGRAM_TOKEN")!;
+    const html = renderInRouter(<PageSystem credential={telegram} />);
+    // non-plainValue credential: probe section visible in body and test button in footer
+    expect(html).toContain("probe · last test");
+    expect(html).toContain(">test<");
+  });
+
   it("shows data-page attribute", () => {
     const telegram = MOCK_SYSTEM_CREDENTIALS[0]!;
     const html = renderInRouter(<PageSystem credential={telegram} />);
