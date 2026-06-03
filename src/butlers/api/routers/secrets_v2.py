@@ -20,7 +20,7 @@ github           | user       | GET https://api.github.com/user
 home_assistant   | user       | GET {configured_url}/api/ (Bearer token)
 steam            | user       | GET ISteamUser/GetPlayerSummaries/v2
 owntracks_webhook_token | system | presence + 64-char hex format check
-spotify          | user       | tracked separately by bu-xfq4r (unchanged)
+spotify          | user       | PKCE token refresh → GET https://api.spotify.com/v1/me
 
 The existing /api/butlers/{name}/secrets/* CRUD surface in secrets.py is
 preserved unchanged per the compatibility requirement.
@@ -1869,6 +1869,13 @@ _STEAM_GET_PLAYER_SUMMARIES_URL = f"{_STEAM_API_BASE}/ISteamUser/GetPlayerSummar
 _OWNTRACKS_TOKEN_RE_LENGTH = 64
 _OWNTRACKS_SYSTEM_KEY = "owntracks_webhook_token"
 
+# Spotify token and verify endpoints.
+_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+_SPOTIFY_ME_URL = "https://api.spotify.com/v1/me"
+
+# butler_secrets key for the Spotify OAuth app client ID (PKCE flow — no client_secret).
+_SPOTIFY_CLIENT_ID_KEY = "SPOTIFY_CLIENT_ID"
+
 
 class _ProviderVerifyConfig:
     """Per-provider live-verify configuration.
@@ -2064,6 +2071,95 @@ async def _verify_steam_credential(
     return "live_ok", None, None
 
 
+async def _verify_spotify_credential(
+    refresh_token: str,
+    shared_pool: Any,
+) -> tuple[str, int | None, str | None]:
+    """Live-probe a Spotify OAuth refresh token.
+
+    Loads the Spotify client ID from ``butler_secrets`` (PKCE flow — no
+    client_secret required), performs a token refresh via
+    ``POST https://accounts.spotify.com/api/token``, then calls
+    ``GET https://api.spotify.com/v1/me`` with the minted access token.
+    HTTP 200 from /v1/me → ``live_ok``.
+
+    Graceful-fallback rules (NEVER raises):
+    - SPOTIFY_CLIENT_ID not configured in butler_secrets → ``skipped_local_check``
+    - Network error / timeout on token refresh           → ``skipped_local_check``
+    - Network error / timeout on /v1/me call             → ``skipped_local_check``
+    - Token refresh non-200 (invalid/expired token)      → ``live_failed:<code>``
+    - /v1/me 401 / 403 (bad access token)                → ``live_failed:<code>``
+    - /v1/me any other non-200                           → ``live_failed:<code>``
+    """
+    # Load the Spotify client ID from butler_secrets (required for PKCE refresh).
+    cred_store = CredentialStore(shared_pool)
+    try:
+        client_id = await cred_store.load(_SPOTIFY_CLIENT_ID_KEY)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_verify_spotify_credential: failed to load Spotify client_id: %s", exc)
+        return "skipped_local_check", None, None
+
+    if not client_id:
+        logger.debug("_verify_spotify_credential: SPOTIFY_CLIENT_ID not configured; skipping")
+        return "skipped_local_check", None, None
+
+    # Step 1: Exchange the refresh token for a fresh access token (PKCE — no client_secret).
+    try:
+        async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+            token_resp = await client.post(
+                _SPOTIFY_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Network error — cannot distinguish bad credential from connectivity issue.
+        logger.warning("_verify_spotify_credential: network error during token refresh: %s", exc)
+        return "skipped_local_check", None, None
+
+    if token_resp.status_code != 200:
+        # Token refresh failure IS a credential failure (expired / revoked refresh token).
+        reason = f"token_refresh HTTP {token_resp.status_code}"
+        logger.debug("_verify_spotify_credential: token refresh failed: %s", reason)
+        return f"live_failed:{token_resp.status_code}", token_resp.status_code, reason
+
+    try:
+        token_data = token_resp.json()
+    except Exception as exc:  # noqa: BLE001
+        reason = f"token_refresh: invalid JSON response: {exc}"
+        logger.warning("_verify_spotify_credential: %s", reason)
+        return "live_failed:invalid_json", None, reason
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        reason = "token_refresh: no access_token in response"
+        logger.warning("_verify_spotify_credential: %s", reason)
+        return "live_failed:no_access_token", None, reason
+
+    # Step 2: Call GET /v1/me with the fresh access token.
+    try:
+        async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+            me_resp = await client.get(
+                _SPOTIFY_ME_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Network error on verify call — fall back to local check.
+        logger.warning("_verify_spotify_credential: network error during /v1/me call: %s", exc)
+        return "skipped_local_check", None, None
+
+    if me_resp.status_code == 200:
+        logger.debug("_verify_spotify_credential: live_ok (HTTP 200)")
+        return "live_ok", None, None
+
+    reason = f"GET /v1/me HTTP {me_resp.status_code}"
+    logger.debug("_verify_spotify_credential: live_failed: %s", reason)
+    return f"live_failed:{me_resp.status_code}", me_resp.status_code, reason
+
+
 def _verify_owntracks_token_format(token: str) -> tuple[str, int | None, str | None]:
     """Validate an OwnTracks webhook token by presence and format (no remote call).
 
@@ -2139,6 +2235,12 @@ async def _verify_oauth_credential(
     # ------------------------------------------------------------------
     if provider == "steam" and credential_type.endswith("_api_key"):
         return await _verify_steam_credential(refresh_token, shared_pool)
+
+    # ------------------------------------------------------------------
+    # Spotify: dispatch to custom handler (PKCE refresh → /v1/me)
+    # ------------------------------------------------------------------
+    if provider == "spotify" and credential_type.endswith("_oauth_refresh"):
+        return await _verify_spotify_credential(refresh_token, shared_pool)
 
     provider_config = _OAUTH_VERIFY_PROVIDERS.get(provider)
     if provider_config is None:

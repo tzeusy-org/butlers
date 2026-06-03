@@ -364,17 +364,17 @@ def test_google_probe_token_exchange_failure_returns_probe_ok_false(monkeypatch)
 
 
 def test_non_google_provider_falls_back_to_local_check(monkeypatch):
-    """Non-Google provider (e.g. spotify) falls back to local-state check, no HTTP calls."""
-    # Credential type does NOT end with _oauth_refresh → skipped at type check level.
-    # But even if provider is unlisted, the function returns skipped_local_check.
+    """Unlisted provider (e.g. telegram) falls back to local-state check, no HTTP calls."""
+    # telegram is not in _OAUTH_VERIFY_PROVIDERS and has no custom handler
+    # → always returns skipped_local_check without any HTTP calls.
     row = _make_entity_info_row(
-        info_type="spotify_oauth_refresh",
+        info_type="telegram_oauth_refresh",
         last_test_ok=True,
-        value="spotify-refresh-tok",
+        value="telegram-refresh-tok",
     )
     mock_db = _make_db(
         user_row=row,
-        raw_token_value="spotify-refresh-tok",
+        raw_token_value="telegram-refresh-tok",
     )
 
     http_calls: list[dict] = []
@@ -401,7 +401,7 @@ def test_non_google_provider_falls_back_to_local_check(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
     client = _build_app(mock_db)
-    resp = client.post("/api/secrets/user/spotify/probe")
+    resp = client.post("/api/secrets/user/telegram/probe")
 
     assert resp.status_code == 200
     data = resp.json()["data"]
