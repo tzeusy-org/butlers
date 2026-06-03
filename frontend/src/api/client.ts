@@ -5508,7 +5508,7 @@ export function deleteSystemCredential(
 // Secrets v2 — CLI runtime mutations (bu-ayp6v.1)
 // ---------------------------------------------------------------------------
 
-import type { SecretsCliRotateResult, SecretsCliRevokeResult } from "./types.ts";
+import type { SecretsCliRotateResult, SecretsCliRevokeResult, SecretsCliReauthorizeResult } from "./types.ts";
 
 /**
  * POST /api/secrets/cli/<id>/rotate
@@ -5541,6 +5541,30 @@ export function rotateCliCredential(id: string): Promise<ApiResponse<SecretsCliR
 export function revokeCliCredential(id: string): Promise<ApiResponse<SecretsCliRevokeResult>> {
   return apiFetch<ApiResponse<SecretsCliRevokeResult>>(
     `/secrets/cli/${encodeURIComponent(id)}/revoke`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * POST /api/secrets/cli/<id>/reauthorize
+ *
+ * Initiates (or resumes) re-authentication for a device-code or api-key CLI
+ * runtime credential.  Writes an 'attempted' audit row.
+ *
+ * device_code response: { auth_mode: "device_code", session_id, auth_url,
+ *   device_code, message } — poll GET /api/cli-auth/sessions/{session_id}.
+ * api_key response: { auth_mode: "api_key", env_var, prompt } — render
+ *   the key-entry form and submit via PUT /api/cli-auth/{provider}/api-key.
+ *
+ * Returns 404 when <id> is not a known CLI auth provider.
+ *
+ * Spec: bu-ayp6v.10 reauthorize bridge
+ */
+export function reauthorizeCliCredential(
+  id: string,
+): Promise<ApiResponse<SecretsCliReauthorizeResult>> {
+  return apiFetch<ApiResponse<SecretsCliReauthorizeResult>>(
+    `/secrets/cli/${encodeURIComponent(id)}/reauthorize`,
     { method: "POST" },
   );
 }

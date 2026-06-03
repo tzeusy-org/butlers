@@ -53,6 +53,7 @@ import {
   // CLI mutations
   rotateCliCredential,
   revokeCliCredential,
+  reauthorizeCliCredential,
   // Already-existing reauthorize (must not be duplicated)
   reauthorizeUserCredential,
 } from "./client.ts";
@@ -261,6 +262,51 @@ describe("revokeCliCredential", () => {
     expect(url).toContain("/api/secrets/cli/old-cli-token/revoke");
     expect(opts?.method).toBe("POST");
     expect(result.data.status).toBe("revoked");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reauthorizeCliCredential — bu-3wg2l (C10 bridge)
+// ---------------------------------------------------------------------------
+
+describe("reauthorizeCliCredential", () => {
+  it("calls POST /api/secrets/cli/<id>/reauthorize for device_code branch", async () => {
+    mockApiResponse({
+      auth_mode: "device_code",
+      provider: "codex",
+      session_id: "sess-abc",
+      auth_url: "https://auth.openai.com/device",
+      device_code: "AAAA-BBBB",
+      message: null,
+    });
+    const result = await reauthorizeCliCredential("codex");
+    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/secrets/cli/codex/reauthorize");
+    expect(opts?.method).toBe("POST");
+    expect(result.data.auth_mode).toBe("device_code");
+    expect(result.data.session_id).toBe("sess-abc");
+  });
+
+  it("calls POST /api/secrets/cli/<id>/reauthorize for api_key branch", async () => {
+    mockApiResponse({
+      auth_mode: "api_key",
+      provider: "claude",
+      env_var: "ANTHROPIC_API_KEY",
+      prompt: "Enter your API key for Claude.",
+    });
+    const result = await reauthorizeCliCredential("claude");
+    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/secrets/cli/claude/reauthorize");
+    expect(opts?.method).toBe("POST");
+    expect(result.data.auth_mode).toBe("api_key");
+    expect(result.data.env_var).toBe("ANTHROPIC_API_KEY");
+  });
+
+  it("URL-encodes the credential id", async () => {
+    mockApiResponse({ auth_mode: "device_code", provider: "opencode-openai" });
+    await reauthorizeCliCredential("opencode-openai");
+    const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/secrets/cli/opencode-openai/reauthorize");
   });
 });
 

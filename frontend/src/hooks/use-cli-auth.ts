@@ -9,6 +9,7 @@ import {
   startCLIAuth,
   testCLIAuthApiKey,
 } from "@/api/index.ts";
+import { reauthorizeCliCredential } from "@/api/client.ts";
 import type { CLIAuthSessionResponse } from "@/api/index.ts";
 import { secretsInventoryKeys } from "@/hooks/use-secrets-inventory.ts";
 
@@ -138,12 +139,32 @@ export interface CliDeviceAuthState {
   inProgress: boolean;
   /** The start request is in flight. */
   starting: boolean;
+  /**
+   * The POST /api/secrets/cli/{id}/reauthorize request is in flight.
+   * Distinct from `starting` so callers can show targeted feedback.
+   */
+  reauthorizing: boolean;
+  /**
+   * Set to true when POST /api/secrets/cli/{id}/reauthorize returns
+   * auth_mode="api_key", signalling the caller to open the key-entry form.
+   * Cleared when the caller calls `acknowledgeApiKeyReauth()`.
+   */
+  apiKeyReauthPending: boolean;
   /** Error from the start request, if any. */
   error: string | null;
-  /** Begin a device-code flow for this provider. */
+  /** Begin a device-code flow for this provider (initial connect path). */
   start: () => void;
+  /**
+   * Re-authorize via POST /api/secrets/cli/{id}/reauthorize (audited path).
+   * device_code response → drives the existing session-polling flow.
+   * api_key response → sets apiKeyReauthPending so the caller opens the
+   * key-entry panel.
+   */
+  reauthorize: () => void;
   /** Cancel the running session, if any. */
   cancel: () => void;
+  /** Clear the apiKeyReauthPending flag once the caller has acted on it. */
+  acknowledgeApiKeyReauth: () => void;
 }
 
 /**
@@ -163,6 +184,8 @@ export function useCliDeviceAuth(credentialId: string): CliDeviceAuthState {
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reauthorizing, setReauthorizing] = useState(false);
+  const [apiKeyReauthPending, setApiKeyReauthPending] = useState(false);
   const startMutation = useStartCLIAuth();
   const cancelMutation = useCancelCLIAuth();
   const sessionQuery = useCLIAuthSession(sessionId);
@@ -192,11 +215,45 @@ export function useCliDeviceAuth(credentialId: string): CliDeviceAuthState {
     }
   }
 
+  /**
+   * Re-authorize via POST /api/secrets/cli/{id}/reauthorize (audited path).
+   *
+   * device_code response: feeds the returned session_id into the existing
+   * session-polling flow (useCLIAuthSession) without re-calling /start.
+   *
+   * api_key response: sets apiKeyReauthPending so PageCli can open the
+   * key-entry panel; caller clears it via acknowledgeApiKeyReauth().
+   */
+  async function reauthorize() {
+    setError(null);
+    setReauthorizing(true);
+    try {
+      const result = await reauthorizeCliCredential(credentialId);
+      const payload = result.data;
+      if (payload.auth_mode === "device_code") {
+        if (payload.session_id) {
+          setSessionId(payload.session_id);
+        }
+      } else {
+        // api_key branch — signal the caller to open the key-entry form
+        setApiKeyReauthPending(true);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start re-authorization.");
+    } finally {
+      setReauthorizing(false);
+    }
+  }
+
   function cancel() {
     if (sessionId) {
       cancelMutation.mutate(sessionId);
       setSessionId(null);
     }
+  }
+
+  function acknowledgeApiKeyReauth() {
+    setApiKeyReauthPending(false);
   }
 
   return {
@@ -206,8 +263,12 @@ export function useCliDeviceAuth(credentialId: string): CliDeviceAuthState {
     session,
     inProgress,
     starting: startMutation.isPending,
+    reauthorizing,
+    apiKeyReauthPending,
     error,
     start,
+    reauthorize,
     cancel,
+    acknowledgeApiKeyReauth,
   };
 }

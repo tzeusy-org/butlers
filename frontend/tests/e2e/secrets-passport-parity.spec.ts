@@ -204,6 +204,27 @@ async function mockAllSecretRoutes(page: Page) {
   await page.route("**/api/secrets/cli/*/revoke**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { revoked: true }, meta: {} }) })
   );
+  // CLI re-authorize (audited endpoint) -- device_code branch.
+  // Re-auth now routes through POST /api/secrets/cli/{id}/reauthorize (bu-3wg2l);
+  // returning a device_code payload with session_id="sess-001" lets the existing
+  // /api/cli-auth/sessions/** polling mock drive the device-auth panel.
+  await page.route("**/api/secrets/cli/*/reauthorize**", (route) =>
+    route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          auth_mode: "device_code",
+          provider: "github",
+          session_id: "sess-001",
+          session_state: "awaiting_auth",
+          auth_url: "https://example.com/activate",
+          device_code: "ABCD-1234",
+          message: null,
+        },
+        meta: {},
+      }),
+    })
+  );
   // Butler list (for override picker)
   await page.route("**/api/butlers", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ name: "switchboard", state: "running" }, { name: "tze", state: "running" }], meta: {} }) })

@@ -5776,6 +5776,29 @@ export interface SecretsCliRevokeResult {
   status: "revoked";
 }
 
+/**
+ * Response payload for POST /api/secrets/cli/<id>/reauthorize.
+ * Maps to CliReauthorizeResponse in secrets_v2.py.
+ *
+ * Inspect `auth_mode` to decide which fields are meaningful:
+ *   "device_code" → session_id, auth_url, device_code, message present.
+ *                   Poll GET /api/cli-auth/sessions/{session_id} for completion.
+ *   "api_key"     → env_var, prompt present; caller renders key-entry form.
+ */
+export interface SecretsCliReauthorizeResult {
+  auth_mode: "device_code" | "api_key";
+  provider: string;
+  // device_code fields
+  session_id?: string | null;
+  session_state?: string | null;
+  auth_url?: string | null;
+  device_code?: string | null;
+  message?: string | null;
+  // api_key fields
+  env_var?: string | null;
+  prompt?: string | null;
+}
+
 /** Query params for GET /api/secrets/audit/<scope>/<key>. */
 export interface SecretsAuditParams {
   limit?: number;

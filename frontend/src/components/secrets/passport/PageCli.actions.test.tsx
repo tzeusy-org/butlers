@@ -29,6 +29,7 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     ...actual,
     rotateCliCredential: vi.fn(),
     revokeCliCredential: vi.fn(),
+    reauthorizeCliCredential: vi.fn(),
     testCLIAuthApiKey: vi.fn(),
     saveCLIAuthApiKey: vi.fn(),
     deleteCLIAuthApiKey: vi.fn(),
@@ -76,9 +77,13 @@ function deviceAuthState(overrides: Partial<CliDeviceAuthState> = {}): CliDevice
     session: null,
     inProgress: false,
     starting: false,
+    reauthorizing: false,
+    apiKeyReauthPending: false,
     error: null,
     start: vi.fn(),
+    reauthorize: vi.fn(),
     cancel: vi.fn(),
+    acknowledgeApiKeyReauth: vi.fn(),
     ...overrides,
   };
 }

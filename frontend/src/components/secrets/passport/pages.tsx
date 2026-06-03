@@ -1893,9 +1893,8 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
  *   api-key save   — useSaveCLIAuthApiKey; api-key mode providers can paste key
  *   api-key delete — useDeleteCLIAuthApiKey
  *
- * Device-code re-auth: wired to existing deviceAuth.start/cancel flow.
- * C10 (bu-ayp6v.10) bridge: once built, connect via the handleReauthorize
- * integration point below (search for C10-BRIDGE).
+ * Device-code re-auth: wired to POST /api/secrets/cli/{id}/reauthorize
+ *   (bu-ayp6v.10 audited endpoint) via handleReauthorize / useCliDeviceAuth.
  *
  * How-to-use snippet rendered as static literal (no LLM).
  *
@@ -2056,6 +2055,23 @@ export function PageCli({
     if (deleteApiKeyMutation.isPending) return;
     deleteApiKeyMutation.mutate(providerName);
   }
+
+  // ── Re-authorize (C10-BRIDGE: bu-ayp6v.10) ───────────────────────────────
+  // Calls POST /api/secrets/cli/{id}/reauthorize (audited endpoint).
+  // device_code response → useCliDeviceAuth drives the existing polling flow.
+  // api_key response    → apiKeyReauthPending triggers the key-entry panel.
+  function handleReauthorize() {
+    if (deviceAuth?.reauthorizing || deviceAuth?.starting) return;
+    deviceAuth?.reauthorize();
+  }
+
+  // When the reauthorize endpoint returns api_key mode, open the key-entry panel.
+  React.useEffect(() => {
+    if (deviceAuth?.apiKeyReauthPending) {
+      setSetTokenOpen(true);
+      deviceAuth.acknowledgeApiKeyReauth();
+    }
+  }, [deviceAuth?.apiKeyReauthPending, deviceAuth]);
 
   return (
     <div
@@ -2321,15 +2337,12 @@ export function PageCli({
               <PillBtn onClick={deviceAuth.cancel}>cancel</PillBtn>
             ) : (
               <>
-                {/* C10-BRIDGE: once bu-ayp6v.10 is built, the re-authorize button
-                    can be wired to the C10 reauth bridge. Until then, existing
-                    deviceAuth.start covers both initial connect and re-auth. */}
                 <PillBtn
                   variant={isMissing || sick ? "commit" : "pill"}
-                  onClick={deviceAuth.start}
-                  disabled={deviceAuth.starting}
+                  onClick={isMissing ? deviceAuth.start : handleReauthorize}
+                  disabled={deviceAuth.starting || deviceAuth.reauthorizing}
                 >
-                  {deviceAuth.starting
+                  {(deviceAuth.starting || deviceAuth.reauthorizing)
                     ? "starting…"
                     : isMissing
                       ? "connect"
