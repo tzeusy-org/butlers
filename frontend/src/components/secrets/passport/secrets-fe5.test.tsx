@@ -21,6 +21,30 @@ import * as React from "react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+// ---------------------------------------------------------------------------
+// Mock API client — PageSystem (and PageUser) use TanStack Query mutation hooks
+// which call useQueryClient() at render time, including during snapshot renders.
+// ---------------------------------------------------------------------------
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>()
+  return {
+    ...actual,
+    reauthorizeUserCredential: vi.fn(),
+    probeUserCredential: vi.fn(),
+    rotateUserCredential: vi.fn(),
+    disconnectUserCredential: vi.fn(),
+    setSystemCredential: vi.fn(),
+    probeSystemCredential: vi.fn(),
+    deleteSystemCredential: vi.fn(),
+    revealSecret: vi.fn(),
+  }
+})
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+// PageSystem calls useButlers() for the override butler-picker.
+vi.mock("@/hooks/use-butlers", () => ({
+  useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
+}))
+
 import { Spine } from "./Spine.tsx";
 import { PageCli } from "./pages.tsx";
 import { DirectionPassport } from "./DirectionPassport.tsx";
