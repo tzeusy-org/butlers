@@ -49,114 +49,81 @@ The response MUST include:
 
 ### Requirement: Contact detail page
 
-The frontend SHALL render a contact detail page at the canonical route `/contacts/:contactId` (per the shipped `dashboard-relationship` spec Requirement: Contact detail page canonical route) displaying the contact's channel and identity record. The legacy path `/butlers/relationship/contacts/:id` continues to redirect to the canonical route per that spec; all narrative in this change refers to the canonical path. The page is intentionally scoped to contact-bound concerns (the channels by which the contact is reached, their CRM-style attributes, and their typed relationships to other contacts). Activity history (notes, interactions, gifts, loans, timeline) lives on the entity detail page (`/butlers/relationship/entities/:id`) and is reachable via a prominent link from the header.
+The standalone contact detail page SHALL be decommissioned. Contact-channel data
+that remains useful to the user SHALL be rendered on the canonical entity detail
+page at `/entities/:entityId` as a post-redesign contact-channel card.
 
-The page MUST contain the following sections:
+The entity detail contact-channel card MUST contain, for each linked contact:
 
-1. **Header card** — displaying the contact's full name (`first_name` + `last_name`), `company`, `job_title`, `pronouns`, `avatar_url` (as an image if present, or initials fallback), and `roles` as colored role badges (e.g., "owner" badge in a distinct color). Assigned labels SHALL be rendered as colored badges. The `nickname` SHALL be displayed in parentheses after the name if present. The header MUST include a prominent "View entity activity →" link that deep-links to `/butlers/relationship/entities/:entity_id` where `entity_id` is the contact's `entity_id`. If the contact has no `entity_id` (a degenerate state that should not occur post-`core_014`), the link MUST be omitted and a non-blocking warning rendered.
+1. Contact methods grouped by type, including secured reveal/hide affordances for
+   secured entries.
+2. Preferred channel and primary contact summaries.
+3. Important dates and quick facts until their triple-backed replacements are
+   fully cut over.
+4. Contact-to-contact relationships while relationship edge-facts remain out of
+   scope.
+5. Labels and supported lifecycle actions where those actions still exist in the
+   backend.
 
-2. **Contact info section** — displaying all `contact_info` entries grouped by `type` (email, phone, social, etc.). Each entry SHALL show the `label` (e.g., "work", "personal") and the `value`. Entries with `secured = true` SHALL display the value as `"********"` with a click-to-reveal button that fetches the actual value from `GET /api/contacts/{id}/secrets/{info_id}`. Values of type `email` SHALL be rendered as `mailto:` links. Values of type `phone` SHALL be rendered as `tel:` links.
+The page MUST NOT reintroduce the legacy tabbed contact layout. Activity history
+continues to live in the entity detail activity stream.
 
-3. **Important dates section** — displaying all important dates with a countdown indicator. Each date SHALL show the `label`, the date (`day`/`month`/`year` formatted, with "unknown year" if `year` is null), and the number of days until the next occurrence. Dates occurring within the next 7 days SHALL be visually highlighted (e.g., with a colored badge or accent).
+#### Scenario: Entity detail renders contact-channel card
 
-4. **Quick facts section** — displaying all quick facts, grouped or tagged by `category`. Each fact SHALL show the `category` label and the `content` text.
+- **WHEN** a user navigates to `/entities/ent-456-uuid` for an entity with one or
+  more linked contacts
+- **THEN** the entity detail page MUST render a contact-channel card
+- **AND** the card MUST list each linked contact with its contact methods
+- **AND** secured entries MUST be masked until explicitly revealed
 
-5. **Relationships section** — displaying all relationships as a list. Each entry SHALL show the `type` label (e.g., "Parent", "Friend"), the related contact's name as a clickable link to their detail page, and the `group_type`. The `relationships` array on the contact detail API response is preserved unchanged from the prior spec; re-anchoring typed contact-to-contact relationships to entity edge facts is explicitly out of scope for this change.
+#### Scenario: Entity detail renders sparse contact data
 
-The page MUST NOT contain a tabbed content area for notes, interactions, gifts, or loans, and MUST NOT contain an activity feed sidebar or section. These sections — previously bullets 6 ("Tabbed content area") and 7 ("Activity feed sidebar or section") of this requirement — are removed in this change. They are replaced by the entity detail page and its tab APIs (see "Entity detail page" and "Entity-level tab APIs" below). The contact detail API response SHALL no longer include any of `notes`, `interactions`, `gifts`, `loans`, `activity_feed` arrays as embedded sub-resources, and the five sub-resource endpoints `GET /api/relationship/contacts/{id}/{notes,interactions,gifts,loans,feed}` SHALL be removed.
+- **WHEN** an entity has a linked contact with no contact methods, dates, quick
+  facts, labels, or relationships
+- **THEN** the contact-channel card MUST render without errors
+- **AND** empty subsections MUST use compact empty states, not blank dead space
 
-#### Scenario: Contact detail page loads with roles, entity link, and secured info
+#### Scenario: Activity stays entity-scoped
 
-- **WHEN** a user navigates to `/contacts/abc-123-uuid` for the owner contact and the contact has `entity_id = ent-456-uuid`
-- **THEN** the header card MUST display the contact's name with an "owner" role badge
-- **AND** the header MUST display a "View entity activity →" link pointing to `/butlers/relationship/entities/ent-456-uuid`
-- **AND** contact info entries with `secured = true` MUST display masked values with reveal buttons
-
-#### Scenario: Click-to-reveal secured credential
-
-- **WHEN** a user clicks the reveal button on a secured `contact_info` entry
-- **THEN** the frontend MUST call `GET /api/contacts/{id}/secrets/{info_id}`
-- **AND** the masked value MUST be replaced with the actual value
-- **AND** a hide button MUST appear to re-mask the value
-
-#### Scenario: Contact with sparse channel data
-
-- **WHEN** a user navigates to a contact's detail page and the contact has no `contact_info`, `addresses`, `important_dates`, `quick_facts`, or relationships
-- **THEN** each empty section MUST display an appropriate empty state message (e.g., "No contact info", "No relationships")
-- **AND** the page MUST render without errors
-- **AND** the "View entity activity →" link MUST still be present in the header
-
-#### Scenario: Email and phone values are clickable
-
-- **WHEN** a contact has a `contact_info` entry with `type='email'` and `value='alice@example.com'`
-- **THEN** the value MUST be rendered as a clickable `mailto:alice@example.com` link
-- **WHEN** a contact has a `contact_info` entry with `type='phone'` and `value='+1-555-0100'`
-- **THEN** the value MUST be rendered as a clickable `tel:+1-555-0100` link
-
-#### Scenario: Contact not found
-
-- **WHEN** a user navigates to `/contacts/nonexistent-uuid` and the contact does not exist
-- **THEN** the page MUST display a 404 message (e.g., "Contact not found")
-
-#### Scenario: Contact missing entity link (degenerate state)
-
-- **WHEN** a contact has `entity_id IS NULL`
-- **THEN** the "View entity activity →" link MUST be omitted from the header
-- **AND** a non-blocking warning MUST be rendered indicating the contact is not linked to an entity
-- **AND** the rest of the page MUST render normally
-
-#### Scenario: Legacy tab endpoints removed
-
-- **WHEN** any of `GET /api/relationship/contacts/{id}/{notes,interactions,gifts,loans,feed}` is called
-- **THEN** the response MUST be a 404 (route not found)
-- **AND** the legacy tables `relationship.{notes, interactions, gifts, loans, activity_feed}` MUST NOT exist in the database after this change is applied
+- **WHEN** the contact-channel card renders
+- **THEN** notes, interactions, gifts, loans, and life events MUST remain in the
+  entity ActivityTimeline and structured entity panels
+- **AND** the card MUST NOT render separate activity tabs
 
 ---
 
 ### Requirement: Contact detail page canonical route is /contacts/:contactId
 
-The contact detail page SHALL be served exclusively at the canonical route
-`/contacts/:contactId`. The legacy route `/butlers/relationship/contacts/:id` (specified
-in the existing "Contact detail page" requirement) is deprecated and MUST NOT be treated
-as a normative route.
+The route `/contacts/:contactId` SHALL be a compatibility route, not a canonical
+page. It MUST resolve the contact by `contactId`, read the linked `entity_id`, and
+redirect to `/entities/:entityId`.
 
-**Route duplication resolution:**
+If the contact does not exist, the route MUST render a not-found state. If the
+contact exists but has no linked entity, the route MUST render a recovery state
+that links back to `/entities?has=contact` and does not claim activity history is
+available.
 
-- **Canonical route:** `/contacts/:contactId` (renders `ContactDetailPage`; matches the
-  parameter name already registered at `frontend/src/router.tsx` line 84)
-- **Legacy route:** `/butlers/relationship/contacts/:id` — MUST redirect to the canonical
-  path via a client-side React Router entry using `<Navigate replace />`, following the
-  `RelationshipEntityRedirect` pattern already present at `frontend/src/router.tsx`
-  lines 57–64. This is a client-side redirect; for external HTTP-level bookmarks a
-  hosting-level redirect would be needed separately (out of scope for this change).
-- Any internal navigation link (breadcrumb, "View contact" button, notification link,
-  email) that currently targets `/butlers/relationship/contacts/:id` MUST be updated
-  to target `/contacts/:contactId`.
+The route `/contacts` without a `contactId` continues to redirect to
+`/entities?has=contact`.
 
-**Verification:**
-
-The router at `frontend/src/router.tsx` line 84 already registers `/contacts/:contactId`
-as the active route. The legacy path `/butlers/relationship/contacts/:id` is not
-registered. This requirement formalizes what the router already does and adds the
-redirect requirement for any external links that may have been bookmarked.
-
-#### Scenario: Canonical URL for contact detail
+#### Scenario: Contact detail URL redirects to entity detail
 
 - **WHEN** a user navigates to `/contacts/abc-123-uuid`
-- **THEN** the contact detail page MUST render for contact `abc-123-uuid`
-- **AND** the URL in the address bar MUST remain `/contacts/abc-123-uuid`
+- **AND** contact `abc-123-uuid` has `entity_id = ent-456-uuid`
+- **THEN** the client MUST redirect to `/entities/ent-456-uuid`
+- **AND** the entity detail page MUST render the contact-channel card
 
-#### Scenario: Legacy URL redirects to canonical
+#### Scenario: Contact detail URL handles missing entity link
 
-- **WHEN** a user navigates to `/butlers/relationship/contacts/abc-123-uuid`
-- **THEN** the client-side router MUST redirect to `/contacts/abc-123-uuid`
-- **AND** the contact detail page MUST render for contact `abc-123-uuid`
+- **WHEN** a user navigates to `/contacts/abc-123-uuid`
+- **AND** the contact exists but has `entity_id IS NULL`
+- **THEN** the route MUST not redirect to a broken entity URL
+- **AND** it MUST render a compact recovery state linking to `/entities?has=contact`
 
-#### Scenario: Internal contact links use canonical route
+#### Scenario: Contact index still redirects to entity index filter
 
-- **WHEN** a contact name is rendered as a navigation link anywhere in the dashboard
-  (e.g., in the contacts table, in a relationship entry, in a notification)
-- **THEN** the link target MUST be `/contacts/{contactId}`, not `/butlers/relationship/contacts/{id}`
+- **WHEN** a user navigates to `/contacts`
+- **THEN** the client MUST redirect to `/entities?has=contact`
 
 ---
 
@@ -261,26 +228,34 @@ The dashboard API SHALL expose `GET /api/contacts/{id}/secrets/{info_id}` which 
 
 ### Requirement: Owner identity and credential management via contact detail page
 
-The contact detail page (`/butlers/relationship/contacts/:id`) SHALL be the primary mechanism for configuring owner identity fields and credentials. The "Add contact info" form on the contact detail page MUST support all identity and credential types, including secured types (`email_password`, `telegram_api_id`, `telegram_api_hash`).
+The entity detail contact-channel card at `/entities/:entityId` SHALL be the
+primary mechanism for configuring owner identity fields and credentials. The
+"Add contact info" form on the contact-channel card MUST support all identity
+and credential types, including secured types (`email_password`,
+`telegram_api_id`, `telegram_api_hash`).
 
 When a secured type is selected, the form MUST:
 - Use a password input field to mask the value during entry
 - Automatically set `secured = true` on the created `contact_info` entry
 - Hide the "Primary" checkbox (not applicable to credential entries)
 
-The form MUST display human-friendly labels for all types (e.g., "Email password", "Telegram API ID", "Telegram API hash", "Telegram chat ID").
+The form MUST display human-friendly labels for all types (e.g., "Email
+password", "Telegram API ID", "Telegram API hash", "Telegram chat ID").
 
-#### Scenario: Add a secured credential from the contact detail page
+#### Scenario: Add a secured credential from the entity detail contact-channel card
 
-- **WHEN** a user opens the owner contact's detail page and clicks "Add contact info"
+- **WHEN** a user opens the owner entity's detail page at `/entities/:entityId`
+  and clicks "Add contact info" in the contact-channel card
 - **AND** selects "Email password" from the type dropdown and enters a value
 - **THEN** the input field MUST be a password field (masked)
 - **AND** the created `contact_info` entry MUST have `secured = true`
-- **AND** the entry MUST appear in the contact info list with a masked value and a "Reveal" button
+- **AND** the entry MUST appear in the contact info list with a masked value
+  and a "Reveal" button
 
-#### Scenario: Add a non-secured identity field from the contact detail page
+#### Scenario: Add a non-secured identity field from the entity detail contact-channel card
 
-- **WHEN** a user adds a `telegram` or `email` entry via the contact detail page form
+- **WHEN** a user adds a `telegram` or `email` entry via the contact-channel
+  card form on the entity detail page
 - **THEN** the input field MUST be a text field (not masked)
 - **AND** the created `contact_info` entry MUST have `secured = false`
 
@@ -288,36 +263,50 @@ The form MUST display human-friendly labels for all types (e.g., "Email password
 
 ### Requirement: Owner identity setup banner
 
-The dashboard SHALL display a persistent banner on the contacts page (`/butlers/relationship/contacts`) when the owner contact is missing key identity fields (name, email, telegram handle, or telegram chat ID). The banner provides a one-time onboarding dialog as a convenience; the contact detail page is the canonical location for ongoing identity and credential management.
+The dashboard SHALL display a persistent banner on the entity index page
+(`/entities?has=contact`) when the owner contact is missing key identity
+fields (name, email, telegram handle, or telegram chat ID). The banner
+provides a one-time onboarding dialog as a convenience; the entity detail
+contact-channel card at `/entities/:entityId` is the canonical location for
+ongoing identity and credential management.
 
 #### Scenario: Banner shown when owner has missing identity fields
 
-- **WHEN** a user navigates to the contacts page and the owner contact is missing any of: name, email, telegram handle, or telegram chat ID
+- **WHEN** a user navigates to `/entities?has=contact` and the owner contact
+  is missing any of: name, email, telegram handle, or telegram chat ID
 - **THEN** a banner MUST be displayed indicating which fields are missing
-- **AND** a "Set Up Identity" button MUST open a dialog for filling in missing fields
+- **AND** a "Set Up Identity" button MUST open a dialog for filling in missing
+  fields
 
 #### Scenario: Banner hidden when all identity fields are configured
 
-- **WHEN** the owner contact has name, email, telegram handle, and telegram chat ID configured
+- **WHEN** the owner contact has name, email, telegram handle, and telegram
+  chat ID configured
 - **THEN** the setup banner MUST NOT be displayed
 
 #### Scenario: Banner dialog includes credentials section
 
 - **WHEN** the owner setup dialog is opened
-- **THEN** a collapsible "Credentials" section MUST be available for optionally setting email password, Telegram API ID, and Telegram API hash
+- **THEN** a collapsible "Credentials" section MUST be available for
+  optionally setting email password, Telegram API ID, and Telegram API hash
 - **AND** these credential fields MUST create secured `contact_info` entries
 
 ---
 
 ### Requirement: Pending identities queue on contacts page
 
-The contacts page SHALL display a "Pending Identities" section listing all contacts with `metadata.needs_disambiguation = true`. This section MUST appear above the main contacts table when pending contacts exist.
+The entity index page (`/entities?has=contact`) SHALL display a "Pending
+Identities" section listing all contacts with
+`metadata.needs_disambiguation = true`. This section MUST appear above the
+main entity table when pending contacts exist.
 
 #### Scenario: Pending identities displayed
 
-- **WHEN** a user navigates to `/butlers/relationship/contacts` and 2 temporary contacts exist with `metadata.needs_disambiguation = true`
-- **THEN** a "Pending Identities" section MUST appear above the contacts table
-- **AND** each pending contact MUST display the contact's name, source channel, source value, and creation date
+- **WHEN** a user navigates to `/entities?has=contact` and 2 temporary
+  contacts exist with `metadata.needs_disambiguation = true`
+- **THEN** a "Pending Identities" section MUST appear above the entity table
+- **AND** each pending contact MUST display the contact's name, source
+  channel, source value, and creation date
 
 #### Scenario: Merge action on pending identity
 
@@ -325,13 +314,15 @@ The contacts page SHALL display a "Pending Identities" section listing all conta
 - **THEN** a dialog MUST open with a contact search/select input
 - **AND** the user MUST be able to search existing contacts by name
 - **AND** selecting a contact and confirming MUST call the merge API
-- **AND** the pending identity MUST disappear from the queue after successful merge
+- **AND** the pending identity MUST disappear from the queue after successful
+  merge
 
 #### Scenario: Confirm as new action on pending identity
 
 - **WHEN** the user clicks "Confirm as new" on a pending identity
-- **THEN** the `needs_disambiguation` flag MUST be removed from the contact's metadata
-- **AND** the contact MUST move to the main contacts table
+- **THEN** the `needs_disambiguation` flag MUST be removed from the contact's
+  metadata
+- **AND** the contact MUST move to the main entity table
 
 #### Scenario: Archive action on pending identity
 
@@ -372,104 +363,59 @@ The dashboard API SHALL expose `PATCH /api/contacts/{id}` which allows updating 
 
 ### Requirement: Memory entity page links to relationship activity
 
-The memory butler entity surfaces (`/entities` and `/entities/:id`, rendered by `EntitiesPage.tsx` and `EntityDetailPage.tsx`) SHALL surface a navigation link to `/butlers/relationship/entities/:id` for every entity whose `entity_type` is `'person'`. This closes the bidirectional bridge with the existing `EntityDetailView → /entities/:id` "View identity →" link mandated for the relationship-scoped entity page. The relationship butler writes facts only against `person` entities (every relationship-domain row in `predicate-taxonomy.md` Part 2 columns its target entity type as `person`); for `organization`, `place`, and `other` entity types the bridge MUST NOT direct users to a page that will render with all five tabs empty.
+The entity surfaces (`/entities` and `/entities/:entityId`) SHALL use
+`/entities/:entityId` as the canonical entity detail route. They MUST NOT link to
+`/butlers/relationship/entities/:entityId` as a product route.
 
-The pages MUST render the link as follows:
+The legacy route `/butlers/relationship/entities/:entityId` MAY remain registered
+only as a compatibility redirect to `/entities/:entityId`.
 
-1. **On `/entities/:id` (entity detail page)** — the link MUST appear inside the main entity card, positioned after the Roles block and before the Source Provenance block. The link text MUST be "View relationship activity →" and MUST point to `/butlers/relationship/entities/:entityId`. Styling MUST mirror the `ContactDetailView` "View entity activity →" link (`text-primary text-sm font-medium hover:underline`). The link MUST be rendered only when `entity.entity_type === 'person'`; for other entity types the link MUST be omitted (matching the conditional-render convention used by the "Mark as confirmed" CTA on the same card).
+#### Scenario: Internal entity links target canonical entity route
 
-2. **On `/entities` (entity listing page)** — every table row MUST include an icon button in the row-actions cluster, positioned immediately adjacent to the existing Edit action. The button MUST be enabled with tooltip "Open relationship activity" when the row's `entity_type === 'person'`, and rendered disabled with tooltip "Not a person entity" otherwise. Activating the enabled button MUST navigate to `/butlers/relationship/entities/:id` for that row's entity. This always-rendered, conditionally-disabled pattern MUST mirror the existing "View contact" UserIcon button on the same row.
+- **WHEN** a user activates an entity row, entity finder result, contact-channel
+  card entity link, or relationship activity affordance
+- **THEN** the navigation target MUST be `/entities/:entityId`
+- **AND** no new internal link MUST target `/butlers/relationship/entities/:entityId`
 
-#### Scenario: Entity detail page surfaces relationship activity link for a person
+#### Scenario: Legacy relationship entity URL redirects
 
-- **WHEN** a user navigates to `/entities/ent-456-uuid` and the entity has `entity_type = 'person'`
-- **THEN** the main entity card MUST include a "View relationship activity →" link
-- **AND** the link target MUST be `/butlers/relationship/entities/ent-456-uuid`
-- **AND** the link MUST be positioned after the Roles block and before the Source Provenance block
-
-#### Scenario: Entity detail page omits link for organization entity
-
-- **WHEN** a user navigates to `/entities/org-789-uuid` and the entity has `entity_type = 'organization'`
-- **THEN** the main entity card MUST NOT contain a "View relationship activity →" link
-- **AND** the rest of the page MUST render normally
-
-#### Scenario: Entity detail page omits link for place entity
-
-- **WHEN** a user navigates to `/entities/loc-111-uuid` and the entity has `entity_type = 'place'`
-- **THEN** the main entity card MUST NOT contain a "View relationship activity →" link
-- **AND** the rest of the page MUST render normally
-
-#### Scenario: Entity detail page omits link for other entity
-
-- **WHEN** a user navigates to `/entities/oth-222-uuid` and the entity has `entity_type = 'other'`
-- **THEN** the main entity card MUST NOT contain a "View relationship activity →" link
-- **AND** the rest of the page MUST render normally
-
-#### Scenario: Entities listing renders enabled action for person row
-
-- **WHEN** a user navigates to `/entities` and a row in the table has `entity_type = 'person'`
-- **THEN** the row's actions cluster MUST contain an enabled icon button
-- **AND** the button's tooltip MUST read "Open relationship activity"
-- **AND** clicking the button MUST navigate to `/butlers/relationship/entities/:id` for that row's entity
-
-#### Scenario: Entities listing renders disabled action for non-person row
-
-- **WHEN** a user navigates to `/entities` and a row in the table has `entity_type` other than `'person'` (e.g., `'organization'`, `'place'`, `'other'`)
-- **THEN** the row's actions cluster MUST still contain the icon button (rendered, not omitted)
-- **AND** the button MUST be disabled
-- **AND** the button's tooltip MUST read "Not a person entity"
-- **AND** clicking the disabled button MUST NOT navigate
-
-### Requirement: Entity detail page
-
-The frontend SHALL render an entity detail page at `/butlers/relationship/entities/:id` displaying the entity's identity header and a unified activity stream. This is the canonical surface for browsing notes, interactions, gifts, loans, and life events for any entity in `public.entities`. This surface coexists with the memory butler's identity-focused entity detail page at `/entities/:id`; the two pages serve different audiences (relationship browsing vs. credential and identity admin) and deep-link to each other.
-
-The page MUST contain:
-
-1. **Header card** — displaying `canonical_name`, `entity_type`, `aliases` (as chips), and `roles` as colored badges. If the entity has `metadata->>'unidentified' = 'true'`, an "Unidentified" badge MUST be shown. The header MUST include a "View identity →" link to `/entities/:id`.
-
-2. **Linked contacts section** — listing all rows in `public.contacts` where `entity_id` matches, with each row showing `first_name + last_name`, primary `contact_info` entries (one email/phone), and a link to the contact detail page.
-
-3. **Unified ActivityTimeline** — a single vertically-scrolling event stream sourced from the entity timeline endpoint (`GET /api/relationship/entities/{id}/timeline`). The stream MUST display all supported event kinds: interactions, notes, gifts, loans, and life events. Filter pills at the top of the stream allow the user to narrow the view to a single event kind. The active filter is single-select: pills are: **All**, **Interactions**, **Notes**, **Gifts**, **Loans**, **Life events**. Selecting a pill hides all other kinds in the stream (client-side filtering; no additional API call). Empty stream state MUST display an appropriate message (e.g., "No activity recorded yet." when All is active, or "No interactions yet." when a specific kind pill is active). The stream MUST be sorted `valid_at DESC` with `created_at DESC` as a tie-break, consistent with the timeline endpoint sort contract.
-
-4. **Gifts panel** — a structured display of gift-scoped facts (gifts with occasion, status, and description). This panel MAY be hidden when empty. This is a separate surface complementing the unified ActivityTimeline above; the timeline includes gifts mixed with other event kinds, whereas this panel dedicates focus to gifts alone.
-
-5. **Loans panel** — a structured display of loan-scoped facts (loans with amount, direction, settlement status, and description). This panel MAY be hidden when empty. Like the Gifts panel above, this surface coexists with the unified ActivityTimeline.
-
-#### Scenario: Entity detail page renders with unified timeline
-
-- **WHEN** a user navigates to `/butlers/relationship/entities/ent-456-uuid` and the entity exists
-- **THEN** the header card MUST display the entity's `canonical_name`, `entity_type`, and any `roles`
-- **AND** the linked contacts section MUST list all contacts whose `entity_id` matches
-- **AND** the ActivityTimeline MUST be rendered with "All" pill active and all event kinds visible
-
-#### Scenario: Filter pill narrows the stream
-
-- **WHEN** a user activates the "Interactions" pill on the ActivityTimeline
-- **THEN** only events with `kind = "interaction"` MUST be visible in the stream
-- **AND** no additional API call MUST be issued (filtering is client-side)
-- **AND** the "Interactions" pill MUST appear in the active state and all other pills MUST appear inactive
-
-#### Scenario: Entity not found
-
-- **WHEN** a user navigates to `/butlers/relationship/entities/nonexistent-uuid`
-- **THEN** the page MUST display a 404 message (e.g., "Entity not found")
-
-#### Scenario: Entity with no facts
-
-- **WHEN** a user navigates to an entity that has zero matching facts
-- **THEN** the ActivityTimeline MUST display the empty-state message "No activity recorded yet."
-- **AND** the page MUST render without errors
-
-#### Scenario: Unidentified entity badge
-
-- **WHEN** an entity has `metadata->>'unidentified' = 'true'`
-- **THEN** the header card MUST display an "Unidentified" badge
-- **AND** the rest of the page MUST render normally
+- **WHEN** a user navigates to `/butlers/relationship/entities/ent-456-uuid`
+- **THEN** the client MUST redirect to `/entities/ent-456-uuid`
 
 ---
 
-> **Design history:** Originally specced as five separate tabs (Notes / Interactions / Gifts / Loans / Timeline); consolidated into one filterable stream per shipped UX. See bu-afx6k for the design-update decision.
+### Requirement: Entity detail page
+
+The frontend SHALL render the canonical entity detail page at `/entities/:entityId`
+displaying the entity's identity header, contact-channel card, unified activity
+stream, and supporting entity panels. This is the canonical surface for browsing
+notes, interactions, gifts, loans, life events, contact methods, and practical
+relationship context for any entity in `public.entities`.
+
+The page MUST contain:
+
+1. **Header** — displaying `canonical_name`, `entity_type`, aliases, roles, entity
+   state, and mode controls.
+2. **Contact-channel card** — displaying linked-contact channel data as specified
+   in Requirement: Contact detail page.
+3. **Unified ActivityTimeline** — a single vertically-scrolling event stream
+   sourced from the entity timeline endpoint.
+4. **Gifts and Loans panels** — structured displays for those fact families when
+   non-empty.
+5. **Workbench/Provenance mode** — the dense provenance view already specified for
+   entity detail.
+
+#### Scenario: Entity detail is canonical at /entities
+
+- **WHEN** a user navigates to `/entities/ent-456-uuid`
+- **THEN** the entity detail page MUST render for entity `ent-456-uuid`
+- **AND** the page MUST include activity and contact-channel context in the same
+  detail surface
+
+#### Scenario: Entity not found
+
+- **WHEN** a user navigates to `/entities/nonexistent-uuid`
+- **THEN** the page MUST display an entity not-found state
 
 ---
 
@@ -573,7 +519,7 @@ When a metadata field referenced above is absent from a fact's JSONB, the respon
 
 ---
 
-## Phase 2 Extension: Entity Redesign
+**Phase 2 Extension: Entity Redesign**
 
 > Added 2026-05-17 via `/project-direction` Phase 2 for the entity-redesign feature.
 > Drives the brief at `docs/redesigns/2026-05-17-entity-brief.md` (binding §0 design intent,
@@ -583,15 +529,12 @@ When a metadata field referenced above is absent from a fact's JSONB, the respon
 
 ### Requirement: Owner-only authorization for entity endpoints
 
-> Added 2026-05-18 per Brief §6b Amendment 12 (Phase 1 R-pass). Closes the R2 critical C2
-> data-leak gap. Three sub-clauses: writes (12a), reads (12b), deploy gate (12c).
-
-The new entity endpoints introduced by this change extension expose both mutation
-surfaces that mint, merge, archive, or forget entities AND read surfaces that return
-raw contact-fact `object` values (emails, phone numbers, social handles, addresses) —
-which are PII. The owner-only authorization gate from `about/heart-and-soul/security.md:18-22`
-and `rfcs/0007:309` (`'owner' = ANY(e.roles)`) MUST apply to both write and PII-bearing
-read surfaces; one without the other leaves a leak hole.
+The entity endpoints under `/api/relationship/entities/*` MUST enforce owner-only authorization.
+They expose both mutation surfaces that mint, merge, archive, or forget entities AND read
+surfaces that return raw contact-fact `object` values (emails, phone numbers, social handles,
+addresses) — which are PII. The owner-only authorization gate from
+`about/heart-and-soul/security.md:18-22` and `rfcs/0007:309` (`'owner' = ANY(e.roles)`) MUST
+apply to both write and PII-bearing read surfaces; one without the other leaves a leak hole.
 
 **Clause 12a — Writes (mutations).** Every `POST/PATCH/DELETE` under
 `/api/relationship/entities/*` MUST resolve the caller to an owner-role entity
@@ -797,71 +740,88 @@ Phase 1 Open Question 1).
 
 ### Requirement: Entity detail Editorial / Workbench mode toggle
 
-The Entity detail page (`/butlers/relationship/entities/:id`, established by the
-"Entity detail page" requirement above) SHALL render in one of two modes:
-**Editorial** (default) or **Workbench**. The unified ActivityTimeline is present in
-Editorial mode. In Workbench mode it is replaced by the ProvenanceGrid (see
-`bu-r6vft`), which surfaces every provenance column in a dense, sortable grid. The toggle
-also changes how the header and contact facts are rendered.
+The entity detail page at `/entities/:entityId` SHALL render in one of two modes: **Editorial** (default) or **Workbench**.
+The unified ActivityTimeline is present in Editorial mode. In Workbench mode
+it is replaced by the ProvenanceGrid (see `bu-r6vft`), which surfaces every
+provenance column in a dense, sortable grid. The toggle also changes how the
+header and contact facts are rendered.
 
 **Editorial mode** is the default and MUST:
-- Use `<Page archetype="detail">` (per the in-flight `detail-page-archetype` change) with
-  Display 44px headline for the entity canonical_name (editorial archetype, per
-  `about/heart-and-soul/design-language.md:218-246` Non-Negotiable 2 + Gate A A2).
-  The 44px Display tier is permitted per the editorial-archetype carve-out at
-  `about/heart-and-soul/design-language.md:225-232`; the 1.2 type-ratio doctrine at
-  `:243-246` is a floor (values ≥1.2 satisfy it), not a target — Display-tier headlines
-  are exempt by archetype.
-- Hide provenance metadata (`conf`, `src`, `weight`, `verified`, `primary`) from row chrome.
-  Provenance is still loaded into the response; only the visual rendering hides it.
-- Render contacts grouped by predicate (`has-email`, `has-phone`, ...). A person with three
-  emails MUST render three rows, primary first; never collapsed to "the email."
-- Render the voice gloss in `Source Serif 4` italic 16px (one line under the canonical name).
-  **The gloss text MUST be a canned string** selected by `(tier, state, category)` from
-  `frontend/src/lib/entity-glosses.ts` — see Requirement: Detail-page voice gloss source.
+- Use `<Page archetype="detail">` (per the in-flight `detail-page-archetype`
+  change) with Display 44px headline for the entity canonical_name (editorial
+  archetype, per `about/heart-and-soul/design-language.md:218-246`
+  Non-Negotiable 2 + Gate A A2). The 44px Display tier is permitted per the
+  editorial-archetype carve-out at
+  `about/heart-and-soul/design-language.md:225-232`; the 1.2 type-ratio
+  doctrine at `:243-246` is a floor (values ≥1.2 satisfy it), not a target —
+  Display-tier headlines are exempt by archetype.
+- Hide provenance metadata (`conf`, `src`, `weight`, `verified`, `primary`)
+  from row chrome. Provenance is still loaded into the response; only the
+  visual rendering hides it.
+- Render contacts grouped by predicate (`has-email`, `has-phone`, ...). A
+  person with three emails MUST render three rows, primary first; never
+  collapsed to "the email."
+- Render the voice gloss in `Source Serif 4` italic 16px (one line under the
+  canonical name). **The gloss text MUST be a canned string** selected by
+  `(tier, state, category)` from `frontend/src/lib/entity-glosses.ts` — see
+  Requirement: Detail-page voice gloss source.
 
 **Workbench mode** MUST:
-- Use `<Page archetype="overview">` with `text-2xl` H1 (per `about/heart-and-soul/design-language.md`
-  Non-Negotiable 2 + Gate A A2). 44px Display is forbidden in this mode. Editorial mode
-  uses `<Page archetype="detail">` (per the in-flight `detail-page-archetype` change);
-  Workbench reuses the already-defined `archetype="overview"` for its dense workspace
-  layout. **Workspace-archetype gap note (R3):** the brief originally proposed
-  `<Page archetype="workspace">` but no `workspace` archetype is normatively defined in
-  any shipped or in-flight Page spec. Rather than block on authoring a sister spec,
-  Workbench reuses `archetype="overview"` (which IS defined) for v1; a dedicated
-  `workspace` archetype MAY be introduced in a separate change later if needed.
-- Surface every provenance column (`conf`, `src`, `lastSeen`, `weight`, `verified`, `primary`)
-  on every row. The same data record drives both modes.
-- Render contacts as a dense predicate+value+provenance grid; sortable by any column.
+- Use `<Page archetype="overview">` with `text-2xl` H1 (per
+  `about/heart-and-soul/design-language.md` Non-Negotiable 2 + Gate A A2).
+  44px Display is forbidden in this mode. Editorial mode uses
+  `<Page archetype="detail">` (per the in-flight `detail-page-archetype`
+  change); Workbench reuses the already-defined `archetype="overview"` for
+  its dense workspace layout. **Workspace-archetype gap note (R3):** the
+  brief originally proposed `<Page archetype="workspace">` but no `workspace`
+  archetype is normatively defined in any shipped or in-flight Page spec.
+  Rather than block on authoring a sister spec, Workbench reuses
+  `archetype="overview"` (which IS defined) for v1; a dedicated `workspace`
+  archetype MAY be introduced in a separate change later if needed.
+- Surface every provenance column (`conf`, `src`, `lastSeen`, `weight`,
+  `verified`, `primary`) on every row. The same data record drives both
+  modes.
+- Render contacts as a dense predicate+value+provenance grid; sortable by
+  any column.
 
 **Mode persistence and toggle UI:**
-- The mode toggle lives in the Page shell's actions slot (icon button), per Phase 1 Amendment 8.
-- The mode persists in `localStorage` under the key `entities.detail.mode` (distinct from
-  the `butlers.detail.mode` key used by `redesign-detail-page-tab-vocabulary`'s
-  Resident/Operator toggle — Phase 1 Amendment 10 mandates the distinct key and distinct
-  vocabulary).
-- Missing, invalid, or unsupported values in `localStorage` MUST default to `editorial`.
-- `?mode=workbench` URL parameter overrides `localStorage` for the current page load only;
-  toggling via the UI updates both URL and `localStorage`.
-  _(Design history: param name reconciled from `?view=` → `?mode=` to match shipped code, bu-monvg.)_
+- The mode toggle lives in the Page shell's actions slot (icon button), per
+  Phase 1 Amendment 8.
+- The mode persists in `localStorage` under the key `entities.detail.mode`
+  (distinct from the `butlers.detail.mode` key used by
+  `redesign-detail-page-tab-vocabulary`'s Resident/Operator toggle — Phase 1
+  Amendment 10 mandates the distinct key and distinct vocabulary).
+- Missing, invalid, or unsupported values in `localStorage` MUST default to
+  `editorial`.
+- `?mode=workbench` URL parameter overrides `localStorage` for the current
+  page load only; toggling via the UI updates both URL and `localStorage`.
+  _(Design history: param name reconciled from `?view=` → `?mode=` to match
+  shipped code, bu-monvg.)_
 
 **Forget affordance (binding):**
-- Both modes MUST surface a "Forget this entity" action in the Page header (NOT a kebab
-  menu). Clicking opens a confirm dialog with a one-sentence serif gloss (canned text:
-  "Forgetting also tombstones the source. Aliases stay.") before the destructive POST.
+- Both modes MUST surface a "Forget this entity" action in the Page header
+  (NOT a kebab menu). Clicking opens a confirm dialog with a one-sentence
+  serif gloss (canned text: "Forgetting also tombstones the source. Aliases
+  stay.") before the destructive POST.
 
 #### Scenario: Editorial is default, mode persists
-- **WHEN** a user lands on `/butlers/relationship/entities/<uuid>` with no `localStorage` value
+
+- **WHEN** a user lands on `/entities/<uuid>` with no `localStorage` value
 - **THEN** Editorial MUST render with Display 44px headline
 - **WHEN** the user toggles to Workbench
 - **THEN** `localStorage["entities.detail.mode"]` MUST be set to `workbench`
 - **AND** subsequent loads MUST render Workbench until toggled back
 
 #### Scenario: Three emails render three rows in both modes
+
 - **WHEN** an entity has three `has-email` triples (primary + two secondary)
-- **THEN** Editorial MUST render three rows under the "Email" predicate group, primary first
-- **AND** Workbench MUST render three rows in the contacts grid, sorted by `primary DESC`
+- **THEN** Editorial MUST render three rows under the "Email" predicate group,
+  primary first
+- **AND** Workbench MUST render three rows in the contacts grid, sorted by
+  `primary DESC`
 - **AND** neither mode MUST collapse to a single "Email" row
+
+---
 
 ### Requirement: Entity curation queue (Index right rail)
 
@@ -944,57 +904,53 @@ that fans out to this endpoint, but that is out of scope here.
 
 ### Requirement: Dispatch design language token discipline
 
-All six entity routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`,
-`/entities/social-map`, `/butlers/relationship/entities/:id`) SHALL conform to the Dispatch
-design language with the following token rules (per Phase 1 Amendment 9 + Brief §1 binding tokens):
+All six entity routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/social-map`, `/entities/:entityId`) SHALL conform to the Dispatch design language with the following token rules (per Phase 1 Amendment 9 + Brief §1 binding tokens).
 
-1. **No new tokens** outside `frontend/src/index.css`. The redesign reuses `--bg`, `--bg-elev`,
-   `--bg-deep`, `--fg`, `--mfg`, `--dim`, `--border`, `--border-soft`, `--border-strong`,
-   `--red`, `--amber`, `--green`, `--category-1..8` (butler hues, EntityMark glyph only),
-   `--tier-1..6` (Dunbar ramp, six layers: 5/15/50/150/500/1500), and `--severity-*` (per in-flight `token-system-spec-sync`).
+Note: the sixth route in this list replaces the legacy `/butlers/relationship/entities/:id` route name that appeared in the original version of this requirement. The route `/entities/:entityId` is the canonical entity detail route per the "Entity detail page" requirement.
 
-   **Token namespace bridging (R3 gap note):** the Dispatch tokens (`--bg`, `--fg`, `--mfg`,
-   `--dim`, `--border-soft`, `--border-strong`) are NOT present in shipped
-   `frontend/src/index.css` (which today defines the shadcn ramp: `--foreground`,
-   `--background`, `--border`, `--muted-foreground`, …) and they are NOT part of any
-   in-flight token change. Phase 3 task 8.x (frontend foundation) MUST resolve this by
-   EITHER (a) adding the Dispatch tokens to `frontend/src/index.css` mapped 1:1 to the
-   shadcn tokens they replace, OR (b) rewriting component classes to use the existing
-   shadcn token names. The choice is deferred to implementation; this spec is shape-only.
-   `--tier-1..6` already ships in `frontend/src/index.css` and is not part of this gap.
-2. **No hex literals** anywhere in `frontend/src/components/relationship/*`, `frontend/src/pages/entities/*`,
-   or `frontend/src/pages/butlers/relationship/*` EXCEPT in `frontend/src/lib/entity-model.ts`
-   and the predicate-catalog UI.
-3. **Fonts:** `Inter Tight` (UI), `Source Serif 4` (voice/gloss), `JetBrains Mono` (numerals,
-   IDs, eyebrows, kbd). Font loading MUST be verified in `frontend/index.html` or
-   `frontend/src/index.css` (resolves Phase 1 Open Question 11).
-4. **Numerals** MUST use `font-variant-numeric: tabular-nums` everywhere. No count-up animations.
-5. **Page primitive conformance:** all six routes MUST render inside `<Page>` (per in-flight
-   `page-primitive-spec-sync`). Index/Hop/Columns/Concentration/Social-map use
-   `<Page archetype="overview">`. EntityDetailPage Editorial uses `<Page archetype="detail">`
-   (per the in-flight `detail-page-archetype` change); Workbench reuses
-   `<Page archetype="overview">` for its dense workspace layout (no `workspace` archetype
-   exists in any shipped or in-flight spec; see the Editorial / Workbench mode toggle
-   requirement above for the rationale).
-6. **Hard "do not" list** (mirrors Brief §1): no cards, no gradients, no glassmorphism, no
-   drop shadows, no emoji, no italic-serif as branding, no 24px row padding, no decorative
-   SVGs, no hue from entity type (only on letter-mark glyph), no hardcoded predicate IDs
-   outside `entity-model.ts`.
+1. **No new tokens** outside `frontend/src/index.css`. The redesign reuses
+   `--bg`, `--bg-elev`, `--bg-deep`, `--fg`, `--mfg`, `--dim`, `--border`,
+   `--border-soft`, `--border-strong`, `--red`, `--amber`, `--green`,
+   `--category-1..8` (butler hues, EntityMark glyph only), `--tier-1..6`
+   (Dunbar ramp, six layers: 5/15/50/150/500/1500), and `--severity-*` (per
+   in-flight `token-system-spec-sync`).
 
-#### Scenario: No hex literals in component tree
-- **WHEN** ripgrep is run with `rg -n "#[0-9a-fA-F]{3,8}" frontend/src/components/relationship/ frontend/src/pages/entities/ frontend/src/pages/butlers/relationship/`
-- **THEN** the only allowed match MUST be inside `entity-model.ts` or the predicate-catalog rendering file
+   **Token namespace bridging (R3 gap note):** the Dispatch tokens (`--bg`,
+   `--fg`, `--mfg`, `--dim`, `--border-soft`, `--border-strong`) are NOT
+   present in shipped `frontend/src/index.css` (which today defines the
+   shadcn ramp: `--foreground`, `--background`, `--border`,
+   `--muted-foreground`, …) and they are NOT part of any in-flight token
+   change. Phase 3 task 8.x (frontend foundation) MUST resolve this by
+   EITHER (a) adding the Dispatch tokens to `frontend/src/index.css` mapped
+   1:1 to the shadcn tokens they replace, OR (b) rewriting component classes
+   to use the existing shadcn token names. The choice is deferred to
+   implementation; this spec is shape-only. `--tier-1..6` already ships in
+   `frontend/src/index.css` and is not part of this gap.
+2. **No hex literals** anywhere in
+   `frontend/src/components/relationship/*`,
+   `frontend/src/pages/entities/*`, or
+   `frontend/src/pages/butlers/relationship/*` EXCEPT in
+   `frontend/src/lib/entity-model.ts` and the predicate-catalog UI.
+3. **Fonts:** `Inter Tight` (UI), `Source Serif 4` (voice/gloss),
+   `JetBrains Mono` (numerals, IDs, eyebrows, kbd). Font loading MUST be
+   verified in `frontend/index.html` or equivalent before merge.
+
+#### Scenario: Token discipline applies to canonical entity detail route
+
+- **WHEN** code review compares any component rendered at `/entities/:entityId`
+- **THEN** the component MUST NOT introduce new CSS custom properties outside `frontend/src/index.css`
+- **AND** the component MUST NOT use hex color literals in `frontend/src/components/relationship/*` or `frontend/src/pages/entities/*`
 
 ### Requirement: Provenance contract — every fact carries its origin
 
-Every triple returned by any entity-scoped endpoint
-(`/api/relationship/entities/{id}/contacts`,
+Every entity-scoped endpoint MUST include provenance fields on every triple it returns.
+The affected endpoints are: `/api/relationship/entities/{id}/contacts`,
 `/api/relationship/entities/{id}/neighbours`,
 `/api/relationship/entities/concentration`,
 `/api/relationship/entities/queue`,
 `/api/relationship/entities/{id}/{notes,interactions,gifts,loans,timeline}`,
-`/api/relationship/entities/search`) MUST include the provenance fields
-defined in the `relationship-facts` capability spec:
+and `/api/relationship/entities/search`. Provenance fields are defined in the
+`relationship-facts` capability spec:
 
 - `src` (TEXT, NOT NULL): butler that wrote the fact.
 - `conf` (FLOAT 0..1, NOT NULL): confidence score, default 1.0 for owner-authored.
@@ -1065,10 +1021,11 @@ renders the aggregator output as the merged stream.
 
 ### Requirement: Detail-page voice gloss source — canned strings only
 
-Detail-page voice glosses (the serif italic one-liner under the canonical name in Editorial
-mode, and the forget-confirm gloss in both modes) are **canned strings selected by
-`(tier, state, category)`**. No LLM call per page load. The source of truth lives at
-`frontend/src/lib/entity-glosses.ts` as a strict enum keyed on `(tier, state, category)`.
+Detail-page voice glosses SHALL be canned strings selected by `(tier, state, category)`,
+with no LLM call per page load. The gloss types are: the serif italic one-liner under the
+canonical name in Editorial mode, and the forget-confirm gloss in both modes. The source of
+truth lives at `frontend/src/lib/entity-glosses.ts` as a strict enum keyed on
+`(tier, state, category)`.
 
 The enum MUST be exhaustive — every `(tier ∈ {0..5}, state ∈ {active, unidentified,
 duplicate-candidate, stale, archived}, category ∈ {person, organization, location, product,
@@ -1082,14 +1039,15 @@ MUST fail if any combination is missing.
 
 ### Requirement: Finder is deterministic — no LLM ranking
 
-`GET /api/relationship/entities/search` ranking is **rule-based per
-`pr/overview/entity-redesign/prompts/07-finder.md §7.5`** (the rule set is also reproduced in
-Requirement: App-wide Cmd-K Finder above). **No embedding service, no reranker LLM in v1.**
-No model call MAY appear in the request handler path of
-`/api/relationship/entities/search`.
+`GET /api/relationship/entities/search` MUST use rule-based ranking only (no embedding service,
+no reranker LLM in v1). The rule set is defined in
+`pr/overview/entity-redesign/prompts/07-finder.md §7.5` and also reproduced in
+Requirement: App-wide Cmd-K Finder above. No model call MAY appear in the request handler path
+of `/api/relationship/entities/search`.
 
 #### Scenario: Finder handler issues zero LLM calls
 - **WHEN** a Finder query is processed
 - **THEN** the handler MUST NOT call any LLM provider
 - **AND** the handler MUST NOT call any embedding service
 - **AND** ranking MUST be computed purely from string-matching and `last_seen / tier` tie-breaks
+
