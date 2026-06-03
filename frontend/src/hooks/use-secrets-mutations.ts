@@ -1,0 +1,281 @@
+/**
+ * TanStack Query mutation hooks for the secrets passport page (bu-ayp6v.2).
+ *
+ * Each hook wraps exactly one API client function from the Secrets v2 layer,
+ * invalidates the secrets inventory + relevant per-credential query key on
+ * success, and surfaces success/error toasts via sonner.
+ *
+ * Scope: hooks layer only — no button wiring (that lives in .3/.4/.5).
+ *
+ * Query key namespaces:
+ *   secretsUserKeys   — per-user-credential evidence
+ *   secretsSystemKeys — per-system-credential evidence
+ *   secretsCliKeys    — per-CLI-credential evidence
+ */
+
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+
+import {
+  deleteSystemCredential,
+  disconnectUserCredential,
+  probeSystemCredential,
+  probeUserCredential,
+  revealSecret,
+  rotateCliCredential,
+  rotateUserCredential,
+  revokeCliCredential,
+  setSystemCredential,
+} from "@/api/client.ts";
+import type {
+  SecretsRotateUserRequest,
+  SecretsSystemSetRequest,
+} from "@/api/types.ts";
+import { secretsInventoryKeys } from "@/hooks/use-secrets-inventory.ts";
+
+// ---------------------------------------------------------------------------
+// Per-credential query keys
+//
+// These mirror the inventory key namespace but are scoped to individual
+// credential evidence fetches (GET /api/secrets/user/<provider>, etc.).
+// They are defined here so mutation hooks can target precise invalidations.
+// ---------------------------------------------------------------------------
+
+export const secretsUserKeys = {
+  all: ["secrets", "user"] as const,
+  byProvider: (provider: string, identity?: string | null) =>
+    ["secrets", "user", provider, identity ?? "owner"] as const,
+};
+
+export const secretsSystemKeys = {
+  all: ["secrets", "system"] as const,
+  byKey: (key: string) => ["secrets", "system", key] as const,
+};
+
+export const secretsCliKeys = {
+  all: ["secrets", "cli"] as const,
+  byId: (id: string) => ["secrets", "cli", id] as const,
+};
+
+// ---------------------------------------------------------------------------
+// User credential mutations
+// ---------------------------------------------------------------------------
+
+/** Rotate (replace) a stored user-scoped credential. */
+export function useRotateUserSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      provider,
+      body,
+      identity,
+    }: {
+      provider: string;
+      body: SecretsRotateUserRequest;
+      identity?: string;
+    }) => rotateUserCredential(provider, body, identity),
+    onSuccess: (_, { provider, identity }) => {
+      toast.success("Credential rotated");
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({
+        queryKey: secretsUserKeys.byProvider(provider, identity),
+      });
+    },
+    onError: (error: Error) => {
+      toast.error(`Rotate failed: ${error.message}`);
+    },
+  });
+}
+
+/** Disconnect (hard-delete) a user-scoped credential. */
+export function useDisconnectUserSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      provider,
+      identity,
+    }: {
+      provider: string;
+      identity?: string;
+    }) => disconnectUserCredential(provider, identity),
+    onSuccess: (_, { provider, identity }) => {
+      toast.success("Credential disconnected");
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({
+        queryKey: secretsUserKeys.byProvider(provider, identity),
+      });
+    },
+    onError: (error: Error) => {
+      toast.error(`Disconnect failed: ${error.message}`);
+    },
+  });
+}
+
+/** Probe (live-verify) a user-scoped credential. */
+export function useProbeUserSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      provider,
+      identity,
+    }: {
+      provider: string;
+      identity?: string;
+    }) => probeUserCredential(provider, identity),
+    onSuccess: (data, { provider, identity }) => {
+      const ok = data?.data?.ok;
+      if (ok) {
+        toast.success("Probe passed");
+      } else {
+        toast.error(`Probe failed: ${data?.data?.message ?? "no details"}`);
+      }
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({
+        queryKey: secretsUserKeys.byProvider(provider, identity),
+      });
+    },
+    onError: (error: Error) => {
+      toast.error(`Probe failed: ${error.message}`);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// System credential mutations
+// ---------------------------------------------------------------------------
+
+/** Set (create, rotate, or override) a system credential. */
+export function useSetSystemSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      key,
+      body,
+    }: {
+      key: string;
+      body: SecretsSystemSetRequest;
+    }) => setSystemCredential(key, body),
+    onSuccess: (_, { key }) => {
+      toast.success("Credential saved");
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsSystemKeys.byKey(key) });
+    },
+    onError: (error: Error) => {
+      toast.error(`Save failed: ${error.message}`);
+    },
+  });
+}
+
+/** Probe (verify state of) a system credential. */
+export function useProbeSystemSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key }: { key: string }) => probeSystemCredential(key),
+    onSuccess: (data, { key }) => {
+      const ok = data?.data?.ok;
+      if (ok) {
+        toast.success("Probe passed");
+      } else {
+        toast.error(`Probe failed: ${data?.data?.message ?? "no details"}`);
+      }
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsSystemKeys.byKey(key) });
+    },
+    onError: (error: Error) => {
+      toast.error(`Probe failed: ${error.message}`);
+    },
+  });
+}
+
+/** Delete a system credential (shared row or per-butler override). */
+export function useDeleteSystemSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      key,
+      target,
+    }: {
+      key: string;
+      target?: "shared" | string;
+    }) => deleteSystemCredential(key, target),
+    onSuccess: (_, { key }) => {
+      toast.success("Credential deleted");
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsSystemKeys.byKey(key) });
+    },
+    onError: (error: Error) => {
+      toast.error(`Delete failed: ${error.message}`);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// CLI runtime mutations
+// ---------------------------------------------------------------------------
+
+/** Rotate (regenerate) a CLI runtime token. The new value is returned once. */
+export function useRotateCliRuntime() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string }) => rotateCliCredential(id),
+    onSuccess: (_, { id }) => {
+      toast.success("CLI token rotated — copy the new value now");
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsCliKeys.byId(id) });
+    },
+    onError: (error: Error) => {
+      toast.error(`Rotate failed: ${error.message}`);
+    },
+  });
+}
+
+/** Revoke (delete) a CLI runtime token. */
+export function useRevokeCliRuntime() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string }) => revokeCliCredential(id),
+    onSuccess: (_, { id }) => {
+      toast.success("CLI token revoked");
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsCliKeys.byId(id) });
+    },
+    onError: (error: Error) => {
+      toast.error(`Revoke failed: ${error.message}`);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reveal helper
+//
+// secrets_v2 does NOT return raw values. The legacy revealSecret(butlerName, key)
+// client function is used here, piping butler from SecretsSystemDetail.butler
+// for system secrets.
+//
+// User-secret reveal: there is no backend endpoint that returns the raw OAuth
+// token for a user credential. This is intentional — OAuth refresh tokens are
+// never surfaced to the UI. There is no reveal path for user secrets.
+//
+// Note for .3/.4/.5 (button-wiring beads): the reveal action for system
+// secrets requires knowing the butler name at call time. Callers must pass
+// the `butler` field from SecretsSystemDetail (or use "shared" as the
+// default). The hook result includes `data.data.value` which is the raw value.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reveal the raw value of a system credential.
+ *
+ * @param butler - The butler schema that owns the row (SecretsSystemDetail.butler).
+ *                 Use "shared" for switchboard-owned rows.
+ *
+ * User-secret reveal gap: OAuth tokens are intentionally never returned by any
+ * GET/POST endpoint. There is no reveal path for user secrets via the existing
+ * backend. The button-wiring beads (.3/.4/.5) should omit or hide the reveal
+ * action for user credentials.
+ */
+export function useRevealSystemSecret() {
+  return useMutation({
+    mutationFn: ({ butler, key }: { butler: string; key: string }) =>
+      revealSecret(butler, key),
+  });
+}
