@@ -29,8 +29,6 @@ import { useEntityFinderSearch } from "@/hooks/use-entities";
 vi.mock("@/hooks/use-entities", () => ({
   useEntityFinderSearch: vi.fn(),
   useEntityLinkedContacts: vi.fn(),
-  useEntityNotes: vi.fn(),
-  useEntityInteractions: vi.fn(),
   useEntityGifts: vi.fn(),
   useEntityLoans: vi.fn(),
   useEntityTimeline: vi.fn(),

@@ -35,8 +35,6 @@ vi.mock("@/hooks/use-entities", () => ({
   useMergeRelationshipEntities: vi.fn(),
   // Other exports from use-entities that the module re-exports
   useEntityLinkedContacts: vi.fn(),
-  useEntityNotes: vi.fn(),
-  useEntityInteractions: vi.fn(),
   useEntityGifts: vi.fn(),
   useEntityLoans: vi.fn(),
   useEntityTimeline: vi.fn(),

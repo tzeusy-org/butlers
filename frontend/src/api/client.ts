@@ -258,8 +258,6 @@ import type {
   ChroniclerOverride,
   ChroniclerPointEvent,
   ChroniclerSourceStateRow,
-  EntityNote,
-  EntityInteraction,
   EntityGift,
   EntityLoan,
   EntityImportantDate,
@@ -1913,34 +1911,6 @@ export function getEntityLinkedContacts(entityId: string): Promise<LinkedContact
   return apiFetch<LinkedContactSummary[]>(
     `/relationship/entities/${encodeURIComponent(entityId)}/linked-contacts`,
   );
-}
-
-/** Fetch notes tab data for a relationship entity. */
-export function getEntityNotes(
-  entityId: string,
-  params?: { limit?: number; offset?: number },
-): Promise<EntityNote[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/notes?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/notes`;
-  return apiFetch<EntityNote[]>(path);
-}
-
-/** Fetch interactions tab data for a relationship entity. */
-export function getEntityInteractions(
-  entityId: string,
-  params?: { limit?: number; offset?: number },
-): Promise<EntityInteraction[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/interactions?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/interactions`;
-  return apiFetch<EntityInteraction[]>(path);
 }
 
 /** Fetch gifts tab data for a relationship entity. */
