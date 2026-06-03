@@ -226,38 +226,53 @@ The dashboard API SHALL expose `GET /api/contacts/{id}/secrets/{info_id}` which 
 
 ---
 
-### Requirement: Owner identity and credential management via contact detail page
+### Requirement: Owner identity and credential management
 
-The entity detail contact-channel card at `/entities/:entityId` SHALL be the
-primary mechanism for configuring owner identity fields and credentials. The
-"Add contact info" form on the contact-channel card MUST support all identity
-and credential types, including secured types (`email_password`,
-`telegram_api_id`, `telegram_api_hash`).
+The Secrets page (`/secrets`) SHALL be the primary mechanism for configuring
+owner identity credentials. The entity detail page (`/entities/:entityId`) SHALL
+surface identity-bound credentials by displaying a prominent link to the Secrets
+page (`/secrets` → User tab) where the owner entity's credentials can be viewed,
+entered, and managed.
 
-When a secured type is selected, the form MUST:
-- Use a password input field to mask the value during entry
-- Automatically set `secured = true` on the created `contact_info` entry
-- Hide the "Primary" checkbox (not applicable to credential entries)
+The entity detail contact-channel card MUST NOT include secured credential types
+(`email_password`, `telegram_api_id`, `telegram_api_hash`,
+`home_assistant_token`) in its "Add contact info" type dropdown. The
+`AddChannelInfoForm` MUST support the following non-secured contact types only:
+`email`, `phone`, `telegram`, `website`, `other`. The form MUST display
+human-friendly labels for all supported types.
 
-The form MUST display human-friendly labels for all types (e.g., "Email
-password", "Telegram API ID", "Telegram API hash", "Telegram chat ID").
+The User tab on the Secrets page MUST support all secured credential types for
+the owner entity (`email_password`, `telegram_api_id`, `telegram_api_hash`,
+`home_assistant_token`).
 
-#### Scenario: Add a secured credential from the entity detail contact-channel card
+> **Design rationale (deliberate product decision):** Secured credentials are
+> intentionally managed on the dedicated Secrets page, not through the "Add
+> contact info" form on the entity detail contact-channel card. Separating
+> credential entry from contact-channel entry is an explicit security/UX
+> boundary: the Secrets page is purpose-built for masked entry, reveal
+> affordances, and per-entity identity projection. This is the shipped
+> implementation as of the entity detail redesign (bu-m8gb6 reconciliation,
+> 2026-05-25, bu-x1zql spec alignment).
+
+#### Scenario: Add a non-secured channel entry from the entity detail contact-channel card
 
 - **WHEN** a user opens the owner entity's detail page at `/entities/:entityId`
   and clicks "Add contact info" in the contact-channel card
-- **AND** selects "Email password" from the type dropdown and enters a value
-- **THEN** the input field MUST be a password field (masked)
-- **AND** the created `contact_info` entry MUST have `secured = true`
-- **AND** the entry MUST appear in the contact info list with a masked value
-  and a "Reveal" button
-
-#### Scenario: Add a non-secured identity field from the entity detail contact-channel card
-
-- **WHEN** a user adds a `telegram` or `email` entry via the contact-channel
-  card form on the entity detail page
+- **AND** selects "Email" or "Telegram" from the type dropdown and enters a
+  value
 - **THEN** the input field MUST be a text field (not masked)
-- **AND** the created `contact_info` entry MUST have `secured = false`
+- **AND** the created entry MUST have `secured = false`
+
+#### Scenario: Secured credentials are managed via the Secrets page
+
+- **WHEN** a user needs to enter or update a secured credential (e.g., email
+  password, Telegram API ID/hash)
+- **THEN** the user MUST navigate to the Secrets page at `/secrets` (linked
+  from the entity detail page)
+- **AND** the User tab MUST display and allow management of the owner entity's
+  secured credentials
+- **AND** the entity detail contact-channel card MUST NOT offer secured
+  credential types in its add form
 
 ---
 
