@@ -5590,6 +5590,198 @@ export interface SecretsInventoryParams {
 }
 
 // ---------------------------------------------------------------------------
+// Secrets v2 — per-credential detail + mutation types (bu-ayp6v.1)
+//
+// These types mirror the Pydantic models in secrets_v2.py:
+//   UserSecretDetail, SystemSecretDetail, CliRuntimeDetail, CliRotateResult,
+//   DisconnectStatus, SystemDeleteStatus, CliRevokeResult, AuditEvent.
+// ---------------------------------------------------------------------------
+
+/**
+ * Full evidence payload for a single user-scoped credential.
+ *
+ * Returned by GET /api/secrets/user/<provider>?identity=<uuid>
+ * Maps to UserSecretDetail in secrets_v2.py.
+ * Raw credential values are NEVER returned.
+ */
+export interface SecretsUserDetail {
+  /** entity_info primary key (UUID string). */
+  id: string;
+  /** entity UUID. */
+  entity_id: string;
+  /** e.g. "google_oauth_refresh". */
+  type: string;
+  /** Normalised provider slug (e.g. "google"). */
+  provider: string;
+  label: string | null;
+
+  /** Derived state: "ok" | "warn" | "failing" | "expired" | "never_set". */
+  state: string;
+  /** SHA-256[:8] hex fingerprint, computed on-read. Null when value is unset. */
+  fingerprint: string | null;
+
+  /** ISO-8601 created_at. */
+  issued: string | null;
+  /** ISO-8601 expires_at. Null when not persisted. */
+  expires: string | null;
+  last_verified: string | null;
+  last_used: string | null;
+
+  scopes_required: string[];
+  scopes_granted: string[];
+  feeds: string[];
+
+  failure_tail: string | null;
+  breaks: SecretsBreakDict[];
+  test: SecretsProbeResult | null;
+  audit: SecretsAuditEvent[];
+}
+
+/**
+ * Full evidence payload for a single system-scoped credential.
+ *
+ * Returned by GET /api/secrets/system/<key>
+ * Maps to SystemSecretDetail in secrets_v2.py.
+ */
+export interface SecretsSystemDetail {
+  key: string;
+  category: string;
+  description: string | null;
+
+  state: string;
+  fingerprint: string | null;
+
+  /** "shared" | "local" | "missing". */
+  row_state: string;
+  source: string | null;
+  target: string | null;
+
+  last_verified: string | null;
+  used_by: string[];
+
+  breaks: SecretsBreakDict[];
+  test: SecretsProbeResult | null;
+  audit: SecretsAuditEvent[];
+
+  /** Butler schema that owns this row. */
+  butler: string;
+}
+
+/**
+ * Full evidence payload for a single CLI runtime token.
+ *
+ * Returned by GET /api/secrets/cli/<id>
+ * Maps to CliRuntimeDetail in secrets_v2.py.
+ */
+export interface SecretsCliDetail {
+  /** secret_key (the credential identifier). */
+  id: string;
+  label: string | null;
+
+  state: string;
+  fingerprint: string | null;
+
+  issued: string | null;
+  expires: string | null;
+  last_used: string | null;
+
+  scopes_required: string[];
+  scopes_granted: string[];
+
+  test: SecretsProbeResult | null;
+}
+
+/**
+ * A single audit event for a credential.
+ *
+ * Returned by GET /api/secrets/audit/<scope>/<key>
+ * Maps to AuditEvent in secrets_v2.py.
+ * `ts` is pre-formatted server-side (e.g. "14:21 today", "yesterday 09:08").
+ */
+export interface SecretsAuditEvent {
+  ts: string;
+  actor: string;
+  action: string;
+  note: string | null;
+}
+
+/**
+ * A break-entry dict as returned in per-credential detail payloads.
+ * Looser than BreakEntry (from the catalogue endpoint) because break entries
+ * returned inline do not always carry required_scopes.
+ */
+export interface SecretsBreakDict {
+  butler: string;
+  feature: string;
+  severity: "high" | "medium" | "low";
+  required_scopes?: string[];
+}
+
+/**
+ * Response payload for POST /api/secrets/user/<provider>/rotate.
+ * Returns ApiResponse<SecretsUserDetail> (updated credential).
+ */
+export interface SecretsRotateUserRequest {
+  /** New secret value to store. */
+  value: string;
+}
+
+/**
+ * Response payload for POST /api/secrets/user/<provider>/disconnect.
+ * Maps to DisconnectStatus in secrets_v2.py.
+ */
+export interface SecretsDisconnectStatus {
+  status: "disconnected";
+}
+
+/**
+ * Request body for POST /api/secrets/system/<key>.
+ * Maps to SystemSetRequest in secrets_v2.py.
+ */
+export interface SecretsSystemSetRequest {
+  value: string;
+  /** "shared" (default) or a butler name for per-butler override. */
+  target: "shared" | string;
+}
+
+/**
+ * Response payload for DELETE /api/secrets/system/<key>.
+ * Maps to SystemDeleteStatus in secrets_v2.py.
+ * status is "disconnected" (shared row) or "revoked" (override row).
+ */
+export interface SecretsSystemDeleteStatus {
+  status: "disconnected" | "revoked";
+}
+
+/**
+ * Response payload for POST /api/secrets/cli/<id>/rotate.
+ * Maps to CliRotateResult in secrets_v2.py.
+ *
+ * IMPORTANT: `value` is returned EXACTLY ONCE in this response.
+ * No GET endpoint exposes raw values; this is the only opportunity to
+ * copy the value into local config.
+ */
+export interface SecretsCliRotateResult {
+  /** SHA-256 first-8 hex fingerprint of the newly-generated value. */
+  fingerprint: string;
+  /** Raw secret value — returned ONCE; not retrievable via any GET endpoint. */
+  value: string;
+}
+
+/**
+ * Response payload for POST /api/secrets/cli/<id>/revoke.
+ * Maps to CliRevokeResult in secrets_v2.py.
+ */
+export interface SecretsCliRevokeResult {
+  status: "revoked";
+}
+
+/** Query params for GET /api/secrets/audit/<scope>/<key>. */
+export interface SecretsAuditParams {
+  limit?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Entity-contacts triple API (GET/POST/DELETE /entities/{id}/contacts)
 // Introduced by entity-redesign §9.4 (bu-u1w78). These types represent
 // contact-fact triples in relationship.entity_facts (has-* predicates).

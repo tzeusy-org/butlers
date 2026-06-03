@@ -5269,6 +5269,283 @@ export function getSecretsInventory(
 }
 
 // ---------------------------------------------------------------------------
+// Secrets v2 — per-credential reads (bu-ayp6v.1)
+// ---------------------------------------------------------------------------
+
+import type {
+  SecretsAuditEvent,
+  SecretsAuditParams,
+  SecretsCliDetail,
+  SecretsProbeResult,
+  SecretsSystemDetail,
+  SecretsUserDetail,
+} from "./types.ts";
+
+/**
+ * GET /api/secrets/user/<provider>?identity=<uuid>
+ *
+ * Returns the full evidence payload for a single user-scoped credential.
+ * Raw values are NEVER returned — fingerprint + evidence only.
+ *
+ * Returns 404 when no matching credential exists.
+ */
+export function getUserCredential(
+  provider: string,
+  identity?: string,
+): Promise<ApiResponse<SecretsUserDetail>> {
+  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
+  return apiFetch<ApiResponse<SecretsUserDetail>>(
+    `/secrets/user/${encodeURIComponent(provider)}${qs}`,
+  );
+}
+
+/**
+ * GET /api/secrets/system/<key>
+ *
+ * Returns the full evidence payload for a single system-scoped credential.
+ * Raw values are NEVER returned — fingerprint + evidence only.
+ *
+ * Returns 404 when no matching credential exists.
+ */
+export function getSystemCredential(key: string): Promise<ApiResponse<SecretsSystemDetail>> {
+  return apiFetch<ApiResponse<SecretsSystemDetail>>(
+    `/secrets/system/${encodeURIComponent(key)}`,
+  );
+}
+
+/**
+ * GET /api/secrets/cli/<id>
+ *
+ * Returns the full evidence payload for a single CLI runtime token.
+ * Raw values are NEVER returned — fingerprint + evidence only.
+ *
+ * Returns 404 when no matching token exists.
+ */
+export function getCliCredential(id: string): Promise<ApiResponse<SecretsCliDetail>> {
+  return apiFetch<ApiResponse<SecretsCliDetail>>(
+    `/secrets/cli/${encodeURIComponent(id)}`,
+  );
+}
+
+/**
+ * GET /api/secrets/audit/<scope>/<key>?limit=<n>
+ *
+ * Returns recent audit events for a single credential.
+ * `scope` must be one of "user", "system", or "cli".
+ * `key` is the provider/secret-key/cli-id for the credential.
+ *
+ * Timestamps in `ts` are pre-formatted server-side
+ * (e.g. "14:21 today", "yesterday 09:08").
+ *
+ * meta.deep_link points to the full audit log page for this credential.
+ */
+export function getCredentialAudit(
+  scope: "user" | "system" | "cli",
+  key: string,
+  params?: SecretsAuditParams,
+): Promise<ApiResponse<SecretsAuditEvent[]>> {
+  const qs = params?.limit != null ? `?limit=${String(params.limit)}` : "";
+  return apiFetch<ApiResponse<SecretsAuditEvent[]>>(
+    `/secrets/audit/${encodeURIComponent(scope)}/${encodeURIComponent(key)}${qs}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — user credential mutations (bu-ayp6v.1)
+// ---------------------------------------------------------------------------
+
+import type {
+  SecretsDisconnectStatus,
+  SecretsRotateUserRequest,
+} from "./types.ts";
+
+/**
+ * POST /api/secrets/user/<provider>/rotate?identity=<uuid>
+ *
+ * Rotates (replaces) the stored value for a user-scoped credential.
+ * Attempts to revoke the old OAuth token at the provider after the local
+ * DB update (fire-and-forget; rotation still succeeds on revoke failure).
+ * Writes a "rotated" audit row.
+ *
+ * Returns ApiResponse<SecretsUserDetail> (updated credential).
+ * Returns 404 when no matching credential exists.
+ */
+export function rotateUserCredential(
+  provider: string,
+  body: SecretsRotateUserRequest,
+  identity?: string,
+): Promise<ApiResponse<SecretsUserDetail>> {
+  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
+  return apiFetch<ApiResponse<SecretsUserDetail>>(
+    `/secrets/user/${encodeURIComponent(provider)}/rotate${qs}`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/**
+ * POST /api/secrets/user/<provider>/disconnect?identity=<uuid>
+ *
+ * Disconnects (removes) a user-scoped credential.
+ * Hard-deletes the matching entity_info row.
+ * Writes a "disconnected" audit row.
+ *
+ * Returns ApiResponse<SecretsDisconnectStatus>.
+ * Returns 404 when no matching credential exists.
+ */
+export function disconnectUserCredential(
+  provider: string,
+  identity?: string,
+): Promise<ApiResponse<SecretsDisconnectStatus>> {
+  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
+  return apiFetch<ApiResponse<SecretsDisconnectStatus>>(
+    `/secrets/user/${encodeURIComponent(provider)}/disconnect${qs}`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * POST /api/secrets/user/<provider>/probe?identity=<uuid>
+ *
+ * Probes a user-scoped credential and records the test result.
+ * For supported providers (Google OAuth, GitHub PAT) makes a live verify call;
+ * falls back to local-state check for others.
+ * Writes to secret_probe_log + updates entity_info test-state columns
+ * in one transaction.
+ *
+ * Returns ApiResponse<SecretsProbeResult> with the probe outcome.
+ * Returns 404 when no matching credential exists.
+ */
+export function probeUserCredential(
+  provider: string,
+  identity?: string,
+): Promise<ApiResponse<SecretsProbeResult>> {
+  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
+  return apiFetch<ApiResponse<SecretsProbeResult>>(
+    `/secrets/user/${encodeURIComponent(provider)}/probe${qs}`,
+    { method: "POST" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — system credential mutations (bu-ayp6v.1)
+// ---------------------------------------------------------------------------
+
+import type {
+  SecretsSystemDeleteStatus,
+  SecretsSystemSetRequest,
+} from "./types.ts";
+
+/**
+ * POST /api/secrets/system/<key>
+ *
+ * Sets (first-time create), rotates (updates existing), or overrides
+ * (per-butler) a system credential.
+ *
+ * body.target = "shared" → writes to the switchboard butler schema.
+ * body.target = "<butler>" → creates a per-butler override row.
+ *
+ * Audit actions: "set" (first-time), "rotated" (existing), "overrode" (override).
+ *
+ * Returns ApiResponse<SecretsSystemDetail> (updated).
+ * Returns 404 when target is a butler name that is not registered.
+ */
+export function setSystemCredential(
+  key: string,
+  body: SecretsSystemSetRequest,
+): Promise<ApiResponse<SecretsSystemDetail>> {
+  return apiFetch<ApiResponse<SecretsSystemDetail>>(
+    `/secrets/system/${encodeURIComponent(key)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/**
+ * POST /api/secrets/system/<key>/probe
+ *
+ * Probes a system credential and records the test result.
+ * Derives the probe outcome from local state (no external provider calls).
+ * Rate-limited to 1 call per 5 s per key (in-process guard).
+ *
+ * Returns ApiResponse<SecretsProbeResult>.
+ * Returns 404 when no credential exists for the given key.
+ * Returns 429 when the rate limit is exceeded.
+ */
+export function probeSystemCredential(key: string): Promise<ApiResponse<SecretsProbeResult>> {
+  return apiFetch<ApiResponse<SecretsProbeResult>>(
+    `/secrets/system/${encodeURIComponent(key)}/probe`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * DELETE /api/secrets/system/<key>?target=<butler|shared>
+ *
+ * Removes a system credential row.
+ * target="shared" → deletes the shared (switchboard) row; audit "disconnected".
+ * target="<butler>" → deletes the per-butler override row; audit "revoked".
+ *
+ * Returns ApiResponse<SecretsSystemDeleteStatus>.
+ * Returns 404 when the key does not exist or the target butler is not registered.
+ */
+export function deleteSystemCredential(
+  key: string,
+  target: "shared" | string = "shared",
+): Promise<ApiResponse<SecretsSystemDeleteStatus>> {
+  const qs = `?target=${encodeURIComponent(target)}`;
+  return apiFetch<ApiResponse<SecretsSystemDeleteStatus>>(
+    `/secrets/system/${encodeURIComponent(key)}${qs}`,
+    { method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Secrets v2 — CLI runtime mutations (bu-ayp6v.1)
+// ---------------------------------------------------------------------------
+
+import type { SecretsCliRotateResult, SecretsCliRevokeResult } from "./types.ts";
+
+/**
+ * POST /api/secrets/cli/<id>/rotate
+ *
+ * Rotates (regenerates) the secret value for a CLI runtime token.
+ * The new raw value is returned EXACTLY ONCE in this response.
+ * No GET endpoint exposes raw values — this is the sole opportunity to copy
+ * the value into local config.
+ *
+ * Returns ApiResponse<SecretsCliRotateResult> with {fingerprint, value}.
+ * Returns 404 when no matching CLI token exists.
+ */
+export function rotateCliCredential(id: string): Promise<ApiResponse<SecretsCliRotateResult>> {
+  return apiFetch<ApiResponse<SecretsCliRotateResult>>(
+    `/secrets/cli/${encodeURIComponent(id)}/rotate`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * POST /api/secrets/cli/<id>/revoke
+ *
+ * Revokes (deletes) a CLI runtime token.
+ * Hard-deletes the butler_secrets row (category='cli').
+ * Writes a "disconnected" audit row.
+ *
+ * Returns ApiResponse<SecretsCliRevokeResult>.
+ * Returns 404 when no matching CLI token exists.
+ */
+export function revokeCliCredential(id: string): Promise<ApiResponse<SecretsCliRevokeResult>> {
+  return apiFetch<ApiResponse<SecretsCliRevokeResult>>(
+    `/secrets/cli/${encodeURIComponent(id)}/revoke`,
+    { method: "POST" },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Timeline saved views (bu-vgj88)
 // ---------------------------------------------------------------------------
 
