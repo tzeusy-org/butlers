@@ -151,4 +151,10 @@ export interface InventoryResponse {
   cli: CliCredential[];
   identities: Identity[];
   providers: Record<string, ProviderInfo>;
+  /**
+   * The owner entity UUID — used by the add-credential flow (bu-ayp6v.6)
+   * to POST entity_info rows. Populated from identities[role==="owner"].id.
+   * May be undefined in older mock data; create-user flow degrades gracefully.
+   */
+  ownerEntityId?: string;
 }
