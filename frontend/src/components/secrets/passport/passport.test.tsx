@@ -14,11 +14,27 @@
 //   - Identity switcher shows only when multiple identities present
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// ---------------------------------------------------------------------------
+// Mock API client — PageUser now uses TanStack Query mutation hooks which call
+// useQueryClient() at render time; even renderToStaticMarkup triggers the hook.
+// ---------------------------------------------------------------------------
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>()
+  return {
+    ...actual,
+    reauthorizeUserCredential: vi.fn(),
+    probeUserCredential: vi.fn(),
+    rotateUserCredential: vi.fn(),
+    disconnectUserCredential: vi.fn(),
+  }
+})
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 import { SpineRow, Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli } from "./pages.tsx";
@@ -357,9 +373,11 @@ describe("SortPicker", () => {
 // ── PageUser ─────────────────────────────────────────────────────────────────
 
 describe("PageUser: renders against mocked data", () => {
+  // PageUser uses TanStack Query mutation hooks; renderInRouter provides the
+  // required QueryClientProvider wrapper.
   it("renders google credential", () => {
     const google = MOCK_USER_CREDENTIALS.find((u) => u.provider === "google" && u.identity === "tze")!;
-    const html = renderToStaticMarkup(
+    const html = renderInRouter(
       <PageUser
         credential={google}
         provider={MOCK_PROVIDERS.google}
@@ -374,7 +392,7 @@ describe("PageUser: renders against mocked data", () => {
 
   it("renders expired spotify credential with re-authorize commit", () => {
     const spotify = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!;
-    const html = renderToStaticMarkup(
+    const html = renderInRouter(
       <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} />,
     );
     expect(html).toContain("expired");
@@ -383,7 +401,7 @@ describe("PageUser: renders against mocked data", () => {
 
   it("renders webhook owntracks credential", () => {
     const owntracks = MOCK_USER_CREDENTIALS.find((u) => u.provider === "owntracks")!;
-    const html = renderToStaticMarkup(
+    const html = renderInRouter(
       <PageUser credential={owntracks} provider={MOCK_PROVIDERS.owntracks} />,
     );
     expect(html).toContain("incoming url");
@@ -392,7 +410,7 @@ describe("PageUser: renders against mocked data", () => {
 
   it("renders never_set steam credential with connect button", () => {
     const steam = MOCK_USER_CREDENTIALS.find((u) => u.provider === "steam")!;
-    const html = renderToStaticMarkup(
+    const html = renderInRouter(
       <PageUser credential={steam} provider={MOCK_PROVIDERS.steam} />,
     );
     expect(html).toContain("connect");
@@ -400,7 +418,7 @@ describe("PageUser: renders against mocked data", () => {
 
   it("shows data-page attribute", () => {
     const google = MOCK_USER_CREDENTIALS[0]!;
-    const html = renderToStaticMarkup(
+    const html = renderInRouter(
       <PageUser credential={google} provider={MOCK_PROVIDERS.google} />,
     );
     expect(html).toContain('data-page="user"');
