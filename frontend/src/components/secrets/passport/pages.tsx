@@ -2618,11 +2618,11 @@ export function PassportAddPanel({
   ];
 
   async function handleOAuthConnect(slug: string, identity?: string) {
+    if (!ownerEntityId) return;
     setOauthPending(true);
     setOauthError(null);
     try {
-      // Use the owner entity ID as identity, falling back to "owner" sentinel.
-      const resolvedIdentity = identity ?? ownerEntityId ?? "owner";
+      const resolvedIdentity = identity ?? ownerEntityId;
       const resp = await reauthorizeUserCredential(slug, resolvedIdentity);
       if (!resp?.data?.redirect_url) throw new Error("No redirect URL returned.");
       window.location.assign(resp.data.redirect_url);
@@ -2940,12 +2940,17 @@ export function PassportAddPanel({
                   key={slug}
                   variant="commit"
                   onClick={() => handleOAuthConnect(slug)}
-                  disabled={oauthPending}
+                  disabled={!ownerEntityId || oauthPending}
                 >
                   {oauthPending ? "redirecting…" : `connect ${label}`}
                 </PillBtn>
               ))}
             </div>
+            {!ownerEntityId && (
+              <Mono size={11} color="var(--dim)" className="mt-2">
+                owner entity ID not available — cannot connect provider
+              </Mono>
+            )}
             {oauthError && (
               <Mono size={11} color="var(--red)" className="mt-2">
                 {oauthError}

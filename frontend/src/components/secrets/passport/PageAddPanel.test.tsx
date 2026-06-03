@@ -11,9 +11,11 @@
 //   - useCreateUserSecret is wired for user creation
 //   - useSetSystemSecret is wired for system creation
 //   - SpineAddButton renders in the Spine footer
+//   - OAuth connect guard: undefined ownerEntityId → button disabled, no API call [bu-vzwnl]
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
@@ -57,6 +59,8 @@ import {
   MOCK_PROVIDERS,
 } from "./mock-data.ts";
 import { buildSpineEntries } from "./spine-builder.ts";
+import { reauthorizeUserCredential } from "@/api/client.ts";
+const mockReauth = vi.mocked(reauthorizeUserCredential);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -275,5 +279,59 @@ describe("DirectionPassport: add panel wiring", () => {
   it("renders spine with add button when using standard inventory", () => {
     const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
     expect(html).toContain('data-spine-add="true"');
+  });
+});
+
+// ── PassportAddPanel: OAuth connect guard [bu-vzwnl] ─────────────────────────
+
+describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", () => {
+  afterEach(() => {
+    cleanup();
+    mockReauth.mockReset();
+  });
+
+  function renderAddPanel(ownerEntityId: string | undefined) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <PassportAddPanel ownerEntityId={ownerEntityId} onClose={() => {}} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("connect Google button is disabled when ownerEntityId is undefined", () => {
+    renderAddPanel(undefined);
+    // Navigate to the connect provider panel
+    const connectProviderBtn = screen.getByText("connect provider");
+    fireEvent.click(connectProviderBtn);
+    // The connect Google button should be disabled
+    const connectBtn = screen.getByText(/connect google/i);
+    expect((connectBtn.closest("button") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows 'owner entity ID not available' hint in provider panel when ownerEntityId is undefined", () => {
+    renderAddPanel(undefined);
+    fireEvent.click(screen.getByText("connect provider"));
+    expect(screen.getByText(/owner entity ID not available — cannot connect provider/i)).toBeTruthy();
+  });
+
+  it("does NOT call reauthorizeUserCredential when ownerEntityId is undefined and connect is clicked", () => {
+    renderAddPanel(undefined);
+    fireEvent.click(screen.getByText("connect provider"));
+    const connectBtn = screen.getByText(/connect google/i).closest("button") as HTMLButtonElement;
+    // Even if somehow clicked (e.g. via programmatic click bypassing disabled), the guard fires
+    fireEvent.click(connectBtn);
+    expect(mockReauth).not.toHaveBeenCalled();
+  });
+
+  it("connect Google button is enabled when ownerEntityId is provided", () => {
+    renderAddPanel("entity-uuid-123");
+    fireEvent.click(screen.getByText("connect provider"));
+    const connectBtn = screen.getByText(/connect google/i).closest("button") as HTMLButtonElement;
+    expect(connectBtn.disabled).toBe(false);
   });
 });
