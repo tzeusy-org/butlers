@@ -55,6 +55,18 @@ POST /api/secrets/cli/<id>/revoke
     Writes audit action 'disconnected'.
     404 when no matching CLI token exists.
 
+POST /api/secrets/cli/<id>/reauthorize
+    Initiate (or resume) re-authentication for a device-code or api-key CLI
+    runtime.  Does NOT reimplement device-code logic — delegates to the
+    existing cli-auth subsystem (/api/cli-auth/<provider>/start).
+    device_code providers → ApiResponse<CliReauthorizeResponse> with
+      auth_mode="device_code", session_id, auth_url, device_code.  Poll
+      GET /api/cli-auth/sessions/<session_id> for completion.
+    api_key providers → ApiResponse<CliReauthorizeResponse> with
+      auth_mode="api_key", env_var, prompt (the human-readable instruction).
+    Writes audit action 'attempted'.
+    404 when <id> is not a known CLI auth provider.
+
 POST /api/secrets/system/<key>
     Set (first-time create), rotate (value replaced), or override (per-butler).
     Body: { value, target: "shared" | "<butler>" }
@@ -149,7 +161,10 @@ from pydantic import BaseModel, Field
 from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse
+from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
+from butlers.cli_auth.registry import PROVIDERS
+from butlers.cli_auth.session import CLIAuthSession, store_session
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.credential_store import CredentialStore
 from butlers.google_credentials import KEY_CLIENT_ID, KEY_CLIENT_SECRET
@@ -3279,3 +3294,184 @@ async def revoke_cli_credential(
     )
 
     return ApiResponse[CliRevokeResult](data=CliRevokeResult(), meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# CLI reauthorize response model
+# ---------------------------------------------------------------------------
+
+
+class CliReauthorizeResponse(BaseModel):
+    """Response payload for POST /api/secrets/cli/<id>/reauthorize.
+
+    Covers both auth modes.  The caller inspects ``auth_mode`` to decide
+    which fields are meaningful:
+
+    device_code
+        session_id, auth_url, device_code, message — same contract as
+        POST /api/cli-auth/<provider>/start.  Poll
+        GET /api/cli-auth/sessions/<session_id> for completion.
+
+    api_key
+        env_var, prompt — the caller renders a text-input for the key value
+        and submits it via PUT /api/cli-auth/<provider>/api-key.
+    """
+
+    auth_mode: str
+    """'device_code' or 'api_key'."""
+
+    provider: str
+    """Provider name (e.g. 'codex', 'claude')."""
+
+    # device_code fields (None for api_key)
+    session_id: str | None = None
+    session_state: str | None = None
+    auth_url: str | None = None
+    device_code: str | None = None
+    message: str | None = None
+
+    # api_key fields (None for device_code)
+    env_var: str | None = None
+    prompt: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/cli/<id>/reauthorize
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/cli/{credential_id}/reauthorize",
+    response_model=ApiResponse[CliReauthorizeResponse],
+)
+async def reauthorize_cli_credential(
+    credential_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CliReauthorizeResponse]:
+    """Initiate (or resume) re-authentication for a CLI runtime provider.
+
+    Resolves ``<credential_id>`` against the CLI auth provider registry
+    (PROVIDERS) to determine the auth mode.  Does NOT reimplement device-code
+    or api-key logic — it delegates to the existing cli-auth subsystem.
+
+    device_code providers (e.g. ``codex``, ``opencode-openai``)
+        Kicks off a new device-code session via the same path as
+        POST /api/cli-auth/<provider>/start, then returns the session/redirect
+        payload so the caller can display the device code and poll
+        GET /api/cli-auth/sessions/<session_id> for completion.
+
+    api_key providers (e.g. ``claude``, ``opencode-go``)
+        Returns the api-key prompt contract (``env_var`` + human-readable
+        ``prompt``).  The caller renders a key-entry form and submits the
+        value via PUT /api/cli-auth/<provider>/api-key.
+
+    In both cases an ``attempted`` audit row is written (the re-auth dance has
+    been initiated but not yet completed).
+
+    Returns 404 when ``<credential_id>`` is not a known CLI auth provider.
+
+    Spec anchor
+    -----------
+    bu-ayp6v.10: Add backend reauthorize bridge for CLI runtime credentials.
+    """
+    provider_def = PROVIDERS.get(credential_id)
+    if provider_def is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown CLI auth provider: {credential_id!r}",
+        )
+
+    # Fetch shared pool for audit writes (best-effort — swallowed on error).
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if provider_def.auth_mode == "device_code":
+        # --- device_code branch: delegate to the cli-auth start subsystem ---
+        if not provider_def.is_available():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"CLI binary '{provider_def.binary()}' not found on PATH; "
+                    "cannot start device-code flow."
+                ),
+            )
+
+        session_id = _secrets_mod.token_urlsafe(16)
+
+        # Build on_success callback that persists the token and wires DB.
+        from butlers.api.routers.cli_auth import _build_on_success
+
+        session = CLIAuthSession(
+            id=session_id,
+            provider=provider_def,
+            on_success=_build_on_success(db),
+        )
+        store_session(session)
+
+        try:
+            await session.start()
+            # Wait briefly for the device code to appear in stdout.
+            await session.wait(timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "reauthorize_cli_credential: session start failed for id=%s: %s",
+                credential_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to start device-code session: {exc}",
+            ) from exc
+
+        # Audit — attempted (initiated, not yet completed).
+        if shared_pool is not None:
+            await _write_cli_audit(
+                shared_pool,
+                action="attempted",
+                credential_id=credential_id,
+                note=f"Device-code reauthorize initiated; session_id={session_id}",
+            )
+
+        return ApiResponse[CliReauthorizeResponse](
+            data=CliReauthorizeResponse(
+                auth_mode="device_code",
+                provider=provider_def.name,
+                session_id=session.id,
+                session_state=CLIAuthSessionState(session.state).value,
+                auth_url=session.auth_url,
+                device_code=session.device_code,
+                message=session.message,
+            ),
+            meta=ApiMeta(),
+        )
+
+    else:
+        # --- api_key branch: return the key-prompt contract ---
+        env_var = provider_def.env_var or None
+        prompt = (
+            f"Enter your API key for {provider_def.display_name}."
+            + (f" Set it as the {env_var} environment variable." if env_var else "")
+            + f" Submit via PUT /api/cli-auth/{provider_def.name}/api-key."
+        )
+
+        # Audit — attempted.
+        if shared_pool is not None:
+            await _write_cli_audit(
+                shared_pool,
+                action="attempted",
+                credential_id=credential_id,
+                note="API-key reauthorize initiated from /secrets",
+            )
+
+        return ApiResponse[CliReauthorizeResponse](
+            data=CliReauthorizeResponse(
+                auth_mode="api_key",
+                provider=provider_def.name,
+                env_var=env_var,
+                prompt=prompt,
+            ),
+            meta=ApiMeta(),
+        )
