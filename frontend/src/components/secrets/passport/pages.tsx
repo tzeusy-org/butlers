@@ -72,6 +72,17 @@ import {
   useCreateUserSecret,
 } from "@/hooks/use-secrets-mutations.ts";
 import { useButlers } from "@/hooks/use-butlers";
+import {
+  useGoogleAccounts,
+  useSetPrimaryAccount,
+  useDisconnectAccount,
+} from "@/hooks/use-secrets.ts";
+import { useDisconnectGoogleHealth } from "@/hooks/use-google-health.ts";
+import {
+  getGoogleOAuthStartUrl,
+  GOOGLE_HEALTH_SCOPES,
+} from "@/api/client.ts";
+import type { GoogleAccount } from "@/api/types.ts";
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
@@ -220,6 +231,397 @@ function ActionArrow({
     >
       {children} →
     </a>
+  );
+}
+
+// ── PageGoogleAccounts — Google-specific multi-account drawer ────────────────
+
+/**
+ * Account state rendered as a 6px dot. State is NEVER a word inline with the
+ * account row — per design-language rule §Evidence-Over-Value Affordance Contract.
+ */
+function GoogleAccountDot({ status }: { status: GoogleAccount["status"] }) {
+  const color =
+    status === "active"
+      ? "var(--green)"
+      : status === "expired"
+        ? "var(--amber)"
+        : "var(--red)"; // revoked
+  const label = status === "active" ? "active" : status === "expired" ? "expired" : "revoked";
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      data-google-account-state={status}
+      className="inline-block shrink-0 rounded-full"
+      style={{ width: 6, height: 6, backgroundColor: color }}
+    />
+  );
+}
+
+/**
+ * Scope-set picker: grant Calendar / Drive / Google Health.
+ * Health revoke is handled via DELETE /api/connectors/google-health/disconnect
+ * (selective scope-strip, preserves Calendar/Drive).
+ *
+ * The three scope sets map to backend GOOGLE_SCOPE_SETS names.
+ */
+const SCOPE_SETS: Array<{ id: string; label: string; description: string }> = [
+  { id: "calendar", label: "Calendar",   description: "Read and manage calendar events" },
+  { id: "drive",    label: "Drive",      description: "Read Drive files and metadata"   },
+  { id: "health",   label: "Health",     description: "Google Health sleep, activity, and metrics" },
+];
+
+function hasHealthScopes(grantedScopes: string[]): boolean {
+  return GOOGLE_HEALTH_SCOPES.some((s) => grantedScopes.includes(s));
+}
+
+/**
+ * Per-account row: email + state dot + primary badge + actions.
+ * Inline panels for: set-primary confirm, hard-delete confirm.
+ */
+function GoogleAccountRow({
+  account,
+  totalAccounts,
+}: {
+  account: GoogleAccount;
+  totalAccounts: number;
+}) {
+  const setPrimaryMutation = useSetPrimaryAccount();
+  const disconnectMutation = useDisconnectAccount();
+
+  const [disconnectOpen, setDisconnectOpen] = React.useState(false);
+  const [hardDelete, setHardDelete] = React.useState(false);
+
+  // Re-authorize this account: uses account_hint (pre-selects the email in
+  // Google's account chooser) + forceConsent (always shows the consent screen
+  // so new/changed scopes are re-granted) + selectAccount (forces chooser
+  // even if only one Google session is active).
+  function handleReauthorize() {
+    const url = getGoogleOAuthStartUrl({
+      accountHint: account.email ?? undefined,
+      forceConsent: true,
+      pageOfOrigin: "secrets",
+    });
+    window.location.href = url;
+  }
+
+  function handleSetPrimary() {
+    if (setPrimaryMutation.isPending) return;
+    setPrimaryMutation.mutate(account.id);
+  }
+
+  function handleDisconnectConfirm() {
+    if (disconnectMutation.isPending) return;
+    disconnectMutation.mutate({ accountId: account.id, hardDelete });
+  }
+
+  function handleDisconnectCancel() {
+    setDisconnectOpen(false);
+    setHardDelete(false);
+    disconnectMutation.reset();
+  }
+
+  const email = account.email ?? account.id;
+  const isPrimary = account.is_primary;
+  const isOnlyAccount = totalAccounts === 1;
+
+  return (
+    <div
+      className="flex flex-col gap-2 py-2.5"
+      style={{ borderTop: "1px solid var(--border)" }}
+      data-google-account-row={account.id}
+    >
+      {/* Account identity row */}
+      <div className="flex items-center gap-2.5 min-w-0">
+        <GoogleAccountDot status={account.status} />
+        <Mono size={12} className="flex-1 min-w-0 truncate">{email}</Mono>
+        {isPrimary && (
+          <span
+            className="font-mono text-[9px] uppercase tracking-[0.12em] px-1 py-0.5 shrink-0"
+            style={{
+              border: "1px solid var(--border-strong)",
+              color: "var(--mfg)",
+            }}
+            data-primary-badge="true"
+          >
+            primary
+          </span>
+        )}
+      </div>
+
+      {/* Action row — commit-pill pattern */}
+      <div className="flex gap-2 flex-wrap pl-[14px]">
+        <PillBtn
+          variant={account.status !== "active" ? "commit" : "pill"}
+          onClick={handleReauthorize}
+        >
+          re-authorize
+        </PillBtn>
+        {!isPrimary && (
+          <PillBtn
+            onClick={handleSetPrimary}
+            disabled={setPrimaryMutation.isPending}
+          >
+            {setPrimaryMutation.isPending ? "setting…" : "set primary"}
+          </PillBtn>
+        )}
+        {!isOnlyAccount && (
+          <PillBtn
+            variant="danger"
+            onClick={() => { setDisconnectOpen(true); setHardDelete(false); }}
+            disabled={disconnectOpen}
+          >
+            disconnect
+          </PillBtn>
+        )}
+      </div>
+
+      {/* Disconnect inline confirm — danger confirm pattern from .3/.4 */}
+      {disconnectOpen && (
+        <div
+          className="flex flex-col gap-2.5 p-3.5 ml-[14px]"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-google-disconnect-confirm={account.id}
+        >
+          <Mono size={11} color="var(--red)">
+            Disconnect {email}? Removes saved tokens.
+          </Mono>
+          {/* Hard-delete toggle */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={hardDelete}
+              onChange={(e) => setHardDelete(e.target.checked)}
+              className="shrink-0"
+              data-hard-delete-checkbox="true"
+            />
+            <Mono size={10} color="var(--red)">also delete account record (hard delete)</Mono>
+          </label>
+          {disconnectMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {disconnectMutation.error instanceof Error
+                ? disconnectMutation.error.message
+                : "Disconnect failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={handleDisconnectConfirm}
+              disabled={disconnectMutation.isPending}
+            >
+              {disconnectMutation.isPending ? "disconnecting…" : "yes, disconnect"}
+            </PillBtn>
+            <PillBtn onClick={handleDisconnectCancel} disabled={disconnectMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ScopeSetPicker — grant Calendar / Drive / Google Health via scope_set OAuth
+ * re-dance, or selectively revoke Health via DELETE /api/connectors/google-health/disconnect.
+ *
+ * Rendered once per account list (scope grants apply to the primary account).
+ */
+function ScopeSetPicker({ grantedScopes }: { grantedScopes: string[] }) {
+  const disconnectHealthMutation = useDisconnectGoogleHealth();
+  const [grantPending, setGrantPending] = React.useState<string | null>(null);
+  const [grantError, setGrantError] = React.useState<string | null>(null);
+
+  const healthGranted = hasHealthScopes(grantedScopes);
+
+  function handleGrant(scopeSetId: string) {
+    if (grantPending) return;
+    setGrantPending(scopeSetId);
+    setGrantError(null);
+    // Navigate to OAuth start with scope_set → requests incremental consent.
+    const url = getGoogleOAuthStartUrl({
+      scopeSet: scopeSetId,
+      forceConsent: true,
+      pageOfOrigin: "secrets",
+    });
+    window.location.href = url;
+  }
+
+  function handleRevokeHealth() {
+    if (disconnectHealthMutation.isPending) return;
+    disconnectHealthMutation.mutate();
+  }
+
+  return (
+    <div className="flex flex-col gap-3" data-scope-set-picker="true">
+      <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+        scope grants · calendar / drive / health
+      </Mono>
+      <div className="flex flex-col gap-2">
+        {SCOPE_SETS.map(({ id, label, description }) => {
+          const isHealth = id === "health";
+          const isGranted = isHealth
+            ? healthGranted
+            : grantedScopes.some((s) => s.toLowerCase().includes(id));
+
+          return (
+            <div
+              key={id}
+              className="flex items-center gap-3"
+              style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 8 }}
+            >
+              <div className="flex-1 min-w-0">
+                <Mono size={11}>{label}</Mono>
+                <Mono size={9} color="var(--dim)" className="block mt-0.5">{description}</Mono>
+              </div>
+              {isGranted ? (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span
+                    className="inline-block rounded-full shrink-0"
+                    style={{ width: 6, height: 6, backgroundColor: "var(--green)" }}
+                    aria-hidden="true"
+                  />
+                  {isHealth && (
+                    <PillBtn
+                      variant="danger"
+                      onClick={handleRevokeHealth}
+                      disabled={disconnectHealthMutation.isPending}
+                    >
+                      {disconnectHealthMutation.isPending ? "revoking…" : "revoke"}
+                    </PillBtn>
+                  )}
+                </div>
+              ) : (
+                <PillBtn
+                  variant="commit"
+                  onClick={() => handleGrant(id)}
+                  disabled={!!grantPending}
+                >
+                  {grantPending === id ? "redirecting…" : "grant"}
+                </PillBtn>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {grantError && (
+        <Mono size={11} color="var(--red)">{grantError}</Mono>
+      )}
+      {disconnectHealthMutation.error && (
+        <Mono size={11} color="var(--red)">
+          {disconnectHealthMutation.error instanceof Error
+            ? disconnectHealthMutation.error.message
+            : "Health revoke failed."}
+        </Mono>
+      )}
+    </div>
+  );
+}
+
+/**
+ * PageGoogleAccounts — Google-specific multi-account management surface.
+ *
+ * Rendered inside PageUser when provider.id === "google". Surfaces:
+ *   - All connected Google accounts (email + state dot + primary badge)
+ *   - Per-account: re-authorize / set-primary / disconnect (w/ hard-delete)
+ *   - "add another account" → OAuth with forceConsent + selectAccount (forces chooser)
+ *   - Scope-set picker: grant Calendar / Drive / Health + selective Health revoke
+ *
+ * [bu-ayp6v.7]
+ */
+export function PageGoogleAccounts() {
+  const { data: accountsData, isLoading, error } = useGoogleAccounts();
+  const accounts: GoogleAccount[] = accountsData ?? [];
+
+  // Primary account's granted scopes (for scope-set picker).
+  const primaryAccount = accounts.find((a) => a.is_primary) ?? accounts[0];
+  const grantedScopes = primaryAccount?.granted_scopes ?? [];
+
+  // "add another account" — forceConsent + selectAccount forces Google's
+  // account chooser even when the user is already signed in.
+  function handleAddAccount() {
+    const url = getGoogleOAuthStartUrl({
+      forceConsent: true,
+      selectAccount: true,
+      pageOfOrigin: "secrets",
+    });
+    window.location.href = url;
+  }
+
+  if (isLoading) {
+    return (
+      <div
+        className="flex flex-col gap-3 p-3.5"
+        style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+        data-google-accounts-panel="true"
+      >
+        <Mono size={9} upper tracking="0.14em" color="var(--dim)">google accounts</Mono>
+        <Mono size={11} color="var(--dim)">loading…</Mono>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        className="flex flex-col gap-3 p-3.5"
+        style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+        data-google-accounts-panel="true"
+      >
+        <Mono size={9} upper tracking="0.14em" color="var(--dim)">google accounts</Mono>
+        <Mono size={11} color="var(--red)">
+          {error instanceof Error ? error.message : "Could not load accounts."}
+        </Mono>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-4.5 p-3.5"
+      style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+      data-google-accounts-panel="true"
+    >
+      {/* Account list */}
+      <div>
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">google accounts</Mono>
+          <Mono size={9} color="var(--dim)">{accounts.length} connected</Mono>
+        </div>
+
+        {accounts.length === 0 ? (
+          <Mono size={11} color="var(--dim)" className="pt-1">no accounts connected</Mono>
+        ) : (
+          accounts.map((account) => (
+            <GoogleAccountRow
+              key={account.id}
+              account={account}
+              totalAccounts={accounts.length}
+            />
+          ))
+        )}
+      </div>
+
+      {/* Add another account */}
+      <div
+        className="pt-3"
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <PillBtn variant="commit" onClick={handleAddAccount}>
+          add another account
+        </PillBtn>
+      </div>
+
+      {/* Scope-set picker */}
+      <div
+        className="pt-3"
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <ScopeSetPicker grantedScopes={grantedScopes} />
+      </div>
+    </div>
   );
 }
 
@@ -551,6 +953,11 @@ export function PageUser({
           </div>
         </div>
       </div>
+
+      {/* Google-specific multi-account management surface [bu-ayp6v.7] */}
+      {provider.id === "google" && (
+        <PageGoogleAccounts />
+      )}
 
       {/* Cross-references */}
       <CrossRefFooter

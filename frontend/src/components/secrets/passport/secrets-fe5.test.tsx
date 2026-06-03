@@ -43,6 +43,10 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     testCLIAuthApiKey: vi.fn(),
     saveCLIAuthApiKey: vi.fn(),
     deleteCLIAuthApiKey: vi.fn(),
+    getGoogleAccounts: vi.fn().mockResolvedValue([]),
+    setPrimaryAccount: vi.fn(),
+    disconnectAccount: vi.fn(),
+    disconnectGoogleHealth: vi.fn(),
   }
 })
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -50,6 +54,23 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
 }))
+// PageGoogleAccounts uses useGoogleAccounts, useSetPrimaryAccount, useDisconnectAccount.
+vi.mock("@/hooks/use-secrets.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-secrets.ts")>()
+  return {
+    ...actual,
+    useGoogleAccounts: vi.fn(() => ({ data: [], isLoading: false, error: null })),
+    useSetPrimaryAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, error: null })),
+    useDisconnectAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  }
+})
+vi.mock("@/hooks/use-google-health.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-google-health.ts")>()
+  return {
+    ...actual,
+    useDisconnectGoogleHealth: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  }
+})
 
 import { Spine } from "./Spine.tsx";
 import { PageCli } from "./pages.tsx";

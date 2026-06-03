@@ -43,6 +43,10 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     testCLIAuthApiKey: vi.fn(),
     saveCLIAuthApiKey: vi.fn(),
     deleteCLIAuthApiKey: vi.fn(),
+    getGoogleAccounts: vi.fn().mockResolvedValue([]),
+    setPrimaryAccount: vi.fn(),
+    disconnectAccount: vi.fn(),
+    disconnectGoogleHealth: vi.fn(),
   }
 })
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -51,9 +55,28 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
 }))
+// PageGoogleAccounts uses useGoogleAccounts, useSetPrimaryAccount, useDisconnectAccount.
+// Mock use-secrets to return a stable empty account list (no fetch fired).
+vi.mock("@/hooks/use-secrets.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-secrets.ts")>()
+  return {
+    ...actual,
+    useGoogleAccounts: vi.fn(() => ({ data: [], isLoading: false, error: null })),
+    useSetPrimaryAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, error: null })),
+    useDisconnectAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  }
+})
+// useDisconnectGoogleHealth lives in use-google-health.
+vi.mock("@/hooks/use-google-health.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-google-health.ts")>()
+  return {
+    ...actual,
+    useDisconnectGoogleHealth: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  }
+})
 
 import { SpineRow, Spine } from "./Spine.tsx";
-import { PageUser, PageSystem, PageCli } from "./pages.tsx";
+import { PageUser, PageSystem, PageCli, PageGoogleAccounts } from "./pages.tsx";
 import { DirectionPassport } from "./DirectionPassport.tsx";
 import {
   Fingerprint,
@@ -698,5 +721,210 @@ describe("Sliver atom: appears only when state demands", () => {
   it("does NOT render sliver for never_set state", () => {
     const html = renderToStaticMarkup(<Sliver state="never_set" />);
     expect(html).toBe("");
+  });
+});
+
+// ── PageGoogleAccounts [bu-ayp6v.7] ──────────────────────────────────────────
+
+import * as useSecretsModule from "@/hooks/use-secrets.ts";
+
+describe("PageGoogleAccounts: multi-account Google management surface", () => {
+  /**
+   * Acceptance criteria [bu-ayp6v.7]:
+   *   1. Lists ALL connected Google accounts with email, state dot (not a word),
+   *      and primary marker.
+   *   2. 'add another account' button present (starts OAuth with account chooser forced).
+   *   3. Per-account set-primary and re-authorize actions present.
+   *   4. Scope-set picker (Calendar / Drive / Health) rendered.
+   */
+
+  it("renders google-accounts-panel data attribute", () => {
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain('data-google-accounts-panel="true"');
+  });
+
+  it("renders loading state when accounts are loading", () => {
+    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+      data: undefined,
+      isLoading: true,
+      error: null,
+    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain("loading");
+  });
+
+  it("renders account list with email when accounts present", () => {
+    const mockAccounts = [
+      {
+        id: "acc-1",
+        email: "owner@example.com",
+        display_name: "Owner",
+        is_primary: true,
+        status: "active" as const,
+        granted_scopes: ["https://www.googleapis.com/auth/calendar.readonly"],
+        connected_at: "2026-01-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+      {
+        id: "acc-2",
+        email: "work@example.com",
+        display_name: "Work",
+        is_primary: false,
+        status: "active" as const,
+        granted_scopes: [],
+        connected_at: "2026-02-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+    ];
+    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+      data: mockAccounts,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain("owner@example.com");
+    expect(html).toContain("work@example.com");
+    // 2 connected
+    expect(html).toContain("2 connected");
+  });
+
+  it("renders primary badge on primary account", () => {
+    const mockAccounts = [
+      {
+        id: "acc-1",
+        email: "primary@example.com",
+        display_name: null,
+        is_primary: true,
+        status: "active" as const,
+        granted_scopes: [],
+        connected_at: "2026-01-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+    ];
+    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+      data: mockAccounts,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain('data-primary-badge="true"');
+    expect(html).toContain("primary");
+  });
+
+  it("state is a dot (data-google-account-state) not a word for active account", () => {
+    const mockAccounts = [
+      {
+        id: "acc-1",
+        email: "test@example.com",
+        display_name: null,
+        is_primary: true,
+        status: "active" as const,
+        granted_scopes: [],
+        connected_at: "2026-01-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+    ];
+    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+      data: mockAccounts,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+    // State rendered as a dot attribute, never inline as a word in the account row
+    expect(html).toContain('data-google-account-state="active"');
+  });
+
+  it("renders add-another-account button", () => {
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain("add another account");
+  });
+
+  it("renders re-authorize action for each account", () => {
+    const mockAccounts = [
+      {
+        id: "acc-1",
+        email: "test@example.com",
+        display_name: null,
+        is_primary: true,
+        status: "active" as const,
+        granted_scopes: [],
+        connected_at: "2026-01-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+    ];
+    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+      data: mockAccounts,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain("re-authorize");
+  });
+
+  it("renders set-primary action for non-primary account", () => {
+    const mockAccounts = [
+      {
+        id: "acc-1",
+        email: "primary@example.com",
+        display_name: null,
+        is_primary: true,
+        status: "active" as const,
+        granted_scopes: [],
+        connected_at: "2026-01-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+      {
+        id: "acc-2",
+        email: "secondary@example.com",
+        display_name: null,
+        is_primary: false,
+        status: "active" as const,
+        granted_scopes: [],
+        connected_at: "2026-02-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+    ];
+    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+      data: mockAccounts,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain("set primary");
+  });
+
+  it("renders scope-set picker with Calendar / Drive / Health", () => {
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain('data-scope-set-picker="true"');
+    expect(html).toContain("Calendar");
+    expect(html).toContain("Drive");
+    expect(html).toContain("Health");
+  });
+});
+
+describe("PageUser with Google provider: renders Google accounts panel", () => {
+  it("renders google-accounts-panel inside PageUser for Google provider", () => {
+    const google = MOCK_USER_CREDENTIALS.find((u) => u.provider === "google" && u.identity === "tze")!;
+    const html = renderInRouter(
+      <PageUser
+        credential={google}
+        provider={MOCK_PROVIDERS.google}
+        identities={MOCK_IDENTITIES}
+      />,
+    );
+    expect(html).toContain('data-google-accounts-panel="true"');
+  });
+
+  it("does NOT render google-accounts-panel for non-Google provider", () => {
+    const spotify = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!;
+    const html = renderInRouter(
+      <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} />,
+    );
+    expect(html).not.toContain('data-google-accounts-panel="true"');
   });
 });
