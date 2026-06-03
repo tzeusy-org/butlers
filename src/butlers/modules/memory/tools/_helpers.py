@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,7 @@ _DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 # embedding_model config field produces a fresh engine (and therefore a fresh
 # model load) without evicting engines still in use by other callers.
 _embedding_engines: dict[str, Any] = {}
+_embedding_engines_lock = threading.Lock()
 
 
 def get_embedding_engine(model_name: str = _DEFAULT_EMBEDDING_MODEL) -> Any:
@@ -93,9 +95,10 @@ def get_embedding_engine(model_name: str = _DEFAULT_EMBEDDING_MODEL) -> Any:
     Returns:
         The ``EmbeddingEngine`` instance for the requested model.
     """
-    if model_name not in _embedding_engines:
-        _embedding_engines[model_name] = EmbeddingEngine(model_name)
-    return _embedding_engines[model_name]
+    with _embedding_engines_lock:
+        if model_name not in _embedding_engines:
+            _embedding_engines[model_name] = EmbeddingEngine(model_name)
+        return _embedding_engines[model_name]
 
 
 # ---------------------------------------------------------------------------

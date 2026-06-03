@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -830,6 +832,50 @@ class TestGetEmbeddingEngineSingleton:
             finally:
                 _helpers._embedding_engines.clear()
                 _helpers._embedding_engines.update(saved)
+
+    async def test_concurrent_same_model_builds_single_instance(self):
+        """Concurrent same-model calls do not race duplicate engine construction."""
+        from butlers.modules.memory.tools import _helpers
+        from butlers.modules.memory.tools._helpers import get_embedding_engine
+
+        first_check_entered = threading.Event()
+        second_check_entered = threading.Event()
+        check_count = 0
+        check_count_lock = threading.Lock()
+
+        class RaceDict(dict):
+            def __contains__(self, key):
+                nonlocal check_count
+                present = super().__contains__(key)
+                if key == "model-x":
+                    with check_count_lock:
+                        check_count += 1
+                        call_number = check_count
+                    if call_number == 1:
+                        first_check_entered.set()
+                        second_check_entered.wait(timeout=1)
+                    elif call_number == 2:
+                        second_check_entered.set()
+                return present
+
+        with patch(
+            "butlers.modules.memory.tools._helpers.EmbeddingEngine",
+            side_effect=lambda model_name: MagicMock(name=f"engine-{model_name}"),
+        ) as MockEng:
+            saved = _helpers._embedding_engines
+            _helpers._embedding_engines = RaceDict()
+            try:
+                loop = asyncio.get_running_loop()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    first = loop.run_in_executor(executor, get_embedding_engine, "model-x")
+                    assert await asyncio.to_thread(first_check_entered.wait, 1)
+                    second = loop.run_in_executor(executor, get_embedding_engine, "model-x")
+                    e1, e2 = await asyncio.gather(first, second)
+
+                assert e1 is e2
+                MockEng.assert_called_once_with("model-x")
+            finally:
+                _helpers._embedding_engines = saved
 
     def test_different_model_returns_different_instance(self):
         """A new model name produces a fresh EmbeddingEngine, not the cached one."""

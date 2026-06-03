@@ -558,9 +558,10 @@ async def fetch_memory_context(
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools._helpers import get_embedding_engine
 
+        embedding_engine = await asyncio.to_thread(get_embedding_engine)
         context = await _context.memory_context(
             pool,
-            get_embedding_engine(),
+            embedding_engine,
             prompt,
             butler_name,
             token_budget=token_budget,

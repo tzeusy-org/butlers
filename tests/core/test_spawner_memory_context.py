@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -32,6 +34,35 @@ def _make_config(
 
 
 class TestFetchMemoryContext:
+    async def test_embedding_engine_load_does_not_block_event_loop(self):
+        """Slow embedding engine construction should not stall unrelated async work."""
+        marker_started_at = time.monotonic()
+
+        def slow_engine():
+            time.sleep(0.25)
+            return object()
+
+        with (
+            patch(
+                "butlers.modules.memory.tools.context.memory_context",
+                new_callable=AsyncMock,
+                return_value="# Memory Context\n",
+            ),
+            patch(
+                "butlers.modules.memory.tools._helpers.get_embedding_engine",
+                side_effect=slow_engine,
+            ),
+        ):
+            fetch_task = asyncio.create_task(
+                fetch_memory_context(AsyncMock(), "my-butler", "hello")
+            )
+            await asyncio.sleep(0.05)
+            marker_elapsed = time.monotonic() - marker_started_at
+            result = await fetch_task
+
+        assert marker_elapsed < 0.15
+        assert result == "# Memory Context\n"
+
     async def test_returns_none_for_failure_empty_pool_or_missing_tables(
         self, caplog: pytest.LogCaptureFixture
     ):
