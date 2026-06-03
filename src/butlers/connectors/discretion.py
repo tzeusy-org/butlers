@@ -177,9 +177,9 @@ class WeightTier:
 class ContactWeightResolver:
     """Resolve sender identity to a discretion weight via ``shared`` tables.
 
-    Queries ``public.contact_info → public.contacts → public.entities`` and
-    maps the entity's roles to a :class:`WeightTier` value.  Results are
-    cached in-memory with a configurable TTL.
+    Queries ``relationship.entity_facts`` (migration bead 7) joined to
+    ``public.entities`` and maps the entity's roles to a :class:`WeightTier`
+    value.  Results are cached in-memory with a configurable TTL.
 
     Usage::
 

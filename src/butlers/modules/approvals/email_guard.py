@@ -7,7 +7,7 @@ ensures both gates enforce identical policy:
 1. Resolve contact by email address.
 2. Owner contact AND address is primary → auto-approve (no rule needed).
    Non-primary owner addresses fall through to the rules/parking flow.
-3. Context mismatch: if *msg_context* is provided and the contact_info row
+3. Context mismatch: if *msg_context* is provided and the entity_facts triple
    carrying the resolved address is tagged with a conflicting context, park
    for approval regardless of owner status.  (Owner primary addresses skip
    this check — see step 2.)
@@ -145,7 +145,7 @@ async def check_email_recipient(
     msg_context:
         Optional message context sphere (``"personal"``, ``"work"``, or
         ``"other"``).  When provided, a mismatch against the address's
-        ``contact_info.context`` tag causes the delivery to be parked for
+        ``entity_facts`` triple context tag causes the delivery to be parked for
         approval (even if a standing rule exists).  Unclassified (NULL)
         address context never conflicts.
     butler_name:

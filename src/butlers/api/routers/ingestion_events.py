@@ -808,8 +808,8 @@ async def get_ingestion_event_sender_contact(
     """Resolve the sender_identity for an ingestion event to a contact name.
 
     Fetches the event to obtain ``source_channel`` and ``source_sender_identity``,
-    then calls ``resolve_contact_by_channel`` against ``public.contacts`` /
-    ``public.contact_info``.
+    then calls ``resolve_contact_by_channel`` against ``relationship.entity_facts``
+    (migration bead 7).
 
     Always returns 200; ``resolved=False`` when no contact is found or when
     resolution fails (fail-open, no error toast on the frontend).
