@@ -40,7 +40,14 @@ import {
 } from "./atoms.tsx";
 import type { Identity } from "./types.ts";
 import { reauthorizeUserCredential, ApiError } from "@/api/client.ts";
-import { useCliDeviceAuth, type CliDeviceAuthState } from "@/hooks/use-cli-auth.ts";
+import {
+  useCliDeviceAuth,
+  useSaveCLIAuthApiKey,
+  useDeleteCLIAuthApiKey,
+  useTestCLIAuthApiKey,
+  cliAuthProviderName,
+  type CliDeviceAuthState,
+} from "@/hooks/use-cli-auth.ts";
 import {
   useProbeUserSecret,
   useRotateUserSecret,
@@ -49,6 +56,8 @@ import {
   useProbeSystemSecret,
   useDeleteSystemSecret,
   useRevealSystemSecret,
+  useRotateCliRuntime,
+  useRevokeCliRuntime,
 } from "@/hooks/use-secrets-mutations.ts";
 import { useButlers } from "@/hooks/use-butlers";
 
@@ -1428,7 +1437,20 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
 /**
  * PageCli — CLI runtime credential page.
  *
- * Supports rotate-with-reveal flow: rotate returns the raw value once.
+ * Wired actions [bu-ayp6v.5]:
+ *   rotate         — useRotateCliRuntime; returned value shown once in copy-once panel
+ *   revoke         — danger confirm → useRevokeCliRuntime
+ *   reveal token   — useRevealSystemSecret (switchboard pool); honors revealMode
+ *   test           — useTestCLIAuthApiKey (works for all auth modes via /cli-auth/{p}/test)
+ *   set token      — value-entry panel → useRotateCliRuntime (token-mode) OR
+ *                    useSaveCLIAuthApiKey (api-key mode, e.g. Claude)
+ *   api-key save   — useSaveCLIAuthApiKey; api-key mode providers can paste key
+ *   api-key delete — useDeleteCLIAuthApiKey
+ *
+ * Device-code re-auth: wired to existing deviceAuth.start/cancel flow.
+ * C10 (bu-ayp6v.10) bridge: once built, connect via the handleReauthorize
+ * integration point below (search for C10-BRIDGE).
+ *
  * How-to-use snippet rendered as static literal (no LLM).
  *
  * When `deviceAuth` is supplied (by `PageCliConnected`) and the provider uses
@@ -1462,12 +1484,132 @@ export function PageCli({
   if (isMissing) stateLines.push("paste a token to enable");
 
   const envVar = credential.id.toUpperCase().replace(/-/g, "_") + "_TOKEN";
+  // Bare provider name for the cli-auth endpoints (e.g. "claude" from "claude-cli"
+  // or "codex" from "cli-auth/codex").
+  const providerName = deviceAuth?.providerName ?? cliAuthProviderName(credential.id);
+  const isApiKeyMode = deviceAuth?.isApiKeyMode ?? false;
 
   const allScopes = Array.from(
     new Set([...credential.scopesGranted, ...credential.scopesRequired]),
   );
   const grantedSet = new Set(credential.scopesGranted);
   const requiredSet = new Set(credential.scopesRequired);
+
+  // ── Rotate ────────────────────────────────────────────────────────────────
+  // rotate() regenerates the token and returns the raw value ONCE.
+  // The copy-once panel shows the value until dismissed — after that it's gone.
+  const rotateMutation = useRotateCliRuntime();
+  const [rotatedSecret, setRotatedSecret] = React.useState<string | null>(null);
+
+  function handleRotate() {
+    if (rotateMutation.isPending) return;
+    setRotatedSecret(null);
+    rotateMutation.mutate(
+      { id: credential.id },
+      {
+        onSuccess: (data) => {
+          const val = (data as { data?: { value?: string } })?.data?.value ?? null;
+          setRotatedSecret(val);
+        },
+      },
+    );
+  }
+
+  // ── Revoke ────────────────────────────────────────────────────────────────
+  const revokeMutation = useRevokeCliRuntime();
+  const [revokeConfirm, setRevokeConfirm] = React.useState(false);
+
+  function handleRevokeConfirm() {
+    if (revokeMutation.isPending) return;
+    revokeMutation.mutate({ id: credential.id });
+  }
+
+  function handleRevokeCancel() {
+    setRevokeConfirm(false);
+    revokeMutation.reset();
+  }
+
+  // ── Reveal token ──────────────────────────────────────────────────────────
+  // CLI tokens are stored in the shared butler_secrets pool (switchboard schema).
+  // revealSecret("switchboard", key) is the read path; display once until dismissed.
+  const revealMutation = useRevealSystemSecret();
+  const [revealedToken, setRevealedToken] = React.useState<string | null>(null);
+
+  function handleReveal() {
+    if (revealMutation.isPending) return;
+    revealMutation.mutate(
+      { butler: "switchboard", key: credential.id },
+      {
+        onSuccess: (data) => {
+          const val = (data as { data?: { value?: string } })?.data?.value ?? null;
+          setRevealedToken(val);
+        },
+      },
+    );
+  }
+
+  // ── Test ──────────────────────────────────────────────────────────────────
+  // POST /api/cli-auth/{provider}/test — validates the stored credential.
+  // Works for both device_code and api_key auth modes.
+  const testMutation = useTestCLIAuthApiKey();
+  const [testResult, setTestResult] = React.useState<{ success: boolean; detail: string } | null>(null);
+
+  function handleTest() {
+    if (testMutation.isPending) return;
+    setTestResult(null);
+    testMutation.mutate(providerName, {
+      onSuccess: (data) => {
+        setTestResult({ success: data.success, detail: data.detail ?? "" });
+      },
+      onError: (err) => {
+        setTestResult({ success: false, detail: err.message });
+      },
+    });
+  }
+
+  // ── Set token (token mode: paste into text entry) ─────────────────────────
+  // For providers WITHOUT api_key mode, "set token" pastes the raw value
+  // using the rotate endpoint (which also persists for first-time set).
+  const [setTokenOpen, setSetTokenOpen] = React.useState(false);
+  const [setTokenValue, setSetTokenValue] = React.useState("");
+  // Re-use rotateMutation — rotate endpoint handles both create and rotation.
+
+  function handleSetTokenOpen() {
+    setSetTokenOpen(true);
+    setRevokeConfirm(false);
+  }
+
+  function handleSetTokenCancel() {
+    setSetTokenOpen(false);
+    setSetTokenValue("");
+    rotateMutation.reset();
+  }
+
+  // For token-mode "set token": currently the rotate endpoint generates a new
+  // random value server-side (no paste). A future endpoint may accept a
+  // user-supplied value. For now, clicking "set token" opens the rotate flow
+  // OR the api-key save flow depending on provider mode.
+  // For api_key mode (e.g. Claude): paste the key → useSaveCLIAuthApiKey.
+  const saveApiKeyMutation = useSaveCLIAuthApiKey();
+  const deleteApiKeyMutation = useDeleteCLIAuthApiKey();
+
+  function handleSaveApiKey() {
+    if (!setTokenValue.trim() || saveApiKeyMutation.isPending) return;
+    saveApiKeyMutation.mutate(
+      { provider: providerName, apiKey: setTokenValue.trim() },
+      {
+        onSuccess: () => {
+          setSetTokenOpen(false);
+          setSetTokenValue("");
+        },
+      },
+    );
+  }
+
+  function handleDeleteApiKey() {
+    if (deleteApiKeyMutation.isPending) return;
+    deleteApiKeyMutation.mutate(providerName);
+  }
 
   return (
     <div
@@ -1562,11 +1704,27 @@ export function PageCli({
           <div>
             <BlockHead
               eyebrow="probe · last test"
-              right={credential.test ? (credential.test.ok ? "ok" : "failed") : "never"}
+              right={
+                testResult
+                  ? testResult.success ? "ok" : "failed"
+                  : credential.test ? (credential.test.ok ? "ok" : "failed") : "never"
+              }
             />
             <div className="mt-2.5 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-              <ProbeResult test={credential.test} />
+              <ProbeResult
+                test={
+                  testResult
+                    ? { ok: testResult.success, code: null, latencyMs: 0, at: "just now", message: testResult.detail || undefined }
+                    : credential.test
+                }
+                onProbe={!isMissing ? handleTest : undefined}
+              />
             </div>
+            {testResult && (
+              <Mono size={11} color={testResult.success ? "var(--green)" : "var(--red)"} className="mt-1.5">
+                {testResult.detail}
+              </Mono>
+            )}
           </div>
         </div>
       </div>
@@ -1597,6 +1755,118 @@ export function PageCli({
       {/* Device-code reauth panel (verification URL + one-time code) */}
       {deviceAuth?.supported && <CliDeviceAuthPanel auth={deviceAuth} />}
 
+      {/* Set token inline panel — paste value (token mode) or API key (api_key mode) */}
+      {setTokenOpen && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-set-token-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            {isApiKeyMode ? "api key" : "token value"}
+          </Mono>
+          <textarea
+            rows={3}
+            value={setTokenValue}
+            onChange={(e) => setSetTokenValue(e.target.value)}
+            placeholder={isApiKeyMode ? "paste api key here" : "paste token here"}
+            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            style={{
+              border: "1px solid var(--border-strong)",
+              background: "var(--bg)",
+              color: "var(--fg)",
+              borderRadius: 3,
+            }}
+          />
+          {saveApiKeyMutation.error && isApiKeyMode && (
+            <Mono size={11} color="var(--red)">
+              {saveApiKeyMutation.error instanceof Error
+                ? saveApiKeyMutation.error.message
+                : "Save failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={isApiKeyMode ? handleSaveApiKey : handleRotate}
+              disabled={!setTokenValue.trim() || (isApiKeyMode ? saveApiKeyMutation.isPending : rotateMutation.isPending)}
+            >
+              {(isApiKeyMode ? saveApiKeyMutation.isPending : rotateMutation.isPending) ? "saving…" : "save"}
+            </PillBtn>
+            <PillBtn onClick={handleSetTokenCancel} disabled={isApiKeyMode ? saveApiKeyMutation.isPending : rotateMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Rotate copy-once panel — new value returned from rotate(), shown once */}
+      {rotatedSecret !== null && (
+        <div
+          className="flex flex-col gap-2 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-rotated-secret-panel="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+            new token — copy now, won't be shown again
+          </Mono>
+          <Mono size={12}>{rotatedSecret}</Mono>
+          <div className="flex gap-2">
+            <PillBtn onClick={() => navigator.clipboard?.writeText(rotatedSecret)}>
+              copy
+            </PillBtn>
+            <PillBtn onClick={() => setRotatedSecret(null)}>
+              dismiss
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Revoke inline confirm */}
+      {revokeConfirm && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-revoke-confirm="true"
+        >
+          <Mono size={11} color="var(--red)">
+            Revoke this CLI token? The credential will be deleted and cannot be recovered.
+          </Mono>
+          {revokeMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {revokeMutation.error instanceof Error
+                ? revokeMutation.error.message
+                : "Revoke failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={handleRevokeConfirm}
+              disabled={revokeMutation.isPending}
+            >
+              {revokeMutation.isPending ? "revoking…" : "yes, revoke"}
+            </PillBtn>
+            <PillBtn onClick={handleRevokeCancel} disabled={revokeMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Revealed token display */}
+      {revealedToken !== null && (
+        <div
+          className="flex flex-col gap-2 p-3.5"
+          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
+          data-revealed-token="true"
+        >
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">revealed token</Mono>
+          <Mono size={12}>{revealedToken}</Mono>
+          <PillBtn onClick={() => setRevealedToken(null)}>dismiss</PillBtn>
+        </div>
+      )}
+
       {/* Footer — device-code flow when supported, else rotate-with-reveal */}
       <CommitFooter
         left={
@@ -1605,6 +1875,9 @@ export function PageCli({
               <PillBtn onClick={deviceAuth.cancel}>cancel</PillBtn>
             ) : (
               <>
+                {/* C10-BRIDGE: once bu-ayp6v.10 is built, the re-authorize button
+                    can be wired to the C10 reauth bridge. Until then, existing
+                    deviceAuth.start covers both initial connect and re-auth. */}
                 <PillBtn
                   variant={isMissing || sick ? "commit" : "pill"}
                   onClick={deviceAuth.start}
@@ -1616,24 +1889,89 @@ export function PageCli({
                       ? "connect"
                       : "re-authorize"}
                 </PillBtn>
-                {!isMissing && <PillBtn>test</PillBtn>}
+                {!isMissing && (
+                  <PillBtn
+                    onClick={handleTest}
+                    disabled={testMutation.isPending}
+                  >
+                    {testMutation.isPending ? "testing…" : "test"}
+                  </PillBtn>
+                )}
               </>
             )
+          ) : isApiKeyMode ? (
+            // api_key mode (e.g. Claude): save / test / delete key
+            <>
+              <PillBtn
+                variant={isMissing ? "commit" : "pill"}
+                onClick={handleSetTokenOpen}
+                disabled={setTokenOpen}
+              >
+                {isMissing ? "save key" : "update key"}
+              </PillBtn>
+              {!isMissing && (
+                <PillBtn
+                  onClick={handleTest}
+                  disabled={testMutation.isPending}
+                >
+                  {testMutation.isPending ? "testing…" : "test"}
+                </PillBtn>
+              )}
+            </>
           ) : isMissing ? (
-            <PillBtn variant="commit">set token</PillBtn>
+            <PillBtn
+              variant="commit"
+              onClick={handleSetTokenOpen}
+              disabled={setTokenOpen}
+            >
+              set token
+            </PillBtn>
           ) : (
             <>
-              <PillBtn variant={credential.state === "expiring" ? "commit" : "pill"}>
-                rotate
+              <PillBtn
+                variant={credential.state === "expiring" ? "commit" : "pill"}
+                onClick={handleRotate}
+                disabled={rotateMutation.isPending}
+              >
+                {rotateMutation.isPending ? "rotating…" : "rotate"}
               </PillBtn>
-              <PillBtn>test</PillBtn>
+              <PillBtn
+                onClick={handleTest}
+                disabled={testMutation.isPending}
+              >
+                {testMutation.isPending ? "testing…" : "test"}
+              </PillBtn>
             </>
           )
         }
         right={
           <>
-            {credential.fingerprint && revealMode !== "never" && <PillBtn>reveal token</PillBtn>}
-            {!isMissing && <PillBtn variant="danger">revoke</PillBtn>}
+            {credential.fingerprint && revealMode !== "never" && (
+              <PillBtn
+                onClick={handleReveal}
+                disabled={revealMutation.isPending || revealedToken !== null}
+              >
+                {revealMutation.isPending ? "revealing…" : "reveal token"}
+              </PillBtn>
+            )}
+            {!isMissing && !isApiKeyMode && (
+              <PillBtn
+                variant="danger"
+                onClick={() => { setRevokeConfirm(true); setSetTokenOpen(false); }}
+                disabled={revokeConfirm}
+              >
+                revoke
+              </PillBtn>
+            )}
+            {!isMissing && isApiKeyMode && (
+              <PillBtn
+                variant="danger"
+                onClick={handleDeleteApiKey}
+                disabled={deleteApiKeyMutation.isPending}
+              >
+                {deleteApiKeyMutation.isPending ? "deleting…" : "delete key"}
+              </PillBtn>
+            )}
           </>
         }
       />

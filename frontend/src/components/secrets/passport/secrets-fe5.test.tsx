@@ -37,6 +37,12 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     probeSystemCredential: vi.fn(),
     deleteSystemCredential: vi.fn(),
     revealSecret: vi.fn(),
+    rotateCliCredential: vi.fn(),
+    revokeCliCredential: vi.fn(),
+    listCLIAuthProviders: vi.fn().mockResolvedValue([]),
+    testCLIAuthApiKey: vi.fn(),
+    saveCLIAuthApiKey: vi.fn(),
+    deleteCLIAuthApiKey: vi.fn(),
   }
 })
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -276,24 +282,19 @@ describe("DirectionPassport: removed tweaks chrome", () => {
   const claudeCred = MOCK_CLI_CREDENTIALS.find((c) => c.id === "claude-cli")!;
 
   it("revealMode=eye (default): reveal token button IS present when fingerprint exists", () => {
-    const html = renderToStaticMarkup(
-      <PageCli credential={claudeCred} revealMode="eye" />,
-    );
+    // PageCli uses mutation hooks; wrap with QueryClientProvider via renderInRouter.
+    const html = renderInRouter(<PageCli credential={claudeCred} revealMode="eye" />);
     // Claude CLI has a fingerprint, so reveal token button shows by default
     expect(html).toContain("reveal token");
   });
 
   it("revealMode=hover: reveal token button IS present (hover mode does not suppress)", () => {
-    const html = renderToStaticMarkup(
-      <PageCli credential={claudeCred} revealMode="hover" />,
-    );
+    const html = renderInRouter(<PageCli credential={claudeCred} revealMode="hover" />);
     expect(html).toContain("reveal token");
   });
 
   it("revealMode=never: reveal token button is ABSENT", () => {
-    const html = renderToStaticMarkup(
-      <PageCli credential={claudeCred} revealMode="never" />,
-    );
+    const html = renderInRouter(<PageCli credential={claudeCred} revealMode="never" />);
     // Eye button suppressed when revealMode="never"
     expect(html).not.toContain("reveal token");
   });
@@ -301,9 +302,7 @@ describe("DirectionPassport: removed tweaks chrome", () => {
   it("revealMode=never, no fingerprint: button already absent (never_set cred)", () => {
     const gemini = MOCK_CLI_CREDENTIALS.find((c) => c.id === "gemini-cli")!;
     // gemini has no fingerprint — button is absent regardless of revealMode
-    const html = renderToStaticMarkup(
-      <PageCli credential={gemini} revealMode="never" />,
-    );
+    const html = renderInRouter(<PageCli credential={gemini} revealMode="never" />);
     expect(html).not.toContain("reveal token");
   });
 

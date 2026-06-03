@@ -37,6 +37,12 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     probeSystemCredential: vi.fn(),
     deleteSystemCredential: vi.fn(),
     revealSecret: vi.fn(),
+    rotateCliCredential: vi.fn(),
+    revokeCliCredential: vi.fn(),
+    listCLIAuthProviders: vi.fn().mockResolvedValue([]),
+    testCLIAuthApiKey: vi.fn(),
+    saveCLIAuthApiKey: vi.fn(),
+    deleteCLIAuthApiKey: vi.fn(),
   }
 })
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -485,10 +491,11 @@ describe("PageSystem: renders against mocked data", () => {
 
 // ── PageCli ──────────────────────────────────────────────────────────────────
 
+// PageCli now uses TanStack Query mutation hooks; use renderInRouter.
 describe("PageCli: renders against mocked data", () => {
   it("renders claude-cli (ok state)", () => {
     const claude = MOCK_CLI_CREDENTIALS.find((c) => c.id === "claude-cli")!;
-    const html = renderToStaticMarkup(<PageCli credential={claude} />);
+    const html = renderInRouter(<PageCli credential={claude} />);
     expect(html).toContain('data-page="cli"');
     expect(html).toContain("Claude Code");
     expect(html).toContain("how to use");
@@ -497,20 +504,20 @@ describe("PageCli: renders against mocked data", () => {
 
   it("renders codex-cli (expiring state) with rotate commit button", () => {
     const codex = MOCK_CLI_CREDENTIALS.find((c) => c.id === "codex-cli")!;
-    const html = renderToStaticMarkup(<PageCli credential={codex} />);
+    const html = renderInRouter(<PageCli credential={codex} />);
     expect(html).toContain("expiring");
     expect(html).toContain("rotate");
   });
 
   it("renders gemini-cli (never_set) with set token button", () => {
     const gemini = MOCK_CLI_CREDENTIALS.find((c) => c.id === "gemini-cli")!;
-    const html = renderToStaticMarkup(<PageCli credential={gemini} />);
+    const html = renderInRouter(<PageCli credential={gemini} />);
     expect(html).toContain("set token");
   });
 
   it("shows data-page attribute", () => {
     const claude = MOCK_CLI_CREDENTIALS[0]!;
-    const html = renderToStaticMarkup(<PageCli credential={claude} />);
+    const html = renderInRouter(<PageCli credential={claude} />);
     expect(html).toContain('data-page="cli"');
   });
 });

@@ -128,6 +128,8 @@ export function cliAuthProviderName(credentialId: string): string {
 export interface CliDeviceAuthState {
   /** True when a matching provider exists and uses the device-code flow. */
   supported: boolean;
+  /** True when the provider uses api_key auth mode (e.g. Claude). */
+  isApiKeyMode: boolean;
   /** Bare provider name passed to the cli-auth endpoints. */
   providerName: string;
   /** Latest polled session, or null before the flow starts. */
@@ -157,6 +159,7 @@ export function useCliDeviceAuth(credentialId: string): CliDeviceAuthState {
   const providersQuery = useCLIAuthProviders();
   const provider = providersQuery.data?.find((p) => p.name === providerName) ?? null;
   const supported = provider?.auth_mode === "device_code";
+  const isApiKeyMode = provider?.auth_mode === "api_key";
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -198,6 +201,7 @@ export function useCliDeviceAuth(credentialId: string): CliDeviceAuthState {
 
   return {
     supported,
+    isApiKeyMode,
     providerName,
     session,
     inProgress,

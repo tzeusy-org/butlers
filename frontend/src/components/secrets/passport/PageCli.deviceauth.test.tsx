@@ -18,10 +18,35 @@
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import * as React from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { PageCli } from "./pages.tsx";
 import type { CliCredential } from "./types.ts";
 import type { CliDeviceAuthState } from "@/hooks/use-cli-auth.ts";
+
+// PageCli uses TanStack Query mutation hooks; wrap with a provider.
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
+  return {
+    ...actual,
+    rotateCliCredential: vi.fn(),
+    revokeCliCredential: vi.fn(),
+    listCLIAuthProviders: vi.fn().mockResolvedValue([]),
+    testCLIAuthApiKey: vi.fn(),
+    saveCLIAuthApiKey: vi.fn(),
+    deleteCLIAuthApiKey: vi.fn(),
+    revealSecret: vi.fn(),
+  };
+});
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+function renderWithQuery(element: React.ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>{element}</QueryClientProvider>,
+  );
+}
 
 // Fixtures
 
@@ -44,6 +69,7 @@ function cred(overrides: Partial<CliCredential> = {}): CliCredential {
 function deviceAuth(overrides: Partial<CliDeviceAuthState> = {}): CliDeviceAuthState {
   return {
     supported: true,
+    isApiKeyMode: false,
     providerName: "codex",
     session: null,
     inProgress: false,
@@ -65,7 +91,7 @@ afterEach(() => {
 describe("PageCli: device-code reauth flow", () => {
   it("shows 'connect' for a never_set supported credential and calls start()", () => {
     const auth = deviceAuth();
-    render(<PageCli credential={cred({ state: "never_set" })} deviceAuth={auth} />);
+    renderWithQuery(<PageCli credential={cred({ state: "never_set" })} deviceAuth={auth} />);
 
     const [btn] = screen.getAllByText("connect");
     fireEvent.click(btn);
@@ -76,7 +102,7 @@ describe("PageCli: device-code reauth flow", () => {
 
   it("shows 're-authorize' for an expired supported credential and calls start()", () => {
     const auth = deviceAuth();
-    render(<PageCli credential={cred({ state: "expired", fingerprint: "ab12" })} deviceAuth={auth} />);
+    renderWithQuery(<PageCli credential={cred({ state: "expired", fingerprint: "ab12" })} deviceAuth={auth} />);
 
     const [btn] = screen.getAllByText("re-authorize");
     fireEvent.click(btn);
@@ -85,7 +111,7 @@ describe("PageCli: device-code reauth flow", () => {
   });
 
   it("shows 'starting…' and disables the button while starting", () => {
-    render(<PageCli credential={cred()} deviceAuth={deviceAuth({ starting: true })} />);
+    renderWithQuery(<PageCli credential={cred()} deviceAuth={deviceAuth({ starting: true })} />);
     const [btn] = screen.getAllByText("starting…").map((el) => el.closest("button")!);
     expect(btn.disabled).toBe(true);
   });
@@ -95,7 +121,7 @@ describe("PageCli: device-code reauth flow", () => {
       inProgress: true,
       session: { session_id: "s1", state: "awaiting_auth", auth_url: null, device_code: null, message: null, provider: "codex" },
     });
-    render(<PageCli credential={cred()} deviceAuth={auth} />);
+    renderWithQuery(<PageCli credential={cred()} deviceAuth={auth} />);
 
     const [btn] = screen.getAllByText("cancel");
     fireEvent.click(btn);
@@ -114,7 +140,7 @@ describe("PageCli: device-code reauth flow", () => {
         provider: "codex",
       },
     });
-    render(<PageCli credential={cred()} deviceAuth={auth} />);
+    renderWithQuery(<PageCli credential={cred()} deviceAuth={auth} />);
 
     expect(screen.getAllByText("ABCD-EFGH").length).toBeGreaterThan(0);
     const link = screen.getAllByText("https://auth.openai.com/codex/device")[0].closest("a");
@@ -123,7 +149,7 @@ describe("PageCli: device-code reauth flow", () => {
   });
 
   it("renders the legacy footer (no connect button) for unsupported providers", () => {
-    render(
+    renderWithQuery(
       <PageCli
         credential={cred({ id: "cli-auth/claude", label: "Claude", state: "never_set" })}
         deviceAuth={deviceAuth({ supported: false, providerName: "claude" })}
@@ -134,7 +160,7 @@ describe("PageCli: device-code reauth flow", () => {
   });
 
   it("renders the legacy footer when no deviceAuth prop is supplied", () => {
-    render(<PageCli credential={cred({ state: "never_set" })} />);
+    renderWithQuery(<PageCli credential={cred({ state: "never_set" })} />);
     expect(screen.getAllByText("set token").length).toBeGreaterThan(0);
     expect(screen.queryByText("connect")).toBeNull();
   });
