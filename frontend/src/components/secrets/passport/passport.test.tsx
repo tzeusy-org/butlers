@@ -74,10 +74,55 @@ vi.mock("@/hooks/use-google-health.ts", async (importOriginal) => {
     useDisconnectGoogleHealth: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
   }
 })
+// Provider-config drawer hooks [bu-ayp6v.8]
+vi.mock("@/hooks/use-home-assistant.ts", () => ({
+  useHomeAssistantStatus: vi.fn(() => ({
+    data: { state: "connected", url_configured: true, token_configured: true, masked_url: "http://ha.local:8123" },
+    isLoading: false,
+    error: null,
+  })),
+  useConfigureHomeAssistant: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null, data: null })),
+  useDeleteHomeAssistantConfig: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
+vi.mock("@/hooks/use-owntracks.ts", () => ({
+  useOwnTracksStatus: vi.fn(() => ({
+    data: { state: "active", last_event_at: "2026-06-01T10:00:00Z", events_today: 5, token_configured: true },
+    isLoading: false,
+    error: null,
+  })),
+  useOwnTracksConfig: vi.fn(() => ({
+    data: { webhook_url: "https://butlers.example.com/api/connectors/owntracks/webhook", host: "butlers.example.com" },
+    isLoading: false,
+    error: null,
+  })),
+  useOwnTracksGenerateToken: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
+vi.mock("@/hooks/use-steam.ts", () => ({
+  useSteamAccounts: vi.fn(() => ({
+    data: {
+      accounts: [
+        { id: "steam-1", steam_id: "76561198000000001", display_name: "TestUser", profile_url: null, avatar_url: null, is_primary: true, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null },
+      ],
+    },
+    isLoading: false,
+    error: null,
+  })),
+  useSteamConnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+  useSteamDisconnect: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
+}))
 
 import { SpineRow, Spine } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCli, PageGoogleAccounts } from "./pages.tsx";
 import { DirectionPassport } from "./DirectionPassport.tsx";
+import {
+  ProviderConfigDrawer,
+  HomeAssistantDrawer,
+  HomeAssistantDrawerContent,
+  OwnTracksDrawer,
+  OwnTracksDrawerContent,
+  SteamDrawer,
+  SteamDrawerContent,
+} from "./ProviderConfigDrawer.tsx";
 import {
   Fingerprint,
   StampGlyph,
@@ -926,5 +971,252 @@ describe("PageUser with Google provider: renders Google accounts panel", () => {
       <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} />,
     );
     expect(html).not.toContain('data-google-accounts-panel="true"');
+  });
+});
+
+// ── ProviderConfigDrawer framework [bu-ayp6v.8] ─────────────────────────────
+
+describe("ProviderConfigDrawer: generic shell", () => {
+  it("renders data-provider-config-drawer attribute with provider slug", () => {
+    const html = renderInRouter(
+      <ProviderConfigDrawer provider="testprovider" label="Test Provider" onClose={() => undefined}>
+        <span>content</span>
+      </ProviderConfigDrawer>,
+    );
+    expect(html).toContain('data-provider-config-drawer="testprovider"');
+  });
+
+  it("renders heading with provider label", () => {
+    const html = renderInRouter(
+      <ProviderConfigDrawer provider="testprovider" label="Test Provider" onClose={() => undefined}>
+        <span>content</span>
+      </ProviderConfigDrawer>,
+    );
+    expect(html).toContain("Test Provider");
+  });
+
+  it("renders dismiss button when not inline", () => {
+    const html = renderInRouter(
+      <ProviderConfigDrawer provider="testprovider" label="Test Provider" onClose={() => undefined}>
+        <span>content</span>
+      </ProviderConfigDrawer>,
+    );
+    expect(html).toContain("dismiss");
+  });
+
+  it("omits dismiss button and heading when inline=true", () => {
+    const html = renderInRouter(
+      <ProviderConfigDrawer provider="testprovider" label="Test Provider" onClose={() => undefined} inline>
+        <span data-inner="true">content</span>
+      </ProviderConfigDrawer>,
+    );
+    expect(html).toContain('data-provider-drawer-inline="true"');
+    expect(html).not.toContain("dismiss");
+    expect(html).not.toContain("Test Provider");
+  });
+
+  it("renders children", () => {
+    const html = renderInRouter(
+      <ProviderConfigDrawer provider="testprovider" label="Test Provider" onClose={() => undefined}>
+        <span data-custom-child="true">hello</span>
+      </ProviderConfigDrawer>,
+    );
+    expect(html).toContain('data-custom-child="true"');
+  });
+});
+
+// ── HomeAssistantDrawer [bu-ayp6v.8] ─────────────────────────────────────────
+
+describe("HomeAssistantDrawer: configure/disconnect", () => {
+  it("renders data-provider-config-drawer=homeassistant", () => {
+    const html = renderInRouter(<HomeAssistantDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-provider-config-drawer="homeassistant"');
+  });
+
+  it("renders HA drawer content", () => {
+    const html = renderInRouter(<HomeAssistantDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-ha-drawer-content="true"');
+  });
+
+  it("renders dismiss button in standalone mode", () => {
+    const html = renderInRouter(<HomeAssistantDrawer onClose={() => undefined} />);
+    expect(html).toContain("dismiss");
+  });
+
+  it("omits dismiss button in inline mode", () => {
+    const html = renderInRouter(<HomeAssistantDrawer onClose={() => undefined} inline />);
+    expect(html).not.toContain("dismiss");
+  });
+
+  it("renders status dot (not a word) for connection state", () => {
+    const html = renderInRouter(<HomeAssistantDrawerContent />);
+    expect(html).toContain('data-ha-status-dot="true"');
+  });
+
+  it("renders masked URL when configured", () => {
+    const html = renderInRouter(<HomeAssistantDrawerContent />);
+    expect(html).toContain("http://ha.local:8123");
+  });
+
+  it("renders configure/reconfigure action", () => {
+    const html = renderInRouter(<HomeAssistantDrawerContent />);
+    expect(html).toContain("reconfigure");
+  });
+
+  it("renders disconnect action when configured", () => {
+    const html = renderInRouter(<HomeAssistantDrawerContent />);
+    expect(html).toContain("disconnect");
+  });
+});
+
+// ── OwnTracksDrawer [bu-ayp6v.8] ─────────────────────────────────────────────
+
+describe("OwnTracksDrawer: token generate/regenerate + webhook URL", () => {
+  it("renders data-provider-config-drawer=owntracks", () => {
+    const html = renderInRouter(<OwnTracksDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-provider-config-drawer="owntracks"');
+  });
+
+  it("renders OwnTracks drawer content", () => {
+    const html = renderInRouter(<OwnTracksDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-owntracks-drawer-content="true"');
+  });
+
+  it("renders status dot (not a word) for connection state", () => {
+    const html = renderInRouter(<OwnTracksDrawerContent />);
+    expect(html).toContain('data-owntracks-status-dot="true"');
+  });
+
+  it("renders webhook URL display", () => {
+    const html = renderInRouter(<OwnTracksDrawerContent />);
+    expect(html).toContain('data-owntracks-webhook-url="true"');
+    expect(html).toContain("butlers.example.com");
+  });
+
+  it("renders regenerate token action when token is configured", () => {
+    const html = renderInRouter(<OwnTracksDrawerContent />);
+    expect(html).toContain("regenerate token");
+  });
+
+  it("renders event count", () => {
+    const html = renderInRouter(<OwnTracksDrawerContent />);
+    expect(html).toContain("5 events today");
+  });
+
+  it("renders dismiss button in standalone mode", () => {
+    const html = renderInRouter(<OwnTracksDrawer onClose={() => undefined} />);
+    expect(html).toContain("dismiss");
+  });
+
+  it("omits dismiss button in inline mode", () => {
+    const html = renderInRouter(<OwnTracksDrawer onClose={() => undefined} inline />);
+    expect(html).not.toContain("dismiss");
+  });
+});
+
+// ── SteamDrawer [bu-ayp6v.8] ─────────────────────────────────────────────────
+
+describe("SteamDrawer: connect / list / disconnect accounts", () => {
+  it("renders data-provider-config-drawer=steam", () => {
+    const html = renderInRouter(<SteamDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-provider-config-drawer="steam"');
+  });
+
+  it("renders Steam drawer content", () => {
+    const html = renderInRouter(<SteamDrawer onClose={() => undefined} />);
+    expect(html).toContain('data-steam-drawer-content="true"');
+  });
+
+  it("renders connected account with steam_id", () => {
+    const html = renderInRouter(<SteamDrawerContent />);
+    expect(html).toContain("76561198000000001");
+  });
+
+  it("renders account display name", () => {
+    const html = renderInRouter(<SteamDrawerContent />);
+    expect(html).toContain("TestUser");
+  });
+
+  it("renders status dot (not a word) for account state", () => {
+    const html = renderInRouter(<SteamDrawerContent />);
+    expect(html).toContain("data-steam-account-dot");
+  });
+
+  it("renders connect account action", () => {
+    const html = renderInRouter(<SteamDrawerContent />);
+    expect(html).toContain("connect account");
+  });
+
+  it("renders disconnect action for connected account", () => {
+    const html = renderInRouter(<SteamDrawerContent />);
+    expect(html).toContain("disconnect");
+  });
+
+  it("renders dismiss button in standalone mode", () => {
+    const html = renderInRouter(<SteamDrawer onClose={() => undefined} />);
+    expect(html).toContain("dismiss");
+  });
+
+  it("omits dismiss button in inline mode", () => {
+    const html = renderInRouter(<SteamDrawer onClose={() => undefined} inline />);
+    expect(html).not.toContain("dismiss");
+  });
+
+  it("renders 1 connected count", () => {
+    const html = renderInRouter(<SteamDrawerContent />);
+    expect(html).toContain("1 connected");
+  });
+});
+
+// ── PageUser provider drawer integration [bu-ayp6v.8] ───────────────────────
+
+describe("PageUser: renders provider config drawers for HA/OwnTracks/Steam", () => {
+  it("renders HA drawer inline inside PageUser for homeassistant provider", () => {
+    const ha = MOCK_USER_CREDENTIALS.find((u) => u.provider === "homeassistant")!;
+    const html = renderInRouter(
+      <PageUser
+        credential={ha}
+        provider={MOCK_PROVIDERS.homeassistant}
+        identities={MOCK_IDENTITIES}
+      />,
+    );
+    expect(html).toContain('data-provider-config-drawer="homeassistant"');
+    expect(html).toContain('data-ha-drawer-content="true"');
+  });
+
+  it("renders OwnTracks drawer inline inside PageUser for owntracks provider", () => {
+    const owntracks = MOCK_USER_CREDENTIALS.find((u) => u.provider === "owntracks")!;
+    const html = renderInRouter(
+      <PageUser
+        credential={owntracks}
+        provider={MOCK_PROVIDERS.owntracks}
+        identities={MOCK_IDENTITIES}
+      />,
+    );
+    expect(html).toContain('data-provider-config-drawer="owntracks"');
+    expect(html).toContain('data-owntracks-drawer-content="true"');
+  });
+
+  it("renders Steam drawer inline inside PageUser for steam provider", () => {
+    const steam = MOCK_USER_CREDENTIALS.find((u) => u.provider === "steam")!;
+    const html = renderInRouter(
+      <PageUser
+        credential={steam}
+        provider={MOCK_PROVIDERS.steam}
+        identities={MOCK_IDENTITIES}
+      />,
+    );
+    expect(html).toContain('data-provider-config-drawer="steam"');
+    expect(html).toContain('data-steam-drawer-content="true"');
+  });
+
+  it("does NOT render HA drawer for non-HA provider (e.g. spotify)", () => {
+    const spotify = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!;
+    const html = renderInRouter(
+      <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} />,
+    );
+    expect(html).not.toContain('data-provider-config-drawer="homeassistant"');
+    expect(html).not.toContain('data-provider-config-drawer="owntracks"');
+    expect(html).not.toContain('data-provider-config-drawer="steam"');
   });
 });
