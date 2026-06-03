@@ -636,7 +636,11 @@ export interface SearchParams {
 // Audit Log
 // ---------------------------------------------------------------------------
 
-/** A single audit log entry. */
+/**
+ * Legacy audit entry from the ``dashboard_audit_log`` table.
+ * Kept for any existing code that still references the old schema.
+ * @deprecated Use AuditLogEntry for the current public.audit_log schema.
+ */
 export interface AuditEntry {
   id: string;
   butler: string;
@@ -648,18 +652,33 @@ export interface AuditEntry {
   created_at: string; // ISO 8601
 }
 
-/** Query parameters for the audit log endpoint. */
+/**
+ * A single entry from the ``public.audit_log`` primitive table (core_092).
+ * Matches the backend ``AuditLogEntry`` Pydantic model exactly.
+ */
+export interface AuditLogEntry {
+  id: number;
+  ts: string; // ISO 8601
+  actor: string;
+  action: string;
+  target: string | null;
+  note: string | null;
+  ip: string | null;
+  request_id: string | null;
+}
+
+/** Query parameters for the audit log endpoint (GET /api/audit-log). */
 export interface AuditLogParams {
   offset?: number;
   limit?: number;
-  butler?: string;
-  operation?: string;
+  /** Filter by actor (exact match). */
+  actor?: string;
+  /** Filter by action verb (exact match). */
+  action?: string;
+  /** ISO 8601 lower bound on ts. */
   since?: string;
-  until?: string;
   /** Filter by canonical credential key (e.g. "u:google"). Forwarded as ?key= to GET /api/audit-log. */
   key?: string;
-  /** Filter by actor identity (e.g. a CLI credential id). Forwarded as ?actor= to GET /api/audit-log. */
-  actor?: string;
 }
 
 // ---------------------------------------------------------------------------

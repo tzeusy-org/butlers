@@ -359,10 +359,10 @@ function AuditReelSection() {
           {(data?.data ?? []).map((entry) => (
             <div key={entry.id} className="flex gap-3 text-sm">
               <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
-                {new Date(entry.created_at).toLocaleTimeString()}
+                {new Date(entry.ts).toLocaleTimeString()}
               </span>
-              <span className="text-xs text-muted-foreground">{entry.butler}</span>
-              <span className="font-serif text-xs flex-1">{entry.operation}</span>
+              <span className="text-xs text-muted-foreground">{entry.actor}</span>
+              <span className="font-serif text-xs flex-1">{entry.action}</span>
             </div>
           ))}
           {(data?.data ?? []).length === 0 && (

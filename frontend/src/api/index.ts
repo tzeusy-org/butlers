@@ -194,6 +194,7 @@ export type {
   ApiMeta,
   ApiResponse,
   AuditEntry,
+  AuditLogEntry,
   AuditLogParams,
   ButlerConfigResponse,
   ButlerDetail,

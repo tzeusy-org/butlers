@@ -26,7 +26,7 @@ import type {
   ExpireStaleActionsResponse,
   RuleConstraintSuggestion,
   ApiResponse,
-  AuditEntry,
+  AuditLogEntry,
   AuditLogParams,
   ButlerConfigResponse,
   ButlerDetail,
@@ -895,21 +895,19 @@ export function callButlerMcpTool(
 // Audit Log
 // ---------------------------------------------------------------------------
 
-/** Fetch a paginated list of audit log entries. */
+/** Fetch a paginated list of audit log entries from public.audit_log. */
 export function getAuditLog(
   params?: AuditLogParams,
-): Promise<PaginatedResponse<AuditEntry>> {
+): Promise<PaginatedResponse<AuditLogEntry>> {
   const sp = new URLSearchParams();
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.butler) sp.set("butler", params.butler);
-  if (params?.operation) sp.set("operation", params.operation);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  if (params?.key) sp.set("key", params.key);
   if (params?.actor) sp.set("actor", params.actor);
+  if (params?.action) sp.set("action", params.action);
+  if (params?.since) sp.set("since", params.since);
+  if (params?.key) sp.set("key", params.key);
   const qs = sp.toString();
-  return apiFetch<PaginatedResponse<AuditEntry>>(qs ? `/audit-log?${qs}` : "/audit-log");
+  return apiFetch<PaginatedResponse<AuditLogEntry>>(qs ? `/audit-log?${qs}` : "/audit-log");
 }
 
 // ---------------------------------------------------------------------------

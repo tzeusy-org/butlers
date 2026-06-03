@@ -1,13 +1,10 @@
 /**
- * AuditLogPage — unit tests for ?key= and ?actor= deep-link wiring (bu-zpivp).
+ * AuditLogPage — unit tests.
  *
- * Verifies:
- * - ?key= from URL is forwarded to getAuditLog via useAuditLog
- * - ?actor= from URL is forwarded to getAuditLog via useAuditLog
- * - Key filter chip renders when ?key= is present
- * - Actor filter chip renders when ?actor= is present
- * - No filter chips when neither ?key= nor ?actor= is present
- * - Existing filters (butler, operation, since, until) still build params
+ * Covers:
+ * - ?key= and ?actor= deep-link wiring (bu-zpivp) — preserved
+ * - New-schema filter params: actor (filter bar), action, since (bu-ffnyz)
+ * - Table renders new-schema AuditLogEntry rows
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -16,7 +13,7 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import AuditLogPage from "@/pages/AuditLogPage";
-import type { AuditLogParams } from "@/api/types";
+import type { AuditLogParams, AuditLogEntry } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -32,9 +29,12 @@ import { useButlers } from "@/hooks/use-butlers";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeEmptyAuditResponse() {
+function makeAuditResponse(entries: AuditLogEntry[] = []) {
   return {
-    data: { data: [], meta: { total: 0, offset: 0, limit: 20 } },
+    data: {
+      data: entries,
+      meta: { total: entries.length, offset: 0, limit: 20, has_more: false },
+    },
     isLoading: false,
   };
 }
@@ -58,9 +58,13 @@ function renderPage(initialPath = "/audit-log"): string {
 // Setup defaults
 // ---------------------------------------------------------------------------
 
-function setupDefaults() {
-  vi.mocked(useAuditLog).mockReturnValue(makeEmptyAuditResponse() as unknown as ReturnType<typeof useAuditLog>);
-  vi.mocked(useButlers).mockReturnValue(makeEmptyButlersResponse() as unknown as ReturnType<typeof useButlers>);
+function setupDefaults(entries: AuditLogEntry[] = []) {
+  vi.mocked(useAuditLog).mockReturnValue(
+    makeAuditResponse(entries) as unknown as ReturnType<typeof useAuditLog>,
+  );
+  vi.mocked(useButlers).mockReturnValue(
+    makeEmptyButlersResponse() as unknown as ReturnType<typeof useButlers>,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -160,28 +164,10 @@ describe("AuditLogPage — combined filters", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Existing URL filters still work (butler, operation, since, until)
+// New-schema filter params (bu-ffnyz): action and since
 // ---------------------------------------------------------------------------
 
-describe("AuditLogPage — existing URL filter params", () => {
-  it("reads butler filter from URL and builds params", () => {
-    setupDefaults();
-    renderPage("/audit-log?butler=general");
-
-    const calls = vi.mocked(useAuditLog).mock.calls;
-    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
-    expect(params.butler).toBe("general");
-  });
-
-  it("excludes butler from params when value is 'all'", () => {
-    setupDefaults();
-    renderPage("/audit-log");
-
-    const calls = vi.mocked(useAuditLog).mock.calls;
-    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
-    expect(params.butler).toBeUndefined();
-  });
-
+describe("AuditLogPage — new-schema URL filter params", () => {
   it("reads since filter from URL and builds params", () => {
     setupDefaults();
     renderPage("/audit-log?since=2026-01-01");
@@ -189,5 +175,77 @@ describe("AuditLogPage — existing URL filter params", () => {
     const calls = vi.mocked(useAuditLog).mock.calls;
     const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
     expect(params.since).toBe("2026-01-01");
+  });
+
+  it("does not include action in params when absent", () => {
+    setupDefaults();
+    renderPage("/audit-log");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.action).toBeUndefined();
+  });
+
+  it("does not include actor in params when neither URL param nor filter is set", () => {
+    setupDefaults();
+    renderPage("/audit-log");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.actor).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Table renders new-schema rows correctly
+// ---------------------------------------------------------------------------
+
+describe("AuditLogPage — table renders new-schema rows", () => {
+  it("renders actor and action columns from AuditLogEntry", () => {
+    const entry: AuditLogEntry = {
+      id: 1,
+      ts: "2026-01-15T10:00:00Z",
+      actor: "owner",
+      action: "credential_set",
+      target: "u:google",
+      note: null,
+      ip: null,
+      request_id: null,
+    };
+    setupDefaults([entry]);
+    const html = renderPage("/audit-log");
+    expect(html).toContain("owner");
+    expect(html).toContain("credential_set");
+    expect(html).toContain("u:google");
+  });
+
+  it("renders multiple entries", () => {
+    const entries: AuditLogEntry[] = [
+      {
+        id: 1,
+        ts: "2026-01-15T10:00:00Z",
+        actor: "owner",
+        action: "credential_set",
+        target: "u:google",
+        note: null,
+        ip: null,
+        request_id: null,
+      },
+      {
+        id: 2,
+        ts: "2026-01-15T09:00:00Z",
+        actor: "qa",
+        action: "session_start",
+        target: null,
+        note: null,
+        ip: null,
+        request_id: null,
+      },
+    ];
+    setupDefaults(entries);
+    const html = renderPage("/audit-log");
+    expect(html).toContain("credential_set");
+    expect(html).toContain("session_start");
+    expect(html).toContain("qa");
   });
 });

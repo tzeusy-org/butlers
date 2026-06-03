@@ -7,15 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useAuditLog } from "@/hooks/use-audit-log";
-import { useButlers } from "@/hooks/use-butlers";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -23,46 +15,28 @@ import { useButlers } from "@/hooks/use-butlers";
 
 const PAGE_SIZE = 20;
 
-const OPERATION_OPTIONS = [
-  "all",
-  "trigger",
-  "tick",
-  "session",
-  "schedule.create",
-  "schedule.update",
-  "schedule.delete",
-  "schedule.toggle",
-  "state.set",
-  "state.delete",
-] as const;
-
 // ---------------------------------------------------------------------------
 // Filter state
 // ---------------------------------------------------------------------------
 
 interface FilterState {
-  butler: string;
-  operation: string;
+  actor: string;
+  action: string;
   since: string;
-  until: string;
 }
 
 const EMPTY_FILTERS: FilterState = {
-  butler: "all",
-  operation: "all",
+  actor: "",
+  action: "",
   since: "",
-  until: "",
 };
 
-const VALID_OPERATIONS = new Set<string>(OPERATION_OPTIONS);
-
 function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
-  const op = searchParams.get("operation") ?? "";
   return {
-    butler: searchParams.get("butler") || "all",
-    operation: VALID_OPERATIONS.has(op) ? op : "all",
+    // actor from filter bar (not the ?actor= deep-link chip)
+    actor: "",
+    action: searchParams.get("action") ?? "",
     since: searchParams.get("since") ?? "",
-    until: searchParams.get("until") ?? "",
   };
 }
 
@@ -83,19 +57,15 @@ export default function AuditLogPage() {
   const keyFilter = searchParams.get("key") ?? undefined;
   const actorFilter = searchParams.get("actor") ?? undefined;
 
-  // Fetch butler names for the dropdown
-  const { data: butlersResponse } = useButlers();
-  const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
-
   // Build API params from filter state
   const params: AuditLogParams = {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
-    ...(filters.butler !== "all" ? { butler: filters.butler } : {}),
-    ...(filters.operation !== "all" ? { operation: filters.operation } : {}),
+    ...(filters.actor ? { actor: filters.actor } : {}),
+    ...(filters.action ? { action: filters.action } : {}),
     ...(filters.since ? { since: filters.since } : {}),
-    ...(filters.until ? { until: filters.until } : {}),
     ...(keyFilter ? { key: keyFilter } : {}),
+    // ?actor= deep-link overrides the filter-bar actor when present
     ...(actorFilter ? { actor: actorFilter } : {}),
   };
 
@@ -138,10 +108,9 @@ export default function AuditLogPage() {
   }
 
   const hasActiveFilters =
-    filters.butler !== "all" ||
-    filters.operation !== "all" ||
-    filters.since !== "" ||
-    filters.until !== "";
+    filters.actor !== "" ||
+    filters.action !== "" ||
+    filters.since !== "";
 
   return (
     <div className="space-y-6">
@@ -197,49 +166,40 @@ export default function AuditLogPage() {
       <Card>
         <CardContent className="pt-0">
           <div className="flex flex-wrap items-end gap-4">
-            {/* Butler dropdown */}
+            {/* Actor text input */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">
-                Butler
-              </label>
-              <Select
-                value={filters.butler}
-                onValueChange={(v) => handleFilterChange("butler", v)}
+              <label
+                htmlFor="filter-actor"
+                className="text-muted-foreground text-xs font-medium"
               >
-                <SelectTrigger className="w-44">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {butlerNames.map((name) => (
-                    <SelectItem key={name} value={name}>
-                      {name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                Actor
+              </label>
+              <Input
+                id="filter-actor"
+                type="text"
+                placeholder="e.g. owner"
+                value={filters.actor}
+                onChange={(e) => handleFilterChange("actor", e.target.value)}
+                className="w-40"
+              />
             </div>
 
-            {/* Operation dropdown */}
+            {/* Action text input */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">
-                Operation
-              </label>
-              <Select
-                value={filters.operation}
-                onValueChange={(v) => handleFilterChange("operation", v)}
+              <label
+                htmlFor="filter-action"
+                className="text-muted-foreground text-xs font-medium"
               >
-                <SelectTrigger className="w-44">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {OPERATION_OPTIONS.map((op) => (
-                    <SelectItem key={op} value={op}>
-                      {op === "all" ? "All" : op}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                Action
+              </label>
+              <Input
+                id="filter-action"
+                type="text"
+                placeholder="e.g. credential_set"
+                value={filters.action}
+                onChange={(e) => handleFilterChange("action", e.target.value)}
+                className="w-48"
+              />
             </div>
 
             {/* Since date */}
@@ -255,23 +215,6 @@ export default function AuditLogPage() {
                 type="date"
                 value={filters.since}
                 onChange={(e) => handleFilterChange("since", e.target.value)}
-                className="w-40"
-              />
-            </div>
-
-            {/* Until date */}
-            <div className="space-y-1">
-              <label
-                htmlFor="filter-until"
-                className="text-muted-foreground text-xs font-medium"
-              >
-                To
-              </label>
-              <Input
-                id="filter-until"
-                type="date"
-                value={filters.until}
-                onChange={(e) => handleFilterChange("until", e.target.value)}
                 className="w-40"
               />
             </div>
