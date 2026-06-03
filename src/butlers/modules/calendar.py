@@ -195,6 +195,7 @@ class _GoogleOAuthClient:
         credentials: _GoogleOAuthCredentials,
         http_client: httpx.AsyncClient,
         on_token_refreshed: Callable[[], Coroutine[Any, Any, None]] | None = None,
+        on_token_revoked: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         self._credentials = credentials
         self._http_client = http_client
@@ -202,6 +203,7 @@ class _GoogleOAuthClient:
         self._access_token_expires_at: datetime | None = None
         self._refresh_lock = asyncio.Lock()
         self._on_token_refreshed = on_token_refreshed
+        self._on_token_revoked = on_token_revoked
 
     async def get_access_token(self, *, force_refresh: bool = False) -> str:
         if not force_refresh and self._token_is_fresh():
@@ -244,10 +246,14 @@ class _GoogleOAuthClient:
                 ) from exc
 
             if response.status_code < 200 or response.status_code >= 300:
+                error_code = _google_error_code(response)
                 last_exc = CalendarTokenRefreshError(
                     "Google OAuth token refresh failed "
                     f"({response.status_code}): {_safe_google_error_message(response)}"
                 )
+                if error_code == "invalid_grant":
+                    await self._notify_token_revoked()
+                    raise last_exc
                 if attempt < max_retries:
                     delay = 2**attempt  # 1s, 2s
                     logger.warning(
@@ -290,9 +296,20 @@ class _GoogleOAuthClient:
                 await self._on_token_refreshed()
             except Exception:
                 logger.debug(
-                    "CalendarModule: on_token_refreshed callback failed (non-blocking)",
+                    "CalendarModule: on_token_refreshed callback failed (best-effort)",
                     exc_info=True,
                 )
+
+    async def _notify_token_revoked(self) -> None:
+        if self._on_token_revoked is None:
+            return
+        try:
+            await self._on_token_revoked()
+        except Exception:
+            logger.debug(
+                "CalendarModule: on_token_revoked callback failed (best-effort)",
+                exc_info=True,
+            )
 
 
 def _cron_next_occurrence(cron: str, *, now: datetime | None = None) -> datetime:
@@ -409,6 +426,28 @@ def _safe_google_error_message(response: httpx.Response) -> str:
     if raw_text:
         return " ".join(raw_text.split())[:200]
     return "Request failed without an error payload"
+
+
+def _google_error_code(response: httpx.Response) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    error_payload = payload.get("error")
+    if isinstance(error_payload, str) and error_payload.strip():
+        return error_payload.strip()
+    if isinstance(error_payload, dict):
+        for key in ("code", "status", "reason"):
+            value = error_payload.get(key)
+            if isinstance(value, str | int | float | bool):
+                value_text = str(value).strip()
+                if value_text:
+                    return value_text
+    return None
 
 
 def _redact_credential_values(message: str) -> str:
@@ -1692,34 +1731,74 @@ class _GoogleProvider(CalendarProvider):
         self._owns_http_client = http_client is None
         self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
 
-        # Wire a post-refresh callback to update last_token_refresh_at when an
-        # explicit account is configured (multi-account setup).
+        # Wire post-refresh callbacks so account health follows observed OAuth
+        # outcomes from this module, not only dashboard-originated changes.
         on_token_refreshed: Callable[[], Coroutine[Any, Any, None]] | None = None
+        on_token_revoked: Callable[[], Coroutine[Any, Any, None]] | None = None
         account_email = config.account
-        if pool is not None and account_email:
+        if pool is not None:
             _email = account_email
             _pool = pool
 
             async def _update_last_token_refresh_at() -> None:
                 try:
-                    await _pool.execute(
-                        """
-                        UPDATE public.google_accounts
-                        SET last_token_refresh_at = NOW()
-                        WHERE email = $1
-                        """,
-                        _email,
-                    )
+                    if _email:
+                        await _pool.execute(
+                            """
+                            UPDATE public.google_accounts
+                            SET last_token_refresh_at = NOW()
+                            WHERE email = $1
+                            """,
+                            _email,
+                        )
+                    else:
+                        await _pool.execute(
+                            """
+                            UPDATE public.google_accounts
+                            SET last_token_refresh_at = NOW()
+                            WHERE is_primary = true
+                            """
+                        )
                 except Exception:
                     logger.debug(
-                        "CalendarModule: failed to update last_token_refresh_at for %s",
-                        _email,
+                        "CalendarModule: failed to update last_token_refresh_at",
+                        exc_info=True,
+                    )
+
+            async def _mark_token_revoked() -> None:
+                try:
+                    if _email:
+                        await _pool.execute(
+                            """
+                            UPDATE public.google_accounts
+                            SET status = 'revoked'
+                            WHERE email = $1
+                            """,
+                            _email,
+                        )
+                    else:
+                        await _pool.execute(
+                            """
+                            UPDATE public.google_accounts
+                            SET status = 'revoked'
+                            WHERE is_primary = true
+                            """
+                        )
+                except Exception:
+                    logger.debug(
+                        "CalendarModule: failed to mark Google account revoked",
                         exc_info=True,
                     )
 
             on_token_refreshed = _update_last_token_refresh_at
+            on_token_revoked = _mark_token_revoked
 
-        self._oauth = _GoogleOAuthClient(credentials, self._http_client, on_token_refreshed)
+        self._oauth = _GoogleOAuthClient(
+            credentials,
+            self._http_client,
+            on_token_refreshed,
+            on_token_revoked,
+        )
 
     @property
     def name(self) -> str:
