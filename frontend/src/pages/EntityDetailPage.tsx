@@ -638,12 +638,9 @@ function LinkedContactSection({
       <CardContent>
         {entity.linked_contact_id ? (
           <div className="flex items-center gap-3">
-            <Link
-              to={`/entities/${entityId}`}
-              className="text-primary hover:underline"
-            >
+            <span className="text-sm">
               {entity.linked_contact_name ?? entity.linked_contact_id}
-            </Link>
+            </span>
             <Button
               variant="ghost"
               size="sm"

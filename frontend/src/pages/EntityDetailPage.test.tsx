@@ -1006,25 +1006,39 @@ describe("EntityDetailPage — BreadcrumbStrip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// LinkedContactSection — direct /entities/:id link (bu-rah6u)
+// LinkedContactSection — plain text (no circular self-link) (bu-u0csg)
 // ---------------------------------------------------------------------------
 
-describe("EntityDetailPage — LinkedContactSection direct entity link", () => {
+describe("EntityDetailPage — LinkedContactSection plain-text display", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("linked contact name links to /entities/:entityId directly (not /contacts/:contactId)", () => {
+  it("linked contact name renders as plain text, not a link to the same entity page", () => {
     setEntityState({
       ...BASE_ENTITY,
       linked_contact_id: "contact-xyz",
       linked_contact_name: "Linked Contact Name",
     });
     const html = renderPage();
-    // Must link to the entity page directly
-    expect(html).toContain('href="/entities/entity-001"');
+    // Contact name must appear as plain text
+    expect(html).toContain("Linked Contact Name");
+    // Must NOT render a circular self-link to the current entity page
+    expect(html).not.toContain('href="/entities/entity-001"');
     // Must NOT use the /contacts/ redirect path
     expect(html).not.toContain('href="/contacts/contact-xyz"');
+  });
+
+  it("falls back to linked_contact_id as text when linked_contact_name is null", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      linked_contact_id: "contact-xyz",
+      linked_contact_name: null,
+    });
+    const html = renderPage();
+    // ID shown as fallback plain text
+    expect(html).toContain("contact-xyz");
+    expect(html).not.toContain('href="/entities/entity-001"');
   });
 
   it("linked contact section is not rendered when linked_contact_id is null", () => {
