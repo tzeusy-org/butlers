@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core.runtimes.opencode import (
+    _MAX_PROMPT_ARG_BYTES,
+    _PROMPT_ATTACHMENT_MESSAGE,
     OpenCodeAdapter,
     _extract_opencode_tool_call,
     _extract_usage,
@@ -274,6 +276,8 @@ async def test_invoke_success_and_config():
     assert result_text == "Task done." and usage == {"input_tokens": 10, "output_tokens": 20}
     cmd = mock_sub.call_args[0]
     assert cmd[0] == "/usr/bin/opencode" and cmd[1] == "run" and "--format" in cmd
+    assert "do something" in cmd
+    assert "--file" not in cmd
     env = mock_sub.call_args[1]["env"]
     assert "OPENCODE_CONFIG" in env and env["OPENCODE_CONFIG"].endswith("opencode.jsonc")
 
@@ -292,6 +296,41 @@ async def test_invoke_success_and_config():
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(prompt="run", system_prompt="", mcp_servers={}, env={}, model=None)
     assert "--model" not in mock_sub.call_args[0]
+
+
+async def test_invoke_spills_large_prompt_to_attachment():
+    """Large prompts are attached by file so execve argv limits cannot reject the spawn."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+    large_prompt = "x" * (_MAX_PROMPT_ARG_BYTES + 1)
+    output = json.dumps({"type": "text", "text": "Task done."})
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
+    mock_proc.returncode = 0
+
+    captured: dict[str, object] = {}
+
+    async def fake_exec(*cmd, **kwargs):
+        prompt_file = Path(cmd[cmd.index("--file") + 1])
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        captured["prompt_file_text"] = prompt_file.read_text(encoding="utf-8")
+        return mock_proc
+
+    with patch(_EXEC, side_effect=fake_exec):
+        result_text, _, _ = await adapter.invoke(
+            prompt=large_prompt,
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    cmd = captured["cmd"]
+    assert result_text == "Task done."
+    assert isinstance(cmd, tuple)
+    assert large_prompt not in cmd
+    assert "--file" in cmd
+    assert _PROMPT_ATTACHMENT_MESSAGE in cmd
+    assert captured["prompt_file_text"] == large_prompt
 
 
 async def test_invoke_retries_completed_startup_migration():

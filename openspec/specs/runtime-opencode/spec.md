@@ -10,8 +10,14 @@ The `OpenCodeAdapter` SHALL invoke the OpenCode CLI via `opencode run --format j
 
 #### Scenario: Successful invocation
 - **WHEN** the adapter invokes OpenCode with a valid prompt and config
-- **THEN** it runs `opencode run --format json --model <model> <prompt>` as an async subprocess
+- **THEN** it runs `opencode run --format json --model <model> <prompt>` as an async subprocess when the prompt is small enough for argv
 - **AND** captures stdout/stderr and parses the JSON output
+
+#### Scenario: Large prompt uses file attachment
+- **WHEN** the prompt is too large to pass safely as a command-line argument
+- **THEN** the adapter writes the prompt to a temporary Markdown file for the invocation
+- **AND** the command uses `--file <prompt-file>` with a short instruction message instead of placing the full prompt in argv
+- **AND** the temporary prompt file is cleaned up with the invocation directory
 
 #### Scenario: Binary not found
 - **WHEN** the `opencode` binary is not on PATH
