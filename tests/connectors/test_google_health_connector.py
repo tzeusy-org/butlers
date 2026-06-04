@@ -1909,3 +1909,57 @@ async def test_main_loop_all_accounts_fail_sets_global_auth_error(
     assert connector._auth_error is True, (
         "Global auth_error must be True when all accounts have credential failures"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: _load_all_cursors is a safe no-op when _resources is empty
+# [bu-69krs]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_load_all_cursors_is_noop_with_no_cursor_pool() -> None:
+    """_load_all_cursors returns immediately when cursor_pool is None.
+
+    This is the degenerate case: Phase 3 of start() is always called, but
+    cursor_pool may be None in test and degraded-mode environments.  No error
+    must be raised.
+    """
+    connector = _make_connector()
+    # Freshly constructed — _resources is empty, _cursor_pool is None.
+    assert connector._resources == {}
+    assert connector._cursor_pool is None
+
+    # Must not raise.
+    await connector._load_all_cursors()
+
+
+@pytest.mark.asyncio
+async def test_load_all_cursors_is_noop_when_resources_empty_and_pool_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_load_all_cursors is a no-op when _resources is empty, even with a live cursor_pool.
+
+    Invariant: _load_all_cursors() is called in start() Phase 3 *before*
+    _resolve_owner_and_scopes has had a chance to populate _resources.  In
+    that pre-population window _resources is empty, so the for-loop body never
+    executes and load_cursor is never called — regardless of whether a cursor
+    pool is attached.
+
+    Regression guard for bu-69krs.
+    """
+    connector = _make_connector()
+    # Attach a real-looking (mocked) cursor pool so the early-return guard
+    # at the top of _load_all_cursors does NOT fire.
+    connector._cursor_pool = MagicMock()
+
+    # _resources must be empty — this is the invariant we are locking in.
+    assert connector._resources == {}
+
+    load_cursor_mock = AsyncMock()
+    monkeypatch.setattr("butlers.connectors.google_health.load_cursor", load_cursor_mock)
+
+    # Must not raise, must not call into the DB.
+    await connector._load_all_cursors()
+
+    load_cursor_mock.assert_not_awaited()
