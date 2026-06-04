@@ -287,7 +287,9 @@ def _should_include_entry(
     ):
         return False
 
-    if suppress_session_duplicate_timeouts and entry.logger == "butlers.core.runtimes.opencode":
+    if entry.logger == "butlers.core.runtimes.opencode" and (
+        entry.level not in _ERROR_LEVELS or suppress_session_duplicate_timeouts
+    ):
         event_lower = entry.event.lower()
         if event_lower.startswith("opencode cli returned no response:") and (
             "no result" in event_lower

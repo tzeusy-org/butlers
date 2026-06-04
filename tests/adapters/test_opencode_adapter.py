@@ -462,16 +462,22 @@ async def test_invoke_error_paths(caplog):
     assert timeout_records and all(r.levelno == logging.WARNING for r in timeout_records)
 
 
-async def test_invoke_empty_exit_zero_raises_pre_tool_call_error():
+async def test_invoke_empty_exit_zero_raises_pre_tool_call_error(caplog):
     """invoke() rejects exit-0 runs that produce no parseable response or diagnostics."""
     adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
     mock_proc.returncode = 0
 
-    with patch(_EXEC, return_value=mock_proc):
+    with patch(_EXEC, return_value=mock_proc), caplog.at_level(logging.WARNING):
         with pytest.raises(RuntimeError, match="OpenCode CLI returned no response"):
             await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    no_response_records = [
+        r for r in caplog.records if "OpenCode CLI returned no response" in r.message
+    ]
+    assert no_response_records
+    assert all(r.levelno == logging.WARNING for r in no_response_records)
 
     info = adapter.last_process_info
     assert info is not None

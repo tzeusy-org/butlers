@@ -93,13 +93,12 @@ The scanner SHALL filter log entries by severity level, extracting entries at ER
 - **AND** deployments that disable `session_records` intentionally opt out of structured session-timeout coverage
 
 #### Scenario: OpenCode empty-response attempt duplicates excluded
-- **WHEN** the scanner is registered with `session_records` available in the same patrol configuration
-- **AND** the log scanner sees `butlers.core.runtimes.opencode` emit `OpenCode CLI returned no response: ...`
-- **OR** the matching spawner wrapper log is `Runtime invocation failed: RuntimeError: OpenCode CLI returned no response: ...`
-- **THEN** the scanner excludes the raw log entry from the finding set
+- **WHEN** the scanner sees `butlers.core.runtimes.opencode` emit `OpenCode CLI returned no response: ...` below ERROR level
+- **THEN** the scanner excludes the adapter attempt diagnostic from the finding set
 - **AND** any terminal failure remains discoverable through `session_records`, while recovered same-tier failover attempts do not create autonomous QA cases from adapter attempt logs
 - **WHEN** `session_records` is unavailable or disabled
-- **THEN** the log scanner includes the empty-response entry to preserve degraded-mode coverage
+- **AND** the matching spawner wrapper log is `Runtime invocation failed: RuntimeError: OpenCode CLI returned no response: ...`
+- **THEN** the log scanner includes the terminal spawner failure to preserve degraded-mode coverage
 
 #### Scenario: Expected Switchboard classification timeout excluded
 - **WHEN** a log entry is a `butlers.core.spawner` Switchboard runtime timeout

@@ -1108,7 +1108,7 @@ class OpenCodeAdapter(RuntimeAdapter):
                         )
                         if stderr.strip():
                             error_detail += f" (stderr: {stderr.strip()})"
-                        logger.error(error_detail)
+                        logger.warning(error_detail)
                         self._last_process_info["error_detail"] = error_detail
                         self._last_process_info["is_pre_tool_call"] = True
                         if retry_attempted:

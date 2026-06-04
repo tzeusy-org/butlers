@@ -331,14 +331,56 @@ def test_spawner_runtime_timeout_excluded_when_session_records_covers_it():
     assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
 
 
-def test_opencode_empty_response_included_without_session_records_coverage():
-    """Log-scanner-only deployments keep OpenCode empty-response coverage."""
+def test_opencode_empty_response_adapter_warning_excluded_without_session_records_coverage():
+    """Recovered OpenCode empty-response attempts are not QA findings."""
+    entry = LogEntry(
+        level="warning",
+        event=("OpenCode CLI returned no response: no result, tool calls, or token usage"),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.opencode",
+    )
+    assert _should_include_entry(entry) is False
+
+
+def test_opencode_empty_response_warning_with_stderr_sentinel_excluded():
+    """Recovered OpenCode empty-response warnings stay excluded even with stderr details."""
+    entry = LogEntry(
+        level="warning",
+        event=(
+            "OpenCode CLI returned no response: no result, tool calls, or token usage; "
+            "stderr=TimeoutError: upstream request timed out"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.opencode",
+    )
+    assert _should_include_entry(entry) is False
+
+
+def test_opencode_empty_response_error_included_without_session_records_coverage():
+    """Degraded deployments keep ERROR-level OpenCode empty-response coverage."""
     entry = LogEntry(
         level="error",
         event=("OpenCode CLI returned no response: no result, tool calls, or token usage"),
         timestamp=datetime.now(UTC),
         butler_name="switchboard",
         logger="butlers.core.runtimes.opencode",
+    )
+    assert _should_include_entry(entry) is True
+
+
+def test_spawner_opencode_empty_response_included_without_session_records_coverage():
+    """Terminal OpenCode empty-response failures stay visible without session records."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: RuntimeError: OpenCode CLI returned no response: "
+            "no result, tool calls, or token usage"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
     )
     assert _should_include_entry(entry) is True
 
