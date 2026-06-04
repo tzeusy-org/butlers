@@ -165,6 +165,7 @@ import json
 import logging
 import secrets as _secrets_mod
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -1685,23 +1686,64 @@ _GITHUB_OAUTH_CLIENT_SECRET_KEY = "GITHUB_OAUTH_CLIENT_SECRET"
 # https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-grant
 _GITHUB_REVOKE_URL_TEMPLATE = "https://api.github.com/applications/{client_id}/grant"
 
-# Credential types that carry an OAuth token eligible for provider-side revocation.
-# Keys are provider slugs; values are the URL template to call (or None = not implemented).
-# Only providers with a working implementation are listed.  Unlisted providers are
-# treated as "skipped" (log a warning, rotation still succeeds).
-_OAUTH_REVOKE_PROVIDERS: dict[str, str | None] = {
-    "google": "https://oauth2.googleapis.com/revoke",
-    # GitHub revocation uses DELETE /applications/{client_id}/grant with HTTP Basic auth.
-    # The client_id is substituted at call time from butler_secrets.
-    "github": _GITHUB_REVOKE_URL_TEMPLATE,
-    # Spotify and others: add as follow-up issues.
-}
-
 # Credential type suffixes that indicate an OAuth token (access or refresh).
 # Non-OAuth types (plain API keys, etc.) skip revocation entirely.
 _OAUTH_TYPE_SUFFIXES = ("_oauth_refresh", "_oauth_access")
 
 _REVOKE_TIMEOUT_S = 5.0
+
+# ---------------------------------------------------------------------------
+# Revoke handler registry
+# ---------------------------------------------------------------------------
+# Each handler is an async callable with signature:
+#   async def handler(old_value: str, *, shared_pool: Any | None) -> str
+# returning one of: "succeeded", "failed:<reason>", "skipped".
+#
+# Register a handler via the @register_revoke_handler("<provider>") decorator,
+# or call register_revoke_handler(provider, handler) directly.
+#
+# Connector modules that need to self-register may import and call
+# register_revoke_handler at module load time — there is no import cycle risk
+# as long as the connector does not import secrets_v2 in its __init__ chain
+# (it only needs to call the function at import time after secrets_v2 is loaded).
+# When in doubt, define + register the handler inside secrets_v2 (as done here
+# for google and github) to keep everything self-contained.
+
+_RevokeHandler = Callable[..., Any]  # async (old_value: str, *, shared_pool) -> str
+
+_revoke_handler_registry: dict[str, _RevokeHandler] = {}
+
+
+def register_revoke_handler(
+    provider: str,
+    handler: _RevokeHandler | None = None,
+) -> Any:
+    """Register an async revoke handler for *provider*.
+
+    Can be used as a decorator::
+
+        @register_revoke_handler("myprovider")
+        async def _revoke_myprovider(old_value: str, *, shared_pool) -> str:
+            ...
+
+    Or called directly::
+
+        register_revoke_handler("myprovider", _my_handler)
+
+    The handler must be an async callable with signature
+    ``async (old_value: str, *, shared_pool: Any | None) -> str`` and must
+    return one of ``"succeeded"``, ``"failed:<reason>"``, or ``"skipped"``.
+    """
+    if handler is None:
+        # Used as a decorator factory: @register_revoke_handler("provider")
+        def _decorator(fn: _RevokeHandler) -> _RevokeHandler:
+            _revoke_handler_registry[provider] = fn
+            return fn
+
+        return _decorator
+    # Direct call: register_revoke_handler("provider", fn)
+    _revoke_handler_registry[provider] = handler
+    return handler
 
 
 async def _revoke_oauth_token(
@@ -1716,7 +1758,7 @@ async def _revoke_oauth_token(
 
     Rules:
     - If the credential type is not an OAuth type, return ``"skipped"`` immediately.
-    - If the provider has no revoke handler, log a warning and return ``"skipped"``.
+    - If the provider has no registered revoke handler, log a warning and return ``"skipped"``.
     - On HTTP 200, return ``"succeeded"``.
     - On any error (HTTP non-200, timeout, network failure), log at WARN level and return
       ``"failed:<reason>"``.  Caller must NOT propagate this as a rotation failure.
@@ -1735,47 +1777,42 @@ async def _revoke_oauth_token(
     if not any(credential_type.endswith(suffix) for suffix in _OAUTH_TYPE_SUFFIXES):
         return "skipped"
 
-    revoke_url = _OAUTH_REVOKE_PROVIDERS.get(provider)
-    if revoke_url is None:
-        if provider in _OAUTH_REVOKE_PROVIDERS:
-            # Explicitly listed but not implemented (value is None).
-            logger.warning(
-                "_revoke_oauth_token: no revoke handler for provider=%s (follow-up required)",
-                provider,
-            )
-        else:
-            logger.warning(
-                "_revoke_oauth_token: unknown provider=%s; skipping revoke",
-                provider,
-            )
+    handler = _revoke_handler_registry.get(provider)
+    if handler is None:
+        logger.warning(
+            "_revoke_oauth_token: unknown provider=%s; skipping revoke",
+            provider,
+        )
         return "skipped"
 
-    # ------------------------------------------------------------------
-    # GitHub — DELETE /applications/{client_id}/grant with Basic auth
-    # ------------------------------------------------------------------
-    if provider == "github":
-        return await _revoke_github_oauth_token(old_value, shared_pool=shared_pool)
+    return await handler(old_value, shared_pool=shared_pool)
 
-    # ------------------------------------------------------------------
-    # Default path (e.g. Google) — POST with form body {"token": old_value}
-    # ------------------------------------------------------------------
+
+@register_revoke_handler("google")
+async def _revoke_google_oauth_token(old_value: str, *, shared_pool: Any | None) -> str:
+    """Revoke a Google OAuth token via POST to the Google revoke endpoint.
+
+    Sends the token in the POST body (application/x-www-form-urlencoded) to avoid
+    token leakage through proxy/server request logs.
+
+    Returns a revoke_status string: ``"succeeded"``, ``"failed:<reason>"``, or ``"skipped"``.
+    """
+    _google_revoke_url = "https://oauth2.googleapis.com/revoke"
     try:
         async with httpx.AsyncClient(timeout=_REVOKE_TIMEOUT_S) as client:
             # Send the token in the POST body (application/x-www-form-urlencoded)
             # rather than as a query parameter.  Query params are routinely logged by
             # reverse proxies and web servers — sending in the body avoids token leakage.
-            resp = await client.post(revoke_url, data={"token": old_value})
+            resp = await client.post(_google_revoke_url, data={"token": old_value})
         if resp.status_code == 200:
-            logger.debug("_revoke_oauth_token: revoked provider=%s (HTTP 200)", provider)
+            logger.debug("_revoke_oauth_token: revoked provider=google (HTTP 200)")
             return "succeeded"
         reason = f"HTTP {resp.status_code}"
-        logger.warning("_revoke_oauth_token: provider=%s revoke failed: %s", provider, reason)
+        logger.warning("_revoke_oauth_token: provider=google revoke failed: %s", reason)
         return f"failed:{reason}"
     except Exception as exc:  # noqa: BLE001
         reason = type(exc).__name__
-        logger.warning(
-            "_revoke_oauth_token: provider=%s revoke error: %s", provider, exc, exc_info=True
-        )
+        logger.warning("_revoke_oauth_token: provider=google revoke error: %s", exc, exc_info=True)
         return f"failed:{reason}"
 
 
@@ -1847,6 +1884,17 @@ async def _revoke_github_oauth_token(
         reason = type(exc).__name__
         logger.warning("_revoke_github_oauth_token: revoke error: %s", exc, exc_info=True)
         return f"failed:{reason}"
+
+
+# Register GitHub's revoke handler.  The underlying helper uses the parameter name
+# ``access_token`` for clarity in its docstring; the thin lambda adapts it to the
+# registry's uniform ``(old_value, *, shared_pool)`` call convention.
+register_revoke_handler(
+    "github",
+    lambda old_value, *, shared_pool: _revoke_github_oauth_token(
+        old_value, shared_pool=shared_pool
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
