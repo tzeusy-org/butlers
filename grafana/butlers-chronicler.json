@@ -1,0 +1,62 @@
+{
+  "annotations": { "list": [{ "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard" }] },
+  "description": "Chronicler butler: participant resolution telemetry and episode list filter distribution. Panels wired for metrics shipped in PR #1874 (bu-zxoxk). Source: src/butlers/chronicler/adapters/calendar.py:98 (counter) and roster/chronicler/api/router.py:304-312 (OTel span).",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 100, "title": "Participant Resolution", "type": "row" },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Rate of episode_entities participant rows resolved by the calendar adapter, by butler schema. Metric: chronicler_episode_participants_resolved_total{schema} — counter incremented by len(participant_ids) per episode (owner row excluded). Shipped in PR #1874 (bu-zxoxk). Source: src/butlers/chronicler/adapters/calendar.py:98.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 }, "id": 1,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "expr": "sum by(schema) (rate(chronicler_episode_participants_resolved_total[$__rate_interval]))",
+        "legendFormat": "{{schema}}", "refId": "A"
+      }],
+      "title": "Participant resolution rate by schema", "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }, "id": 101, "title": "Episode List Filter Distribution", "type": "row" },
+
+    {
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "description": "Rate of /api/chronicler/episodes requests grouped by the chronicler.episodes.filter_kind OTel span attribute (participant_join | owner_only | none). Shipped in PR #1874 (bu-zxoxk). Source: roster/chronicler/api/router.py:304-312. NOTE: This panel queries Tempo directly via TraceQL metrics — the filter_kind attribute is NOT available as a Prometheus label because the Tempo metrics generator (tempo/config.yaml) does not configure custom span-metrics dimensions. Live-stack verification is deferred until after at least one production deploy cycle following the PR #1874 rollout.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 15, "lineWidth": 1, "stacking": { "group": "A", "mode": "normal" } }, "unit": "reqps" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 }, "id": 2,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{
+        "datasource": { "type": "tempo", "uid": "tempo" },
+        "queryType": "traceql",
+        "query": "{ span.chronicler.episodes.filter_kind != \"\" } | rate() by(span.chronicler.episodes.filter_kind)",
+        "refId": "A"
+      }],
+      "title": "Episode list filter_kind request rate", "type": "timeseries"
+    }
+
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["butlers", "opentelemetry", "ai-agents", "chronicler"],
+  "templating": {
+    "list": [
+      {
+        "current": {}, "hide": 0, "includeAll": false, "label": "Datasource", "name": "datasource",
+        "options": [], "query": "prometheus", "refresh": 1, "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Butlers — Chronicler",
+  "uid": "butlers-chronicler-v1",
+  "version": 1
+}
