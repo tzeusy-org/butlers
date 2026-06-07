@@ -408,15 +408,15 @@ def test_inventory_no_shared_pool_returns_empty_user_and_cli():
     assert "system" in body["data"]
 
 
-def test_inventory_surfaces_shared_pool_system_secrets_as_read_only():
+def test_inventory_surfaces_shared_pool_system_secrets_as_editable():
     """Shared-pool (public.butler_secrets) system secrets appear in the System
-    family flagged read_only=true.
+    family tagged butler='shared-public' and flagged read_only=false.
 
     These are the shared application credentials (Google OAuth app keys, etc.)
     that the consolidated /secrets page surfaces after /settings/owner was
-    removed. They must be marked read_only so the passport does not offer the
-    generic mutate path (which targets the switchboard schema, not the shared
-    pool).
+    removed.  They are now fully editable via target='shared-public' which
+    routes mutations to the correct public pool.  The passport no longer needs
+    to block editing these rows.
     """
     butler_row = _make_system_row(key="LOCAL_KEY", value="v1", last_test_ok=True)
     shared_row = _make_system_row(
@@ -439,10 +439,12 @@ def test_inventory_surfaces_shared_pool_system_secrets_as_read_only():
     assert "LOCAL_KEY" in system
     assert "GOOGLE_OAUTH_CLIENT_ID" in system
 
-    # Per-butler rows stay editable; shared-pool rows are read-only.
+    # Per-butler rows stay editable; shared-pool rows are now ALSO editable
+    # (read_only=False) and tagged butler='shared-public' to route mutations
+    # to the public credential pool.
     assert system["LOCAL_KEY"]["read_only"] is False
-    assert system["GOOGLE_OAUTH_CLIENT_ID"]["read_only"] is True
-    assert system["GOOGLE_OAUTH_CLIENT_ID"]["butler"] == "shared"
+    assert system["GOOGLE_OAUTH_CLIENT_ID"]["read_only"] is False
+    assert system["GOOGLE_OAUTH_CLIENT_ID"]["butler"] == "shared-public"
 
 
 def test_inventory_shared_pool_cli_rows_excluded_from_system_family():

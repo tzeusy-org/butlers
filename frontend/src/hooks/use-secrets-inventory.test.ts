@@ -322,3 +322,74 @@ describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr, bu-lb
     expect(result.providers).toEqual({});
   });
 });
+
+// ---------------------------------------------------------------------------
+// shared-public pool target routing [bu-91noc]
+// ---------------------------------------------------------------------------
+
+describe("adaptInventoryResponse: shared-public target routing", () => {
+  it("sets target='shared-public' for rows with butler='shared-public'", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [makeSystem({ key: "TELEGRAM_TOKEN", state: "ok", butler: "shared-public" })],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].target).toBe("shared-public");
+  });
+
+  it("sets target='shared' for rows with butler='shared' (legacy switchboard rows)", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [makeSystem({ key: "SOME_SWITCH_KEY", state: "ok", butler: "shared" })],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].target).toBe("shared");
+  });
+
+  it("shared-public rows have readOnly=false (editable)", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({ key: "TELEGRAM_TOKEN", state: "ok", butler: "shared-public", read_only: false }),
+      ],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].readOnly).toBe(false);
+  });
+
+  it("preserves target='shared-public' when groupSystemCredentials merges credentials", () => {
+    // Two rows with the same key — one shared-public, one ok state from same pool
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({ key: "SHARED_KEY", state: "ok", butler: "shared-public" }),
+        makeSystem({ key: "SHARED_KEY", state: "warn", butler: "shared-public" }),
+      ],
+      user: [],
+      identities: [],
+    });
+    // After grouping there should be one merged credential
+    const matching = result.system.filter((c) => c.key === "SHARED_KEY");
+    expect(matching).toHaveLength(1);
+    expect(matching[0].target).toBe("shared-public");
+  });
+
+  it("shared-public wins over shared when both contribute to the same key", () => {
+    // Edge case: same key in both shared and shared-public pools
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({ key: "DUP_KEY", state: "ok", butler: "shared" }),
+        makeSystem({ key: "DUP_KEY", state: "ok", butler: "shared-public" }),
+      ],
+      user: [],
+      identities: [],
+    });
+    const matching = result.system.filter((c) => c.key === "DUP_KEY");
+    expect(matching).toHaveLength(1);
+    expect(matching[0].target).toBe("shared-public");
+  });
+});

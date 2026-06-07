@@ -196,6 +196,13 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
 
 function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
   const rowState = rowStateFromSystemRaw(raw);
+  // Rows from the public credential pool are tagged butler="shared-public" by
+  // the backend.  Their mutation target must be "shared-public" (routes to the
+  // public pool) rather than "shared" (routes to the switchboard schema).
+  const isSharedPublic = raw.butler === "shared-public";
+  const mutationTarget = rowState === "local" ? raw.butler
+    : isSharedPublic ? "shared-public"
+    : "shared";
   return {
     key:          raw.key,
     category:     raw.category,
@@ -204,7 +211,7 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
     fingerprint:  raw.fingerprint ?? null,
     description:  raw.description ?? null,
     source:       rowState === "shared" ? raw.butler : "",
-    target:       rowState === "local" ? raw.butler : "shared",
+    target:       mutationTarget,
     lastVerified: raw.last_verified ?? null,
     usedBy:       [],
     breaks:       [],
@@ -331,6 +338,16 @@ function groupSystemCredentials(credentials: SystemCredential[]): SystemCredenti
       ?? existing.target
       ?? credential.target;
 
+    // Determine the mutation target for the merged credential:
+    // - local override rows use the butler name as target
+    // - shared-public rows keep "shared-public" so mutations route to the
+    //   public credential pool (not the switchboard schema)
+    // - all other shared rows use "shared" (switchboard schema)
+    const mergedTarget = rowState === "local" ? localTarget
+      : (existing.target === "shared-public" || credential.target === "shared-public")
+        ? "shared-public"
+        : "shared";
+
     grouped.set(credential.key, {
       ...existing,
       category: existing.category || credential.category,
@@ -339,7 +356,7 @@ function groupSystemCredentials(credentials: SystemCredential[]): SystemCredenti
       rowState,
       fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
       source: sharedSource,
-      target: rowState === "local" ? localTarget : "shared",
+      target: mergedTarget,
       lastVerified: existing.lastVerified ?? credential.lastVerified,
       usedBy: Array.from(new Set([...existing.usedBy, ...credential.usedBy])),
       breaks: [...existing.breaks, ...credential.breaks],
@@ -347,7 +364,7 @@ function groupSystemCredentials(credentials: SystemCredential[]): SystemCredenti
       audit: [...existing.audit, ...credential.audit],
       plainValue: existing.plainValue ?? credential.plainValue,
       // A per-butler override (local row) is editable and wins; otherwise the
-      // row is read-only if any contributing source is read-only (shared pool).
+      // row is read-only if any contributing source is read-only.
       readOnly:
         rowState === "local"
           ? false

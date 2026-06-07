@@ -1408,11 +1408,11 @@ export function PageSystem({
   // PUT endpoint (the correct shared/public location). The generic mutate
   // controls are suppressed for them.
   const isGoogleApp = isGoogleAppCredential(credential);
-  // Rows read from the shared credential pool (public.butler_secrets) are
-  // flagged read_only by the backend: the generic set/rotate/override path
-  // targets the switchboard schema, NOT the shared pool, so editing those here
-  // would write to the wrong place. Surface them read-only. (Per-butler and
-  // switchboard-scoped rows are not flagged and stay editable as before.)
+  // Rows explicitly flagged read_only by the backend are suppressed from the
+  // generic editor.  Shared-public rows (public.butler_secrets) are no longer
+  // flagged read_only — they use target="shared-public" which routes mutations
+  // to the correct pool. Only externally-managed or future reserved rows would
+  // set read_only=true.
   const isSharedStore = !!credential.readOnly;
   const stateColor = isMissing ? "var(--dim)" : "var(--green)";
   const stateLabel = isMissing ? "not set" : isLocal ? "local override" : "shared default";
@@ -1441,8 +1441,12 @@ export function PageSystem({
 
   function handleSetValueSubmit() {
     if (!setValue.trim() || setMutation.isPending) return;
+    // Use credential.target to route to the correct schema:
+    // "shared-public" → public credential pool (what modules read)
+    // "shared" → switchboard schema (legacy/explicit switchboard rows)
+    // "<butler>" → per-butler override (local rows — this path sets, not overrides)
     setMutation.mutate(
-      { key: credential.key, body: { value: setValue.trim(), target: "shared" } },
+      { key: credential.key, body: { value: setValue.trim(), target: credential.target } },
       {
         onSuccess: () => {
           setSetValueOpen(false);
@@ -1540,9 +1544,14 @@ export function PageSystem({
 
   function handleReveal() {
     if (revealMutation.isPending) return;
-    const butler = credential.target || "shared";
+    // The old /butlers/{name}/secrets/{key}/reveal endpoint treats both
+    // "shared" and "shared-public" as the shared credential pool.
+    // Map "shared-public" → "shared" for reveal-path compatibility.
+    const revealButler = (credential.target === "shared-public")
+      ? "shared"
+      : (credential.target || "shared");
     revealMutation.mutate(
-      { butler, key: credential.key },
+      { butler: revealButler, key: credential.key },
       {
         onSuccess: (data) => {
           const val = (data as { data?: { value?: string } })?.data?.value ?? null;
@@ -1557,9 +1566,11 @@ export function PageSystem({
   const [deleteConfirm, setDeleteConfirm] = React.useState(false);
   const deleteMutation = useDeleteSystemSecret();
 
-  // The delete target: shared rows delete the shared row; local overrides delete
-  // the butler-specific row (use credential.target which holds the butler name).
-  const deleteTarget = isLocal ? credential.target : "shared";
+  // The delete target routes to the correct schema:
+  // - local overrides: credential.target holds the butler name
+  // - shared-public rows: credential.target === "shared-public" → public pool
+  // - shared (switchboard) rows: credential.target === "shared" → switchboard
+  const deleteTarget = credential.target;
 
   function handleDeleteOpen() {
     setDeleteConfirm(true);
@@ -1941,9 +1952,9 @@ export function PageSystem({
         </div>
       )}
 
-      {/* Other shared-pool secrets are managed in the shared credential store;
-          editing them here would target the wrong schema, so they are
-          read-only on the passport. */}
+      {/* Externally-managed or otherwise explicitly read_only rows that are
+          not the Google app keys. Shared-public rows are now editable via
+          target="shared-public" and will not trigger this gate. */}
       {isSharedStore && !isGoogleApp && (
         <div className="pt-3.5" style={{ borderTop: "1px solid var(--border)" }}>
           <Mono size={11} color="var(--dim)">
@@ -1952,8 +1963,10 @@ export function PageSystem({
         </div>
       )}
 
-      {/* Footer — generic mutate controls; suppressed for shared-pool rows
-          (incl. the Google app keys, which carry their own editor above). */}
+      {/* Footer — generic mutate controls; suppressed for the Google app keys
+          (dedicated editor above) and any explicitly read_only rows.
+          Shared-public rows (public.butler_secrets) are editable here via
+          target="shared-public". */}
       {!isGoogleApp && !isSharedStore && (
         <CommitFooter
           left={
