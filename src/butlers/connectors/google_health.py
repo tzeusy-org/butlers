@@ -97,7 +97,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import Counter, Gauge, generate_latest
+from prometheus_client import REGISTRY, Counter, Gauge, generate_latest
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
@@ -183,31 +183,62 @@ _DEFAULT_MAX_INFLIGHT = 8
 # Google Health-specific Prometheus metrics
 # ---------------------------------------------------------------------------
 
-google_health_polls_total = Counter(
+
+def _metric[T](factory: type[T], name: str, documentation: str, **kwargs: Any) -> T:
+    """Register a Prometheus collector, reusing the existing one on collision.
+
+    This connector runs as ``__main__`` (``python -m
+    butlers.connectors.google_health``), so any ``from
+    butlers.connectors.google_health import ...`` re-imports the module under
+    its real package name and re-executes these module-level definitions. A
+    plain ``Counter(...)`` would then raise "Duplicated timeseries in
+    CollectorRegistry" and crash the importer. Returning the already-registered
+    collector keeps the module import-idempotent regardless of how it is loaded.
+    """
+    try:
+        return factory(name, documentation, **kwargs)
+    except ValueError:
+        # prometheus_client registers a Counter "<name>_total" under the base
+        # key "<name>" (suffix stripped); gauges register under their full name.
+        base = name[: -len("_total")] if name.endswith("_total") else name
+        if base in REGISTRY._names_to_collectors:
+            return REGISTRY._names_to_collectors[base]  # type: ignore[return-value]
+        # The ValueError was not a duplicate-registration collision (e.g. an
+        # invalid metric name or label); surface the real error instead of
+        # masking it with a KeyError.
+        raise
+
+
+google_health_polls_total = _metric(
+    Counter,
     "connector_google_health_polls_total",
     "Total Google Health per-resource poll cycles",
     labelnames=["endpoint_identity", "resource", "outcome"],
 )
 
-google_health_envelopes_total = Counter(
+google_health_envelopes_total = _metric(
+    Counter,
     "connector_google_health_envelopes_total",
     "Ingest.v1 envelopes emitted per resource",
     labelnames=["endpoint_identity", "resource"],
 )
 
-google_health_rate_limit_remaining = Gauge(
+google_health_rate_limit_remaining = _metric(
+    Gauge,
     "connector_google_health_rate_limit_remaining",
     "Google Health API X-RateLimit-Remaining observed on the last call per resource",
     labelnames=["endpoint_identity", "resource"],
 )
 
-google_health_rate_limit_events_total = Counter(
+google_health_rate_limit_events_total = _metric(
+    Counter,
     "connector_google_health_rate_limit_events_total",
     "Total HTTP 429 responses observed per resource",
     labelnames=["endpoint_identity", "resource"],
 )
 
-google_health_scope_missing_total = Counter(
+google_health_scope_missing_total = _metric(
+    Counter,
     "connector_google_health_scope_missing_total",
     "Count of startup / re-check cycles that found missing Google Health scopes",
     labelnames=["endpoint_identity"],
@@ -935,7 +966,16 @@ class GoogleHealthConnector:
             return
 
         try:
-            health_accounts = await list_health_scoped_accounts(self._shared_pool)
+            # Pass GOOGLE_HEALTH_SCOPES explicitly. Without it the registry
+            # lazily runs ``from butlers.connectors.google_health import
+            # GOOGLE_HEALTH_SCOPES`` — and because this module is executed as
+            # ``__main__`` (``python -m butlers.connectors.google_health``), that
+            # import re-imports it under its real package name, re-running the
+            # module-level Prometheus metric definitions and raising
+            # "Duplicated timeseries in CollectorRegistry" on every cycle.
+            health_accounts = await list_health_scoped_accounts(
+                self._shared_pool, health_scopes=GOOGLE_HEALTH_SCOPES
+            )
         except Exception as exc:  # noqa: BLE001
             self._account_missing = True
             self._scope_missing = True

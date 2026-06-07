@@ -1963,3 +1963,88 @@ async def test_load_all_cursors_is_noop_when_resources_empty_and_pool_present(
     await connector._load_all_cursors()
 
     load_cursor_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Regression: `python -m` double-import must not crash the connector.
+#
+# The connector runs as ``__main__`` (``python -m butlers.connectors.google_health``).
+# Any ``from butlers.connectors.google_health import ...`` then re-imports the
+# module under its real package name, re-executing the module-level Prometheus
+# metric definitions. Two independent guards keep that safe:
+#   1. ``_resolve_owner_and_scopes`` passes ``health_scopes`` explicitly so the
+#      registry never performs the lazy self-import in the first place.
+#   2. The module-level metrics use ``_metric()`` get-or-create so a re-exec
+#      reuses existing collectors instead of raising "Duplicated timeseries".
+# Either alone fixes the observed outage; together they are defence-in-depth.
+# ---------------------------------------------------------------------------
+
+
+def test_module_reimport_is_idempotent() -> None:
+    """Re-executing the module body must not raise DuplicatedTimeseries.
+
+    ``importlib.reload`` re-runs every module-level statement against the live
+    Prometheus registry — exactly what the ``__main__`` double-import did at
+    runtime. Before the ``_metric`` get-or-create guard this raised
+    ``ValueError: Duplicated timeseries in CollectorRegistry``.
+    """
+    import importlib
+
+    import butlers.connectors.google_health as gh
+
+    reloaded = importlib.reload(gh)
+
+    # Metrics still usable after reload.
+    reloaded.google_health_polls_total.labels(
+        endpoint_identity="google_health:user:reload@example.com",
+        resource="sleep",
+        outcome="success",
+    ).inc()
+
+
+def test_metric_reraises_non_collision_value_error() -> None:
+    """A non-collision ``ValueError`` must surface, not be masked by a KeyError.
+
+    ``_metric`` only swallows ``ValueError`` when the metric is actually already
+    registered (a duplicate-registration collision). For any other cause — e.g.
+    a reserved label name — the original ``ValueError`` must propagate so the
+    real failure is debuggable rather than masked by a ``KeyError`` from the
+    registry lookup.
+    """
+    from prometheus_client import Counter
+
+    from butlers.connectors.google_health import _metric
+
+    with pytest.raises(ValueError, match="Reserved label"):
+        _metric(
+            Counter,
+            "connector_google_health_unit_test_reserved_label",
+            "Should surface the reserved-label ValueError",
+            labelnames=["__reserved"],
+        )
+
+
+async def test_resolve_owner_passes_explicit_scopes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The connector pins ``health_scopes`` so the registry never self-imports.
+
+    Passing ``GOOGLE_HEALTH_SCOPES`` explicitly is what stops
+    ``list_health_scoped_accounts`` from running its lazy
+    ``from butlers.connectors.google_health import GOOGLE_HEALTH_SCOPES`` —
+    the re-import path that crashed account discovery every cycle.
+    """
+    connector = _make_connector()
+    connector._shared_pool = MagicMock()  # bypass the None-pool degraded short-circuit
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_list(pool: Any, health_scopes: Any = None) -> list[Any]:
+        captured["pool"] = pool
+        captured["health_scopes"] = health_scopes
+        return []
+
+    monkeypatch.setattr("butlers.connectors.google_health.list_health_scoped_accounts", _fake_list)
+
+    await connector._resolve_owner_and_scopes()
+
+    assert captured["pool"] is connector._shared_pool
+    assert captured["health_scopes"] == GOOGLE_HEALTH_SCOPES
