@@ -444,75 +444,15 @@ class TestNotifyContactIdResolution:
         # Must NOT reference contact_info anywhere
         assert "contact_info" not in ef_query
 
-    async def test_telegram_legacy_verbatim_numeric_row_resolved_as_fallback(
-        self, butler_dir: Path
-    ) -> None:
-        """Backward-compat: verbatim (unprefixed) all-numeric telegram has-handle is resolved.
+    async def test_telegram_no_has_handle_with_prefix_returns_none(self, butler_dir: Path) -> None:
+        """Returns None if entity has no telegram: prefixed has-handle row.
 
-        Contacts written by the reconciler/backfill BEFORE the bu-wni4z fix stored the
-        telegram_user_id without the 'telegram:' prefix.  The daemon must fall back to
-        the all-numeric regex match and return the bare numeric ID so delivery works
-        during the transition period.
-        """
-        # Build a mock connection that:
-        # - Step 1 (contacts lookup): returns entity_id
-        # - Step 2a (LIKE 'telegram:%' query): returns None (no prefixed row)
-        # - Step 2b (numeric regex fallback): returns the verbatim numeric row
-        verbatim_numeric_id = "86807245"
-        prefixed_query_call = 0
-
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(return_value=None)
-        mock_conn.fetchval = AsyncMock(return_value=None)
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        async def _three_step_fetchrow(query: str, *args, **kwargs):
-            if "public.contacts" in query:
-                return {"entity_id": _ENTITY_ID}
-            if "relationship.entity_facts" in query:
-                # First EF call is the LIKE 'telegram:%' filter; return None.
-                # Second EF call is the numeric regex fallback; return the verbatim row.
-                nonlocal prefixed_query_call
-                prefixed_query_call += 1
-                if prefixed_query_call == 1:
-                    return None  # no prefixed row
-                return {"object": verbatim_numeric_id}  # verbatim fallback
-            return None
-
-        mock_conn.fetchrow = AsyncMock(side_effect=_three_step_fetchrow)
-
-        mock_pool = AsyncMock()
-        mock_pool.fetchval = AsyncMock(return_value=None)
-        mock_pool.execute = AsyncMock(return_value=None)
-        mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        @asynccontextmanager
-        async def mock_acquire():
-            yield mock_conn
-
-        mock_pool.acquire = mock_acquire
-
-        patches = _patch_infra()
-        _patch_db_in_patches(patches, mock_pool)
-        daemon, _ = await _start_daemon_with_notify(butler_dir, patches)
-
-        result = await daemon._resolve_contact_channel_identifier(
-            contact_id=uuid.UUID("00000000-0000-0000-0000-000000000035"),
-            channel="telegram",
-        )
-        # Verbatim numeric ID returned as-is (no prefix to strip)
-        assert result == verbatim_numeric_id
-
-    async def test_telegram_no_has_handle_with_prefix_or_numeric_returns_none(
-        self, butler_dir: Path
-    ) -> None:
-        """Returns None if entity has no telegram: prefixed row AND no all-numeric verbatim row.
-
-        A contact with only linkedin/twitter handles (non-numeric, non-prefixed)
+        rel_019 normalised legacy telegram rows to the 'telegram:' prefix in
+        production, so the daemon no longer falls back to an unprefixed all-numeric
+        match (bu-3nu0x).  A contact with only linkedin/twitter handles (non-prefixed)
         must not be delivered to the wrong platform.
         """
-        # entity has has-handle but NOT with telegram: prefix and NOT all-numeric
+        # entity has has-handle but NOT with telegram: prefix
         mock_pool, _ = _make_pool_with_entity_facts_conn(
             entity_id=_ENTITY_ID,
             facts_value=None,  # query returns no row (no telegram:-prefixed handle)
