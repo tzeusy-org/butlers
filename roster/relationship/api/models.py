@@ -27,17 +27,20 @@ class ContactInfoEntry(BaseModel):
 
     The ``value`` field is set to ``None`` when ``secured=True`` and the
     caller has not been granted reveal access (masked in list views).
-    Use GET /contacts/{id}/secrets/{info_id} to retrieve the real value.
+    Use GET /relationship/entities/{entity_id}/secrets/{info_id} to retrieve the real value.
 
     ``source`` discriminates the backing store for this entry:
-    - ``None`` / absent — legacy ``public.contact_info`` row (default; omitted
-      from serialised output for backward compatibility).
+    - ``None`` / absent — legacy row (default; omitted from serialised output
+      for backward compatibility). No legacy rows are served by the current API
+      — all entries from ``list_entity_linked_contacts`` carry
+      ``source="entity_facts"``.
     - ``"entity_facts"`` — the entry was synthesised from a
-      ``relationship.entity_facts`` has-* triple for the linked entity.
+      ``relationship.entity_facts`` has-* triple for the linked entity, or is
+      a secured credential from ``public.entity_info``.
 
     For ``source="entity_facts"`` entries, ``predicate`` and ``value_hash``
     are populated to enable entity-keyed mutation (delete / retract).
-    They are absent (``None``) for legacy ``public.contact_info`` rows.
+    They are absent (``None``) for secured ``entity_info`` entries.
     """
 
     id: UUID
@@ -329,7 +332,7 @@ class EntityInfoEntry(BaseModel):
 
     The ``value`` field is set to ``None`` when ``secured=True`` and the
     caller has not been granted reveal access (masked in list views).
-    Use GET /entities/{id}/secrets/{info_id} to retrieve the real value.
+    Use GET /relationship/entities/{entity_id}/secrets/{info_id} to retrieve the real value.
     """
 
     id: UUID

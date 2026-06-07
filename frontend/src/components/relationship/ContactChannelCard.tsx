@@ -11,35 +11,16 @@
  *             labels[], and preferred_channel. No N+1 getContact() fanout
  *             is needed for the collapsed view.
  *
- * Migration status (bu-k9ylx write-path cut-over is COMPLETE as of PR #2021,
- * display-layer unification is COMPLETE as of PR #2025,
- * edit-in-place is COMPLETE as of bu-690xu,
- * secured-reveal dual-dispatch is COMPLETE as of bu-6m9an):
+ * Migration status: contacts-to-triples migration (bu-uhjxr) COMPLETE.
+ * public.contact_info dropped (bu-e2ja9). The live API (list_entity_linked_contacts)
+ * serves only source="entity_facts" entries. The component retains read-only rendering
+ * for source=null entries for compat display of any legacy fixtures; no such entries
+ * are returned by the current API.
  *
- *   deleteContactInfo — REMOVED. Replaced by useDeleteEntityContact for
- *     entries with source="entity_facts". Legacy entries (source=null) are
- *     shown read-only (see ExpandedContactInfoRow).
- *
- *   patchContactInfo — REMOVED. Replaced by useUpdateEntityContact for
- *     entity_facts entries. Routes through entity-keyed
- *     PUT /entities/{id}/contacts/{pred}/{hash}. Legacy entries are read-only.
- *
- *   createContactInfo (add new channel) — MIGRATED to useAddEntityContact.
- *     Routes through entity-keyed POST /entities/{id}/contacts.
- *
- *   patchContact (preferred_channel) — COMPAT-ONLY. No entity-keyed endpoint
- *     for preferred_channel exists. preferred_channel lives on contacts.preferred_channel;
- *     it has no triple equivalent yet. Blocked on bu-uhjxr.
- *
- *   revealContactSecret — DUAL-DISPATCH (bu-6m9an): secured entries now route
- *     to the correct endpoint based on entry.source:
- *       source="entity_facts" → useRevealEntityContactSecret (entity-keyed,
- *         GET /relationship/entities/{entityId}/secrets/{infoId}, added in PR #2043).
- *       source=null (legacy) → useRevealContactSecret (contact-keyed COMPAT,
- *         GET /relationship/contacts/{contactId}/secrets/{infoId}, remove after bu-uhjxr).
- *     NOTE: list_entity_linked_contacts currently excludes secured=true rows
- *     (WHERE secured = false), so the dual-dispatch is dormant until bu-pl8fy
- *     completes. After bu-uhjxr the legacy contact-keyed path can be removed.
+ *   patchContact (preferred_channel) — COMPAT-ONLY. preferred_channel lives on
+ *     contacts.preferred_channel (CRM field); no entity_facts triple equivalent
+ *     exists yet. The PATCH /contacts/{id} endpoint is kept for this sole write
+ *     path until a triple-based model is added.
  *
  * See: docs/reports/contact-detail-parity-inventory-2026-05-25.md
  */
@@ -64,10 +45,7 @@ import {
 import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
-import {
-  usePatchContact,
-  useRevealContactSecret,
-} from "@/hooks/use-contacts";
+import { usePatchContact } from "@/hooks/use-contacts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -143,39 +121,24 @@ function labelStyle(label: Label): string {
 // ---------------------------------------------------------------------------
 // SecuredChannelEntry — click-to-reveal with auto-hide timer
 //
-// Dual-dispatch routing (bu-6m9an):
-//   entry.source === "entity_facts" → reveal via entity-keyed endpoint
-//     GET /relationship/entities/{entityId}/secrets/{infoId}
-//     Uses useRevealEntityContactSecret (entity_info row).
-//   entry.source === null/undefined → legacy public.contact_info row,
-//     reveal via contact-keyed endpoint
-//     GET /relationship/contacts/{contactId}/secrets/{infoId}
-//     Uses useRevealContactSecret (COMPAT-ONLY path).
-//
-// In practice, the list_entity_linked_contacts endpoint currently excludes
-// secured=true rows (WHERE secured = false), so no secured entries reach this
-// component from the real API. The dual-dispatch is wired for the migration
-// window (bu-pl8fy) when secured rows will flow through both paths.
-// After bu-uhjxr completes, the legacy contact-keyed path can be removed.
+// All secured entries surfaced by list_entity_linked_contacts carry
+// source="entity_facts" (public.contact_info was dropped in bu-e2ja9).
+// Reveal routes exclusively to the entity-keyed endpoint via
+// useRevealEntityContactSecret (GET /relationship/entities/{entityId}/secrets/{infoId}).
 // ---------------------------------------------------------------------------
 
 function SecuredChannelEntry({
   entry,
-  contactId,
   entityId,
 }: {
   entry: ContactInfoEntry;
-  contactId: string;
   entityId: string;
 }) {
   const [revealed, setRevealed] = useState<string | null>(null);
   const [isRevealing, setIsRevealing] = useState(false);
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Dual-dispatch: entity-keyed reveal for entity_facts entries,
-  // contact-keyed reveal for legacy contact_info entries (COMPAT-ONLY).
   const revealEntityMutation = useRevealEntityContactSecret();
-  const revealContactMutation = useRevealContactSecret();
 
   // Auto-hide the revealed secret 30s after it becomes visible.
   // useEffect ensures the timer is reset whenever `revealed` changes and is
@@ -204,20 +167,10 @@ function SecuredChannelEntry({
       toast.error("Failed to reveal secret.");
     };
 
-    if (entry.source === "entity_facts") {
-      // New path: entity_info secured row → entity-keyed reveal endpoint.
-      revealEntityMutation.mutate(
-        { entityId, infoId: entry.id },
-        { onSuccess, onError },
-      );
-    } else {
-      // Legacy path: public.contact_info secured row → contact-keyed reveal.
-      // COMPAT-ONLY: remove after bu-uhjxr migration completes.
-      revealContactMutation.mutate(
-        { contactId, infoId: entry.id },
-        { onSuccess, onError },
-      );
-    }
+    revealEntityMutation.mutate(
+      { entityId, infoId: entry.id },
+      { onSuccess, onError },
+    );
   }
 
   function handleHide() {
@@ -305,11 +258,9 @@ function ChannelValue({ entry }: { entry: ContactInfoEntry }) {
 
 export function ExpandedContactInfoRow({
   entry,
-  contactId,
   entityId,
 }: {
   entry: ContactInfoEntry;
-  contactId: string;
   entityId: string;
 }) {
   const deleteEntityContact = useDeleteEntityContact();
@@ -440,7 +391,7 @@ export function ExpandedContactInfoRow({
       </span>
       <span className="flex-1">
         {entry.secured ? (
-          <SecuredChannelEntry entry={entry} contactId={contactId} entityId={entityId} />
+          <SecuredChannelEntry entry={entry} entityId={entityId} />
         ) : (
           <ChannelValue entry={entry} />
         )}
@@ -775,7 +726,6 @@ function ContactRow({
                 <ExpandedContactInfoRow
                   key={ci.id}
                   entry={ci}
-                  contactId={contact.id}
                   entityId={entityId}
                 />
               ))}
@@ -833,8 +783,11 @@ function ContactRow({
  *     (PUT /entities/{id}/contacts/{predicate}/{value_hash})
  *   - Delete of entity_facts rows: useDeleteEntityContact
  *     (DELETE /entities/{id}/contacts/{predicate}/{value_hash})
+ *   - Reveal secured entries: useRevealEntityContactSecret
+ *     (GET /relationship/entities/{entityId}/secrets/{infoId})
  *   - Legacy contact_info rows: read-only (write-blocked since PR #2021)
- *   - preferred_channel: COMPAT-ONLY patchContact (no entity-keyed path yet)
+ *   - preferred_channel: COMPAT-ONLY patchContact (no entity-keyed path yet —
+ *     preferred_channel lives on contacts.preferred_channel, not entity_facts)
  * - onLinkContact: callback to open the existing link/unlink flow on the host
  *   page. The actual link/unlink UI is NOT moved into this card.
  */

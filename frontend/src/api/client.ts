@@ -1082,16 +1082,6 @@ export function getPendingContacts(): Promise<ContactDetail[]> {
   return apiFetch<ContactDetail[]>("/relationship/contacts/pending");
 }
 
-/** Reveal a secured contact_info entry value. */
-export function revealContactSecret(
-  contactId: string,
-  infoId: string,
-): Promise<ContactInfoEntry> {
-  return apiFetch<ContactInfoEntry>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/secrets/${encodeURIComponent(infoId)}`,
-  );
-}
-
 /** Update a contact's fields (full_name, nickname, company, job_title, roles). */
 export function patchContact(
   contactId: string,

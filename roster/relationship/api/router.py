@@ -1366,7 +1366,7 @@ async def get_contact(
     code.  Migration gate: bu-k9ylx (write-path cut-over) + bu-uhjxr children.
 
     Secured contact_info values are masked (value=None) in the response.
-    Use GET /contacts/{id}/secrets/{info_id} to reveal a secured value.
+    Use GET /relationship/entities/{entity_id}/secrets/{info_id} to reveal a secured value.
     """
     pool = _pool(db)
 
@@ -1496,73 +1496,6 @@ async def get_contact(
         entity_id=entity_id,
         contact_info=contact_info_entries,
         preferred_channel=row["preferred_channel"],
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /contacts/{contact_id}/secrets/{info_id}
-# ---------------------------------------------------------------------------
-
-
-@router.get("/contacts/{contact_id}/secrets/{info_id}")
-async def reveal_contact_secret(
-    contact_id: UUID,
-    info_id: UUID,
-    request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> dict[str, Any]:
-    """Reveal the actual value of a secured contact channel entry.
-
-    COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
-    is fully removed.  Prefer GET /relationship/entities/{entityId}/secrets/{infoId}
-    for entity_info secured rows (bu-pl8fy).
-
-    After bu-6ioq3, channel identifiers live in relationship.entity_facts which
-    has no "secured" concept — all channel values are non-secured.  This endpoint
-    resolves the fact by id, validates it belongs to the contact's entity, and
-    returns 400 (not secured) per the pre-existing contract for non-secured entries.
-    Returns 404 if the fact_id is not found or does not belong to this contact.
-
-    The response is intentionally minimal: ``{"id": ..., "type": ..., "value": ...}``.
-    """
-    pool = _pool(db)
-
-    # Resolve contact → entity_id, then look up the entity_facts row by id.
-    # This replaces the direct public.contact_info read (bu-6ioq3).
-    contact_row = await pool.fetchrow(
-        "SELECT entity_id FROM public.contacts WHERE id = $1 AND archived_at IS NULL LIMIT 1",
-        contact_id,
-    )
-    if contact_row is None:
-        raise HTTPException(status_code=404, detail="Contact info entry not found")
-    entity_id = contact_row["entity_id"]
-
-    ef_row = None
-    if entity_id is not None:
-        ef_row = await pool.fetchrow(
-            """
-            SELECT ef.id, ef.predicate, ef.object
-            FROM relationship.entity_facts ef
-            WHERE ef.id = $1
-              AND ef.subject = $2
-              AND ef.predicate LIKE 'has-%'
-              AND ef.validity = 'active'
-            LIMIT 1
-            """,
-            info_id,
-            entity_id,
-        )
-
-    if ef_row is None:
-        raise HTTPException(status_code=404, detail="Contact info entry not found")
-
-    # entity_facts has no secured concept; all entries are non-secured.
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "This contact channel entry is not secured; "
-            "value is available in the contact detail response."
-        ),
     )
 
 

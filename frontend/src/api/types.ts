@@ -754,7 +754,8 @@ export interface ContactSummary {
 }
 
 /** A single contact_info entry (phone, email, address, etc.).
- * When secured=true and value is null, the value is masked. Use revealContactSecret() to fetch it.
+ * When secured=true and value is null, the value is masked.
+ * Use GET /relationship/entities/{entityId}/secrets/{infoId} to retrieve the real value.
  */
 export interface ContactInfoEntry {
   id: string;

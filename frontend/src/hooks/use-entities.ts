@@ -376,14 +376,10 @@ export function useDeleteEntityContact() {
 /**
  * Reveal a secured entity_info value.
  *
- * Used by ContactChannelCard.SecuredChannelEntry for secured entries whose
- * origin is entity_info (entry.source === "entity_facts" with secured=true).
+ * Used by ContactChannelCard.SecuredChannelEntry for all secured entries
+ * (all entries from list_entity_linked_contacts carry source="entity_facts"
+ * since public.contact_info was dropped in bu-e2ja9).
  * Routes to GET /relationship/entities/{entityId}/secrets/{infoId}.
- *
- * For migration dual-dispatch, prefer this over useRevealContactSecret whenever
- * the entry originates from entity_info (not the legacy public.contact_info table).
- * After bu-uhjxr completes the contacts-to-triples migration, the legacy
- * useRevealContactSecret path in ContactChannelCard can be dropped.
  */
 export function useRevealEntityContactSecret() {
   return useMutation({

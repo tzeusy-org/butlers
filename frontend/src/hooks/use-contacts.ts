@@ -26,7 +26,6 @@ import {
   mergeContact,
   patchContact,
   patchContactInfo,
-  revealContactSecret,
   getUpcomingDates,
 } from "@/api/index.ts";
 import type {
@@ -89,14 +88,6 @@ export function usePendingContacts() {
   });
 }
 
-
-/** Reveal a secured contact_info entry value. */
-export function useRevealContactSecret() {
-  return useMutation({
-    mutationFn: ({ contactId, infoId }: { contactId: string; infoId: string }) =>
-      revealContactSecret(contactId, infoId),
-  });
-}
 
 /** Patch a contact's fields. */
 export function usePatchContact() {

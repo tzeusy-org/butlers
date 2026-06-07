@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 /**
- * ContactChannelCard — secured reveal click-routing tests (bu-6m9an)
+ * ContactChannelCard — secured reveal click tests
  *
- * Verifies that clicking "Reveal" in SecuredChannelEntry dispatches to the
- * correct mutation based on entry.source:
- *   source="entity_facts" → revealEntityMutation.mutate({ entityId, infoId })
- *   source=null (legacy)  → revealContactMutation.mutate({ contactId, infoId })
+ * Verifies that clicking "Reveal" in SecuredChannelEntry dispatches to
+ * revealEntityMutation.mutate({ entityId, infoId }).
+ *
+ * All entries from list_entity_linked_contacts carry source="entity_facts"
+ * (public.contact_info was dropped in bu-e2ja9), so all reveals route to
+ * the entity-keyed endpoint via useRevealEntityContactSecret.
  *
  * Uses @testing-library/react for DOM interaction (fireEvent.click).
  * Split from ContactChannelCard.test.tsx (which uses renderToStaticMarkup)
@@ -23,11 +25,10 @@ import {
   useUpdateEntityContact,
   useRevealEntityContactSecret,
 } from "@/hooks/use-entities";
-import { useRevealContactSecret } from "@/hooks/use-contacts";
 import type { ContactInfoEntry } from "@/api/types";
 
 // ---------------------------------------------------------------------------
-// Module mocks (mirror ContactChannelCard.test.tsx)
+// Module mocks
 // ---------------------------------------------------------------------------
 
 vi.mock("@/hooks/use-entities", () => ({
@@ -38,8 +39,9 @@ vi.mock("@/hooks/use-entities", () => ({
   useRevealEntityContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
 }));
 
+// usePatchContact is still used by PreferredChannelSelector (COMPAT-ONLY for
+// preferred_channel — no entity-keyed path exists yet).
 vi.mock("@/hooks/use-contacts", () => ({
-  useRevealContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
   usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
@@ -62,24 +64,12 @@ const CI_SECURED_ENTITY_FACTS: ContactInfoEntry = {
   value_hash: null,
 };
 
-const CI_SECURED_LEGACY: ContactInfoEntry = {
-  id: "ci-031",
-  type: "other",
-  value: null,
-  is_primary: false,
-  secured: true,
-  parent_id: null,
-  context: null,
-  source: null,
-};
-
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 
 function renderRow(
   entry: ContactInfoEntry,
-  contactId = "contact-001",
   entityId = "entity-001",
 ) {
   const queryClient = new QueryClient();
@@ -88,7 +78,6 @@ function renderRow(
       <MemoryRouter>
         <ExpandedContactInfoRow
           entry={entry}
-          contactId={contactId}
           entityId={entityId}
         />
       </MemoryRouter>
@@ -102,16 +91,11 @@ function renderRow(
 
 describe("SecuredChannelEntry — Reveal click routing (entity_facts)", () => {
   let entityMutate: ReturnType<typeof vi.fn>;
-  let contactMutate: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     entityMutate = vi.fn();
-    contactMutate = vi.fn();
     vi.mocked(useRevealEntityContactSecret).mockReturnValue(
       { mutate: entityMutate } as unknown as ReturnType<typeof useRevealEntityContactSecret>,
-    );
-    vi.mocked(useRevealContactSecret).mockReturnValue(
-      { mutate: contactMutate } as unknown as ReturnType<typeof useRevealContactSecret>,
     );
     vi.mocked(useDeleteEntityContact).mockReturnValue(
       { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>,
@@ -126,64 +110,12 @@ describe("SecuredChannelEntry — Reveal click routing (entity_facts)", () => {
   });
 
   it("clicking Reveal calls the entity-keyed mutate with { entityId, infoId }", () => {
-    renderRow(CI_SECURED_ENTITY_FACTS, "contact-005", "entity-005");
+    renderRow(CI_SECURED_ENTITY_FACTS, "entity-005");
     fireEvent.click(screen.getByText("Reveal"));
     expect(entityMutate).toHaveBeenCalledOnce();
     expect(entityMutate).toHaveBeenCalledWith(
       { entityId: "entity-005", infoId: "ci-032" },
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     );
-  });
-
-  it("clicking Reveal does NOT call the contact-keyed mutate for entity_facts entries", () => {
-    renderRow(CI_SECURED_ENTITY_FACTS, "contact-005", "entity-005");
-    fireEvent.click(screen.getByText("Reveal"));
-    expect(contactMutate).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: click-routing for legacy (source=null) secured entries
-// ---------------------------------------------------------------------------
-
-describe("SecuredChannelEntry — Reveal click routing (legacy contact_info)", () => {
-  let entityMutate: ReturnType<typeof vi.fn>;
-  let contactMutate: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    entityMutate = vi.fn();
-    contactMutate = vi.fn();
-    vi.mocked(useRevealEntityContactSecret).mockReturnValue(
-      { mutate: entityMutate } as unknown as ReturnType<typeof useRevealEntityContactSecret>,
-    );
-    vi.mocked(useRevealContactSecret).mockReturnValue(
-      { mutate: contactMutate } as unknown as ReturnType<typeof useRevealContactSecret>,
-    );
-    vi.mocked(useDeleteEntityContact).mockReturnValue(
-      { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>,
-    );
-    vi.mocked(useUpdateEntityContact).mockReturnValue(
-      { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>,
-    );
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
-
-  it("clicking Reveal calls the contact-keyed mutate with { contactId, infoId }", () => {
-    renderRow(CI_SECURED_LEGACY, "contact-004", "entity-004");
-    fireEvent.click(screen.getByText("Reveal"));
-    expect(contactMutate).toHaveBeenCalledOnce();
-    expect(contactMutate).toHaveBeenCalledWith(
-      { contactId: "contact-004", infoId: "ci-031" },
-      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
-    );
-  });
-
-  it("clicking Reveal does NOT call the entity-keyed mutate for legacy entries", () => {
-    renderRow(CI_SECURED_LEGACY, "contact-004", "entity-004");
-    fireEvent.click(screen.getByText("Reveal"));
-    expect(entityMutate).not.toHaveBeenCalled();
   });
 });

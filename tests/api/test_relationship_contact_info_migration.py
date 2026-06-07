@@ -5,7 +5,6 @@ Covers the migrated read sites in roster/relationship/api/router.py:
   - GET /contacts (list_contacts) — batch email/phone via entity_facts
   - GET /contacts/pending (list_pending_contacts) — contact_info list via entity_facts
   - GET /contacts/{id} (get_contact) — email, phone, contact_info via entity_facts
-  - GET /contacts/{id}/secrets/{info_id} (reveal_contact_secret) — entity_facts lookup
   - GET /contacts/unlinked (list_unlinked_contacts) — unlinked contacts → null email/phone
   - Telegram disambiguation in has-handle predicates
 
@@ -44,7 +43,6 @@ _TELEGRAM_NUMERIC = "210454304"
 _TELEGRAM_OBJECT = f"telegram:{_TELEGRAM_NUMERIC}"
 
 _CONTACT_PATH = f"/api/relationship/contacts/{_CONTACT_ID}"
-_SECRETS_PATH = f"/api/relationship/contacts/{_CONTACT_ID}/secrets/{_FACT_ID}"
 _CONTACTS_PATH = "/api/relationship/contacts"
 _PENDING_PATH = "/api/relationship/contacts/pending"
 _UNLINKED_PATH = "/api/relationship/contacts/unlinked"
@@ -198,29 +196,6 @@ def _make_app_for_get_contact(
     return app, mock_pool
 
 
-def _make_app_for_reveal_secret(
-    *,
-    contact_row=None,
-    ef_row=None,
-) -> tuple[FastAPI, AsyncMock]:
-    """Wire app for GET /contacts/{id}/secrets/{info_id}."""
-    mock_pool = AsyncMock()
-    # fetchrow call 1 → contact_row (contact entity_id lookup)
-    # fetchrow call 2 → ef_row (entity_facts lookup by id)
-    mock_pool.fetchrow = AsyncMock(side_effect=[contact_row, ef_row])
-
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = mock_pool
-
-    app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
-            break
-
-    return app, mock_pool
-
-
 async def _get(app: FastAPI, path: str) -> httpx.Response:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -315,45 +290,6 @@ class TestGetContactEntityFacts:
         app, _ = _make_app_for_get_contact(contact_row=None, ef_rows=[])
         resp = await _get(app, _CONTACT_PATH)
         assert resp.status_code == 404
-
-
-# ===========================================================================
-# Tests: GET /contacts/{id}/secrets/{info_id} (reveal_contact_secret)
-# ===========================================================================
-
-
-class TestRevealContactSecret:
-    """GET /contacts/{id}/secrets/{info_id} after bu-6ioq3 migration."""
-
-    async def test_contact_not_found_returns_404(self):
-        """No contact row → 404 (contact_id lookup fails)."""
-        app, _ = _make_app_for_reveal_secret(contact_row=None, ef_row=None)
-        resp = await _get(app, _SECRETS_PATH)
-        assert resp.status_code == 404
-
-    async def test_entity_id_null_returns_404(self):
-        """Contact has no linked entity → fact cannot be found → 404."""
-        contact_row = _make_row({"entity_id": None})
-        app, _ = _make_app_for_reveal_secret(contact_row=contact_row, ef_row=None)
-        resp = await _get(app, _SECRETS_PATH)
-        assert resp.status_code == 404
-
-    async def test_fact_not_found_returns_404(self):
-        """entity_facts row not found for given info_id → 404."""
-        contact_row = _make_row({"entity_id": _ENTITY_ID})
-        app, _ = _make_app_for_reveal_secret(contact_row=contact_row, ef_row=None)
-        resp = await _get(app, _SECRETS_PATH)
-        assert resp.status_code == 404
-
-    async def test_fact_found_returns_400_not_secured(self):
-        """entity_facts has no secured concept — always returns 400 (not secured)."""
-        contact_row = _make_row({"entity_id": _ENTITY_ID})
-        ef_row = _make_row({"id": _FACT_ID, "predicate": "has-email", "object": _EMAIL})
-        app, _ = _make_app_for_reveal_secret(contact_row=contact_row, ef_row=ef_row)
-        resp = await _get(app, _SECRETS_PATH)
-        # entity_facts entries are not secured; endpoint returns 400 per contract
-        assert resp.status_code == 400
-        assert "not secured" in resp.json().get("detail", "").lower()
 
 
 # ===========================================================================

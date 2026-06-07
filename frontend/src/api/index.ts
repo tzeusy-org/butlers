@@ -119,7 +119,6 @@ export {
   resolveContactEntity,
   triggerContactsSync,
   getPendingContacts,
-  revealContactSecret,
   patchContact,
   mergeContact,
   confirmContact,
