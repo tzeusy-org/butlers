@@ -338,6 +338,19 @@ describe("adaptInventoryResponse: shared-public target routing", () => {
     expect(result.system[0].target).toBe("shared-public");
   });
 
+  it("shared-public rows adapt to rowState='shared' (not 'local')", () => {
+    // Regression guard: rowStateFromSystemRaw must treat butler="shared-public"
+    // as a shared row, not a local override.  Misclassification would display
+    // these rows as "local override" in the passport UI.
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [makeSystem({ key: "TELEGRAM_TOKEN", state: "ok", butler: "shared-public" })],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].rowState).toBe("shared");
+  });
+
   it("sets target='shared' for rows with butler='shared' (legacy switchboard rows)", () => {
     const result = adaptInventoryResponse({
       cli: [],

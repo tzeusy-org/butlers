@@ -126,7 +126,8 @@ function mergeFingerprints(a: string | null, b: string | null): string | null {
 function rowStateFromSystemRaw(raw: SecretsSystemRaw): SystemCredential["rowState"] {
   if (raw.state === "missing" || raw.state === "never_set") return "missing";
   if (raw.state === "shared" || raw.state === "local") return raw.state;
-  return raw.butler && !["shared", "switchboard"].includes(raw.butler) ? "local" : "shared";
+  // "shared-public" is the public credential pool — treat as shared, not local.
+  return raw.butler && !["shared", "switchboard", "shared-public"].includes(raw.butler) ? "local" : "shared";
 }
 
 /**

@@ -3287,6 +3287,11 @@ async def set_system_credential(
                     key,
                     value,
                 )
+            except UndefinedTableError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="butler_secrets table not available — migration may not have run",
+                ) from exc
             except Exception as exc:
                 logger.warning(
                     "set_system_credential: INSERT failed key=%s target=shared-public: %s",
@@ -3308,6 +3313,11 @@ async def set_system_credential(
                     value,
                     key,
                 )
+            except UndefinedTableError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="butler_secrets table not available — migration may not have run",
+                ) from exc
             except Exception as exc:
                 logger.warning(
                     "set_system_credential: UPDATE failed key=%s target=shared-public: %s",
