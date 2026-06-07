@@ -77,12 +77,12 @@ import {
   useSetPrimaryAccount,
   useDisconnectAccount,
 } from "@/hooks/use-secrets.ts";
-import { useDisconnectGoogleHealth } from "@/hooks/use-google-health.ts";
+import { useDisconnectGoogleHealth, useGoogleHealthStatus } from "@/hooks/use-google-health.ts";
 import {
   getGoogleOAuthStartUrl,
   GOOGLE_HEALTH_SCOPES,
 } from "@/api/client.ts";
-import type { GoogleAccount } from "@/api/types.ts";
+import type { GoogleAccount, GoogleHealthStatusResponse } from "@/api/types.ts";
 import {
   HomeAssistantDrawer,
   OwnTracksDrawer,
@@ -91,6 +91,10 @@ import {
   WhatsAppDrawer,
 } from "./ProviderConfigDrawer.tsx";
 import { GoogleAppCredentials } from "./GoogleAppCredentials.tsx";
+import {
+  isTestModeTokenNearExpiry,
+  isTestModeTokenExpired,
+} from "@/lib/google-health-utils.ts";
 
 // ── Shared-credential-store helpers ───────────────────────────────────────────
 
@@ -552,6 +556,140 @@ function ScopeSetPicker({
   );
 }
 
+// ── GoogleHealthPassportStatusCard — health connector status in passport ──────
+
+/**
+ * Module-level helper: compute banner visibility flags from status snapshot.
+ * Called once per render; Date.now() is not called inside the render body
+ * (required by the react-hooks/purity ESLint rule).
+ */
+function computeHealthBannerFlags(status: GoogleHealthStatusResponse): {
+  showBanner: boolean;
+  isExpired: boolean;
+} {
+  const nowMs = Date.now();
+  const showBanner =
+    status.test_mode && isTestModeTokenNearExpiry(status.last_token_refresh_at, nowMs);
+  const isExpired =
+    status.test_mode && isTestModeTokenExpired(status.last_token_refresh_at, nowMs);
+  return { showBanner, isExpired };
+}
+
+/**
+ * TestModeExpiryBanner — shown when the primary account is in test mode AND
+ * the token is within 24 h of (or past) the 7-day test-mode expiry.
+ *
+ * Derives entirely from existing status endpoint signals: test_mode +
+ * last_token_refresh_at. Does NOT require new backend persistence.
+ *
+ * Accepts pre-computed `isExpired` boolean from the parent so the component
+ * stays pure (no impure Date.now() in render).
+ *
+ * [bu-hh875]
+ */
+function TestModeExpiryBanner({ isExpired }: { isExpired: boolean }) {
+  const tone = isExpired ? "var(--red)" : "var(--amber)";
+  const label = isExpired
+    ? "test-mode token expired — re-run OAuth to refresh"
+    : "test-mode token expires within 24 h — re-run OAuth soon";
+
+  return (
+    <div
+      className="flex items-start gap-2 p-2.5 rounded-sm"
+      style={{
+        border: `1px solid ${tone}`,
+        background: isExpired ? "color-mix(in oklch, var(--red) 8%, transparent)" : "color-mix(in oklch, var(--amber) 8%, transparent)",
+      }}
+      data-testid="test-mode-expiry-banner"
+      data-expired={isExpired ? "true" : "false"}
+    >
+      <span
+        className="inline-block shrink-0 rounded-full mt-1"
+        style={{ width: 6, height: 6, backgroundColor: tone }}
+        aria-hidden="true"
+      />
+      <Mono size={10} style={{ color: tone }}>{label}</Mono>
+    </div>
+  );
+}
+
+/**
+ * GoogleHealthPassportStatusCard — inline connector status card for the
+ * Google credential page in the Secrets passport.
+ *
+ * Acceptance rules:
+ * - HIDDEN when the primary account has no health scopes granted.
+ * - Shows: state + last ingest + 7d sleep/daily counts.
+ * - Shows TestModeExpiryBanner when test_mode=true AND token near/after 7d expiry.
+ *
+ * Only the PRIMARY-account view is shown (per dashboard-google-accounts spec).
+ * Polls every 30 s via useGoogleHealthStatus (same cadence as butler-detail tab).
+ *
+ * [bu-hh875]
+ */
+function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatusResponse }) {
+  const stateColor =
+    status.state === "healthy"
+      ? "var(--green)"
+      : status.state === "error"
+        ? "var(--red)"
+        : "var(--amber)";
+
+  // Compute banner flags via a module-level helper so Date.now() is not called
+  // directly during render (required by the react-hooks/purity ESLint rule).
+  const { showBanner, isExpired } = computeHealthBannerFlags(status);
+
+  return (
+    <div
+      className="flex flex-col gap-2"
+      data-testid="health-passport-status-card"
+    >
+      <Mono size={9} upper tracking="0.14em" color="var(--dim)">
+        health connector
+      </Mono>
+
+      {showBanner && (
+        <TestModeExpiryBanner isExpired={isExpired} />
+      )}
+
+      <div className="flex flex-col gap-1.5">
+        {/* State row */}
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block shrink-0 rounded-full"
+            style={{ width: 6, height: 6, backgroundColor: stateColor }}
+            aria-hidden="true"
+          />
+          <Mono size={10} style={{ color: stateColor }}>{status.state}</Mono>
+        </div>
+
+        {/* KV rows */}
+        <div
+          className="flex flex-col gap-0.5 pt-1.5"
+          style={{ borderTop: "1px solid var(--border-soft)" }}
+        >
+          <div className="flex justify-between gap-3">
+            <Mono size={9} color="var(--dim)">last ingest</Mono>
+            <Mono size={9}>
+              {status.last_ingest_at && !Number.isNaN(new Date(status.last_ingest_at).getTime())
+                ? new Date(status.last_ingest_at).toLocaleDateString()
+                : "—"}
+            </Mono>
+          </div>
+          <div className="flex justify-between gap-3">
+            <Mono size={9} color="var(--dim)">sleep · 7d</Mono>
+            <Mono size={9}>{status.sleep_sessions_7d}</Mono>
+          </div>
+          <div className="flex justify-between gap-3">
+            <Mono size={9} color="var(--dim)">summaries · 7d</Mono>
+            <Mono size={9}>{status.daily_summaries_7d}</Mono>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * PageGoogleAccounts — Google-specific multi-account management surface.
  *
@@ -560,6 +698,7 @@ function ScopeSetPicker({
  *   - Per-account: re-authorize / set-primary / disconnect (w/ hard-delete)
  *   - "add another account" → OAuth with forceConsent + selectAccount (forces chooser)
  *   - Scope-set picker: grant Calendar / Drive / Health + selective Health revoke
+ *   - Google Health status card (hidden when no health scopes granted) [bu-hh875]
  *
  * [bu-ayp6v.7]
  */
@@ -570,6 +709,12 @@ export function PageGoogleAccounts() {
   // Primary account's granted scopes (for scope-set picker).
   const primaryAccount = accounts.find((a) => a.is_primary) ?? accounts[0];
   const grantedScopes = primaryAccount?.granted_scopes ?? [];
+
+  // Google Health connector status — drives the status card and test-mode banner [bu-hh875].
+  // Poll only when the primary account has health scopes (avoids redundant calls
+  // when the user has never granted health access).
+  const hasHealth = hasHealthScopes(grantedScopes);
+  const { data: healthStatus } = useGoogleHealthStatus({ enabled: hasHealth });
 
   // "add another account" — forceConsent + selectAccount forces Google's
   // account chooser even when the user is already signed in.
@@ -669,6 +814,16 @@ export function PageGoogleAccounts() {
           primaryAccountEmail={primaryAccount?.email ?? undefined}
         />
       </div>
+
+      {/* Health connector status card — hidden when no health scopes granted [bu-hh875] */}
+      {hasHealth && healthStatus && (
+        <div
+          className="pt-3"
+          style={{ borderTop: "1px solid var(--border)" }}
+        >
+          <GoogleHealthPassportStatusCard status={healthStatus} />
+        </div>
+      )}
     </div>
   );
 }
