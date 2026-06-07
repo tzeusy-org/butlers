@@ -5511,9 +5511,10 @@ export interface SecretsSystemRaw {
   butler: string;
   test: SecretsProbeResult | null;
   /**
-   * True for rows read from the shared credential pool (public.butler_secrets).
-   * The passport renders these read-only — the generic mutate path targets the
-   * switchboard schema, not the shared pool. May be absent on older backends.
+   * When true, the passport renders the row read-only (generic editor suppressed).
+   * Shared-public rows (butler="shared-public") are NOT flagged read_only —
+   * they are fully editable via target="shared-public". May be absent on older
+   * backends (treat missing as false).
    */
   read_only?: boolean;
 }

@@ -86,9 +86,14 @@ POST /api/secrets/cli/<id>/reauthorize
 
 POST /api/secrets/system/<key>
     Set (first-time create), rotate (value replaced), or override (per-butler).
-    Body: { value, target: "shared" | "<butler>" }
+    Body: { value, target: "shared" | "shared-public" | "<butler>" }
     Returns ApiResponse<SystemSecretDetail> (updated).
     Audit: set (first-time), rotated (existing key), overrode (override).
+
+    target="shared-public" writes to the public credential pool
+    (public.butler_secrets via credential_shared_pool()), which is the pool
+    that modules read via CredentialStore.  target="shared" continues to
+    write to the switchboard schema (preserved for backwards compatibility).
 
 POST /api/secrets/system/<key>/probe
     Probe a system credential; writes probe_log + test-state cache + audit.
@@ -96,9 +101,10 @@ POST /api/secrets/system/<key>/probe
     Rate-limited: 1 call per 5 s per key (in-process TTL guard).
     Audit: verified (ok), failed (not-ok), warned (scope mismatch/expiring).
 
-DELETE /api/secrets/system/<key>?target=<butler|shared>
+DELETE /api/secrets/system/<key>?target=<butler|shared|shared-public>
     Remove a system credential row.
     target=shared → delete the shared (switchboard) row; audit disconnected.
+    target=shared-public → delete from the public credential pool; audit disconnected.
     target=<butler> → delete the per-butler override row; audit revoked.
     Returns ApiResponse<{ status: "disconnected" | "revoked" }>.
 
@@ -137,6 +143,16 @@ Design decisions (system mutations)
   "when target='shared' the value is written to the switchboard's butler_secrets
   table; when target='<butler>' an override row is created in that butler's
   butler_secrets table."
+- shared-public target: target="shared-public" routes to db.credential_shared_pool()
+  (the public schema's butler_secrets table), which is where modules read shared
+  application secrets via CredentialStore.  Inventory rows tagged butler="shared-public"
+  are NOT read_only — the passport renders the generic editor for them wired to
+  this target.  target="shared" (switchboard schema) is preserved unchanged.
+  Migration note: no existing data migration is performed; the public pool and
+  switchboard pool are separate schema partitions.  Any key that was previously
+  written via target="shared" to the switchboard schema stays there; only keys
+  that were always in the public pool (written via CredentialStore.store() at
+  module boot) are served with butler="shared-public".
 - Rate limit on probe: an in-process TTL dict keyed on key (not client IP)
   with a 5 s window.  Shared per server process; adequate for single-owner
   admin use-case.  TTL chosen per spec "1 call/page-load/key".
@@ -146,6 +162,7 @@ Design decisions (system mutations)
   as the probe_log INSERT, replicating the user probe atomicity invariant.
 - DELETE distinguishes shared vs override via the target query param:
   target=shared → DELETE shared (switchboard) row; audit disconnected.
+  target=shared-public → DELETE from the public credential pool; audit disconnected.
   target=<butler> → DELETE per-butler override row; audit revoked.
 
 Spec anchor
@@ -226,11 +243,10 @@ class SystemSecret(BaseModel):
     last_test_message: str | None = None
     butler: str  # which butler schema owns this row
     test: TestResult | None = None
-    # True for rows read from the shared credential pool (public.butler_secrets).
-    # The generic mutate path (set/rotate/override) targets the switchboard
-    # schema, not the shared pool, so the passport renders these read-only to
-    # avoid writing to the wrong place. (Google app keys are edited via the
-    # dedicated oauth endpoint instead.)
+    # True for rows that must not be edited through the generic mutate path.
+    # Shared-pool rows (butler="shared-public") are now editable via
+    # target="shared-public"; the passport renders the generic editor for them.
+    # Reserved for future use (e.g. externally-managed secrets).
     read_only: bool = False
 
 
@@ -1068,15 +1084,18 @@ async def get_inventory(
     # telegram tokens, S3, Spotify, …) lives in public.butler_secrets via the
     # shared credential pool, which is NOT one of the per-butler schemas above.
     # Surface those rows so the System family reflects shared config; tag them
-    # butler="shared" so the frontend renders them as shared-default entries.
+    # butler="shared-public" so the frontend adapter can wire mutations to
+    # target="shared-public" (which routes writes to this pool).
     # (cli-auth/* rows are rerouted to the CLI family by the frontend adapter.)
     #
     # Exclude category='cli' rows: CLI runtime tokens have their own family and
     # are read separately from this same pool by _fetch_cli_secrets(). Including
     # them here would double-list them across the system and cli arrays and
     # double-count them in meta.severity / needs_hand_count.
+    #
+    # read_only=False: these rows are now editable via target="shared-public".
     if shared_pool is not None:
-        shared_system = await _fetch_system_secrets(shared_pool, "shared", read_only=True)
+        shared_system = await _fetch_system_secrets(shared_pool, "shared-public", read_only=False)
         system_secrets.extend(s for s in shared_system if s.category != "cli")
 
     # --- Fetch user secrets from shared pool ---
@@ -1410,10 +1429,12 @@ async def get_system_credential(
 ) -> ApiResponse[SystemSecretDetail]:
     """Return full evidence payload for a single system-scoped credential.
 
-    Searches across all registered butler schemas for a butler_secrets row
-    with the given key.  Returns the first match found.
+    Searches across all registered butler schemas and then the shared credential
+    pool (public.butler_secrets) for a butler_secrets row with the given key.
+    Returns the first match found.
 
-    Returns 404 when no matching credential exists in any butler schema.
+    Returns 404 when no matching credential exists in any butler schema or the
+    shared pool.
     Raw credential values are NEVER returned.
     """
     for butler_name in db.butler_names:
@@ -1425,6 +1446,15 @@ async def get_system_credential(
         detail = await _fetch_single_system_secret(pool, butler_name, key)
         if detail is not None:
             return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+
+    # Also search the shared credential pool (public.butler_secrets).
+    try:
+        shared_pool = db.credential_shared_pool()
+        detail = await _fetch_single_system_secret(shared_pool, "shared-public", key)
+        if detail is not None:
+            return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+    except KeyError:
+        pass
 
     raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -3024,7 +3054,14 @@ class SystemSetRequest(BaseModel):
     value: str
     """New secret value to store."""
     target: str = "shared"
-    """'shared' (default) or a butler name for per-butler override."""
+    """Write target for the credential:
+
+    - ``'shared'`` (default) — write to the switchboard schema's butler_secrets.
+    - ``'shared-public'`` — write to the public credential pool (public.butler_secrets),
+      which modules read via CredentialStore.  Use this for rows surfaced by the
+      inventory with ``butler='shared-public'``.
+    - ``'<butler>'`` — write a per-butler override row in that butler's schema.
+    """
 
 
 class SystemDeleteStatus(BaseModel):
@@ -3128,6 +3165,12 @@ async def set_system_credential(
       table.  If the row exists, UPDATE the value (audit ``rotated``); if not,
       INSERT a new row (audit ``set``).
 
+    - ``target = "shared-public"`` — write to the public credential pool
+      (``public.butler_secrets`` via ``credential_shared_pool()``).  This is the
+      pool that modules read via CredentialStore; rows in this pool are surfaced
+      in the inventory with ``butler="shared-public"`` and are fully editable.
+      Same set/rotate semantics as target="shared".
+
     - ``target = "<butler>"`` — INSERT a new override row in that butler's
       ``butler_secrets`` table (the butler schema).  The override takes
       precedence over the shared row for that butler.  Audit ``overrode``.
@@ -3203,6 +3246,92 @@ async def set_system_credential(
 
         # Re-fetch to return updated state.
         detail = await _fetch_single_system_secret(pool, "switchboard", key)
+        if detail is None:
+            raise HTTPException(status_code=503, detail="Credential not found after write")
+        return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+
+    elif target == "shared-public":
+        # Public credential pool — the pool modules read via CredentialStore.
+        try:
+            pool = db.credential_shared_pool()
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Shared credential pool is not available",
+            ) from exc
+
+        # Check if an existing row exists in the public pool.
+        try:
+            existing = await pool.fetchrow(
+                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except UndefinedTableError:
+            existing = None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "set_system_credential: fetchrow failed key=%s target=shared-public: %s",
+                key,
+                exc,
+            )
+            raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+
+        if existing is None:
+            # First-time create in the public pool.
+            try:
+                await pool.execute(
+                    """
+                    INSERT INTO butler_secrets (secret_key, secret_value, updated_at)
+                    VALUES ($1, $2, now())
+                    """,
+                    key,
+                    value,
+                )
+            except UndefinedTableError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="butler_secrets table not available — migration may not have run",
+                ) from exc
+            except Exception as exc:
+                logger.warning(
+                    "set_system_credential: INSERT failed key=%s target=shared-public: %s",
+                    key,
+                    exc,
+                )
+                raise HTTPException(status_code=503, detail="Credential create failed") from exc
+            audit_action = "set"
+            audit_note = "System credential created in public pool (first-time set)"
+        else:
+            # Row exists — rotate the value in the public pool.
+            try:
+                await pool.execute(
+                    """
+                    UPDATE butler_secrets
+                    SET secret_value = $1, updated_at = now()
+                    WHERE secret_key = $2
+                    """,
+                    value,
+                    key,
+                )
+            except UndefinedTableError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="butler_secrets table not available — migration may not have run",
+                ) from exc
+            except Exception as exc:
+                logger.warning(
+                    "set_system_credential: UPDATE failed key=%s target=shared-public: %s",
+                    key,
+                    exc,
+                )
+                raise HTTPException(status_code=503, detail="Credential rotation failed") from exc
+            audit_action = "rotated"
+            audit_note = "System credential value replaced in public pool (rotated)"
+
+        await _write_system_audit(pool, action=audit_action, key=key, note=audit_note)
+
+        # Re-fetch from the public pool to return updated state.
+        detail = await _fetch_single_system_secret(pool, "shared-public", key)
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after write")
         return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
@@ -3322,17 +3451,29 @@ async def probe_system_credential(
             found_butler = butler_name
             break
 
+    # Also search the shared credential pool (public.butler_secrets) when
+    # the credential was not found in any per-butler schema.
+    shared_pool: Any = None
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        pass
+
+    if found_pool is None and shared_pool is not None:
+        detail = await _fetch_single_system_secret(shared_pool, "shared-public", key)
+        if detail is not None:
+            found_pool = shared_pool
+            found_butler = "shared-public"
+
     if found_pool is None or found_butler is None or detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    # Use the shared pool for probe_log (cross-butler public table).
-    try:
-        shared_pool = db.credential_shared_pool()
-    except KeyError as exc:
+    # Require the shared pool for probe_log (cross-butler public table).
+    if shared_pool is None:
         raise HTTPException(
             status_code=503,
             detail="Shared credential pool unavailable for probe_log write",
-        ) from exc
+        )
 
     # ---------------------------------------------------------------------------
     # Live probe for supported system credentials (OwnTracks webhook token).
@@ -3448,7 +3589,7 @@ async def probe_system_credential(
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/secrets/system/<key>?target=<butler|shared>
+# DELETE /api/secrets/system/<key>?target=<butler|shared|shared-public>
 # ---------------------------------------------------------------------------
 
 
@@ -3462,6 +3603,7 @@ async def delete_system_credential(
         default="shared",
         description=(
             "'shared' to fully delete the shared (switchboard) row (audit: disconnected), "
+            "'shared-public' to delete from the public credential pool (audit: disconnected), "
             "or a butler name to remove the per-butler override row (audit: revoked)."
         ),
     ),
@@ -3473,6 +3615,10 @@ async def delete_system_credential(
 
     - ``target=shared`` — DELETE the shared row from the switchboard's
       ``butler_secrets`` table.  Audit action: ``disconnected``.
+
+    - ``target=shared-public`` — DELETE from the public credential pool
+      (``public.butler_secrets`` via ``credential_shared_pool()``).
+      Audit action: ``disconnected``.
 
     - ``target=<butler>`` — DELETE the per-butler override row from that
       butler's ``butler_secrets`` table.  Audit action: ``revoked``.
@@ -3526,6 +3672,57 @@ async def delete_system_credential(
             action="disconnected",
             key=key,
             note="Shared system credential deleted",
+        )
+        return ApiResponse[SystemDeleteStatus](
+            data=SystemDeleteStatus(status="disconnected"),
+            meta=ApiMeta(),
+        )
+
+    elif target == "shared-public":
+        # Public credential pool (public.butler_secrets) deletion.
+        try:
+            pool = db.credential_shared_pool()
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Shared credential pool is not available",
+            ) from exc
+
+        # Verify the row exists before deleting.
+        try:
+            existing = await pool.fetchrow(
+                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except UndefinedTableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="butler_secrets table not available — migration may not have run",
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
+
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+
+        try:
+            await pool.execute(
+                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                key,
+            )
+        except Exception as exc:
+            logger.warning(
+                "delete_system_credential: DELETE failed key=%s target=shared-public: %s",
+                key,
+                exc,
+            )
+            raise HTTPException(status_code=503, detail="Credential delete failed") from exc
+
+        await _write_system_audit(
+            pool,
+            action="disconnected",
+            key=key,
+            note="Public pool system credential deleted",
         )
         return ApiResponse[SystemDeleteStatus](
             data=SystemDeleteStatus(status="disconnected"),

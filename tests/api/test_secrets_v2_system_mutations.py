@@ -724,3 +724,288 @@ def test_probe_rate_limit_different_keys_not_affected():
     client_b = _build_app(mock_db_b)
     resp_b = client_b.post("/api/secrets/system/KEY_B/probe")
     assert resp_b.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Helpers: shared-public pool fixture
+# ---------------------------------------------------------------------------
+
+
+def _make_db_with_shared_public(
+    *,
+    public_row: MagicMock | None = None,
+    execute_ok: bool = True,
+) -> MagicMock:
+    """Build a mock DatabaseManager where the key lives ONLY in the public pool.
+
+    butler_names is empty (no per-butler schema), switchboard is not registered.
+    credential_shared_pool() returns a pool seeded with public_row.
+    """
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+
+    mock_db.pool = MagicMock(side_effect=KeyError("no butler pools"))
+
+    public_pool = _make_butler_pool(existing_row=public_row, execute_ok=execute_ok)
+    mock_db.credential_shared_pool = MagicMock(return_value=public_pool)
+
+    return mock_db
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /api/secrets/system/<key>  target="shared-public"
+# — verify writes land in public pool, NOT switchboard
+# ---------------------------------------------------------------------------
+
+
+def test_set_shared_public_new_returns_200():
+    """POST target=shared-public (no existing row) → 200 with SystemSecretDetail."""
+    new_row = _make_butler_secrets_row(secret_key="PUB_KEY", last_test_ok=True)
+    mock_db = _make_db_with_shared_public(public_row=None)
+    public_pool = mock_db.credential_shared_pool()
+
+    call_count = [0]
+
+    async def _fetchrow_se(sql, *args):
+        if "secret_probe_log" in sql:
+            return None
+        call_count[0] += 1
+        return None if call_count[0] == 1 else new_row
+
+    public_pool.fetchrow = AsyncMock(side_effect=_fetchrow_se)
+
+    client = _build_app(mock_db)
+    resp = client.post(
+        "/api/secrets/system/PUB_KEY",
+        json={"value": "pub-secret", "target": "shared-public"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert "meta" in body
+
+
+def test_set_shared_public_insert_goes_to_public_pool_not_switchboard():
+    """POST target=shared-public → INSERT executed on the public pool, switchboard untouched."""
+    new_row = _make_butler_secrets_row(secret_key="PUB_KEY")
+    mock_db = _make_db_with_shared_public(public_row=None)
+    public_pool = mock_db.credential_shared_pool()
+
+    call_count = [0]
+
+    async def _fetchrow_se(sql, *args):
+        if "secret_probe_log" in sql:
+            return None
+        call_count[0] += 1
+        return None if call_count[0] == 1 else new_row
+
+    public_pool.fetchrow = AsyncMock(side_effect=_fetchrow_se)
+
+    client = _build_app(mock_db)
+    resp = client.post(
+        "/api/secrets/system/PUB_KEY",
+        json={"value": "pub-val", "target": "shared-public"},
+    )
+    assert resp.status_code == 200
+
+    # The public pool must have had execute() called (INSERT or UPDATE).
+    assert public_pool.execute.called, "Expected execute() on the public pool"
+
+    # The switchboard pool must NOT have been touched (it was never instantiated
+    # via db.pool("switchboard") — confirm db.pool was not called).
+    mock_db.pool.assert_not_called()
+
+
+def test_set_shared_public_rotate_existing_writes_rotated_audit(monkeypatch):
+    """POST target=shared-public on existing row → audit action is 'rotated'."""
+    existing_row = _make_butler_secrets_row(secret_key="PUB_ROTATE", last_test_ok=True)
+    mock_db = _make_db_with_shared_public(public_row=existing_row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+    resp = client.post(
+        "/api/secrets/system/PUB_ROTATE",
+        json={"value": "new-val", "target": "shared-public"},
+    )
+    assert resp.status_code == 200
+    assert any(c["action"] == "rotated" for c in audit_calls), (
+        f"Expected 'rotated' audit action; got: {audit_calls}"
+    )
+
+
+def test_set_shared_public_new_writes_set_audit(monkeypatch):
+    """POST target=shared-public on missing row → audit action is 'set'."""
+    new_row = _make_butler_secrets_row(secret_key="PUB_SET")
+    mock_db = _make_db_with_shared_public(public_row=None)
+    public_pool = mock_db.credential_shared_pool()
+
+    call_count = [0]
+
+    async def _fetchrow_se(sql, *args):
+        if "secret_probe_log" in sql:
+            return None
+        call_count[0] += 1
+        return None if call_count[0] == 1 else new_row
+
+    public_pool.fetchrow = AsyncMock(side_effect=_fetchrow_se)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+    resp = client.post(
+        "/api/secrets/system/PUB_SET",
+        json={"value": "first-val", "target": "shared-public"},
+    )
+    assert resp.status_code == 200
+    assert any(c["action"] == "set" for c in audit_calls), (
+        f"Expected 'set' audit action; got: {audit_calls}"
+    )
+
+
+def test_set_shared_public_503_when_pool_unavailable():
+    """POST target=shared-public returns 503 when the shared pool is not configured."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.pool = MagicMock(side_effect=KeyError("no pools"))
+    mock_db.credential_shared_pool = MagicMock(side_effect=KeyError("no shared pool"))
+
+    client = _build_app(mock_db)
+    resp = client.post(
+        "/api/secrets/system/PUB_KEY",
+        json={"value": "val", "target": "shared-public"},
+    )
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Tests: shared target still routes to switchboard (backwards-compat)
+# ---------------------------------------------------------------------------
+
+
+def test_set_shared_target_still_uses_switchboard():
+    """POST target=shared (default) → writes to switchboard pool, NOT the public pool."""
+    existing_row = _make_butler_secrets_row(secret_key="SW_KEY", last_test_ok=True)
+    mock_db = _make_db(switchboard_row=existing_row)
+    switchboard_pool = mock_db.pool("switchboard")
+
+    client = _build_app(mock_db)
+    resp = client.post(
+        "/api/secrets/system/SW_KEY",
+        json={"value": "sw-val", "target": "shared"},
+    )
+    assert resp.status_code == 200
+    # switchboard pool must have had execute() called.
+    assert switchboard_pool.execute.called, "Expected execute() on the switchboard pool"
+
+
+# ---------------------------------------------------------------------------
+# Tests: DELETE /api/secrets/system/<key>?target=shared-public
+# ---------------------------------------------------------------------------
+
+
+def test_delete_shared_public_returns_200_disconnected():
+    """DELETE ?target=shared-public → 200 with {status: 'disconnected'}."""
+    existing_row = _make_butler_secrets_row(secret_key="PUB_DEL")
+    mock_db = _make_db_with_shared_public(public_row=existing_row)
+    client = _build_app(mock_db)
+    resp = client.delete("/api/secrets/system/PUB_DEL?target=shared-public")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "disconnected"
+
+
+def test_delete_shared_public_goes_to_public_pool_not_switchboard():
+    """DELETE ?target=shared-public → DELETE executed on the public pool, switchboard untouched."""
+    existing_row = _make_butler_secrets_row(secret_key="PUB_DEL2")
+    mock_db = _make_db_with_shared_public(public_row=existing_row)
+    public_pool = mock_db.credential_shared_pool()
+
+    client = _build_app(mock_db)
+    resp = client.delete("/api/secrets/system/PUB_DEL2?target=shared-public")
+    assert resp.status_code == 200
+
+    # Public pool execute() must have been called (DELETE).
+    assert public_pool.execute.called, "Expected execute() on the public pool"
+    # switchboard pool must NOT have been accessed.
+    mock_db.pool.assert_not_called()
+
+
+def test_delete_shared_public_404_when_key_missing():
+    """DELETE ?target=shared-public → 404 when key does not exist in public pool."""
+    mock_db = _make_db_with_shared_public(public_row=None)
+    client = _build_app(mock_db)
+    resp = client.delete("/api/secrets/system/NO_PUB_KEY?target=shared-public")
+    assert resp.status_code == 404
+
+
+def test_delete_shared_public_writes_disconnected_audit(monkeypatch):
+    """DELETE ?target=shared-public → audit action is 'disconnected'."""
+    existing_row = _make_butler_secrets_row(secret_key="PUB_AUDIT_DEL")
+    mock_db = _make_db_with_shared_public(public_row=existing_row)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+    resp = client.delete("/api/secrets/system/PUB_AUDIT_DEL?target=shared-public")
+    assert resp.status_code == 200
+    assert any(c["action"] == "disconnected" for c in audit_calls), (
+        f"Expected 'disconnected' audit action; got: {audit_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests: probe finds credentials in the shared-public pool
+# ---------------------------------------------------------------------------
+
+
+def test_probe_finds_credential_in_public_pool():
+    """Probe locates a key in the public pool when no per-butler schema has it."""
+    existing_row = _make_butler_secrets_row(
+        secret_key="PUB_PROBE", last_test_ok=True, secret_value="val"
+    )
+    mock_db = _make_db_with_shared_public(public_row=existing_row)
+    _system_probe_timestamps.pop("PUB_PROBE", None)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/system/PUB_PROBE/probe")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert body["data"]["ok"] is True
+
+
+def test_probe_shared_public_writes_to_public_pool_not_switchboard():
+    """Probe on a public-pool key must not call db.pool() (no switchboard lookup)."""
+    existing_row = _make_butler_secrets_row(
+        secret_key="PUB_PROBE2", last_test_ok=True, secret_value="val"
+    )
+    mock_db = _make_db_with_shared_public(public_row=existing_row)
+    _system_probe_timestamps.pop("PUB_PROBE2", None)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/system/PUB_PROBE2/probe")
+    assert resp.status_code == 200
+
+    # db.pool() must not have been called — the key was found via the public pool.
+    mock_db.pool.assert_not_called()

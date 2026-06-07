@@ -109,10 +109,10 @@ export interface SystemCredential {
   audit: AuditEvent[];
   plainValue?: string | null;
   /**
-   * Managed in the shared credential pool (public.butler_secrets) — rendered
-   * read-only on the passport because the generic mutate path targets the
-   * switchboard schema, not the shared pool. (Google app keys are the
-   * exception: they carry a dedicated oauth-PUT editor.)
+   * When true, the generic editor is suppressed (read-only row).
+   * Shared-public rows (butler="shared-public") are NOT flagged read_only —
+   * they use target="shared-public" which routes to the correct pool.
+   * Reserved for externally-managed or future restricted rows.
    */
   readOnly?: boolean;
 }

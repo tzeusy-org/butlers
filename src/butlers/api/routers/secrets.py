@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/butlers", tags=["butlers", "secrets"])
 _SHARED_SECRETS_TARGET = "shared"
+# "shared-public" is an alias introduced by secrets_v2 for rows in the public
+# credential pool (public.butler_secrets).  The old reveal/read endpoints
+# treat it identically to "shared" — both route to credential_shared_pool().
+_SHARED_PUBLIC_TARGET = "shared-public"
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -65,7 +69,7 @@ def _credential_store_for(db: DatabaseManager, butler_name: str) -> CredentialSt
         If the butler's database pool is not available.
     """
     normalized_name = butler_name.strip().lower()
-    if normalized_name == _SHARED_SECRETS_TARGET:
+    if normalized_name in (_SHARED_SECRETS_TARGET, _SHARED_PUBLIC_TARGET):
         try:
             pool = db.credential_shared_pool()
         except KeyError:

@@ -497,3 +497,71 @@ describe("PageSystem: reveal value button", () => {
     expect(queryBtn("reveal value")).toBeNull()
   })
 })
+
+// ── shared-public target routing [bu-91noc] ─────────────────────────────────
+
+/** A shared-public credential (public.butler_secrets pool, not switchboard). */
+const SHARED_PUBLIC: typeof TELEGRAM = {
+  ...TELEGRAM,
+  key: "TELEGRAM_TOKEN",
+  target: "shared-public",
+  rowState: "shared",
+  readOnly: false,
+}
+
+function renderSharedPublic() {
+  return renderInProvider(<PageSystem credential={SHARED_PUBLIC} />)
+}
+
+describe("PageSystem: shared-public routing [bu-91noc]", () => {
+  it("renders the generic editor (rotate button) for shared-public rows", () => {
+    renderSharedPublic()
+    expect(getBtn("rotate")).toBeTruthy()
+  })
+
+  it("calls setSystemCredential with target='shared-public' on rotate submit", async () => {
+    mockSet.mockReturnValue(new Promise(() => {}))
+    renderSharedPublic()
+
+    fireEvent.click(getBtn("rotate"))
+    const textarea = screen.getByPlaceholderText("paste value here")
+    fireEvent.change(textarea, { target: { value: "new-public-secret" } })
+
+    await act(async () => {
+      fireEvent.click(getBtn("save"))
+    })
+
+    expect(mockSet).toHaveBeenCalledOnce()
+    expect(mockSet).toHaveBeenCalledWith("TELEGRAM_TOKEN", {
+      value: "new-public-secret",
+      target: "shared-public",
+    })
+  })
+
+  it("calls deleteSystemCredential with target='shared-public' for shared-public row", async () => {
+    mockDelete.mockReturnValue(new Promise(() => {}))
+    renderSharedPublic()
+
+    fireEvent.click(getBtn("delete"))
+
+    await act(async () => {
+      fireEvent.click(getBtn("yes, delete"))
+    })
+
+    expect(mockDelete).toHaveBeenCalledOnce()
+    expect(mockDelete).toHaveBeenCalledWith("TELEGRAM_TOKEN", "shared-public")
+  })
+
+  it("calls revealSecret with butler='shared' (not 'shared-public') for reveal", async () => {
+    mockReveal.mockReturnValue(new Promise(() => {}))
+    renderSharedPublic()
+
+    await act(async () => {
+      fireEvent.click(getBtn("reveal value"))
+    })
+
+    expect(mockReveal).toHaveBeenCalledOnce()
+    // reveal routes through the old endpoint which treats "shared" = public pool
+    expect(mockReveal).toHaveBeenCalledWith("shared", "TELEGRAM_TOKEN")
+  })
+})
