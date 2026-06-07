@@ -226,6 +226,12 @@ class SystemSecret(BaseModel):
     last_test_message: str | None = None
     butler: str  # which butler schema owns this row
     test: TestResult | None = None
+    # True for rows read from the shared credential pool (public.butler_secrets).
+    # The generic mutate path (set/rotate/override) targets the switchboard
+    # schema, not the shared pool, so the passport renders these read-only to
+    # avoid writing to the wrong place. (Google app keys are edited via the
+    # dedicated oauth endpoint instead.)
+    read_only: bool = False
 
 
 class UserSecret(BaseModel):
@@ -596,10 +602,16 @@ async def _fetch_probe_logs_bulk(
 async def _fetch_system_secrets(
     pool: Any,
     butler_name: str,
+    *,
+    read_only: bool = False,
 ) -> list[SystemSecret]:
     """Fetch all butler_secrets rows from a single butler's schema pool.
 
     Returns an empty list when the table doesn't exist or the pool errors.
+
+    ``read_only`` marks the returned rows as managed in the shared credential
+    pool (see :class:`SystemSecret.read_only`); set it when scanning the shared
+    pool rather than a per-butler schema.
     """
     try:
         rows = await pool.fetch(
@@ -659,6 +671,7 @@ async def _fetch_system_secrets(
                 last_test_message=row["last_test_message"],
                 butler=butler_name,
                 test=probe_map.get(row["secret_key"]),
+                read_only=read_only,
             )
         )
 
@@ -936,9 +949,10 @@ async def get_inventory(
 ) -> ApiResponse[InventoryData]:
     """Return the aggregated secrets inventory for the passport-book /secrets page.
 
-    Merges across all butler schemas (system credentials) and
-    public.entity_info (user credentials).  CLI runtime tokens are read
-    from the shared credential pool.
+    Merges system credentials across all butler schemas and the shared
+    credential pool (public.butler_secrets — shared application config such as
+    the Google OAuth app credentials), plus public.entity_info (user
+    credentials).  CLI runtime tokens are read from the shared credential pool.
 
     The ?identity= parameter filters the user array to credentials associated
     with the specified entity UUID.  When omitted, the owner entity is used
@@ -954,7 +968,13 @@ async def get_inventory(
     meta.needs_hand_count is computed server-side from the full row set as
     count(row.state != 'ok').
     """
-    # --- Fetch system secrets across all butler schemas ---
+    # --- Resolve the shared credential pool (public schema) ---
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        shared_pool = None
+
+    # --- Fetch system secrets across all butler schemas + the shared pool ---
     system_secrets: list[SystemSecret] = []
     for butler_name in db.butler_names:
         try:
@@ -964,13 +984,23 @@ async def get_inventory(
         butler_rows = await _fetch_system_secrets(pool, butler_name)
         system_secrets.extend(butler_rows)
 
+    # Shared application config (Google OAuth app credentials, butler email /
+    # telegram tokens, S3, Spotify, …) lives in public.butler_secrets via the
+    # shared credential pool, which is NOT one of the per-butler schemas above.
+    # Surface those rows so the System family reflects shared config; tag them
+    # butler="shared" so the frontend renders them as shared-default entries.
+    # (cli-auth/* rows are rerouted to the CLI family by the frontend adapter.)
+    #
+    # Exclude category='cli' rows: CLI runtime tokens have their own family and
+    # are read separately from this same pool by _fetch_cli_secrets(). Including
+    # them here would double-list them across the system and cli arrays and
+    # double-count them in meta.severity / needs_hand_count.
+    if shared_pool is not None:
+        shared_system = await _fetch_system_secrets(shared_pool, "shared", read_only=True)
+        system_secrets.extend(s for s in shared_system if s.category != "cli")
+
     # --- Fetch user secrets from shared pool ---
     user_secrets: list[UserSecret] = []
-    try:
-        shared_pool = db.credential_shared_pool()
-    except KeyError:
-        shared_pool = None
-
     if shared_pool is not None:
         user_secrets = await _fetch_user_secrets(shared_pool, identity=identity)
 

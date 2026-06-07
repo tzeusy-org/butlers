@@ -25,9 +25,10 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
 ];
 
 /**
- * Owner identity credentials are surfaced from /settings/owner for setup and
- * /secrets for inventory. Google app credentials remain shared system secrets;
- * Google account refresh tokens live on companion entity_info rows.
+ * Owner identity credentials are surfaced and configured on /secrets. Google
+ * app credentials (client ID + secret) are shared system secrets edited on the
+ * Google system-credential pages; Google account refresh tokens live on
+ * companion entity_info rows.
  *
  * Contact-level channel identifiers (Telegram chat ID, email address, phone)
  * remain on the contact at /contacts/{owner_id}.

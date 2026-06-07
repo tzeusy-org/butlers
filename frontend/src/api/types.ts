@@ -5510,6 +5510,12 @@ export interface SecretsSystemRaw {
   last_verified: string | null;
   butler: string;
   test: SecretsProbeResult | null;
+  /**
+   * True for rows read from the shared credential pool (public.butler_secrets).
+   * The passport renders these read-only — the generic mutate path targets the
+   * switchboard schema, not the shared pool. May be absent on older backends.
+   */
+  read_only?: boolean;
 }
 
 /**

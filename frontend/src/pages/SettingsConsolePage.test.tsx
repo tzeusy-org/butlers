@@ -51,10 +51,14 @@ function renderPage() {
 }
 
 describe("SettingsConsolePage", () => {
-  it("links owner configuration to /settings/owner", () => {
+  it("links credentials to /secrets and no longer surfaces an owner-config panel", () => {
     const html = renderPage();
 
-    expect(html).toContain("Owner Config");
-    expect(html).toContain('aria-label="Go to Owner Config"');
+    // Google OAuth app credentials moved onto /secrets; the standalone
+    // /settings/owner panel was removed.
+    expect(html).toContain("Secrets");
+    expect(html).toContain('aria-label="Go to Secrets"');
+    expect(html).not.toContain("Owner Config");
+    expect(html).not.toContain("/settings/owner");
   });
 });

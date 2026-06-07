@@ -90,6 +90,17 @@ import {
   SpotifyDrawer,
   WhatsAppDrawer,
 } from "./ProviderConfigDrawer.tsx";
+import { GoogleAppCredentials } from "./GoogleAppCredentials.tsx";
+
+// ── Shared-credential-store helpers ───────────────────────────────────────────
+
+/** butler_secrets keys holding the shared Google OAuth *app* credentials. */
+const GOOGLE_APP_KEYS = new Set(["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"]);
+
+/** True when a system credential is one of the editable Google app keys. */
+function isGoogleAppCredential(credential: SystemCredential): boolean {
+  return GOOGLE_APP_KEYS.has(credential.key);
+}
 
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
@@ -1208,6 +1219,16 @@ export function PageSystem({
   const isMissing = credential.rowState === "missing";
   const isLocal = credential.rowState === "local";
   const isPlain = !!credential.plainValue;
+  // The Google OAuth app keys get a dedicated editor that writes via the oauth
+  // PUT endpoint (the correct shared/public location). The generic mutate
+  // controls are suppressed for them.
+  const isGoogleApp = isGoogleAppCredential(credential);
+  // Rows read from the shared credential pool (public.butler_secrets) are
+  // flagged read_only by the backend: the generic set/rotate/override path
+  // targets the switchboard schema, NOT the shared pool, so editing those here
+  // would write to the wrong place. Surface them read-only. (Per-butler and
+  // switchboard-scoped rows are not flagged and stay editable as before.)
+  const isSharedStore = !!credential.readOnly;
   const stateColor = isMissing ? "var(--dim)" : "var(--green)";
   const stateLabel = isMissing ? "not set" : isLocal ? "local override" : "shared default";
   const stateLines: string[] = [];
@@ -1724,66 +1745,91 @@ export function PageSystem({
         </Mono>
       )}
 
-      {/* Footer */}
-      <CommitFooter
-        left={
-          isMissing ? (
-            <PillBtn
-              variant="commit"
-              onClick={handleSetValueOpen}
-              disabled={setValueOpen}
-            >
-              set value
-            </PillBtn>
-          ) : (
-            <>
-              {!isPlain && (
-                <PillBtn
-                  onClick={handleProbe}
-                  disabled={probeMutation.isPending}
-                >
-                  {probeMutation.isPending ? "testing…" : "test"}
-                </PillBtn>
-              )}
+      {/* Google OAuth app editor — replaces the generic mutate controls for
+          the shared GOOGLE_OAUTH_CLIENT_ID / _SECRET keys. Writes via the
+          oauth PUT endpoint (the correct public credential-pool location) and
+          carries the (re-)authorize action that formerly lived on
+          /settings/owner. */}
+      {isGoogleApp && (
+        <div className="pt-3.5" style={{ borderTop: "1px solid var(--border)" }}>
+          <GoogleAppCredentials />
+        </div>
+      )}
+
+      {/* Other shared-pool secrets are managed in the shared credential store;
+          editing them here would target the wrong schema, so they are
+          read-only on the passport. */}
+      {isSharedStore && !isGoogleApp && (
+        <div className="pt-3.5" style={{ borderTop: "1px solid var(--border)" }}>
+          <Mono size={11} color="var(--dim)">
+            Managed in the shared credential store · read-only here
+          </Mono>
+        </div>
+      )}
+
+      {/* Footer — generic mutate controls; suppressed for shared-pool rows
+          (incl. the Google app keys, which carry their own editor above). */}
+      {!isGoogleApp && !isSharedStore && (
+        <CommitFooter
+          left={
+            isMissing ? (
               <PillBtn
+                variant="commit"
                 onClick={handleSetValueOpen}
                 disabled={setValueOpen}
               >
-                rotate
+                set value
               </PillBtn>
-              {!isLocal && (
+            ) : (
+              <>
+                {!isPlain && (
+                  <PillBtn
+                    onClick={handleProbe}
+                    disabled={probeMutation.isPending}
+                  >
+                    {probeMutation.isPending ? "testing…" : "test"}
+                  </PillBtn>
+                )}
                 <PillBtn
-                  onClick={handleOverrideOpen}
-                  disabled={overrideOpen}
+                  onClick={handleSetValueOpen}
+                  disabled={setValueOpen}
                 >
-                  override · per butler
+                  rotate
+                </PillBtn>
+                {!isLocal && (
+                  <PillBtn
+                    onClick={handleOverrideOpen}
+                    disabled={overrideOpen}
+                  >
+                    override · per butler
+                  </PillBtn>
+                )}
+              </>
+            )
+          }
+          right={
+            <>
+              {credential.fingerprint && !isPlain && revealMode !== "never" && (
+                <PillBtn
+                  onClick={handleReveal}
+                  disabled={revealMutation.isPending || revealedValue !== null}
+                >
+                  {revealMutation.isPending ? "revealing…" : "reveal value"}
+                </PillBtn>
+              )}
+              {!isMissing && (
+                <PillBtn
+                  variant="danger"
+                  onClick={handleDeleteOpen}
+                  disabled={deleteConfirm}
+                >
+                  delete
                 </PillBtn>
               )}
             </>
-          )
-        }
-        right={
-          <>
-            {credential.fingerprint && !isPlain && revealMode !== "never" && (
-              <PillBtn
-                onClick={handleReveal}
-                disabled={revealMutation.isPending || revealedValue !== null}
-              >
-                {revealMutation.isPending ? "revealing…" : "reveal value"}
-              </PillBtn>
-            )}
-            {!isMissing && (
-              <PillBtn
-                variant="danger"
-                onClick={handleDeleteOpen}
-                disabled={deleteConfirm}
-              >
-                delete
-              </PillBtn>
-            )}
-          </>
-        }
-      />
+          }
+        />
+      )}
     </div>
   );
 }

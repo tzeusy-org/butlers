@@ -455,22 +455,6 @@ function PermissionsPanel({ onNavigate }: { onNavigate: (route: string) => void 
   );
 }
 
-// Owner panel — static summary
-function OwnerConfigPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
-  return (
-    <PanelShell
-      title="Owner Config"
-      description="Primary identity and OAuth provider setup."
-      href="/settings/owner"
-      onNavigate={onNavigate}
-    >
-      <p className="text-sm text-muted-foreground">
-        Configure Google OAuth app credentials and re-authorize owner accounts.
-      </p>
-    </PanelShell>
-  );
-}
-
 // Secrets panel — static summary
 function SecretsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
   return (
@@ -481,7 +465,8 @@ function SecretsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
       onNavigate={onNavigate}
     >
       <p className="text-sm text-muted-foreground">
-        Inspect API keys, CLI tokens, user credentials, and what each credential feeds.
+        Inspect API keys, CLI tokens, user credentials, and the Google OAuth app
+        configuration — plus what each credential feeds.
       </p>
     </PanelShell>
   );
@@ -581,10 +566,7 @@ export default function SettingsConsolePage() {
         {/* Permissions — static panel (navigates to sub-route) */}
         <PermissionsPanel onNavigate={handleNavigate} />
 
-        {/* Owner Config — static panel */}
-        <OwnerConfigPanel onNavigate={handleNavigate} />
-
-        {/* Secrets — static panel */}
+        {/* Secrets — static panel (Google OAuth app credentials now live here) */}
         <SecretsPanel onNavigate={handleNavigate} />
       </div>
     </div>

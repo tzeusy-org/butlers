@@ -108,6 +108,13 @@ export interface SystemCredential {
   test: TestResult | null;
   audit: AuditEvent[];
   plainValue?: string | null;
+  /**
+   * Managed in the shared credential pool (public.butler_secrets) — rendered
+   * read-only on the passport because the generic mutate path targets the
+   * switchboard schema, not the shared pool. (Google app keys are the
+   * exception: they carry a dedicated oauth-PUT editor.)
+   */
+  readOnly?: boolean;
 }
 
 /** CLI runtime credential. */

@@ -145,6 +145,7 @@ def _make_db_manager(
     system_rows: list[MagicMock] | None = None,
     user_rows: list[MagicMock] | None = None,
     cli_rows: list[MagicMock] | None = None,
+    shared_system_rows: list[MagicMock] | None = None,
     probe_row: MagicMock | None = None,
     probe_rows: list[MagicMock] | None = None,
     shared_pool_available: bool = True,
@@ -167,6 +168,7 @@ def _make_db_manager(
     system_rows = system_rows or []
     user_rows = user_rows or []
     cli_rows = cli_rows or []
+    shared_system_rows = shared_system_rows or []
     # probe_rows drives the bulk fetch path; fall back to wrapping probe_row
     # in a list so existing tests continue to work.
     if probe_rows is None and probe_row is not None:
@@ -193,12 +195,15 @@ def _make_db_manager(
 
     async def _shared_fetch(sql, *args):
         if "secret_probe_log" in sql:
-            # Bulk probe-log query for user/cli credentials.
+            # Bulk probe-log query for user/cli/shared-system credentials.
             return bulk_probe_rows
         if "category = 'cli'" in sql:
             return cli_rows
         if "entity_info" in sql:
             return user_rows
+        if "butler_secrets" in sql:
+            # Shared-pool system-secret scan (public.butler_secrets).
+            return shared_system_rows
         return []
 
     shared_pool.fetch = AsyncMock(side_effect=_shared_fetch)
@@ -401,6 +406,73 @@ def test_inventory_no_shared_pool_returns_empty_user_and_cli():
     assert body["data"]["cli"] == []
     # System may or may not have rows depending on pool mock
     assert "system" in body["data"]
+
+
+def test_inventory_surfaces_shared_pool_system_secrets_as_read_only():
+    """Shared-pool (public.butler_secrets) system secrets appear in the System
+    family flagged read_only=true.
+
+    These are the shared application credentials (Google OAuth app keys, etc.)
+    that the consolidated /secrets page surfaces after /settings/owner was
+    removed. They must be marked read_only so the passport does not offer the
+    generic mutate path (which targets the switchboard schema, not the shared
+    pool).
+    """
+    butler_row = _make_system_row(key="LOCAL_KEY", value="v1", last_test_ok=True)
+    shared_row = _make_system_row(
+        key="GOOGLE_OAUTH_CLIENT_ID",
+        value="client-id-value",
+        category="google",
+        last_test_ok=True,
+    )
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[butler_row],
+        shared_system_rows=[shared_row],
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    system = {row["key"]: row for row in resp.json()["data"]["system"]}
+
+    # Both the per-butler row and the shared-pool row are present.
+    assert "LOCAL_KEY" in system
+    assert "GOOGLE_OAUTH_CLIENT_ID" in system
+
+    # Per-butler rows stay editable; shared-pool rows are read-only.
+    assert system["LOCAL_KEY"]["read_only"] is False
+    assert system["GOOGLE_OAUTH_CLIENT_ID"]["read_only"] is True
+    assert system["GOOGLE_OAUTH_CLIENT_ID"]["butler"] == "shared"
+
+
+def test_inventory_shared_pool_cli_rows_excluded_from_system_family():
+    """category='cli' rows in the shared pool are NOT surfaced in the System
+    family — CLI runtime tokens have their own family (_fetch_cli_secrets reads
+    them separately from the same pool). Including them in both would double-list
+    and double-count them in meta.needs_hand_count.
+    """
+    google_row = _make_system_row(
+        key="GOOGLE_OAUTH_CLIENT_ID", value="cid", category="google", last_test_ok=True
+    )
+    # A category='cli' row lives in the shared pool and is owned by the CLI family.
+    cli_row = _make_system_row(key="cli-token", value="tok", category="cli", last_test_ok=True)
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[],
+        shared_system_rows=[google_row, cli_row],
+        cli_rows=[cli_row],
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    system_keys = {row["key"] for row in body["data"]["system"]}
+
+    # Google app key is surfaced; the cli-category row is not in the System family.
+    assert "GOOGLE_OAUTH_CLIENT_ID" in system_keys
+    assert "cli-token" not in system_keys
+    # The CLI token is present exactly once, in the cli family.
+    assert any(row["key"] == "cli-token" for row in body["data"]["cli"])
 
 
 # ---------------------------------------------------------------------------

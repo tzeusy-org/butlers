@@ -210,6 +210,7 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
     breaks:       [],
     test:         adaptProbeResult(raw.test),
     audit:        [],
+    readOnly:     raw.read_only ?? false,
   };
 }
 
@@ -345,6 +346,12 @@ function groupSystemCredentials(credentials: SystemCredential[]): SystemCredenti
       test: existing.test ?? credential.test,
       audit: [...existing.audit, ...credential.audit],
       plainValue: existing.plainValue ?? credential.plainValue,
+      // A per-butler override (local row) is editable and wins; otherwise the
+      // row is read-only if any contributing source is read-only (shared pool).
+      readOnly:
+        rowState === "local"
+          ? false
+          : (existing.readOnly ?? false) || (credential.readOnly ?? false),
     });
   }
 
