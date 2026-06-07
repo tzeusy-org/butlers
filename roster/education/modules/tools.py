@@ -420,14 +420,31 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     async def analytics_get_snapshot(
         mind_map_id: str,
         snapshot_date: str | None = None,
-    ) -> dict[str, Any] | None:
-        """Return the latest (or specific-date) analytics snapshot for a mind map."""
+    ) -> dict[str, Any]:
+        """Return the latest analytics snapshot, or an explicit not-found result.
+
+        The lower-level analytics helper returns ``None`` when no snapshot exists.
+        MCP callers need a terminal, self-describing result so they do not retry
+        the same empty read in a loop.
+        """
         parsed_date: date | None = None
         if snapshot_date is not None:
             parsed_date = date.fromisoformat(snapshot_date)
-        return await _analytics.analytics_get_snapshot(
+        snapshot = await _analytics.analytics_get_snapshot(
             module._get_pool(), mind_map_id, date=parsed_date
         )
+        if snapshot is not None:
+            return snapshot
+        return {
+            "status": "not_found",
+            "mind_map_id": mind_map_id,
+            "snapshot_date": snapshot_date,
+            "message": (
+                "No analytics snapshot exists for this mind map/date. Do not retry the "
+                "same analytics_get_snapshot call; use analytics_get_trend, "
+                "mastery_get_map_summary, or state that analytics are not available yet."
+            ),
+        }
 
     @_tool("analytics")
     async def analytics_get_trend(
