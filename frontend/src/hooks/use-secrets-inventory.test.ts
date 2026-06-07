@@ -6,12 +6,12 @@
 //   - adaptInventoryResponse maps user credential raw.state to state
 //   - adaptInventoryResponse maps backend identities[] (name, role) directly
 //   - adaptInventoryResponse uses backend providers when present [bu-ej5dr]
-//   - adaptInventoryResponse falls back to PROVIDER_CATALOG when providers absent [bu-ej5dr]
+//   - adaptInventoryResponse returns empty providers map when providers absent [bu-lbhxu]
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
 
-import { adaptInventoryResponse, PROVIDER_CATALOG } from "@/hooks/use-secrets-inventory.ts";
+import { adaptInventoryResponse } from "@/hooks/use-secrets-inventory.ts";
 import type { SecretsIdentityInfo, SecretsProviderInfo, SecretsSystemRaw, SecretsUserRaw } from "@/api/types.ts";
 
 function makeSystem(overrides: Partial<SecretsSystemRaw> & Pick<SecretsSystemRaw, "key" | "state">): SecretsSystemRaw {
@@ -102,7 +102,9 @@ describe("adaptInventoryResponse: user credential state", () => {
 
 describe("adaptInventoryResponse: user provider derivation", () => {
   const backendProviders: Record<string, SecretsProviderInfo> = {
-    ...PROVIDER_CATALOG,
+    google:        { id: "google",        label: "Google",         glyph: "G", kind: "oauth",   authority: "accounts.google.com",  brief: "Calendar, Gmail, Drive read.",    cadence: "on demand · refreshes hourly" },
+    homeassistant: { id: "homeassistant", label: "Home Assistant", glyph: "H", kind: "token",   authority: "home.lim.local",       brief: "Smart-home state, sensors.",       cadence: "poll · 30s" },
+    telegram_bot:  { id: "telegram_bot",  label: "Telegram Bot",   glyph: "T", kind: "token",   authority: "api.telegram.org",     brief: "Bot inbound + outbound.",          cadence: "webhook + poll · 30s" },
     github: {
       id: "github",
       label: "GitHub",
@@ -166,7 +168,10 @@ describe("adaptInventoryResponse: user provider derivation", () => {
         makeUser({ id: "google", entity_id: "tze", state: "ok", type: "google_oauth_refresh" }),
       ],
       identities: [],
-      providers: PROVIDER_CATALOG,
+      providers: {
+        google:       { id: "google",       label: "Google",       glyph: "G", kind: "oauth",  authority: "accounts.google.com", brief: "Calendar, Gmail, Drive read.", cadence: "on demand · refreshes hourly" },
+        telegram_bot: { id: "telegram_bot", label: "Telegram Bot", glyph: "T", kind: "token",  authority: "api.telegram.org",    brief: "Bot inbound + outbound.",      cadence: "webhook + poll · 30s" },
+      },
     });
 
     expect(result.user.map((credential) => credential.provider)).toEqual(["telegram_bot", "google"]);
@@ -270,7 +275,7 @@ describe("adaptInventoryResponse: identity mapping from backend", () => {
   });
 });
 
-describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr]", () => {
+describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr, bu-lbhxu]", () => {
   const backendProviders: Record<string, SecretsProviderInfo> = {
     google: {
       id: "google",
@@ -295,7 +300,7 @@ describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr]", () 
     expect(result.providers["google"].label).toBe("Google (from backend)");
   });
 
-  it("falls back to static PROVIDER_CATALOG when providers field is absent", () => {
+  it("returns empty providers map when providers field is absent", () => {
     const result = adaptInventoryResponse({
       cli: [],
       system: [],
@@ -303,14 +308,10 @@ describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr]", () 
       identities: [],
       // providers field intentionally omitted
     });
-    expect(result.providers).toEqual(PROVIDER_CATALOG);
-    // Should contain the canonical set of known providers.
-    expect(Object.keys(result.providers)).toContain("google");
-    expect(Object.keys(result.providers)).toContain("spotify");
-    expect(Object.keys(result.providers)).toContain("anthropic");
+    expect(result.providers).toEqual({});
   });
 
-  it("falls back to static PROVIDER_CATALOG when providers is undefined", () => {
+  it("returns empty providers map when providers is undefined", () => {
     const result = adaptInventoryResponse({
       cli: [],
       system: [],
@@ -318,6 +319,6 @@ describe("adaptInventoryResponse: provider catalog from backend [bu-ej5dr]", () 
       identities: [],
       providers: undefined,
     });
-    expect(result.providers).toEqual(PROVIDER_CATALOG);
+    expect(result.providers).toEqual({});
   });
 });

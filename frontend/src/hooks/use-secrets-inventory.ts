@@ -6,8 +6,8 @@
  * when omitted the owner entity is used (projection-lens semantics).
  *
  * The raw API response is adapted to the InventoryResponse shape expected by
- * DirectionPassport. Static provider metadata (labels, glyphs, authority) is
- * sourced from the frontend PROVIDER_CATALOG; the backend does not return it.
+ * DirectionPassport. Provider metadata (labels, glyphs, authority) is sourced
+ * from the backend providers map returned in the inventory response.
  *
  * Spec anchor: openspec/changes/redesign-secrets-passport/specs/dashboard-api
  * §Inventory endpoint shape
@@ -45,28 +45,6 @@ const STATE_RANK: Record<CredentialState, number> = {
   rotating: 4,
   ok: 5,
   never_set: 9,
-};
-
-// ---------------------------------------------------------------------------
-// Static provider catalog (fallback)
-//
-// The inventory endpoint now returns provider metadata in response.providers
-// (added in bu-ej5dr). This static copy is kept as a one-release fallback
-// for rolling deploys where the backend may not yet include the field.
-//
-// TODO(post-deploy): remove this fallback once all backends are on the
-// version that includes providers in the inventory response.
-// ---------------------------------------------------------------------------
-
-export const PROVIDER_CATALOG: Record<string, SecretsProviderInfo> = {
-  google:        { id: "google",        label: "Google",         glyph: "G", kind: "oauth",   authority: "accounts.google.com",  brief: "Calendar, Gmail, Drive read.",    cadence: "on demand · refreshes hourly" },
-  spotify:       { id: "spotify",       label: "Spotify",        glyph: "S", kind: "oauth",   authority: "accounts.spotify.com", brief: "Recent listens.",                  cadence: "poll · 15m" },
-  homeassistant: { id: "homeassistant", label: "Home Assistant", glyph: "H", kind: "token",   authority: "home.lim.local",       brief: "Smart-home state, sensors.",       cadence: "poll · 30s" },
-  whatsapp:      { id: "whatsapp",      label: "WhatsApp",       glyph: "W", kind: "oauth",   authority: "wa.bridge",            brief: "Inbound messages.",                cadence: "webhook + poll · 5m" },
-  owntracks:     { id: "owntracks",     label: "OwnTracks",      glyph: "O", kind: "webhook", authority: "self-hosted",          brief: "Location pings via MQTT.",         cadence: "event-driven" },
-  steam:         { id: "steam",         label: "Steam",          glyph: "V", kind: "apikey",  authority: "steamcommunity.com",   brief: "Library, playtime.",               cadence: "poll · 6h" },
-  telegram_bot:  { id: "telegram_bot",  label: "Telegram Bot",   glyph: "T", kind: "token",   authority: "api.telegram.org",     brief: "Bot inbound + outbound.",          cadence: "webhook + poll · 30s" },
-  anthropic:     { id: "anthropic",     label: "Anthropic",      glyph: "A", kind: "apikey",  authority: "api.anthropic.com",    brief: "Claude model calls.",              cadence: "on demand" },
 };
 
 // ---------------------------------------------------------------------------
@@ -400,10 +378,7 @@ export function adaptInventoryResponse(data: {
   identities: SecretsIdentityInfo[];
   providers?: Record<string, SecretsProviderInfo>;
 }): InventoryResponse {
-  // Prefer the backend-supplied catalog; fall back to the static FE copy
-  // for rolling deploys where the backend has not yet been updated.
-  // TODO(post-deploy): remove fallback once all backends include providers.
-  const providers: Record<string, SecretsProviderInfo> = { ...(data.providers ?? PROVIDER_CATALOG) };
+  const providers: Record<string, SecretsProviderInfo> = { ...(data.providers ?? {}) };
   const user = data.user.map((raw) => {
     const credential = adaptUserCredential(raw, providers);
     providers[credential.provider] ??= genericProvider(credential.provider, raw.type);

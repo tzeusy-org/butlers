@@ -36,7 +36,6 @@ vi.mock("@/hooks/use-secrets-inventory.ts", () => ({
     isLoading: false,
     isError: false,
   }),
-  PROVIDER_CATALOG: {},
   secretsInventoryKeys: { all: [], byIdentity: () => [] },
   adaptInventoryResponse: (d: unknown) => d,
 }));
