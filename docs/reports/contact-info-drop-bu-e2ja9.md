@@ -40,8 +40,9 @@ rows from the snapshot when present.
 
 ## Acceptance criteria status
 
-1. **`public.contact_info` dropped** — migration authored; the drop is enforced
-   by `core_115` and self-guards against loss. ✅ (code) / ⏳ (execution, see below)
+1. **`public.contact_info` dropped** — ✅ **executed and verified** on the live
+   host (`butlers-db-dev`) via `core_115`; ran through the self-guard (parity 0, no
+   force). See *Execution* below.
 2. **`public.contacts` channel-identity columns removed** — **N/A on the real
    schema**: `public.contacts` has no channel-*identity* columns. The only
    channel-adjacent column is `preferred_channel`, a routing *preference*
@@ -51,34 +52,45 @@ rows from the snapshot when present.
    `public.contact_info_dropbak_core_115`; the pre-migration snapshots from bead 1
    (`contact_info_pre_migration_*`) are likewise retained. Operator must keep both
    ≥ 90 days from the drop date.
-4. **Final reconciliation recorded** — see the execution checklist below; row
-   counts (in vs dropped) are recorded by the operator at actual drop time.
+4. **Final reconciliation recorded** — ✅ see *Execution* below: 872 rows
+   snapshotted, retroactive parity gap = 0, zero data loss.
 5. **Gated on bead 9 sign-off (bu-hpv4u)** — closed; the parity guard is the
    in-migration enforcement of its precondition (*backfill applied + gap = 0*).
 
-## Remaining operational gate (NOT done in this PR — owner-approved, irreversible)
+## Execution (completed — live host `butlers-db-dev`)
 
-The actual `DROP TABLE` against **production** data is a separate dated decision and
-is not performed here. Before/at execution, the operator must:
+> **Host note.** The active system is `butlers-db-dev` (`.env.dev`) — it holds all
+> the data and ran the full migration. The host named `butlers-db` (`.env.prod`)
+> is empty and far behind (`core_045`, no relationship chain); it is **deferred**
+> (bu-qs8sp) and the drop was **not** run there. See bu-e2ja9 close notes.
 
-1. Re-run the backfill `--apply` on production so all mapped rows land in
-   `entity_facts`; approve the owner-entity `pending_actions`; disposition the
-   null-entity orphans and any `google_health`/secured residue.
-2. Confirm a fresh zero-loss verification (the `core_115` parity guard does this
-   automatically and aborts if gap > 0).
-3. Apply the migration (`alembic upgrade core@head`). Record the pre-drop row count
-   (`SELECT count(*) FROM public.contact_info`) and confirm the snapshot row count
-   matches — append both numbers here.
-4. Retain `contact_info_dropbak_core_115` + bead-1 snapshots ≥ 90 days.
+Sequence performed:
 
-> **Final reconciliation (fill in at execution):**
-> rows in `public.contact_info` immediately before drop = `<N>`;
-> rows in `public.contact_info_dropbak_core_115` = `<N>`; parity gap = `0`;
-> drop date = `<YYYY-MM-DD>`; snapshot prune-after = `<drop date + 90d>`.
+1. Backfill `--apply` (idempotent) → 866 rows already present; the 4 remaining
+   gaps were the owner entity's own channels, parked as `pending_actions` per the
+   RFC 0017 §2.3 owner carve-out.
+2. Owner approved those 4 actions → channel triples became active (parity → 0).
+3. `core_115` applied (`alembic upgrade core@head`) — it snapshotted
+   `public.contact_info` → `public.contact_info_dropbak_core_115`, the parity
+   guard passed at gap 0 (no `CONTACT_INFO_DROP_FORCE`), and dropped the table.
+4. Stale owner `pending_actions` (now redundant — triples active) transitioned to
+   `executed` during reconciliation.
+
+> **Final reconciliation:**
+> rows in `public.contact_info_dropbak_core_115` (snapshot of the dropped table) = **872**;
+> retroactive parity gap (non-secured, entity-linked, mapped rows lacking an active
+> triple) = **0** → zero data loss;
+> active `has-*` triples = **872**; `google_health` unmapped (owner-accepted) = **2**;
+> secured/orphan/empty-value = **0**;
+> core alembic revision = **`core_115`**;
+> drop applied ≈ **2026-06-04/05** (after PR #2087 merged 2026-06-03); verified
+> **2026-06-07**; snapshot retained ≥ 90 days (prune-after ≈ **2026-09-07**).
 
 ## Follow-ups
 
+- **bu-qs8sp** (deferred per owner): the `butlers-db` host is empty/at `core_045`;
+  deploy the full migration chain there if it is to become real production.
 - bu-u1mw8 (doctrine): update `about/heart-and-soul/v1.md` to reflect the post-drop
-  reality (entity-facts-backed contacts). Unblocked by this bead.
+  reality (entity-facts-backed contacts). Unblocked (epic bu-uhjxr closed).
 - The project `CLAUDE.md` "Database Isolation" section still describes
   `public.contact_info` as current; fold into the doctrine update.
