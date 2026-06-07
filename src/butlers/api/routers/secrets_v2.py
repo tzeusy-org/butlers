@@ -688,6 +688,16 @@ async def _fetch_user_secrets(
     When identity is provided, filters to that entity.  When omitted, uses
     the owner entity (projection-lens semantics per spec §Inventory endpoint
     shape and design.md Q4).
+
+    Owner-default path (identity=None): in addition to the owner entity's own
+    secured credentials, also includes the PRIMARY Google account's companion
+    entity secured credentials (e.g. google_oauth_refresh) so the Health
+    scope-grant CTA is reachable from /secrets without a manual ?identity= param.
+
+    SECURITY: the join on ``public.google_accounts`` is guarded by
+    ``is_primary = true AND status != 'revoked'`` so that only the primary
+    account surfaces in the owner-default view.  Non-primary accounts MUST NOT
+    appear here — they are only accessible under an explicit ?identity= lens.
     """
     try:
         if identity is not None:
@@ -712,8 +722,26 @@ async def _fetch_user_secrets(
                 identity,
             )
         else:
-            rows = await pool.fetch(
-                """
+            # Owner-default projection: include both the owner entity's credentials
+            # AND the primary Google account companion entity's credentials.
+            #
+            # The UNION merges two disjoint sets:
+            #   1. Credentials anchored on the owner entity (telegram_token, etc.)
+            #      — priority 0, so they always sort first.
+            #   2. Credentials anchored on the primary Google account companion
+            #      entity (google_oauth_refresh), gated by is_primary=true AND
+            #      status != 'revoked' (includes 'active' and 'expired' so the
+            #      reauth CTA is reachable even for expired accounts).
+            #      — priority 1, so they always sort after owner credentials.
+            #
+            # ORDER BY priority, type guarantees owner entity_id appears first in
+            # seen_eids (built in encounter order), which preserves the owner-first
+            # contract in _fetch_identity_info and the identities[] switcher chip.
+            #
+            # SECURITY: non-primary Google accounts are excluded from this query.
+            # They only appear when the caller provides an explicit ?identity= param.
+            _owner_default_sql = """
+                -- Owner entity credentials (priority 0: always first)
                 SELECT
                     ei.id,
                     ei.entity_id,
@@ -724,14 +752,66 @@ async def _fetch_user_secrets(
                     ei.last_verified,
                     ei.last_test_ok,
                     ei.last_test_code,
-                    ei.last_test_message
+                    ei.last_test_message,
+                    0 AS priority
                 FROM public.entity_info ei
                 JOIN public.entities e ON e.id = ei.entity_id
                 WHERE 'owner' = ANY(e.roles)
                   AND ei.secured = true
-                ORDER BY ei.type
-                """
-            )
+
+                UNION ALL
+
+                -- Primary Google account companion entity credentials (priority 1).
+                -- Guarded: is_primary = true AND status != 'revoked' only.
+                SELECT
+                    ei.id,
+                    ei.entity_id,
+                    ei.type,
+                    ei.value,
+                    ei.label,
+                    ei.created_at,
+                    ei.last_verified,
+                    ei.last_test_ok,
+                    ei.last_test_code,
+                    ei.last_test_message,
+                    1 AS priority
+                FROM public.entity_info ei
+                JOIN public.google_accounts ga ON ga.entity_id = ei.entity_id
+                WHERE ga.is_primary = true
+                  AND ga.status != 'revoked'
+                  AND ei.secured = true
+
+                ORDER BY priority, type
+            """
+            try:
+                rows = await pool.fetch(_owner_default_sql)
+            except UndefinedTableError as exc:
+                # google_accounts table not yet migrated — fall back to owner-only
+                # query so existing owner credentials are not hidden.
+                logger.debug(
+                    "google_accounts table not available, falling back to owner-only query: %s",
+                    exc,
+                )
+                rows = await pool.fetch(
+                    """
+                    SELECT
+                        ei.id,
+                        ei.entity_id,
+                        ei.type,
+                        ei.value,
+                        ei.label,
+                        ei.created_at,
+                        ei.last_verified,
+                        ei.last_test_ok,
+                        ei.last_test_code,
+                        ei.last_test_message
+                    FROM public.entity_info ei
+                    JOIN public.entities e ON e.id = ei.entity_id
+                    WHERE 'owner' = ANY(e.roles)
+                      AND ei.secured = true
+                    ORDER BY ei.type
+                    """
+                )
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()
         if "does not exist" in msg or "undefined" in msg.lower():

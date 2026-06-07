@@ -1217,3 +1217,420 @@ def test_inventory_credential_with_no_probe_has_null_test():
     system = resp.json()["data"]["system"]
     assert len(system) == 1
     assert system[0]["test"] is None
+
+
+# ---------------------------------------------------------------------------
+# bu-2kejb: Owner-default inventory surfaces primary Google account
+# ---------------------------------------------------------------------------
+#
+# These tests cover the four acceptance scenarios from the spec:
+#   (a) Owner-default INCLUDES the primary account's google_oauth_refresh
+#   (b) Owner-default EXCLUDES non-primary account credentials
+#   (c) Existing owner creds (telegram/home_assistant) still included
+#   (d) Expired primary (status='expired') still surfaces its credential
+#
+# The new owner-default SQL uses UNION ALL to merge:
+#   1. Owner entity credentials (anchored on the entity with 'owner' in roles)
+#   2. Primary Google account companion entity credentials
+#      (anchored on the entity pointed to by google_accounts WHERE
+#       is_primary=true AND status != 'revoked')
+#
+# The mock distinguishes the owner-default UNION query (contains
+# 'google_accounts') from the identity-specific query (contains 'entity_id = $1').
+# Both paths contain 'entity_info', so the mock checks for 'google_accounts'
+# to route the owner-default path.
+# ---------------------------------------------------------------------------
+
+
+def _make_google_inventory_pool(
+    *,
+    primary_rows: list[MagicMock],
+    owner_rows: list[MagicMock],
+    identity_rows: dict[str, list[MagicMock]] | None = None,
+    entity_rows: list[MagicMock] | None = None,
+) -> AsyncMock:
+    """Build a shared pool mock for google account inventory tests.
+
+    Routes:
+    - SQL containing 'google_accounts' → UNION ALL result: owner_rows + primary_rows
+    - SQL containing 'entity_id = $1' (identity-specific) → identity_rows[str(arg)] or []
+    - SQL containing 'public.entities' (identity enrichment) → entity_rows or []
+    - SQL containing "category = 'cli'" → []
+    - SQL containing 'secret_probe_log' → []
+    """
+    identity_rows = identity_rows or {}
+    entity_rows = entity_rows or []
+
+    shared_pool = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            return []
+        if "category = 'cli'" in sql:
+            return []
+        if "entity_id = $1" in sql and args:
+            # Identity-specific path: return rows for the requested entity.
+            return identity_rows.get(str(args[0]), [])
+        if "google_accounts" in sql:
+            # Owner-default UNION ALL path.
+            return list(owner_rows) + list(primary_rows)
+        if "entity_info" in sql:
+            # Fallback: owner entity only (old-style path — should not be reached
+            # by the new UNION query, but kept as safety net).
+            return list(owner_rows)
+        if "public.entities" in sql:
+            return entity_rows
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+    return shared_pool
+
+
+def _build_app_with_shared_pool(shared_pool: AsyncMock) -> TestClient:
+    """Create a TestClient wired to a custom shared pool (no butler schemas)."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.pool = MagicMock(side_effect=KeyError("no butler pool"))
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    return TestClient(app)
+
+
+# --- (a) Primary active google account appears in owner-default inventory ---
+
+
+def test_primary_google_account_surfaces_in_owner_default():
+    """Owner-default inventory INCLUDES the primary active Google account credential.
+
+    Spec: §Owner-Default Inventory Surfaces Primary Google Account
+    When a primary active Google account exists, google_oauth_refresh MUST appear
+    in the user array without needing ?identity=.
+    """
+    primary_entity_id = str(uuid4())
+    primary_row = _make_entity_info_row(
+        entity_id=primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="primary-refresh-token",
+    )
+
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[primary_row],
+        owner_rows=[],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    types = [u["type"] for u in user]
+    assert "google_oauth_refresh" in types, (
+        "Owner-default inventory must include google_oauth_refresh for the primary account"
+    )
+
+    google_entry = next(u for u in user if u["type"] == "google_oauth_refresh")
+    assert google_entry["entity_id"] == primary_entity_id
+
+
+# --- (b) Non-primary account EXCLUDED from owner-default ---
+
+
+def test_non_primary_google_account_excluded_from_owner_default():
+    """Owner-default inventory EXCLUDES non-primary Google account credentials.
+
+    Spec: §Multi-Account Leak Prevention (dashboard-google-accounts) and
+          §Only the primary account appears in owner-default — non-primary excluded
+
+    This is the core security invariant: a non-primary account (e.g. tzeuse@)
+    MUST NOT appear in the owner-default view.
+    """
+    primary_entity_id = str(uuid4())
+    non_primary_entity_id = str(uuid4())
+
+    primary_row = _make_entity_info_row(
+        entity_id=primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="primary-token",
+    )
+    non_primary_row = _make_entity_info_row(
+        entity_id=non_primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="non-primary-token",
+    )
+
+    # The mock simulates the DB enforcing is_primary=true: only primary_row
+    # comes back in the google_accounts UNION path.  The non_primary_row is
+    # available under an explicit identity= lens only.
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[primary_row],
+        owner_rows=[],
+        identity_rows={non_primary_entity_id: [non_primary_row]},
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    # Owner-default: must NOT contain the non-primary entity.
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    entity_ids = [u["entity_id"] for u in user]
+    assert non_primary_entity_id not in entity_ids, (
+        f"Non-primary Google account entity {non_primary_entity_id} "
+        "MUST NOT appear in the owner-default inventory (security leak)"
+    )
+
+    # Exactly one google_oauth_refresh, belonging to the primary account.
+    google_entries = [u for u in user if u["type"] == "google_oauth_refresh"]
+    assert len(google_entries) == 1
+    assert google_entries[0]["entity_id"] == primary_entity_id
+
+    # Non-primary IS accessible under explicit identity= lens.
+    resp2 = client.get(f"/api/secrets/inventory?identity={non_primary_entity_id}")
+    assert resp2.status_code == 200, resp2.text
+    user2 = resp2.json()["data"]["user"]
+    entity_ids2 = [u["entity_id"] for u in user2]
+    assert non_primary_entity_id in entity_ids2
+
+
+# --- (c) Existing owner creds still included alongside primary google account ---
+
+
+def test_owner_default_includes_existing_creds_alongside_primary_google():
+    """Owner-default includes telegram/home_assistant alongside google_oauth_refresh.
+
+    Spec: §Owner-Default Inventory Surfaces Primary Google Account
+    The UNION extension MUST NOT drop existing owner credentials.
+    """
+    owner_entity_id = str(uuid4())
+    google_entity_id = str(uuid4())
+
+    telegram_row = _make_entity_info_row(
+        entity_id=owner_entity_id,
+        info_type="telegram_token",
+        value="tg-token",
+    )
+    ha_row = _make_entity_info_row(
+        entity_id=owner_entity_id,
+        info_type="home_assistant_token",
+        value="ha-token",
+    )
+    google_row = _make_entity_info_row(
+        entity_id=google_entity_id,
+        info_type="google_oauth_refresh",
+        value="google-token",
+    )
+
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[google_row],
+        owner_rows=[telegram_row, ha_row],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    types = {u["type"] for u in user}
+    assert "telegram_token" in types, "telegram_token must still appear in owner-default"
+    assert "home_assistant_token" in types, (
+        "home_assistant_token must still appear in owner-default"
+    )
+    assert "google_oauth_refresh" in types, "google_oauth_refresh must appear for primary account"
+    assert len(user) == 3
+
+
+# --- (d) Expired primary still surfaces (status='expired' is not 'revoked') ---
+
+
+def test_expired_primary_google_account_still_surfaces_in_owner_default():
+    """Expired primary Google account (status='expired') still appears in owner-default.
+
+    Spec: §Owner-Default Inventory Surfaces Primary Google Account
+    The filter is status != 'revoked', which includes 'expired' accounts.
+    An expired primary must surface so the owner can reach the reauth CTA.
+    The DB enforces the filter; the mock simulates it by including the expired
+    primary row in the google_accounts UNION path result.
+    """
+    primary_entity_id = str(uuid4())
+    expired_primary_row = _make_entity_info_row(
+        entity_id=primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="expired-token",
+        last_test_ok=False,  # expired token likely fails probe
+    )
+
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[expired_primary_row],
+        owner_rows=[],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    types = [u["type"] for u in user]
+    assert "google_oauth_refresh" in types, (
+        "Expired primary account must still surface google_oauth_refresh "
+        "so the owner can reach the reauth CTA (status='expired' != 'revoked')"
+    )
+
+    google_entry = next(u for u in user if u["type"] == "google_oauth_refresh")
+    assert google_entry["entity_id"] == primary_entity_id
+
+
+# --- Primary google account entity appears in identities[] switcher ---
+
+
+def test_primary_google_account_entity_appears_in_identities():
+    """Primary Google account entity_id appears in identities[] in the inventory response.
+
+    Spec: §Projection-Lens Identity Switcher (butler-secrets)
+    The identity switcher chip SHALL include connected Google accounts as
+    selectable identity lenses.  The backend surfaces the primary account's
+    companion entity through the UNION, so its entity_id flows into seen_eids
+    and is picked up by _fetch_identity_info.
+    """
+    primary_entity_id = str(uuid4())
+    primary_row = _make_entity_info_row(
+        entity_id=primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="google-token",
+    )
+
+    # _fetch_identity_info queries public.entities for canonical_name+roles.
+    google_entity_row = _make_entity_row(
+        entity_id=primary_entity_id,
+        canonical_name="google-account:uniquosity@gmail.com",
+        roles=["google_account"],
+    )
+
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[primary_row],
+        owner_rows=[],
+        entity_rows=[google_entity_row],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    identities = body["data"]["identities"]
+    entity_ids = [i["entity_id"] for i in identities]
+    assert primary_entity_id in entity_ids, (
+        "Primary Google account companion entity must appear in identities[] "
+        "so the FE can render the identity switcher chip"
+    )
+
+    google_identity = next(i for i in identities if i["entity_id"] == primary_entity_id)
+    # google_account role is not 'owner', so it maps to 'member' in the switcher
+    assert google_identity["role"] == "member"
+
+
+# --- No google account connected — google_oauth_refresh absent from owner-default ---
+
+
+def test_no_primary_google_account_no_google_entry_in_owner_default():
+    """When no primary Google account exists, google_oauth_refresh is absent.
+
+    Spec: §No Google account connected — no google_oauth_refresh in owner-default
+    The UNION path for google_accounts returns empty when there is no primary
+    account (DB enforces is_primary=true AND status!='revoked').
+    """
+    owner_entity_id = str(uuid4())
+    telegram_row = _make_entity_info_row(
+        entity_id=owner_entity_id,
+        info_type="telegram_token",
+        value="tg-token",
+    )
+
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[],  # no primary google account
+        owner_rows=[telegram_row],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    types = [u["type"] for u in user]
+    assert "google_oauth_refresh" not in types, (
+        "google_oauth_refresh must NOT appear when no primary Google account is connected"
+    )
+    assert "telegram_token" in types
+
+
+# --- Owner identity always appears first in identities[] regardless of type sort order ---
+
+
+def test_owner_entity_first_in_identities_when_google_type_sorts_before_owner_type():
+    """Owner entity_id appears first in identities[] even when google_oauth_refresh sorts before.
+
+    Regression guard for the ordering bug: prior to the priority-column fix, ORDER BY type
+    caused google_oauth_refresh (g) to sort before telegram_token (t), making the Google
+    account entity_id appear first in seen_eids and thus first in identities[].
+
+    With the priority-column fix (ORDER BY priority, type), owner credentials (priority=0)
+    always appear before google account credentials (priority=1), preserving the owner-first
+    contract documented in _fetch_identity_info.
+
+    The mock simulates the DB returning rows already sorted by priority, type (as the real
+    DB would), with owner rows (telegram_token) coming before google rows (google_oauth_refresh).
+    """
+    owner_entity_id = str(uuid4())
+    google_entity_id = str(uuid4())
+
+    telegram_row = _make_entity_info_row(
+        entity_id=owner_entity_id,
+        info_type="telegram_token",
+        value="tg-token",
+    )
+    google_row = _make_entity_info_row(
+        entity_id=google_entity_id,
+        info_type="google_oauth_refresh",
+        value="google-token",
+    )
+
+    owner_entity_row = _make_entity_row(
+        entity_id=owner_entity_id,
+        canonical_name="Owner",
+        roles=["owner"],
+    )
+    google_entity_row = _make_entity_row(
+        entity_id=google_entity_id,
+        canonical_name="google-account:uniquosity@gmail.com",
+        roles=["google_account"],
+    )
+
+    # Mock returns owner rows first (priority=0), google rows second (priority=1),
+    # simulating the DB's ORDER BY priority, type guarantee.
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[google_row],
+        owner_rows=[telegram_row],
+        entity_rows=[owner_entity_row, google_entity_row],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    identities = body["data"]["identities"]
+    assert len(identities) >= 2, "Both owner and google identities must appear"
+
+    # Owner MUST be first.
+    assert identities[0]["entity_id"] == owner_entity_id, (
+        "Owner entity must appear first in identities[] — "
+        "google_oauth_refresh must not displace it via alphabetical type sort"
+    )
+    assert identities[0]["role"] == "owner"
+
+    # Google account appears second.
+    google_identity = next((i for i in identities if i["entity_id"] == google_entity_id), None)
+    assert google_identity is not None, "Google account entity must appear in identities[]"
+    assert google_identity["role"] == "member"
