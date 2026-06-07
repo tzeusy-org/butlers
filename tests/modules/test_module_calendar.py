@@ -330,6 +330,45 @@ class TestCalendarReadTools:
         with pytest.raises(ValueError, match="calendar_id"):
             await mcp.tools["calendar_list_events"](calendar_id="   ")
 
+    async def test_unknown_calendar_id_override_rejected_after_discovery(self):
+        provider = _ProviderDouble()
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        mod._all_provider_calendar_ids = ["primary"]
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+            butler_name="test-butler",
+        )
+
+        with pytest.raises(ValueError, match="discovered provider calendars"):
+            await mcp.tools["calendar_list_events"](calendar_id="__invalid_check__")
+
+        assert provider.list_calls == []
+
+    async def test_primary_alias_allowed_after_discovery(self):
+        provider = _ProviderDouble()
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "butlers@example.com"
+        mod._primary_calendar_id = "owner@example.com"
+        mod._all_provider_calendar_ids = ["owner@example.com", "butlers@example.com"]
+        mod._provider_calendar_discovery_completed = True
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "butlers@example.com"},
+            db=None,
+            butler_name="test-butler",
+        )
+
+        await mcp.tools["calendar_list_events"](calendar_id="primary")
+
+        assert provider.list_calls[0]["calendar_id"] == "primary"
+
 
 # ---------------------------------------------------------------------------
 # Calendar write tools
@@ -363,6 +402,61 @@ class TestCalendarWriteTools:
         assert payload.title == "BUTLER: Team Sync"
         assert payload.private_metadata[BUTLER_GENERATED_PRIVATE_KEY] == "true"
         assert result["event"]["butler_generated"] is True
+
+    async def test_create_event_rejects_unknown_calendar_id_before_provider_write(self):
+        created = _make_event(
+            title="BUTLER: Team Sync", butler_generated=True, butler_name="general"
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        mod._all_provider_calendar_ids = ["primary"]
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+
+        with pytest.raises(ValueError, match="discovered provider calendars"):
+            await mcp.tools["calendar_create_event"](
+                title="Team Sync",
+                start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+                end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+                calendar_id="__invalid_check__",
+            )
+
+        assert provider.create_calls == []
+
+    async def test_empty_discovered_calendar_list_still_rejects_unknown_override(self):
+        created = _make_event(
+            title="BUTLER: Team Sync", butler_generated=True, butler_name="general"
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "butlers@example.com"
+        mod._all_provider_calendar_ids = []
+        mod._provider_calendar_discovery_completed = True
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "butlers@example.com"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+
+        with pytest.raises(ValueError, match="discovered provider calendars"):
+            await mcp.tools["calendar_create_event"](
+                title="Team Sync",
+                start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+                end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+                calendar_id="__invalid_check__",
+            )
+
+        assert provider.create_calls == []
 
     async def test_delete_event_tool_is_registered(self):
         provider = _ProviderDouble()

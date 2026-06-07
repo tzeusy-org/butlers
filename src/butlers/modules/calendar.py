@@ -2560,6 +2560,7 @@ class CalendarModule(Module):
         self._calendar_is_butler_specific: bool = False
         # All provider calendar IDs discovered at startup (for pull-all sync).
         self._all_provider_calendar_ids: list[str] = []
+        self._provider_calendar_discovery_completed = False
         # User's primary Google Calendar ID (email address).  Used as the
         # default target for user-facing MCP tool mutations so that events
         # land on the user's personal calendar rather than the shared
@@ -5178,6 +5179,7 @@ class CalendarModule(Module):
 
         # Discover all user calendars and register them as sources for pull-all.
         self._all_provider_calendar_ids = await self._discover_and_register_all_calendars()
+        self._provider_calendar_discovery_completed = True
 
         # If the stored calendar ID is stale (e.g. created under a previous Google
         # account), it won't appear in the discovered list.  Re-discover so a new
@@ -5194,6 +5196,7 @@ class CalendarModule(Module):
             self._resolved_calendar_id = await self._resolve_startup_calendar_id(None)
             # Re-run discovery to register the new calendar as a source.
             self._all_provider_calendar_ids = await self._discover_and_register_all_calendars()
+            self._provider_calendar_discovery_completed = True
             # Persist the new ID to shared store.
             if credential_store is not None and self._resolved_calendar_id:
                 await credential_store.store_shared(
@@ -7053,6 +7056,15 @@ class CalendarModule(Module):
         normalized = override_calendar_id.strip()
         if not normalized:
             raise ValueError("calendar_id must be a non-empty string when provided")
+        if self._provider_calendar_discovery_completed or self._all_provider_calendar_ids:
+            known_calendar_ids = set(self._all_provider_calendar_ids)
+            if self._primary_calendar_id is not None:
+                known_calendar_ids.add(self._primary_calendar_id)
+            if self._resolved_calendar_id is not None:
+                known_calendar_ids.add(self._resolved_calendar_id)
+            known_calendar_ids.add("primary")
+            if normalized not in known_calendar_ids:
+                raise ValueError("calendar_id is not one of the discovered provider calendars")
         return normalized
 
     async def create_user_event(
