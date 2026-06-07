@@ -117,6 +117,22 @@ _RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S = 1.0
 _RUNTIME_TIMEOUT_MAX_CLEANUP_GRACE_S = 10.0
 _RUNTIME_TIMEOUT_CLEANUP_GRACE_FRACTION = 0.05
 
+# ---------------------------------------------------------------------------
+# Guardrail budget defaults
+# ---------------------------------------------------------------------------
+
+# Default maximum number of tool calls allowed per session.
+# 0 means disabled (no limit enforced). This is the safe default so that
+# existing deployments without explicit config are not affected.
+_DEFAULT_MAX_TOOL_CALLS = 0
+
+# Number of consecutive identical (name, input) tool call signatures that
+# triggers a degenerate-loop guardrail. A conservative threshold keeps
+# false-positive rates very low while catching true runaway loops.
+# Only adjacent duplicates count — a loop requires the same call repeatedly
+# without any different call in between.
+_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD = 6
+
 
 def _runtime_timeout_guard_s(timeout_s: float) -> float:
     grace_s = min(
@@ -396,6 +412,124 @@ def _merge_tool_call_records(
 def _has_non_command_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
     """Return whether the record set includes any non-bash tool call."""
     return any(str(call.get("name", "") or "") != "command_execution" for call in tool_calls)
+
+
+def _check_degenerate_tool_loop(
+    tool_calls: list[dict[str, Any]],
+    *,
+    consecutive_threshold: int = _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD,
+) -> str | None:
+    """Detect a degenerate tool loop in the session's tool-call list.
+
+    A degenerate loop is defined as ``consecutive_threshold`` or more
+    back-to-back tool calls with identical ``(name, input)`` signatures.
+    Only adjacent duplicates count — non-identical calls reset the streak.
+
+    Parameters
+    ----------
+    tool_calls:
+        Full list of tool call records for the completed session.
+    consecutive_threshold:
+        Number of consecutive identical calls required to trigger the guard.
+
+    Returns
+    -------
+    str | None
+        A human-readable guardrail reason string when a loop is detected, or
+        ``None`` when no degenerate pattern is found.
+    """
+    if consecutive_threshold <= 0 or len(tool_calls) < consecutive_threshold:
+        return None
+
+    def _call_signature(call: dict[str, Any]) -> str:
+        name = str(call.get("name", "") or "")
+        payload = call.get("input")
+        if payload is None:
+            payload = call.get("args")
+        if payload is None:
+            payload = call.get("arguments")
+        try:
+            payload_str = json.dumps(payload, sort_keys=True, default=str)
+        except Exception:
+            payload_str = str(payload)
+        return f"{name}|{payload_str}"
+
+    streak = 1
+    prev_sig = _call_signature(tool_calls[0])
+    for call in tool_calls[1:]:
+        sig = _call_signature(call)
+        if sig == prev_sig:
+            streak += 1
+            if streak >= consecutive_threshold:
+                return (
+                    f"degenerate_tool_loop: {streak} consecutive identical calls to "
+                    f"{str(call.get('name', '') or '')!r} detected; "
+                    "session terminated to prevent runaway loop"
+                )
+        else:
+            streak = 1
+            prev_sig = sig
+    return None
+
+
+def _check_tool_call_budget(
+    tool_calls: list[dict[str, Any]],
+    *,
+    max_tool_calls: int,
+) -> str | None:
+    """Return a guardrail reason string when the tool-call budget is exceeded.
+
+    Parameters
+    ----------
+    tool_calls:
+        Full list of tool call records for the completed session.
+    max_tool_calls:
+        Maximum allowed tool calls. ``0`` disables the check.
+
+    Returns
+    -------
+    str | None
+        A reason string when the budget is exceeded, or ``None`` otherwise.
+    """
+    if max_tool_calls <= 0:
+        return None
+    count = len(tool_calls)
+    if count > max_tool_calls:
+        return (
+            f"tool_call_budget_exceeded: session made {count} tool calls, "
+            f"exceeding budget of {max_tool_calls}"
+        )
+    return None
+
+
+def _check_token_budget(
+    input_tokens: int | None,
+    *,
+    max_token_budget: int | None,
+) -> str | None:
+    """Return a guardrail reason string when the token budget is exceeded.
+
+    Parameters
+    ----------
+    input_tokens:
+        Input token count reported by the adapter. ``None`` means unknown.
+    max_token_budget:
+        Maximum allowed input tokens. ``None`` disables the check.
+
+    Returns
+    -------
+    str | None
+        A reason string when the budget is exceeded, or ``None`` otherwise.
+    """
+    if max_token_budget is None or input_tokens is None:
+        return None
+    if input_tokens > max_token_budget:
+        return (
+            f"token_budget_exceeded: session consumed {input_tokens:,} input tokens, "
+            f"exceeding budget of {max_token_budget:,} "
+            f"(+{input_tokens - max_token_budget:,} over)"
+        )
+    return None
 
 
 def _compose_system_prompt(
@@ -1026,6 +1160,7 @@ class Spawner:
         cwd: str | None = None,
         bypass_butler_semaphore: bool = False,
         max_token_budget: int | None = None,
+        max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS,
         env_override: dict[str, str] | None = None,
         timeout_override: int | None = None,
         ingestion_event_id: str | None = None,
@@ -1068,9 +1203,15 @@ class Spawner:
             must not block behind ordinary butler sessions.
         max_token_budget:
             Optional per-session token budget (input tokens). When set and the
-            completed session's ``input_tokens`` exceeds this value, the session
-            is marked as a budget overrun (success remains True but a warning is
-            logged and the ``error`` field records the overrun).
+            completed session's ``input_tokens`` exceeds this value, a
+            ``RuntimeError("token_budget_exceeded: ...")`` is raised so the
+            failover classifier treats this as a guardrail termination and
+            suppresses any same-tier retry.
+        max_tool_calls:
+            Maximum number of tool calls allowed per session. ``0`` disables
+            the limit (default). When exceeded, a
+            ``RuntimeError("tool_call_budget_exceeded: ...")`` is raised,
+            which the failover classifier suppresses from same-tier retry.
         env_override:
             When provided, replaces the automatically-built credential/env dict
             with this explicit environment map. Used by the QA dispatcher to pass
@@ -1185,6 +1326,7 @@ class Spawner:
                         complexity,
                         cwd=cwd,
                         max_token_budget=max_token_budget,
+                        max_tool_calls=max_tool_calls,
                         env_override=env_override,
                         timeout_override=timeout_override,
                         ingestion_event_id=ingestion_event_id,
@@ -1212,6 +1354,7 @@ class Spawner:
                             complexity,
                             cwd=cwd,
                             max_token_budget=max_token_budget,
+                            max_tool_calls=max_tool_calls,
                             env_override=env_override,
                             timeout_override=timeout_override,
                             ingestion_event_id=ingestion_event_id,
@@ -1367,6 +1510,7 @@ class Spawner:
         complexity: Complexity = Complexity.WORKHORSE,
         cwd: str | None = None,
         max_token_budget: int | None = None,
+        max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS,
         env_override: dict[str, str] | None = None,
         timeout_override: int | None = None,
         ingestion_event_id: str | None = None,
@@ -1380,6 +1524,10 @@ class Spawner:
         # tool-call buffer, it stores the result here so the failure-path
         # exception handler does not re-consume an empty buffer.
         preconsumed_runtime_tool_calls: list[dict[str, Any]] | None = None
+        # Set to True when the failover loop already ran classify_failover_eligibility
+        # and emitted the suppressed metric for this exception.  The outer except
+        # block skips classification for exceptions that are already classified.
+        _failover_already_classified: bool = False
         routing_context = _capture_pipeline_routing_context()
         # Ledger token tracking: set as soon as the adapter reports usage so that
         # ledger recording in the finally block captures tokens even when post-invoke
@@ -1889,6 +2037,9 @@ class Spawner:
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
                         )
+                    # Mark as already classified so the outer except handler does not
+                    # double-emit the suppressed metric for this exception.
+                    _failover_already_classified = True
                     # Restore tool calls for the outer except block.
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
@@ -2013,6 +2164,32 @@ class Spawner:
                     _ledger_input_tokens = input_tokens
                     _ledger_output_tokens = output_tokens or 0
 
+            # ------------------------------------------------------------------
+            # Guardrail checks — run after tool-call merge and token extraction.
+            # These conditions indicate intentional session termination and must
+            # SUPPRESS same-tier failover (the failover classifier recognises the
+            # marker strings in the RuntimeError message and returns eligible=False).
+            #
+            # Raise order: degenerate loop → tool-call budget → token budget.
+            # When raised, ``preconsumed_runtime_tool_calls`` is set so the outer
+            # except handler records the tool calls that actually ran.
+            # ------------------------------------------------------------------
+            _guardrail_reason: str | None = (
+                _check_degenerate_tool_loop(tool_calls)
+                or _check_tool_call_budget(tool_calls, max_tool_calls=max_tool_calls)
+                or _check_token_budget(input_tokens, max_token_budget=max_token_budget)
+            )
+            if _guardrail_reason is not None:
+                # Preserve tool calls so the except handler can persist them.
+                preconsumed_runtime_tool_calls = list(tool_calls)
+                logger.warning(
+                    "Guardrail triggered for butler=%s session=%s: %s",
+                    self._config.name,
+                    session_id,
+                    _guardrail_reason,
+                )
+                raise RuntimeError(_guardrail_reason)
+
             spawner_result = SpawnerResult(
                 output=result_text,
                 success=True,
@@ -2093,42 +2270,6 @@ class Spawner:
                             exc_info=True,
                         )
 
-            # Token budget overrun check (post-hoc — session already ran).
-            # Records the overrun as a warning so dashboards can surface it.
-            budget_overrun = False
-            if (
-                max_token_budget is not None
-                and input_tokens is not None
-                and input_tokens > max_token_budget
-            ):
-                budget_overrun = True
-                overrun_msg = (
-                    f"Token budget overrun: {input_tokens:,} input tokens "
-                    f"exceeded budget of {max_token_budget:,} "
-                    f"(+{input_tokens - max_token_budget:,} over)"
-                )
-                logger.warning(
-                    "Session %s budget overrun for butler=%s trigger=%s: %s",
-                    session_id,
-                    self._config.name,
-                    trigger_source,
-                    overrun_msg,
-                )
-                # Persist the overrun as a warning on the session record.
-                if self._pool is not None and session_id is not None:
-                    try:
-                        await self._pool.execute(
-                            "UPDATE sessions SET error = $2 WHERE id = $1",
-                            session_id,
-                            overrun_msg,
-                        )
-                    except Exception:
-                        logger.debug(
-                            "Failed to record budget overrun for session %s",
-                            session_id,
-                            exc_info=True,
-                        )
-
             # Write daemon-side audit log entry
             await write_audit_entry(
                 self._audit_pool,
@@ -2147,7 +2288,6 @@ class Spawner:
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "max_token_budget": max_token_budget,
-                    "budget_overrun": budget_overrun,
                 },
             )
 
@@ -2193,6 +2333,28 @@ class Spawner:
                 captured_on_failure = consume_runtime_session_tool_calls(runtime_session_id)
             duration_ms = int((time.monotonic() - t0) * 1000)
             error_msg = f"{type(exc).__name__}: {exc}"
+
+            # Guardrail exceptions raised from the post-invocation success path
+            # (degenerate_tool_loop, tool_call_budget_exceeded, token_budget_exceeded)
+            # bypass the failover loop and arrive here unclassified. Classify them
+            # so the suppressed metric is emitted and the outcome is observable.
+            # Skip when the failover loop already classified and emitted for this exc.
+            if not _failover_already_classified:
+                _outer_failover_decision = classify_failover_eligibility(
+                    FailoverContext(
+                        exception=exc,
+                        tool_calls=captured_on_failure,
+                        process_info=runtime.last_process_info if runtime_invoked else None,
+                    )
+                )
+                if not _outer_failover_decision.eligible:
+                    self._metrics.record_failover_suppressed(reason=_outer_failover_decision.reason)
+                    logger.debug(
+                        "Failover suppressed for butler=%s (outer except): %s",
+                        self._config.name,
+                        _outer_failover_decision.reason,
+                    )
+
             logger.error(
                 "Runtime invocation failed: %s",
                 error_msg,
