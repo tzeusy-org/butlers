@@ -219,15 +219,21 @@ the use case before being treated as binding.
    `<Page>` shell that owns title, description, breadcrumbs, action
    bar, loading state, error state, and empty state. Pages compose
    sections inside it; they do not reinvent the chrome.
-   - **Standard H1 size is `text-2xl font-bold tracking-tight`.**
-     Settled per the detail-page audit and adopted by `<Page>`. Pages
-     currently using `text-3xl` get demoted during their migration.
+   - **Standard H1 size is `text-3xl font-bold tracking-tight`.**
+     Canonical per `<Page>` as shipped (`frontend/src/components/ui/page.tsx`)
+     and the dashboard-shell spec (`openspec/specs/dashboard-shell/spec.md`):
+     the `<h1>` is owned by `<Page>` and uses `text-3xl font-bold
+     tracking-tight` for all standard (non-editorial) pages. This ratifies
+     the shipped shape and supersedes the earlier detail-page-audit choice of
+     `text-2xl` (decision bu-23bgb): the heading weight stays `font-bold`
+     (700) for standard chrome — the Dispatch "Display weight is 500" rule
+     below applies only to the Display/Editorial tier, not the standard H1.
    - **Editorial archetype gets a Display tier.** The Overview opens
      with a Display headline instead of the standard H1. The Display
      tier is reserved for editorial pages where the system is speaking
      in sentences (see [Editorial archetype](#editorial-archetype)).
      It is not available to drilldown, workspace, feed, log, or graph
-     archetypes; those keep the `text-2xl` H1. Display tier sizing:
+     archetypes; those keep the standard `text-3xl` H1. Display tier sizing:
      **44px / weight 500 / tracking -0.025em / leading 1.08** (sans).
      Full token table in [`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md)
      under the Type tokens section.
@@ -240,7 +246,7 @@ the use case before being treated as binding.
      touch `archetype="detail"`). Workbench is a workspace-grade record
      page: it renders via `<Page archetype="overview">` (the `workspace`
      archetype gap is left to Phase 2 per entity-brief.md R3; `overview`
-     is the interim choice), keeps the standard `text-2xl` H1, and does
+     is the interim choice), keeps the standard `text-3xl` H1, and does
      not get the Display tier. The Editorial/Workbench toggle is a
      `localStorage`-persisted mode switch in the Page shell's actions
      slot; the two modes share one route and one `<Page>` mount. Per
@@ -789,7 +795,9 @@ defeated when digits jitter as they update.
 
 **Display weight is 500, not 700.** Tight tracking does the work that
 weight would do; bold display reads as loud, which violates the calm
-contract.
+contract. This governs the **Display/Editorial tier** (the 44px headline);
+it does not override the standard `<Page>` H1, which stays `text-3xl
+font-bold` (700) — see the `Page` primitive section (decision bu-23bgb).
 
 **Eyebrows title sections in lieu of a heading.** They establish
 rhythm without adding shouting weight. They are not subtitles, they
