@@ -924,9 +924,39 @@ describe("PageGoogleAccounts: multi-account Google management surface", () => {
     expect(html).toContain('data-google-account-state="active"');
   });
 
-  it("renders add-another-account button", () => {
+  it("renders connect Google CTA in empty state (no accounts)", () => {
+    // Empty state (default mock returns []): shows a prominent 'connect Google' CTA
+    // instead of 'add another account'. [bu-3gekd] empty-state fix.
+    const html = renderInRouter(<PageGoogleAccounts />);
+    expect(html).toContain("connect Google");
+    expect(html).toContain('data-google-connect-empty-state="true"');
+    // 'add another account' is only shown when at least one account is already connected
+    expect(html).not.toContain("add another account");
+  });
+
+  it("renders add-another-account button when accounts are already connected", () => {
+    const mockAccounts = [
+      {
+        id: "acc-1",
+        email: "owner@example.com",
+        display_name: "Owner",
+        is_primary: true,
+        status: "active" as const,
+        granted_scopes: [],
+        connected_at: "2026-01-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+    ];
+    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+      data: mockAccounts,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+
     const html = renderInRouter(<PageGoogleAccounts />);
     expect(html).toContain("add another account");
+    // Empty state not shown when accounts are connected
+    expect(html).not.toContain("connect Google");
   });
 
   it("renders re-authorize action for each account", () => {

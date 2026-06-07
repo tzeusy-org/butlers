@@ -102,10 +102,25 @@ export function DirectionPassport({
   const defaultIdentity = inventory.identities[0]?.id ?? "";
   const identityId = identityParam ?? defaultIdentity;
 
-  // Spine entries for current identity.
+  // In the owner-default view (?identity= absent), the backend already gated
+  // the response to owner-relevant companion entities (e.g. primary Google
+  // account).  Surface ALL returned identities' credentials so the Google spine
+  // entry is reachable without a manual ?identity= switch [bu-3gekd].
+  //
+  // When an explicit identity is selected via the chip switcher, scope to just
+  // that identity — preserving the per-member projection-lens contract.
+  const spineIdentityIds: string | string[] = React.useMemo(
+    () =>
+      identityParam === null
+        ? inventory.identities.map((i) => i.id)
+        : identityId,
+    [identityParam, identityId, inventory.identities],
+  );
+
+  // Spine entries for current identity (or all owner-default identities).
   const entries = React.useMemo(
-    () => buildSpineEntries(inventory, identityId),
-    [inventory, identityId],
+    () => buildSpineEntries(inventory, spineIdentityIds),
+    [inventory, spineIdentityIds],
   );
 
   // Focus key: derived from URL param — URL is the single source of truth.
@@ -169,8 +184,14 @@ export function DirectionPassport({
   const resolved = React.useMemo((): ResolvedPage => {
     if (!parsed) return { kind: null };
     if (parsed.family === "u") {
+      // In the owner-default view, spineIdentityIds is an array of all returned
+      // identities (owner + companion entities). The credential lookup must
+      // search across all of them, not just the single ownerIdentityId.
+      const spineIdSet = new Set(
+        Array.isArray(spineIdentityIds) ? spineIdentityIds : [spineIdentityIds],
+      );
       const record = inventory.user.find(
-        (s) => s.provider === parsed.id && s.identity === identityId,
+        (s) => s.provider === parsed.id && spineIdSet.has(s.identity),
       );
       return record ? { kind: "user", credential: record } : { kind: null };
     }
@@ -183,10 +204,13 @@ export function DirectionPassport({
       return record ? { kind: "cli", credential: record } : { kind: null };
     }
     return { kind: null };
-  }, [parsed, identityId, inventory]);
+  }, [parsed, spineIdentityIds, inventory]);
 
   // ── KPIs ─────────────────────────────────────────────────────────────────
-  const userForIdentity = inventory.user.filter((s) => s.identity === identityId);
+  const spineIdSet = new Set(
+    Array.isArray(spineIdentityIds) ? spineIdentityIds : [spineIdentityIds],
+  );
+  const userForIdentity = inventory.user.filter((s) => spineIdSet.has(s.identity));
   const kpis = {
     integrations: {
       total:    userForIdentity.length,

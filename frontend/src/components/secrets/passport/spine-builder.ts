@@ -7,13 +7,27 @@ import { severityRank } from "./constants.ts";
 
 /**
  * Build the flat list of spine entries from inventory data.
- * User entries are filtered by identityId.
+ *
+ * When ``identityId`` is an array with more than one entry (owner-default
+ * projection), ALL matching user credentials are included.  The backend
+ * already gates the owner-default response to owner-relevant companion
+ * entities (primary Google account only), so every identity returned is
+ * intentional.
+ *
+ * When ``identityId`` is a single string (explicit ?identity= param or a chip
+ * click), only that identity's credentials are included — this preserves the
+ * per-member projection-lens contract.
+ *
+ * Both ``string`` and ``string[]`` are accepted via the union type so callers
+ * can pass a single ID or the full identity list without casting.
  */
 export function buildSpineEntries(
   inventory: InventoryResponse,
-  identityId: string,
+  identityId: string | string[],
 ): SpineEntry[] {
-  const userSecrets = inventory.user.filter((s) => s.identity === identityId);
+  const identityIds = Array.isArray(identityId) ? identityId : [identityId];
+  const identitySet = new Set(identityIds);
+  const userSecrets = inventory.user.filter((s) => identitySet.has(s.identity));
 
   const cli: SpineEntry[] = inventory.cli.map((r, i) => ({
     key: `c:${r.id}`,
