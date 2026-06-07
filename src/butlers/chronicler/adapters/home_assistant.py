@@ -33,6 +33,26 @@ Semantics:
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
+
+Entity-id resolution (bu-v7hen):
+- Each presence episode is tagged with the ``entity_id`` of the person
+  whose presence is being tracked, resolved via:
+    ``connectors.home_assistant_persons.ha_entity_id``  (e.g. ``person.alice``)
+    → ``connectors.home_assistant_persons.contact_id``
+    → ``public.contacts.entity_id``
+- Resolution is performed once per adapter run (batch-loaded for all
+  distinct person entities present in the batch) — never per row.
+- Degrades gracefully to ``entity_id = NULL`` when:
+  - ``connectors.home_assistant_persons`` table is absent (migration not run)
+  - No mapping exists for the HA person entity
+  - The mapped contact has ``entity_id IS NULL`` (not yet linked to the
+    memory entity graph)
+- To bootstrap person-entity mappings, see migration core_116 for SQL
+  examples (single-person and multi-person households).
+- To backfill ``entity_id`` on pre-bu-v7hen episodes, run:
+    ``python scripts/backfill_ha_presence_entity_id.py [--dry-run]``
+  Or reset the adapter watermark in ``projection_checkpoints`` to
+  ``NULL`` and let the next scheduled run re-project all rows.
 """
 
 from __future__ import annotations
@@ -40,9 +60,11 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.adapters._owner_entity import upsert_owner_episode_entity
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Precision, Privacy
 from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
@@ -59,6 +81,85 @@ _PRESENCE_ENTITY_PREFIX = "person."
 
 # State value that denotes the person is at home.
 _STATE_HOME = "home"
+
+
+async def resolve_ha_person_entity_ids(
+    pool: asyncpg.Pool,
+    ha_entity_ids: list[str],
+) -> dict[str, UUID]:
+    """Batch-resolve HA person entity IDs to entity graph UUIDs.
+
+    Queries ``connectors.home_assistant_persons`` joined to ``public.contacts``
+    for the given HA entity IDs (e.g. ``person.alice``).
+
+    Returns a mapping ``ha_entity_id → entity_id`` for entities that have a
+    mapping AND whose contact has a non-NULL entity_id.  Unmapped entities
+    are absent from the returned dict (caller should default to ``None``).
+
+    Degrades gracefully to an empty dict when:
+    - ``connectors.home_assistant_persons`` table is absent (migration not run)
+    - All entities are unmapped
+    - Any DB error occurs
+
+    Called once per adapter run batch (not per row or per entity).
+    """
+    if not ha_entity_ids:
+        return {}
+
+    try:
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'connectors'
+                      AND table_name = 'home_assistant_persons'
+                )
+                """
+            )
+            if not exists:
+                logger.debug(
+                    "resolve_ha_person_entity_ids: connectors.home_assistant_persons absent "
+                    "(migration core_116 not run) — all presence episodes will have entity_id=NULL"
+                )
+                return {}
+
+            rows = await conn.fetch(
+                """
+                SELECT hap.ha_entity_id, c.entity_id
+                FROM connectors.home_assistant_persons AS hap
+                INNER JOIN public.contacts AS c ON c.id = hap.contact_id
+                WHERE hap.ha_entity_id = ANY($1)
+                  AND c.entity_id IS NOT NULL
+                """,
+                ha_entity_ids,
+            )
+    except asyncpg.PostgresError:
+        logger.debug(
+            "resolve_ha_person_entity_ids: query failed (table absent or DB error) "
+            "— all presence episodes will have entity_id=NULL",
+            exc_info=True,
+        )
+        return {}
+
+    result: dict[str, UUID] = {}
+    for row in rows:
+        ha_id: str = row["ha_entity_id"]
+        raw = row["entity_id"]
+        if raw is None:
+            continue
+        if isinstance(raw, UUID):
+            result[ha_id] = raw
+        elif isinstance(raw, str):
+            try:
+                result[ha_id] = UUID(raw)
+            except ValueError:
+                logger.debug(
+                    "resolve_ha_person_entity_ids: invalid UUID %r for %r — skipping",
+                    raw,
+                    ha_id,
+                )
+    return result
 
 
 class HomeAssistantHistoryAdapter(ProjectionAdapter):
@@ -115,11 +216,18 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         ]
 
         if presence_rows:
+            # Collect the unique HA person entity IDs in this batch so we can
+            # batch-load their entity graph mappings in a single query.
+            batch_ha_ids = list(
+                {row["entity_id"] for row in presence_rows if isinstance(row["entity_id"], str)}
+            )
+            entity_id_map = await resolve_ha_person_entity_ids(pool, batch_ha_ids)
+
             # Load prior-batch carryover state for cross-batch stitching.
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
 
             episodes_closed, new_carryover = await self._project_presence_episodes(
-                chronicler_pool, presence_rows, prior_carryover
+                chronicler_pool, presence_rows, prior_carryover, entity_id_map=entity_id_map
             )
             result.rows_projected = len(presence_rows)
             result.episodes_closed += episodes_closed
@@ -198,6 +306,8 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         rows: list[Any],
         prior_carryover: dict,
+        *,
+        entity_id_map: dict[str, UUID],
     ) -> tuple[int, dict]:
         """Collapse per-entity presence state changes into presence episodes.
 
@@ -211,36 +321,50 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         and there is an open episode in the carryover, the open episode is
         extended rather than starting a new one.
 
+        ``entity_id_map`` maps HA entity IDs (e.g. ``person.alice``) to the
+        corresponding entity graph UUID from ``connectors.home_assistant_persons``.
+        Episodes for unmapped persons receive ``entity_id=NULL``.  An empty
+        dict (the result when the mapping table is absent or all persons are
+        unmapped) degrades all episodes to ``entity_id=NULL``.
+
         Returns ``(episodes_upserted, new_carryover)`` where ``new_carryover``
         captures any entities that are still home at the end of this batch.
         """
         # Group rows by entity_id preserving recorded_at order.
         by_entity: dict[str, list[Any]] = {}
         for row in rows:
-            entity_id = row["entity_id"]
-            by_entity.setdefault(entity_id, []).append(row)
+            ha_entity_id = row["entity_id"]
+            by_entity.setdefault(ha_entity_id, []).append(row)
 
         episodes_upserted = 0
         new_carryover: dict = {}
 
-        for entity_id, entity_rows in by_entity.items():
+        for ha_entity_id, entity_rows in by_entity.items():
+            # Resolve the entity graph UUID for this HA person (or None).
+            resolved_entity_id = entity_id_map.get(ha_entity_id)
             # entity_rows are already in (recorded_at ASC, id ASC) order.
-            entity_carryover = prior_carryover.get(entity_id)
+            entity_carryover = prior_carryover.get(ha_entity_id)
             count, open_ep = await self._rollup_entity_episodes(
-                chronicler_pool, entity_id, entity_rows, entity_carryover
+                chronicler_pool,
+                ha_entity_id,
+                entity_rows,
+                entity_carryover,
+                entity_id=resolved_entity_id,
             )
             episodes_upserted += count
             if open_ep is not None:
-                new_carryover[entity_id] = open_ep
+                new_carryover[ha_entity_id] = open_ep
 
         return episodes_upserted, new_carryover
 
     async def _rollup_entity_episodes(
         self,
         chronicler_pool: asyncpg.Pool,
-        entity_id: str,
+        ha_entity_id: str,
         entity_rows: list[Any],
         carryover: dict | None,
+        *,
+        entity_id: UUID | None = None,
     ) -> tuple[int, dict | None]:
         """Rollup presence episodes for a single entity.
 
@@ -250,6 +374,11 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         If ``carryover`` is provided and the first row is ``home``, the
         open episode from the prior batch is extended using the same
         ``source_ref`` (cross-batch stitching).
+
+        ``entity_id`` is the resolved entity graph UUID for the person whose
+        presence is being tracked (from ``connectors.home_assistant_persons``).
+        Passed through to ``_upsert_presence_episode`` and stamped on every
+        episode row.  ``None`` when no mapping exists.
 
         Returns ``(episodes_upserted, open_episode_carryover)``.
         ``open_episode_carryover`` is ``None`` when the entity is not at
@@ -275,7 +404,7 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
                 span_start = None
                 span_end = None
                 span_source_ref = None
-                logger.warning("Discarding malformed carryover for %s: %r", entity_id, carryover)
+                logger.warning("Discarding malformed carryover for %s: %r", ha_entity_id, carryover)
 
         for row in entity_rows:
             state = row["state"]
@@ -291,7 +420,12 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
                 if span_start is not None and span_end is not None:
                     # Close this span.
                     await self._upsert_presence_episode(
-                        chronicler_pool, entity_id, span_start, span_end, span_source_ref
+                        chronicler_pool,
+                        ha_entity_id,
+                        span_start,
+                        span_end,
+                        span_source_ref,
+                        entity_id=entity_id,
                     )
                     episodes_upserted += 1
                     span_start = None
@@ -303,7 +437,12 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         open_episode_carryover: dict | None = None
         if span_start is not None and span_end is not None:
             upserted = await self._upsert_presence_episode(
-                chronicler_pool, entity_id, span_start, span_end, span_source_ref
+                chronicler_pool,
+                ha_entity_id,
+                span_start,
+                span_end,
+                span_source_ref,
+                entity_id=entity_id,
             )
             episodes_upserted += 1
             open_episode_carryover = {
@@ -317,30 +456,37 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
     async def _upsert_presence_episode(
         self,
         chronicler_pool: asyncpg.Pool,
-        entity_id: str,
+        ha_entity_id: str,
         start_at: datetime,
         end_at: datetime,
         existing_source_ref: str | None = None,
+        *,
+        entity_id: UUID | None = None,
     ) -> Episode:
         """Upsert a presence episode.
 
         If ``existing_source_ref`` is provided (cross-batch continuation),
         it is used as-is so that the prior episode row is updated in place.
-        Otherwise a new ``source_ref`` is derived from ``(entity_id, start_tst)``.
+        Otherwise a new ``source_ref`` is derived from ``(ha_entity_id, start_tst)``.
+
+        ``entity_id`` is the resolved entity graph UUID for the person whose
+        presence is being tracked (from ``connectors.home_assistant_persons``).
+        When non-None, also writes a row into ``chronicler.episode_entities``
+        with ``role='owner'`` (the person whose episode this is).
         """
         if existing_source_ref is not None:
             source_ref = existing_source_ref
         else:
             start_tst = int(start_at.timestamp())
-            source_ref = f"{_EVIDENCE_TABLE}:presence:{entity_id}:{start_tst}"
+            source_ref = f"{_EVIDENCE_TABLE}:presence:{ha_entity_id}:{start_tst}"
 
-        # Derive a human-readable label from the entity_id.
+        # Derive a human-readable label from the HA entity ID.
         # e.g. "person.alice" → "Alice at home"
-        short_name = entity_id.split(".", 1)[-1].replace("_", " ").title()
+        short_name = ha_entity_id.split(".", 1)[-1].replace("_", " ").title()
         title = f"{short_name} at home"
 
         payload: dict[str, Any] = {
-            "entity_id": entity_id,
+            "entity_id": ha_entity_id,
             "state": _STATE_HOME,
         }
 
@@ -357,8 +503,13 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
+                    entity_id=entity_id,
                 ),
             )
+            # Write the person's entity row into episode_entities (bu-v7hen).
+            # Uses role='owner' because this episode belongs to the person being tracked.
+            # upsert_owner_episode_entity no-ops when entity_id or episode.id is None.
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
 
@@ -367,4 +518,5 @@ __all__ = [
     "EPISODE_TYPE_PRESENCE",
     "HomeAssistantHistoryAdapter",
     "SOURCE_NAME",
+    "resolve_ha_person_entity_ids",
 ]

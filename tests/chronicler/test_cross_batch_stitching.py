@@ -105,8 +105,24 @@ def _make_mock_row(r: dict) -> MagicMock:
 
 
 def _pool_returning(*rows: dict) -> AsyncMock:
+    """Build a mock pool returning the given rows for HA history fetch.
+
+    fetchval is routed by the SQL string:
+      - "home_assistant_history" in SQL → True  (evidence table exists)
+      - "home_assistant_persons" in SQL → False (no mapping table in stitching tests)
+
+    Routing by SQL content rather than call order means the mock stays correct
+    even if the adapter adds extra fetchval calls in future.
+    """
+
+    async def _fetchval(*args: object, **kwargs: object) -> bool:
+        sql = args[0] if args else ""
+        if "home_assistant_persons" in sql:
+            return False  # mapping table absent → all episodes degrade to entity_id=NULL
+        return True  # evidence table exists
+
     conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetchval = _fetchval
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
     pool = AsyncMock()
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
