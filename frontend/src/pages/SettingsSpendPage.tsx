@@ -11,24 +11,22 @@
 //
 // Accepts no props — fetches all data internally.
 // No chart library. SVG rendered by hand.
+//
+// Design language: Dispatch. No card chrome, no word-badges — state is a
+// {dot, numeral, colour} only when state demands. Display weight 500 (never
+// 700). Numerals are tabular. Mirrors SettingsConsolePage / SettingsModelsPage
+// and the shared atoms in components/butler-detail/atoms.tsx.
 // ---------------------------------------------------------------------------
 
 import { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card"
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
 import { useSpendStream } from "@/hooks/use-spend-stream"
+import { cn } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,6 +60,23 @@ interface SpendRule {
 interface BreakdownData {
   by: string
   breakdown: Record<string, number>
+}
+
+// ---------------------------------------------------------------------------
+// Shared mono eyebrow — 10px uppercase, 0.14em tracking, muted
+// ---------------------------------------------------------------------------
+
+function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <p
+      className={cn(
+        "font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground leading-none",
+        className,
+      )}
+    >
+      {children}
+    </p>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -114,22 +129,38 @@ function fmtUsdPrecise(n: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// KPI Strip
+// KPI Strip — hairline-divided, no card chrome. Mega numerals are weight 500,
+// tabular. State colour appears only when state demands (over-ceiling).
 // ---------------------------------------------------------------------------
 
 interface KpiCellProps {
   label: string
   value: string
   sub?: string
+  tone?: "fg" | "red"
   testId?: string
 }
 
-function KpiCell({ label, value, sub, testId }: KpiCellProps) {
+function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
   return (
-    <div className="flex flex-col gap-1 p-4" data-testid={testId}>
-      <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{label}</span>
-      <span className="text-2xl tabular-nums font-semibold">{value}</span>
-      {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
+    <div
+      className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60 last:border-r-0 sm:[&:nth-child(2)]:border-r-0 lg:[&:nth-child(2)]:border-r lg:[&:nth-child(4)]:border-r-0"
+      data-testid={testId}
+    >
+      <Eyebrow>{label}</Eyebrow>
+      <span
+        className={cn(
+          "text-[28px] font-medium tracking-tight tabular-nums leading-none",
+          tone === "red" ? "text-[var(--red)]" : "text-foreground",
+        )}
+      >
+        {value}
+      </span>
+      {sub && (
+        <span className="font-mono text-xs tabular-nums text-muted-foreground leading-tight">
+          {sub}
+        </span>
+      )}
     </div>
   )
 }
@@ -140,38 +171,40 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
     forecast.ceiling_usd != null && forecast.ceiling_usd > 0
       ? Math.min(100, Math.round((forecast.mtd_usd / forecast.ceiling_usd) * 100))
       : null
+  const overCeiling =
+    forecast.ceiling_usd != null && forecast.projected_eom_usd > forecast.ceiling_usd
 
   return (
-    <Card>
-      <CardContent className="p-0">
-        <div className="grid grid-cols-4 divide-x" data-testid="kpi-strip">
-          <KpiCell
-            testId="kpi-mtd"
-            label="MTD Spend"
-            value={fmtUsd(forecast.mtd_usd)}
-            sub={`${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`}
-          />
-          <KpiCell
-            testId="kpi-projected-eom"
-            label="Projected EOM"
-            value={fmtUsd(forecast.projected_eom_usd)}
-            sub={`${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining`}
-          />
-          <KpiCell
-            testId="kpi-ceiling"
-            label="Monthly Ceiling"
-            value={forecast.ceiling_usd != null ? fmtUsd(forecast.ceiling_usd) : "—"}
-            sub={pct != null ? `${pct}% used` : undefined}
-          />
-          <KpiCell
-            testId="kpi-days-in-month"
-            label="Days in Month"
-            value={String(forecast.days_in_month)}
-            sub={`${forecast.days_elapsed} elapsed / ${daysRemaining} left`}
-          />
-        </div>
-      </CardContent>
-    </Card>
+    <div
+      className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60"
+      data-testid="kpi-strip"
+    >
+      <KpiCell
+        testId="kpi-mtd"
+        label="MTD Spend"
+        value={fmtUsd(forecast.mtd_usd)}
+        sub={`${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`}
+      />
+      <KpiCell
+        testId="kpi-projected-eom"
+        label="Projected EOM"
+        value={fmtUsd(forecast.projected_eom_usd)}
+        tone={overCeiling ? "red" : "fg"}
+        sub={`${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining`}
+      />
+      <KpiCell
+        testId="kpi-ceiling"
+        label="Monthly Ceiling"
+        value={forecast.ceiling_usd != null ? fmtUsd(forecast.ceiling_usd) : "—"}
+        sub={pct != null ? `${pct}% used` : undefined}
+      />
+      <KpiCell
+        testId="kpi-days-in-month"
+        label="Days in Month"
+        value={String(forecast.days_in_month)}
+        sub={`${forecast.days_elapsed} elapsed / ${daysRemaining} left`}
+      />
+    </div>
   )
 }
 
@@ -369,32 +402,32 @@ function BreakdownSection() {
   const maxValue = entries[0]?.[1] ?? 0
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">Spend Breakdown</CardTitle>
-          <div className="flex gap-1">
-            {(["butler", "model", "feature"] as BreakdownBy[]).map((dim) => (
-              <Button
-                key={dim}
-                variant={by === dim ? "default" : "ghost"}
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={() => setBy(dim)}
-              >
-                {dim}
-              </Button>
-            ))}
-          </div>
+    <section className="border border-border">
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
+        <Eyebrow>Spend Breakdown</Eyebrow>
+        <div className="flex gap-1">
+          {(["butler", "model", "feature"] as BreakdownBy[]).map((dim) => (
+            <Button
+              key={dim}
+              variant={by === dim ? "default" : "ghost"}
+              size="sm"
+              className="h-6 px-2 font-mono text-[10px] uppercase tracking-widest"
+              onClick={() => setBy(dim)}
+            >
+              {dim}
+            </Button>
+          ))}
         </div>
-      </CardHeader>
-      <CardContent>
+      </div>
+      <div className="p-4">
         {isLoading ? (
           <div className="space-y-2">
             {[1, 2, 3].map((i) => <Skeleton key={i} className="h-4 w-full" />)}
           </div>
         ) : entries.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No spend data available.</p>
+          <p className="font-serif italic text-muted-foreground text-sm">
+            No spend has been recorded yet.
+          </p>
         ) : (
           <div className="space-y-2">
             {entries.map(([label, value]) => (
@@ -402,8 +435,8 @@ function BreakdownSection() {
             ))}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
 
@@ -441,8 +474,8 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
 
   if (rules.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground py-4 text-center">
-        No routing rules configured. Rules are evaluated top-to-bottom; first match wins.
+      <p className="font-serif italic text-muted-foreground text-sm py-4 text-center">
+        No routing rules are configured; rules evaluate top-to-bottom and the first match wins.
       </p>
     )
   }
@@ -451,12 +484,12 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b text-xs text-muted-foreground">
-            <th className="text-left py-2 px-2 w-8">Pos</th>
-            <th className="text-left py-2 px-2">Condition</th>
-            <th className="text-left py-2 px-2">Action</th>
-            <th className="text-right py-2 px-2">Saved 7d</th>
-            <th className="text-right py-2 px-2 w-16"></th>
+          <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            <th className="text-left py-2 px-2 w-8 font-normal">Pos</th>
+            <th className="text-left py-2 px-2 font-normal">Condition</th>
+            <th className="text-left py-2 px-2 font-normal">Action</th>
+            <th className="text-right py-2 px-2 font-normal">Saved 7d</th>
+            <th className="text-right py-2 px-2 w-16 font-normal"></th>
           </tr>
         </thead>
         <tbody>
@@ -467,7 +500,7 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
               onDragStart={(e) => handleDragStart(e, rule.id)}
               onDrop={(e) => handleDrop(e, rule.position)}
               onDragOver={handleDragOver}
-              className="border-b hover:bg-muted/30 cursor-grab active:cursor-grabbing"
+              className="border-b border-border/60 hover:bg-muted/30 cursor-grab active:cursor-grabbing"
             >
               <td className="py-2 px-2 text-muted-foreground tabular-nums">{rule.position}</td>
               <td className="py-2 px-2">
@@ -527,21 +560,19 @@ function SpendRulesSection() {
   const rules = data?.data ?? []
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="text-sm">Routing Rules</CardTitle>
-            <CardDescription className="text-xs mt-0.5">
-              Evaluated top-to-bottom; first match wins. Drag rows to reorder.
-            </CardDescription>
-          </div>
-          <Badge variant="outline" className="text-xs">
-            {rules.length} {rules.length === 1 ? "rule" : "rules"}
-          </Badge>
+    <section className="border border-border">
+      <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-border">
+        <div className="flex flex-col gap-1">
+          <Eyebrow>Routing Rules</Eyebrow>
+          <p className="text-xs text-muted-foreground">
+            Evaluated top-to-bottom; first match wins. Drag rows to reorder.
+          </p>
         </div>
-      </CardHeader>
-      <CardContent>
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] tabular-nums text-muted-foreground">
+          {rules.length} {rules.length === 1 ? "rule" : "rules"}
+        </span>
+      </div>
+      <div className="p-4">
         {isLoading ? (
           <div className="space-y-2">
             {[1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
@@ -553,8 +584,8 @@ function SpendRulesSection() {
             onReorder={(id, position) => reorderMutation.mutate({ id, position })}
           />
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
 
@@ -590,7 +621,7 @@ function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
       <span className="text-xs text-muted-foreground">$</span>
       <input
         type="number"
-        className="w-24 text-xs border rounded px-2 py-1 bg-background"
+        className="w-24 text-xs border rounded px-2 py-1 bg-background tabular-nums"
         value={value}
         min="0.01"
         step="0.01"
@@ -674,56 +705,83 @@ export default function SettingsSpendPage() {
     }
   }, [streamedCostUsd, invalidateBreakdown])
 
+  // Over-ceiling attention condition — the only state-color-on-background use.
+  const overCeiling =
+    liveForecast?.ceiling_usd != null &&
+    liveForecast.projected_eom_usd > liveForecast.ceiling_usd
+
   return (
     <Page archetype="overview" title="Spend">
       <div className="space-y-6">
+        {/* Over-ceiling attention row — projected EOM exceeds the ceiling */}
+        {overCeiling && liveForecast && (
+          <div
+            className="attention-row flex items-center gap-3 px-4 py-3"
+            data-tone="red"
+            role="alert"
+            aria-label="Projected spend exceeds the monthly ceiling"
+          >
+            <span className="shrink-0 h-2 w-2 rounded-full bg-[var(--red)]" aria-hidden />
+            <p className="text-sm">
+              Projected end-of-month spend{" "}
+              <span className="tabular-nums font-medium">
+                {fmtUsd(liveForecast.projected_eom_usd)}
+              </span>{" "}
+              exceeds the monthly ceiling of{" "}
+              <span className="tabular-nums font-medium">
+                {fmtUsd(liveForecast.ceiling_usd!)}
+              </span>
+              .
+            </p>
+          </div>
+        )}
+
         {/* KPI strip */}
         {forecastLoading && !liveForecast ? (
-          <Card>
-            <CardContent className="p-0">
-              <div className="grid grid-cols-4 divide-x">
-                {[1, 2, 3, 4].map((i) => (
-                  <div key={i} className="p-4">
-                    <Skeleton className="h-4 w-20 mb-2" />
-                    <Skeleton className="h-8 w-16" />
-                  </div>
-                ))}
+          <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60">
+            {[1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60"
+              >
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-8 w-16" />
               </div>
-            </CardContent>
-          </Card>
+            ))}
+          </div>
         ) : liveForecast ? (
           <KpiStrip forecast={liveForecast} />
         ) : null}
 
         {/* Forecast SVG chart */}
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm">Forecast</CardTitle>
-                <CardDescription className="text-xs mt-0.5">
-                  Solid = actual MTD spend. Dashed = linear projection to end of month.
-                  {liveForecast?.ceiling_usd != null
-                    ? " Red hairline = monthly ceiling."
-                    : ""}
-                </CardDescription>
-              </div>
-              {liveForecast && (
-                <CeilingEdit currentCeiling={liveForecast.ceiling_usd} />
-              )}
+        <section className="border border-border">
+          <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-border">
+            <div className="flex flex-col gap-1">
+              <Eyebrow>Forecast</Eyebrow>
+              <p className="text-xs text-muted-foreground">
+                Solid = actual MTD spend. Dashed = linear projection to end of month.
+                {liveForecast?.ceiling_usd != null
+                  ? " Red hairline = monthly ceiling."
+                  : ""}
+              </p>
             </div>
-          </CardHeader>
-          <CardContent>
+            {liveForecast && (
+              <CeilingEdit currentCeiling={liveForecast.ceiling_usd} />
+            )}
+          </div>
+          <div className="p-4">
             {forecastLoading && !liveForecast ? (
               <Skeleton className="h-48 w-full" />
             ) : liveForecast ? (
               <ForecastChart days={liveForecast.days} ceiling_usd={liveForecast.ceiling_usd} />
             ) : (
-              <p className="text-xs text-muted-foreground">No forecast data available.</p>
+              <p className="font-serif italic text-muted-foreground text-sm">
+                No forecast data is available yet.
+              </p>
             )}
-          </CardContent>
+          </div>
           {/* TODO: Add anomaly detection (deferred §D13 — threshold TBD) */}
-        </Card>
+        </section>
 
         {/* Breakdown */}
         <BreakdownSection />

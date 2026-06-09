@@ -148,7 +148,9 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
   // Wait for the matrix to render
   const cellButton = page.getByTestId("perm-cell-inbox-email.read");
   await expect(cellButton).toBeVisible();
-  expect(await cellButton.textContent()).toBe("off");
+  // Dispatch: denied state is a hollow "○" glyph; assert the semantic aria-label
+  // rather than the word-badge text the old design used.
+  await expect(cellButton).toHaveAttribute("aria-label", /denied/);
 
   // Click the cell — the flip modal should open
   await cellButton.click();
@@ -178,8 +180,11 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
   expect(putCalled).toBe(true);
   expect(putBody).toMatchObject({ granted: true, reason: "testing grant" });
 
-  // Matrix re-renders — cell should now show "on"
-  await expect(page.getByTestId("perm-cell-inbox-email.read")).toHaveText("on");
+  // Matrix re-renders — cell should now show the granted "●" glyph
+  await expect(page.getByTestId("perm-cell-inbox-email.read")).toHaveAttribute(
+    "aria-label",
+    /granted/,
+  );
 });
 
 // ---------------------------------------------------------------------------

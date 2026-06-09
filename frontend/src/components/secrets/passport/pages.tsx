@@ -608,7 +608,7 @@ function TestModeExpiryBanner({ isExpired }: { isExpired: boolean }) {
         style={{ width: 6, height: 6, backgroundColor: tone }}
         aria-hidden="true"
       />
-      <Mono size={10} style={{ color: tone }}>{label}</Mono>
+      <Mono size={10} color={tone}>{label}</Mono>
     </div>
   );
 }
@@ -660,7 +660,7 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
             style={{ width: 6, height: 6, backgroundColor: stateColor }}
             aria-hidden="true"
           />
-          <Mono size={10} style={{ color: stateColor }}>{status.state}</Mono>
+          <Mono size={10} color={stateColor}>{status.state}</Mono>
         </div>
 
         {/* KV rows */}

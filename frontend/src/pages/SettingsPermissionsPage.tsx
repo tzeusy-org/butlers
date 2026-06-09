@@ -7,32 +7,22 @@
  *  - Audit reel — last 15 entries from GET /api/audit-log?limit=15
  *  - Data ops sub-grid: export (scope picker → signed URL), wipe (phrase input)
  *  - Webhooks table: list, add, edit, test, delete
+ *
+ * Design language: Dispatch. No card chrome, no word-badges — state is a
+ * {dot, glyph, colour} only. Display weight 500 (never 700). Numerals are
+ * tabular. Mirrors SettingsConsolePage / SettingsModelsPage and the shared
+ * atoms in components/butler-detail/atoms.tsx.
+ *
+ * CSS: .attention-row[data-tone="red"] from frontend/src/index.css — the only
+ * state-color-on-background pattern, reserved here for the data-wipe danger zone.
  */
 
 import { useEffect, useState } from "react";
 
-import {
-  AlertTriangle,
-  CheckCircle,
-  ExternalLink,
-  Loader2,
-  Plus,
-  RefreshCw,
-  Shield,
-  Trash2,
-  Webhook,
-  XCircle,
-} from "lucide-react";
+import { ExternalLink, Loader2 } from "lucide-react";
 
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -51,15 +41,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,6 +74,49 @@ interface WebhookRow {
 }
 
 type ExportScope = "all" | "memory" | "audit" | "config";
+
+// ---------------------------------------------------------------------------
+// Shared mono eyebrow — 10px uppercase, 0.14em tracking, muted
+// ---------------------------------------------------------------------------
+
+function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <p
+      className={cn(
+        "font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground leading-none",
+        className,
+      )}
+    >
+      {children}
+    </p>
+  );
+}
+
+/**
+ * Hairline section frame — a mono eyebrow header above a hairline-bordered body.
+ * Replaces the old shadcn card chrome (no card components anywhere on this page).
+ */
+function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1.5">
+        <Eyebrow>{title}</Eyebrow>
+        {description ? (
+          <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -223,7 +249,7 @@ function CellFlipModal({
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="font-medium">
             {currentGranted ? "Revoke" : "Grant"} permission
           </DialogTitle>
           <DialogDescription>
@@ -234,7 +260,12 @@ function CellFlipModal({
         </DialogHeader>
 
         <div className="space-y-3 py-2">
-          <Label htmlFor="flip-reason">Reason (required)</Label>
+          <Label
+            htmlFor="flip-reason"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Reason (required)
+          </Label>
           <Input
             id="flip-reason"
             placeholder="Why are you changing this permission?"
@@ -277,24 +308,24 @@ interface PermissionsMatrixSectionProps {
 function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSectionProps) {
   if (matrix.butlers.length === 0 || matrix.permissions.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground italic">
+      <p className="text-sm italic font-serif text-muted-foreground">
         No permissions or butlers found.
       </p>
     );
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="text-sm border-collapse min-w-max">
+    <div className="overflow-x-auto border-t border-l border-border/60">
+      <table className="text-sm border-collapse min-w-max w-full">
         <thead>
           <tr>
-            <th className="text-left font-mono text-xs text-muted-foreground p-2 border-b">
+            <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-3 py-2 border-r border-b border-border/60">
               permission
             </th>
             {matrix.butlers.map((b) => (
               <th
                 key={b}
-                className="font-mono text-xs text-muted-foreground p-2 border-b text-center"
+                className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-3 py-2 border-r border-b border-border/60 text-center"
               >
                 {b}
               </th>
@@ -303,29 +334,35 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
         </thead>
         <tbody>
           {matrix.permissions.map((perm) => (
-            <tr key={perm} className="border-b last:border-0">
-              <td className="font-mono text-xs p-2 pr-6 whitespace-nowrap">{perm}</td>
+            <tr key={perm}>
+              <td className="font-mono text-xs px-3 py-2 pr-6 whitespace-nowrap border-r border-b border-border/60">
+                {perm}
+              </td>
               {matrix.butlers.map((butler) => {
                 const cell = matrix.cells[butler]?.[perm];
                 const inherited = cell?.inherited ?? true;
                 const granted = cell?.granted ?? false;
 
                 return (
-                  <td key={butler} className="p-2 text-center">
+                  <td
+                    key={butler}
+                    className="px-3 py-2 text-center border-r border-b border-border/60"
+                  >
                     <button
                       onClick={() => onCellFlip(butler, perm, granted)}
-                      className={[
-                        "w-12 rounded px-2 py-0.5 text-xs font-mono transition-colors",
+                      className={cn(
+                        "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors",
                         inherited
                           ? "opacity-40 cursor-default"
                           : granted
-                            ? "bg-green-100 text-green-800 hover:bg-green-200 dark:bg-green-900 dark:text-green-200"
-                            : "bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-900 dark:text-red-200",
-                      ].join(" ")}
+                            ? "text-[var(--green)] hover:bg-muted/40"
+                            : "text-muted-foreground hover:bg-muted/40",
+                      )}
                       title={cell?.reason ?? undefined}
                       data-testid={`perm-cell-${butler}-${perm}`}
+                      aria-label={`${butler} ${perm}: ${granted ? "granted" : "denied"}${inherited ? " (inherited)" : ""}`}
                     >
-                      {granted ? "on" : "off"}
+                      {granted ? "●" : "○"}
                     </button>
                   </td>
                 );
@@ -342,35 +379,59 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
 // Audit Reel Section
 // ---------------------------------------------------------------------------
 
+/** Heuristic: destructive actions read in red; everything else stays neutral. */
+function isDestructiveAction(action: string): boolean {
+  return /\b(revoke|delete|wipe|remove|disable|destroy)\b/i.test(action);
+}
+
 function AuditReelSection() {
   const { data, isLoading } = useAuditLog({ limit: 15 });
+  const entries = data?.data ?? [];
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-0 border-t border-l border-border/60">
       {isLoading && (
-        <div className="space-y-1">
+        <div className="flex flex-col gap-0">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-6 w-full" />
+            <div key={i} className="border-r border-b border-border/60 px-4 py-2">
+              <Skeleton className="h-5 w-full" />
+            </div>
           ))}
         </div>
       )}
       {!isLoading && (
         <>
-          {(data?.data ?? []).map((entry) => (
-            <div key={entry.id} className="flex gap-3 text-sm">
-              <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+          {entries.map((entry) => (
+            <div
+              key={entry.id}
+              className="flex items-baseline gap-3 border-r border-b border-border/60 px-4 py-2 text-sm"
+            >
+              <span className="font-mono text-xs tabular-nums text-muted-foreground whitespace-nowrap">
                 {new Date(entry.ts).toLocaleTimeString()}
               </span>
-              <span className="text-xs text-muted-foreground">{entry.actor}</span>
-              <span className="font-serif text-xs flex-1">{entry.action}</span>
+              <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
+                {entry.actor}
+              </span>
+              <span
+                className={cn(
+                  "font-serif text-sm flex-1 min-w-0",
+                  isDestructiveAction(entry.action) && "text-[var(--red)]",
+                )}
+              >
+                {entry.action}
+              </span>
             </div>
           ))}
-          {(data?.data ?? []).length === 0 && (
-            <p className="text-xs text-muted-foreground italic">No recent audit entries.</p>
+          {entries.length === 0 && (
+            <div className="border-r border-b border-border/60 px-4 py-3">
+              <p className="font-serif italic text-sm text-muted-foreground">
+                No recent audit entries.
+              </p>
+            </div>
           )}
           <a
             href="/audit-log"
-            className="text-xs text-primary hover:underline inline-flex items-center gap-1 mt-2"
+            className="border-r border-b border-border/60 px-4 py-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1"
           >
             Full audit log <ExternalLink className="h-3 w-3" />
           </a>
@@ -424,84 +485,82 @@ function DataOpsSection() {
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="grid grid-cols-1 md:grid-cols-2 border-t border-l border-border/60">
       {/* Export */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Export data</CardTitle>
-          <CardDescription>Download an encrypted zip of your data.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <Select
-              value={exportScope}
-              onValueChange={(v) => setExportScope(v as ExportScope)}
-            >
-              <SelectTrigger className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All data</SelectItem>
-                <SelectItem value="memory">Memory</SelectItem>
-                <SelectItem value="audit">Audit log</SelectItem>
-                <SelectItem value="config">Config</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button onClick={handleExport} disabled={exportLoading} variant="outline">
-              {exportLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Export"}
-            </Button>
-          </div>
-          {exportUrl && (
-            <a
-              href={exportUrl}
-              className="text-xs font-mono text-primary hover:underline break-all"
-            >
-              {exportUrl}
-            </a>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Wipe */}
-      <Card className="border-destructive/40">
-        <CardHeader>
-          <CardTitle className="text-base text-destructive flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4" />
-            Wipe all data
-          </CardTitle>
-          <CardDescription>
-            Permanently deletes every butler schema and all cross-butler tables. This cannot be undone.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-1">
-            <Label htmlFor="wipe-phrase" className="text-xs font-mono">
-              Type to confirm: <span className="text-destructive">{WIPE_PHRASE}</span>
-            </Label>
-            <Input
-              id="wipe-phrase"
-              value={wipePhrase}
-              onChange={(e) => setWipePhrase(e.target.value)}
-              placeholder="Type the phrase exactly"
-              className="font-mono text-xs"
-            />
-          </div>
-          <Button
-            variant="destructive"
-            disabled={wipePhrase !== WIPE_PHRASE || wipeLoading}
-            onClick={() => setWipeConfirmOpen(true)}
+      <div className="flex flex-col gap-3 border-r border-b border-border/60 px-4 py-4">
+        <div className="flex flex-col gap-1.5">
+          <Eyebrow>Export data</Eyebrow>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Download an encrypted zip of your data.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Select
+            value={exportScope}
+            onValueChange={(v) => setExportScope(v as ExportScope)}
           >
-            <Trash2 className="mr-2 h-4 w-4" />
-            Wipe everything
+            <SelectTrigger className="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All data</SelectItem>
+              <SelectItem value="memory">Memory</SelectItem>
+              <SelectItem value="audit">Audit log</SelectItem>
+              <SelectItem value="config">Config</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button onClick={handleExport} disabled={exportLoading} variant="outline">
+            {exportLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Export"}
           </Button>
-        </CardContent>
-      </Card>
+        </div>
+        {exportUrl && (
+          <a
+            href={exportUrl}
+            className="text-xs font-mono text-primary hover:underline break-all"
+          >
+            {exportUrl}
+          </a>
+        )}
+      </div>
+
+      {/* Wipe — danger zone: the sole attention-tint usage on this page */}
+      <div
+        className="attention-row flex flex-col gap-3 border-r border-b border-border/60 px-4 py-4"
+        data-tone="red"
+      >
+        <div className="flex flex-col gap-1.5">
+          <Eyebrow className="text-[var(--red)]">Wipe all data</Eyebrow>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Permanently deletes every butler schema and all cross-butler tables. This cannot be undone.
+          </p>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="wipe-phrase" className="text-xs font-mono">
+            Type to confirm: <span className="text-[var(--red)]">{WIPE_PHRASE}</span>
+          </Label>
+          <Input
+            id="wipe-phrase"
+            value={wipePhrase}
+            onChange={(e) => setWipePhrase(e.target.value)}
+            placeholder="Type the phrase exactly"
+            className="font-mono text-xs"
+          />
+        </div>
+        <Button
+          variant="destructive"
+          disabled={wipePhrase !== WIPE_PHRASE || wipeLoading}
+          onClick={() => setWipeConfirmOpen(true)}
+          className="self-start"
+        >
+          Wipe everything
+        </Button>
+      </div>
 
       {/* Wipe confirmation dialog */}
       <Dialog open={wipeConfirmOpen} onOpenChange={setWipeConfirmOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className="text-destructive">Confirm wipe</DialogTitle>
+            <DialogTitle className="font-medium text-[var(--red)]">Confirm wipe</DialogTitle>
             <DialogDescription>
               This will permanently delete all butler data. There is no undo. Are you sure?
             </DialogDescription>
@@ -572,7 +631,7 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add webhook</DialogTitle>
+          <DialogTitle className="font-medium">Add webhook</DialogTitle>
         </DialogHeader>
         <div className="space-y-3 py-2">
           <div className="space-y-1">
@@ -677,92 +736,110 @@ function WebhooksSection() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <div className="flex justify-end">
-        <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>
-          <Plus className="mr-1 h-4 w-4" />
-          Add webhook
-        </Button>
+        <button
+          onClick={() => setAddOpen(true)}
+          className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Add webhook →
+        </button>
       </div>
 
       {loading ? (
-        <div className="space-y-2">
+        <div className="flex flex-col gap-0 border-t border-l border-border/60">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 w-full" />
+            <div key={i} className="border-r border-b border-border/60 px-4 py-3">
+              <Skeleton className="h-5 w-full" />
+            </div>
           ))}
         </div>
       ) : webhooks.length === 0 ? (
-        <p className="text-sm text-muted-foreground italic">No webhooks registered.</p>
+        <p className="text-sm italic font-serif text-muted-foreground">
+          No webhooks registered.
+        </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="font-mono text-xs">Endpoint</TableHead>
-              <TableHead className="font-mono text-xs">Events</TableHead>
-              <TableHead className="font-mono text-xs">Last test</TableHead>
-              <TableHead className="font-mono text-xs text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {webhooks.map((wh) => (
-              <TableRow key={wh.id} data-testid={`webhook-row-${wh.id}`}>
-                <TableCell className="font-mono text-xs max-w-xs truncate">
-                  {wh.endpoint}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {wh.events.length > 0 ? wh.events.join(", ") : "—"}
-                </TableCell>
-                <TableCell className="text-xs" data-testid={`webhook-last-test-${wh.id}`}>
-                  {wh.last_test_at ? (
-                    <span className="flex items-center gap-1">
-                      {wh.last_test_ok ? (
-                        <CheckCircle className="h-3 w-3 text-green-600" data-testid="webhook-test-ok" />
-                      ) : (
-                        <XCircle className="h-3 w-3 text-red-600" data-testid="webhook-test-fail" />
-                      )}
-                      {new Date(wh.last_test_at).toLocaleString()}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleTest(wh.id)}
-                      disabled={testingId === wh.id}
-                      title="Test webhook"
-                      data-testid={`webhook-test-${wh.id}`}
-                    >
-                      {testingId === wh.id ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-3 w-3" />
-                      )}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleDelete(wh.id)}
-                      disabled={deletingId === wh.id}
-                      title="Delete webhook"
-                      className="text-destructive hover:text-destructive"
-                      data-testid={`webhook-delete-${wh.id}`}
-                    >
-                      {deletingId === wh.id ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-3 w-3" />
-                      )}
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <div className="overflow-x-auto border-t border-l border-border/60">
+          <table className="text-sm border-collapse w-full min-w-max">
+            <thead>
+              <tr>
+                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                  Endpoint
+                </th>
+                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                  Events
+                </th>
+                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                  Last test
+                </th>
+                <th className="text-right font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {webhooks.map((wh) => (
+                <tr key={wh.id} data-testid={`webhook-row-${wh.id}`}>
+                  <td className="font-mono text-xs max-w-xs truncate px-4 py-2 border-r border-b border-border/60">
+                    {wh.endpoint}
+                  </td>
+                  <td className="text-xs px-4 py-2 border-r border-b border-border/60">
+                    {wh.events.length > 0 ? wh.events.join(", ") : "—"}
+                  </td>
+                  <td
+                    className="text-xs px-4 py-2 border-r border-b border-border/60"
+                    data-testid={`webhook-last-test-${wh.id}`}
+                  >
+                    {wh.last_test_at ? (
+                      <span className="flex items-center gap-1.5">
+                        {wh.last_test_ok ? (
+                          <span
+                            className="h-1.5 w-1.5 rounded-full bg-[var(--green)] shrink-0"
+                            data-testid="webhook-test-ok"
+                            aria-hidden
+                          />
+                        ) : (
+                          <span
+                            className="h-1.5 w-1.5 rounded-full bg-[var(--red)] shrink-0"
+                            data-testid="webhook-test-fail"
+                            aria-hidden
+                          />
+                        )}
+                        <span className="font-mono tabular-nums text-muted-foreground">
+                          {new Date(wh.last_test_at).toLocaleString()}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="text-right px-4 py-2 border-r border-b border-border/60">
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => handleTest(wh.id)}
+                        disabled={testingId === wh.id}
+                        title="Test webhook"
+                        data-testid={`webhook-test-${wh.id}`}
+                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 whitespace-nowrap"
+                      >
+                        {testingId === wh.id ? "Testing…" : "Test →"}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(wh.id)}
+                        disabled={deletingId === wh.id}
+                        title="Delete webhook"
+                        data-testid={`webhook-delete-${wh.id}`}
+                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-[var(--red)] transition-colors disabled:opacity-40 whitespace-nowrap"
+                      >
+                        {deletingId === wh.id ? "Deleting…" : "Delete →"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <AddWebhookModal
@@ -820,41 +897,34 @@ export default function SettingsPermissionsPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8 p-6">
+    <div className="max-w-5xl mx-auto space-y-8">
       {/* Page header */}
       <div>
-        <p className="font-mono text-xs text-muted-foreground uppercase tracking-wider">
-          system · permissions
-        </p>
-        <h1 className="text-2xl font-semibold mt-1">Permissions & data</h1>
+        <Eyebrow className="mb-2">system · permissions</Eyebrow>
+        <h1 className="text-3xl font-medium tracking-tight leading-tight">
+          Permissions &amp; data
+        </h1>
       </div>
 
       {/* Permissions matrix */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Shield className="h-4 w-4" />
-            Permissions matrix
-          </CardTitle>
-          <CardDescription>
-            Flip cells to grant or revoke per-butler permissions. A reason is required for every
-            change and is recorded in the audit log.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {matrixLoading ? (
-            <div className="space-y-2">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-6 w-full" />
-              ))}
-            </div>
-          ) : matrix ? (
-            <PermissionsMatrixSection matrix={matrix} onCellFlip={handleCellFlip} />
-          ) : (
-            <p className="text-sm text-muted-foreground italic">Failed to load matrix.</p>
-          )}
-        </CardContent>
-      </Card>
+      <Section
+        title="Permissions matrix"
+        description="Flip cells to grant or revoke per-butler permissions. A reason is required for every change and is recorded in the audit log."
+      >
+        {matrixLoading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-6 w-full" />
+            ))}
+          </div>
+        ) : matrix ? (
+          <PermissionsMatrixSection matrix={matrix} onCellFlip={handleCellFlip} />
+        ) : (
+          <p className="text-sm italic font-serif text-muted-foreground">
+            Failed to load matrix.
+          </p>
+        )}
+      </Section>
 
       {/* Cell flip modal */}
       {flipModal && (
@@ -869,37 +939,22 @@ export default function SettingsPermissionsPage() {
       )}
 
       {/* Audit reel */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Audit reel</CardTitle>
-          <CardDescription>Last 15 entries from the audit log.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <AuditReelSection />
-        </CardContent>
-      </Card>
+      <Section title="Audit reel" description="Last 15 entries from the audit log.">
+        <AuditReelSection />
+      </Section>
 
       {/* Data ops */}
-      <div>
-        <h2 className="text-lg font-medium mb-4">Data operations</h2>
+      <Section title="Data operations">
         <DataOpsSection />
-      </div>
+      </Section>
 
       {/* Webhooks */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Webhook className="h-4 w-4" />
-            Webhooks
-          </CardTitle>
-          <CardDescription>
-            Outbound webhook registrations. Events are signed with HMAC-SHA256.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <WebhooksSection />
-        </CardContent>
-      </Card>
+      <Section
+        title="Webhooks"
+        description="Outbound webhook registrations. Events are signed with HMAC-SHA256."
+      >
+        <WebhooksSection />
+      </Section>
     </div>
   );
 }

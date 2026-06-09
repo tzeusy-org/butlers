@@ -7,10 +7,15 @@
  * Layout:
  *   - Page heading (h1: "Settings")
  *   - AttentionStrip — attention items from GET /api/settings/console
- *   - Header KPI strip — 5 counts: active butlers, spend MTD, open approvals,
+ *   - Header KPI strip — 4 counts: active butlers, spend MTD, open approvals,
  *     models verified / total
  *   - Panel grid — one panel per sub-route; each fetches its own summary
  *     endpoint in parallel (a slow panel MUST NOT block the others)
+ *
+ * Design language: Dispatch. No card chrome, no word-badges — state is a
+ * {dot, numeral, colour} only when state demands. Display weight 500 (never
+ * 700). Numerals are tabular. Mirrors the SettingsModelsPage treatment and
+ * the shared atoms in components/butler-detail/atoms.tsx.
  *
  * Design refs: §7.2, settings-redesign.jsx :: SettingsConsole
  * CSS: .attention-row[data-tone="red"|"amber"] from frontend/src/index.css
@@ -22,15 +27,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,6 +69,23 @@ interface ModelStats {
 
 interface ApprovalMetricsSummary {
   pending: number;
+}
+
+// ---------------------------------------------------------------------------
+// Shared mono eyebrow — 10px uppercase, 0.14em tracking, muted
+// ---------------------------------------------------------------------------
+
+function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <p
+      className={cn(
+        "font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground leading-none",
+        className,
+      )}
+    >
+      {children}
+    </p>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +139,7 @@ function AttentionStrip({
   }
 
   return (
-    <div className="flex flex-col gap-0 rounded-md overflow-hidden border border-border">
+    <div className="flex flex-col gap-0 overflow-hidden border border-border">
       {items.map((item, idx) => (
         <div
           key={`${item.kind}-${idx}`}
@@ -135,17 +150,17 @@ function AttentionStrip({
         >
           <div className="flex items-center gap-3 min-w-0">
             <span
-              className={[
+              className={cn(
                 "shrink-0 h-2 w-2 rounded-full",
                 item.tone === "red" ? "bg-[var(--red)]" : "bg-[var(--amber)]",
-              ].join(" ")}
+              )}
               aria-hidden
             />
             <p className="text-sm truncate">{item.text}</p>
           </div>
           <button
             onClick={() => onNavigate(item.action_route)}
-            className="shrink-0 text-xs font-medium underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            className="shrink-0 font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
             aria-label={`Go to ${item.action_route}`}
           >
             Review →
@@ -153,11 +168,11 @@ function AttentionStrip({
         </div>
       ))}
       {truncatedCount > 0 && (
-        <div className="px-4 py-2 text-xs text-muted-foreground bg-muted/40 border-t border-border flex items-center justify-between">
+        <div className="px-4 py-2 font-mono text-[11px] text-muted-foreground border-t border-border flex items-center justify-between">
           <span>{truncatedCount} more item{truncatedCount !== 1 ? "s" : ""} not shown.</span>
           <button
             onClick={() => onNavigate("/audit-log")}
-            className="underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
+            className="uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
           >
             ...{truncatedCount} more →
           </button>
@@ -200,38 +215,45 @@ function ConsoleClock() {
 }
 
 // ---------------------------------------------------------------------------
-// KPI strip
+// KPI strip — hairline-divided, no card chrome. Mega numerals are weight 500,
+// tabular. State colour appears only when state demands (open approvals > 0).
 // ---------------------------------------------------------------------------
 
 function KpiCell({
   label,
   value,
+  tone = "fg",
   loading,
 }: {
   label: string;
   value: React.ReactNode;
+  tone?: "fg" | "red";
   loading?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">{label}</p>
+    <div className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60 last:border-r-0 sm:[&:nth-child(2)]:border-r-0 lg:[&:nth-child(2)]:border-r lg:[&:nth-child(4)]:border-r-0">
+      <Eyebrow>{label}</Eyebrow>
       {loading ? (
-        <Skeleton className="h-7 w-16" />
+        <Skeleton className="h-8 w-16" />
       ) : (
-        <p className="text-2xl font-bold tabular-nums">{value}</p>
+        <span
+          className={cn(
+            "text-[28px] font-medium tracking-tight tabular-nums leading-none",
+            tone === "red" ? "text-[var(--red)]" : "text-foreground",
+          )}
+        >
+          {value}
+        </span>
       )}
     </div>
   );
 }
 
 function KpiStrip({ counts, loading }: { counts: HeaderCounts | undefined; loading: boolean }) {
+  const openApprovals = counts?.open_approvals ?? 0;
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 rounded-lg border border-border bg-card px-6 py-4">
-      <KpiCell
-        label="Active Butlers"
-        value={counts?.active_butlers ?? 0}
-        loading={loading}
-      />
+    <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60">
+      <KpiCell label="Active Butlers" value={counts?.active_butlers ?? 0} loading={loading} />
       <KpiCell
         label="Spend MTD"
         value={counts ? `$${counts.spend_mtd_usd.toFixed(2)}` : "$0.00"}
@@ -239,7 +261,8 @@ function KpiStrip({ counts, loading }: { counts: HeaderCounts | undefined; loadi
       />
       <KpiCell
         label="Open Approvals"
-        value={counts?.open_approvals ?? 0}
+        value={openApprovals}
+        tone={openApprovals > 0 ? "red" : "fg"}
         loading={loading}
       />
       <KpiCell
@@ -247,25 +270,12 @@ function KpiStrip({ counts, loading }: { counts: HeaderCounts | undefined; loadi
         value={counts ? `${counts.models_verified}/${counts.models_total}` : "—"}
         loading={loading}
       />
-      <KpiCell
-        label="Status"
-        value={
-          counts ? (
-            <Badge variant={counts.open_approvals > 0 ? "destructive" : "default"}>
-              {counts.open_approvals > 0 ? "Needs Review" : "Nominal"}
-            </Badge>
-          ) : (
-            "—"
-          )
-        }
-        loading={loading}
-      />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Individual console panels
+// Individual console panels — hairline cells, no card chrome
 // ---------------------------------------------------------------------------
 
 function PanelShell({
@@ -282,8 +292,8 @@ function PanelShell({
   onNavigate: (route: string) => void;
 }) {
   return (
-    <Card
-      className="cursor-pointer hover:border-foreground/30 transition-colors"
+    <div
+      className="group flex flex-col gap-3 border-r border-b border-border/60 px-4 py-4 cursor-pointer transition-colors hover:bg-muted/30"
       onClick={() => onNavigate(href)}
       role="button"
       tabIndex={0}
@@ -292,12 +302,20 @@ function PanelShell({
       }}
       aria-label={`Go to ${title}`}
     >
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-base font-medium tracking-tight">{title}</span>
+          <span
+            className="font-mono text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+            aria-hidden
+          >
+            →
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -317,7 +335,7 @@ function ModelsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
       onNavigate={onNavigate}
     >
       {isLoading ? (
-        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-8 w-full" />
       ) : isError ? (
         <p className="text-sm text-muted-foreground">
           Failed to load.{" "}
@@ -326,21 +344,22 @@ function ModelsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
               e.stopPropagation();
               refetch();
             }}
-            className="underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
+            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
           </button>
         </p>
       ) : (
-        <div className="flex items-baseline gap-4">
-          <span className="text-2xl font-bold tabular-nums">{data?.ok ?? 0}</span>
-          <span className="text-sm text-muted-foreground">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[22px] font-medium tabular-nums leading-none">{data?.ok ?? 0}</span>
+          <span className="text-xs text-muted-foreground">
             verified / {data?.total ?? 0} enabled
           </span>
           {(data?.errors ?? 0) > 0 && (
-            <Badge variant="destructive" className="ml-auto">
+            <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-[var(--red)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--red)]" aria-hidden />
               {data!.errors} error{data!.errors !== 1 ? "s" : ""}
-            </Badge>
+            </span>
           )}
         </div>
       )}
@@ -364,7 +383,7 @@ function SpendPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
       onNavigate={onNavigate}
     >
       {isLoading ? (
-        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-8 w-full" />
       ) : isError ? (
         <p className="text-sm text-muted-foreground">
           Failed to load.{" "}
@@ -373,17 +392,17 @@ function SpendPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
               e.stopPropagation();
               refetch();
             }}
-            className="underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
+            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
           </button>
         </p>
       ) : (
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold tabular-nums">
+          <span className="text-[22px] font-medium tabular-nums leading-none">
             ${(data?.data?.total_cost_usd ?? 0).toFixed(2)}
           </span>
-          <span className="text-sm text-muted-foreground">MTD</span>
+          <span className="text-xs text-muted-foreground">MTD</span>
         </div>
       )}
     </PanelShell>
@@ -398,6 +417,8 @@ function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void })
     retry: 1,
   });
 
+  const pending = data?.pending ?? 0;
+
   return (
     <PanelShell
       title="Approvals"
@@ -406,7 +427,7 @@ function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void })
       onNavigate={onNavigate}
     >
       {isLoading ? (
-        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-8 w-full" />
       ) : isError ? (
         <p className="text-sm text-muted-foreground">
           Failed to load.{" "}
@@ -415,7 +436,7 @@ function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void })
               e.stopPropagation();
               refetch();
             }}
-            className="underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
+            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
           </button>
@@ -423,15 +444,15 @@ function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void })
       ) : (
         <div className="flex items-baseline gap-2">
           <span
-            className={[
-              "text-2xl font-bold tabular-nums",
-              (data?.pending ?? 0) > 0 ? "text-destructive" : "",
-            ].join(" ")}
+            className={cn(
+              "text-[22px] font-medium tabular-nums leading-none",
+              pending > 0 ? "text-[var(--red)]" : "text-foreground",
+            )}
           >
-            {data?.pending ?? 0}
+            {pending}
           </span>
-          <span className="text-sm text-muted-foreground">
-            {(data?.pending ?? 0) === 1 ? "approval" : "approvals"} pending
+          <span className="text-xs text-muted-foreground">
+            {pending === 1 ? "approval" : "approvals"} pending
           </span>
         </div>
       )}
@@ -448,7 +469,7 @@ function PermissionsPanel({ onNavigate }: { onNavigate: (route: string) => void 
       href="/settings/permissions"
       onNavigate={onNavigate}
     >
-      <p className="text-sm text-muted-foreground">
+      <p className="text-xs text-muted-foreground leading-relaxed">
         Manage access policies, webhook integrations, and export or wipe controls.
       </p>
     </PanelShell>
@@ -464,7 +485,7 @@ function SecretsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
       href="/secrets"
       onNavigate={onNavigate}
     >
-      <p className="text-sm text-muted-foreground">
+      <p className="text-xs text-muted-foreground leading-relaxed">
         Inspect API keys, CLI tokens, user credentials, and the Google OAuth app
         configuration — plus what each credential feeds.
       </p>
@@ -504,10 +525,8 @@ export default function SettingsConsolePage() {
       {/* ------------------------------------------------------------------ */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground mb-2">
-            system · console
-          </p>
-          <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
+          <Eyebrow className="mb-2">system · console</Eyebrow>
+          <h1 className="text-3xl font-medium tracking-tight leading-tight">Settings</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             System configuration, model catalog, spend controls, and access management.
           </p>
@@ -525,14 +544,14 @@ export default function SettingsConsolePage() {
         </div>
       ) : consoleError ? (
         <div
-          className="attention-row rounded-md px-4 py-3 flex items-center justify-between"
+          className="attention-row px-4 py-3 flex items-center justify-between"
           data-tone="amber"
           role="alert"
         >
           <p className="text-sm">Could not load console status.</p>
           <button
             onClick={() => consoleRefetch()}
-            className="text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
           </button>
@@ -552,8 +571,9 @@ export default function SettingsConsolePage() {
 
       {/* ------------------------------------------------------------------ */}
       {/* Panel grid — each panel fetches its own data independently          */}
+      {/* Hairline frame: outer border-t/border-l, cells border-r/border-b.   */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 border-t border-l border-border/60">
         {/* Models — independent fetch, failures do not block other panels */}
         <ModelsPanel onNavigate={handleNavigate} />
 
