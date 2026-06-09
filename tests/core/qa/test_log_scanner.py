@@ -358,8 +358,8 @@ def test_opencode_empty_response_warning_with_stderr_sentinel_excluded():
     assert _should_include_entry(entry) is False
 
 
-def test_opencode_empty_response_error_included_without_session_records_coverage():
-    """Degraded deployments keep ERROR-level OpenCode empty-response coverage."""
+def test_opencode_adapter_empty_response_excluded_without_session_records_coverage():
+    """Adapter empty-response logs are pre-failover attempt noise."""
     entry = LogEntry(
         level="error",
         event=("OpenCode CLI returned no response: no result, tool calls, or token usage"),
@@ -367,22 +367,7 @@ def test_opencode_empty_response_error_included_without_session_records_coverage
         butler_name="switchboard",
         logger="butlers.core.runtimes.opencode",
     )
-    assert _should_include_entry(entry) is True
-
-
-def test_spawner_opencode_empty_response_included_without_session_records_coverage():
-    """Terminal OpenCode empty-response failures stay visible without session records."""
-    entry = LogEntry(
-        level="error",
-        event=(
-            "Runtime invocation failed: RuntimeError: OpenCode CLI returned no response: "
-            "no result, tool calls, or token usage"
-        ),
-        timestamp=datetime.now(UTC),
-        butler_name="switchboard",
-        logger="butlers.core.spawner",
-    )
-    assert _should_include_entry(entry) is True
+    assert _should_include_entry(entry) is False
 
 
 def test_opencode_empty_response_excluded_when_session_records_covers_it():
@@ -395,6 +380,21 @@ def test_opencode_empty_response_excluded_when_session_records_covers_it():
         logger="butlers.core.runtimes.opencode",
     )
     assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
+
+
+def test_spawner_opencode_empty_response_included_without_session_records_coverage():
+    """Log-scanner-only deployments keep terminal OpenCode empty-response coverage."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: RuntimeError: OpenCode CLI returned no response: "
+            "no result, tool calls, or token usage"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry) is True
 
 
 def test_spawner_opencode_empty_response_excluded_when_session_records_covers_it():
