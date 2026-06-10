@@ -21,7 +21,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { IngestionEventSummary } from "@/api/index.ts";
+import type { IngestionEventStatus, IngestionEventSummary } from "@/api/index.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -259,6 +259,82 @@ describe("TimelineTab — channel chip filter passes channels= CSV to useIngesti
     for (const [filters] of calls) {
       expect(filters).not.toHaveProperty("source_channel");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TimelineTab — status filter pushes statuses= CSV to useIngestionEvents
+//
+// Hidden statuses (e.g. "skipped" home_assistant sensor noise) must be
+// excluded server-side so pages aren't dominated by rows the client filters
+// out anyway.
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — status filter passes statuses= CSV to useIngestionEvents", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderWithStatuses(statuses?: IngestionEventStatus[]) {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={statuses} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("passes the enabled statuses as a CSV when a subset is selected", () => {
+    renderWithStatuses(["ingested", "error"]);
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).toMatchObject({ statuses: "ingested,error" });
+  });
+
+  it("excludes skipped and filtered by default (no defaultStatuses override)", () => {
+    renderWithStatuses(undefined);
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0] as { statuses?: string };
+    expect(lastFilters.statuses).toBeDefined();
+    expect(lastFilters.statuses).not.toContain("skipped");
+    expect(lastFilters.statuses).not.toContain("filtered");
+    expect(lastFilters.statuses).toContain("ingested");
+  });
+
+  it("omits the statuses param when every status is enabled", () => {
+    renderWithStatuses([
+      "ingested",
+      "skipped",
+      "filtered",
+      "error",
+      "replay_pending",
+      "replay_complete",
+      "replay_failed",
+    ]);
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).not.toHaveProperty("statuses");
   });
 });
 

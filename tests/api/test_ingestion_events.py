@@ -219,6 +219,56 @@ async def test_no_channel_param_passes_none(app):
 
 
 # ---------------------------------------------------------------------------
+# Status filter — statuses CSV, precedence over single status
+# ---------------------------------------------------------------------------
+
+
+async def test_statuses_param_forwarded_to_core(app):
+    """GET /api/ingestion/events?statuses=ingested,error passes list to core;
+    'skipped' is accepted both as CSV member and as a single status value."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?statuses=ingested,error")
+            resp_skipped = await client.get("/api/ingestion/events?status=skipped")
+
+    assert resp.status_code == 200
+    first_kwargs = mock_list.await_args_list[0].kwargs
+    assert first_kwargs.get("statuses") == ["ingested", "error"]
+
+    assert resp_skipped.status_code == 200
+    second_kwargs = mock_list.await_args_list[1].kwargs
+    assert second_kwargs.get("status") == "skipped"
+
+
+async def test_statuses_and_status_both_forwarded(app):
+    """When both statuses and status are set, both reach core (core prefers statuses)."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?statuses=ingested&status=error")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("statuses") == ["ingested"]
+    assert call_kwargs.get("status") == "error"
+
+
+# ---------------------------------------------------------------------------
 # Event detail — 200 found, 404 not found
 # ---------------------------------------------------------------------------
 

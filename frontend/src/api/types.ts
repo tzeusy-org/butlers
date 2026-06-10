@@ -2263,6 +2263,7 @@ export interface ConnectorFanout {
 /**
  * All possible lifecycle statuses for an ingestion event from the unified timeline.
  * - ingested: processed successfully
+ * - skipped: stored but deliberately not dispatched (matched a `skip` triage rule)
  * - filtered: dropped by a rule
  * - error: processing failed
  * - replay_pending: replay requested, awaiting processing
@@ -2271,6 +2272,7 @@ export interface ConnectorFanout {
  */
 export type IngestionEventStatus =
   | "ingested"
+  | "skipped"
   | "filtered"
   | "error"
   | "replay_pending"
@@ -2377,8 +2379,10 @@ export interface IngestionEventsParams {
   source_channel?: string;
   /** Comma-separated channel values (e.g. "email,telegram"). Preferred over source_channel. */
   channels?: string;
-  /** Filter by event status. Omit to return all events. */
+  /** Filter by a single event status. Ignored when `statuses` is set. Omit to return all events. */
   status?: IngestionEventStatus;
+  /** Comma-separated status values to include (e.g. "ingested,error"). Takes precedence over `status`. */
+  statuses?: string;
   /**
    * Freetext search (ILIKE %q%) against source_channel, source_sender_identity,
    * and error_detail. Server-side; safe against injection.

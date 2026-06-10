@@ -76,10 +76,10 @@ describe('parseIngestionState', () => {
   })
 
   it('parses all valid status values', () => {
-    const all = 'ingested,filtered,error,replay_pending,replay_complete,replay_failed'
+    const all = 'ingested,skipped,filtered,error,replay_pending,replay_complete,replay_failed'
     const params = new URLSearchParams(`statuses=${all}`)
     const state = parseIngestionState(params)
-    expect(state.statuses).toHaveLength(6)
+    expect(state.statuses).toHaveLength(7)
   })
 
   it('parses a valid view param', () => {

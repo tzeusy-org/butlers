@@ -35,8 +35,9 @@ class IngestionEventSummary(BaseModel):
     """Lightweight ingestion event representation for list views.
 
     Returned from the unified timeline endpoint which merges
-    ``public.ingestion_events`` (status='ingested') with
-    ``connectors.filtered_events`` (status = filtered/error/replay_*).
+    ``public.ingestion_events`` (status = ingested, or the derived 'skipped'
+    for skip-triaged rows) with ``connectors.filtered_events``
+    (status = filtered/error/replay_*).
     """
 
     id: str

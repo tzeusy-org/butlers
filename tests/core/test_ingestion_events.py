@@ -167,7 +167,8 @@ def test_column_spec_contract() -> None:
         "source_thread_identity, external_event_id, dedupe_key, "
         "dedupe_strategy, ingestion_tier, policy_tier, "
         "triage_decision, triage_target, "
-        "status, "
+        "CASE WHEN status = 'ingested' AND triage_decision = 'skip' "
+        "THEN 'skipped' ELSE status END AS status, "
         "NULL::text AS filter_reason, "
         "error_detail"
     )
@@ -289,6 +290,24 @@ async def test_ingestion_events_list_and_sessions() -> None:
     await ingestion_events_list(pool2, channels=["email", "telegram"], limit=5)
     _, sql2, args2 = pool2.calls[0]
     assert "ANY(" in sql2 and ["email", "telegram"] in args2
+
+    # List: statuses filter — status = ANY(...); single status param ignored
+    pool3 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool3, status="filtered", statuses=["ingested", "error"], limit=5)
+    _, sql3, args3 = pool3.calls[0]
+    assert "status = ANY(" in sql3 and ["ingested", "error"] in args3
+    assert "filtered" not in args3
+
+    # List: single status filter still works when statuses is absent
+    pool4 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool4, status="error", limit=5)
+    _, sql4, args4 = pool4.calls[0]
+    assert "status = $" in sql4 and "error" in args4
+
+    # The unified SELECT derives 'skipped' for skip-triaged ingested rows
+    from butlers.core.ingestion_events import _INGESTED_COLS
+
+    assert "THEN 'skipped'" in _INGESTED_COLS
 
     # Sessions: empty; single butler; multiple butlers merged; cost JSONB decoded
     assert await ingestion_event_sessions(_FakeDatabaseManager(), "req-001") == []
