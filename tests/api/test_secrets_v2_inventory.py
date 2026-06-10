@@ -1272,17 +1272,19 @@ def test_inventory_credential_with_no_probe_has_null_test():
 # bu-2kejb: Owner-default inventory surfaces primary Google account
 # ---------------------------------------------------------------------------
 #
-# These tests cover the four acceptance scenarios from the spec:
+# These tests cover the acceptance scenarios from the spec:
 #   (a) Owner-default INCLUDES the primary account's google_oauth_refresh
 #   (b) Owner-default EXCLUDES non-primary account credentials
 #   (c) Existing owner creds (telegram/home_assistant) still included
 #   (d) Expired primary (status='expired') still surfaces its credential
+#   (e) Revoked primary (status='revoked') still surfaces its credential
+#       (bu-lw5fn — the reauth CTA must stay reachable for a revoked primary)
 #
 # The new owner-default SQL uses UNION ALL to merge:
 #   1. Owner entity credentials (anchored on the entity with 'owner' in roles)
 #   2. Primary Google account companion entity credentials
 #      (anchored on the entity pointed to by google_accounts WHERE
-#       is_primary=true AND status != 'revoked')
+#       is_primary=true — ALL statuses, including 'revoked')
 #
 # The mock distinguishes the owner-default UNION query (contains
 # 'google_accounts') from the identity-specific query (contains 'entity_id = $1').
@@ -1498,7 +1500,7 @@ def test_expired_primary_google_account_still_surfaces_in_owner_default():
     """Expired primary Google account (status='expired') still appears in owner-default.
 
     Spec: §Owner-Default Inventory Surfaces Primary Google Account
-    The filter is status != 'revoked', which includes 'expired' accounts.
+    The filter is is_primary=true only — all statuses pass, including 'expired'.
     An expired primary must surface so the owner can reach the reauth CTA.
     The DB enforces the filter; the mock simulates it by including the expired
     primary row in the google_accounts UNION path result.
@@ -1529,6 +1531,111 @@ def test_expired_primary_google_account_still_surfaces_in_owner_default():
 
     google_entry = next(u for u in user if u["type"] == "google_oauth_refresh")
     assert google_entry["entity_id"] == primary_entity_id
+
+
+# --- (e) Revoked primary still surfaces (bu-lw5fn) ---
+
+
+def test_revoked_primary_google_account_still_surfaces_in_owner_default():
+    """Revoked primary Google account (status='revoked') still appears in owner-default.
+
+    Regression guard for bu-lw5fn: a revoked primary used to be excluded from
+    the owner-default UNION leg, which made the entire Google user page (and
+    the reauthorize CTA it hosts) unreachable from /secrets — a dead end
+    precisely when the owner needs to reauthorize.  The guard is now
+    is_primary=true only; the revoked primary's credential row surfaces with a
+    failing state so the page resolves and the reauth CTA is reachable.
+
+    The DB enforces the filter; the mock simulates it by including the revoked
+    primary row in the google_accounts UNION path result (connector-401 case:
+    account marked revoked but token row retained).
+    """
+    primary_entity_id = str(uuid4())
+    revoked_primary_row = _make_entity_info_row(
+        entity_id=primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="revoked-but-present-token",
+        last_test_ok=False,  # revoked refresh token fails probes
+    )
+
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[revoked_primary_row],
+        owner_rows=[],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    types = [u["type"] for u in user]
+    assert "google_oauth_refresh" in types, (
+        "Revoked primary account must still surface google_oauth_refresh "
+        "so the owner can reach the reauthorize CTA (bu-lw5fn)"
+    )
+
+    google_entry = next(u for u in user if u["type"] == "google_oauth_refresh")
+    assert google_entry["entity_id"] == primary_entity_id
+    # The revoked credential is shown as needing attention, not healthy.
+    assert google_entry["state"] == "failing"
+
+
+def test_owner_default_sql_does_not_exclude_revoked_primary():
+    """The owner-default UNION SQL must not filter the primary leg by status.
+
+    The mock harness simulates the DB, so the surfacing tests above pass for
+    any SQL.  This test inspects the actual SQL sent to the pool and asserts
+    the contract directly: the google_accounts leg keeps the is_primary=true
+    guard (non-primary exclusion is a security invariant) but carries NO
+    status filter (revoked/expired primaries must surface — bu-lw5fn).
+    """
+    shared_pool = _make_google_inventory_pool(primary_rows=[], owner_rows=[])
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+
+    union_sqls = [
+        call.args[0]
+        for call in shared_pool.fetch.call_args_list
+        if "google_accounts" in call.args[0] and "entity_info" in call.args[0]
+    ]
+    assert union_sqls, "owner-default inventory must issue the google_accounts UNION query"
+    for sql in union_sqls:
+        assert "is_primary = true" in sql, (
+            "SECURITY: the primary-account leg must keep the is_primary=true guard"
+        )
+        assert "ga.status" not in sql, (
+            "The primary-account leg must not filter by status — revoked/expired "
+            "primaries must surface so the reauth CTA stays reachable (bu-lw5fn)"
+        )
+
+
+def test_revoked_primary_with_deleted_token_row_absent_from_owner_default():
+    """Revoked primary whose token entity_info row was DELETED does not surface.
+
+    Documents the known limitation (bu-lw5fn): the explicit disconnect path
+    deletes the google_oauth_refresh entity_info row before marking the account
+    revoked, so there is no credential row left for the UNION to return — the
+    Google user page is not reachable from owner-default in that sub-case.
+    Recovery there is a fresh connect, not reauth.  Only the connector-401
+    path (revoked status, token row retained) is covered by the fix above.
+    """
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[],  # token row deleted by the disconnect path
+        owner_rows=[],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    types = [u["type"] for u in user]
+    assert "google_oauth_refresh" not in types, (
+        "No credential row exists after the disconnect path deletes the token; "
+        "the owner-default view cannot synthesize one (documented limitation)"
+    )
 
 
 # --- Primary google account entity appears in identities[] switcher ---
@@ -1588,7 +1695,7 @@ def test_no_primary_google_account_no_google_entry_in_owner_default():
 
     Spec: §No Google account connected — no google_oauth_refresh in owner-default
     The UNION path for google_accounts returns empty when there is no primary
-    account (DB enforces is_primary=true AND status!='revoked').
+    account (DB enforces is_primary=true).
     """
     owner_entity_id = str(uuid4())
     telegram_row = _make_entity_info_row(

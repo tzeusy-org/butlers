@@ -713,9 +713,18 @@ async def _fetch_user_secrets(
     scope-grant CTA is reachable from /secrets without a manual ?identity= param.
 
     SECURITY: the join on ``public.google_accounts`` is guarded by
-    ``is_primary = true AND status != 'revoked'`` so that only the primary
-    account surfaces in the owner-default view.  Non-primary accounts MUST NOT
-    appear here — they are only accessible under an explicit ?identity= lens.
+    ``is_primary = true`` so that only the primary account surfaces in the
+    owner-default view.  Non-primary accounts MUST NOT appear here — they are
+    only accessible under an explicit ?identity= lens.  The primary account is
+    included regardless of status ('active', 'expired', AND 'revoked') so the
+    reauthorize CTA on the Google user page stays reachable exactly when the
+    owner needs it — hiding the revoked primary made the reauth flow a dead end.
+
+    Note: if the revoked primary's refresh-token entity_info row has been
+    deleted (the explicit disconnect path deletes the token before marking the
+    account revoked), there is no credential row to surface and the account
+    will not appear here.  Only the connector 401 path (marks revoked, keeps
+    the token row) is recoverable from the owner-default view.
     """
     try:
         if identity is not None:
@@ -747,9 +756,11 @@ async def _fetch_user_secrets(
             #   1. Credentials anchored on the owner entity (telegram_token, etc.)
             #      — priority 0, so they always sort first.
             #   2. Credentials anchored on the primary Google account companion
-            #      entity (google_oauth_refresh), gated by is_primary=true AND
-            #      status != 'revoked' (includes 'active' and 'expired' so the
-            #      reauth CTA is reachable even for expired accounts).
+            #      entity (google_oauth_refresh), gated by is_primary=true only.
+            #      ALL statuses are included ('active', 'expired', 'revoked') so
+            #      the reauth CTA is reachable even for expired or revoked
+            #      accounts — a revoked primary that is hidden here makes the
+            #      reauthorize flow unreachable (bu-lw5fn).
             #      — priority 1, so they always sort after owner credentials.
             #
             # ORDER BY priority, type guarantees owner entity_id appears first in
@@ -780,7 +791,7 @@ async def _fetch_user_secrets(
                 UNION ALL
 
                 -- Primary Google account companion entity credentials (priority 1).
-                -- Guarded: is_primary = true AND status != 'revoked' only.
+                -- Guarded: is_primary = true only (all statuses, incl. revoked).
                 SELECT
                     ei.id,
                     ei.entity_id,
@@ -796,7 +807,6 @@ async def _fetch_user_secrets(
                 FROM public.entity_info ei
                 JOIN public.google_accounts ga ON ga.entity_id = ei.entity_id
                 WHERE ga.is_primary = true
-                  AND ga.status != 'revoked'
                   AND ei.secured = true
 
                 ORDER BY priority, type
