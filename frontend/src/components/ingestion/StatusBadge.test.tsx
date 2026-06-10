@@ -39,6 +39,14 @@ describe("StatusBadge", () => {
     expect(badge!.className).toContain("emerald");
   });
 
+  it("renders 'skipped' with muted outline badge", () => {
+    render("skipped");
+    expect(container.textContent).toContain("skipped");
+    const badge = container.querySelector("[data-slot='badge']");
+    expect(badge).not.toBeNull();
+    expect(badge!.getAttribute("data-variant")).toBe("outline");
+  });
+
   it("renders 'filtered' with secondary badge", () => {
     render("filtered");
     expect(container.textContent).toContain("filtered");

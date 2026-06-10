@@ -112,6 +112,7 @@ async def list_ingestion_events(
     ),
     status: Literal[
         "ingested",
+        "skipped",
         "failed",
         "filtered",
         "error",
@@ -122,10 +123,20 @@ async def list_ingestion_events(
     | None = Query(
         None,
         description=(
-            "Filter by event status. 'ingested'/'failed'/'replay_failed' query "
-            "public.ingestion_events; 'filtered'/'error'/'replay_complete' query "
-            "connectors.filtered_events; 'replay_pending'/'replay_failed' may "
-            "appear in both tables. Omit for unified stream."
+            "Filter by event status. 'ingested'/'skipped'/'failed'/'replay_failed' "
+            "query public.ingestion_events; 'filtered'/'error'/'replay_complete' "
+            "query connectors.filtered_events; 'replay_pending'/'replay_failed' may "
+            "appear in both tables. 'skipped' is derived: ingested events whose "
+            "triage_decision is 'skip' (stored but deliberately not dispatched). "
+            "Ignored when 'statuses' is set. Omit for unified stream."
+        ),
+    ),
+    statuses: str | None = Query(
+        None,
+        description=(
+            "Comma-separated status values to include (e.g. 'ingested,error'). "
+            "Takes precedence over 'status'. Use to exclude noise statuses "
+            "such as 'skipped' server-side so pagination is not dominated by them."
         ),
     ),
     q: str | None = Query(
@@ -145,12 +156,13 @@ async def list_ingestion_events(
     count is computed per request.  Pass the ``next_cursor`` from a previous response
     as the ``cursor`` query param to fetch the next page.
 
-    Merges ``public.ingestion_events`` (status=ingested, filter_reason=null) with
-    ``connectors.filtered_events`` (status/filter_reason from their own columns).
+    Merges ``public.ingestion_events`` (status=ingested/skipped, filter_reason=null)
+    with ``connectors.filtered_events`` (status/filter_reason from their own columns).
     Supports optional filtering by ``channels`` (CSV), ``source_channel`` (deprecated),
-    ``status``, and freetext ``q``.
+    ``statuses`` (CSV), ``status`` (single), and freetext ``q``.
 
     Channel filter precedence: ``channels`` wins over ``source_channel``.
+    Status filter precedence: ``statuses`` wins over ``status``.
     """
     try:
         pool = db.credential_shared_pool()
@@ -174,8 +186,17 @@ async def list_ingestion_events(
     else:
         channel_list = None
 
+    # Resolve status filter: statuses CSV wins; fall back to single status.
+    status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
+
     result = await ingestion_events_list(
-        pool, limit=limit, cursor=cursor, channels=channel_list, status=status, q=q
+        pool,
+        limit=limit,
+        cursor=cursor,
+        channels=channel_list,
+        status=status,
+        statuses=status_list,
+        q=q,
     )
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]

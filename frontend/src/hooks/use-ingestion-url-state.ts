@@ -27,7 +27,7 @@ import { useSearchParams } from 'react-router'
 
 export type IngestionRange = 'live' | '1h' | '24h' | '7d' | 'custom'
 export type IngestionView = 'all' | 'errors' | 'priority' | 'spend'
-export type IngestionStatus = 'ingested' | 'filtered' | 'error' | 'replay_pending' | 'replay_complete' | 'replay_failed'
+export type IngestionStatus = 'ingested' | 'skipped' | 'filtered' | 'error' | 'replay_pending' | 'replay_complete' | 'replay_failed'
 
 export interface IngestionUrlState {
   /** Active time range. Defaults to '24h' when absent. */
@@ -50,6 +50,7 @@ const VALID_RANGES: IngestionRange[] = ['live', '1h', '24h', '7d', 'custom']
 const VALID_VIEWS: IngestionView[] = ['all', 'errors', 'priority', 'spend']
 const VALID_STATUSES: IngestionStatus[] = [
   'ingested',
+  'skipped',
   'filtered',
   'error',
   'replay_pending',

@@ -3,6 +3,7 @@
  *
  * Status → color mapping:
  * - ingested      → green (default/success)
+ * - skipped       → muted outline (stored but not dispatched — skip triage rule)
  * - filtered      → gray (secondary)
  * - error         → red (destructive)
  * - replay_pending → blue (custom)
@@ -30,6 +31,7 @@ interface StatusBadgeProps {
 
 const STATUS_LABELS: Record<IngestionEventStatus, string> = {
   ingested: "ingested",
+  skipped: "skipped",
   filtered: "filtered",
   error: "error",
   replay_pending: "replay pending",
@@ -43,6 +45,12 @@ function BadgeInner({ status }: { status: IngestionEventStatus }) {
       return (
         <Badge className="bg-emerald-500 text-white hover:bg-emerald-600">
           {STATUS_LABELS.ingested}
+        </Badge>
+      );
+    case "skipped":
+      return (
+        <Badge variant="outline" className="text-muted-foreground">
+          {STATUS_LABELS.skipped}
         </Badge>
       );
     case "filtered":

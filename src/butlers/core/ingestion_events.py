@@ -58,6 +58,16 @@ logger = logging.getLogger(__name__)
 # here; both SELECT lists are rebuilt automatically at import time.
 # ---------------------------------------------------------------------------
 
+# Display status for ingestion_events rows: events that matched a `skip`
+# triage rule are stored with status='ingested' (they are fully persisted and
+# replayable) but were deliberately not dispatched to any butler.  The unified
+# timeline surfaces them as the synthetic status 'skipped' so the dashboard can
+# distinguish — and filter out — skip-triaged noise (e.g. home_assistant sensor
+# streams) without conflating it with genuinely dispatched events.
+_SKIP_AWARE_STATUS = (
+    "CASE WHEN status = 'ingested' AND triage_decision = 'skip' THEN 'skipped' ELSE status END"
+)
+
 _UNION_COLUMN_SPEC: tuple[tuple[str, str, str], ...] = (
     # (output_alias,               ingested_expr,               filtered_expr)
     # ── columns present verbatim in both tables ──────────────────────────────
@@ -79,7 +89,7 @@ _UNION_COLUMN_SPEC: tuple[tuple[str, str, str], ...] = (
     ("triage_decision", "triage_decision", "NULL::text"),
     ("triage_target", "triage_target", "NULL::text"),
     # ── status/error columns (real on both sides now) ──────────────────────
-    ("status", "status", "status"),
+    ("status", _SKIP_AWARE_STATUS, "status"),
     ("filter_reason", "NULL::text", "filter_reason"),
     ("error_detail", "error_detail", "error_detail"),
 )
@@ -238,6 +248,7 @@ async def ingestion_events_list(
     cursor: str | None = None,
     channels: list[str] | None = None,
     status: str | None = None,
+    statuses: list[str] | None = None,
     q: str | None = None,
 ) -> dict[str, Any]:
     """Return a keyset-paginated list of ingestion events (unified stream), newest first.
@@ -257,7 +268,11 @@ async def ingestion_events_list(
             When ``None``, returns the first page.
         channels: Optional list of source_channel values to include.
             Generates a ``source_channel = ANY($N::text[])`` clause.
-        status: Optional filter by ``status``.
+        status: Optional filter by a single ``status``. Ignored when
+            ``statuses`` is provided.
+        statuses: Optional list of status values to include.  Generates a
+            ``status = ANY($N::text[])`` clause and takes precedence over
+            ``status``.
         q: Optional freetext search (ILIKE %q%) against source_channel,
             source_sender_identity, and error_detail.
 
@@ -270,7 +285,10 @@ async def ingestion_events_list(
     args: list[Any] = []
     where_parts: list[str] = []
 
-    if status is not None:
+    if statuses:
+        args.append(statuses)
+        where_parts.append(f"status = ANY(${len(args)}::text[])")
+    elif status is not None:
         args.append(status)
         where_parts.append(f"status = ${len(args)}")
     if channels:

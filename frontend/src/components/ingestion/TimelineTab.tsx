@@ -95,7 +95,12 @@ function fmtNum(n: number | null | undefined): string {
 }
 
 function isReplayable(status: IngestionEventStatus): boolean {
-  return status !== "replay_pending" && status !== "ingested" && status !== "replay_complete";
+  return (
+    status !== "replay_pending" &&
+    status !== "ingested" &&
+    status !== "skipped" &&
+    status !== "replay_complete"
+  );
 }
 
 function isReplayPending(status: IngestionEventStatus): boolean {
@@ -154,7 +159,9 @@ const BUILT_IN_VIEWS: SavedView[] = [
   {
     id: "all",
     label: "All",
-    statuses: ["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"],
+    // All real traffic — noise statuses ("skipped" skip-triaged events,
+    // "filtered" rule drops) stay hidden until toggled on via the status chips.
+    statuses: ["ingested", "error", "replay_pending", "replay_complete", "replay_failed"],
   },
   {
     id: "errors",
@@ -206,6 +213,7 @@ function persistView(viewId: ViewId): void {
 
 const ALL_STATUSES: IngestionEventStatus[] = [
   "ingested",
+  "skipped",
   "filtered",
   "error",
   "replay_pending",
@@ -215,6 +223,7 @@ const ALL_STATUSES: IngestionEventStatus[] = [
 
 const STATUS_LABELS: Record<IngestionEventStatus, string> = {
   ingested: "ok",
+  skipped: "skipped",
   filtered: "filtered",
   error: "error",
   replay_pending: "replay",
@@ -222,7 +231,9 @@ const STATUS_LABELS: Record<IngestionEventStatus, string> = {
   replay_failed: "failed",
 };
 
-const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered");
+// "skipped" (stored but not dispatched — e.g. home_assistant sensor streams)
+// and "filtered" are noise statuses, hidden by default.
+const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered" && s !== "skipped");
 
 // ---------------------------------------------------------------------------
 // Toolbar — range picker, search input, saved views, channel chips, status filter
@@ -1221,12 +1232,22 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     return { from, to };
   }, [range]);
 
-  // Events query — pass q and channels (CSV) from URL state
+  // Events query — pass q, channels (CSV), and statuses (CSV) from toolbar state.
+  // Statuses are pushed server-side so pages aren't dominated by hidden rows
+  // (e.g. skipped home_assistant sensor spam); omitted when every status is
+  // enabled, which is equivalent to no filter. Serialized in ALL_STATUSES
+  // order so the query key is stable regardless of toggle order.
+  const statusesCsv = useMemo(() => {
+    if (enabledStatuses.size >= ALL_STATUSES.length) return "";
+    return ALL_STATUSES.filter((s) => enabledStatuses.has(s)).join(",");
+  }, [enabledStatuses]);
+
   const eventsFilters = useMemo(() => ({
     limit: PAGE_SIZE,
     ...(debouncedQ ? { q: debouncedQ } : {}),
     ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
-  }), [debouncedQ, activeChannels]);
+    ...(statusesCsv ? { statuses: statusesCsv } : {}),
+  }), [debouncedQ, activeChannels, statusesCsv]);
 
   const {
     data: infiniteData,
