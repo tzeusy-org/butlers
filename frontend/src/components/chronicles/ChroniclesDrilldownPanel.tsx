@@ -5,10 +5,10 @@
 // briefing, KPI strip, attention list, recent-days index. The Gantt, Map,
 // Scrubber, aggregations charts, source-state strip, streak callouts, and
 // EpisodeDrawer that used to be the primary view are mounted here as a
-// collapsible drilldown panel below the editorial fold.
+// drilldown panel below the editorial fold.
 //
-// The panel is closed by default. Opening it lazy-loads the heavy widgets
-// (Gantt and Map already self-lazy via React.lazy / dynamic import).
+// The panel is always expanded. Its heavy widgets (Gantt and Map) remain
+// self-lazy via React.lazy / dynamic import.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useMemo, useState } from "react";
@@ -20,7 +20,6 @@ import {
 } from "@/hooks/use-chronicles";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { useTimezone } from "@/components/ui/timezone-context";
-import { Button } from "@/components/ui/button";
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker";
 import { Scrubber } from "@/components/workspace/Scrubber";
 import {
@@ -43,40 +42,21 @@ import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 
 import type { ChroniclerEventsParams } from "@/api/types";
 
-interface ChroniclesDrilldownPanelProps {
-  /** Initial open/closed state. Defaults to closed (editorial-first). */
-  defaultOpen?: boolean;
-}
-
-export function ChroniclesDrilldownPanel({
-  defaultOpen = false,
-}: ChroniclesDrilldownPanelProps) {
-  const [open, setOpen] = useState(defaultOpen);
-
+export function ChroniclesDrilldownPanel() {
   return (
     <section aria-label="Chronicles drilldown" className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p
-          className="tnum uppercase"
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: "10px",
-            letterSpacing: "0.14em",
-            color: "var(--muted-foreground)",
-          }}
-        >
-          Drilldown
-        </p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setOpen((prev) => !prev)}
-          aria-expanded={open}
-        >
-          {open ? "Close drilldown" : "Open drilldown"}
-        </Button>
-      </div>
-      {open ? <DrilldownBody /> : null}
+      <p
+        className="tnum uppercase"
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: "10px",
+          letterSpacing: "0.14em",
+          color: "var(--muted-foreground)",
+        }}
+      >
+        Drilldown
+      </p>
+      <DrilldownBody />
     </section>
   );
 }
