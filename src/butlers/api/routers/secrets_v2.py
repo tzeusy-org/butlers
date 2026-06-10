@@ -649,11 +649,13 @@ async def _fetch_system_secrets(
             ORDER BY category, secret_key
             """
         )
+    except UndefinedTableError:
+        logger.debug("butler_secrets not found for butler %s", butler_name)
+        return []
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg.lower():
-            logger.debug("butler_secrets not found for butler %s", butler_name)
-            return []
+        # A missing COLUMN (schema drift, e.g. test-state columns absent) must
+        # not be silently treated as "table not found" — it hides every row in
+        # this scan from the inventory (bu-urcwx).
         logger.warning("Failed to fetch system secrets for butler %s: %s", butler_name, exc)
         return []
 
@@ -899,11 +901,12 @@ async def _fetch_cli_secrets(
             ORDER BY secret_key
             """
         )
+    except UndefinedTableError:
+        logger.debug("butler_secrets (cli) not found in shared pool")
+        return []
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg.lower():
-            logger.debug("butler_secrets (cli) not found in shared pool")
-            return []
+        # Schema drift (e.g. a missing column) is a real failure, not an
+        # absent table — surface it instead of silently returning nothing.
         logger.warning("Failed to fetch CLI secrets: %s", exc)
         return []
 

@@ -54,8 +54,23 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
     is_sensitive BOOLEAN NOT NULL DEFAULT true,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ
+    expires_at   TIMESTAMPTZ,
+    last_verified     TIMESTAMPTZ,
+    last_test_ok      BOOLEAN,
+    last_test_code    INTEGER,
+    last_test_message TEXT
 )
+"""
+
+# Test-state columns (core_106 / core_117). Applied via ALTER on every
+# ensure_secrets_schema call so tables created before these columns existed
+# converge without depending on the alembic chain having run.
+_SECRETS_TEST_STATE_DDL = f"""
+ALTER TABLE {_TABLE}
+    ADD COLUMN IF NOT EXISTS last_verified TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS last_test_ok BOOLEAN,
+    ADD COLUMN IF NOT EXISTS last_test_code INTEGER,
+    ADD COLUMN IF NOT EXISTS last_test_message TEXT
 """
 
 _SECRETS_CATEGORY_INDEX_DDL = f"""
@@ -595,6 +610,7 @@ async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
     """Ensure ``butler_secrets`` exists on the target database."""
     async with _acquire_conn(pool) as conn:
         await conn.execute(_SECRETS_TABLE_DDL)
+        await conn.execute(_SECRETS_TEST_STATE_DDL)
         await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
 
 

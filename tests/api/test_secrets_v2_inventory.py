@@ -32,16 +32,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from asyncpg.exceptions import UndefinedTableError
+from asyncpg.exceptions import UndefinedColumnError, UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
     _derive_state,
+    _fetch_cli_secrets,
     _fetch_identity_info,
     _fetch_probe_log,
     _fetch_probe_logs_bulk,
+    _fetch_system_secrets,
     _fingerprint,
     _format_probe_time,
     _get_db_manager,
@@ -475,6 +477,51 @@ def test_inventory_shared_pool_cli_rows_excluded_from_system_family():
     assert "cli-token" not in system_keys
     # The CLI token is present exactly once, in the cli family.
     assert any(row["key"] == "cli-token" for row in body["data"]["cli"])
+
+
+# ---------------------------------------------------------------------------
+# Schema-drift regression (bu-urcwx): a missing COLUMN must not be silently
+# treated as a missing table.  On the live dev DB public.butler_secrets lacked
+# the test-state columns, the SELECT failed with UndefinedColumnError, and the
+# old string-matching except branch swallowed it as "table not found" — hiding
+# every shared-pool secret (incl. the Google OAuth app keys) from /secrets.
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_system_secrets_missing_column_logs_warning(caplog):
+    """UndefinedColumnError (schema drift) returns [] but logs a WARNING."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        side_effect=UndefinedColumnError('column "last_verified" does not exist')
+    )
+    with caplog.at_level("DEBUG", logger="butlers.api.routers.secrets_v2"):
+        rows = await _fetch_system_secrets(pool, "shared-public")
+    assert rows == []
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "schema drift must be logged as a warning, not swallowed as table-missing"
+    assert "shared-public" in warnings[0].getMessage()
+
+
+async def test_fetch_system_secrets_missing_table_logs_debug_only(caplog):
+    """UndefinedTableError (no table yet) stays a silent debug-level no-op."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        side_effect=UndefinedTableError('relation "butler_secrets" does not exist')
+    )
+    with caplog.at_level("DEBUG", logger="butlers.api.routers.secrets_v2"):
+        rows = await _fetch_system_secrets(pool, "general")
+    assert rows == []
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+async def test_fetch_cli_secrets_missing_column_logs_warning(caplog):
+    """Same contract for the CLI-family scan of the shared pool."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=UndefinedColumnError('column "last_test_ok" does not exist'))
+    with caplog.at_level("DEBUG", logger="butlers.api.routers.secrets_v2"):
+        rows = await _fetch_cli_secrets(pool)
+    assert rows == []
+    assert [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 # ---------------------------------------------------------------------------
