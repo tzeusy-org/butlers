@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repo Root Discipline (NON-NEGOTIABLE)
+
+**NEVER switch the main repo root (`~/gt/butlers`) away from `main`.** Do not
+`git checkout -b`, `git switch`, `git checkout <branch>`, or otherwise move HEAD
+off `main` in this directory — agents and humans rely on the root checkout
+staying on `main` at all times.
+
+To do any branch work (features, fixes, experiments), **always use a dedicated
+git worktree** outside the repo (e.g. under `/home/tze/.butlers-worktrees/`):
+
+```bash
+git worktree add /home/tze/.butlers-worktrees/<branch-name> -b <branch-name> origin/main
+```
+
+Commit, push, and open PRs from the worktree; the root checkout stays on `main`.
+When done, `git worktree remove <path>`. If you find the root on any branch other
+than `main`, switch it back to `main` before starting work.
+
 ## Project Overview
 
 Butlers is an AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself via a locked-down MCP config.
