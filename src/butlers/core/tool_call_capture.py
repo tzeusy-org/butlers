@@ -8,6 +8,7 @@ execution observed inside the daemon.
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import threading
 from collections import defaultdict
@@ -104,11 +105,24 @@ def _json_safe(value: Any) -> Any:
         return str(value)
 
 
+def fingerprint_tool_call_payload(value: Any) -> str:
+    """Return a stable, non-reversible fingerprint for a tool input payload."""
+    safe_value = _json_safe(value)
+    encoded = json.dumps(
+        safe_value,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8", errors="replace")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def capture_tool_call(
     *,
     tool_name: str,
     module_name: str | None = None,
     input_payload: dict[str, Any] | None = None,
+    input_fingerprint: str | None = None,
     outcome: str | None = None,
     result_payload: Any | None = None,
     error: str | None = None,
@@ -123,6 +137,8 @@ def capture_tool_call(
         record["module"] = module_name
     if isinstance(input_payload, dict) and input_payload:
         record["input"] = _json_safe(input_payload)
+    if input_fingerprint:
+        record["input_fingerprint"] = input_fingerprint
     if outcome:
         record["outcome"] = outcome
     if result_payload is not None:

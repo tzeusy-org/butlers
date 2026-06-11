@@ -79,6 +79,7 @@ from butlers.core.tool_call_capture import (
     clear_runtime_session_routing_context,
     consume_runtime_session_tool_calls,
     ensure_runtime_session_capture,
+    fingerprint_tool_call_payload,
     set_runtime_session_routing_context,
 )
 from butlers.core.utils import generate_uuid7_string
@@ -359,8 +360,10 @@ def _merge_tool_call_records(
     def _signature(call: dict[str, Any]) -> str:
         raw_name = str(call.get("name", "") or "")
         name = _normalize_tool_name(raw_name, butler_name)
-        payload = _payload_for_signature(call)
-        return f"{name}|{json.dumps(payload, sort_keys=True, default=str)}"
+        fingerprint = call.get("input_fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            fingerprint = fingerprint_tool_call_payload(_payload_for_signature(call))
+        return f"{name}|{fingerprint}"
 
     merged: list[dict[str, Any]] = []
     matched_parsed_indexes: set[int] = set()
@@ -443,16 +446,15 @@ def _check_degenerate_tool_loop(
 
     def _call_signature(call: dict[str, Any]) -> str:
         name = str(call.get("name", "") or "")
-        payload = call.get("input")
-        if payload is None:
-            payload = call.get("args")
-        if payload is None:
-            payload = call.get("arguments")
-        try:
-            payload_str = json.dumps(payload, sort_keys=True, default=str)
-        except Exception:
-            payload_str = str(payload)
-        return f"{name}|{payload_str}"
+        payload_fingerprint = call.get("input_fingerprint")
+        if not isinstance(payload_fingerprint, str) or not payload_fingerprint:
+            payload = call.get("input")
+            if payload is None:
+                payload = call.get("args")
+            if payload is None:
+                payload = call.get("arguments")
+            payload_fingerprint = fingerprint_tool_call_payload(payload)
+        return f"{name}|{payload_fingerprint}"
 
     streak = 1
     prev_sig = _call_signature(tool_calls[0])

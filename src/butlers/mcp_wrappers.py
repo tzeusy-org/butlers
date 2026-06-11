@@ -12,18 +12,38 @@ Classes:
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 from typing import Any
 
 from fastmcp import FastMCP
 
 from butlers.core.telemetry import tool_span
-from butlers.core.tool_call_capture import capture_tool_call
+from butlers.core.tool_call_capture import capture_tool_call, fingerprint_tool_call_payload
 from butlers.module_state import ModuleRuntimeState
 
 logger = logging.getLogger(__name__)
 
 _MCP_TOOL_CALL_LOG_LINE = "MCP tool called (butler=%s module=%s tool=%s)"
+_VISIBLE_CAPTURE_INPUT_FIELDS = frozenset(
+    ("butler", "target_butler", "butler_name", "prompt", "context")
+)
+
+
+def _visible_capture_input(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Return the small raw-input allowlist that is safe to persist."""
+    return {k: kwargs.get(k) for k in _VISIBLE_CAPTURE_INPUT_FIELDS if k in kwargs}
+
+
+def _tool_input_fingerprint(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    """Fingerprint the full tool input without storing sensitive raw arguments."""
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+        bound_arguments = dict(bound.arguments)
+        payload: Any = bound_arguments if bound_arguments else None
+    except Exception:
+        payload = {"args": args, "kwargs": kwargs}
+    return fingerprint_tool_call_payload(payload)
 
 
 class _SpanWrappingMCP:
@@ -76,11 +96,8 @@ class _SpanWrappingMCP:
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 self._log_tool_call(resolved_tool_name)
-                capture_input = {
-                    k: kwargs.get(k)
-                    for k in ("butler", "target_butler", "butler_name", "prompt", "context")
-                    if k in kwargs
-                }
+                capture_input = _visible_capture_input(kwargs)
+                input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
                 # Check module enabled state at call time to support live toggling.
                 if runtime_states_ref is not None:
                     state = runtime_states_ref.get(module_name_for_gate)
@@ -97,6 +114,7 @@ class _SpanWrappingMCP:
                             tool_name=resolved_tool_name,
                             module_name=self._module_name,
                             input_payload=capture_input,
+                            input_fingerprint=input_fingerprint,
                             outcome="module_disabled",
                             result_payload=disabled_result,
                         )
@@ -110,6 +128,7 @@ class _SpanWrappingMCP:
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
                         input_payload=capture_input,
+                        input_fingerprint=input_fingerprint,
                         outcome="error",
                         error=f"{type(exc).__name__}: {exc}",
                     )
@@ -119,6 +138,7 @@ class _SpanWrappingMCP:
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
                     input_payload=capture_input,
+                    input_fingerprint=input_fingerprint,
                     outcome="success",
                     result_payload=result,
                 )
@@ -165,11 +185,8 @@ class _ToolCallLoggingMCP:
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 self._log_tool_call(resolved_tool_name)
-                capture_input = {
-                    k: kwargs.get(k)
-                    for k in ("butler", "target_butler", "butler_name", "prompt", "context")
-                    if k in kwargs
-                }
+                capture_input = _visible_capture_input(kwargs)
+                input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
                 try:
                     result = await fn(*args, **kwargs)
                 except Exception as exc:
@@ -177,6 +194,7 @@ class _ToolCallLoggingMCP:
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
                         input_payload=capture_input,
+                        input_fingerprint=input_fingerprint,
                         outcome="error",
                         error=f"{type(exc).__name__}: {exc}",
                     )
@@ -185,6 +203,7 @@ class _ToolCallLoggingMCP:
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
                     input_payload=capture_input,
+                    input_fingerprint=input_fingerprint,
                     outcome="success",
                     result_payload=result,
                 )
