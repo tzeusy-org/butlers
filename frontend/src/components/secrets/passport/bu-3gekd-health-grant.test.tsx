@@ -195,9 +195,10 @@ describe("Health grant CTA: OAuth URL contains scope_set=health + account_hint +
     expect(params.get("scope_set")).toBe("health");
   });
 
-  it("ScopeSetPicker renders health grant button when health not yet granted", () => {
+  it("health grant CTA lives on the account row; picker shows per-account hint [bu-kg2nl]", () => {
     // When useGoogleAccounts returns an account without health scopes,
-    // the health tile shows a 'grant' button.
+    // the account row shows a 'grant health' button and the picker's health
+    // tile points at the per-account controls instead of a primary-only grant.
     const mockAccounts = [
       {
         id: "acc-1",
@@ -219,10 +220,13 @@ describe("Health grant CTA: OAuth URL contains scope_set=health + account_hint +
 
     const html = renderInRouter(<PageGoogleAccounts />);
 
-    // Health tile must show a grant button (health not yet granted)
     expect(html).toContain('data-scope-set-picker="true"');
     expect(html).toContain("Health");
-    expect(html).toContain("grant");
+    // Per-account grant control on the row [bu-kg2nl]
+    expect(html).toContain("grant health");
+    expect(html).toContain('data-account-health-state="absent"');
+    // Picker no longer renders a primary-only health grant button
+    expect(html).toContain("grant per account above");
   });
 
   it("ScopeSetPicker shows 'revoke' for health when health scopes already granted", () => {

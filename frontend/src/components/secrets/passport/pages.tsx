@@ -344,6 +344,22 @@ function GoogleAccountRow({
     disconnectMutation.reset();
   }
 
+  // Per-account Google Health grant [bu-kg2nl]. Each account carries its own
+  // granted_scopes, so health state is derived — and granted — per account,
+  // not just for the primary. account_hint targets the OAuth dance at THIS
+  // account; the backend widens scopes from the hinted account's own grants.
+  const healthGranted = hasHealthScopes(account.granted_scopes ?? []);
+
+  function handleGrantHealth() {
+    const url = getGoogleOAuthStartUrl({
+      scopeSet: "health",
+      forceConsent: true,
+      pageOfOrigin: "secrets",
+      accountHint: account.email ?? undefined,
+    });
+    window.location.assign(url);
+  }
+
   const email = account.email ?? account.id;
   const isPrimary = account.is_primary;
   const isOnlyAccount = totalAccounts === 1;
@@ -387,6 +403,27 @@ function GoogleAccountRow({
           >
             {setPrimaryMutation.isPending ? "setting…" : "set primary"}
           </PillBtn>
+        )}
+        {healthGranted ? (
+          <span
+            className="inline-flex items-center gap-1.5"
+            data-account-health={account.id}
+            data-account-health-state="granted"
+          >
+            <span
+              className="inline-block rounded-full shrink-0"
+              style={{ width: 6, height: 6, backgroundColor: "var(--green)" }}
+              aria-hidden="true"
+            />
+            <Mono size={9} color="var(--dim)">health</Mono>
+          </span>
+        ) : (
+          <span
+            data-account-health={account.id}
+            data-account-health-state="absent"
+          >
+            <PillBtn onClick={handleGrantHealth}>grant health</PillBtn>
+          </span>
         )}
         {!isOnlyAccount && (
           <PillBtn
@@ -446,10 +483,16 @@ function GoogleAccountRow({
 }
 
 /**
- * ScopeSetPicker — grant Calendar / Drive / Google Health via scope_set OAuth
- * re-dance, or selectively revoke Health via DELETE /api/connectors/google-health/disconnect.
+ * ScopeSetPicker — grant Calendar / Drive via scope_set OAuth re-dance
+ * (targeted at the primary account), or selectively revoke Health via
+ * DELETE /api/connectors/google-health/disconnect (primary-only backend).
  *
- * Rendered once per account list (scope grants apply to the primary account).
+ * Health GRANT moved per-account [bu-kg2nl]: each account row carries its own
+ * "grant health" control, so the picker's health row only shows granted state
+ * (primary) + revoke, or a hint pointing at the per-account controls above.
+ *
+ * Rendered once per account list (calendar/drive grants apply to the primary
+ * account; health revoke applies to the primary account).
  */
 function ScopeSetPicker({
   grantedScopes,
@@ -475,7 +518,8 @@ function ScopeSetPicker({
     setGrantError(null);
     // Navigate to OAuth start with scope_set → requests incremental consent.
     // account_hint pre-selects the primary Google account so the scope grant
-    // lands on the correct account (required for Health grant CTA [bu-3gekd]).
+    // lands on the correct account (calendar / drive only — health grant is
+    // per-account on the rows above [bu-kg2nl]).
     const url = getGoogleOAuthStartUrl({
       scopeSet: scopeSetId,
       forceConsent: true,
@@ -520,15 +564,24 @@ function ScopeSetPicker({
                     aria-hidden="true"
                   />
                   {isHealth && (
-                    <PillBtn
-                      variant="danger"
-                      onClick={handleRevokeHealth}
-                      disabled={disconnectHealthMutation.isPending}
-                    >
-                      {disconnectHealthMutation.isPending ? "revoking…" : "revoke"}
-                    </PillBtn>
+                    <>
+                      <Mono size={9} color="var(--dim)">primary</Mono>
+                      <PillBtn
+                        variant="danger"
+                        onClick={handleRevokeHealth}
+                        disabled={disconnectHealthMutation.isPending}
+                      >
+                        {disconnectHealthMutation.isPending ? "revoking…" : "revoke"}
+                      </PillBtn>
+                    </>
                   )}
                 </div>
+              ) : isHealth ? (
+                /* Health grant lives on the account rows [bu-kg2nl] — each
+                 * connected account has its own "grant health" control. */
+                <Mono size={9} color="var(--dim)" className="shrink-0">
+                  grant per account above
+                </Mono>
               ) : (
                 <PillBtn
                   variant="commit"
@@ -695,9 +748,10 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
  *
  * Rendered inside PageUser when provider.id === "google". Surfaces:
  *   - All connected Google accounts (email + state dot + primary badge)
- *   - Per-account: re-authorize / set-primary / disconnect (w/ hard-delete)
+ *   - Per-account: re-authorize / set-primary / grant-health / disconnect (w/ hard-delete)
  *   - "add another account" → OAuth with forceConsent + selectAccount (forces chooser)
- *   - Scope-set picker: grant Calendar / Drive / Health + selective Health revoke
+ *   - Scope-set picker: grant Calendar / Drive (primary) + selective Health
+ *     revoke (primary-only backend); Health grant is per-account [bu-kg2nl]
  *   - Google Health status card (hidden when no health scopes granted) [bu-hh875]
  *
  * [bu-ayp6v.7]
