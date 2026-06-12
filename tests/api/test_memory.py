@@ -55,6 +55,20 @@ def _make_mock_record(row: dict) -> MagicMock:
     return m
 
 
+class _Record(dict):
+    """Dict subclass standing in for an asyncpg Record.
+
+    Supports both ``record[key]`` and ``record.get(key)`` with real None
+    values, unlike MagicMock-based records whose ``.get`` returns a truthy
+    mock.  Used by fact rows where ``_row_to_fact`` calls ``r.get(...)``.
+    """
+
+
+def _make_record(row: dict) -> _Record:
+    """Return an asyncpg-Record-like mapping for the given row dict."""
+    return _Record(row)
+
+
 class _MockDB:
     """Minimal DatabaseManager stand-in for fan-out tests.
 
@@ -654,3 +668,154 @@ async def test_reembed_post_404_for_unknown_butler(app):
         )
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/facts/{fact_id}/confirm
+# ---------------------------------------------------------------------------
+
+
+def _make_fact_row(
+    *,
+    fact_id: uuid.UUID,
+    subject: str = "owner",
+    predicate: str = "likes",
+    content: str = "Owner likes tea",
+    last_confirmed_at: datetime | None = None,
+) -> dict:
+    """Build a dict mimicking an asyncpg Record for the facts table."""
+    return {
+        "id": fact_id,
+        "subject": subject,
+        "predicate": predicate,
+        "content": content,
+        "importance": 5.0,
+        "confidence": 0.9,
+        "decay_rate": 0.008,
+        "permanence": "standard",
+        "source_butler": "atlas",
+        "source_episode_id": None,
+        "session_id": None,
+        "supersedes_id": None,
+        "entity_id": None,
+        "object_entity_id": None,
+        "validity": "active",
+        "scope": "global",
+        "reference_count": 0,
+        "created_at": _NOW,
+        "last_referenced_at": None,
+        "last_confirmed_at": last_confirmed_at,
+        "tags": None,
+        "metadata": None,
+    }
+
+
+class _ConfirmPool:
+    """Fake pool for the confirm endpoint.
+
+    Holds at most one fact row keyed by id.  ``fetchrow`` returns that row when
+    the id matches (used both for the initial locate and the post-confirm
+    re-fetch).  ``execute`` stamps ``last_confirmed_at`` and reports
+    ``UPDATE 1``/``UPDATE 0`` exactly like asyncpg + storage.confirm_memory.
+    Entity-name resolution (public.entities) returns no rows.
+    """
+
+    def __init__(self, *, fact: dict | None) -> None:
+        self._fact = fact
+        self.execute_calls: list[tuple] = []
+
+    async def fetchrow(self, query: str, *args: object):
+        if (
+            self._fact is not None
+            and "FROM facts WHERE id" in query
+            and args[0] == self._fact["id"]
+        ):
+            return _make_record(self._fact)
+        return None
+
+    async def fetch(self, query: str, *args: object):
+        # _resolve_entity_names queries public.entities — no linked entities here.
+        return []
+
+    async def execute(self, query: str, *args: object) -> str:
+        self.execute_calls.append((query, args))
+        if self._fact is not None and args[0] == self._fact["id"]:
+            self._fact["last_confirmed_at"] = _NOW
+            return "UPDATE 1"
+        return "UPDATE 0"
+
+
+class _ConfirmDB:
+    """DatabaseManager stand-in returning a distinct _ConfirmPool per butler."""
+
+    def __init__(self, pools: dict[str, _ConfirmPool]) -> None:
+        self._pools = pools
+        self.butler_names = list(pools)
+
+    def pool(self, name: str) -> _ConfirmPool:
+        if name not in self._pools:
+            raise KeyError(f"No pool for butler: {name}")
+        return self._pools[name]
+
+
+async def test_confirm_fact_reinks_and_returns_updated_fact(app):
+    """POST confirm stamps last_confirmed_at and returns the updated Fact."""
+    fact_id = uuid.uuid4()
+    holding = _ConfirmPool(fact=_make_fact_row(fact_id=fact_id, last_confirmed_at=None))
+    db = _ConfirmDB({"atlas": holding, "memory": _ConfirmPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/memory/facts/{fact_id}/confirm")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["id"] == str(fact_id)
+    # last_confirmed_at was previously null and is now stamped.
+    assert data["last_confirmed_at"] is not None
+    # The confirming UPDATE ran exactly once, on the pool that holds the fact.
+    assert len(holding.execute_calls) == 1
+    assert "last_confirmed_at = now()" in holding.execute_calls[0][0]
+
+
+async def test_confirm_fact_404_when_not_found(app):
+    """POST confirm returns 404 when no pool holds the fact."""
+    fact_id = uuid.uuid4()
+    db = _ConfirmDB({"atlas": _ConfirmPool(fact=None), "memory": _ConfirmPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/memory/facts/{fact_id}/confirm")
+
+    assert resp.status_code == 404
+
+
+async def test_confirm_fact_400_on_malformed_id(app):
+    """POST confirm returns 400 when the path id is not a valid UUID."""
+    db = _ConfirmDB({"atlas": _ConfirmPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/memory/facts/not-a-uuid/confirm")
+
+    assert resp.status_code == 400
+
+
+async def test_confirm_fact_503_when_no_pools_available(app):
+    """POST confirm returns 503 when no memory pools are registered."""
+    fact_id = uuid.uuid4()
+    db = _ConfirmDB({})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/memory/facts/{fact_id}/confirm")
+
+    assert resp.status_code == 503

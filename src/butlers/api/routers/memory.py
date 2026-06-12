@@ -573,6 +573,74 @@ async def get_fact(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/memory/facts/{fact_id}/confirm
+# ---------------------------------------------------------------------------
+
+_FACT_SELECT_COLUMNS = (
+    "SELECT id, subject, predicate, content, importance, confidence,"
+    " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+    " entity_id, object_entity_id, validity, scope, reference_count,"
+    " created_at, last_referenced_at,"
+    " last_confirmed_at, tags, metadata"
+    " FROM facts WHERE id = $1"
+)
+
+
+@router.post("/facts/{fact_id}/confirm", response_model=ApiResponse[Fact])
+async def confirm_fact(
+    fact_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[Fact]:
+    """Re-ink a fact: reset its confidence-decay timer (set last_confirmed_at=now).
+
+    Delegates to ``storage.confirm_memory`` (the same call backing the MCP
+    ``memory_confirm`` tool) on whichever butler pool owns the fact, then
+    returns the updated row so the fact-detail commit footer can reflect the
+    fresh confirmation immediately.
+
+    Errors:
+    - 400: ``fact_id`` is not a valid UUID.
+    - 404: no memory pool holds a fact with this id.
+    - 503: no database pools are available.
+    """
+    from butlers.modules.memory import storage as _storage
+
+    try:
+        fact_uuid = _uuid.UUID(fact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid fact id (must be a UUID)") from exc
+
+    pools = _memory_pools(db)
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+
+    # Locate the pool that owns this fact, confirm it there, and re-fetch the
+    # updated row.  Each pool probe is guarded so a pool lacking memory tables is
+    # skipped rather than failing the whole request.
+    for _name, pool in pools:
+        try:
+            confirmed = await _storage.confirm_memory(pool, "fact", fact_uuid)
+        except Exception:
+            logger.debug(
+                "Skipping pool %s while confirming fact %s (pool lacks memory tables or failed)",
+                _name,
+                fact_id,
+                exc_info=True,
+            )
+            continue
+        if not confirmed:
+            continue
+        row = await pool.fetchrow(_FACT_SELECT_COLUMNS, fact_uuid)
+        if row is None:
+            continue
+        fact = _row_to_fact(row)
+        await _resolve_entity_names(db, [fact])
+        return ApiResponse[Fact](data=fact)
+
+    raise HTTPException(status_code=404, detail="Fact not found")
+
+
+# ---------------------------------------------------------------------------
 # GET /api/memory/rules
 # ---------------------------------------------------------------------------
 
