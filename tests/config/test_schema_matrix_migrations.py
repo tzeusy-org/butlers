@@ -56,7 +56,6 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "delivery_dead_letter",
     },
     "relationship": {
-        "_reminders_backup",
         "addresses",
         "contact_info",
         "contact_labels",
@@ -72,7 +71,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "quick_facts",
         "relationship_types",
         "relationships",
-        # reminders renamed to _reminders_backup by rel_007
+        # reminders renamed to _reminders_backup by rel_007, then dropped by rel_020
         "tasks",
     },
     "switchboard": {

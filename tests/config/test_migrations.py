@@ -613,23 +613,12 @@ def test_core_acl_and_relationship_chain(postgres_container):
 
     # relationship chain
     asyncio.run(run_migrations(db_url, chain="relationship"))
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            # After rel_007, reminders is renamed to _reminders_backup.
-            # Verify the backup table has the expected columns.
-            rows = conn.execute(
-                text(
-                    "SELECT column_name FROM information_schema.columns"
-                    " WHERE table_schema = 'public' AND table_name = '_reminders_backup'"
-                )
-            )
-            cols = {str(r[0]) for r in rows}
-            for required in ("contact_id", "message", "reminder_type", "cron", "due_at"):
-                assert required in cols, f"Missing _reminders_backup.{required}"
-            # reminders table should no longer exist
-            assert not _table_exists_in_schema(db_url, "public", "reminders"), (
-                "reminders table should have been renamed to _reminders_backup"
-            )
-    finally:
-        engine.dispose()
+    # rel_007 renamed the live `reminders` table to `_reminders_backup` as a
+    # safety net; rel_020 then dropped that dead backup table. After the full
+    # relationship chain neither table should exist.
+    assert not _table_exists_in_schema(db_url, "public", "reminders"), (
+        "reminders table should have been renamed to _reminders_backup by rel_007"
+    )
+    assert not _table_exists_in_schema(db_url, "public", "_reminders_backup"), (
+        "_reminders_backup table should have been dropped by rel_020"
+    )
