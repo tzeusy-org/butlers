@@ -280,6 +280,21 @@ async def run_consolidation(
                 if exec_result["errors"]:
                     all_errors.extend(exec_result["errors"])
 
+                # Persist one audit row per successful butler-group run so the
+                # read-side stats endpoint can derive last_consolidation_at /
+                # last_consolidation_facts_produced. Best-effort: a logging
+                # failure must never mask a successful consolidation.
+                await _record_consolidation_run(
+                    pool,
+                    butler=butler_name,
+                    episodes_processed=exec_result["episodes_consolidated"],
+                    facts_produced=exec_result["facts_created"],
+                    facts_updated=exec_result["facts_updated"],
+                    rules_created=exec_result["rules_created"],
+                    confirmations_made=exec_result["confirmations_made"],
+                    errors=len(exec_result["errors"]),
+                )
+
                 logger.info(
                     "Consolidated %s/%s: %d facts, %d rules, %d episodes",
                     tenant_id,
@@ -401,6 +416,44 @@ async def _mark_group_failed(
         )
     except Exception as exc:
         logger.warning("Failed to emit consolidation events: %s", exc)
+
+
+async def _record_consolidation_run(
+    pool: Pool,
+    *,
+    butler: str,
+    episodes_processed: int,
+    facts_produced: int,
+    facts_updated: int,
+    rules_created: int,
+    confirmations_made: int,
+    errors: int,
+) -> None:
+    """Insert one row into ``public.consolidation_runs``; best-effort (no raise).
+
+    Mirrors ``_log_compaction`` in scheduled_jobs: an audit-write failure (e.g.
+    the table not yet migrated, or a privilege gap) must not fail an otherwise
+    successful consolidation run. Called once per successfully consolidated
+    ``(tenant_id, butler)`` group.
+    """
+    try:
+        await pool.execute(
+            """
+            INSERT INTO public.consolidation_runs
+                (butler, episodes_processed, facts_produced, facts_updated,
+                 rules_created, confirmations_made, errors)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            butler,
+            episodes_processed,
+            facts_produced,
+            facts_updated,
+            rules_created,
+            confirmations_made,
+            errors,
+        )
+    except Exception as exc:
+        logger.warning("Failed to record consolidation run for %s: %s", butler, exc)
 
 
 # ---------------------------------------------------------------------------
