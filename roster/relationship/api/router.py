@@ -8,6 +8,7 @@ directly from the relationship butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import importlib.util
 import json
@@ -4883,6 +4884,16 @@ async def _assert_owner_entity_exists(pool) -> None:
 )
 async def list_entity_neighbours(
     entity_id: UUID,
+    rank: Literal["weight"] | None = Query(
+        None,
+        description="Ranking key for per-predicate truncation. Only 'weight' in v1.",
+    ),
+    per_predicate: int = Query(
+        6,
+        ge=1,
+        description="When rank is set, max neighbours returned per predicate group "
+        "(top-N by weight). Groups above this carry a remainder count.",
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> NeighboursResponse:
     """Return relational triples grouped by predicate for both directions.
@@ -4893,11 +4904,20 @@ async def list_entity_neighbours(
     ``kind='relational'`` predicates from ``relationship.entity_predicate_registry``
     are returned.
 
+    Ranked truncation (entity v3, ``dashboard-relationship`` §"Neighbour ranking
+    and truncation"): with ``rank=weight`` (and optional ``per_predicate=N``,
+    default 6) each predicate group returns its top-N neighbours by
+    ``weight DESC`` and ``remainders`` carries the count of unreturned
+    neighbours per truncated group (the Hop / Columns "+N more" row).  Without
+    ``rank`` the endpoint returns every neighbour and ``remainders`` is empty
+    (unchanged behaviour — standing Columns option (a) client-side chaining).
+
     Owner-only authz gate (Clause 12b, Amendment 12b): returns HTTP 403 with
     ``{"code": "owner_required"}`` if no owner entity is registered.
 
     Returns 404 if the entity does not exist in ``public.entities``.
-    Returns ``{"neighbours": {}}`` if the entity has no relational triples.
+    Returns ``{"neighbours": {}, "remainders": {}}`` if the entity has no
+    relational triples.
 
     Response shape::
 
@@ -5011,6 +5031,17 @@ async def list_entity_neighbours(
         if predicate not in grouped:
             grouped[predicate] = []
         grouped[predicate].append(entry)
+
+    # Ranked truncation: top-N by weight per predicate group + remainder count.
+    if rank == "weight":
+        remainders: dict[str, int] = {}
+        for predicate, entries in grouped.items():
+            # weight DESC (NULLs last so scored neighbours rank above unscored).
+            entries.sort(key=lambda e: (e.weight is None, -(e.weight or 0)))
+            if len(entries) > per_predicate:
+                remainders[predicate] = len(entries) - per_predicate
+                grouped[predicate] = entries[:per_predicate]
+        return NeighboursResponse(neighbours=grouped, remainders=remainders)
 
     return NeighboursResponse(neighbours=grouped)
 
@@ -5570,38 +5601,88 @@ async def update_entity_contact(
 # ---------------------------------------------------------------------------
 
 
+def _encode_facts_cursor(created_at: datetime, fact_id: UUID | str) -> str:
+    """Encode a ``(created_at, id)`` keyset position into an opaque cursor.
+
+    Base64url-encoded JSON so it is safe as a query parameter.  Mirrors the
+    repo cursor convention (``src/butlers/core/ingestion_events.py``) for the
+    facts drill's ``created_at DESC, id DESC`` keyset.
+    """
+    payload = {"ca": created_at.isoformat(), "id": str(fact_id)}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def _decode_facts_cursor(cursor: str) -> tuple[datetime, str]:
+    """Decode an opaque facts cursor back to ``(created_at, id)``.
+
+    Raises ``ValueError`` if the cursor is malformed (caller maps to HTTP 422).
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        return datetime.fromisoformat(payload["ca"]), str(payload["id"])
+    except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid cursor: {exc}") from exc
+
+
 @router.get(
     "/entities/{entity_id}/facts",
     response_model=EntityFactsResponse,
 )
 async def list_entity_facts(
     entity_id: UUID,
-    offset: int = Query(0, ge=0, description="Pagination offset."),
+    predicate: str | None = Query(None, description="Filter to a single predicate."),
+    validity: Literal["active", "superseded"] = Query(
+        "active",
+        description="Fact validity to return. 'active' (default) or 'superseded' (history).",
+    ),
+    store: Literal["identity", "all"] = Query(
+        "identity",
+        description="'identity' (default) returns triple-store rows; "
+        "'all' additionally appends labeled narrative-store facts.",
+    ),
     limit: int = Query(20, ge=1, le=200, description="Page size (max 200)."),
+    cursor: str | None = Query(
+        None,
+        description="Opaque keyset cursor from a prior response's next_cursor.",
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> EntityFactsResponse:
-    """List active triples for an entity from ``relationship.entity_facts``.
+    """Drill endpoint: fact-level read for an entity with full provenance.
 
-    Returns all active facts for the entity (as subject) with per-fact
-    provenance fields required by the Workbench ProvenanceGrid (§6b Amendment 7):
+    The canonical fact-level read for the Workbench grid and Editorial
+    provenance reveals (entity v3, ``dashboard-relationship`` §"Facts drill
+    endpoint").
 
-    - ``weight`` — relational aggregation weight (NULL when not yet scored).
-    - ``last_observed_at`` — most-recent observation timestamp (DB: ``last_seen``).
-    - ``object_kind`` — ``'literal'`` for plain values; ``'entity'`` for entity refs.
-    - ``src`` — butler slug that authored the fact.
+    Filters:
 
-    Note: ``source_event_id`` is not yet a column in ``relationship.entity_facts``;
-    it is a planned schema addition. Use ``src`` for source attribution.
+    - ``predicate=`` — restrict to one predicate.
+    - ``validity=`` — ``active`` (default) or ``superseded`` (the Workbench
+      grid's history view).
+    - ``store=`` — ``identity`` (default; ``relationship.entity_facts``) or
+      ``all`` (additionally appends labeled narrative-store rows from the
+      memory-module ``facts`` table, after the identity rows).
 
-    Owner-only authz gate (Clause 12b, Amendment 12b): returns HTTP 403 with
-    ``{"code": "owner_required"}`` if no owner entity is registered.
+    Every row carries the Provenance contract fields (``src``, ``conf``,
+    ``last_observed_at``, ``weight``, ``verified``, ``primary``) plus a
+    read-time ``staleness_band`` (``fresh`` / ``aging`` / ``stale``) and its
+    ``store`` of origin.
 
-    Returns 404 if the entity does not exist in ``public.entities``.
-    Returns ``{"facts": [], "total": 0, ...}`` when no active facts exist.
+    Pagination is keyset (cursor) per the repo convention — ordered
+    ``created_at DESC, id DESC`` with the envelope ``{items, next_cursor,
+    has_more}`` (no ``total``).  ``store=all`` paginates the identity store;
+    narrative rows are appended to the page (they are the Workbench grid's
+    secondary layer and are not independently cursored in v1).
 
-    Ordered by ``created_at DESC``.
+    Owner-only authz gate (Clause 12b): HTTP 403 ``{"code": "owner_required"}``
+    if no owner entity is registered.  Returns 404 if the entity does not exist.
+    Returns ``{"items": [], "next_cursor": null, "has_more": false}`` when no
+    facts match.
     """
-    from butlers.tools.relationship.staleness import identity_staleness_band_sql
+    from butlers.tools.relationship.staleness import (
+        identity_staleness_band_sql,
+        narrative_staleness_band_sql,
+    )
 
     pool = _pool(db)
 
@@ -5611,19 +5692,29 @@ async def list_entity_facts(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    total = await pool.fetchval(
-        """
-        SELECT count(*)
-        FROM relationship.entity_facts
-        WHERE subject  = $1
-          AND validity = 'active'
-        """,
-        entity_id,
-    )
+    keyset: tuple[datetime, str] | None = None
+    if cursor is not None:
+        try:
+            keyset = _decode_facts_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Read-time staleness band, derived in SQL from the identity-store fallback
-    # chain COALESCE(observed_at, last_seen, created_at). Never stored on the row.
-    rows = await pool.fetch(
+    # --- Identity store (relationship.entity_facts) -----------------------
+    # Keyset over (created_at, id): page one row past the limit to detect more.
+    args: list[Any] = [entity_id, validity]
+    where = ["f.subject = $1", "f.validity = $2"]
+    if predicate is not None:
+        args.append(predicate)
+        where.append(f"f.predicate = ${len(args)}")
+    if keyset is not None:
+        args.append(keyset[0])
+        args.append(keyset[1])
+        # Strict keyset on the DESC,DESC order.
+        where.append(f"(f.created_at, f.id) < (${len(args) - 1}::timestamptz, ${len(args)}::uuid)")
+    args.append(limit + 1)
+    limit_pos = len(args)
+
+    identity_rows = await pool.fetch(
         f"""
         SELECT
             f.id,
@@ -5641,18 +5732,22 @@ async def list_entity_facts(
             f.created_at,
             {identity_staleness_band_sql("f")} AS staleness_band
         FROM relationship.entity_facts f
-        WHERE f.subject  = $1
-          AND f.validity = 'active'
-        ORDER BY f.created_at DESC
-        OFFSET $2
-        LIMIT  $3
+        WHERE {" AND ".join(where)}
+        ORDER BY f.created_at DESC, f.id DESC
+        LIMIT ${limit_pos}
         """,
-        entity_id,
-        offset,
-        limit,
+        *args,
     )
 
-    facts = [
+    has_more = len(identity_rows) > limit
+    page_rows = list(identity_rows[:limit])
+
+    next_cursor: str | None = None
+    if has_more and page_rows:
+        last = page_rows[-1]
+        next_cursor = _encode_facts_cursor(last["created_at"], last["id"])
+
+    items = [
         EntityFactEntry(
             id=r["id"],
             subject=r["subject"],
@@ -5667,18 +5762,73 @@ async def list_entity_facts(
             primary=r["primary"],
             validity=r["validity"],
             created_at=r["created_at"],
+            store="identity",
             staleness_band=r["staleness_band"],
         )
-        for r in rows
+        for r in page_rows
     ]
 
-    return EntityFactsResponse(
-        facts=facts,
-        total=total,
-        offset=offset,
-        limit=limit,
-        has_more=total > offset + limit,
-    )
+    # --- Narrative store (memory-module facts table) ----------------------
+    # store=all appends labeled narrative rows after the identity page. These
+    # are the Workbench grid's secondary layer; they ride the same page (no
+    # independent cursor) so the cursor stays a pure identity-store keyset.
+    if store == "all":
+        narr_args: list[Any] = [entity_id]
+        narr_where = ["f.entity_id = $1", "f.scope = 'relationship'"]
+        # The narrative store records supersession via validity too.
+        narr_args.append(validity)
+        narr_where.append(f"f.validity = ${len(narr_args)}")
+        if predicate is not None:
+            narr_args.append(predicate)
+            narr_where.append(f"f.predicate = ${len(narr_args)}")
+
+        narrative_rows = await pool.fetch(
+            f"""
+            SELECT
+                f.id,
+                f.entity_id   AS subject,
+                f.predicate,
+                f.content     AS object,
+                'literal'::text AS object_kind,
+                COALESCE(f.source_butler, 'memory')::text AS src,
+                f.confidence  AS conf,
+                NULL::int     AS weight,
+                f.last_confirmed_at AS last_seen,
+                false         AS verified,
+                NULL::bool    AS "primary",
+                f.validity,
+                f.created_at,
+                {narrative_staleness_band_sql("f")} AS staleness_band
+            FROM facts f
+            WHERE {" AND ".join(narr_where)}
+            ORDER BY f.created_at DESC, f.id DESC
+            LIMIT ${len(narr_args) + 1}
+            """,
+            *narr_args,
+            limit,
+        )
+        items.extend(
+            EntityFactEntry(
+                id=r["id"],
+                subject=r["subject"],
+                predicate=r["predicate"],
+                object=r["object"],
+                object_kind=r["object_kind"],
+                src=r["src"],
+                conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+                weight=r["weight"],
+                last_observed_at=r["last_seen"],
+                verified=r["verified"],
+                primary=r["primary"],
+                validity=r["validity"],
+                created_at=r["created_at"],
+                store="narrative",
+                staleness_band=r["staleness_band"],
+            )
+            for r in narrative_rows
+        )
+
+    return EntityFactsResponse(items=items, next_cursor=next_cursor, has_more=has_more)
 
 
 # ---------------------------------------------------------------------------

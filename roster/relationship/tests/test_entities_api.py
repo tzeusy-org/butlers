@@ -1428,6 +1428,7 @@ class TestEntityNeighbours:
         object_val: str | None = None,
         direction: str = "forward",
         canonical_name: str = "Test Entity",
+        weight: int | None = None,
     ) -> MagicMock:
         data = {
             "id": uuid4(),
@@ -1438,7 +1439,7 @@ class TestEntityNeighbours:
             "src": "relationship",
             "conf": 1.0,
             "last_seen": None,
-            "weight": None,
+            "weight": weight,
             "verified": False,
             "primary": None,
             "direction": direction,
@@ -1497,6 +1498,58 @@ class TestEntityNeighbours:
         assert resp.status_code == 200
         assert resp.json()["neighbours"] == {}
 
+    async def test_unranked_default_has_empty_remainders(self):
+        """Without rank/per_predicate, all neighbours return and remainders is empty."""
+        rows = [self._make_fact_row(predicate="knows", weight=w) for w in (1, 2, 3)]
+        app, _ = self._make_app(fact_rows=rows)
+        resp = await _get(app, _NEIGHBOURS_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["neighbours"]["knows"]) == 3
+        assert body["remainders"] == {}
+
+    async def test_ranked_truncation_top_n_by_weight_with_remainder(self):
+        """rank=weight&per_predicate=6 → 6 highest-weight + remainder count."""
+        # 40 'knows' neighbours with weights 1..40.
+        rows = [
+            self._make_fact_row(predicate="knows", weight=w, canonical_name=f"E{w}")
+            for w in range(1, 41)
+        ]
+        app, _ = self._make_app(fact_rows=rows)
+        resp = await _get(app, _NEIGHBOURS_PATH, rank="weight", per_predicate=6)
+        assert resp.status_code == 200
+        body = resp.json()
+        group = body["neighbours"]["knows"]
+        assert len(group) == 6
+        # Highest weights first: 40, 39, ..., 35.
+        assert [n["weight"] for n in group] == [40, 39, 38, 37, 36, 35]
+        assert body["remainders"]["knows"] == 34
+
+    async def test_ranked_truncation_per_predicate_independent(self):
+        """Truncation applies per predicate group independently."""
+        rows = [self._make_fact_row(predicate="knows", weight=w) for w in range(1, 11)]
+        rows += [self._make_fact_row(predicate="family-of", weight=w) for w in range(1, 4)]
+        app, _ = self._make_app(fact_rows=rows)
+        resp = await _get(app, _NEIGHBOURS_PATH, rank="weight", per_predicate=6)
+        body = resp.json()
+        assert len(body["neighbours"]["knows"]) == 6
+        assert body["remainders"]["knows"] == 4
+        # Group below the cap returns whole and has no remainder entry.
+        assert len(body["neighbours"]["family-of"]) == 3
+        assert "family-of" not in body["remainders"]
+
+    async def test_invalid_rank_value_rejected(self):
+        """An unknown rank value is a 422 (only rank=weight is supported in v1)."""
+        app, _ = self._make_app(fact_rows=[])
+        resp = await _get(app, _NEIGHBOURS_PATH, rank="bogus")
+        assert resp.status_code == 422
+
+    async def test_per_predicate_requires_positive_int(self):
+        """per_predicate must be >= 1."""
+        app, _ = self._make_app(fact_rows=[])
+        resp = await _get(app, _NEIGHBOURS_PATH, rank="weight", per_predicate=0)
+        assert resp.status_code == 422
+
 
 # ===========================================================================
 # GET /entities/{entity_id}/facts — per-fact provenance grid (bu-mg4dk)
@@ -1506,21 +1559,29 @@ _FACTS_PATH = f"/api/relationship/entities/{_ENT_ID}/facts"
 
 
 class TestEntityFacts:
-    """GET /entities/{id}/facts — per-fact provenance fields (bu-mg4dk)."""
+    """GET /entities/{id}/facts — drill endpoint (bu-tzvm6, entity v3).
+
+    Keyset (cursor) pagination; ``predicate``/``validity``/``store`` filters;
+    full provenance + ``staleness_band`` per row; owner-only authz.
+    """
 
     def _make_fact_row(
         self,
         *,
+        fact_id: UUID | None = None,
         predicate: str = "works-at",
         object_val: str = "Acme Corp",
         object_kind: str = "literal",
         src: str = "relationship",
         weight: int | None = 5,
         last_seen: datetime | None = None,
+        validity: str = "active",
+        created_at: datetime | None = None,
+        store: str = "identity",
         staleness_band: str = "fresh",
     ) -> MagicMock:
         data = {
-            "id": uuid4(),
+            "id": fact_id or uuid4(),
             "subject": _ENT_ID,
             "predicate": predicate,
             "object": object_val,
@@ -1531,9 +1592,10 @@ class TestEntityFacts:
             "last_seen": last_seen,
             "verified": False,
             "primary": None,
-            "validity": "active",
-            "created_at": _NOW,
-            # Derived in SQL by identity_staleness_band_sql() in the real query.
+            "validity": validity,
+            "created_at": created_at or _NOW,
+            "store": store,
+            # Derived in SQL by the staleness band expression in the real query.
             "staleness_band": staleness_band,
         }
         row = MagicMock()
@@ -1546,52 +1608,107 @@ class TestEntityFacts:
         owner_exists: bool = True,
         entity_exists: bool = True,
         fact_rows: list | None = None,
-        total_count: int | None = None,
+        narrative_rows: list | None = None,
     ) -> tuple[FastAPI, AsyncMock]:
         mock_pool = AsyncMock()
         owner_row = _make_owner_row() if owner_exists else None
         entity_val = 1 if entity_exists else None
 
-        # GET /facts call sequence:
+        # GET /facts call sequence (keyset; no COUNT):
         #   1. fetchrow → owner-entity gate
         #   2. fetchval → entity existence check
-        #   3. fetchval → COUNT(*) for total
-        #   4. fetch → fact rows
-        rows = fact_rows or []
-        count = total_count if total_count is not None else len(rows)
-
+        #   3. fetch → identity-store rows
+        #   4. fetch → narrative-store rows (only when store=all)
+        identity = fact_rows if fact_rows is not None else []
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
-        mock_pool.fetchval = AsyncMock(side_effect=[entity_val, count])
-        mock_pool.fetch = AsyncMock(return_value=rows)
+        mock_pool.fetchval = AsyncMock(return_value=entity_val)
+        if narrative_rows is not None:
+            mock_pool.fetch = AsyncMock(side_effect=[identity, narrative_rows])
+        else:
+            mock_pool.fetch = AsyncMock(return_value=identity)
 
         return _wire_app(mock_pool), mock_pool
 
-    async def test_happy_path_returns_200_with_facts(self):
-        """GET /entities/{id}/facts returns 200 with provenance facts."""
+    async def test_happy_path_returns_200_with_keyset_envelope(self):
+        """Default call returns the keyset envelope {items, next_cursor, has_more}."""
         rows = [self._make_fact_row()]
         app, _ = self._make_app(fact_rows=rows)
         resp = await _get(app, _FACTS_PATH)
         assert resp.status_code == 200
         body = resp.json()
-        assert "facts" in body
-        assert body["total"] == 1
+        assert "items" in body
+        assert "next_cursor" in body
         assert body["has_more"] is False
+        # No legacy offset/total fields.
+        assert "total" not in body
+        assert "offset" not in body
 
-    async def test_response_shape_includes_provenance_fields(self):
-        """Facts response includes weight, last_observed_at, object_kind, src."""
+    async def test_response_shape_includes_provenance_and_staleness(self):
+        """Each row carries full provenance + staleness_band + store label."""
         rows = [self._make_fact_row(weight=7, object_kind="literal", src="relationship")]
         app, _ = self._make_app(fact_rows=rows)
         resp = await _get(app, _FACTS_PATH)
         assert resp.status_code == 200
-        body = resp.json()
-        fact = body["facts"][0]
-        assert "weight" in fact
+        fact = resp.json()["items"][0]
         assert fact["weight"] == 7
-        assert "last_observed_at" in fact
-        assert "object_kind" in fact
         assert fact["object_kind"] == "literal"
-        assert "src" in fact
         assert fact["src"] == "relationship"
+        assert "last_observed_at" in fact
+        assert fact["staleness_band"] == "fresh"
+        assert fact["store"] == "identity"
+
+    async def test_default_filters_active_identity_rows(self):
+        """No filters → only validity='active' identity-store rows are queried."""
+        app, pool = self._make_app(fact_rows=[])
+        await _get(app, _FACTS_PATH)
+        sql = pool.fetch.call_args[0][0]
+        assert "relationship.entity_facts" in sql
+        assert "validity" in sql
+        # Default store=identity must not query the narrative facts table.
+        assert pool.fetch.await_count == 1
+
+    async def test_predicate_filter_passed_to_query(self):
+        """predicate= narrows the result set via a bound predicate filter."""
+        app, pool = self._make_app(fact_rows=[])
+        await _get(app, _FACTS_PATH, predicate="has-email")
+        assert "has-email" in pool.fetch.call_args[0]
+
+    async def test_validity_superseded_returns_history(self):
+        """validity=superseded reaches superseded rows (Workbench history view)."""
+        rows = [self._make_fact_row(validity="superseded")]
+        app, pool = self._make_app(fact_rows=rows)
+        resp = await _get(app, _FACTS_PATH, validity="superseded")
+        assert resp.status_code == 200
+        assert "superseded" in pool.fetch.call_args[0]
+        assert resp.json()["items"][0]["validity"] == "superseded"
+
+    async def test_invalid_validity_rejected(self):
+        """An unknown validity value is a 422 (enum-guarded)."""
+        app, _ = self._make_app(fact_rows=[])
+        resp = await _get(app, _FACTS_PATH, validity="bogus")
+        assert resp.status_code == 422
+
+    async def test_store_all_layers_labeled_narrative_rows(self):
+        """store=all appends labeled narrative-store rows after identity rows."""
+        ident = [self._make_fact_row(predicate="works-at", store="identity")]
+        narr = [
+            self._make_fact_row(
+                predicate="contact_note",
+                object_val="met at conf",
+                src="memory",
+                store="narrative",
+            )
+        ]
+        app, pool = self._make_app(fact_rows=ident, narrative_rows=narr)
+        resp = await _get(app, _FACTS_PATH, store="all")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        stores = {i["store"] for i in items}
+        assert stores == {"identity", "narrative"}
+        # Two fetches issued: identity + narrative.
+        assert pool.fetch.await_count == 2
+        narr_sql = pool.fetch.await_args_list[1][0][0]
+        assert "FROM facts" in narr_sql
 
     async def test_owner_gate_returns_403(self):
         """GET /entities/{id}/facts returns 403 when no owner entity."""
@@ -1605,40 +1722,58 @@ class TestEntityFacts:
         resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/facts")
         assert resp.status_code == 404
 
-    async def test_empty_facts_returns_empty_list(self):
-        """Entity with no active triples returns empty facts list."""
-        app, _ = self._make_app(fact_rows=[], total_count=0)
+    async def test_empty_facts_returns_empty_envelope(self):
+        """Entity with no active triples returns an empty keyset envelope."""
+        app, _ = self._make_app(fact_rows=[])
         resp = await _get(app, _FACTS_PATH)
         assert resp.status_code == 200
         body = resp.json()
-        assert body["facts"] == []
-        assert body["total"] == 0
+        assert body["items"] == []
+        assert body["next_cursor"] is None
         assert body["has_more"] is False
 
-    async def test_has_more_is_true_when_total_exceeds_limit(self):
-        """has_more is True when total > offset + limit."""
-        rows = [self._make_fact_row() for _ in range(20)]
-        app, _ = self._make_app(fact_rows=rows, total_count=50)
+    async def test_keyset_has_more_and_cursor_round_trip(self):
+        """A full page yields has_more + a cursor that decodes to the last row's key."""
+        import base64
+        import json as _json
+
+        # limit defaults to 20; return 21 rows so the handler trims to a page + cursor.
+        base = _NOW
+        rows = [
+            self._make_fact_row(
+                fact_id=uuid4(),
+                created_at=base - timedelta(minutes=i),
+            )
+            for i in range(21)
+        ]
+        app, pool = self._make_app(fact_rows=rows)
         resp = await _get(app, _FACTS_PATH, limit=20)
         assert resp.status_code == 200
         body = resp.json()
+        assert len(body["items"]) == 20
         assert body["has_more"] is True
-        assert body["total"] == 50
+        assert body["next_cursor"] is not None
+        # Cursor must decode to the (created_at, id) of the last returned row.
+        payload = _json.loads(base64.urlsafe_b64decode(body["next_cursor"].encode()))
+        last = body["items"][-1]
+        assert payload["id"] == last["id"]
+
+        # Feeding the cursor back must add a keyset predicate bound to the values.
+        app2, pool2 = self._make_app(fact_rows=[])
+        await _get(app2, _FACTS_PATH, limit=20, cursor=body["next_cursor"])
+        sql2 = pool2.fetch.call_args[0][0]
+        assert "<" in sql2  # keyset comparison present
+
+    async def test_malformed_cursor_rejected(self):
+        """A malformed cursor is a 422 (decode failure surfaces as bad request)."""
+        app, _ = self._make_app(fact_rows=[])
+        resp = await _get(app, _FACTS_PATH, cursor="!!!not-base64!!!")
+        assert resp.status_code == 422
 
     async def test_sql_uses_entity_facts_not_facts_table(self):
-        """GET /entities/{id}/facts SQL must use relationship.entity_facts."""
+        """Default GET /entities/{id}/facts SQL must use relationship.entity_facts."""
         app, pool = self._make_app(fact_rows=[])
         await _get(app, _FACTS_PATH)
-        fetch_call_sql = pool.fetch.call_args[0][0]
-        assert "relationship.entity_facts" in fetch_call_sql
-        assert "relationship.facts" not in fetch_call_sql
-
-    async def test_sql_selects_required_provenance_columns(self):
-        """SQL must SELECT weight, last_seen, object_kind, src."""
-        app, pool = self._make_app(fact_rows=[])
-        await _get(app, _FACTS_PATH)
-        fetch_call_sql = pool.fetch.call_args[0][0]
-        assert "weight" in fetch_call_sql
-        assert "last_seen" in fetch_call_sql
-        assert "object_kind" in fetch_call_sql
-        assert "src" in fetch_call_sql
+        sql = pool.fetch.call_args[0][0]
+        assert "relationship.entity_facts" in sql
+        assert "relationship.facts" not in sql

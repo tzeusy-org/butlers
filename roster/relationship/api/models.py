@@ -832,17 +832,25 @@ class NeighboursResponse(BaseModel):
     entries reachable via that predicate.  Only ``kind='relational'``
     predicates from ``relationship.entity_predicate_registry`` are included.
 
-    Example::
+    When ranked truncation is requested (``rank=weight&per_predicate=N``), each
+    group's list is the top-N neighbours by ``weight DESC`` and ``remainders``
+    carries the count of unreturned neighbours per predicate (the "+N more"
+    affordance for Hop / Columns).  Without those params ``remainders`` is empty
+    and every group lists all neighbours (unchanged behaviour).
+
+    Example (ranked, ``per_predicate=6``)::
 
         {
-          "neighbours": {
-            "knows": [NeighbourEntry, ...],
-            "family-of": [NeighbourEntry, ...]
-          }
+          "neighbours": {"knows": [<6 entries>]},
+          "remainders": {"knows": 34}
         }
     """
 
     neighbours: dict[str, list[NeighbourEntry]]
+    #: Per-predicate count of neighbours NOT returned in ``neighbours`` because
+    #: of ranked truncation.  Empty (and omitted predicates mean zero remainder)
+    #: when no truncation was applied.
+    remainders: dict[str, int] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1458,25 +1466,31 @@ class EntityFactEntry(BaseModel):
     primary: bool | None = None
     validity: str
     created_at: datetime
+    #: Store of origin for this row — ``'identity'`` (``relationship.entity_facts``)
+    #: or ``'narrative'`` (memory-module ``facts`` table).  Only surfaced as a
+    #: distinguishing label when ``store=all`` is requested; identity-store rows
+    #: still carry it for an unambiguous grid.
+    store: Literal["identity", "narrative"] = "identity"
     #: Read-time staleness band (``fresh`` / ``aging`` / ``stale``) derived from
-    #: ``COALESCE(observed_at, last_seen, created_at)`` — never stored on the row.
-    #: Confidence (``conf``) and staleness are separate axes (lifecycle §"Age").
+    #: ``COALESCE(observed_at, last_seen, created_at)`` (identity) or
+    #: ``COALESCE(observed_at, last_confirmed_at, created_at)`` (narrative) —
+    #: never stored on the row.  Confidence (``conf``) and staleness are separate
+    #: axes (lifecycle §"Age").
     staleness_band: str
 
 
 class EntityFactsResponse(BaseModel):
-    """Response for ``GET /entities/{id}/facts``.
+    """Keyset-paginated response for ``GET /entities/{id}/facts``.
 
-    ``facts`` is a flat list of all active triples for the entity from
-    ``relationship.entity_facts``.  Ordered by ``created_at DESC``.
+    Keyset (cursor) pagination per the repo convention (CLAUDE.md §"Cursor
+    Pagination"): ordered ``created_at DESC, id DESC``, no ``total`` field.
 
-    ``total`` is the count of active triples before pagination.
-    ``offset`` and ``limit`` echo the request parameters.
-    ``has_more`` is True when ``total > offset + limit``.
+    - ``items`` — the page of fact rows (active identity rows by default;
+      labeled narrative rows additionally when ``store=all``).
+    - ``next_cursor`` — opaque cursor for the next page (``None`` on last page).
+    - ``has_more`` — True when more rows exist beyond this page.
     """
 
-    facts: list[EntityFactEntry]
-    total: int
-    offset: int
-    limit: int
+    items: list[EntityFactEntry]
+    next_cursor: str | None = None
     has_more: bool
