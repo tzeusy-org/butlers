@@ -11,11 +11,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import NotificationsPage from "@/pages/NotificationsPage";
-import { useNotifications, useNotificationStats } from "@/hooks/use-notifications";
+import {
+  useAcknowledgeAllFailed,
+  useMarkNotificationRead,
+  useNotifications,
+  useNotificationStats,
+} from "@/hooks/use-notifications";
 
 vi.mock("@/hooks/use-notifications", () => ({
   useNotifications: vi.fn(),
   useNotificationStats: vi.fn(),
+  useMarkNotificationRead: vi.fn(),
+  useAcknowledgeAllFailed: vi.fn(),
 }));
 
 type UseNotificationsResult = ReturnType<typeof useNotifications>;
@@ -90,6 +97,17 @@ function renderPage(): string {
 describe("NotificationsPage", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // Mutation hooks are not the focus of these tests, but the component calls
+    // them on every render. Provide inert default implementations so renders do
+    // not crash; resetAllMocks above clears these between tests.
+    vi.mocked(useMarkNotificationRead).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useMarkNotificationRead>);
+    vi.mocked(useAcknowledgeAllFailed).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
   });
 
   it("renders notification rows when list returns data", () => {
