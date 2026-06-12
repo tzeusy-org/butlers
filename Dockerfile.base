@@ -35,8 +35,9 @@ RUN --mount=type=cache,target=/root/.npm \
     @openai/codex \
     opencode-ai
 
-# uv package manager
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:${PATH}"
+# uv package manager. Install into /usr/local/bin and assert the binary exists so
+# a transient installer/download problem cannot produce a broken base image.
+RUN python -m pip install --no-cache-dir uv \
+    && uv --version
 
 WORKDIR /app
