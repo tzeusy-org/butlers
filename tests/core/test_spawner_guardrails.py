@@ -33,6 +33,7 @@ from butlers.core.spawner import (
     _check_token_budget,
     _check_tool_call_budget,
 )
+from butlers.core.tool_call_capture import fingerprint_tool_call_payload
 
 pytestmark = pytest.mark.unit
 
@@ -151,6 +152,34 @@ class TestCheckDegenerateToolLoop:
         result = _check_degenerate_tool_loop(calls)
         assert result is not None
         assert "degenerate_tool_loop" in result
+
+    def test_input_fingerprint_distinguishes_hidden_inputs(self) -> None:
+        """Captured calls with redacted visible input use fingerprints for loop detection."""
+        calls = [
+            {
+                "id": str(i),
+                "name": "contact_resolve",
+                "input": {},
+                "input_fingerprint": fingerprint_tool_call_payload({"name": f"Person {i}"}),
+            }
+            for i in range(_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD)
+        ]
+
+        assert _check_degenerate_tool_loop(calls) is None
+
+    def test_same_input_fingerprint_triggers(self) -> None:
+        fingerprint = fingerprint_tool_call_payload({"name": "Repeated Person"})
+        calls = [
+            {
+                "id": str(i),
+                "name": "contact_resolve",
+                "input": {},
+                "input_fingerprint": fingerprint,
+            }
+            for i in range(_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD)
+        ]
+
+        assert _check_degenerate_tool_loop(calls) is not None
 
     def test_loop_mid_session_reports_looping_tool_name(self) -> None:
         """When the loop starts mid-session, the reported tool name is the looping tool,
