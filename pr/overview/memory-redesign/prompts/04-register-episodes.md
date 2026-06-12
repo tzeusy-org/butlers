@@ -50,9 +50,10 @@ grid-template-columns: 50px 24px 1fr 16px;
 ## Filters
 
 `Pill` row: consolidation state — `all` (default) · `pending` ·
-`consolidated` · `dead letter` (maps to API `consolidated` /
-status params). A butler scope pill-select may follow in v2; not in
-this pass.
+`consolidated` · `dead letter`. Writes the `status` URL param
+(`dead letter` → `status=dead_letter`), which maps to the backend's
+`GET /episodes?status=` enum filter (backend delta; see 00). A butler
+scope pill-select may follow in v2; not in this pass.
 
 ## Empty states
 

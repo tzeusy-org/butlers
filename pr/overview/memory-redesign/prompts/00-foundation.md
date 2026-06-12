@@ -24,7 +24,11 @@ siblings). No new routes; no removed routes.
 | `q` | search string (submitted, not keystroke) | absent |
 | `kind` | search scope when `q` set: `all` \| `fact` \| `rule` \| `episode` | `all` |
 | `validity` | ledger filter: `active` \| `fading` \| `superseded` \| `expired` \| `retracted` | `active` |
+| `status` | daybook filter: `pending` \| `consolidated` \| `dead_letter` | absent (= all) |
 | `offset` | pagination offset for the focused register | `0` |
+
+Default-valued params are not written to the URL (absent `validity` means
+`active`), so deep-links stay short and round-trip cleanly.
 
 Back button must move between register/filter states. The search text
 *input* is local state; pressing Enter writes `q` to the URL.
