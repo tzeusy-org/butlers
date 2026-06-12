@@ -369,7 +369,160 @@ describe("Owner-default discoverability: Google spine entry visible without ?ide
   });
 });
 
-// ── 3. Empty-state Connect CTA ────────────────────────────────────────────────
+// ── 3. Owner-default discoverability: expired primary + non-primary exclusion ──
+//
+// Spec: §Owner-Default Inventory Surfaces Primary Google Account (butler-secrets)
+// "This includes status='expired' accounts so the owner can reach the scope-set
+// picker and reauth CTA without needing a manual ?identity= parameter."
+// Spec: §Multi-Account Leak Prevention (dashboard-google-accounts)
+// "Non-primary Google accounts SHALL NOT appear in the owner-default projection."
+
+describe("Owner-default discoverability: expired primary still surfaces; non-primary excluded [bu-1sz6w]", () => {
+  const OWNER_ENTITY_ID = "owner-entity-uuid";
+  const PRIMARY_GOOGLE_ENTITY_ID = "google-primary-entity-uuid";
+  const NONPRIMARY_GOOGLE_ENTITY_ID = "google-nonprimary-entity-uuid";
+
+  const ownerIdentity: Identity = {
+    id: OWNER_ENTITY_ID,
+    label: "Tze",
+    role: "owner",
+    hue: "oklch(0.78 0.13 30)",
+  };
+
+  const primaryGoogleIdentity: Identity = {
+    id: PRIMARY_GOOGLE_ENTITY_ID,
+    label: "primary@example.com",
+    role: "member",
+  };
+
+  const nonPrimaryGoogleIdentity: Identity = {
+    id: NONPRIMARY_GOOGLE_ENTITY_ID,
+    label: "secondary@example.com",
+    role: "member",
+  };
+
+  // An EXPIRED primary credential — backend includes it at priority 1 regardless
+  const expiredPrimaryCredential: UserCredential = {
+    provider: "google",
+    identity: PRIMARY_GOOGLE_ENTITY_ID,
+    state: "expired",
+    fingerprint: "sha256:expired1",
+    issued: "2026-01-01",
+    expires: "2026-06-01",
+    lastVerified: "5 days ago",
+    lastUsed: "5 days ago",
+    scopesRequired: [],
+    scopesGranted: ["https://www.googleapis.com/auth/calendar.readonly"],
+    feeds: [],
+    breaks: [],
+    test: null,
+    audit: [],
+  };
+
+  // A non-primary credential — backend should NOT include it in owner-default
+  const nonPrimaryCredential: UserCredential = {
+    provider: "google",
+    identity: NONPRIMARY_GOOGLE_ENTITY_ID,
+    state: "ok",
+    fingerprint: "sha256:nonprimary1",
+    issued: "2026-02-01",
+    expires: null,
+    lastVerified: "today",
+    lastUsed: "today",
+    scopesRequired: [],
+    scopesGranted: [],
+    feeds: [],
+    breaks: [],
+    test: null,
+    audit: [],
+  };
+
+  it("expired primary credential still surfaces u:google in owner-default spine [bu-1sz6w spec §Owner-Default Inventory]", () => {
+    // Simulate owner-default inventory where the backend returns an expired primary
+    const inventory: InventoryResponse = {
+      user: [expiredPrimaryCredential],
+      system: [],
+      cli: [],
+      identities: [ownerIdentity, primaryGoogleIdentity],
+      providers: { google: MOCK_PROVIDERS.google },
+      ownerEntityId: OWNER_ENTITY_ID,
+    };
+
+    // Pass all identities (owner-default mode — no ?identity= chip selected)
+    const allIdentityIds = [OWNER_ENTITY_ID, PRIMARY_GOOGLE_ENTITY_ID];
+    const entries = buildSpineEntries(inventory, allIdentityIds);
+
+    const googleEntry = entries.find((e) => e.key === "u:google");
+    expect(googleEntry).toBeDefined();
+    expect(googleEntry?.family).toBe("user");
+    // The entry state should reflect the expired credential
+    expect(googleEntry?.state).toBe("expired");
+  });
+
+  it("expired primary credential: DirectionPassport renders Google spine entry in needs-hand group [bu-1sz6w spec §Owner-Default Inventory]", () => {
+    const inventory: InventoryResponse = {
+      user: [expiredPrimaryCredential],
+      system: [],
+      cli: [],
+      identities: [ownerIdentity, primaryGoogleIdentity],
+      providers: { google: MOCK_PROVIDERS.google },
+      ownerEntityId: OWNER_ENTITY_ID,
+    };
+
+    const html = renderInRouter(
+      <DirectionPassport inventory={inventory} />,
+      ["/secrets"],
+    );
+    // Expired primary must still appear in the spine
+    expect(html).toContain('data-key="u:google"');
+  });
+
+  it("non-primary account: buildSpineEntries excludes non-primary when only primary identity passed [bu-1sz6w spec §Multi-Account Leak Prevention]", () => {
+    // Inventory that includes BOTH credentials; allIdentityIds only contains the
+    // primary identity — so buildSpineEntries must filter out the non-primary one.
+    const inventory: InventoryResponse = {
+      user: [expiredPrimaryCredential, nonPrimaryCredential],
+      system: [],
+      cli: [],
+      // Owner-default: backend only returns primary companion entity, NOT non-primary
+      identities: [ownerIdentity, primaryGoogleIdentity],
+      providers: { google: MOCK_PROVIDERS.google },
+      ownerEntityId: OWNER_ENTITY_ID,
+    };
+
+    const allIdentityIds = [OWNER_ENTITY_ID, PRIMARY_GOOGLE_ENTITY_ID];
+    const entries = buildSpineEntries(inventory, allIdentityIds);
+
+    // Exactly one u:google entry — the expired primary; non-primary (state "ok") excluded
+    const googleEntries = entries.filter((e) => e.key === "u:google");
+    expect(googleEntries).toHaveLength(1);
+    const [googleEntry] = googleEntries;
+    expect(googleEntry.state).toBe("expired");
+  });
+
+  it("non-primary account accessible under explicit ?identity= lens [bu-1sz6w spec §Multi-Account Leak Prevention]", () => {
+    // Simulate what happens when backend returns non-primary under ?identity=<nonprimary_entity_id>
+    const identityScopedInventory: InventoryResponse = {
+      user: [nonPrimaryCredential],
+      system: [],
+      cli: [],
+      identities: [ownerIdentity, nonPrimaryGoogleIdentity],
+      providers: { google: MOCK_PROVIDERS.google },
+      ownerEntityId: OWNER_ENTITY_ID,
+    };
+
+    // When the ?identity= chip is set to the non-primary entity, its credential appears
+    const entries = buildSpineEntries(identityScopedInventory, NONPRIMARY_GOOGLE_ENTITY_ID);
+
+    const googleEntry = entries.find((e) => e.key === "u:google");
+    expect(googleEntry).toBeDefined();
+    // Non-primary credential is accessible; spine entry exists for the non-primary account
+    expect(googleEntry?.family).toBe("user");
+    expect(googleEntry?.provider).toBe("google");
+  });
+});
+
+// ── 4. Empty-state Connect CTA ────────────────────────────────────────────────
 
 describe("PageGoogleAccounts: empty-state 'connect Google' CTA [bu-3gekd]", () => {
   /**
