@@ -767,7 +767,8 @@ class TestInternalProjectionPollerFailureHandling:
         messages = [record.getMessage() for record in caplog.records]
         assert any("Push to provider after projection deferred" in msg for msg in messages)
         assert not any(
-            record.levelno >= logging.ERROR and "Push to provider after projection" in record.message
+            record.levelno >= logging.ERROR
+            and "Push to provider after projection" in record.message
             for record in caplog.records
         )
 
