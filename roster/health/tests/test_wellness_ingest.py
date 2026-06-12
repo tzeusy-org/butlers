@@ -1089,3 +1089,410 @@ class TestFourSegmentExternalEventId:
         predicates = [f["predicate"] for f in result["facts"]]
         assert "measurement_steps" in predicates
         assert "measurement_active_minutes" in predicates
+
+
+# ---------------------------------------------------------------------------
+# 11. Home Assistant provider arm (epic bu-w7qf2 §3, design ADR-4/5)
+# ---------------------------------------------------------------------------
+
+
+def _make_ha_envelope(
+    metric: str = "blood_pressure_systolic",
+    value: float = 120,
+    unit: str = "mmHg",
+    valid_at: str = "2026-06-12T14:30:00+00:00",
+    source_entity_id: str = "sensor.withings_systolic_blood_pressure",
+    device_class: str | None = None,
+    sender_identity: str | None = None,
+    idempotency_key: str | None = None,
+    normalized_text: str | None = None,
+    wellness_measurement: dict | None = None,
+    omit_measurement: bool = False,
+) -> dict:
+    """Build a minimal ``wellness/home_assistant`` ingest.v1 envelope.
+
+    Mirrors the normalized payload shape from design ADR-4: the
+    ``payload.raw.wellness_measurement`` block carries the canonical
+    measurement, plus the full HA event context lives alongside in ``raw``.
+    """
+    if sender_identity is None:
+        sender_identity = source_entity_id
+    external_event_id = f"ha:{source_entity_id}:1749738600000"
+
+    raw: dict = {
+        # Full HA event context as today (abbreviated).
+        "entity_id": source_entity_id,
+        "new_state": {"state": str(value)},
+    }
+    if not omit_measurement:
+        measurement = (
+            wellness_measurement
+            if wellness_measurement is not None
+            else {
+                "metric": metric,
+                "value": value,
+                "unit": unit,
+                "valid_at": valid_at,
+                "source_entity_id": source_entity_id,
+                "device_class": device_class,
+            }
+        )
+        raw["wellness_measurement"] = measurement
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": "wellness",
+            "provider": "home_assistant",
+            "endpoint_identity": "home_assistant:default",
+        },
+        "event": {
+            "external_event_id": external_event_id,
+            "external_thread_id": None,
+            "observed_at": "2026-06-12T14:30:05Z",
+        },
+        "sender": {"identity": sender_identity},
+        "payload": {
+            "raw": raw,
+            "normalized_text": (
+                normalized_text
+                if normalized_text is not None
+                else "Blood pressure (systolic): 120 mmHg"
+            ),
+        },
+        "control": {
+            "idempotency_key": idempotency_key or f"event:wellness:{external_event_id}",
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+def _expected_agnostic_key(
+    owner_entity_id: str,
+    scope: str,
+    predicate: str,
+    valid_at_iso: str,
+) -> str:
+    """Recompute the provider-agnostic idempotency key (design ADR-5)."""
+    import hashlib
+
+    parts = f"wellness|{owner_entity_id}|{scope}|{predicate}|{valid_at_iso}"
+    return hashlib.sha256(parts.encode()).hexdigest()[:32]
+
+
+async def _call_translate_ha(
+    envelope: dict,
+    *,
+    owner_entity_id: str | None = None,
+    store_fact_return=None,
+):
+    """Call translate_wellness_envelope for a home_assistant envelope.
+
+    The HA arm does NOT consult ``list_health_scoped_accounts`` (design ADR-4);
+    sender validation pins on provider + payload shape.  We still patch the
+    registry so that any accidental call would be observable (await_count == 0).
+    """
+    from butlers.tools.health.wellness_ingest import translate_wellness_envelope
+
+    if owner_entity_id is None:
+        owner_entity_id = str(uuid.uuid4())
+
+    pool = AsyncMock()
+
+    async def _fetchrow(query, *args, **kwargs):
+        if "public.entities" in query:
+            row = MagicMock()
+            row.__getitem__ = MagicMock(
+                side_effect=lambda k: owner_entity_id if k == "id" else None
+            )
+            return row
+        return None
+
+    pool.fetchrow.side_effect = _fetchrow
+    embedding_engine = MagicMock()
+
+    sf_result = store_fact_return or {"id": str(uuid.uuid4()), "superseded_id": None}
+
+    with (
+        patch(
+            "butlers.tools.health.wellness_ingest.list_health_scoped_accounts",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_registry,
+        patch(
+            "butlers.tools.health.wellness_ingest.resolve_owner_entity_info",
+            new_callable=AsyncMock,
+            return_value=owner_entity_id,
+        ),
+        patch(
+            "butlers.tools.health.wellness_ingest.memory_store_fact",
+            new_callable=AsyncMock,
+            return_value=sf_result,
+        ) as mock_store,
+        patch("butlers.tools.health.wellness_ingest.health_wellness_ingest_total") as mock_counter,
+    ):
+        result = await translate_wellness_envelope(pool, embedding_engine, envelope)
+        return result, mock_store, mock_counter, mock_registry, owner_entity_id
+
+
+class TestHomeAssistantArm:
+    """The home_assistant provider arm translates wellness_measurement payloads."""
+
+    async def test_well_formed_envelope_writes_one_fact(self) -> None:
+        """A well-formed HA envelope writes exactly one measurement_{metric} fact."""
+        envelope = _make_ha_envelope(metric="blood_pressure_systolic", value=120)
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "ok", result
+        assert result["facts_written"] == 1
+        assert result["predicate"] == "measurement_blood_pressure_systolic"
+        assert "fact_id" in result
+        mock_store.assert_awaited_once()
+
+    async def test_predicate_is_measurement_metric(self) -> None:
+        """Predicate is derived as measurement_{metric}."""
+        envelope = _make_ha_envelope(metric="weight", value=72.5, unit="kg")
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "ok"
+        call = mock_store.call_args
+        assert call.kwargs.get("predicate") == "measurement_weight"
+        assert call.kwargs.get("scope") == "health"
+
+    async def test_valid_at_from_payload(self) -> None:
+        """valid_at is taken from the wellness_measurement payload, not observed_at."""
+        envelope = _make_ha_envelope(valid_at="2026-06-12T14:30:00+00:00")
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "ok"
+        call = mock_store.call_args
+        assert call.kwargs.get("valid_at") == "2026-06-12T14:30:00+00:00"
+
+    async def test_metadata_shape(self) -> None:
+        """metadata = {provider, source_entity_id, unit, value}."""
+        envelope = _make_ha_envelope(
+            metric="heart_rate",
+            value=72,
+            unit="bpm",
+            source_entity_id="sensor.oura_heart_rate",
+        )
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "ok"
+        meta = mock_store.call_args.kwargs.get("metadata")
+        assert meta == {
+            "provider": "home_assistant",
+            "source_entity_id": "sensor.oura_heart_rate",
+            "unit": "bpm",
+            "value": 72,
+        }
+
+    async def test_owner_entity_forwarded(self) -> None:
+        """The resolved owner entity_id is forwarded to memory_store_fact."""
+        owner = str(uuid.uuid4())
+        envelope = _make_ha_envelope()
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope, owner_entity_id=owner)
+
+        assert result["status"] == "ok"
+        assert mock_store.call_args.kwargs.get("entity_id") == owner
+
+    async def test_does_not_consult_health_scoped_accounts(self) -> None:
+        """HA arm does NOT call list_health_scoped_accounts (design ADR-4)."""
+        envelope = _make_ha_envelope()
+        result, _, _, mock_registry, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "ok"
+        assert mock_registry.await_count == 0
+
+    async def test_success_counter_labelled_with_predicate(self) -> None:
+        """On success the counter is labelled predicate=measurement_{metric}, outcome=success."""
+        envelope = _make_ha_envelope(metric="blood_sugar", value=95, unit="mg/dL")
+        result, _, mock_counter, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "ok"
+        mock_counter.labels.assert_called_once_with(
+            predicate="measurement_blood_sugar", outcome="success"
+        )
+        mock_counter.labels.return_value.inc.assert_called_once()
+
+
+class TestHomeAssistantIdempotency:
+    """Provider-agnostic idempotency key (design ADR-5)."""
+
+    async def test_explicit_agnostic_key_forwarded(self) -> None:
+        """The explicit provider-agnostic key is forwarded to memory_store_fact."""
+        owner = str(uuid.uuid4())
+        envelope = _make_ha_envelope(
+            metric="blood_pressure_systolic",
+            valid_at="2026-06-12T14:30:00+00:00",
+        )
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope, owner_entity_id=owner)
+
+        assert result["status"] == "ok"
+        expected = _expected_agnostic_key(
+            owner,
+            "health",
+            "measurement_blood_pressure_systolic",
+            "2026-06-12T14:30:00+00:00",
+        )
+        assert mock_store.call_args.kwargs.get("idempotency_key") == expected
+
+    async def test_key_is_provider_agnostic(self) -> None:
+        """The idempotency key must not contain the provider or the episode id."""
+        owner = str(uuid.uuid4())
+        envelope = _make_ha_envelope()
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope, owner_entity_id=owner)
+
+        assert result["status"] == "ok"
+        key = mock_store.call_args.kwargs.get("idempotency_key")
+        # 32-char sha256 prefix — opaque, no vendor string embedded.
+        assert isinstance(key, str)
+        assert len(key) == 32
+        assert "home_assistant" not in key
+        assert "ha:" not in key
+
+    async def test_distinct_valid_at_yields_distinct_keys(self) -> None:
+        """Two readings at distinct valid_at produce two distinct keys (two facts)."""
+        owner = str(uuid.uuid4())
+        env_a = _make_ha_envelope(valid_at="2026-06-12T14:30:00+00:00")
+        env_b = _make_ha_envelope(valid_at="2026-06-12T18:00:00+00:00")
+
+        _, store_a, _, _, _ = await _call_translate_ha(env_a, owner_entity_id=owner)
+        _, store_b, _, _, _ = await _call_translate_ha(env_b, owner_entity_id=owner)
+
+        key_a = store_a.call_args.kwargs.get("idempotency_key")
+        key_b = store_b.call_args.kwargs.get("idempotency_key")
+        assert key_a != key_b
+
+    async def test_same_predicate_and_valid_at_yield_same_key(self) -> None:
+        """Same (predicate, valid_at) under the same owner/scope → same key (dedup)."""
+        owner = str(uuid.uuid4())
+        env = _make_ha_envelope(valid_at="2026-06-12T14:30:00+00:00")
+
+        # Two deliveries of the same physical reading (e.g. replay).
+        _, store_1, _, _, _ = await _call_translate_ha(env, owner_entity_id=owner)
+        _, store_2, _, _, _ = await _call_translate_ha(env, owner_entity_id=owner)
+
+        key_1 = store_1.call_args.kwargs.get("idempotency_key")
+        key_2 = store_2.call_args.kwargs.get("idempotency_key")
+        assert key_1 == key_2
+
+    async def test_duplicate_delivery_returns_existing_fact_id(self) -> None:
+        """When storage reports the same fact id (no-op dedup), result reflects it.
+
+        The storage layer's (tenant_id, idempotency_key) no-op check returns the
+        existing fact id; the translator surfaces that id unchanged.
+        """
+        existing_id = str(uuid.uuid4())
+        envelope = _make_ha_envelope()
+        result, _, _, _, _ = await _call_translate_ha(
+            envelope, store_fact_return={"id": existing_id, "supersedes_id": None}
+        )
+
+        assert result["status"] == "ok"
+        assert result["fact_id"] == existing_id
+
+
+class TestHomeAssistantMalformedPayload:
+    """Malformed HA payloads are rejected with a labelled metric — no fact written."""
+
+    async def test_missing_wellness_measurement_rejected(self) -> None:
+        """raw without wellness_measurement → rejected, no fact."""
+        envelope = _make_ha_envelope(omit_measurement=True)
+        result, mock_store, mock_counter, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "rejected_malformed_payload"
+        mock_store.assert_not_awaited()
+        assert mock_counter.labels.call_args.kwargs.get("outcome") == ("rejected_malformed_payload")
+
+    async def test_missing_metric_rejected(self) -> None:
+        envelope = _make_ha_envelope(
+            wellness_measurement={
+                "value": 120,
+                "unit": "mmHg",
+                "valid_at": "2026-06-12T14:30:00+00:00",
+                "source_entity_id": "sensor.x",
+            }
+        )
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "rejected_malformed_payload"
+        mock_store.assert_not_awaited()
+
+    async def test_missing_valid_at_rejected(self) -> None:
+        envelope = _make_ha_envelope(
+            wellness_measurement={
+                "metric": "weight",
+                "value": 70,
+                "unit": "kg",
+                "source_entity_id": "sensor.x",
+            }
+        )
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "rejected_malformed_payload"
+        mock_store.assert_not_awaited()
+
+    async def test_non_numeric_value_rejected(self) -> None:
+        envelope = _make_ha_envelope(
+            wellness_measurement={
+                "metric": "weight",
+                "value": "not-a-number",
+                "unit": "kg",
+                "valid_at": "2026-06-12T14:30:00+00:00",
+                "source_entity_id": "sensor.x",
+            }
+        )
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "rejected_malformed_payload"
+        mock_store.assert_not_awaited()
+
+    async def test_missing_source_entity_id_rejected(self) -> None:
+        envelope = _make_ha_envelope(
+            wellness_measurement={
+                "metric": "weight",
+                "value": 70,
+                "unit": "kg",
+                "valid_at": "2026-06-12T14:30:00+00:00",
+            }
+        )
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "rejected_malformed_payload"
+        mock_store.assert_not_awaited()
+
+
+class TestUnknownProviderRejected:
+    """Unknown providers are rejected with a labelled outcome (task 3.1)."""
+
+    async def test_unknown_provider_rejected(self) -> None:
+        from butlers.tools.health.wellness_ingest import translate_wellness_envelope
+
+        envelope = _make_ha_envelope()
+        envelope["source"]["provider"] = "withings"
+
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        embedding_engine = MagicMock()
+
+        with (
+            patch(
+                "butlers.tools.health.wellness_ingest.list_health_scoped_accounts",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "butlers.tools.health.wellness_ingest.memory_store_fact",
+                new_callable=AsyncMock,
+            ) as mock_store,
+            patch(
+                "butlers.tools.health.wellness_ingest.health_wellness_ingest_total"
+            ) as mock_counter,
+        ):
+            result = await translate_wellness_envelope(pool, embedding_engine, envelope)
+
+        assert result["status"] == "rejected_unknown_provider"
+        mock_store.assert_not_awaited()
+        assert mock_counter.labels.call_args.kwargs.get("outcome") == ("rejected_unknown_provider")

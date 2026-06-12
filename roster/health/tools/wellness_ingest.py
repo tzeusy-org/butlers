@@ -26,7 +26,9 @@ emitted fact with labels ``predicate`` and ``outcome``
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from datetime import datetime
 from typing import Any
 
 from butlers.connectors.metrics import health_wellness_ingest_total
@@ -302,6 +304,16 @@ async def translate_wellness_envelope(
 ) -> dict[str, Any]:
     """Translate a wellness ingest.v1 envelope into one or more stored memory facts.
 
+    Dispatches on ``source.provider`` (design ADR-4):
+
+    - ``google_health`` — resource-segment translation of Google Health daily
+      summaries / sleep sessions (unchanged historical behaviour).
+    - ``home_assistant`` — normalized ``wellness_measurement`` payload → a single
+      ``measurement_{metric}`` fact with provider-agnostic idempotency.
+
+    Unknown providers are rejected with a labelled
+    ``health_wellness_ingest_total`` outcome.
+
     Parameters
     ----------
     pool:
@@ -309,13 +321,33 @@ async def translate_wellness_envelope(
     embedding_engine:
         Shared EmbeddingEngine instance (from memory module).
     envelope:
-        An ingest.v1 envelope dict from the google_health connector.
+        An ingest.v1 wellness envelope dict.
 
     Returns
     -------
     dict with ``status`` and, on success, ``facts_written`` (int) and ``facts``
     (list of per-predicate result dicts).  Single-predicate resources also include
     top-level ``fact_id`` and ``predicate`` for backwards compatibility.
+    """
+    provider: str = envelope.get("source", {}).get("provider", "")
+    if provider == "google_health":
+        return await _translate_google_health_envelope(pool, embedding_engine, envelope)
+    if provider == "home_assistant":
+        return await _translate_home_assistant_envelope(pool, embedding_engine, envelope)
+
+    logger.warning("wellness_ingest: unknown source.provider %r; rejecting envelope", provider)
+    health_wellness_ingest_total.labels(
+        predicate="unknown", outcome="rejected_unknown_provider"
+    ).inc()
+    return {"status": "rejected_unknown_provider"}
+
+
+async def _translate_google_health_envelope(
+    pool: Any,
+    embedding_engine: Any,
+    envelope: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate a ``wellness/google_health`` envelope (resource-segment path).
 
     Possible statuses: ``ok``, ``rejected_non_owner_sender``,
     ``skipped_unknown_predicate``, ``skipped_malformed_payload``, ``error``.
@@ -488,3 +520,159 @@ async def translate_wellness_envelope(
         response["fact_id"] = written_facts[0]["fact_id"]
         response["predicate"] = written_facts[0]["predicate"]
     return response
+
+
+# ---------------------------------------------------------------------------
+# Home Assistant provider arm (design ADR-4/5)
+# ---------------------------------------------------------------------------
+
+
+def _agnostic_idempotency_key(
+    owner_entity_id: str,
+    scope: str,
+    predicate: str,
+    valid_at_iso: str,
+) -> str:
+    """Provider-agnostic temporal-fact idempotency key (design ADR-5).
+
+    ``sha256("wellness|{owner_entity_id}|{scope}|{predicate}|{valid_at_iso}")[:32]``
+
+    Deliberately omits the provider and the source episode id so that the same
+    physical reading delivered through two providers (or replayed) at the same
+    ``valid_at`` resolves to one fact, first-writer-wins, via the storage
+    layer's ``(tenant_id, idempotency_key)`` no-op check.
+    """
+    parts = f"wellness|{owner_entity_id}|{scope}|{predicate}|{valid_at_iso}"
+    return hashlib.sha256(parts.encode()).hexdigest()[:32]
+
+
+async def _translate_home_assistant_envelope(
+    pool: Any,
+    embedding_engine: Any,
+    envelope: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate a ``wellness/home_assistant`` envelope into one measurement fact.
+
+    Sender validation (design ADR-4): the HA arm does NOT consult
+    ``list_health_scoped_accounts``.  Under the single-owner federation rule,
+    any HA endpoint configured in this instance is the owner's; acceptance pins
+    on ``source.provider == "home_assistant"`` (already dispatched here) plus a
+    well-formed ``payload.raw.wellness_measurement`` payload.
+
+    Possible statuses: ``ok``, ``rejected_malformed_payload``, ``error``.
+    """
+    # ------------------------------------------------------------------
+    # Step 1: Validate the normalized measurement payload shape
+    # ------------------------------------------------------------------
+    payload = envelope.get("payload", {})
+    raw: dict[str, Any] = payload.get("raw") or {}
+    measurement = raw.get("wellness_measurement")
+
+    def _reject(reason: str) -> dict[str, Any]:
+        logger.warning("wellness_ingest[home_assistant]: %s; rejecting envelope", reason)
+        health_wellness_ingest_total.labels(
+            predicate="unknown", outcome="rejected_malformed_payload"
+        ).inc()
+        return {"status": "rejected_malformed_payload", "reason": reason}
+
+    if not isinstance(measurement, dict):
+        return _reject("missing wellness_measurement payload")
+
+    metric = measurement.get("metric")
+    if not metric or not isinstance(metric, str):
+        return _reject("missing or invalid metric")
+
+    valid_at = measurement.get("valid_at")
+    if not valid_at or not isinstance(valid_at, str):
+        return _reject("missing or invalid valid_at")
+
+    source_entity_id = measurement.get("source_entity_id")
+    if not source_entity_id or not isinstance(source_entity_id, str):
+        return _reject("missing or invalid source_entity_id")
+
+    raw_value = measurement.get("value")
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        return _reject("missing or non-numeric value")
+    value: int | float = raw_value
+
+    # ------------------------------------------------------------------
+    # Step 2: Resolve owner entity UUID (same path as the google_health arm)
+    # ------------------------------------------------------------------
+    owner_entity_id_str = await resolve_owner_entity_info(pool, "owner")
+    if owner_entity_id_str is None:
+        try:
+            row = await pool.fetchrow(
+                "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+            )
+            if row is not None:
+                owner_entity_id_str = str(row["id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("wellness_ingest[home_assistant]: owner entity fallback failed: %s", exc)
+
+    if owner_entity_id_str is None:
+        logger.warning("wellness_ingest[home_assistant]: owner entity not found; dropping envelope")
+        health_wellness_ingest_total.labels(predicate="unknown", outcome="error").inc()
+        return {"status": "error", "reason": "owner_entity_not_found"}
+
+    # ------------------------------------------------------------------
+    # Step 3: Derive predicate, valid_at ISO, metadata, idempotency key
+    # ------------------------------------------------------------------
+    predicate = f"measurement_{metric}"
+    scope = "health"
+    unit = measurement.get("unit")
+
+    # Normalise valid_at to an ISO string for a stable idempotency key.  Reuse
+    # the payload string verbatim when it cannot be parsed (caller-supplied ISO).
+    try:
+        valid_at_iso = datetime.fromisoformat(valid_at).isoformat()
+    except ValueError:
+        valid_at_iso = valid_at
+
+    idempotency_key = _agnostic_idempotency_key(owner_entity_id_str, scope, predicate, valid_at_iso)
+
+    metadata: dict[str, Any] = {
+        "provider": "home_assistant",
+        "source_entity_id": source_entity_id,
+        "unit": unit,
+        "value": value,
+    }
+
+    content = payload.get("normalized_text") or f"wellness:{predicate}:{valid_at}"
+
+    # ------------------------------------------------------------------
+    # Step 4: Store the fact
+    # ------------------------------------------------------------------
+    try:
+        result = await memory_store_fact(
+            pool,
+            embedding_engine,
+            subject="owner",
+            predicate=predicate,
+            content=content,
+            scope=scope,
+            permanence="standard",
+            valid_at=valid_at,
+            metadata=metadata,
+            entity_id=owner_entity_id_str,
+            idempotency_key=idempotency_key,
+            retention_class="operational",
+            sensitivity="normal",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "wellness_ingest[home_assistant]: memory_store_fact failed for predicate=%r: %s",
+            predicate,
+            exc,
+        )
+        health_wellness_ingest_total.labels(predicate=predicate, outcome="error").inc()
+        return {"status": "error", "reason": str(exc)}
+
+    health_wellness_ingest_total.labels(predicate=predicate, outcome="success").inc()
+    fact_id = result.get("id")
+    return {
+        "status": "ok",
+        "facts_written": 1,
+        "facts": [{"fact_id": fact_id, "predicate": predicate}],
+        "fact_id": fact_id,
+        "predicate": predicate,
+    }
