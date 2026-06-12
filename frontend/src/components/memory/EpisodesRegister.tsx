@@ -130,7 +130,7 @@ function ConsolidationGlyph({ status }: { status: string }) {
 // Episode row
 // ---------------------------------------------------------------------------
 
-function EpisodeRow({ episode }: { episode: Episode }) {
+export function EpisodeRow({ episode }: { episode: Episode }) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
 

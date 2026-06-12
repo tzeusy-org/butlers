@@ -13,8 +13,13 @@ import {
   consolidationGlyph,
   daysSince,
   effectiveConfidence,
+  inspectResultToEpisode,
+  inspectResultToFact,
+  inspectResultToRule,
+  isWriteupOverdue,
   permanenceTag,
 } from './memory-derived'
+import type { MemoryInspectResult } from '@/api/types.ts'
 
 const NOW = new Date('2026-06-12T00:00:00.000Z')
 
@@ -191,5 +196,102 @@ describe('consolidationGlyph', () => {
     expect(consolidationGlyph('whatever')).toBe('◦')
     expect(consolidationGlyph({})).toBe('◦')
     expect(consolidationGlyph({ status: null })).toBe('◦')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Search-result adapters (§3d)
+// ---------------------------------------------------------------------------
+
+function makeInspect(overrides: Partial<MemoryInspectResult> = {}): MemoryInspectResult {
+  return {
+    id: 'r-1',
+    kind: 'fact',
+    content: 'ibuprofen, after meals',
+    butler: 'lifestyle',
+    created_at: '2026-06-12T00:00:00.000Z',
+    metadata: {},
+    ...overrides,
+  }
+}
+
+describe('inspectResultToFact', () => {
+  it('pulls subject/predicate/confidence from metadata when present', () => {
+    const fact = inspectResultToFact(
+      makeInspect({
+        metadata: { subject: 'Owner', predicate: 'preferred_pain_relief', confidence: 0.94 },
+      }),
+    )
+    expect(fact.subject).toBe('Owner')
+    expect(fact.predicate).toBe('preferred_pain_relief')
+    expect(fact.confidence).toBe(0.94)
+    expect(fact.content).toBe('ibuprofen, after meals')
+  })
+
+  it('uses honest defaults when metadata is bare (active, no fabricated belief)', () => {
+    const fact = inspectResultToFact(makeInspect({ butler: 'health', metadata: {} }))
+    // No guessed fading state — never dims on a guess.
+    expect(fact.validity).toBe('active')
+    // No fabricated belief numeral.
+    expect(fact.confidence).toBe(0)
+    // Subject falls back to the source butler.
+    expect(fact.subject).toBe('health')
+  })
+})
+
+describe('inspectResultToRule', () => {
+  it('defaults maturity to candidate and harm to 0 (zero red)', () => {
+    const rule = inspectResultToRule(makeInspect({ kind: 'rule', metadata: {} }))
+    expect(rule.maturity).toBe('candidate')
+    expect(rule.harmful_count).toBe(0)
+  })
+
+  it('reads maturity/tally from metadata when present', () => {
+    const rule = inspectResultToRule(
+      makeInspect({
+        kind: 'rule',
+        metadata: { maturity: 'anti_pattern', harmful_count: 4, applied_count: 10 },
+      }),
+    )
+    expect(rule.maturity).toBe('anti_pattern')
+    expect(rule.harmful_count).toBe(4)
+    expect(rule.applied_count).toBe(10)
+  })
+})
+
+describe('inspectResultToEpisode', () => {
+  it('defaults to a colorless consolidated glyph (never a guessed dead-letter)', () => {
+    const ep = inspectResultToEpisode(makeInspect({ kind: 'episode', metadata: {} }))
+    expect(ep.consolidation_status).toBe('consolidated')
+    expect(ep.importance).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Attention rail: write-up overdue (§5)
+// ---------------------------------------------------------------------------
+
+describe('isWriteupOverdue', () => {
+  const now = new Date('2026-06-12T00:00:00.000Z')
+
+  it('is false when consolidation has never run', () => {
+    expect(isWriteupOverdue(null, now)).toBe(false)
+    expect(isWriteupOverdue(undefined, now)).toBe(false)
+  })
+
+  it('is false within 2× the daily cadence', () => {
+    // 40h ago — under the 48h (2× 24h) threshold.
+    const last = new Date(now.getTime() - 40 * 60 * 60 * 1000).toISOString()
+    expect(isWriteupOverdue(last, now)).toBe(false)
+  })
+
+  it('is true past 2× the daily cadence', () => {
+    // 50h ago — over the 48h threshold.
+    const last = new Date(now.getTime() - 50 * 60 * 60 * 1000).toISOString()
+    expect(isWriteupOverdue(last, now)).toBe(true)
+  })
+
+  it('is false for an unparseable timestamp', () => {
+    expect(isWriteupOverdue('not-a-date', now)).toBe(false)
   })
 })

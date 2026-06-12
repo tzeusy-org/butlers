@@ -72,7 +72,7 @@ function formatConfidence(fact: Fact, now?: Date): string {
 // Ledger row
 // ---------------------------------------------------------------------------
 
-function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
+export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
   const navigate = useNavigate();
 
   // Confidence is ink: a fading fact dims the WHOLE row to --dim. Active facts

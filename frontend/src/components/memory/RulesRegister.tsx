@@ -123,7 +123,7 @@ function TallyLine({ rule }: { rule: MemoryRule }) {
 // Directive row
 // ---------------------------------------------------------------------------
 
-function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number }) {
+export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number }) {
   const navigate = useNavigate();
 
   // §NN — zero-padded, global render-order numbering across the filtered list.

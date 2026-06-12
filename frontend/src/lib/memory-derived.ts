@@ -15,7 +15,7 @@
  *   reports `validity === 'fading'`, because the server owns the threshold.
  */
 
-import type { Episode, Fact } from '@/api/types.ts'
+import type { Episode, Fact, MemoryInspectResult, MemoryRule } from '@/api/types.ts'
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24
 
@@ -211,4 +211,161 @@ export function consolidationGlyph(input: string | { status?: string | null }): 
     default:
       return CONSOLIDATION_GLYPHS.pending
   }
+}
+
+// ---------------------------------------------------------------------------
+// Search-result adapters (MEMORY_LANGUAGE.md §3d)
+//
+// The unified search hits GET /api/memory/inspect, which returns a uniform
+// MemoryInspectResult (id · kind · content · butler · created_at · metadata) —
+// it does NOT carry the full register field set (no subject/predicate/confidence
+// for facts, no maturity/tally for rules, no importance/consolidation for
+// episodes). To honor "results render in the register shape of their kind, no
+// fourth shape" we adapt each result into its domain type, drawing extra fields
+// from `metadata` when the backend supplied them and falling back to neutral,
+// honest defaults otherwise (never a fabricated belief numeral or harm count).
+//
+// These are pure (testable) and frontend-only: they reuse the existing register
+// row components verbatim, so a fact row in browse mode and results mode share
+// the exact same grid, typography, and hairlines.
+// ---------------------------------------------------------------------------
+
+/** Read a string field from inspect metadata, or null when absent/non-string. */
+function metaString(meta: Record<string, unknown>, key: string): string | null {
+  const v = meta[key]
+  return typeof v === 'string' ? v : null
+}
+
+/** Read a finite number field from inspect metadata, or null when absent. */
+function metaNumber(meta: Record<string, unknown>, key: string): number | null {
+  const v = meta[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * Adapt an inspect result (kind === 'fact') into a Fact for the ledger row.
+ *
+ * subject/predicate/confidence/permanence/validity come from `metadata` when
+ * present; otherwise the subject falls back to the source butler (or "—") and
+ * the belief column carries no numeral (confidence 0 → effective 0, which the
+ * ledger renders as `0.00`). Validity defaults to `active` so the row never
+ * dims on a guessed fading state.
+ */
+export function inspectResultToFact(result: MemoryInspectResult): Fact {
+  const meta = result.metadata ?? {}
+  return {
+    id: result.id,
+    subject: metaString(meta, 'subject') ?? result.butler ?? '—',
+    predicate: metaString(meta, 'predicate') ?? '',
+    content: result.content,
+    importance: metaNumber(meta, 'importance') ?? 0,
+    confidence: metaNumber(meta, 'confidence') ?? 0,
+    decay_rate: 0,
+    permanence: metaString(meta, 'permanence') ?? 'standard',
+    source_butler: result.butler,
+    source_episode_id: null,
+    session_id: null,
+    supersedes_id: null,
+    entity_id: null,
+    entity_name: null,
+    object_entity_id: null,
+    object_entity_name: null,
+    validity: metaString(meta, 'validity') ?? 'active',
+    scope: result.butler ?? '',
+    reference_count: 0,
+    created_at: result.created_at,
+    last_referenced_at: null,
+    last_confirmed_at: result.created_at,
+    tags: [],
+    metadata: meta,
+  }
+}
+
+/**
+ * Adapt an inspect result (kind === 'rule') into a MemoryRule for the directive
+ * row. maturity/confidence/tally come from `metadata` when present; otherwise
+ * maturity falls back to `candidate` and counts to 0 (zero harm → zero red).
+ */
+export function inspectResultToRule(result: MemoryInspectResult): MemoryRule {
+  const meta = result.metadata ?? {}
+  return {
+    id: result.id,
+    content: result.content,
+    scope: result.butler ?? '',
+    maturity: metaString(meta, 'maturity') ?? 'candidate',
+    confidence: metaNumber(meta, 'confidence') ?? 0,
+    decay_rate: 0,
+    permanence: metaString(meta, 'permanence') ?? 'standard',
+    effectiveness_score: metaNumber(meta, 'effectiveness_score') ?? 0,
+    applied_count: metaNumber(meta, 'applied_count') ?? 0,
+    success_count: metaNumber(meta, 'success_count') ?? 0,
+    harmful_count: metaNumber(meta, 'harmful_count') ?? 0,
+    source_episode_id: null,
+    source_butler: result.butler,
+    created_at: result.created_at,
+    last_applied_at: null,
+    last_evaluated_at: null,
+    tags: [],
+    metadata: meta,
+  }
+}
+
+/**
+ * Adapt an inspect result (kind === 'episode') into an Episode for the daybook
+ * row. importance/consolidation_status come from `metadata` when present;
+ * otherwise importance is 0 (muted time) and status defaults to `consolidated`
+ * (a filled, colorless glyph — never a guessed dead-letter `✕`).
+ */
+export function inspectResultToEpisode(result: MemoryInspectResult): Episode {
+  const meta = result.metadata ?? {}
+  const status = metaString(meta, 'consolidation_status') ?? 'consolidated'
+  return {
+    id: result.id,
+    butler: result.butler ?? '',
+    session_id: null,
+    content: result.content,
+    importance: metaNumber(meta, 'importance') ?? 0,
+    reference_count: 0,
+    consolidated: status === 'consolidated',
+    consolidation_status: status,
+    created_at: result.created_at,
+    last_referenced_at: null,
+    expires_at: null,
+    metadata: meta,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Attention rail derivations (MEMORY_LANGUAGE.md §5, prompt 05)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default consolidation cadence in hours. The house runs a single daily evening
+ * write-up (MEMORY_LANGUAGE.md §1, §7 — "the evening write-up"), so the cadence
+ * is 24h and "overdue" means the last run is older than 2× that window.
+ */
+export const CONSOLIDATION_CADENCE_HOURS = 24
+
+/** Importance threshold (inclusive) at which a fading fact is "important". */
+export const IMPORTANT_FACT_THRESHOLD = 8
+
+/**
+ * Whether the evening write-up is overdue: now − last_consolidation_at exceeds
+ * 2× the cadence. Returns false when consolidation has never run (there is no
+ * "overdue" without a prior run — the Voice line narrates "not run yet").
+ *
+ * @param lastConsolidationAt  ISO timestamp of the last run, or null.
+ * @param now                  Reference instant (injectable for tests).
+ * @param cadenceHours         Cadence in hours (default 24h daily write-up).
+ */
+export function isWriteupOverdue(
+  lastConsolidationAt: string | null | undefined,
+  now: Date = new Date(),
+  cadenceHours: number = CONSOLIDATION_CADENCE_HOURS,
+): boolean {
+  if (!lastConsolidationAt) return false
+  const lastMs = Date.parse(lastConsolidationAt)
+  if (Number.isNaN(lastMs)) return false
+  const elapsedHours = (now.getTime() - lastMs) / (1000 * 60 * 60)
+  return elapsedHours > 2 * cadenceHours
 }

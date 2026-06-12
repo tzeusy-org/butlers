@@ -2,18 +2,14 @@ import { useState } from "react";
 import MemoryOverture from "@/components/memory/MemoryOverture";
 import MemoryTierCards from "@/components/memory/MemoryTierCards";
 import MemoryBrowser from "@/components/memory/MemoryBrowser";
-import MemoryActivityTimeline from "@/components/memory/MemoryActivityTimeline";
+import AttentionRail from "@/components/memory/AttentionRail";
 import ReembedPanel from "@/components/memory/ReembedPanel";
 import {
   useMemoryRetentionPolicies,
   useUpdateMemoryRetentionPolicies,
   useMemoryCompactionLog,
-  useMemoryInspect,
 } from "@/hooks/use-memory";
-import type {
-  MemoryRetentionPolicy,
-  MemoryInspectParams,
-} from "@/api/types.ts";
+import type { MemoryRetentionPolicy } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Retention policy table (§10.4 §2)
@@ -204,84 +200,6 @@ function CompactionLogSection() {
 }
 
 // ---------------------------------------------------------------------------
-// Inspect search bar (§10.4 §4)
-// ---------------------------------------------------------------------------
-
-function InspectSection() {
-  const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<string>("");
-  const [submitted, setSubmitted] = useState<MemoryInspectParams | undefined>(undefined);
-
-  const { data: resultsResp, isLoading } = useMemoryInspect(submitted);
-  const results = resultsResp?.data ?? [];
-
-  function handleSearch() {
-    const params: MemoryInspectParams = { limit: 50 };
-    if (query.trim()) params.q = query.trim();
-    if (kind) params.kind = kind;
-    setSubmitted(params);
-  }
-
-  return (
-    <div className="space-y-3">
-      <h2 className="text-lg font-semibold">Inspect</h2>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          placeholder="Search memory…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          className="flex-1 rounded border px-3 py-1.5 text-sm"
-        />
-        <select
-          value={kind}
-          onChange={(e) => setKind(e.target.value)}
-          className="rounded border px-2 py-1.5 text-sm"
-        >
-          <option value="">All kinds</option>
-          <option value="episode">Episode</option>
-          <option value="fact">Fact</option>
-          <option value="rule">Rule</option>
-        </select>
-        <button
-          onClick={handleSearch}
-          className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground"
-        >
-          Search
-        </button>
-      </div>
-      {isLoading && (
-        <p className="text-muted-foreground text-sm">Searching…</p>
-      )}
-      {submitted && !isLoading && results.length === 0 && (
-        <p className="text-muted-foreground text-sm italic">No results found.</p>
-      )}
-      {results.length > 0 && (
-        <div className="space-y-2">
-          {results.map((r) => (
-            <div key={r.id} className="rounded border p-3 text-sm">
-              <div className="mb-1 flex items-center gap-2">
-                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                  {r.kind}
-                </span>
-                {r.butler && (
-                  <span className="text-muted-foreground text-xs">{r.butler}</span>
-                )}
-                <span className="ml-auto text-muted-foreground text-xs">
-                  {new Date(r.created_at).toLocaleString()}
-                </span>
-              </div>
-              <p className="text-foreground">{r.content}</p>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // MemoryPage
 // ---------------------------------------------------------------------------
 
@@ -295,23 +213,26 @@ export default function MemoryPage() {
       {/* §10.4 §1: Tier flow (events → mid → long with counts) */}
       <MemoryTierCards />
 
-      {/* Main content: browser + activity timeline */}
-      <div className="grid gap-6 lg:grid-cols-[1fr_350px]">
+      {/* Band 3 — Registers + rail. grid 1.4fr/1fr, gap 56px:
+          left = the one search affordance + focused register (or results);
+          right = the attention rail (the page's state color) + recent activity.
+          The old Inspect section and the carded activity timeline are gone. */}
+      <div className="grid gap-x-14 gap-y-10 lg:grid-cols-[1.4fr_1fr]">
         <MemoryBrowser />
-        <MemoryActivityTimeline />
+        <AttentionRail />
       </div>
 
-      {/* §10.4 §4: Inspect search bar */}
-      <InspectSection />
+      {/* Band 4 — Housekeeping. The stale-embeddings rail action anchors here. */}
+      <div id="housekeeping" className="space-y-6 scroll-mt-6">
+        {/* §10.4 §2: Retention policy editable table */}
+        <RetentionPoliciesSection />
 
-      {/* §10.4 §2: Retention policy editable table */}
-      <RetentionPoliciesSection />
+        {/* §10.4 §3: Compaction log feed */}
+        <CompactionLogSection />
 
-      {/* §10.4 §3: Compaction log feed */}
-      <CompactionLogSection />
-
-      {/* Embedding migration panel (bu-9bqsy) */}
-      <ReembedPanel />
+        {/* Embedding migration panel (bu-9bqsy) */}
+        <ReembedPanel />
+      </div>
     </div>
   );
 }

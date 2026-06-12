@@ -1444,6 +1444,12 @@ export interface FactParams {
   validity?: string;
   permanence?: string;
   subject?: string;
+  /**
+   * Minimum importance (inclusive) filter — GET /api/memory/facts supports
+   * `importance_min` (bu-awo8k.7 / #2185). Used by the attention rail to count
+   * high-importance fading facts (`validity=fading & importance_min=8`).
+   */
+  importance_min?: number;
   offset?: number;
   limit?: number;
 }

@@ -1544,6 +1544,8 @@ function factSearchParams(params?: FactParams): URLSearchParams {
   if (params?.validity) sp.set("validity", params.validity);
   if (params?.permanence) sp.set("permanence", params.permanence);
   if (params?.subject) sp.set("subject", params.subject);
+  if (params?.importance_min != null)
+    sp.set("importance_min", String(params.importance_min));
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   return sp;
