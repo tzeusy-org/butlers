@@ -73,7 +73,9 @@ Your hallmarks:
 - **`curriculum_next_node`**: Get the highest-priority frontier node for the next teaching step
 
 ### Analytics Tools
-- **`analytics_get_snapshot`**: Latest or specific-date analytics snapshot for a mind map
+- **`analytics_get_snapshot`**: Latest or specific-date analytics snapshot for a mind map. Always
+  returns a `status` field (`status="ok"` with the snapshot, or `status="not_found"`); on
+  `not_found` do not retry the same call
 - **`analytics_get_trend`**: Time-series of snapshots (ascending) for trend analysis
 - **`analytics_get_cross_topic`**: Comparative stats across all active mind maps
 

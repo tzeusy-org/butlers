@@ -42,6 +42,40 @@ def _load_register_tools() -> Any:
     return module.register_tools
 
 
+async def test_analytics_get_snapshot_mcp_returns_ok_envelope() -> None:
+    """A found snapshot should come back in a consistent status="ok" envelope.
+
+    snapshot_date is normalized to an ISO-8601 string so callers never have to
+    branch on a raw ``datetime.date`` object.
+    """
+    import datetime
+    from unittest.mock import patch
+
+    from butlers.tools.education import analytics as _analytics
+
+    mind_map_id = str(uuid.uuid4())
+    snapshot_row = {
+        "id": str(uuid.uuid4()),
+        "mind_map_id": mind_map_id,
+        "snapshot_date": datetime.date(2026, 6, 7),
+        "metrics": {"retention_rate_7d": 0.8},
+    }
+    pool = MagicMock()
+    mcp = _CaptureMCP()
+
+    register_tools = _load_register_tools()
+    register_tools(mcp, _Module(pool), SimpleNamespace(groups=["analytics"]))
+
+    with patch.object(
+        _analytics, "analytics_get_snapshot", new=AsyncMock(return_value=dict(snapshot_row))
+    ):
+        result = await mcp.tools["analytics_get_snapshot"](mind_map_id=mind_map_id)
+
+    assert result["status"] == "ok"
+    assert result["snapshot_date"] == "2026-06-07"
+    assert result["metrics"] == {"retention_rate_7d": 0.8}
+
+
 async def test_analytics_get_snapshot_mcp_returns_terminal_not_found() -> None:
     """Missing snapshots should be explicit so agents do not repeat the same call."""
     pool = MagicMock()

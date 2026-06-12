@@ -38,7 +38,8 @@ Data-gathering guardrails:
    active mind map.
 2) Call analytics_get_snapshot(mind_map_id) at most once per map, only when the 7-day trend is
    empty.
-3) If analytics_get_snapshot returns status="not_found" or no snapshot, do not retry the same call.
+3) analytics_get_snapshot always returns a status field: status="ok" carries the snapshot and
+   status="not_found" means none exists. If it returns status="not_found", do not retry the same call.
    Use mastery_get_map_summary() as a fallback and note that weekly analytics are not available yet.
 4) If there are no active maps or no usable analytics/summary data, send one concise status message
    and stop.

@@ -421,11 +421,18 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
         mind_map_id: str,
         snapshot_date: str | None = None,
     ) -> dict[str, Any]:
-        """Return the latest analytics snapshot, or an explicit not-found result.
+        """Return the latest analytics snapshot in a consistent status envelope.
 
-        The lower-level analytics helper returns ``None`` when no snapshot exists.
-        MCP callers need a terminal, self-describing result so they do not retry
-        the same empty read in a loop.
+        Always returns a JSON-friendly dict with a ``status`` key so MCP callers
+        can branch deterministically:
+
+        - ``status="ok"`` plus the snapshot fields (``snapshot_date`` normalized
+          to an ISO-8601 string) when a snapshot exists.
+        - ``status="not_found"`` with next-step guidance when none exists.
+
+        The lower-level analytics helper returns ``None`` for the missing case;
+        callers need a terminal, self-describing result so they do not retry the
+        same empty read in a loop.
         """
         parsed_date: date | None = None
         if snapshot_date is not None:
@@ -434,11 +441,18 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
             module._get_pool(), mind_map_id, date=parsed_date
         )
         if snapshot is not None:
-            return snapshot
+            # Normalize into a consistent, JSON-friendly envelope so MCP callers
+            # can branch on ``status`` without guessing the payload shape. The
+            # lower-level helper leaves ``snapshot_date`` as a ``datetime.date``;
+            # coerce it to an ISO-8601 string here.
+            snapshot_date_value = snapshot.get("snapshot_date")
+            if isinstance(snapshot_date_value, date):
+                snapshot["snapshot_date"] = snapshot_date_value.isoformat()
+            return {"status": "ok", **snapshot}
         return {
             "status": "not_found",
             "mind_map_id": mind_map_id,
-            "snapshot_date": snapshot_date,
+            "snapshot_date": parsed_date.isoformat() if parsed_date else None,
             "message": (
                 "No analytics snapshot exists for this mind map/date. Do not retry the "
                 "same analytics_get_snapshot call; use analytics_get_trend, "

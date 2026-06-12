@@ -33,6 +33,10 @@ Call these tools to collect the analytics data:
    `retention_rate_7d`, `velocity_nodes_per_week`, `struggling_nodes`, `estimated_completion_days`.
 
 3. `analytics_get_snapshot(mind_map_id)` — latest snapshot for each map (if no 7-day trend).
+   Call this at most once per map. It always returns a `status` field: `status="ok"` carries the
+   snapshot (with `snapshot_date` as an ISO-8601 string); `status="not_found"` means none exists.
+   On `status="not_found"`, do not retry the same call — fall back to `mastery_get_map_summary()`
+   and note that weekly analytics are not available yet.
 
 4. `memory_search(query="learning preferences")` — check if the user prefers verbose vs. concise
    summaries, or has expressed delivery preferences.
