@@ -379,36 +379,27 @@ function SidebarFooter({
   butlerStatusMap,
   isLoading,
   isError,
+  expanded = false,
 }: {
   butlerStatusMap: ButlerStatusMap
   isLoading: boolean
   isError: boolean
+  /** When true, render the status text alongside the dot (expanded sidebar). */
+  expanded?: boolean
 }) {
   const { data: costResponse } = useSpendSummary('today')
   const cost = costResponse?.data.total_cost_usd
 
-  if (isLoading) {
-    const titleText = 'Loading butlers'
-    return (
-      <div
-        className="flex items-center justify-center border-t border-border p-3"
-        title={titleText}
-        aria-label={titleText}
-      >
-        <span className="h-2 w-2 rounded-full bg-muted-foreground/40" aria-hidden="true" />
-      </div>
-    )
-  }
+  const containerClass = expanded
+    ? 'flex items-center gap-2 border-t border-border px-4 py-3'
+    : 'flex items-center justify-center border-t border-border p-3'
 
-  if (isError) {
-    const titleText = 'Butlers query failed'
+  if (isLoading || isError) {
+    const titleText = isLoading ? 'Loading butlers' : 'Butlers query failed'
     return (
-      <div
-        className="flex items-center justify-center border-t border-border p-3"
-        title={titleText}
-        aria-label={titleText}
-      >
-        <span className="h-2 w-2 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+      <div className={containerClass} title={titleText} aria-label={titleText}>
+        <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+        {expanded && <span className="truncate font-mono text-[11px] tracking-[0.06em] text-muted-foreground">{titleText}</span>}
       </div>
     )
   }
@@ -433,12 +424,9 @@ function SidebarFooter({
   const titleText = allParts.length > 0 ? allParts.join(' · ') : 'All systems ok'
 
   return (
-    <div
-      className="flex items-center justify-center border-t border-border p-3"
-      title={titleText}
-      aria-label={titleText}
-    >
-      <span className={`h-2 w-2 rounded-full ${dotColor}`} aria-hidden="true" />
+    <div className={containerClass} title={titleText} aria-label={titleText}>
+      <span className={`h-2 w-2 shrink-0 rounded-full ${dotColor}`} aria-hidden="true" />
+      {expanded && <span className="truncate font-mono text-[11px] tracking-[0.06em] text-muted-foreground">{titleText}</span>}
     </div>
   )
 }
@@ -450,10 +438,19 @@ function SidebarFooter({
 interface SidebarProps {
   /** When true, render expanded labels (used by mobile Sheet). */
   mobileExpanded?: boolean
+  /** Desktop: when true, render the compact icon rail instead of the expanded sidebar. */
+  collapsed?: boolean
+  /** Desktop: toggle between expanded and icon-rail modes. */
+  onToggleCollapse?: () => void
   onNavClick?: () => void
 }
 
-export default function Sidebar({ mobileExpanded = false, onNavClick }: SidebarProps) {
+export default function Sidebar({
+  mobileExpanded = false,
+  collapsed = false,
+  onToggleCollapse,
+  onNavClick,
+}: SidebarProps) {
   const { sections: filteredSections, butlerStatusMap, isLoading, isError } = useFilteredNavSections(navSections)
   const badgeCounts = useBadgeCounts()
 
@@ -469,9 +466,54 @@ export default function Sidebar({ mobileExpanded = false, onNavClick }: SidebarP
     )
   }
 
+  // Desktop expanded variant (default): labels + section headers
+  if (!collapsed) {
+    return (
+      <div className="flex h-full flex-col font-sans">
+        <div
+          data-testid="sidebar-brand"
+          className="flex h-14 items-center justify-between border-b border-border pl-4 pr-2"
+        >
+          <span className="text-lg font-semibold">Butlers</span>
+          {onToggleCollapse && (
+            <button
+              onClick={onToggleCollapse}
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
+              className="flex items-center justify-center rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+            >
+              <CollapseChevrons direction="left" />
+            </button>
+          )}
+        </div>
+        <nav
+          className="flex-1 overflow-y-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          aria-label="Main navigation"
+        >
+          {filteredSections.map((section, idx) => (
+            <ExpandedNavSection
+              key={section.title}
+              section={section}
+              isFirst={idx === 0}
+              onNavClick={onNavClick}
+              butlerStatusMap={butlerStatusMap}
+              badgeCounts={badgeCounts}
+            />
+          ))}
+        </nav>
+        <SidebarFooter
+          butlerStatusMap={butlerStatusMap}
+          isLoading={isLoading}
+          isError={isError}
+          expanded
+        />
+      </div>
+    )
+  }
+
   return (
     <TooltipProvider delayDuration={0}>
-      <div className="flex h-full flex-col">
+      <div className="flex h-full flex-col font-sans">
         {/* Brand mark — transparent left border matches the nav-item geometry
             so the brand "B" lines up with the icon-rail centerline. */}
         <div
@@ -500,10 +542,100 @@ export default function Sidebar({ mobileExpanded = false, onNavClick }: SidebarP
           ))}
         </nav>
 
+        {/* Expand toggle — sits above the footer in rail mode */}
+        {onToggleCollapse && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={onToggleCollapse}
+                aria-label="Expand sidebar"
+                className="flex h-9 w-full items-center justify-center border-l-2 border-transparent text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+              >
+                <CollapseChevrons direction="right" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              Expand sidebar
+            </TooltipContent>
+          </Tooltip>
+        )}
+
         {/* Footer */}
         <SidebarFooter butlerStatusMap={butlerStatusMap} isLoading={isLoading} isError={isError} />
       </div>
     </TooltipProvider>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Collapse/expand chevrons icon
+// ---------------------------------------------------------------------------
+
+function CollapseChevrons({ direction }: { direction: 'left' | 'right' }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={direction === 'left' ? 'rotate-180' : ''}
+      aria-hidden="true"
+    >
+      <path d="m6 17 5-5-5-5" />
+      <path d="m13 17 5-5-5-5" />
+    </svg>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ExpandedNavSection — section header + labeled items (desktop expanded mode)
+// ---------------------------------------------------------------------------
+
+function ExpandedNavSection({
+  section,
+  isFirst,
+  onNavClick,
+  butlerStatusMap,
+  badgeCounts,
+}: {
+  section: NavSection
+  isFirst: boolean
+  onNavClick?: () => void
+  butlerStatusMap?: ButlerStatusMap
+  badgeCounts?: Record<string, number>
+}) {
+  return (
+    <div className={!isFirst ? 'mt-2' : ''}>
+      <h3 className="px-3 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/60">
+        {section.title}
+      </h3>
+      <div className="space-y-1">
+        {section.items.map((item) =>
+          isGroup(item) ? (
+            <MobileNavGroup
+              key={item.label}
+              item={item}
+              onNavClick={onNavClick}
+              butlerStatusMap={butlerStatusMap}
+            />
+          ) : (
+            <MobileFlatLink
+              key={item.path}
+              item={item}
+              section={section}
+              onNavClick={onNavClick}
+              butlerStatusMap={butlerStatusMap}
+              badgeCounts={badgeCounts}
+            />
+          ),
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -674,38 +806,20 @@ function MobileSidebar({
   const cost = costResponse?.data.total_cost_usd
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col font-sans">
       <div data-testid="sidebar-brand" className="flex h-14 items-center border-b border-border px-4">
         <span className="text-lg font-semibold">Butlers</span>
       </div>
-      <nav className="flex-1 overflow-y-auto p-3">
+      <nav className="flex-1 overflow-y-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {sections.map((section, idx) => (
-          <div key={section.title} className={idx > 0 ? 'mt-2' : ''}>
-            <h3 className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-              {section.title}
-            </h3>
-            <div className="space-y-1">
-              {section.items.map((item) =>
-                isGroup(item) ? (
-                  <MobileNavGroup
-                    key={item.label}
-                    item={item}
-                    onNavClick={onNavClick}
-                    butlerStatusMap={butlerStatusMap}
-                  />
-                ) : (
-                  <MobileFlatLink
-                    key={item.path}
-                    item={item}
-                    section={section}
-                    onNavClick={onNavClick}
-                    butlerStatusMap={butlerStatusMap}
-                    badgeCounts={badgeCounts}
-                  />
-                ),
-              )}
-            </div>
-          </div>
+          <ExpandedNavSection
+            key={section.title}
+            section={section}
+            isFirst={idx === 0}
+            onNavClick={onNavClick}
+            butlerStatusMap={butlerStatusMap}
+            badgeCounts={badgeCounts}
+          />
         ))}
       </nav>
       <div className="border-t border-border p-4">

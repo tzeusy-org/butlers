@@ -990,7 +990,9 @@ class OpenCodeAdapter(RuntimeAdapter):
                 # Avoid execve/CreateProcess argv limits that raise pre-launch OSError.
                 prompt_path = tmp_dir / "_user_prompt.md"
                 prompt_path.write_text(prompt, encoding="utf-8")
-                cmd.extend(["--file", str(prompt_path), _PROMPT_ATTACHMENT_MESSAGE])
+                # OpenCode's --file flag is array-valued, so any following
+                # positional text can be parsed as another attachment path.
+                cmd.extend([_PROMPT_ATTACHMENT_MESSAGE, "--file", str(prompt_path)])
 
             # Inject OPENCODE_CONFIG into subprocess env when we have MCP
             # servers, instructions, or provider config to override —

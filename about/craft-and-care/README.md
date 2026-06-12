@@ -1,9 +1,12 @@
 # Craft and Care -- Engineering Standards
 
-This directory answers **HOW SHOULD WORK BE EXECUTED WELL?** It defines the
-quality bar for implementation, verification, review, observability,
-interfaces, security hygiene, documentation, and performance discipline in
-Butlers.
+This directory answers **WHO ARE WE WHEN WE BUILD?** It defines the
+engineering character expected in practice -- the quality bar for
+implementation, verification, review, observability, interfaces, security
+hygiene, documentation, and performance discipline in Butlers. The canonical
+default bar is adopted by reference from `/th-engineering` (engineering-bar
+subskill); see [engineering-bar.md](engineering-bar.md). These documents
+record the Butlers-specific standards and take precedence on conflict.
 
 These documents are standards, not subsystem design docs. They do not replace
 the other pillars:
@@ -19,7 +22,7 @@ the other pillars:
 
 | # | File | What it answers |
 |---|------|-----------------|
-| 1 | [engineering-bar.md](engineering-bar.md) | What makes a change complete, clean, and maintainable here |
+| 1 | [engineering-bar.md](engineering-bar.md) | Default-bar adoption, Butlers-specific done criteria, bias additions, blocking change shapes |
 | 2 | [testing-and-verification.md](testing-and-verification.md) | What evidence is required before calling work done |
 | 3 | [review-and-documentation.md](review-and-documentation.md) | What reviewers should block on and what docs must change with behavior |
 | 4 | [observability-and-operations.md](observability-and-operations.md) | What runtime-facing changes must expose to stay diagnosable and operable |

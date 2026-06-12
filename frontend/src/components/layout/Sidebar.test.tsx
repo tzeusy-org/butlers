@@ -63,11 +63,23 @@ describe("Sidebar", () => {
     container.remove();
   });
 
+  // Icon-rail variant (desktop collapsed)
   function render(initialPath = "/") {
     act(() => {
       root.render(
         <MemoryRouter initialEntries={[initialPath]}>
-          <Sidebar />
+          <Sidebar collapsed />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  // Desktop default variant (expanded with labels + section headers)
+  function renderExpanded(initialPath = "/", onToggleCollapse?: () => void) {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Sidebar onToggleCollapse={onToggleCollapse} />
         </MemoryRouter>,
       );
     });
@@ -109,6 +121,99 @@ describe("Sidebar", () => {
       const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
       expect(brandDiv).toBeTruthy();
       expect(brandDiv?.textContent).toContain("Butlers");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Desktop expanded mode (default) — labels + section headers
+  // -------------------------------------------------------------------------
+
+  describe("desktop expanded mode (default)", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }],
+          meta: {},
+        },
+      });
+    });
+
+    it("renders section headers by default (no collapsed prop)", () => {
+      renderExpanded();
+
+      expect(container.textContent).toContain("Main");
+      expect(container.textContent).toContain("Dedicated Butlers");
+      expect(container.textContent).toContain("Telemetry");
+    });
+
+    it("renders nav labels by default", () => {
+      renderExpanded();
+
+      expect(container.textContent).toContain("Overview");
+      expect(container.textContent).toContain("Calendar");
+      expect(container.textContent).toContain("Relationships");
+    });
+
+    it("renders Butlers brand label by default", () => {
+      renderExpanded();
+
+      const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
+      expect(brandDiv?.textContent).toContain("Butlers");
+    });
+
+    it("renders a collapse toggle that invokes onToggleCollapse", () => {
+      const onToggle = vi.fn();
+      renderExpanded("/", onToggle);
+
+      const toggleButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Collapse sidebar",
+      );
+      expect(toggleButton).toBeTruthy();
+
+      act(() => {
+        toggleButton!.click();
+      });
+      expect(onToggle).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not render a collapse toggle without onToggleCollapse", () => {
+      renderExpanded();
+
+      const toggleButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Collapse sidebar",
+      );
+      expect(toggleButton).toBeUndefined();
+    });
+
+    it("rail mode renders an expand toggle when onToggleCollapse is provided", () => {
+      const onToggle = vi.fn();
+      act(() => {
+        root.render(
+          <MemoryRouter initialEntries={["/"]}>
+            <Sidebar collapsed onToggleCollapse={onToggle} />
+          </MemoryRouter>,
+        );
+      });
+
+      const toggleButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Expand sidebar",
+      );
+      expect(toggleButton).toBeTruthy();
+
+      act(() => {
+        toggleButton!.click();
+      });
+      expect(onToggle).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows footer status text in expanded mode", () => {
+      renderExpanded();
+
+      const footerEl = Array.from(container.querySelectorAll("[title]")).find(
+        (el) => el.getAttribute("title") === "$26.27 today",
+      );
+      expect(footerEl).toBeTruthy();
+      expect(footerEl?.textContent).toContain("$26.27 today");
     });
   });
 
