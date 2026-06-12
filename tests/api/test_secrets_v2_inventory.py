@@ -1790,3 +1790,216 @@ def test_owner_entity_first_in_identities_when_google_type_sorts_before_owner_ty
     google_identity = next((i for i in identities if i["entity_id"] == google_entity_id), None)
     assert google_identity is not None, "Google account entity must appear in identities[]"
     assert google_identity["role"] == "member"
+
+
+# ---------------------------------------------------------------------------
+# bu-lmrzg.1: is_primary lifecycle security audit — regression invariants
+# ---------------------------------------------------------------------------
+#
+# Audit findings (2026-06-12): No defects found in the is_primary lifecycle.
+#
+# The following tests lock the security invariants identified in the audit:
+#
+#   1. Raw refresh token values are NEVER returned in the inventory API response.
+#      UserSecret has no 'value' field — only 'fingerprint' (sha256[:8] hex).
+#      This is enforced at the Pydantic model level: any field named 'value'
+#      would be silently dropped by model_validate.  This test pins that contract
+#      explicitly at the HTTP response level.
+#
+#   2. With 2 Google accounts (one primary, one non-primary), the owner-default
+#      inventory surfaces ONLY the primary's entity_id and NEVER the non-primary's
+#      raw token value or entity_id.
+#
+#   3. After the primary account is disconnected and the non-primary is promoted,
+#      the previously non-primary account's credential surfaces in owner-default.
+#
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_never_returns_raw_token_value_for_any_account():
+    """The API response MUST NEVER contain a raw refresh token value in any user[] item.
+
+    Security invariant (bu-lmrzg.1): UserSecret is constructed with model_validate
+    from asyncpg row data.  The Pydantic model has no 'value' field, so the raw
+    token is dropped during serialisation.  This test pins the contract at the
+    HTTP response level: the JSON body must not contain the literal token string.
+
+    Two accounts are present (one primary, one non-primary).  Neither token must
+    leak into the response regardless of which UNION leg surfaces the row.
+    """
+    primary_entity_id = str(uuid4())
+    non_primary_entity_id = str(uuid4())
+
+    PRIMARY_RAW_TOKEN = "super-secret-primary-refresh-token-must-never-leak"
+    NON_PRIMARY_RAW_TOKEN = "super-secret-non-primary-token-must-never-leak"
+
+    primary_row = _make_entity_info_row(
+        entity_id=primary_entity_id,
+        info_type="google_oauth_refresh",
+        value=PRIMARY_RAW_TOKEN,
+    )
+    non_primary_row = _make_entity_info_row(
+        entity_id=non_primary_entity_id,
+        info_type="google_oauth_refresh",
+        value=NON_PRIMARY_RAW_TOKEN,
+    )
+
+    # The DB enforces is_primary=true: only the primary row appears in the UNION path.
+    # The non-primary row is accessible only via explicit identity= lens.
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[primary_row],
+        owner_rows=[],
+        identity_rows={non_primary_entity_id: [non_primary_row]},
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    # --- Owner-default: no raw token value anywhere in the response body ---
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body_text = resp.text  # raw JSON string — check for literal token presence
+
+    assert PRIMARY_RAW_TOKEN not in body_text, (
+        "SECURITY: primary refresh token must NEVER appear in the API response body"
+    )
+    assert NON_PRIMARY_RAW_TOKEN not in body_text, (
+        "SECURITY: non-primary refresh token must NEVER appear in the API response body"
+    )
+
+    user = resp.json()["data"]["user"]
+    assert len(user) == 1, (
+        f"Expected exactly one user credential in owner-default response; got {len(user)}"
+    )
+    for item in user:
+        assert "value" not in item, (
+            f"SECURITY: 'value' field must not appear in any user[] item; got keys: {list(item.keys())}"
+        )
+
+    # --- Explicit identity= lens for non-primary: still no raw token ---
+    resp2 = client.get(f"/api/secrets/inventory?identity={non_primary_entity_id}")
+    assert resp2.status_code == 200, resp2.text
+    body2_text = resp2.text
+
+    assert NON_PRIMARY_RAW_TOKEN not in body2_text, (
+        "SECURITY: non-primary refresh token must NEVER appear even under explicit identity= lens"
+    )
+    user2 = resp2.json()["data"]["user"]
+    assert len(user2) == 1, (
+        f"Expected exactly one user credential in identity-specific response; got {len(user2)}"
+    )
+    for item in user2:
+        assert "value" not in item, (
+            f"SECURITY: 'value' field must not appear in any user[] item under identity= lens; "
+            f"got keys: {list(item.keys())}"
+        )
+
+
+def test_two_accounts_only_primary_entity_id_in_owner_default_no_token_leak():
+    """With 2 Google accounts, owner-default surfaces ONLY the primary's entity_id.
+
+    Security invariant (bu-lmrzg.1): The owner-default UNION SQL is gated by
+    WHERE ga.is_primary = true.  With one primary and one non-primary account,
+    the non-primary's entity_id MUST NOT appear in owner-default, and neither
+    account's raw refresh token value must appear in the response.
+    """
+    primary_entity_id = str(uuid4())
+    non_primary_entity_id = str(uuid4())
+
+    primary_row = _make_entity_info_row(
+        entity_id=primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="primary-token-do-not-leak",
+    )
+    non_primary_row = _make_entity_info_row(
+        entity_id=non_primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="non-primary-token-do-not-leak",
+    )
+
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[primary_row],  # DB gives only primary in UNION path
+        owner_rows=[],
+        identity_rows={non_primary_entity_id: [non_primary_row]},
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    user = body["data"]["user"]
+
+    # Primary's entity_id must appear.
+    entity_ids = [u["entity_id"] for u in user]
+    assert primary_entity_id in entity_ids, (
+        "Primary Google account's entity_id must appear in owner-default inventory"
+    )
+
+    # Non-primary's entity_id must NOT appear.
+    assert non_primary_entity_id not in entity_ids, (
+        f"SECURITY: Non-primary entity {non_primary_entity_id} "
+        "must NOT appear in owner-default inventory"
+    )
+
+    # Exactly one google_oauth_refresh entry.
+    google_entries = [u for u in user if u["type"] == "google_oauth_refresh"]
+    assert len(google_entries) == 1, (
+        f"Exactly one google_oauth_refresh must appear in owner-default; got {len(google_entries)}"
+    )
+    assert google_entries[0]["entity_id"] == primary_entity_id
+
+    # No raw token values in response body.
+    body_text = resp.text
+    assert "primary-token-do-not-leak" not in body_text, (
+        "SECURITY: primary token value must not appear in the response body"
+    )
+    assert "non-primary-token-do-not-leak" not in body_text, (
+        "SECURITY: non-primary token value must not appear in the response body"
+    )
+
+
+def test_promoted_account_surfaces_in_owner_default_after_primary_disconnect():
+    """After the primary is disconnected, the promoted account appears in owner-default.
+
+    Promotion-on-primary-removal invariant (bu-lmrzg.1):
+    disconnect_account() promotes the oldest remaining active account within the
+    same DB transaction.  From the API perspective, after promotion the formerly
+    non-primary account's credential must appear in owner-default.
+
+    This test simulates the post-promotion state: the DB now returns the
+    (formerly non-primary) account's credential row in the UNION path because
+    it is now the primary.  The old primary's credential no longer appears
+    (its token row was deleted by the disconnect path).
+    """
+    formerly_non_primary_entity_id = str(uuid4())
+
+    promoted_row = _make_entity_info_row(
+        entity_id=formerly_non_primary_entity_id,
+        info_type="google_oauth_refresh",
+        value="promoted-token-do-not-leak",
+    )
+
+    # Post-promotion state: DB enforces is_primary=true on the promoted account.
+    # The old primary has been disconnected; its token row was deleted.
+    shared_pool = _make_google_inventory_pool(
+        primary_rows=[promoted_row],  # promoted account is now primary
+        owner_rows=[],
+    )
+    client = _build_app_with_shared_pool(shared_pool)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+
+    entity_ids = [u["entity_id"] for u in user]
+    assert formerly_non_primary_entity_id in entity_ids, (
+        "After primary disconnect + promotion, the promoted account's entity_id "
+        "must appear in owner-default inventory"
+    )
+
+    google_entries = [u for u in user if u["type"] == "google_oauth_refresh"]
+    assert len(google_entries) == 1
+    assert google_entries[0]["entity_id"] == formerly_non_primary_entity_id
+
+    # No raw token in response.
+    assert "promoted-token-do-not-leak" not in resp.text, (
+        "SECURITY: promoted account's raw token must not appear in the response body"
+    )
