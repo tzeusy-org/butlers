@@ -1777,3 +1777,431 @@ class TestEntityFacts:
         sql = pool.fetch.call_args[0][0]
         assert "relationship.entity_facts" in sql
         assert "relationship.facts" not in sql
+
+
+# ===========================================================================
+# Activity binning (entity v3 — "Activity binning parameter")
+# ===========================================================================
+
+
+_VIEW_MARK_PATH = f"/api/relationship/entities/{_ENT_ID}/view-mark"
+_DELTA_FACTS_PATH = f"/api/relationship/entities/{_ENT_ID}/delta-facts"
+_CORE_DATES_PATH = f"/api/relationship/entities/{_ENT_ID}/core-dates"
+
+
+class TestEntityActivityBinning:
+    """GET /entities/{id}/activity?bins=daily&window=90d — sparkline source."""
+
+    def _make_fact_row(self, *, last_seen: datetime) -> MagicMock:
+        data = {
+            "id": uuid4(),
+            "predicate": "contact_note",
+            "last_seen": last_seen,
+            "created_at": last_seen,
+        }
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        return row
+
+    def _make_mcp_result(self, episodes: list[dict]) -> MagicMock:
+        import json
+
+        payload = json.dumps({"data": episodes, "count": len(episodes)})
+        block = MagicMock()
+        block.text = payload
+        result = MagicMock()
+        result.content = [block]
+        result.is_error = False
+        return result
+
+    def _make_app(
+        self,
+        *,
+        owner_exists: bool = True,
+        entity_exists: bool = True,
+        fact_rows: list | None = None,
+        chronicler_episodes: list[dict] | None = None,
+    ) -> tuple[FastAPI, AsyncMock]:
+        from butlers.api.deps import get_mcp_manager
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
+        mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+        mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+
+        mock_mcp = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(
+            return_value=self._make_mcp_result(chronicler_episodes or [])
+        )
+        mock_mcp.get_client = AsyncMock(return_value=mock_client)
+
+        app = _wire_app(mock_pool)
+        app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+        return app, mock_pool
+
+    async def test_bins_only_returns_dense_90_day_series(self):
+        """bins_only=true returns exactly 90 daily bins including zero days."""
+        # Activity on 3 distinct days within the window.
+        rows = [
+            self._make_fact_row(last_seen=_NOW),
+            self._make_fact_row(last_seen=_NOW - timedelta(days=5)),
+            self._make_fact_row(last_seen=_NOW - timedelta(days=40)),
+        ]
+        app, _ = self._make_app(fact_rows=rows, chronicler_episodes=[])
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d", bins_only=True)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "bins" in body
+        # No merged stream when bins_only.
+        assert "items" not in body
+        assert len(body["bins"]) == 90
+        # 3 days carry a count; the rest are zero (no day omitted).
+        nonzero = [b for b in body["bins"] if b["count"] > 0]
+        assert len(nonzero) == 3
+        assert sum(b["count"] for b in body["bins"]) == 3
+
+    async def test_bins_alongside_stream_when_not_bins_only(self):
+        """bins=daily without bins_only returns both the merged stream and bins."""
+        rows = [self._make_fact_row(last_seen=_NOW)]
+        app, _ = self._make_app(fact_rows=rows, chronicler_episodes=[])
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "items" in body
+        assert "bins" in body
+        assert len(body["bins"]) == 90
+
+    async def test_bins_ascending_by_date(self):
+        """The bin series is ordered ascending by date (oldest → newest)."""
+        app, _ = self._make_app(fact_rows=[], chronicler_episodes=[])
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d", bins_only=True)
+        dates = [b["date"] for b in resp.json()["bins"]]
+        assert dates == sorted(dates)
+
+    async def test_window_30d_returns_30_bins(self):
+        """The window param controls bin count (30d → 30 bins)."""
+        app, _ = self._make_app(fact_rows=[], chronicler_episodes=[])
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="30d", bins_only=True)
+        assert len(resp.json()["bins"]) == 30
+
+    async def test_chronicler_episode_counted_in_bins(self):
+        """Chronicler episodes (MCP-sourced) contribute to the daily bins."""
+        ep = {
+            "id": str(uuid4()),
+            "canonical_start_at": _NOW.isoformat(),
+            "canonical_title": "Coffee",
+        }
+        app, pool = self._make_app(fact_rows=[], chronicler_episodes=[ep])
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d", bins_only=True)
+        assert sum(b["count"] for b in resp.json()["bins"]) == 1
+
+    async def test_bins_owner_gated(self):
+        app, _ = self._make_app(owner_exists=False)
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d", bins_only=True)
+        _assert_owner_required(resp)
+
+    async def test_bins_missing_entity_404(self):
+        app, _ = self._make_app(entity_exists=False)
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d", bins_only=True)
+        assert resp.status_code == 404
+
+    async def test_default_call_unchanged_no_bins(self):
+        """Without bins=daily the response is the legacy merged stream (no bins)."""
+        rows = [self._make_fact_row(last_seen=_NOW)]
+        app, _ = self._make_app(fact_rows=rows, chronicler_episodes=[])
+        resp = await _get(app, _ACTIVITY_PATH)
+        body = resp.json()
+        assert "items" in body
+        assert "bins" not in body
+
+
+class TestEntityViewMark:
+    """POST /entities/{id}/view-mark — upsert the per-entity view mark."""
+
+    def _make_app(
+        self,
+        *,
+        owner_exists: bool = True,
+        entity_exists: bool = True,
+        marked_at: datetime | None = None,
+    ) -> tuple[FastAPI, AsyncMock]:
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
+        mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+
+        mark_row = None
+        if entity_exists:
+            data = {"entity_id": _ENT_ID, "marked_at": marked_at or _NOW}
+            mark_row = MagicMock()
+            mark_row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+
+        async def _fetchrow(sql, *args):
+            # Owner gate uses fetchrow on public.entities; the upsert RETURNING
+            # also uses fetchrow on entity_view_marks. Discriminate by table.
+            if "entity_view_marks" in sql:
+                return mark_row
+            return _make_owner_row() if owner_exists else None
+
+        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        return _wire_app(mock_pool), mock_pool
+
+    async def test_view_mark_upserts_and_returns_marked_at(self):
+        app, pool = self._make_app()
+        resp = await _post(app, _VIEW_MARK_PATH)
+        assert resp.status_code in (200, 201)
+        body = resp.json()
+        assert body["entity_id"] == str(_ENT_ID)
+        assert body["marked_at"] is not None
+        # The write must target the view-marks table with an upsert.
+        upsert_sql = next(
+            c[0][0] for c in pool.fetchrow.call_args_list if "entity_view_marks" in c[0][0]
+        )
+        assert "ON CONFLICT" in upsert_sql.upper()
+
+    async def test_view_mark_idempotent_second_call(self):
+        """Posting twice keeps a single mark (upsert, not insert) — both succeed."""
+        app, _ = self._make_app()
+        r1 = await _post(app, _VIEW_MARK_PATH)
+        r2 = await _post(app, _VIEW_MARK_PATH)
+        assert r1.status_code in (200, 201)
+        assert r2.status_code in (200, 201)
+
+    async def test_view_mark_owner_gated(self):
+        app, _ = self._make_app(owner_exists=False)
+        resp = await _post(app, _VIEW_MARK_PATH)
+        _assert_owner_required(resp)
+
+    async def test_view_mark_missing_entity_404(self):
+        app, _ = self._make_app(entity_exists=False)
+        resp = await _post(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/view-mark")
+        assert resp.status_code == 404
+
+
+class TestEntityDeltaFacts:
+    """GET /entities/{id}/delta-facts — facts changed since the view mark."""
+
+    def _make_delta_row(
+        self,
+        *,
+        store: str = "identity",
+        predicate: str = "has-email",
+        changed_at: datetime | None = None,
+    ) -> MagicMock:
+        data = {
+            "id": uuid4(),
+            "subject": _ENT_ID,
+            "predicate": predicate,
+            "object": "alice@example.com",
+            "object_kind": "literal",
+            "src": "relationship",
+            "conf": 1.0,
+            "validity": "active",
+            "created_at": _NOW,
+            "changed_at": changed_at or _NOW,
+        }
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        return row
+
+    def _make_app(
+        self,
+        *,
+        owner_exists: bool = True,
+        entity_exists: bool = True,
+        marked_at: datetime | None = _NOW - timedelta(days=10),
+        identity_rows: list | None = None,
+        narrative_rows: list | None = None,
+    ) -> tuple[FastAPI, AsyncMock]:
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+
+        async def _fetchrow(sql, *args):
+            if "entity_view_marks" in sql:
+                if marked_at is None:
+                    return None
+                data = {"marked_at": marked_at}
+                row = MagicMock()
+                row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+                return row
+            return _make_owner_row() if owner_exists else None
+
+        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        # fetch sequence: identity-store delta rows, then narrative-store rows.
+        mock_pool.fetch = AsyncMock(side_effect=[identity_rows or [], narrative_rows or []])
+        return _wire_app(mock_pool), mock_pool
+
+    async def test_two_new_facts_reported_with_mark(self):
+        """An entity marked 10 days ago with 2 facts since reports both + the mark."""
+        rows = [self._make_delta_row(), self._make_delta_row(predicate="has-phone")]
+        app, _ = self._make_app(identity_rows=rows, narrative_rows=[])
+        resp = await _get(app, _DELTA_FACTS_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["marked_at"] is not None
+        assert len(body["items"]) == 2
+
+    async def test_first_visit_no_mark_empty_delta(self):
+        """No view-mark row → marked_at null and no delta items (first-visit case)."""
+        app, pool = self._make_app(marked_at=None)
+        resp = await _get(app, _DELTA_FACTS_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["marked_at"] is None
+        assert body["items"] == []
+        # No fact query is issued when there is no mark to diff against.
+        assert pool.fetch.await_count == 0
+
+    async def test_delta_does_not_move_the_mark(self):
+        """Reading the delta must not write the view mark (no upsert SQL issued)."""
+        rows = [self._make_delta_row()]
+        app, pool = self._make_app(identity_rows=rows, narrative_rows=[])
+        await _get(app, _DELTA_FACTS_PATH)
+        for call in pool.fetchrow.call_args_list:
+            assert "INSERT" not in call[0][0].upper()
+        # No execute-style write on the view-marks table.
+        for call in pool.execute.call_args_list:
+            assert "entity_view_marks" not in call[0][0]
+
+    async def test_identity_change_predicate_uses_greatest(self):
+        """Identity delta SQL diffs GREATEST(created_at, updated_at) against the mark."""
+        app, pool = self._make_app(identity_rows=[], narrative_rows=[])
+        await _get(app, _DELTA_FACTS_PATH)
+        identity_sql = pool.fetch.await_args_list[0][0][0]
+        assert "GREATEST" in identity_sql.upper()
+        assert "updated_at" in identity_sql
+        assert "relationship.entity_facts" in identity_sql
+
+    async def test_narrative_change_predicate_uses_last_confirmed(self):
+        """Narrative delta SQL diffs GREATEST(created_at, COALESCE(last_confirmed_at,...))."""
+        app, pool = self._make_app(identity_rows=[], narrative_rows=[])
+        await _get(app, _DELTA_FACTS_PATH)
+        narrative_sql = pool.fetch.await_args_list[1][0][0]
+        assert "last_confirmed_at" in narrative_sql
+        assert "FROM facts" in narrative_sql
+
+    async def test_delta_owner_gated(self):
+        app, _ = self._make_app(owner_exists=False)
+        resp = await _get(app, _DELTA_FACTS_PATH)
+        _assert_owner_required(resp)
+
+    async def test_delta_missing_entity_404(self):
+        app, _ = self._make_app(entity_exists=False)
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/delta-facts")
+        assert resp.status_code == 404
+
+
+class TestEntityCoreDates:
+    """GET /entities/{id}/core-dates — server-extracted date-kind facts."""
+
+    def _make_date_fact_row(
+        self,
+        *,
+        predicate: str = "has-birthday",
+        value: str = "1990-04-12",
+        staleness_band: str = "fresh",
+    ) -> MagicMock:
+        data = {
+            "id": uuid4(),
+            "predicate": predicate,
+            "object": value,
+            "src": "relationship",
+            "conf": 1.0,
+            "verified": True,
+            "staleness_band": staleness_band,
+        }
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        return row
+
+    def _make_app(
+        self,
+        *,
+        owner_exists: bool = True,
+        entity_exists: bool = True,
+        date_rows: list | None = None,
+    ) -> tuple[FastAPI, AsyncMock]:
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
+        mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+        mock_pool.fetch = AsyncMock(return_value=date_rows or [])
+        return _wire_app(mock_pool), mock_pool
+
+    async def test_birthday_surfaces_with_next_occurrence(self):
+        """An active has-birthday fact yields next_occurrence + days_until."""
+        app, _ = self._make_app(date_rows=[self._make_date_fact_row(value="1990-04-12")])
+        resp = await _get(app, _CORE_DATES_PATH)
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        row = items[0]
+        assert row["predicate"] == "has-birthday"
+        assert row["month"] == 4
+        assert row["day"] == 12
+        assert row["next_occurrence"].endswith("-04-12")
+        assert isinstance(row["days_until"], int)
+        assert row["days_until"] >= 0
+
+    async def test_core_date_carries_provenance(self):
+        """Each core-date row carries provenance fields (src/conf/verified/staleness)."""
+        app, _ = self._make_app(date_rows=[self._make_date_fact_row()])
+        row = (await _get(app, _CORE_DATES_PATH)).json()["items"][0]
+        assert row["src"] == "relationship"
+        assert row["conf"] == 1.0
+        assert row["verified"] is True
+        assert row["staleness_band"] == "fresh"
+
+    async def test_partial_date_without_year_supported(self):
+        """A --MM-DD partial date (year unknown) still yields a next occurrence."""
+        app, _ = self._make_app(date_rows=[self._make_date_fact_row(value="--12-25")])
+        items = (await _get(app, _CORE_DATES_PATH)).json()["items"]
+        assert len(items) == 1
+        assert items[0]["month"] == 12
+        assert items[0]["day"] == 25
+        assert items[0]["year"] is None
+
+    async def test_unparseable_date_skipped(self):
+        """A malformed date object is skipped rather than 500-ing."""
+        app, _ = self._make_app(date_rows=[self._make_date_fact_row(value="not-a-date")])
+        resp = await _get(app, _CORE_DATES_PATH)
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    async def test_ordered_by_days_until(self):
+        """Items are sorted by days_until ascending (soonest first)."""
+        # Build two birthdays: one earlier in the year, one later.
+        rows = [
+            self._make_date_fact_row(value="1990-12-31"),
+            self._make_date_fact_row(value="1990-01-01"),
+        ]
+        app, _ = self._make_app(date_rows=rows)
+        items = (await _get(app, _CORE_DATES_PATH)).json()["items"]
+        days = [i["days_until"] for i in items]
+        assert days == sorted(days)
+
+    async def test_query_filters_date_kind_predicates_server_side(self):
+        """Extraction is server-side: the SQL filters to date-kind predicates.
+
+        The predicate set is passed as a bound array param (``= ANY($2)``), not
+        interpolated, so assert it appears among the query's bound arguments and
+        that the query targets the identity store.
+        """
+        app, pool = self._make_app(date_rows=[])
+        await _get(app, _CORE_DATES_PATH)
+        call = pool.fetch.call_args
+        sql = call[0][0]
+        assert "relationship.entity_facts" in sql
+        assert "ANY(" in sql
+        # The date-kind predicate set is a bound argument to the query.
+        bound_predicates = next(a for a in call[0][1:] if isinstance(a, list))
+        assert "has-birthday" in bound_predicates
+
+    async def test_core_dates_owner_gated(self):
+        app, _ = self._make_app(owner_exists=False)
+        resp = await _get(app, _CORE_DATES_PATH)
+        _assert_owner_required(resp)
+
+    async def test_core_dates_missing_entity_404(self):
+        app, _ = self._make_app(entity_exists=False)
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/core-dates")
+        assert resp.status_code == 404

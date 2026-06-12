@@ -142,3 +142,61 @@ def test_no_direct_chronicler_model_imports() -> None:
         "Inter-butler data access MUST go through MCP, not direct Python imports.\n\n"
         "Violations:\n" + "\n".join(all_violations)
     )
+
+
+# ---------------------------------------------------------------------------
+# Binning code path coverage (entity v3 — Activity binning parameter)
+# ---------------------------------------------------------------------------
+#
+# The static scan above already covers every relationship source file, so the
+# new daily-binning code path in ``get_entity_activity`` is automatically inside
+# the SQL/import guardrail's reach.  This test pins that coverage explicitly so a
+# future refactor that moves binning into a helper which reaches across the
+# chronicler boundary (direct SQL or a model import) is caught here by name,
+# rather than relying on the reader to trust the glob.
+
+
+def _activity_binning_source() -> tuple[Path, str]:
+    """Return the router file path + text that hosts the activity binning logic."""
+    router = _ROSTER_ROOT / "api" / "router.py"
+    assert router.exists(), f"Expected the relationship router at {router}"
+    return router, router.read_text(encoding="utf-8")
+
+
+def test_binning_path_is_in_the_scanned_source_set() -> None:
+    """The activity binning implementation MUST be one of the scanned sources.
+
+    Guards against the binning code being relocated outside ``roster/relationship``
+    (where the boundary scan would no longer see it).
+    """
+    router, _ = _activity_binning_source()
+    scanned = {p.resolve() for p in _relationship_source_files()}
+    assert router.resolve() in scanned, (
+        "The activity binning code path lives in roster/relationship/api/router.py, "
+        "which MUST be covered by the chronicler-boundary static scan."
+    )
+
+
+def test_binning_path_has_no_chronicler_boundary_violation() -> None:
+    """The activity binning code path MUST NOT cross the chronicler boundary.
+
+    Chronicler episodes feed the binning aggregation only via the
+    ``chronicler_list_episodes`` MCP tool (entity v3 spec, "Activity binning
+    parameter" → "Binning stays behind the MCP boundary").  This asserts the
+    binning host file carries the MCP call and no direct chronicler SQL/import.
+    """
+    router, text = _activity_binning_source()
+
+    # The binning path reuses the existing chronicler fetch, which calls the MCP
+    # tool by name; assert that contract marker is present so the boundary the
+    # binning relies on is real, not assumed.
+    assert "chronicler_list_episodes" in text, (
+        "The activity aggregator (which the binning path feeds from) MUST source "
+        "chronicler rows via the chronicler_list_episodes MCP tool."
+    )
+
+    violations = [(lineno, label, line) for lineno, label, line in _scan_file(router)]
+    assert not violations, (
+        "The activity binning host file crosses the chronicler boundary:\n"
+        + "\n".join(f"  router.py:{ln}: [{lbl}] {txt!r}" for ln, lbl, txt in violations)
+    )

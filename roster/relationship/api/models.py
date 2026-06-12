@@ -1494,3 +1494,131 @@ class EntityFactsResponse(BaseModel):
     items: list[EntityFactEntry]
     next_cursor: str | None = None
     has_more: bool
+
+
+# ---------------------------------------------------------------------------
+# Activity binning (entity v3 — "Activity binning parameter")
+# ---------------------------------------------------------------------------
+
+
+class ActivityBin(BaseModel):
+    """One day's activity count for the 90-day sparkline.
+
+    ``date`` is an ISO calendar date (``YYYY-MM-DD``). ``count`` is the number of
+    merged activity entries (relationship facts + chronicler episodes) whose
+    timestamp falls on that local-UTC day. Zero-activity days are present with
+    ``count=0`` — the sparkline renders quiet days honestly rather than
+    collapsing them out (spec: "no day MUST be omitted or interpolated").
+    """
+
+    date: date
+    count: int
+
+
+class ActivityBinsResponse(BaseModel):
+    """Response for ``GET /entities/{id}/activity?bins=daily`` when
+    ``bins_only=true``.
+
+    ``bins`` is a dense, ascending-by-date series covering the full window
+    (one entry per day, including zero-count days). When the endpoint is called
+    without ``bins_only`` it returns :class:`ActivityResponse` with an added
+    ``bins`` field instead (the merged stream is preserved).
+    """
+
+    bins: list[ActivityBin]
+
+
+# ---------------------------------------------------------------------------
+# View marks + delta-since-last-visit (entity v3 — "Delta-since-last-visit")
+# ---------------------------------------------------------------------------
+
+
+class ViewMarkResponse(BaseModel):
+    """Response for ``POST /entities/{id}/view-mark``.
+
+    ``marked_at`` is the timestamp persisted to ``relationship.entity_view_marks``
+    for this entity (upserted: one mark per entity). The frontend posts this only
+    *after* reading ``GET /entities/{id}/delta-facts``, so the next visit's delta
+    is computed relative to this mark.
+    """
+
+    entity_id: UUID
+    marked_at: datetime
+
+
+class DeltaFactEntry(BaseModel):
+    """One fact that changed since the entity's view mark.
+
+    Carries the same provenance shape as the facts-drill rows so the detail page
+    can highlight the delta in place. ``store`` discriminates identity vs
+    narrative origin; ``changed_at`` is the per-store change timestamp that beat
+    the view mark (identity: ``GREATEST(created_at, updated_at)``; narrative:
+    ``GREATEST(created_at, COALESCE(last_confirmed_at, created_at))``).
+    """
+
+    id: UUID
+    subject: UUID
+    predicate: str
+    object: str
+    object_kind: str
+    src: str
+    conf: float
+    store: Literal["identity", "narrative"]
+    validity: str
+    created_at: datetime
+    changed_at: datetime
+
+
+class DeltaFactsResponse(BaseModel):
+    """Response for ``GET /entities/{id}/delta-facts``.
+
+    ``marked_at`` is the view mark the delta was computed against (``None`` on a
+    first visit — no mark row exists yet, so ``items`` is empty and the frontend
+    renders no banner). ``items`` are the facts changed since ``marked_at`` across
+    both stores. The endpoint never moves the mark; the caller posts the mark
+    afterwards via ``POST /entities/{id}/view-mark``.
+    """
+
+    marked_at: datetime | None = None
+    items: list[DeltaFactEntry]
+
+
+# ---------------------------------------------------------------------------
+# Core dates block (entity v3 — "Core dates block", server half)
+# ---------------------------------------------------------------------------
+
+
+class CoreDateEntry(BaseModel):
+    """A date-kind fact with its owner-relevant next occurrence.
+
+    Server-extracted from the facts API (not client-side string matching).
+    ``predicate`` is the date-kind predicate (e.g. ``has-birthday``). ``value`` is
+    the raw stored object (an ISO ``YYYY-MM-DD`` or ``--MM-DD`` partial date).
+    ``next_occurrence`` is the next calendar occurrence of (month, day) on or after
+    the request date; ``days_until`` is the integer day count to it. Provenance
+    fields mirror the facts-drill contract so each row renders provenance.
+    """
+
+    id: UUID
+    predicate: str
+    value: str
+    month: int
+    day: int
+    year: int | None = None
+    next_occurrence: date
+    days_until: int
+    src: str
+    conf: float
+    verified: bool
+    staleness_band: str
+
+
+class CoreDatesResponse(BaseModel):
+    """Response for ``GET /entities/{id}/core-dates``.
+
+    ``items`` are date-kind facts ordered by ``days_until`` ascending (the
+    soonest upcoming date first), so the detail page surfaces the next occurrence
+    without client-side sorting.
+    """
+
+    items: list[CoreDateEntry]

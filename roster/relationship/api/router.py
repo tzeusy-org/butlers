@@ -14,7 +14,7 @@ import importlib.util
 import json
 import logging
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -141,6 +141,13 @@ if _models_path.exists():
         ActivityResponse = _models_module.ActivityResponse
         EntityFactEntry = _models_module.EntityFactEntry
         EntityFactsResponse = _models_module.EntityFactsResponse
+        ActivityBin = _models_module.ActivityBin
+        ActivityBinsResponse = _models_module.ActivityBinsResponse
+        ViewMarkResponse = _models_module.ViewMarkResponse
+        DeltaFactEntry = _models_module.DeltaFactEntry
+        DeltaFactsResponse = _models_module.DeltaFactsResponse
+        CoreDateEntry = _models_module.CoreDateEntry
+        CoreDatesResponse = _models_module.CoreDatesResponse
         ContactEntityResolverResponse = _models_module.ContactEntityResolverResponse
 
 logger = logging.getLogger(__name__)
@@ -6608,14 +6615,61 @@ def _sort_key_activity(entry: ActivityEntry) -> datetime:
     return entry.ts
 
 
-@router.get("/entities/{entity_id}/activity", response_model=ActivityResponse)
+def _build_daily_bins(entries: list[ActivityEntry], window_days: int) -> list[ActivityBin]:
+    """Bin merged activity entries into a dense per-day count series.
+
+    Produces exactly ``window_days`` bins ascending by date, covering the
+    ``[today - (window_days - 1), today]`` inclusive range in UTC. Every day is
+    present — quiet days carry ``count=0`` rather than being collapsed out (spec:
+    "no day MUST be omitted or interpolated"). Entries whose timestamp is None or
+    falls outside the window are ignored.
+
+    The entries here are the SAME merged stream the endpoint already assembles
+    (relationship facts + chronicler episodes sourced via the
+    ``chronicler_list_episodes`` MCP tool); binning never reaches across the
+    chronicler boundary itself.
+    """
+    today = datetime.now(UTC).date()
+    start = today - timedelta(days=window_days - 1)
+
+    counts: dict[date, int] = {}
+    for entry in entries:
+        if entry.ts is None:
+            continue
+        day = entry.ts.astimezone(UTC).date() if entry.ts.tzinfo else entry.ts.date()
+        if start <= day <= today:
+            counts[day] = counts.get(day, 0) + 1
+
+    bins: list[ActivityBin] = []
+    for i in range(window_days):
+        day = start + timedelta(days=i)
+        bins.append(ActivityBin(date=day, count=counts.get(day, 0)))
+    return bins
+
+
+@router.get("/entities/{entity_id}/activity", response_model=None)
 async def get_entity_activity(
     entity_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Maximum entries per page."),
     offset: int = Query(0, ge=0, description="Pagination offset."),
+    bins: Literal["daily"] | None = Query(
+        None,
+        description="When 'daily', also compute a per-day activity-count series "
+        "over the window (the sparkline source).",
+    ),
+    window: str = Query(
+        "90d",
+        pattern=r"^\d{1,3}d$",
+        description="Binning window as '<N>d' (e.g. '90d'). Only honoured with bins=daily.",
+    ),
+    bins_only: bool = Query(
+        False,
+        description="When true (and bins=daily), return only {bins:[...]} and omit "
+        "the merged stream.",
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-) -> ActivityResponse:
+) -> ActivityResponse | ActivityBinsResponse:
     """Return a merged activity stream for the given entity.
 
     Combines:
@@ -6630,6 +6684,14 @@ async def get_entity_activity(
     The merged stream is sorted by timestamp descending (``last_seen`` for
     facts; ``canonical_start_at`` for episodes).  Pagination is applied after
     the merge.  ``total`` reflects the merged count before slicing.
+
+    **Binning** (entity v3 — sparkline source): with ``bins=daily`` the endpoint
+    additionally computes a dense per-day activity-count series over ``window``
+    (default ``90d``) — one bin per day including zero-count days, ascending by
+    date. ``bins_only=true`` returns ``{bins:[...]}`` alone (omitting the merged
+    stream); otherwise ``bins`` rides alongside the stream. Chronicler rows are
+    sourced via the same ``chronicler_list_episodes`` MCP path before binning —
+    the binning step never crosses the chronicler boundary.
 
     **Authorization**: owner-only gate (Amendment 12b) — returns HTTP 403
     with ``{"code": "owner_required"}`` when no owner entity is registered.
@@ -6664,7 +6726,317 @@ async def get_entity_activity(
     all_entries: list[ActivityEntry] = rel_entries + chr_entries
     all_entries.sort(key=_sort_key_activity, reverse=True)
 
+    # Daily binning (sparkline). window is validated as '<N>d' by the route regex.
+    if bins == "daily":
+        window_days = int(window[:-1])
+        daily = _build_daily_bins(all_entries, window_days)
+        if bins_only:
+            return ActivityBinsResponse(bins=daily)
+        total = len(all_entries)
+        page = all_entries[offset : offset + limit]
+        # ActivityResponse with an additional `bins` field. The response_model is
+        # omitted on the route so this richer shape is returned verbatim; JSON mode
+        # serialises the nested datetimes/UUIDs/dates for the plain-dict return.
+        stream = ActivityResponse(items=page, total=total, limit=limit, offset=offset)
+        return stream.model_dump(mode="json") | {"bins": [b.model_dump(mode="json") for b in daily]}
+
     total = len(all_entries)
     page = all_entries[offset : offset + limit]
 
     return ActivityResponse(items=page, total=total, limit=limit, offset=offset)
+
+
+# ---------------------------------------------------------------------------
+# View marks + delta-since-last-visit (entity v3 — "Delta-since-last-visit")
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/view-mark", response_model=ViewMarkResponse)
+async def mark_entity_view(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ViewMarkResponse | JSONResponse:
+    """Upsert the owner's "last viewed" mark for an entity.
+
+    Persists ``now()`` into ``relationship.entity_view_marks`` (one mark per
+    entity, ``ON CONFLICT (entity_id) DO UPDATE``). The frontend posts this only
+    *after* reading ``GET /entities/{id}/delta-facts`` so the next visit's delta
+    is computed relative to this mark (spec: "the view mark MUST be updated only
+    after the delta was computed for this load").
+
+    Owner-only authz gate (Clause 12b): HTTP 403 ``{"code": "owner_required"}``
+    if no owner entity is registered. Returns 404 if the entity does not exist.
+    """
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO relationship.entity_view_marks (entity_id, marked_at)
+        VALUES ($1, now())
+        ON CONFLICT (entity_id) DO UPDATE SET marked_at = now()
+        RETURNING entity_id, marked_at
+        """,
+        entity_id,
+    )
+    return ViewMarkResponse(entity_id=row["entity_id"], marked_at=row["marked_at"])
+
+
+@router.get("/entities/{entity_id}/delta-facts", response_model=DeltaFactsResponse)
+async def get_entity_delta_facts(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> DeltaFactsResponse | JSONResponse:
+    """Return facts changed since the entity's view mark (delta-since-last-visit).
+
+    Computes the per-store change set relative to ``relationship.entity_view_marks``:
+
+    - **identity store** (``relationship.entity_facts``):
+      ``GREATEST(created_at, updated_at) > marked_at``
+    - **narrative store** (memory-module ``facts``):
+      ``GREATEST(created_at, COALESCE(last_confirmed_at, created_at)) > marked_at``
+
+    This endpoint is **read-only** — it never moves the mark. The caller posts
+    ``POST /entities/{id}/view-mark`` afterwards (spec: delta is read before the
+    mark moves). On a first visit (no mark row) ``marked_at`` is ``None`` and
+    ``items`` is empty, so the frontend renders no banner.
+
+    Owner-only authz gate (Clause 12b — returns raw contact-fact values): HTTP
+    403 ``{"code": "owner_required"}`` if no owner entity is registered. Returns
+    404 if the entity does not exist.
+    """
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    mark_row = await pool.fetchrow(
+        """
+        SELECT marked_at
+        FROM relationship.entity_view_marks
+        WHERE entity_id = $1
+        """,
+        entity_id,
+    )
+    if mark_row is None:
+        # First visit — nothing to diff against; the mark is created on the
+        # subsequent POST /view-mark call.
+        return DeltaFactsResponse(marked_at=None, items=[])
+
+    marked_at: datetime = mark_row["marked_at"]
+
+    identity_rows, narrative_rows = await asyncio.gather(
+        pool.fetch(
+            """
+            SELECT
+                f.id,
+                f.subject,
+                f.predicate,
+                f.object,
+                f.object_kind,
+                f.src,
+                f.conf,
+                f.validity,
+                f.created_at,
+                GREATEST(f.created_at, f.updated_at) AS changed_at
+            FROM relationship.entity_facts f
+            WHERE f.subject = $1
+              AND GREATEST(f.created_at, f.updated_at) > $2
+            ORDER BY changed_at DESC, f.id DESC
+            """,
+            entity_id,
+            marked_at,
+        ),
+        pool.fetch(
+            """
+            SELECT
+                f.id,
+                f.entity_id AS subject,
+                f.predicate,
+                f.content   AS object,
+                'literal'::text AS object_kind,
+                COALESCE(f.source_butler, 'memory')::text AS src,
+                f.confidence AS conf,
+                f.validity,
+                f.created_at,
+                GREATEST(f.created_at, COALESCE(f.last_confirmed_at, f.created_at)) AS changed_at
+            FROM facts f
+            WHERE f.entity_id = $1
+              AND f.scope = 'relationship'
+              AND GREATEST(f.created_at, COALESCE(f.last_confirmed_at, f.created_at)) > $2
+            ORDER BY changed_at DESC, f.id DESC
+            """,
+            entity_id,
+            marked_at,
+        ),
+    )
+
+    items: list[DeltaFactEntry] = [
+        DeltaFactEntry(
+            id=r["id"],
+            subject=r["subject"],
+            predicate=r["predicate"],
+            object=r["object"],
+            object_kind=r["object_kind"],
+            src=r["src"],
+            conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+            store="identity",
+            validity=r["validity"],
+            created_at=r["created_at"],
+            changed_at=r["changed_at"],
+        )
+        for r in identity_rows
+    ]
+    items.extend(
+        DeltaFactEntry(
+            id=r["id"],
+            subject=r["subject"],
+            predicate=r["predicate"],
+            object=r["object"],
+            object_kind=r["object_kind"],
+            src=r["src"],
+            conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+            store="narrative",
+            validity=r["validity"],
+            created_at=r["created_at"],
+            changed_at=r["changed_at"],
+        )
+        for r in narrative_rows
+    )
+
+    return DeltaFactsResponse(marked_at=marked_at, items=items)
+
+
+# ---------------------------------------------------------------------------
+# Core dates block (entity v3 — "Core dates block", server half)
+# ---------------------------------------------------------------------------
+
+#: Date-kind predicates whose object is an (optionally partial) ISO date and that
+#: carry an owner-relevant next occurrence. ``has-birthday`` is the seeded
+#: date-kind contact predicate (registry 014); anniversary/future date predicates
+#: are added here as the registry grows.
+_DATE_KIND_PREDICATES: tuple[str, ...] = (
+    "has-birthday",
+    "has-anniversary",
+)
+
+
+def _parse_date_object(value: str) -> tuple[int, int, int | None] | None:
+    """Parse a date-fact object into ``(month, day, year|None)``.
+
+    Accepts a full ISO date (``YYYY-MM-DD``) or a year-less partial
+    (``--MM-DD``, the RFC 6350 vCard ``BDAY`` partial form). Returns ``None`` for
+    anything unparseable so the caller can skip the row rather than 500.
+    """
+    value = value.strip()
+    try:
+        if value.startswith("--"):
+            # Partial date: --MM-DD (year unknown).
+            parts = value[2:].split("-")
+            month, day = int(parts[0]), int(parts[1])
+            year: int | None = None
+        else:
+            parsed = date.fromisoformat(value)
+            month, day, year = parsed.month, parsed.day, parsed.year
+    except (ValueError, IndexError):
+        return None
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return month, day, year
+
+
+def _next_occurrence(month: int, day: int, today: date) -> date | None:
+    """Return the next occurrence of (month, day) on or after ``today``.
+
+    Returns ``None`` for an impossible (month, day) (e.g. Feb 30). Feb 29 rolls
+    to the next leap-year occurrence.
+    """
+    for year in (today.year, today.year + 1, today.year + 2, today.year + 3, today.year + 4):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if candidate >= today:
+            return candidate
+    return None
+
+
+@router.get("/entities/{entity_id}/core-dates", response_model=CoreDatesResponse)
+async def get_entity_core_dates(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CoreDatesResponse | JSONResponse:
+    """Return the entity's date-kind facts with their next occurrence.
+
+    Server-side extraction of date-kind predicates (``has-birthday`` and
+    anniversary/future date predicates) from ``relationship.entity_facts`` —
+    replaces client-side string-matching on the generic facts list (spec: "Core
+    dates block", server half). Each row carries the next calendar occurrence of
+    its (month, day), the integer ``days_until``, and provenance
+    (``src``/``conf``/``verified``/``staleness_band``) per the rendering
+    requirement. Items are ordered by ``days_until`` ascending (soonest first).
+
+    Owner-only authz gate (Clause 12b): HTTP 403 ``{"code": "owner_required"}``
+    if no owner entity is registered. Returns 404 if the entity does not exist.
+    """
+    from butlers.tools.relationship.staleness import identity_staleness_band_sql
+
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            f.id,
+            f.predicate,
+            f.object,
+            f.src,
+            f.conf,
+            f.verified,
+            {identity_staleness_band_sql("f")} AS staleness_band
+        FROM relationship.entity_facts f
+        WHERE f.subject = $1
+          AND f.validity = 'active'
+          AND f.object_kind = 'literal'
+          AND f.predicate = ANY($2::text[])
+        """,
+        entity_id,
+        list(_DATE_KIND_PREDICATES),
+    )
+
+    today = date.today()
+    items: list[CoreDateEntry] = []
+    for r in rows:
+        parsed = _parse_date_object(r["object"])
+        if parsed is None:
+            continue
+        month, day, year = parsed
+        occurrence = _next_occurrence(month, day, today)
+        if occurrence is None:
+            continue
+        items.append(
+            CoreDateEntry(
+                id=r["id"],
+                predicate=r["predicate"],
+                value=r["object"],
+                month=month,
+                day=day,
+                year=year,
+                next_occurrence=occurrence,
+                days_until=(occurrence - today).days,
+                src=r["src"],
+                conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+                verified=r["verified"],
+                staleness_band=r["staleness_band"],
+            )
+        )
+
+    items.sort(key=lambda e: e.days_until)
+    return CoreDatesResponse(items=items)
