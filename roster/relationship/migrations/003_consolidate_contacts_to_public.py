@@ -54,6 +54,11 @@ _CHILD_FKS = [
 ]
 
 
+def _table_exists(conn, table: str) -> bool:
+    """Return True if ``relationship.<table>`` exists in the current database."""
+    return conn.execute(text(f"SELECT to_regclass('relationship.{table}')")).scalar() is not None
+
+
 def upgrade() -> None:
     conn = op.get_bind()
 
@@ -85,14 +90,22 @@ def upgrade() -> None:
     """)
     )
 
+    # Only re-point FKs on child tables that actually exist in this schema.
+    # ``contacts_source_links`` is owned by the contacts MODULE chain, which the
+    # daemon/test harness applies AFTER the relationship butler chain (boot order
+    # is core → butler → modules; see cli.py / lifecycle.py).  When this
+    # migration runs at boot that table does not yet exist, so guard every
+    # child-table operation against existence (cross-chain drop hazard).
+    present_fks = [fk for fk in _CHILD_FKS if _table_exists(conn, fk[0])]
+
     # Step 2: Drop all FK constraints referencing relationship.contacts.
-    for table, constraint, _col, _on_delete in _CHILD_FKS:
+    for table, constraint, _col, _on_delete in present_fks:
         conn.execute(
             text(f"ALTER TABLE relationship.{table} DROP CONSTRAINT IF EXISTS {constraint}")
         )
 
     # Step 3: Recreate FK constraints pointing to public.contacts.
-    for table, constraint, col, on_delete in _CHILD_FKS:
+    for table, constraint, col, on_delete in present_fks:
         conn.execute(
             text(
                 f"ALTER TABLE relationship.{table} "
@@ -165,8 +178,11 @@ def downgrade() -> None:
     """)
     )
 
-    # Re-point FKs back to relationship.contacts.
+    # Re-point FKs back to relationship.contacts (only for tables that exist;
+    # ``contacts_source_links`` may not be present depending on chain order).
     for table, constraint, col, on_delete in _CHILD_FKS:
+        if not _table_exists(conn, table):
+            continue
         conn.execute(
             text(f"ALTER TABLE relationship.{table} DROP CONSTRAINT IF EXISTS {constraint}")
         )

@@ -43,7 +43,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
     "general": {"collections", "collection_items"},
     "health": {
         "conditions",
-        "measurements",
+        # measurements created by health_001, dropped by health_002
         "medication_doses",
         "medications",
         "research",
@@ -57,7 +57,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
     },
     "relationship": {
         "addresses",
-        "contact_info",
+        # contact_info moved to shared public schema (core_115 dropped per-schema)
         "contact_labels",
         # contacts moved to shared schema by core_007 migration
         # gifts, interactions, loans, notes, activity_feed dropped by rel_009
@@ -100,8 +100,24 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "quiz_responses",
         "analytics_snapshots",
     },
-    "memory": {"episodes", "facts", "rules", "memory_links", "entities", "memory_events"},
+    # entities/contact_info are core identity tables in PUBLIC (core_002), not
+    # per-schema memory-chain tables, so they are not asserted here.
+    "memory": {"episodes", "facts", "rules", "memory_links", "memory_events"},
     "travel": {"trips", "legs", "accommodations", "reservations", "documents"},
+    "home": {"ha_entity_snapshot", "ha_command_log", "maintenance_items"},
+    # lifestyle has a butler chain but no domain tables in v1 (schema-only).
+    "lifestyle": set(),
+    "chronicler": {
+        "source_adapter_state",
+        "projection_checkpoints",
+        "point_events",
+        "episodes",
+        "episode_event_links",
+        "episode_entities",
+        "overrides",
+        "idempotency_keys",
+        "tier2_cache",
+    },
 }
 
 
