@@ -32,7 +32,7 @@ Read only the files relevant to your task:
 | # | File | Status | What it governs |
 |---|------|--------|-----------------|
 | 0 | `about/craft-and-care/README.md` | EXISTS | Orienting to the pillar: scope boundary, reading order, file map |
-| 1 | `about/craft-and-care/engineering-bar.md` | EXISTS | Definition of done, change hygiene, cleanup bias, explicitness, durable-fix bar |
+| 1 | `about/craft-and-care/engineering-bar.md` | EXISTS | Default-bar adoption from `/th-engineering`, Butlers-specific done criteria, bias additions, blocking change shapes |
 | 2 | `about/craft-and-care/testing-and-verification.md` | EXISTS | Evidence standards, graduated test scope, final quality-gate expectations |
 | 3 | `about/craft-and-care/review-and-documentation.md` | EXISTS | Blocking review criteria, author/reviewer obligations, same-change doc updates |
 | 4 | `about/craft-and-care/observability-and-operations.md` | EXISTS | Diagnosability, runtime status expectations, telemetry discipline |
