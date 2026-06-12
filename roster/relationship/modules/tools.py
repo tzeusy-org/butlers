@@ -1066,3 +1066,48 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             primary=primary,
         )
         return result.as_dict()
+
+    from butlers.tools.relationship import relationship_lookup as _rlu
+
+    @_tool("entity")
+    async def relationship_lookup(
+        entity_id: uuid.UUID | None = None,
+        entity_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """Read the owner's relationship knowledge for one entity.
+
+        READ-ONLY: this tool never writes, mutates, touches last_seen, or
+        schedules anything; repeated calls leave the database unchanged. It is
+        the symmetric read path to relationship_assert_fact.
+
+        IN-SESSION-ONLY: call this only from an already-running session in
+        response to a live need. Do NOT build any cron entry, scheduled task,
+        or spawn trigger around it (the per-call LLM cost lives at the caller).
+
+        Pass EXACTLY ONE of:
+            entity_id: UUID of a known entity.
+            entity_ref: a name / alias / contact-value string. Resolved with the
+                same deterministic ranking as the entity search endpoint
+                (prefix > contact-value > substring > predicate; no model call).
+
+        Passing both or neither raises a validation error. An unresolved ref is
+        a structured miss (entity=null, candidates=[]), not an error. When a ref
+        is ambiguous (tied top score) entity is null and up to 3 candidates are
+        returned so you re-invoke with an explicit entity_id.
+
+        Returns a dict:
+            entity: {id, canonical_name, entity_type, aliases, roles, tier
+                (null unless a Dunbar tier override is pinned), state} or null.
+            facts: active facts from both stores (identity rows first, then
+                narrative), each {store, predicate, object, object_kind, src,
+                conf, verified, primary, observed_at, last_seen (identity only),
+                staleness_band: fresh|aging|stale}.
+            recency: {last_seen, last_interaction_at, staleness_band} or null.
+            resolution: when entity_ref was used — {matched_on, score,
+                ambiguous, candidates}; null for entity_id lookups.
+        """
+        return await _rlu.relationship_lookup(
+            module._get_pool(),
+            entity_id=entity_id,
+            entity_ref=entity_ref,
+        )
