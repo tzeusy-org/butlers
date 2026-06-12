@@ -7,6 +7,8 @@ tool under three different name forms:
 - opencode-prefixed: ``{butler_name}_memory_entity_resolve`` (opencode parser)
 - claude-code/codex prefixed: ``mcp__{butler_name}__memory_entity_resolve``
   (claude_code / codex parsers)
+- endpoint-prefixed: ``mcp__http://127.0.0.1:.../mcp__memory_entity_resolve``
+  (runtime builds that echo the MCP endpoint as the server identity)
 
 Without normalization the merge-by-(name, payload) signature never matches
 across those forms, so each invocation is persisted multiple times in
@@ -151,6 +153,55 @@ def test_merge_preserves_bare_name_as_canonical_when_prefixed_only():
     assert len(merged) == 1
     # The stored name is the bare form.
     assert merged[0]["name"] == "memory_entity_resolve"
+
+
+def test_merge_dedupes_endpoint_prefixed_mcp_names_against_capture():
+    """Endpoint-derived MCP aliases collapse against server-side bare names.
+
+    Some runtimes can report the remote MCP endpoint identity in the
+    ``mcp__<server>__<tool>`` slot.  That alias is environment-specific and must
+    not prevent parser records from merging with capture-side records.
+    """
+    parsed = [
+        {
+            "id": "t1",
+            "name": (
+                "mcp__http://127.0.0.1:41109/mcp?"
+                "runtime_session_id=session-1__memory_entity_resolve"
+            ),
+            "input": {"query": "alice"},
+        },
+    ]
+    executed = [
+        {
+            "name": "memory_entity_resolve",
+            "input": {"query": "alice"},
+            "outcome": "success",
+        },
+    ]
+
+    merged = _merge_tool_call_records(parsed, executed, butler_name="lifestyle")
+
+    assert len(merged) == 1
+    assert merged[0]["id"] == "t1"
+    assert merged[0]["name"] == "memory_entity_resolve"
+    assert merged[0]["outcome"] == "success"
+
+
+def test_merge_normalizes_endpoint_prefixed_mcp_names_without_capture():
+    """Parser-only endpoint-prefixed MCP records are stored under the bare tool name."""
+    parsed = [
+        {
+            "id": "t1",
+            "name": "mcp__lifestyle.internal__spotify_search",
+            "input": {"query": "jazz"},
+        },
+    ]
+
+    merged = _merge_tool_call_records(parsed, [], butler_name="lifestyle")
+
+    assert len(merged) == 1
+    assert merged[0]["name"] == "spotify_search"
 
 
 def test_merge_matches_raw_parser_payload_to_capture_fingerprint():
