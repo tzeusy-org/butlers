@@ -301,6 +301,10 @@ def _normalize_tool_name(name: str, butler_name: str | None) -> str:
     """
     if not name:
         return name
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        if len(parts) == 3 and _looks_like_mcp_endpoint_alias(parts[1]):
+            return parts[2]
     if butler_name:
         mcp_prefix = f"mcp__{butler_name}__"
         if name.startswith(mcp_prefix):
@@ -309,6 +313,26 @@ def _normalize_tool_name(name: str, butler_name: str | None) -> str:
         if name.startswith(opencode_prefix):
             return name[len(opencode_prefix) :]
     return name
+
+
+def _looks_like_mcp_endpoint_alias(alias: str) -> bool:
+    """Return whether an MCP server alias is an endpoint-derived identifier.
+
+    Codex/OpenCode should report configured server names such as ``lifestyle``,
+    but some runtime builds can echo the remote endpoint identity in the
+    ``mcp__<server>__<tool>`` prefix.  Those aliases are environment-specific
+    and must still collapse to the same bare tool name as server-side capture.
+    """
+    if not alias:
+        return False
+    if "://" in alias:
+        parsed = urlsplit(alias)
+        return bool(parsed.scheme and parsed.netloc)
+    if "/" in alias or "?" in alias:
+        return True
+    if alias in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    return ":" in alias or "." in alias
 
 
 def _merge_tool_call_records(
