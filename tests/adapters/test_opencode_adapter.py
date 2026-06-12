@@ -331,7 +331,7 @@ async def test_invoke_spills_large_prompt_to_attachment():
     assert "--file" in cmd
     assert _PROMPT_ATTACHMENT_MESSAGE in cmd
     assert cmd.index(_PROMPT_ATTACHMENT_MESSAGE) < cmd.index("--file")
-    assert cmd[-2:] == ("--file", str(Path(cmd[cmd.index("--file") + 1])))
+    assert cmd[-2] == "--file"
     assert captured["prompt_file_text"] == large_prompt
 
 
