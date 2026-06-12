@@ -51,6 +51,13 @@ export interface PredicateGroupProps {
    * own default: `Select entity <displayName>`.
    */
   getRowAriaLabel?: (entry: NeighbourEntry) => string;
+  /**
+   * Count of neighbours NOT returned in ``entries`` because of ranked
+   * truncation (from the neighbours response ``remainders`` map). When > 0 a
+   * non-interactive "+N more" affordance is rendered after the rows. Zero or
+   * undefined renders nothing.
+   */
+  remainder?: number;
 }
 
 /**
@@ -78,6 +85,7 @@ export function PredicateGroup({
   onSelect,
   columnIndex,
   getRowAriaLabel,
+  remainder,
 }: PredicateGroupProps) {
   const label = predicate.replace(/-/g, " ");
   const isColumns = columnIndex !== undefined;
@@ -87,12 +95,19 @@ export function PredicateGroup({
     : `predicate-group-${predicate}`;
 
   const rowTestId = isColumns ? `column-neighbour-row-${columnIndex}` : "neighbour-row";
+  const moreTestId = isColumns
+    ? `column-predicate-more-${columnIndex}-${predicate}`
+    : `predicate-more-${predicate}`;
+
+  const hasRemainder = remainder !== undefined && remainder > 0;
+  // The full group size is what we returned plus the truncated overflow.
+  const totalCount = entries.length + (hasRemainder ? remainder : 0);
 
   return (
     <section data-testid={sectionTestId}>
       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1 px-2">
         {label}
-        <span className="ml-2 font-normal tabular-nums">({entries.length})</span>
+        <span className="ml-2 font-normal tabular-nums">({totalCount})</span>
       </h3>
       <ul>
         {entries.map((entry) => (
@@ -106,6 +121,14 @@ export function PredicateGroup({
           />
         ))}
       </ul>
+      {hasRemainder && (
+        <p
+          className="text-xs text-muted-foreground px-2 pt-0.5 tabular-nums"
+          data-testid={moreTestId}
+        >
+          +{remainder} more
+        </p>
+      )}
     </section>
   );
 }

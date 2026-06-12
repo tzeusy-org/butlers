@@ -105,6 +105,59 @@ describe("PredicateGroup: entries", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Ranked truncation — remainder "+N more" affordance
+// ---------------------------------------------------------------------------
+
+describe("PredicateGroup: remainder (+N more)", () => {
+  it("renders +N more when remainder > 0", () => {
+    const html = renderToStaticMarkup(
+      <PredicateGroup predicate="knows" entries={[ALICE, BOB]} remainder={34} onSelect={() => {}} />,
+    );
+    expect(html).toContain("+34 more");
+    expect(html).toContain('data-testid="predicate-more-knows"');
+  });
+
+  it("includes the remainder in the parenthesized group count", () => {
+    const html = renderToStaticMarkup(
+      <PredicateGroup predicate="knows" entries={[ALICE, BOB]} remainder={34} onSelect={() => {}} />,
+    );
+    // 2 returned + 34 truncated = 36 total in the group.
+    expect(html).toContain("(36)");
+  });
+
+  it("does not render the affordance when remainder is 0", () => {
+    const html = renderToStaticMarkup(
+      <PredicateGroup predicate="knows" entries={[ALICE, BOB]} remainder={0} onSelect={() => {}} />,
+    );
+    expect(html).not.toContain("more");
+    expect(html).not.toContain("predicate-more-knows");
+    expect(html).toContain("(2)");
+  });
+
+  it("does not render the affordance when remainder is undefined", () => {
+    const html = renderToStaticMarkup(
+      <PredicateGroup predicate="knows" entries={[ALICE, BOB]} onSelect={() => {}} />,
+    );
+    expect(html).not.toContain("predicate-more-knows");
+    expect(html).toContain("(2)");
+  });
+
+  it("uses the Columns-view testId for the remainder when columnIndex is set", () => {
+    const html = renderToStaticMarkup(
+      <PredicateGroup
+        predicate="knows"
+        entries={[ALICE]}
+        remainder={5}
+        columnIndex={2}
+        onSelect={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="column-predicate-more-2-knows"');
+    expect(html).toContain("+5 more");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test IDs — Hop view (no columnIndex)
 // ---------------------------------------------------------------------------
 

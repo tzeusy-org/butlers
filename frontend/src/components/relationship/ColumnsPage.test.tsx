@@ -102,9 +102,10 @@ const KNOWS_NEIGHBOURS: NeighboursResponse = {
       },
     ],
   },
+  remainders: {},
 };
 
-const EMPTY_NEIGHBOURS: NeighboursResponse = { neighbours: {} };
+const EMPTY_NEIGHBOURS: NeighboursResponse = { neighbours: {}, remainders: {} };
 
 function makeQueryClient() {
   return new QueryClient({

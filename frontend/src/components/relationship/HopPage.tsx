@@ -132,7 +132,11 @@ interface NeighbourFanOutProps {
 }
 
 function NeighbourFanOut({ entityId, onRecentre }: NeighbourFanOutProps) {
-  const { data, isLoading, error, refetch } = useEntityNeighbours(entityId);
+  // Ranked truncation: top-N by weight per predicate, with the overflow count
+  // surfaced via `remainders` → the "+N more" affordance on each group.
+  const { data, isLoading, error, refetch } = useEntityNeighbours(entityId, {
+    rank: "weight",
+  });
 
   if (isLoading) {
     return (
@@ -162,6 +166,7 @@ function NeighbourFanOut({ entityId, onRecentre }: NeighbourFanOutProps) {
   }
 
   const neighbours = data?.neighbours ?? {};
+  const remainders = data?.remainders ?? {};
   const predicates = Object.keys(neighbours).sort();
 
   if (predicates.length === 0) {
@@ -180,6 +185,7 @@ function NeighbourFanOut({ entityId, onRecentre }: NeighbourFanOutProps) {
           key={predicate}
           predicate={predicate}
           entries={neighbours[predicate]}
+          remainder={remainders[predicate]}
           onSelect={onRecentre}
           getRowAriaLabel={(entry) =>
             `Re-centre on entity ${entry.canonical_name || entry.entity_id}`

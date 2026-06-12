@@ -64,7 +64,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityFacts: vi.fn(() => ({
-    data: { facts: [], total: 0, offset: 0, limit: 20, has_more: false },
+    data: { items: [], next_cursor: null, has_more: false },
     isFetching: false,
     error: null,
   })),
@@ -602,20 +602,20 @@ const SAMPLE_ENTITY_FACT: EntityFact = {
   primary: null,
   validity: "active",
   created_at: "2025-03-10T08:00:00Z",
+  store: "identity",
+  staleness_band: "fresh",
 };
 
 function setEntityFacts(
   facts: EntityFact[],
-  opts: { has_more?: boolean; total?: number; error?: Error } = {},
+  opts: { has_more?: boolean; next_cursor?: string | null; error?: Error } = {},
 ) {
   vi.mocked(useEntityFacts).mockReturnValue({
     data: opts.error
       ? undefined
       : {
-          facts,
-          total: opts.total ?? facts.length,
-          offset: 0,
-          limit: 20,
+          items: facts,
+          next_cursor: opts.next_cursor ?? (opts.has_more ? "cursor-next" : null),
           has_more: opts.has_more ?? false,
         },
     isFetching: false,
@@ -702,7 +702,7 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
   it("Workbench shows load-more button when has_more is true", () => {
     setMode("workbench");
     setEntityState(BASE_ENTITY);
-    setEntityFacts([SAMPLE_ENTITY_FACT], { has_more: true, total: 50 });
+    setEntityFacts([SAMPLE_ENTITY_FACT], { has_more: true });
     const html = renderPage();
     expect(html).toContain("Load more facts");
   });
@@ -744,6 +744,58 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
     expect(html).toContain('data-testid="provenance-grid"');
     expect(html).toContain("Failed to fetch facts");
     expect(html).not.toContain("No facts linked to this entity.");
+  });
+
+  it("Workbench renders Store and Freshness columns + per-row badges", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
+    const html = renderPage();
+    // New column headers from the keyset contract.
+    expect(html).toContain("Store");
+    expect(html).toContain("Freshness");
+    // Per-row store + staleness labels.
+    expect(html).toContain("identity");
+    expect(html).toContain("fresh");
+  });
+
+  it("Workbench renders validity (History) and store (All stores) toggles", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT]);
+    const html = renderPage();
+    expect(html).toContain('data-testid="provenance-validity-active"');
+    expect(html).toContain('data-testid="provenance-validity-superseded"');
+    expect(html).toContain('data-testid="provenance-store-all"');
+  });
+
+  it("Workbench layers labeled narrative-store rows when store=all returns them", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    const narrativeFact: EntityFact = {
+      ...SAMPLE_ENTITY_FACT,
+      id: "fact-narr-1",
+      object: "Narrative detail",
+      src: "memory",
+      store: "narrative",
+      staleness_band: "aging",
+    };
+    setEntityFacts([SAMPLE_ENTITY_FACT, narrativeFact]);
+    const html = renderPage();
+    // Both the identity row and the labeled narrative row render together.
+    expect(html).toContain('data-testid="provenance-row-identity"');
+    expect(html).toContain('data-testid="provenance-row-narrative"');
+    expect(html).toContain("narrative");
+    expect(html).toContain("Narrative detail");
+  });
+
+  it("Workbench load-more is wired to the keyset cursor (renders the button)", () => {
+    setMode("workbench");
+    setEntityState(BASE_ENTITY);
+    setEntityFacts([SAMPLE_ENTITY_FACT], { has_more: true, next_cursor: "CURSOR_2" });
+    const html = renderPage();
+    expect(html).toContain('data-testid="provenance-load-more"');
+    expect(html).toContain("Load more facts");
   });
 });
 

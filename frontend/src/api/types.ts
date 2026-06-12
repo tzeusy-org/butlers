@@ -5307,6 +5307,29 @@ export interface NeighbourEntry {
 export interface NeighboursResponse {
   /** Maps relational predicate to its list of neighbours. */
   neighbours: Record<string, NeighbourEntry[]>;
+  /**
+   * Per-predicate count of neighbours NOT returned in ``neighbours`` because of
+   * ranked truncation (the "+N more" affordance for Hop / Columns).
+   *
+   * Empty (and an omitted predicate means zero remainder) when no truncation was
+   * applied — i.e. when ``rank`` was not requested.
+   */
+  remainders: Record<string, number>;
+}
+
+/** Query parameters for the entity neighbours endpoint. */
+export interface NeighboursParams {
+  /**
+   * Ranking key for per-predicate truncation. Only ``"weight"`` in v1. When set,
+   * each predicate group is truncated to the top ``per_predicate`` by weight and
+   * the overflow count is reported in ``remainders``.
+   */
+  rank?: "weight";
+  /**
+   * Max neighbours returned per predicate group when ``rank`` is set
+   * (top-N by weight). Defaults to 6 on the backend.
+   */
+  per_predicate?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -5404,13 +5427,30 @@ export interface ConcentrationResponse {
 // ---------------------------------------------------------------------------
 
 /**
- * One triple from relationship.entity_facts for the Workbench ProvenanceGrid.
+ * Origin store of an entity fact row.
+ *
+ * - ``"identity"`` — the relationship triple store (``relationship.entity_facts``).
+ * - ``"narrative"`` — labeled memory-module ``facts`` rows, appended only when
+ *   ``store=all`` is requested.
+ */
+export type EntityFactStore = "identity" | "narrative";
+
+/**
+ * Read-time staleness band derived from the most-recent observation timestamp.
+ * Separate axis from confidence (``conf``).
+ */
+export type EntityFactStalenessBand = "fresh" | "aging" | "stale";
+
+/**
+ * One fact row for the Workbench ProvenanceGrid.
  *
  * Provenance fields:
  * - ``weight`` — relational aggregation weight (null when not yet scored).
  * - ``last_observed_at`` — most-recent observation timestamp (null when never re-observed).
  * - ``object_kind`` — ``"literal"`` for plain values; ``"entity"`` for entity refs.
  * - ``src`` — butler slug that authored the fact.
+ * - ``store`` — origin store of this row (``"identity"`` or ``"narrative"``).
+ * - ``staleness_band`` — read-time freshness band (``"fresh"`` / ``"aging"`` / ``"stale"``).
  *
  * Note: ``source_event_id`` is not yet a column in relationship.entity_facts.
  * Use ``src`` for source attribution until that column is added.
@@ -5429,21 +5469,43 @@ export interface EntityFact {
   primary: boolean | null;
   validity: string;
   created_at: string;
+  /** Origin store of this row. Identity rows always carry ``"identity"``. */
+  store: EntityFactStore;
+  /** Read-time staleness band (``"fresh"`` / ``"aging"`` / ``"stale"``). */
+  staleness_band: EntityFactStalenessBand;
 }
 
-/** Response envelope for GET /api/butlers/relationship/entities/{id}/facts. */
+/**
+ * Keyset (cursor) response envelope for
+ * GET /api/butlers/relationship/entities/{id}/facts.
+ *
+ * Ordered ``created_at DESC, id DESC`` per the repo cursor convention; there is
+ * no ``total`` field. ``next_cursor`` is null on the last page.
+ */
 export interface EntityFactsResponse {
-  facts: EntityFact[];
-  total: number;
-  offset: number;
-  limit: number;
+  items: EntityFact[];
+  next_cursor: string | null;
   has_more: boolean;
 }
 
-/** Query parameters for entity facts endpoints. */
+/** Validity filter for the facts drill (active rows vs. superseded history). */
+export type EntityFactsValidity = "active" | "superseded";
+
+/** Query parameters for the entity facts drill endpoint (keyset paginated). */
 export interface EntityFactsParams {
-  offset?: number;
+  /** Restrict to a single predicate. */
+  predicate?: string;
+  /** ``"active"`` (default) or ``"superseded"`` (the Workbench history view). */
+  validity?: EntityFactsValidity;
+  /**
+   * ``"identity"`` (default; triple store only) or ``"all"`` (additionally
+   * appends labeled narrative-store rows after the identity page).
+   */
+  store?: "identity" | "all";
+  /** Page size (max 200). */
   limit?: number;
+  /** Opaque keyset cursor from a prior response's ``next_cursor``. */
+  cursor?: string;
 }
 
 // ---------------------------------------------------------------------------

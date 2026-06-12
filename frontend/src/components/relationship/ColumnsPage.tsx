@@ -64,9 +64,13 @@ interface ColumnPanelProps {
 }
 
 function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelProps) {
-  const { data, isLoading, error, refetch } = useEntityNeighbours(entityId);
+  // Ranked truncation: top-N by weight per predicate; overflow → "+N more".
+  const { data, isLoading, error, refetch } = useEntityNeighbours(entityId, {
+    rank: "weight",
+  });
 
   const neighbours = data?.neighbours ?? {};
+  const remainders = data?.remainders ?? {};
   const predicates = Object.keys(neighbours).sort();
 
   return (
@@ -127,6 +131,7 @@ function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelP
                 key={predicate}
                 predicate={predicate}
                 entries={neighbours[predicate]}
+                remainder={remainders[predicate]}
                 columnIndex={columnIndex}
                 onSelect={(entityId) => onSelect(entityId, columnIndex)}
               />

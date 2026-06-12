@@ -38,6 +38,7 @@ import type {
   AddEntityContactRequest,
   UpdateEntityContactRequest,
   EntityFactsParams,
+  NeighboursParams,
   MergeRelationshipEntitiesRequest,
   PromoteRelationshipEntityRequest,
   RelationshipEntityListParams,
@@ -97,11 +98,19 @@ export function useEntityDates(entityId: string | undefined) {
   });
 }
 
-/** Fetch relational neighbours grouped by predicate for a relationship entity (§9.2). */
-export function useEntityNeighbours(entityId: string | undefined) {
+/** Fetch relational neighbours grouped by predicate for a relationship entity (§9.2).
+ *
+ * Pass ``params.rank = "weight"`` (with optional ``per_predicate``) to request
+ * ranked truncation; the response then carries a ``remainders`` map driving the
+ * "+N more" affordance for Hop / Columns.
+ */
+export function useEntityNeighbours(
+  entityId: string | undefined,
+  params?: NeighboursParams,
+) {
   return useQuery({
-    queryKey: ["entity-neighbours", entityId],
-    queryFn: () => getEntityNeighbours(entityId!),
+    queryKey: ["entity-neighbours", entityId, params?.rank ?? null, params?.per_predicate ?? null],
+    queryFn: () => getEntityNeighbours(entityId!, params),
     enabled: !!entityId,
   });
 }
@@ -110,17 +119,27 @@ export function useEntityNeighbours(entityId: string | undefined) {
  * Fetch per-fact provenance data from relationship.entity_facts (bu-mg4dk).
  *
  * Provides real provenance fields for the Workbench ProvenanceGrid (§6b Amendment 7):
- * weight, last_observed_at, object_kind, src.
+ * weight, last_observed_at, object_kind, src — plus the row ``store`` label and
+ * ``staleness_band``. Keyset (cursor) paginated.
  *
  * @param entityId — the entity UUID to fetch facts for.
- * @param params — optional offset/limit pagination parameters.
+ * @param params — optional facts-drill filters + keyset pagination params
+ *   (predicate / validity / store / limit / cursor).
  */
 export function useEntityFacts(
   entityId: string | undefined,
   params?: EntityFactsParams,
 ) {
   return useQuery({
-    queryKey: ["entity-facts", entityId, params?.offset ?? 0, params?.limit ?? 20],
+    queryKey: [
+      "entity-facts",
+      entityId,
+      params?.predicate ?? null,
+      params?.validity ?? "active",
+      params?.store ?? "identity",
+      params?.limit ?? 20,
+      params?.cursor ?? null,
+    ],
     queryFn: () => getEntityFacts(entityId!, params),
     enabled: !!entityId,
   });

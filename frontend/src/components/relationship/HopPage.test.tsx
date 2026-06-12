@@ -115,9 +115,10 @@ const KNOWS_NEIGHBOURS: NeighboursResponse = {
       },
     ],
   },
+  remainders: {},
 };
 
-const EMPTY_NEIGHBOURS: NeighboursResponse = { neighbours: {} };
+const EMPTY_NEIGHBOURS: NeighboursResponse = { neighbours: {}, remainders: {} };
 
 function makeQueryClient() {
   return new QueryClient({
@@ -314,6 +315,31 @@ describe("HopPage — neighbour list", () => {
     const panel = container.querySelector("[data-testid='neighbours-panel']");
     expect(panel).toBeNull();
     expect(container.textContent).toContain("No neighbours yet.");
+  });
+
+  it("requests ranked neighbours (rank=weight) for the +N more affordance", () => {
+    renderPage("/entities/hop?center=owner-uuid-001");
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    const ranked = calls.find((c) => c[1]?.rank === "weight");
+    expect(ranked).toBeTruthy();
+  });
+
+  it("renders '+N more' from the neighbours remainders map", () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: { ...KNOWS_NEIGHBOURS, remainders: { knows: 34 } },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const more = container.querySelector("[data-testid='predicate-more-knows']");
+    expect(more).toBeTruthy();
+    expect(more?.textContent).toContain("+34 more");
+    // family-of has no remainder → no affordance.
+    expect(container.querySelector("[data-testid='predicate-more-family-of']")).toBeNull();
   });
 });
 

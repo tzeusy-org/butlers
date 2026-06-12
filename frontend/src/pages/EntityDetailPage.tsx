@@ -22,6 +22,8 @@ import type { DunbarTier, EntityState, EntityType } from "@/lib/entity-glosses";
 import type {
   ContactSummary,
   EntityFact,
+  EntityFactStalenessBand,
+  EntityFactsValidity,
   EntityImportantDate,
   EntityInfoEntry,
   EntityTimelineItem,
@@ -1628,23 +1630,73 @@ function SortHeaderButton({
 }
 
 const PROVENANCE_FACTS_PAGE_SIZE = 20;
-const PROVENANCE_FACTS_MAX_LIMIT = 200;
+
+const STALENESS_BADGE_VARIANT: Record<EntityFactStalenessBand, "default" | "secondary" | "outline"> =
+  {
+    fresh: "default",
+    aging: "secondary",
+    stale: "outline",
+  };
 
 function ProvenanceGrid({ entityId }: { entityId: string }) {
-  const [offset, setOffset] = useState(0);
   const [sort, setSort] = useState<ProvenanceSortState>({
     key: "last_observed_at",
     dir: "desc",
   });
+  // History view: active (default) vs. superseded facts.
+  const [validity, setValidity] = useState<EntityFactsValidity>("active");
+  // Narrative layering: identity-only (default) vs. all stores.
+  const [storeAll, setStoreAll] = useState(false);
+  // Keyset cursor stack: accumulated cursors driving the current visible window.
+  // We re-derive the merged page from each loaded cursor (React Query caches per key).
+  const [cursors, setCursors] = useState<string[]>([]);
 
+  const store = storeAll ? "all" : "identity";
+
+  // The active page request: the last cursor in the stack (undefined → first page).
+  const activeCursor = cursors[cursors.length - 1];
   const { data, isFetching, error } = useEntityFacts(entityId, {
-    offset: 0,
-    limit: Math.min(offset + PROVENANCE_FACTS_PAGE_SIZE, PROVENANCE_FACTS_MAX_LIMIT),
+    validity,
+    store,
+    limit: PROVENANCE_FACTS_PAGE_SIZE,
+    cursor: activeCursor,
   });
 
-  const facts = useMemo(() => data?.facts ?? [], [data?.facts]);
-  const total = data?.total ?? 0;
+  // Pages loaded BEFORE the active cursor. The active page's items are merged
+  // on top via useMemo so the first render (SSR/tests) shows facts without
+  // waiting for an effect to flush.
+  const [priorPages, setPriorPages] = useState<EntityFact[]>([]);
+
+  // Reset the cursor stack + accumulation when a filter changes (validity /
+  // store / entity). Done during render via the React-recommended "store the
+  // previous value in state and adjust on change" pattern — this avoids a
+  // cascading effect and re-renders immediately with the reset state.
+  const filterKey = `${entityId}|${validity}|${store}`;
+  const [prevFilterKey, setPrevFilterKey] = useState(filterKey);
+  if (prevFilterKey !== filterKey) {
+    setPrevFilterKey(filterKey);
+    if (cursors.length > 0) setCursors([]);
+    if (priorPages.length > 0) setPriorPages([]);
+  }
+
+  const pageItems = useMemo(() => data?.items ?? [], [data?.items]);
+
+  const facts = useMemo(() => {
+    if (priorPages.length === 0) return pageItems;
+    const seen = new Set(priorPages.map((f) => `${f.store}:${f.id}`));
+    return [...priorPages, ...pageItems.filter((f) => !seen.has(`${f.store}:${f.id}`))];
+  }, [priorPages, pageItems]);
+
   const hasMore = data?.has_more ?? false;
+  const nextCursor = data?.next_cursor ?? null;
+
+  function handleLoadMore() {
+    if (nextCursor == null) return;
+    // Fold the currently-visible page into priorPages, then advance the cursor
+    // so the next page appends to (rather than replaces) what is on screen.
+    setPriorPages(facts);
+    setCursors((prev) => [...prev, nextCursor]);
+  }
 
   function handleSort(key: ProvenanceSortKey) {
     setSort((prev) =>
@@ -1671,12 +1723,47 @@ function ProvenanceGrid({ entityId }: { entityId: string }) {
     <section className="space-y-3" data-testid="provenance-grid">
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold">Provenance</h2>
-        <span className="text-muted-foreground text-xs">
-          {facts.length} of {total} facts
+        <span className="text-muted-foreground text-xs" data-testid="provenance-count">
+          {facts.length} {facts.length === 1 ? "fact" : "facts"} loaded
         </span>
       </div>
 
-      {facts.length === 0 ? (
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-md border border-border" role="group" aria-label="Fact validity">
+          <Button
+            type="button"
+            variant={validity === "active" ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={validity === "active"}
+            data-testid="provenance-validity-active"
+            onClick={() => setValidity("active")}
+          >
+            Active
+          </Button>
+          <Button
+            type="button"
+            variant={validity === "superseded" ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={validity === "superseded"}
+            data-testid="provenance-validity-superseded"
+            onClick={() => setValidity("superseded")}
+          >
+            History
+          </Button>
+        </div>
+        <Button
+          type="button"
+          variant={storeAll ? "secondary" : "ghost"}
+          size="sm"
+          aria-pressed={storeAll}
+          data-testid="provenance-store-all"
+          onClick={() => setStoreAll((prev) => !prev)}
+        >
+          {storeAll ? "All stores" : "Identity only"}
+        </Button>
+      </div>
+
+      {facts.length === 0 && !isFetching ? (
         <p className="text-muted-foreground py-6 text-center text-sm">
           No facts linked to this entity.
         </p>
@@ -1694,6 +1781,8 @@ function ProvenanceGrid({ entityId }: { entityId: string }) {
               </TableHead>
               <TableHead className="text-muted-foreground text-xs">Object</TableHead>
               <TableHead className="text-muted-foreground text-xs">Kind</TableHead>
+              <TableHead className="text-muted-foreground text-xs">Store</TableHead>
+              <TableHead className="text-muted-foreground text-xs">Freshness</TableHead>
               <TableHead className="text-muted-foreground text-xs">
                 <SortHeaderButton
                   label="Weight"
@@ -1715,7 +1804,7 @@ function ProvenanceGrid({ entityId }: { entityId: string }) {
           </TableHeader>
           <TableBody>
             {sorted.map((fact) => (
-              <ProvenanceRow key={fact.id} fact={fact} />
+              <ProvenanceRow key={`${fact.store}:${fact.id}`} fact={fact} />
             ))}
           </TableBody>
         </Table>
@@ -1726,8 +1815,9 @@ function ProvenanceGrid({ entityId }: { entityId: string }) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setOffset((prev) => prev + PROVENANCE_FACTS_PAGE_SIZE)}
-            disabled={isFetching}
+            data-testid="provenance-load-more"
+            onClick={handleLoadMore}
+            disabled={isFetching || nextCursor == null}
           >
             {isFetching ? "Loading..." : "Load more facts"}
           </Button>
@@ -1757,13 +1847,23 @@ function ProvenanceRow({ fact }: { fact: EntityFact }) {
   );
 
   return (
-    <TableRow>
+    <TableRow data-testid={`provenance-row-${fact.store}`}>
       <TableCell className="text-xs capitalize font-medium">
         {fact.predicate.replaceAll("-", " ").replaceAll("_", " ")}
       </TableCell>
       <TableCell className="text-xs">{objectCell}</TableCell>
       <TableCell className="text-xs text-muted-foreground">
         {fact.object_kind}
+      </TableCell>
+      <TableCell className="text-xs">
+        <Badge variant={fact.store === "narrative" ? "outline" : "secondary"} className="capitalize">
+          {fact.store}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-xs">
+        <Badge variant={STALENESS_BADGE_VARIANT[fact.staleness_band]} className="capitalize">
+          {fact.staleness_band}
+        </Badge>
       </TableCell>
       <TableCell className="text-xs tabular-nums">
         {fact.weight != null ? fact.weight : <span className="text-muted-foreground">—</span>}

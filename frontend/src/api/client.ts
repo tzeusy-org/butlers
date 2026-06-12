@@ -266,6 +266,7 @@ import type {
   DunbarTierOverrideResponse,
   EntityFinderSearchResponse,
   NeighboursResponse,
+  NeighboursParams,
   ConcentrationResponse,
   LinkedContactSummary,
   MessageThreadSummary,
@@ -2113,19 +2114,38 @@ export function mergeRelationshipEntities(
  *
  * Hits GET /api/butlers/relationship/entities/{id}/neighbours — returns only
  * kind='relational' predicates (excludes has-* contact predicates).
+ *
+ * Pass ``rank="weight"`` (and optional ``per_predicate``) to truncate each
+ * predicate group to the top-N by weight; the per-predicate overflow count is
+ * returned in the response ``remainders`` map (the "+N more" affordance).
+ *
  * Returns owner-only gate 403 when no owner entity is registered.
  */
-export function getEntityNeighbours(entityId: string): Promise<NeighboursResponse> {
-  return apiFetch<NeighboursResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/neighbours`,
-  );
+export function getEntityNeighbours(
+  entityId: string,
+  params?: NeighboursParams,
+): Promise<NeighboursResponse> {
+  const qs = new URLSearchParams();
+  if (params?.rank != null) qs.set("rank", params.rank);
+  if (params?.per_predicate != null) qs.set("per_predicate", String(params.per_predicate));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/neighbours?${qs.toString()}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/neighbours`;
+  return apiFetch<NeighboursResponse>(path);
 }
 
 /**
  * Fetch per-fact provenance data for an entity from relationship.entity_facts (bu-mg4dk).
  *
- * Hits GET /api/butlers/relationship/entities/{id}/facts — returns active triples
- * with real provenance fields: weight, last_observed_at, object_kind, src.
+ * Hits GET /api/butlers/relationship/entities/{id}/facts — keyset (cursor)
+ * paginated, ordered ``created_at DESC, id DESC``. Each row carries provenance
+ * fields (weight, last_observed_at, object_kind, src) plus a ``store`` label and
+ * ``staleness_band``.
+ *
+ * Filters: ``predicate`` (single predicate), ``validity`` (``active`` default /
+ * ``superseded`` history), ``store`` (``identity`` default / ``all`` to append
+ * labeled narrative rows). Pagination: ``limit`` + ``cursor`` (pass the prior
+ * response's ``next_cursor``).
  *
  * Used by the Workbench ProvenanceGrid (§6b Amendment 7).
  * Returns owner-only gate 403 when no owner entity is registered.
@@ -2135,8 +2155,11 @@ export function getEntityFacts(
   params?: EntityFactsParams,
 ): Promise<EntityFactsResponse> {
   const qs = new URLSearchParams();
-  if (params?.offset != null) qs.set("offset", String(params.offset));
+  if (params?.predicate != null) qs.set("predicate", params.predicate);
+  if (params?.validity != null) qs.set("validity", params.validity);
+  if (params?.store != null) qs.set("store", params.store);
   if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.cursor != null) qs.set("cursor", params.cursor);
   const path = qs.size
     ? `/relationship/entities/${encodeURIComponent(entityId)}/facts?${qs.toString()}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/facts`;
