@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
@@ -22,9 +22,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { permanenceBadge } from "@/components/memory/badges";
-import { useEpisodes, useFacts, useRules } from "@/hooks/use-memory";
-import type { EpisodeParams, FactParams, RuleParams } from "@/api/types";
+import FactsRegister from "@/components/memory/FactsRegister";
+import { useEpisodes, useRules } from "@/hooks/use-memory";
+import type { EpisodeParams, RuleParams } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -44,29 +44,6 @@ const PAGE_SIZE = 20;
 // ---------------------------------------------------------------------------
 // Badge helpers
 // ---------------------------------------------------------------------------
-
-function validityBadge(v: string) {
-  switch (v) {
-    case "active":
-      return (
-        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-          active
-        </Badge>
-      );
-    case "fading":
-      return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600">
-          fading
-        </Badge>
-      );
-    case "superseded":
-      return <Badge variant="secondary">superseded</Badge>;
-    case "expired":
-      return <Badge variant="destructive">expired</Badge>;
-    default:
-      return <Badge variant="secondary">{v}</Badge>;
-  }
-}
 
 function maturityBadge(m: string) {
   switch (m) {
@@ -93,21 +70,6 @@ function maturityBadge(m: string) {
 
 function truncate(s: string, len = 80) {
   return s.length > len ? s.slice(0, len) + "..." : s;
-}
-
-function confidenceBar(value: number) {
-  const pct = Math.round(value * 100);
-  return (
-    <div className="flex items-center gap-2">
-      <div className="bg-muted h-2 w-16 overflow-hidden rounded-full">
-        <div
-          className="bg-primary h-full rounded-full"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className="text-muted-foreground text-xs">{pct}%</span>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -171,114 +133,6 @@ function TableSkeleton({ cols, rows = 5 }: { cols: number; rows?: number }) {
           ))}
         </div>
       ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Facts Tab
-// ---------------------------------------------------------------------------
-
-function FactsTab({ butlerScope }: { butlerScope?: string }) {
-  const navigate = useNavigate();
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(0);
-
-  const params: FactParams = {
-    q: search || undefined,
-    scope: butlerScope,
-    offset: page * PAGE_SIZE,
-    limit: PAGE_SIZE,
-  };
-
-  const { data: response, isLoading } = useFacts(params);
-  const facts = response?.data ?? [];
-  const total = response?.meta?.total ?? 0;
-
-  return (
-    <div className="space-y-4">
-      <Input
-        placeholder="Search facts..."
-        value={search}
-        onChange={(e) => {
-          setSearch(e.target.value);
-          setPage(0);
-        }}
-      />
-
-      {isLoading ? (
-        <TableSkeleton cols={6} />
-      ) : facts.length === 0 ? (
-        <p className="text-muted-foreground py-8 text-center text-sm">
-          No facts found.
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Subject</TableHead>
-                <TableHead>Predicate</TableHead>
-                <TableHead>Content</TableHead>
-                <TableHead>Confidence</TableHead>
-                <TableHead>Permanence</TableHead>
-                <TableHead>Validity</TableHead>
-                <TableHead>Scope</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {facts.map((f) => (
-                <TableRow
-                  key={f.id}
-                  className="cursor-pointer"
-                  onClick={() => navigate(`/memory/facts/${f.id}`)}
-                >
-                  <TableCell className="font-medium">
-                    {f.entity_id ? (
-                      <Link
-                        to={`/entities/${f.entity_id}`}
-                        className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {f.entity_name ?? f.subject}
-                      </Link>
-                    ) : (
-                      f.subject
-                    )}
-                  </TableCell>
-                  <TableCell>{f.predicate}</TableCell>
-                  <TableCell className="max-w-xs truncate">
-                    {f.object_entity_id ? (
-                      <Link
-                        to={`/entities/${f.object_entity_id}`}
-                        className="text-primary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {f.object_entity_name ?? truncate(f.content)}
-                      </Link>
-                    ) : (
-                      truncate(f.content)
-                    )}
-                  </TableCell>
-                  <TableCell>{confidenceBar(f.confidence)}</TableCell>
-                  <TableCell>{permanenceBadge(f.permanence)}</TableCell>
-                  <TableCell>{validityBadge(f.validity)}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{f.scope}</Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-
-      <PaginationControls
-        page={page}
-        total={total}
-        pageSize={PAGE_SIZE}
-        onPageChange={setPage}
-      />
     </div>
   );
 }
@@ -509,7 +363,7 @@ export default function MemoryBrowser({ butlerScope }: MemoryBrowserProps) {
           </TabsList>
 
           <TabsContent value="facts">
-            <FactsTab butlerScope={butlerScope} />
+            <FactsRegister butlerScope={butlerScope} />
           </TabsContent>
 
           <TabsContent value="rules">
