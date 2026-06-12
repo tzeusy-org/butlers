@@ -551,20 +551,38 @@ class DurableBuffer:
                         raw_payload,
                         normalized_text
                     FROM message_inbox
-                    WHERE (
-                        lifecycle_state = 'accepted'
-                        AND received_at < now() - ($1 * interval '1 second')
-                    ) OR (
-                        lifecycle_state = 'processing'
-                        AND updated_at < now() - ($3 * interval '1 second')
-                    )
+                    WHERE lifecycle_state = 'accepted'
+                      AND received_at < now() - make_interval(secs => $1::double precision)
                     ORDER BY received_at ASC
-                    LIMIT $2
+                    LIMIT $2::int
                     """,
                     self._config.scanner_grace_s,
                     self._config.scanner_batch_size,
-                    lock_timeout,
                 )
+                remaining = self._config.scanner_batch_size - len(rows)
+                if remaining > 0:
+                    expired_processing_rows = await conn.fetch(
+                        """
+                        SELECT
+                            id,
+                            received_at,
+                            request_context,
+                            raw_payload,
+                            normalized_text
+                        FROM message_inbox
+                        WHERE lifecycle_state = 'processing'
+                          AND updated_at < now() - make_interval(secs => $1::double precision)
+                        ORDER BY updated_at ASC, received_at ASC
+                        LIMIT $2::int
+                        """,
+                        lock_timeout,
+                        remaining,
+                    )
+                    rows = [*rows, *expired_processing_rows]
+                    rows.sort(key=lambda row: row["received_at"])
+        except TimeoutError:
+            logger.warning("Buffer scanner DB query timed out; will retry on next sweep")
+            return 0
         except Exception:
             logger.exception("Buffer scanner DB query failed")
             return 0
