@@ -453,6 +453,15 @@ def _check_degenerate_tool_loop(
                 payload = call.get("args")
             if payload is None:
                 payload = call.get("arguments")
+            if payload is None:
+                payload = call.get("parameters")
+            if isinstance(payload, str):
+                stripped = payload.strip()
+                if stripped:
+                    try:
+                        payload = json.loads(stripped)
+                    except Exception:
+                        pass
             payload_fingerprint = fingerprint_tool_call_payload(payload)
         return f"{name}|{payload_fingerprint}"
 

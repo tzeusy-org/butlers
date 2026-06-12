@@ -39,6 +39,7 @@ def _tool_input_fingerprint(fn: Any, args: tuple[Any, ...], kwargs: dict[str, An
     """Fingerprint the full tool input without storing sensitive raw arguments."""
     try:
         bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+        bound.apply_defaults()
         bound_arguments = dict(bound.arguments)
         payload: Any = bound_arguments if bound_arguments else None
     except Exception:
