@@ -69,3 +69,5 @@ sync-branch: "beads-sync"
 sync.mode: "dolt-native"
 dolt.host: localhost
 dolt.port: 3307
+
+export.path: "issues.export.jsonl"
