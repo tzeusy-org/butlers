@@ -296,6 +296,155 @@ def build_state_changed_envelope(
 
 
 # ---------------------------------------------------------------------------
+# wellness envelope builder (ADR-4 — home-assistant-wellness-promotion)
+# ---------------------------------------------------------------------------
+
+_WELLNESS_CHANNEL = "wellness"
+
+# Human-readable labels for normalized_text rendering.
+_WELLNESS_METRIC_LABELS: dict[str, str] = {
+    "blood_pressure_systolic": "Blood pressure (systolic)",
+    "blood_pressure_diastolic": "Blood pressure (diastolic)",
+    "weight": "Weight",
+    "heart_rate": "Heart rate",
+    "blood_sugar": "Blood sugar",
+    "steps": "Steps",
+}
+
+
+def _wellness_metric_label(metric: str) -> str:
+    """Return a human-readable label for a wellness metric.
+
+    Falls back to a title-cased rendering of the metric token for owner-defined
+    metrics that lack a curated label.
+    """
+    label = _WELLNESS_METRIC_LABELS.get(metric)
+    if label is not None:
+        return label
+    return metric.replace("_", " ").capitalize()
+
+
+def build_wellness_normalized_text(metric: str, value: float, unit: str | None) -> str:
+    """Render a human-readable wellness measurement string.
+
+    Format: ``"<Label>: <value>[ <unit>]"`` (e.g.
+    ``"Blood pressure (systolic): 120 mmHg"``). Integral float values render
+    without a trailing ``.0``.
+    """
+    label = _wellness_metric_label(metric)
+    if value == int(value):
+        value_str = str(int(value))
+    else:
+        value_str = str(value)
+    if unit:
+        return f"{label}: {value_str} {unit}"
+    return f"{label}: {value_str}"
+
+
+def build_wellness_envelope(
+    *,
+    endpoint_identity: str,
+    entity_id: str,
+    time_fired: str,
+    ha_event: dict[str, Any],
+    metric: str,
+    value: float,
+    unit: str | None,
+    device_class: str | None = None,
+    friendly_name: str | None = None,
+    old_state: dict[str, Any] | None = None,
+    new_state: dict[str, Any] | None = None,
+    domain: str | None = None,
+    area_id: str | None = None,
+) -> dict[str, Any]:
+    """Build an ``ingest.v1`` envelope on the ``wellness`` channel for a
+    health-shaped HA ``state_changed`` event (design ADR-3/ADR-4).
+
+    The envelope reuses the SAME ``external_event_id`` as the ``home_assistant``
+    emission (``ha:{entity_id}:{time_ms}``) — disambiguation between the two
+    emissions comes from the channel, not the id (ADR-3). It carries a
+    normalized ``payload.raw.wellness_measurement`` block alongside the full HA
+    event context, so the Health butler can translate it without re-deriving
+    transport details and replay/forensics keep the raw event.
+
+    Args:
+        endpoint_identity: Connector endpoint identity.
+        entity_id: HA entity ID.
+        time_fired: ISO-8601 timestamp from the HA event (becomes ``valid_at``).
+        ha_event: Raw HA event dict (preserved in ``payload.raw.ha_event``).
+        metric: Canonical wellness metric (e.g. ``blood_pressure_systolic``).
+        value: Parsed numeric reading.
+        unit: Unit of measurement (e.g. ``mmHg``); may be ``None``.
+        device_class: Entity device class (preserved in the measurement block).
+        friendly_name: Human-readable entity name (optional).
+        old_state: Old entity state dict from HA (optional).
+        new_state: New entity state dict from HA (optional).
+        domain: Entity domain; derived from ``entity_id`` if omitted.
+        area_id: HA area ID (optional).
+
+    Returns:
+        A complete ``ingest.v1`` envelope on the ``wellness`` channel.
+    """
+    if domain is None and "." in entity_id:
+        domain = entity_id.split(".")[0]
+
+    observed_at_dt = parse_time_fired(time_fired)
+    valid_at_iso = observed_at_dt.isoformat()
+    time_ms = int(observed_at_dt.timestamp() * 1000)
+
+    raw: dict[str, Any] = {
+        "wellness_measurement": {
+            "metric": metric,
+            "value": value,
+            "unit": unit,
+            "valid_at": valid_at_iso,
+            "source_entity_id": entity_id,
+            "device_class": device_class,
+        },
+        "entity_id": entity_id,
+        "event_type": "state_changed",
+        "domain": domain,
+        "device_class": device_class,
+        "friendly_name": friendly_name,
+        "area": area_id,
+    }
+    if old_state is not None:
+        raw["old_state"] = old_state
+    if new_state is not None:
+        raw["new_state"] = new_state
+    if ha_event:
+        raw["ha_event"] = ha_event
+
+    normalized_text = build_wellness_normalized_text(metric, value, unit)
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _WELLNESS_CHANNEL,
+            "provider": _PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": f"ha:{entity_id}:{time_ms}",
+            "external_thread_id": f"ha:entity:{entity_id}",
+            "observed_at": observed_at_dt.isoformat(),
+        },
+        "sender": {
+            "identity": entity_id,
+        },
+        "payload": {
+            "raw": raw,
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": mint_idempotency_key(endpoint_identity, entity_id, time_ms),
+            "policy_tier": _POLICY_TIER,
+            "ingestion_tier": _INGESTION_TIER,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # automation_triggered envelope builder (task 6.2)
 # ---------------------------------------------------------------------------
 

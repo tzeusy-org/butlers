@@ -72,6 +72,11 @@ from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.home_assistant_wellness import (
+    WellnessClassifier,
+    WellnessRule,
+    parse_rules_extra,
+)
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 
@@ -738,6 +743,22 @@ ha_discretion_total = Counter(
 )
 """verdict: forward | ignore | error_forward"""
 
+ha_wellness_classify_total = Counter(
+    "connector_ha_wellness_classify_total",
+    "Wellness classifier outcomes for filter-passing events",
+    labelnames=["endpoint_identity", "outcome", "metric"],
+)
+"""outcome: promoted | no_match | skipped_non_numeric | denylisted.
+
+metric: matched metric name, or 'none' when not promoted."""
+
+ha_submissions_total = Counter(
+    "connector_ha_submissions_total",
+    "Switchboard ingest submissions by channel and status",
+    labelnames=["endpoint_identity", "channel", "status"],
+)
+"""channel: home_assistant | wellness; status: success | error"""
+
 # --- Gauges (task 8.4) ---
 
 ha_filter_pass_rate = Gauge(
@@ -823,6 +844,33 @@ class HAConnectorMetrics:
         """
         ha_discretion_total.labels(endpoint_identity=self._eid, verdict=verdict).inc()
 
+    def inc_wellness_classify(self, outcome: str, metric: str | None) -> None:
+        """Record a wellness classifier outcome.
+
+        Args:
+            outcome: One of ``promoted``, ``no_match``, ``skipped_non_numeric``,
+                ``denylisted``.
+            metric: Matched metric name, or ``None`` (recorded as ``"none"``).
+        """
+        ha_wellness_classify_total.labels(
+            endpoint_identity=self._eid,
+            outcome=outcome,
+            metric=metric or "none",
+        ).inc()
+
+    def inc_submission(self, channel: str, status: str) -> None:
+        """Record a Switchboard submission outcome for a channel.
+
+        Args:
+            channel: One of ``home_assistant``, ``wellness``.
+            status: One of ``success``, ``error``.
+        """
+        ha_submissions_total.labels(
+            endpoint_identity=self._eid,
+            channel=channel,
+            status=status,
+        ).inc()
+
     # --- Gauges ---
 
     def set_filter_pass_rate(self, rate: float) -> None:
@@ -894,13 +942,18 @@ class HAConnectorConfig:
     domain_allowlist: frozenset[str] = field(
         default_factory=lambda: frozenset(_DEFAULT_DOMAIN_ALLOWLIST)
     )
+    # Wellness promotion (home-assistant-wellness-promotion ADR-2)
+    wellness_promotion_enabled: bool = True
+    wellness_rules_extra: tuple[WellnessRule, ...] = ()
+    wellness_entity_denylist: frozenset[str] = frozenset()
 
     @classmethod
     def from_env(cls) -> HAConnectorConfig:
         """Load connector configuration from environment variables.
 
         Raises:
-            ValueError: If ``SWITCHBOARD_MCP_URL`` is not set.
+            ValueError: If ``SWITCHBOARD_MCP_URL`` is not set, or if
+                ``HA_WELLNESS_RULES_EXTRA`` holds malformed JSON / rules.
         """
         switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL", "").strip()
         if not switchboard_mcp_url:
@@ -924,6 +977,21 @@ class HAConnectorConfig:
         else:
             domain_allowlist = frozenset(_DEFAULT_DOMAIN_ALLOWLIST)
 
+        def _bool(key: str, default: bool) -> bool:
+            raw = os.environ.get(key, "").strip().lower()
+            if not raw:
+                return default
+            return raw in ("1", "true", "yes", "on")
+
+        # Wellness promotion config (ADR-2). Malformed rules-extra fails fast at
+        # startup with a clear error rather than silently disabling promotion.
+        wellness_rules_extra = parse_rules_extra(os.environ.get("HA_WELLNESS_RULES_EXTRA", ""))
+
+        raw_denylist = os.environ.get("HA_WELLNESS_ENTITY_DENYLIST", "").strip()
+        wellness_entity_denylist = frozenset(
+            d.strip() for d in raw_denylist.split(",") if d.strip()
+        )
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
@@ -936,6 +1004,9 @@ class HAConnectorConfig:
             discretion_timeout_s=_int("HA_DISCRETION_TIMEOUT_S", _DEFAULT_DISCRETION_TIMEOUT_S),
             event_queue_max=_int("HA_EVENT_QUEUE_MAX", _DEFAULT_EVENT_QUEUE_MAX),
             domain_allowlist=domain_allowlist,
+            wellness_promotion_enabled=_bool("HA_WELLNESS_PROMOTION_ENABLED", True),
+            wellness_rules_extra=wellness_rules_extra,
+            wellness_entity_denylist=wellness_entity_denylist,
         )
 
 
@@ -1347,6 +1418,110 @@ async def persist_ha_history(
 
 
 # ---------------------------------------------------------------------------
+# Dual-channel emission (home-assistant-wellness-promotion ADR-3)
+# ---------------------------------------------------------------------------
+
+
+async def emit_with_wellness_promotion(
+    *,
+    mcp_client: Any,
+    ha_envelope: dict[str, Any],
+    classifier: WellnessClassifier,
+    endpoint_identity: str,
+    entity_id: str,
+    time_fired: str,
+    ha_event: dict[str, Any],
+    device_class: str | None,
+    unit_of_measurement: str | None,
+    attributes: dict[str, Any],
+    new_state: dict[str, Any] | None,
+    friendly_name: str | None,
+    metrics: HAConnectorMetrics | None,
+    promotion_enabled: bool,
+) -> bool:
+    """Submit the ``home_assistant`` envelope and, when warranted, a second
+    ``wellness`` envelope for the same event (design ADR-3).
+
+    The ``home_assistant`` emission is unconditional and goes first; the
+    ``wellness`` emission is additive and only happens when promotion is enabled
+    and the classifier promotes the reading. Both emissions reuse the same
+    ``external_event_id`` — the Switchboard's channel-inclusive dedup key keeps
+    them independent on replay.
+
+    Returns:
+        ``True`` if every attempted submission succeeded (caller may advance the
+        checkpoint once); ``False`` if any submission failed transiently (caller
+        must NOT advance — replay re-emits both channels, deduped per channel).
+    """
+    from butlers.connectors.home_assistant_envelope import build_wellness_envelope
+
+    # Primary (home_assistant) — unchanged behavior, always emitted.
+    try:
+        await mcp_client.call_tool("ingest", ha_envelope)
+        if metrics is not None:
+            metrics.inc_submission("home_assistant", "success")
+    except Exception:
+        logger.warning(
+            "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
+            entity_id,
+            exc_info=True,
+        )
+        if metrics is not None:
+            metrics.inc_submission("home_assistant", "error")
+        # Primary failed: do not attempt the secondary channel, do not advance.
+        return False
+
+    if not promotion_enabled:
+        return True
+
+    # Classify for the secondary (wellness) channel.
+    result = classifier.classify_detailed(
+        entity_id=entity_id,
+        device_class=device_class,
+        unit_of_measurement=unit_of_measurement,
+        attributes=attributes,
+        state=(new_state or {}).get("state"),
+    )
+    if metrics is not None:
+        metrics.inc_wellness_classify(result.outcome, result.metric)
+
+    if result.outcome != "promoted" or result.metric is None or result.value is None:
+        return True
+
+    wellness_envelope = build_wellness_envelope(
+        endpoint_identity=endpoint_identity,
+        entity_id=entity_id,
+        time_fired=time_fired,
+        ha_event=ha_event,
+        metric=result.metric,
+        value=result.value,
+        unit=unit_of_measurement,
+        device_class=device_class,
+        friendly_name=friendly_name,
+        new_state=new_state,
+    )
+
+    try:
+        await mcp_client.call_tool("ingest", wellness_envelope)
+        if metrics is not None:
+            metrics.inc_submission("wellness", "success")
+    except Exception:
+        logger.warning(
+            "ha-connector: failed to submit wellness envelope for entity_id=%s metric=%s",
+            entity_id,
+            result.metric,
+            exc_info=True,
+        )
+        if metrics is not None:
+            metrics.inc_submission("wellness", "error")
+        # Secondary failed transiently: leave the checkpoint un-advanced so the
+        # replay re-emits both channels (the accepted primary will dedupe).
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Process entrypoint
 # ---------------------------------------------------------------------------
 
@@ -1462,6 +1637,12 @@ async def _main() -> None:
         config=HAFilterPipelineConfig(domain_allowlist=config.domain_allowlist),
         evaluator=None,  # discretion evaluator not wired (always passes via weight bypass)
         metrics=connector._ha_metrics,
+    )
+
+    # Wellness classifier for dual-channel promotion (ADR-1/ADR-3).
+    wellness_classifier = WellnessClassifier(
+        extra_rules=config.wellness_rules_extra,
+        denylist=config.wellness_entity_denylist,
     )
 
     # Load checkpoint (fail-open: empty checkpoint on any error)
@@ -1686,17 +1867,33 @@ async def _main() -> None:
             discretion_reason=result.discretion_reason or None,
         )
 
-        try:
-            ingest_start = time.monotonic()
-            await connector._mcp_client.call_tool("ingest", envelope)
-            if connector._ha_metrics is not None:
-                connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
-        except Exception:
-            logger.warning(
-                "ha-connector: failed to submit state_changed envelope for entity_id=%s",
-                entity_id,
-                exc_info=True,
-            )
+        # Emit on the home_assistant channel and, when the reading is
+        # health-shaped, additionally on the wellness channel (ADR-3). The
+        # checkpoint is advanced once, only after BOTH submissions succeed; a
+        # transient secondary failure leaves it un-advanced so the replay
+        # re-emits both channels (deduped per channel by the Switchboard).
+        ingest_start = time.monotonic()
+        submitted_all = await emit_with_wellness_promotion(
+            mcp_client=connector._mcp_client,
+            ha_envelope=envelope,
+            classifier=wellness_classifier,
+            endpoint_identity=endpoint_identity,
+            entity_id=entity_id,
+            time_fired=time_fired,
+            ha_event=event,
+            device_class=device_class,
+            unit_of_measurement=unit_of_measurement,
+            attributes=new_attrs,
+            new_state=new_state_data or None,
+            friendly_name=friendly_name,
+            metrics=connector._ha_metrics,
+            promotion_enabled=config.wellness_promotion_enabled,
+        )
+        if connector._ha_metrics is not None:
+            connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
+
+        if not submitted_all:
+            # Do not advance the checkpoint; the event will be replayed.
             return
 
         # Persist person.* state-change events to the history evidence table
