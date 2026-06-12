@@ -15,7 +15,7 @@ their own structure and tooling.
 | Pillar | Directory | Question | Content | Start here |
 |--------|-----------|----------|---------|------------|
 | **Heart and Soul** | `about/heart-and-soul/` | **WHY** does this exist? | Vision, 7 non-negotiable rules, scope boundaries, anti-patterns | [vision.md](heart-and-soul/vision.md) |
-| **Craft and Care** | `about/craft-and-care/` | **HOW SHOULD WORK BE EXECUTED WELL?** | Engineering bar, testing discipline, review expectations, observability, security, maintainability | [README.md](craft-and-care/README.md) |
+| **Craft and Care** | `about/craft-and-care/` | **WHO ARE WE WHEN WE BUILD?** | Engineering character in practice: engineering bar, testing discipline, review expectations, observability, security, maintainability | [README.md](craft-and-care/README.md) |
 | **Legends and Lore** | `about/legends-and-lore/` | **HOW** will it work? | RFCs defining wire contracts, state machines, data models | [README.md](legends-and-lore/README.md) |
 | **Spec and Spine** | `openspec/` | **WHAT** exactly must be built? | Capability specs with WHEN/THEN scenarios | `openspec/specs/` |
 | **Lay and Land** | `about/lay-and-land/` | **WHERE** does everything live? | Component maps, data flow, dependencies, deployment topology | [README.md](lay-and-land/README.md) |

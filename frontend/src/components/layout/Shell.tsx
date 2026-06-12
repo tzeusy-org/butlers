@@ -11,8 +11,31 @@ interface ShellProps {
   children: ReactNode
 }
 
+const SIDEBAR_COLLAPSED_KEY = 'butlers.sidebar-collapsed'
+
+function readCollapsedPreference(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
 export default function Shell({ header, children }: ShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(readCollapsedPreference)
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
+      } catch {
+        // Persistence is best-effort; the in-memory state still applies.
+      }
+      return next
+    })
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -24,9 +47,13 @@ export default function Shell({ header, children }: ShellProps) {
         </SheetContent>
       </Sheet>
 
-      {/* Desktop sidebar — fixed 56px icon rail, not collapsible */}
-      <aside className="hidden md:flex md:w-14 md:flex-col border-r border-border">
-        <Sidebar />
+      {/* Desktop sidebar — expanded by default, collapsible to a 56px icon rail */}
+      <aside
+        className={`hidden md:flex md:flex-col border-r border-border ${
+          collapsed ? 'md:w-14' : 'md:w-60'
+        }`}
+      >
+        <Sidebar collapsed={collapsed} onToggleCollapse={toggleCollapsed} />
       </aside>
 
       {/* Main area */}

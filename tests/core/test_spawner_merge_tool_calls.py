@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from butlers.core.spawner import _merge_tool_call_records
+from butlers.core.tool_call_capture import fingerprint_tool_call_payload
 
 pytestmark = pytest.mark.unit
 
@@ -201,3 +202,38 @@ def test_merge_normalizes_endpoint_prefixed_mcp_names_without_capture():
 
     assert len(merged) == 1
     assert merged[0]["name"] == "spotify_search"
+
+
+def test_merge_matches_raw_parser_payload_to_capture_fingerprint():
+    """Redacted capture input still merges with parser records via full-input fingerprint."""
+    parsed = [
+        {
+            "id": "t1",
+            "name": "mcp__relationship__contact_resolve",
+            "input": {"name": "Person A"},
+        },
+        {
+            "id": "t2",
+            "name": "mcp__relationship__contact_resolve",
+            "input": {"name": "Person B"},
+        },
+    ]
+    executed = [
+        {
+            "name": "contact_resolve",
+            "input_fingerprint": fingerprint_tool_call_payload({"name": "Person A"}),
+            "outcome": "success",
+        },
+        {
+            "name": "contact_resolve",
+            "input_fingerprint": fingerprint_tool_call_payload({"name": "Person B"}),
+            "outcome": "success",
+        },
+    ]
+
+    merged = _merge_tool_call_records(parsed, executed, butler_name="relationship")
+
+    assert len(merged) == 2
+    assert [call["id"] for call in merged] == ["t1", "t2"]
+    assert [call["name"] for call in merged] == ["contact_resolve", "contact_resolve"]
+    assert all(call["outcome"] == "success" for call in merged)
