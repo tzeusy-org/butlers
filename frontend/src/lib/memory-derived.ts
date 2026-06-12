@@ -15,7 +15,7 @@
  *   reports `validity === 'fading'`, because the server owns the threshold.
  */
 
-import type { Fact } from '@/api/types.ts'
+import type { Episode, Fact } from '@/api/types.ts'
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24
 
@@ -84,6 +84,99 @@ export function permanenceTag(permanence: string): string {
     default:
       return permanence
   }
+}
+
+// ---------------------------------------------------------------------------
+// Daybook (episodes register) day grouping
+// ---------------------------------------------------------------------------
+
+/** A day-bucket of episodes for the daybook (register=episodes). */
+export interface DayGroup {
+  /** Local-day key `YYYY-MM-DD` — stable across the group. */
+  key: string
+  /** Rendered header label: `TODAY` · `YESTERDAY` · `THU 12 JUN`. */
+  label: string
+  /** Episodes in this day, preserving the API's (reverse-chronological) order. */
+  episodes: Episode[]
+}
+
+/** Local-day key `YYYY-MM-DD` for an instant (NOT UTC — grouping is local). */
+function localDayKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+const WEEKDAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const
+const MONTHS = [
+  'JAN',
+  'FEB',
+  'MAR',
+  'APR',
+  'MAY',
+  'JUN',
+  'JUL',
+  'AUG',
+  'SEP',
+  'OCT',
+  'NOV',
+  'DEC',
+] as const
+
+/**
+ * Day header label for a day relative to `now`:
+ *   today → "TODAY" · yesterday → "YESTERDAY" · older → "THU 12 JUN".
+ */
+function dayLabel(day: Date, now: Date): string {
+  const dayKey = localDayKey(day)
+  if (dayKey === localDayKey(now)) return 'TODAY'
+
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (dayKey === localDayKey(yesterday)) return 'YESTERDAY'
+
+  return `${WEEKDAYS[day.getDay()]} ${day.getDate()} ${MONTHS[day.getMonth()]}`
+}
+
+/**
+ * Group episodes into days by local `created_at`, preserving the incoming
+ * (reverse-chronological) order both across and within groups. Pure — operates
+ * on a copy and never sorts; the API owns ordering. A day may legitimately
+ * split across pages; this returns whatever the current page holds, and the
+ * caller repeats the header at the top of the next page (re-grouping each page
+ * yields exactly that). Adjacent same-day episodes share a group; a day that
+ * reappears non-adjacently (page boundary) starts a fresh group.
+ *
+ * @param episodes  Episodes in API order (created_at desc).
+ * @param now       Reference instant for TODAY/YESTERDAY labels (injectable).
+ */
+export function groupEpisodesByDay(episodes: Episode[], now: Date = new Date()): DayGroup[] {
+  const groups: DayGroup[] = []
+  let current: DayGroup | null = null
+
+  for (const ep of episodes) {
+    const d = new Date(ep.created_at)
+    const valid = !Number.isNaN(d.getTime())
+    const key = valid ? localDayKey(d) : 'unknown'
+
+    if (!current || current.key !== key) {
+      current = { key, label: valid ? dayLabel(d, now) : 'UNDATED', episodes: [] }
+      groups.push(current)
+    }
+    current.episodes.push(ep)
+  }
+
+  return groups
+}
+
+/** `HH:MM` local wall-clock time, or `--:--` for an unparseable timestamp. */
+export function formatEpisodeTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '--:--'
+  const h = String(d.getHours()).padStart(2, '0')
+  const m = String(d.getMinutes()).padStart(2, '0')
+  return `${h}:${m}`
 }
 
 /** Consolidation status values that map to a glyph. */

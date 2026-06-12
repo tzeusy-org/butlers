@@ -1,4 +1,8 @@
 // @vitest-environment jsdom
+//
+// MemoryBrowser wires the three register components under tabs. This suite only
+// asserts that the episodes tab renders the daybook (EpisodesRegister) — the
+// daybook's own behavior is covered exhaustively in EpisodesRegister.test.tsx.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ReactNode } from "react";
@@ -30,33 +34,41 @@ type UseEpisodesResult = ReturnType<typeof useEpisodes>;
 type UseFactsResult = ReturnType<typeof useFacts>;
 type UseRulesResult = ReturnType<typeof useRules>;
 
-const LONG_EPISODE_CONTENT =
-  "This is an intentionally long episode body that should only appear in full after expanding the row for detailed reading.";
+const EPISODE_CONTENT = "Owner mentioned fatigue again during the afternoon check-in.";
+
+function makeEpisode(overrides: Partial<Episode> = {}): Episode {
+  return {
+    id: "episode-1",
+    butler: "general",
+    session_id: null,
+    content: EPISODE_CONTENT,
+    importance: 5,
+    reference_count: 1,
+    consolidated: false,
+    consolidation_status: "pending",
+    created_at: "2026-02-19T01:00:00Z",
+    last_referenced_at: null,
+    expires_at: null,
+    metadata: {},
+    ...overrides,
+  };
+}
 
 function setMemoryQueryState(episodes: Episode[]) {
   vi.mocked(useFacts).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } },
-    isLoading: false,
   } as unknown as UseFactsResult);
 
   vi.mocked(useRules).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } },
-    isLoading: false,
   } as unknown as UseRulesResult);
 
   vi.mocked(useEpisodes).mockReturnValue({
     data: {
       data: episodes,
-      meta: { total: episodes.length, offset: 0, limit: 20, has_more: false },
+      meta: { total: episodes.length, offset: 0, limit: 50, has_more: false },
     },
-    isLoading: false,
   } as unknown as UseEpisodesResult);
-}
-
-function findButtonByText(container: HTMLElement, text: string): HTMLButtonElement | undefined {
-  return Array.from(container.querySelectorAll("button")).find(
-    (button): button is HTMLButtonElement => button.textContent?.includes(text) ?? false,
-  );
 }
 
 describe("MemoryBrowser episodes", () => {
@@ -78,45 +90,22 @@ describe("MemoryBrowser episodes", () => {
     vi.restoreAllMocks();
   });
 
-  it("expands and collapses episode content", () => {
-    setMemoryQueryState([
-      {
-        id: "episode-1",
-        butler: "general",
-        session_id: null,
-        content: LONG_EPISODE_CONTENT,
-        importance: 0.8,
-        reference_count: 1,
-        consolidated: false,
-        created_at: "2026-02-19T01:00:00Z",
-        last_referenced_at: null,
-        expires_at: null,
-        metadata: {},
-      },
-    ]);
+  it("renders the daybook register for the episodes tab", () => {
+    setMemoryQueryState([makeEpisode()]);
 
     act(() => {
-      root.render(<MemoryRouter><MemoryBrowser /></MemoryRouter>);
+      root.render(
+        <MemoryRouter>
+          <MemoryBrowser />
+        </MemoryRouter>,
+      );
     });
 
-    expect(container.textContent).not.toContain(LONG_EPISODE_CONTENT);
-
-    const expandButton = findButtonByText(container, "Expand");
-    expect(expandButton).toBeDefined();
-
-    act(() => {
-      expandButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(container.textContent).toContain(LONG_EPISODE_CONTENT);
-
-    const collapseButton = findButtonByText(container, "Collapse");
-    expect(collapseButton).toBeDefined();
-
-    act(() => {
-      collapseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(container.textContent).not.toContain(LONG_EPISODE_CONTENT);
+    // The daybook always renders content (CSS-clamped, not JS-hidden) and the
+    // status filter pills, plus the ButlerMark — none of the legacy Expand
+    // table chrome.
+    expect(container.textContent).toContain(EPISODE_CONTENT);
+    expect(container.textContent).toContain("dead letter");
+    expect(container.querySelector('[role="button"][aria-expanded]')).not.toBeNull();
   });
 });

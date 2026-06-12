@@ -1528,6 +1528,7 @@ function episodeSearchParams(params?: EpisodeParams): URLSearchParams {
   const sp = new URLSearchParams();
   if (params?.butler) sp.set("butler", params.butler);
   if (params?.consolidated != null) sp.set("consolidated", String(params.consolidated));
+  if (params?.status) sp.set("status", params.status);
   if (params?.since) sp.set("since", params.since);
   if (params?.until) sp.set("until", params.until);
   if (params?.offset != null) sp.set("offset", String(params.offset));

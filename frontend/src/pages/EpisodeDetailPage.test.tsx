@@ -26,6 +26,7 @@ const BASE_EPISODE: Episode = {
   importance: 7.5,
   reference_count: 3,
   consolidated: false,
+  consolidation_status: "pending",
   created_at: "2025-01-01T10:00:00Z",
   last_referenced_at: "2025-01-15T12:00:00Z",
   expires_at: null,

@@ -1280,6 +1280,13 @@ export interface Episode {
   importance: number;
   reference_count: number;
   consolidated: boolean;
+  /**
+   * Consolidation lifecycle status: pending | consolidated | failed |
+   * dead_letter. The daybook glyph and status filter read this (the legacy
+   * `consolidated` bool is retained for back-compat). Backend always returns it
+   * (defaults to "pending").
+   */
+  consolidation_status: string;
   created_at: string;
   last_referenced_at: string | null;
   expires_at: string | null;
@@ -1418,6 +1425,12 @@ export interface MemoryInspectParams {
 export interface EpisodeParams {
   butler?: string;
   consolidated?: boolean;
+  /**
+   * Consolidation lifecycle filter (pending|consolidated|failed|dead_letter).
+   * Maps to the GET /memory/episodes `status` enum filter; takes precedence
+   * over the legacy `consolidated` bool. Drives the daybook filter pills.
+   */
+  status?: string;
   since?: string;
   until?: string;
   offset?: number;
