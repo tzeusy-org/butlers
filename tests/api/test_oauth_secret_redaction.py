@@ -361,10 +361,10 @@ class TestOAuthCallbackResponseRedaction:
 
         _clear_state_store()
 
-        assert resp.status_code == 200
-        raw_body = resp.text
-        # Access token must NEVER be in the response body
-        assert _ACCESS_TOKEN not in raw_body
+        assert resp.status_code == 302
+        # Access token must NEVER be in the response body or redirect target
+        assert _ACCESS_TOKEN not in resp.text
+        assert _ACCESS_TOKEN not in resp.headers.get("location", "")
 
     async def test_callback_success_does_not_leak_refresh_token(self) -> None:
         """Successful callback response must not include the raw refresh_token."""
@@ -407,10 +407,10 @@ class TestOAuthCallbackResponseRedaction:
 
         _clear_state_store()
 
-        assert resp.status_code == 200
-        raw_body = resp.text
-        # Refresh token must NEVER be in the response body
-        assert _SECRET_VALUE not in raw_body
+        assert resp.status_code == 302
+        # Refresh token must NEVER be in the response body or redirect target
+        assert _SECRET_VALUE not in resp.text
+        assert _SECRET_VALUE not in resp.headers.get("location", "")
 
     async def test_callback_error_does_not_leak_google_internal_error_codes(
         self,

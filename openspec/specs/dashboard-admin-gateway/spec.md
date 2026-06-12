@@ -135,13 +135,15 @@ The Owner Config section under Settings provides the primary mechanism to config
 - **AND** extracts the refresh token (raises an error if absent)
 - **AND** persists Google app credentials (`client_id`, `client_secret`, `scope`) to `butler_secrets` via the CredentialStore
 - **AND** persists the account refresh token to the Google account companion entity's `entity_info`
-- **AND** redirects to the dashboard URL if `OAUTH_DASHBOARD_URL` is configured, otherwise returns a JSON success payload
+- **AND** 302-redirects back to the frontend page that initiated the flow, built from the CSRF state (`connector_detail_path` deep-link, then `page_of_origin`, defaulting to `/secrets?focus=u:google&toast=connected`)
+- **AND** when `OAUTH_DASHBOARD_URL` is configured it is treated as the frontend base URL and prefixed onto the server-built redirect path (for deployments where the dashboard UI is served from a different origin/path prefix than the API)
 - **AND** secret material (client_secret, refresh_token) is never logged in plaintext
 
 #### Scenario: OAuth callback error handling
 
 - **WHEN** the callback encounters an error (provider error, missing code, missing state, invalid/expired state, token exchange failure, no refresh token returned)
 - **THEN** the error is classified into a specific error code: `provider_error`, `missing_code`, `missing_state`, `invalid_state`, `token_exchange_failed`, `no_refresh_token`
+- **AND** provider errors 302-redirect back to the originating page with `?oauth_error=provider_error` when page context from the state or `OAUTH_DASHBOARD_URL` is available; all other error classes (and provider errors without any page context) return sanitized JSON error payloads
 - **AND** a sanitized user-facing message is returned (no raw provider error strings leaked)
 - **AND** the state token is consumed even on error to prevent reuse
 

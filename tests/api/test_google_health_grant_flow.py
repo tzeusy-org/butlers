@@ -416,12 +416,12 @@ async def test_google_health_grant_flow_scope_transition():
                 params={"code": "4/fake_auth_code", "state": start_state},
             )
 
-    assert callback_resp.status_code == 200, (
+    # Success now 302-redirects back to the frontend instead of returning
+    # OAuthCallbackSuccess JSON [bu-e6k2h].
+    assert callback_resp.status_code == 302, (
         f"OAuth callback failed: {callback_resp.status_code} {callback_resp.text}"
     )
-    cb_body = callback_resp.json()
-    assert cb_body.get("success") is True, f"Expected success=true in callback: {cb_body}"
-    assert cb_body.get("provider") == "google", f"Expected provider=google: {cb_body}"
+    assert callback_resp.headers["location"] == "/secrets?focus=u:google&toast=connected"
 
     # The mock execute must have captured the UPDATE granted_scopes call.
     assert state.ga_scopes_updated, (

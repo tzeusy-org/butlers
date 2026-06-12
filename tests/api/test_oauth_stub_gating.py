@@ -342,12 +342,10 @@ async def test_provider_callback_stub_active_redirects_to_toast(app, monkeypatch
             )
 
     # Should redirect to the success URL (toast=connected).
-    assert resp.status_code in (200, 302, 307), (
-        f"Expected redirect or success, got {resp.status_code}: {resp.text[:500]}"
+    assert resp.status_code in (302, 307), (
+        f"Expected redirect, got {resp.status_code}: {resp.text[:500]}"
     )
-    if resp.status_code in (302, 307):
-        location = resp.headers.get("location", "")
-        assert "toast=connected" in location or "oauth_success=true" in location
+    assert "toast=connected" in resp.headers.get("location", "")
 
 
 async def test_provider_callback_stub_active_spotify_redirects(app, monkeypatch):
@@ -385,7 +383,7 @@ async def test_provider_callback_stub_active_spotify_redirects(app, monkeypatch)
 
     assert resp.status_code in (302, 307)
     location = resp.headers.get("location", "")
-    assert "toast=connected" in location or "oauth_success=true" in location
+    assert "toast=connected" in location
 
 
 # ===========================================================================

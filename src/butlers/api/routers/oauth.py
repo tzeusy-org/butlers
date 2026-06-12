@@ -57,8 +57,12 @@ Environment variables:
                                (default: http://localhost:41200/api/oauth/google/callback)
   SPOTIFY_OAUTH_REDIRECT_URI — Callback URL registered with Spotify
                                (default: http://localhost:41200/api/oauth/spotify/callback)
-  OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
-                               (default: not set; returns JSON payload instead)
+  OAUTH_DASHBOARD_URL        — Frontend base URL prefixed onto the server-built
+                               post-callback redirect paths (e.g.
+                               ``https://host/butlers-dev``). Required when the
+                               dashboard UI is served from a different
+                               origin/path prefix than the API; when unset the
+                               redirects are root-relative to the API origin.
 
 Security notes:
   - State tokens are one-time-use: consumed on first callback validation.
@@ -95,7 +99,6 @@ from butlers.api.models.oauth import (
     GoogleAccountStatus,
     GoogleCredentialStatusResponse,
     OAuthCallbackError,
-    OAuthCallbackSuccess,
     OAuthCredentialState,
     OAuthCredentialStatus,
     OAuthStartResponse,
@@ -976,9 +979,28 @@ def _get_scopes() -> str:
 
 
 def _get_dashboard_url() -> str | None:
-    """Read OAUTH_DASHBOARD_URL; returns None if not set."""
+    """Read OAUTH_DASHBOARD_URL (frontend base URL); returns None if not set."""
     val = os.environ.get("OAUTH_DASHBOARD_URL", "").strip()
     return val or None
+
+
+def _frontend_redirect(path: str) -> RedirectResponse:
+    """Build a 302 redirect to a frontend route.
+
+    ``path`` must be a server-built root-relative path produced by
+    ``_build_success_redirect_url`` / ``_build_error_redirect_url`` — never a
+    user-controlled value, so this cannot become an open redirect.
+
+    When ``OAUTH_DASHBOARD_URL`` is set it is treated as the frontend base URL
+    and prefixed onto the path (needed when the dashboard UI lives on a
+    different origin/path prefix than the API, e.g. ``/butlers-dev`` vs
+    ``/butlers-dev-api``). Otherwise the redirect stays root-relative to the
+    API origin.
+    """
+    dashboard_url = _get_dashboard_url()
+    if dashboard_url:
+        return RedirectResponse(url=dashboard_url.rstrip("/") + path, status_code=302)
+    return RedirectResponse(url=path, status_code=302)
 
 
 def _is_google_health_test_mode() -> bool:
@@ -1326,32 +1348,41 @@ async def oauth_google_callback(
     and resolves or creates a google_accounts row via the registry.
 
     On success:
-        - Returns ``OAuthCallbackSuccess`` JSON (or redirects to dashboard).
-        - Includes the account email and whether it was new or re-authorized.
+        - 302-redirects back to the frontend page that initiated the flow
+          (``state.connector_detail_path`` deep-link > ``state.page_of_origin``
+          > default ``/secrets``), mirroring ``_google_callback_from_state``.
 
     On failure:
-        - Returns ``OAuthCallbackError`` JSON with an actionable error message.
+        - Provider errors (user denied consent, etc.) redirect back to the
+          originating page with ``?oauth_error=provider_error`` when page
+          context or ``OAUTH_DASHBOARD_URL`` is available; otherwise JSON 400.
+        - Pre-state failures (missing code/state, invalid state) return
+          ``OAuthCallbackError`` JSON 400 — there is no trusted page context to
+          redirect to and these are API-level errors.
+        - Post-state failures (token exchange, userinfo, no refresh token)
+          return JSON errors, matching the generalised ``/{provider}/callback``
+          behaviour for the same failure classes.
         - Does NOT leak client secrets or raw provider error strings.
     """
-    dashboard_url = _get_dashboard_url()
-
     # --- Handle provider-side errors (e.g. user denied consent) ---
     if error:
         logger.warning("Google OAuth provider error: %s", error)
         if error_description:
             logger.debug("Google OAuth provider error_description: %s", error_description)
         # Consume the state token if provided to prevent reuse after a denied/cancelled flow.
-        if state:
-            _validate_and_consume_state(state)
+        state_entry = _validate_and_consume_state(state) if state else None
+        page_of_origin = state_entry.page_of_origin if state_entry else None
+        connector_detail_path = state_entry.connector_detail_path if state_entry else None
+        if page_of_origin or connector_detail_path or _get_dashboard_url():
+            return _frontend_redirect(
+                _build_error_redirect_url(
+                    "google", page_of_origin, "provider_error", connector_detail_path
+                )
+            )
         error_payload = OAuthCallbackError(
             error_code="provider_error",
             message=_sanitize_provider_error(error),
         )
-        if dashboard_url:
-            return RedirectResponse(
-                url=f"{dashboard_url}?oauth_error={error_payload.error_code}",
-                status_code=302,
-            )
         return JSONResponse(status_code=400, content=error_payload.model_dump())
 
     # --- Validate required parameters ---
@@ -1567,22 +1598,12 @@ async def oauth_google_callback(
             gmail_health_port,
         )
 
-    success_payload = OAuthCallbackSuccess(
-        success=True,
-        message="OAuth bootstrap complete. Credentials persisted to database.",
-        provider="google",
-        scope=scope,
-        account_email=account_email,
-        is_new_account=is_new_account,
+    # Redirect back to the frontend page that initiated the flow.
+    # Priority: connector_detail_path (deep-link) > page_of_origin > default (/secrets).
+    success_url = _build_success_redirect_url(
+        "google", state_entry.page_of_origin, state_entry.connector_detail_path
     )
-
-    if dashboard_url:
-        return RedirectResponse(
-            url=f"{dashboard_url}?oauth_success=true",
-            status_code=302,
-        )
-
-    return JSONResponse(content=success_payload.model_dump())
+    return _frontend_redirect(success_url)
 
 
 async def _register_google_health_contact_info(
@@ -2800,16 +2821,12 @@ async def oauth_provider_callback(
         )
 
         safe_error = _sanitize_provider_error(error)
-        if dashboard_url:
-            return RedirectResponse(
-                url=f"{dashboard_url}?oauth_error=provider_error",
-                status_code=302,
+        if _page_of_origin or _connector_detail_path or dashboard_url:
+            return _frontend_redirect(
+                _build_error_redirect_url(
+                    provider, _page_of_origin, "provider_error", _connector_detail_path
+                )
             )
-        error_redirect = _build_error_redirect_url(
-            provider, _page_of_origin, "provider_error", _connector_detail_path
-        )
-        if _page_of_origin or _connector_detail_path:
-            return RedirectResponse(url=error_redirect, status_code=302)
         return JSONResponse(
             status_code=400,
             content=ApiResponse(
@@ -2976,9 +2993,7 @@ async def oauth_provider_callback(
     # _build_success_redirect_url resolves None to "secrets" so the
     # missing/default case is handled identically to an explicit "secrets" value.
     success_url = _build_success_redirect_url(provider, page_of_origin, connector_detail_path)
-    if dashboard_url:
-        return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
-    return RedirectResponse(url=success_url, status_code=302)
+    return _frontend_redirect(success_url)
 
 
 # ---------------------------------------------------------------------------
@@ -3005,7 +3020,6 @@ async def _google_callback_from_state(
     specific connector detail page instead of the roster.
     """
     shared_pool = _get_shared_pool(db_manager)
-    dashboard_url = _get_dashboard_url()
 
     client_id, client_secret = await _resolve_app_credentials(db_manager)
     redirect_uri = _get_redirect_uri()
@@ -3204,6 +3218,4 @@ async def _google_callback_from_state(
     # _build_success_redirect_url resolves None to "secrets" so the
     # missing/default case is handled identically to an explicit "secrets" value.
     success_url = _build_success_redirect_url("google", page_of_origin, connector_detail_path)
-    if dashboard_url:
-        return RedirectResponse(url=f"{dashboard_url}?oauth_success=true", status_code=302)
-    return RedirectResponse(url=success_url, status_code=302)
+    return _frontend_redirect(success_url)

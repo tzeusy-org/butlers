@@ -121,7 +121,7 @@ def _make_app(
 
 
 async def test_full_oauth_flow_happy_path():
-    """start → get state → callback with state → 200 success."""
+    """start → get state → callback with state → 302 redirect back to the frontend."""
     from butlers.google_account_registry import GoogleAccountNotFoundError
 
     app = _make_app()
@@ -147,9 +147,10 @@ async def test_full_oauth_flow_happy_path():
             resp = await client.get(
                 "/api/oauth/google/callback", params={"code": "4/code", "state": state}
             )
-    assert resp.status_code == 200
-    assert resp.json()["success"] is True
-    assert resp.json()["provider"] == "google"
+    # Success now 302-redirects back to the frontend page (default /secrets)
+    # instead of returning OAuthCallbackSuccess JSON [bu-e6k2h].
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/secrets?focus=u:google&toast=connected"
 
 
 async def test_state_consumed_after_successful_callback():
@@ -177,7 +178,7 @@ async def test_state_consumed_after_successful_callback():
             resp2 = await client.get(
                 "/api/oauth/google/callback", params={"code": "4/c2", "state": state}
             )
-    assert resp1.status_code == 200
+    assert resp1.status_code == 302
     assert resp2.status_code == 400
     assert resp2.json()["error_code"] == "invalid_state"
 

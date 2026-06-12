@@ -499,6 +499,57 @@ async def test_callback_page_of_origin_secrets_redirects_to_secrets(app):
     assert location == "/secrets?focus=u:spotify&toast=connected"
 
 
+async def test_callback_success_with_dashboard_base_url(app, monkeypatch):
+    """OAUTH_DASHBOARD_URL is the frontend base URL prefixed onto the built path [bu-e6k2h]."""
+    monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="secrets", provider="spotify")
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+            )
+
+    assert resp.status_code == 302
+    assert (
+        resp.headers["location"]
+        == "https://example.test/butlers-dev/secrets?focus=u:spotify&toast=connected"
+    )
+
+
+async def test_callback_provider_error_with_dashboard_base_url(app, monkeypatch):
+    """Provider error with OAUTH_DASHBOARD_URL set redirects to base + built error path."""
+    monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="secrets", provider="spotify")
+
+    with patch(_EMIT_AUDIT_PATCH, AsyncMock()):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback", params={"error": "access_denied", "state": state}
+            )
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == (
+        "https://example.test/butlers-dev/secrets?focus=u:spotify&oauth_error=provider_error"
+    )
+
+
 async def test_callback_no_page_of_origin_redirects_to_secrets(app):
     """When page_of_origin is None (default) callback redirects to /secrets."""
     _make_app(app)
@@ -559,7 +610,7 @@ async def test_google_callback_via_generalised_route_writes_connected_audit(app)
     # But the legacy route doesn't use _emit_oauth_audit — only the generalised
     # _google_callback_from_state does. We test the connected audit through the
     # generalised route below.
-    assert resp.status_code == 200
+    assert resp.status_code == 302
 
 
 async def test_generalised_google_callback_writes_connected_audit(app):
@@ -638,8 +689,9 @@ async def test_google_callback_invalid_state_snapshot(app):
     assert body["error_code"] == "invalid_state"
 
 
-async def test_google_callback_success_snapshot(app):
-    """Snapshot: successful google callback → 200 with success=true."""
+async def test_google_callback_success_snapshot(app, monkeypatch):
+    """Snapshot: successful google callback → 302 back to the frontend [bu-e6k2h]."""
+    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
     _make_app(app)
     state = _generate_state()
     _store_state(state)
@@ -657,10 +709,8 @@ async def test_google_callback_success_snapshot(app):
             resp = await client.get(
                 "/api/oauth/google/callback", params={"code": "auth-code", "state": state}
             )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["success"] is True
-    assert body["provider"] == "google"
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/secrets?focus=u:google&toast=connected"
 
 
 async def test_oauth_status_snapshot(app):

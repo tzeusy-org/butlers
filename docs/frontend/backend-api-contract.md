@@ -396,10 +396,19 @@ credential connectivity state in the dashboard.
 
 - `GET /api/oauth/google/callback` — handle Google callback after user authorization
   - Query params (injected by Google): `code`, `state`, `error`, `error_description`
-  - Success (no `OAUTH_DASHBOARD_URL`): `200 OAuthCallbackSuccess`
-  - Success (with `OAUTH_DASHBOARD_URL`): `302` → `{OAUTH_DASHBOARD_URL}?oauth_success=true`
-  - Error (no dashboard URL): `400 OAuthCallbackError`
-  - Error (with `OAUTH_DASHBOARD_URL`): `302` → `{OAUTH_DASHBOARD_URL}?oauth_error={error_code}`
+  - Success: `302` → the page that initiated the flow, built from the CSRF
+    state (`connector_detail_path` deep-link > `page_of_origin` > default
+    `/secrets?focus=u:google&toast=connected`)
+  - Provider error (user denied consent, etc.): `302` → originating page with
+    `?oauth_error=provider_error` when page context or `OAUTH_DASHBOARD_URL`
+    is available; otherwise `400 OAuthCallbackError`
+  - Pre-state errors (missing code/state, invalid state) and post-state
+    failures (token exchange, userinfo): `400`/`502 OAuthCallbackError` JSON
+  - `OAUTH_DASHBOARD_URL`, when set, acts as the frontend **base URL**: the
+    redirect becomes `{OAUTH_DASHBOARD_URL}{built_path}` (needed when the UI
+    is served from a different origin/path prefix than the API). The legacy
+    `?oauth_success=true` redirect param is gone — the built paths carry
+    `toast=connected` / `oauth_error=<code>` instead.
 
 ### Credential Status Surface
 
@@ -442,17 +451,6 @@ interface OAuthCredentialStatus {
 | `unapproved_tester` | App in testing mode, account not added as tester | Show tester setup guidance |
 | `unknown_error` | Unclassified error | Show error banner with `remediation` text |
 
-#### `OAuthCallbackSuccess`
-
-```typescript
-interface OAuthCallbackSuccess {
-  success: true;
-  message: string;
-  provider: string;       // "google"
-  scope: string | null;   // space-separated scopes granted
-}
-```
-
 #### `OAuthCallbackError`
 
 ```typescript
@@ -494,7 +492,7 @@ const checkOAuthStatus = async () => {
 
 // Handle callback result (check URL params after redirect back from Google)
 const params = new URLSearchParams(window.location.search);
-if (params.has('oauth_success')) {
+if (params.get('toast') === 'connected') {
   // Re-check status to confirm connected state
   await checkOAuthStatus();
   showSuccessBanner();

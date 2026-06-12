@@ -435,10 +435,7 @@ async def test_callback_invalid_state_returns_400(app):
     assert resp.status_code == 400
 
 
-async def test_callback_success(app):
-    _make_app(app)
-    state = _generate_state()
-    _store_state(state)
+async def _run_success_callback(app, state: str) -> httpx.Response:
     with (
         patch(_EXCHANGE_PATCH, AsyncMock(return_value=_FAKE_TOKEN)),
         patch(_USERINFO_PATCH, AsyncMock(return_value=_FAKE_USERINFO)),
@@ -447,10 +444,128 @@ async def test_callback_success(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
+            return await client.get(
                 "/api/oauth/google/callback", params={"code": "test-code", "state": state}
             )
-    assert resp.status_code == 200
+
+
+async def test_callback_success(app, monkeypatch):
+    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state)
+    resp = await _run_success_callback(app, state)
+    assert resp.status_code == 302
+    # No page_of_origin in state → default /secrets return path.
+    assert resp.headers["location"] == "/secrets?focus=u:google&toast=connected"
+
+
+# ---------------------------------------------------------------------------
+# Legacy callback redirect contract [bu-e6k2h]
+# ---------------------------------------------------------------------------
+
+
+async def test_callback_success_redirects_to_page_of_origin(app, monkeypatch):
+    """Legacy callback threads state.page_of_origin into the success redirect."""
+    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="secrets")
+    resp = await _run_success_callback(app, state)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/secrets?focus=u:google&toast=connected"
+
+
+async def test_callback_success_with_dashboard_base_url(app, monkeypatch):
+    """OAUTH_DASHBOARD_URL acts as the frontend base URL prefixed onto the built path."""
+    monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev/")
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="secrets")
+    resp = await _run_success_callback(app, state)
+    assert resp.status_code == 302
+    assert (
+        resp.headers["location"]
+        == "https://example.test/butlers-dev/secrets?focus=u:google&toast=connected"
+    )
+
+
+async def test_callback_success_with_connector_detail_path_deep_link(app, monkeypatch):
+    """connector_detail_path in state takes priority over page_of_origin."""
+    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="ingestion", connector_detail_path="gmail/test@example.com")
+    resp = await _run_success_callback(app, state)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/ingestion/connectors/gmail/test@example.com"
+
+
+async def test_callback_provider_error_redirects_with_state_context(app, monkeypatch):
+    """Provider error with a valid state redirects back to the originating page."""
+    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, page_of_origin="secrets")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/oauth/google/callback", params={"error": "access_denied", "state": state}
+        )
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/secrets?focus=u:google&oauth_error=provider_error"
+    # State is consumed even on the error path (one-time-use).
+    assert _validate_and_consume_state(state) is None
+
+
+async def test_callback_provider_error_without_state_uses_dashboard_base(app, monkeypatch):
+    """Provider error without state still redirects when OAUTH_DASHBOARD_URL is set."""
+    monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
+    _make_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/oauth/google/callback", params={"error": "access_denied"})
+    assert resp.status_code == 302
+    assert (
+        resp.headers["location"]
+        == "https://example.test/butlers-dev/secrets?focus=u:google&oauth_error=provider_error"
+    )
+
+
+async def test_callback_provider_error_without_any_context_returns_json_400(app, monkeypatch):
+    """Provider error with no state and no dashboard URL keeps the JSON 400 contract."""
+    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
+    _make_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/oauth/google/callback", params={"error": "access_denied"})
+    assert resp.status_code == 400
+    assert resp.json()["error_code"] == "provider_error"
+
+
+async def test_callback_pre_state_failures_stay_json_400_with_dashboard_url(app, monkeypatch):
+    """Missing code/state and invalid state are API-level errors — JSON 400, never redirects."""
+    monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing_code = await client.get("/api/oauth/google/callback", params={"state": state})
+        missing_state = await client.get("/api/oauth/google/callback", params={"code": "c"})
+        invalid_state = await client.get(
+            "/api/oauth/google/callback", params={"code": "c", "state": "bogus"}
+        )
+    assert missing_code.status_code == 400
+    assert missing_code.json()["error_code"] == "missing_code"
+    assert missing_state.status_code == 400
+    assert missing_state.json()["error_code"] == "missing_state"
+    assert invalid_state.status_code == 400
+    assert invalid_state.json()["error_code"] == "invalid_state"
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +692,7 @@ async def test_health_test_mode_sets_flag_when_health_scope_and_test_mode(app, m
             resp = await client.get(
                 "/api/oauth/google/callback", params={"code": "auth-code", "state": state}
             )
-    assert resp.status_code == 200
+    assert resp.status_code == 302
     mock_set_meta.assert_called_once_with(_pool, entity_id=entity_id)
 
 
@@ -604,5 +719,5 @@ async def test_health_test_mode_not_set_in_prod_mode(app, monkeypatch):
             resp = await client.get(
                 "/api/oauth/google/callback", params={"code": "auth-code", "state": state}
             )
-    assert resp.status_code == 200
+    assert resp.status_code == 302
     mock_set_meta.assert_not_called()

@@ -23,23 +23,6 @@ class OAuthStartResponse(BaseModel):
     state: str
 
 
-class OAuthCallbackSuccess(BaseModel):
-    """Successful OAuth callback payload.
-
-    Returned when the authorization code has been successfully exchanged
-    for tokens and the refresh token has been stored.
-    """
-
-    success: bool = True
-    message: str = "OAuth bootstrap complete. Refresh token stored."
-    provider: str = "google"
-    scope: str | None = None
-    account_email: str | None = None
-    """The authenticated Google account email (multi-account flows)."""
-    is_new_account: bool | None = None
-    """True if a new account was created; False if an existing account was re-authorized."""
-
-
 class OAuthCallbackError(BaseModel):
     """Error payload returned when the OAuth callback fails.
 
