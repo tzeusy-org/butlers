@@ -26,6 +26,8 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -41,6 +43,7 @@ from butlers.modules.calendar import (
     BUTLER_NAME_PRIVATE_KEY,
     DEFAULT_BUTLER_NAME,
     AttendeeInfo,
+    CalendarAuthError,
     CalendarConfig,
     CalendarCredentialError,
     CalendarEvent,
@@ -739,6 +742,53 @@ class TestErrorHierarchy:
         ):
             with pytest.raises((CalendarCredentialError, RuntimeError)):
                 await mod.on_startup({"provider": "google"}, db=db, credential_store=store)
+
+
+# ---------------------------------------------------------------------------
+# Internal projection poller failure handling
+# ---------------------------------------------------------------------------
+
+
+class TestInternalProjectionPollerFailureHandling:
+    async def test_provider_transport_failure_logs_warning_not_error(self, caplog) -> None:
+        mod = CalendarModule()
+        mod._project_internal_sources = AsyncMock()
+        wrapped = CalendarAuthError("Google Calendar request failed: connect failed")
+        wrapped.__cause__ = httpx.ConnectError("connect failed")
+        mod._push_internal_events_to_provider = AsyncMock(side_effect=wrapped)
+
+        caplog.set_level(logging.DEBUG, logger="butlers.modules.calendar")
+        with patch(
+            "butlers.modules.calendar.asyncio.sleep",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ):
+            await mod._run_internal_projection_poller()
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("Push to provider after projection deferred" in msg for msg in messages)
+        assert not any(
+            record.levelno >= logging.ERROR
+            and "Push to provider after projection" in record.message
+            for record in caplog.records
+        )
+
+    async def test_unexpected_provider_push_failure_stays_error(self, caplog) -> None:
+        mod = CalendarModule()
+        mod._project_internal_sources = AsyncMock()
+        mod._push_internal_events_to_provider = AsyncMock(side_effect=RuntimeError("bad payload"))
+
+        caplog.set_level(logging.DEBUG, logger="butlers.modules.calendar")
+        with patch(
+            "butlers.modules.calendar.asyncio.sleep",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ):
+            await mod._run_internal_projection_poller()
+
+        assert any(
+            record.levelno >= logging.ERROR
+            and "Push to provider after projection failed" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------
