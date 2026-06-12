@@ -32,6 +32,17 @@ past 7 days across all active mind maps. Identify trends (velocity, retention ra
 areas). Highlight achievements (nodes mastered, streaks, improvements). Flag any areas where
 retention_rate_7d < 0.60 or struggling_nodes >= 3. Compose a structured summary and deliver via
 notify(channel="telegram", intent="send", message=<digest>).
+
+Data-gathering guardrails:
+1) Start with analytics_get_cross_topic(), then analytics_get_trend(mind_map_id, days=7) once per
+   active mind map.
+2) Call analytics_get_snapshot(mind_map_id) at most once per map, only when the 7-day trend is
+   empty.
+3) analytics_get_snapshot always returns a status field: status="ok" carries the snapshot and
+   status="not_found" means none exists. If it returns status="not_found", do not retry the same call.
+   Use mastery_get_map_summary() as a fallback and note that weekly analytics are not available yet.
+4) If there are no active maps or no usable analytics/summary data, send one concise status message
+   and stop.
 """
 
 [[butler.schedule]]

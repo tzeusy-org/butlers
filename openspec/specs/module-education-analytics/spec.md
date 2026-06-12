@@ -251,6 +251,23 @@ WHEN `analytics_get_snapshot(pool, mind_map_id, date="2025-01-15")` is called
 AND no snapshot exists for that date
 THEN `None` is returned
 
+#### Scenario: the MCP-facing get_snapshot tool returns a consistent status envelope
+
+The lower-level helper above may return `None`, but the registered MCP tool
+`analytics_get_snapshot(mind_map_id, snapshot_date=None)` SHALL always return a
+JSON-friendly dict carrying a `status` field so ephemeral LLM callers can branch
+deterministically and avoid retrying an empty read in a loop.
+
+WHEN the MCP tool `analytics_get_snapshot(mind_map_id)` is called
+AND a snapshot exists
+THEN a dict with `status="ok"` plus the snapshot fields is returned
+AND `snapshot_date` is normalized to an ISO-8601 string
+
+WHEN the MCP tool `analytics_get_snapshot(mind_map_id)` is called
+AND no snapshot exists
+THEN a dict with `status="not_found"`, the requested `mind_map_id` and `snapshot_date`,
+and a `message` instructing the caller not to retry the same call is returned
+
 ---
 
 ### Requirement: Cross-Topic Comparison

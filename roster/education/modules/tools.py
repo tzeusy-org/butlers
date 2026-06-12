@@ -420,14 +420,45 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     async def analytics_get_snapshot(
         mind_map_id: str,
         snapshot_date: str | None = None,
-    ) -> dict[str, Any] | None:
-        """Return the latest (or specific-date) analytics snapshot for a mind map."""
+    ) -> dict[str, Any]:
+        """Return the latest analytics snapshot in a consistent status envelope.
+
+        Always returns a JSON-friendly dict with a ``status`` key so MCP callers
+        can branch deterministically:
+
+        - ``status="ok"`` plus the snapshot fields (``snapshot_date`` normalized
+          to an ISO-8601 string) when a snapshot exists.
+        - ``status="not_found"`` with next-step guidance when none exists.
+
+        The lower-level analytics helper returns ``None`` for the missing case;
+        callers need a terminal, self-describing result so they do not retry the
+        same empty read in a loop.
+        """
         parsed_date: date | None = None
         if snapshot_date is not None:
             parsed_date = date.fromisoformat(snapshot_date)
-        return await _analytics.analytics_get_snapshot(
+        snapshot = await _analytics.analytics_get_snapshot(
             module._get_pool(), mind_map_id, date=parsed_date
         )
+        if snapshot is not None:
+            # Normalize into a consistent, JSON-friendly envelope so MCP callers
+            # can branch on ``status`` without guessing the payload shape. The
+            # lower-level helper leaves ``snapshot_date`` as a ``datetime.date``;
+            # coerce it to an ISO-8601 string here.
+            snapshot_date_value = snapshot.get("snapshot_date")
+            if isinstance(snapshot_date_value, date):
+                snapshot["snapshot_date"] = snapshot_date_value.isoformat()
+            return {"status": "ok", **snapshot}
+        return {
+            "status": "not_found",
+            "mind_map_id": mind_map_id,
+            "snapshot_date": parsed_date.isoformat() if parsed_date else None,
+            "message": (
+                "No analytics snapshot exists for this mind map/date. Do not retry the "
+                "same analytics_get_snapshot call; use analytics_get_trend, "
+                "mastery_get_map_summary, or state that analytics are not available yet."
+            ),
+        }
 
     @_tool("analytics")
     async def analytics_get_trend(
