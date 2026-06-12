@@ -47,7 +47,7 @@ Connectors submit events using this canonical envelope:
 
 **Field contracts:**
 
-- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `gaming/steam`, `wellness/google_health`.
+- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `gaming/steam`, `wellness/google_health`, `wellness/home_assistant` (see Amendment 1).
 - `source.endpoint_identity` is auto-resolved from the source API at connector startup (e.g., Telegram `getMe()` yields `telegram:bot:@username`; Gmail yields `gmail:user:email`).
 - `event.external_event_id` is REQUIRED when the source provides a stable event identifier (Telegram `update_id`, email `Message-ID`).
 - `sender.identity` is the provider-native identifier used for identity resolution (see RFC 0004).
@@ -244,6 +244,33 @@ Connectors send `connector.heartbeat.v1` envelopes every 2 minutes via the `conn
 - **RFC 0011:** The insight broker module runs within the Switchboard daemon. Candidate submissions arrive as `propose_insight_candidate` MCP tool calls, and the delivery cycle runs as a Switchboard scheduled task.
 - **`openspec/specs/conversation-decomposition/`:** Normative requirements for signal extraction, cherry-picked excerpts, fan-out, and empty-decomposition storage. The section above is the RFC-level design contract; that spec governs the behavioral requirements.
 - **`openspec/specs/module-pipeline/`:** Pipeline requirements for the Decomposition Branch, Decomposition-to-Routing Fan-Out, and Empty Decomposition Short-Circuit sit before the deprecated direct-wiring section in that spec.
+
+## Amendments Applied
+
+### Amendment 1 (2026-06-12) — Home Assistant on the Wellness Channel
+
+Applied per `openspec/changes/home-assistant-wellness-promotion`.
+
+**Summary:** The canonical channel/provider pairing registry for the `wellness`
+channel is widened from `{google_health}` to `{google_health, home_assistant}`.
+Health-shaped Home Assistant sensor readings (e.g. a Withings BPM Connect blood
+pressure measurement) are promoted onto the existing `wellness` channel so they
+land as `measurement_*` facts in the health scope over the same deterministic
+`source_channel = "wellness"` route (`route_to:health`, policy-bypass, no LLM
+classification spawned). `wellness/google_health` behavior is unchanged; an
+additional provider simply becomes valid for the channel.
+
+**Changes made:**
+- §"Field contracts" canonical pairings list now records
+  `wellness/home_assistant` alongside `wellness/google_health`.
+- `_ALLOWED_PROVIDERS_BY_CHANNEL["wellness"]` in
+  `roster/switchboard/tools/routing/contracts.py` expanded to
+  `frozenset({"google_health", "home_assistant"})`.
+
+**Backward compatibility:** Additive only. Existing `wellness/google_health`
+envelopes validate and route exactly as before. Any provider other than
+`google_health` or `home_assistant` on the `wellness` channel is still rejected
+at `IngestSourceV1` validation with the `invalid_source_provider` error.
 
 ## Alternatives Considered
 

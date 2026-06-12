@@ -79,7 +79,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "gaming": frozenset({"steam"}),
     "google_drive": frozenset({"google_drive"}),
     "discord": frozenset({"discord"}),
-    "wellness": frozenset({"google_health"}),
+    "wellness": frozenset({"google_health", "home_assistant"}),
 }
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(

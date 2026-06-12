@@ -212,7 +212,7 @@ def test_channel_provider_pairing_and_registry():
         ("telegram_bot", "whatsapp", "bot_test", "user123"),
         ("google_calendar", "gmail", "gcal:user@example.com", "user@example.com"),
         ("telegram_bot", "google_drive", "bot_test", "user123"),
-        # wellness channel only accepts google_health provider in v1.
+        # wellness channel accepts only google_health / home_assistant (RFC 0003 Amendment 1).
         ("wellness", "fitbit", "google_health:user:1234567890", "1234567890"),
         ("wellness", "steam", "google_health:user:1234567890", "1234567890"),
         # google_health provider is not valid for other channels.
@@ -235,7 +235,7 @@ def test_channel_provider_pairing_and_registry():
         "home_assistant": frozenset({"home_assistant"}),
         "gaming": frozenset({"steam"}),
         "google_drive": frozenset({"google_drive"}),
-        "wellness": frozenset({"google_health"}),
+        "wellness": frozenset({"google_health", "home_assistant"}),
     }
     for channel, providers in expected.items():
         assert channel in _ALLOWED_PROVIDERS_BY_CHANNEL

@@ -113,6 +113,70 @@ def _make_wellness_envelope_v1() -> IngestEnvelopeV1:
     )
 
 
+def _ha_wellness_payload() -> dict:
+    """Minimal ingest.v1 payload with source_channel='wellness', provider='home_assistant'.
+
+    Mirrors a Withings-shaped blood-pressure reading promoted onto the wellness
+    channel by the Home Assistant connector (RFC 0003 Amendment 1).
+    """
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": "wellness",
+            "provider": "home_assistant",
+            "endpoint_identity": "home_assistant:owner",
+        },
+        "event": {
+            "external_event_id": "ha-sensor.withings_systolic-2026-06-12",
+            "observed_at": datetime.now(UTC).isoformat(),
+        },
+        "sender": {"identity": "sensor.withings_systolic"},
+        "payload": {
+            "raw": {
+                "wellness_measurement": {
+                    "metric": "blood_pressure_systolic",
+                    "value": 118,
+                    "unit": "mmHg",
+                    "valid_at": datetime.now(UTC).isoformat(),
+                    "source_entity_id": "sensor.withings_systolic",
+                }
+            },
+            "normalized_text": "blood_pressure_systolic: 118 mmHg",
+        },
+        "control": {"ingestion_tier": "full"},
+    }
+
+
+def _make_ha_wellness_envelope_v1() -> IngestEnvelopeV1:
+    """Build an IngestEnvelopeV1 for a Home Assistant wellness event."""
+    return IngestEnvelopeV1(
+        schema_version="ingest.v1",
+        source=IngestSourceV1(
+            channel="wellness",
+            provider="home_assistant",
+            endpoint_identity="home_assistant:owner",
+        ),
+        event=IngestEventV1(
+            external_event_id="ha-sensor.withings_systolic-2026-06-12",
+            observed_at=datetime.now(UTC).isoformat(),
+        ),
+        sender=IngestSenderV1(identity="sensor.withings_systolic"),
+        payload=IngestPayloadV1(
+            raw={
+                "wellness_measurement": {
+                    "metric": "blood_pressure_systolic",
+                    "value": 118,
+                    "unit": "mmHg",
+                    "valid_at": datetime.now(UTC).isoformat(),
+                    "source_entity_id": "sensor.withings_systolic",
+                }
+            },
+            normalized_text="blood_pressure_systolic: 118 mmHg",
+        ),
+        control=IngestControlV1(ingestion_tier="full"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests: policy evaluation
 # ---------------------------------------------------------------------------
@@ -214,5 +278,84 @@ class TestWellnessPolicyContextEmbedding:
     def test_make_ingestion_envelope_source_channel(self) -> None:
         """_make_ingestion_envelope extracts source_channel='wellness' correctly."""
         payload = _wellness_payload()
+        env = _make_ingestion_envelope(payload)
+        assert env.source_channel == "wellness"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Home Assistant wellness provider (RFC 0003 Amendment 1)
+# ---------------------------------------------------------------------------
+
+
+class TestHomeAssistantWellnessPolicyBypass:
+    """A wellness/home_assistant envelope rides the same sw_007 policy-bypass route.
+
+    The route is keyed solely on source_channel='wellness', so the new
+    home_assistant provider traverses the route_to:health bypass identically to
+    google_health, with no Switchboard-side LLM session spawned.
+    """
+
+    def test_ha_wellness_envelope_validates(self) -> None:
+        """The HA wellness envelope passes channel/provider contract validation."""
+        envelope = _make_ha_wellness_envelope_v1()
+        assert envelope.source.channel == "wellness"
+        assert envelope.source.provider == "home_assistant"
+
+    def test_ha_wellness_source_channel_matches_rule(self) -> None:
+        """The HA wellness envelope matches the seeded rule -> route_to:health."""
+        payload = _ha_wellness_payload()
+        evaluator = _make_evaluator_with_rules([_wellness_rule()])
+        decision = _run_policy_evaluation(payload, evaluator, source_channel="wellness")
+        assert decision.action == "route_to"
+        assert decision.target_butler == "health"
+
+    def test_ha_wellness_rule_type_is_source_channel(self) -> None:
+        """Matched rule type is 'source_channel' for the HA wellness envelope."""
+        payload = _ha_wellness_payload()
+        evaluator = _make_evaluator_with_rules([_wellness_rule()])
+        decision = _run_policy_evaluation(payload, evaluator, source_channel="wellness")
+        assert decision.matched_rule_type == "source_channel"
+
+    def test_ha_wellness_decision_bypasses_llm(self) -> None:
+        """PolicyDecision.bypasses_llm is True -> no Switchboard LLM spawn."""
+        payload = _ha_wellness_payload()
+        evaluator = _make_evaluator_with_rules([_wellness_rule()])
+        decision = _run_policy_evaluation(payload, evaluator, source_channel="wellness")
+        assert decision.bypasses_llm is True
+
+
+class TestHomeAssistantWellnessContextEmbedding:
+    def test_ha_triage_decision_and_target_in_context(self) -> None:
+        """route_to:health decision embeds as triage_decision/triage_target for HA."""
+        envelope = _make_ha_wellness_envelope_v1()
+        triage_decision = PolicyDecision(
+            action="route_to",
+            target_butler="health",
+            matched_rule_id="00000000-0000-0000-0001-000000000080",
+            matched_rule_type="source_channel",
+            reason="source_channel match -> route_to:health",
+        )
+        context = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+            triage_decision=triage_decision,
+        )
+        assert context["triage_decision"] == "route_to"
+        assert context["triage_target"] == "health"
+
+    def test_ha_source_channel_in_context(self) -> None:
+        """source_channel='wellness' is present in request_context for HA envelopes."""
+        envelope = _make_ha_wellness_envelope_v1()
+        context = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+        )
+        assert context["source_channel"] == "wellness"
+
+    def test_make_ingestion_envelope_ha_source_channel(self) -> None:
+        """_make_ingestion_envelope extracts source_channel='wellness' for HA payloads."""
+        payload = _ha_wellness_payload()
         env = _make_ingestion_envelope(payload)
         assert env.source_channel == "wellness"

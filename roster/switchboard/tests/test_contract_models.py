@@ -209,6 +209,48 @@ def test_ingest_v1_rejects_inconsistent_source_channel_provider_pair() -> None:
     assert error["type"] == "invalid_source_provider"
 
 
+def test_ingest_v1_accepts_wellness_channel_with_home_assistant_provider() -> None:
+    """wellness/home_assistant is a registered pairing (RFC 0003 Amendment 1)."""
+    payload = _valid_ingest_payload()
+    payload["source"]["channel"] = "wellness"
+    payload["source"]["provider"] = "home_assistant"
+    payload["source"]["endpoint_identity"] = "home_assistant:owner"
+
+    envelope = IngestEnvelopeV1.model_validate(payload)
+
+    assert envelope.source.channel == "wellness"
+    assert envelope.source.provider == "home_assistant"
+
+
+def test_ingest_v1_accepts_wellness_channel_with_google_health_provider() -> None:
+    """wellness/google_health remains valid and unchanged after the amendment."""
+    payload = _valid_ingest_payload()
+    payload["source"]["channel"] = "wellness"
+    payload["source"]["provider"] = "google_health"
+    payload["source"]["endpoint_identity"] = "google_health:owner"
+
+    envelope = IngestEnvelopeV1.model_validate(payload)
+
+    assert envelope.source.channel == "wellness"
+    assert envelope.source.provider == "google_health"
+
+
+@pytest.mark.parametrize("provider", ["telegram", "owntracks", "internal", "steam"])
+def test_ingest_v1_rejects_unregistered_wellness_provider(provider: str) -> None:
+    """Any provider other than google_health/home_assistant is rejected on wellness."""
+    payload = _valid_ingest_payload()
+    payload["source"]["channel"] = "wellness"
+    payload["source"]["provider"] = provider
+    payload["source"]["endpoint_identity"] = f"{provider}:owner"
+
+    with pytest.raises(ValidationError) as exc_info:
+        IngestEnvelopeV1.model_validate(payload)
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ("source",)
+    assert error["type"] == "invalid_source_provider"
+
+
 @pytest.mark.parametrize(
     ("model_cls", "schema_version"),
     [
