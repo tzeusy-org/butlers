@@ -326,7 +326,10 @@ def _looks_like_mcp_endpoint_alias(alias: str) -> bool:
     if not alias:
         return False
     if "://" in alias:
-        parsed = urlsplit(alias)
+        try:
+            parsed = urlsplit(alias)
+        except ValueError:
+            return False
         return bool(parsed.scheme and parsed.netloc)
     if "/" in alias or "?" in alias:
         return True
