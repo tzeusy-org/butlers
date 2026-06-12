@@ -463,6 +463,9 @@ async def list_facts(
     source_episode_id: str | None = Query(
         None, description="Filter to facts derived from this episode"
     ),
+    importance_min: float | None = Query(
+        None, description="Filter to facts with importance >= this threshold"
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -500,6 +503,11 @@ async def list_facts(
     if source_episode_id is not None:
         conditions.append(f"source_episode_id = ${idx}")
         args.append(source_episode_id)
+        idx += 1
+
+    if importance_min is not None:
+        conditions.append(f"importance >= ${idx}")
+        args.append(importance_min)
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
