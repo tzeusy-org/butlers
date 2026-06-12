@@ -8,7 +8,22 @@ Provides models for the three-tier memory subsystem:
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
+
+
+class ConsolidationStatus(StrEnum):
+    """Canonical consolidation lifecycle states for an episode.
+
+    Mirrors the ``consolidation_status`` CHECK constraint on the ``episodes``
+    table (see ``modules/memory/migrations/001_memory_schema.py``).
+    """
+
+    PENDING = "pending"
+    CONSOLIDATED = "consolidated"
+    FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
 
 
 class Episode(BaseModel):

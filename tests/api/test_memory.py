@@ -29,6 +29,7 @@ def _make_episode_row(
     *,
     butler: str = "atlas",
     content: str = "Test episode",
+    consolidation_status: str = "pending",
 ) -> dict:
     """Build a dict mimicking an asyncpg Record for the episodes table."""
     return {
@@ -39,6 +40,7 @@ def _make_episode_row(
         "importance": 0.5,
         "reference_count": 0,
         "consolidated": False,
+        "consolidation_status": consolidation_status,
         "created_at": _NOW,
         "last_referenced_at": None,
         "expires_at": None,
@@ -209,6 +211,95 @@ async def test_episodes_butler_filter_combined_with_consolidated(app):
     assert any(
         "consolidated = $2" in call.args[0] and False in call.args[1:] for call in fetch_calls
     )
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["pending", "consolidated", "failed", "dead_letter"],
+)
+async def test_episodes_status_filter_adds_where_clause(app, status):
+    """?status=<valid> filters on the consolidation_status column."""
+    rows = [_make_episode_row(butler="atlas", consolidation_status=status)]
+    mock_db = _wire_memory_db(app, rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/episodes", params={"status": status})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Two default pools ("atlas", "memory") each return the single mocked row,
+    # so guard against a vacuous pass before checking element properties.
+    assert len(body["data"]) == 2
+    assert all(ep["consolidation_status"] == status for ep in body["data"])
+
+    fetch_calls = mock_db.pool_mock.fetch.call_args_list
+    assert any(
+        "consolidation_status = $1" in call.args[0] and status in call.args[1:]
+        for call in fetch_calls
+    )
+
+
+async def test_episodes_status_filter_combines_with_butler(app):
+    """?butler and ?status both land in the WHERE clause with correct ordinals."""
+    rows = [_make_episode_row(butler="atlas", consolidation_status="dead_letter")]
+    mock_db = _wire_memory_db(app, rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/memory/episodes",
+            params={"butler": "atlas", "status": "dead_letter"},
+        )
+
+    assert resp.status_code == 200
+    queried_names = {call.args[0] for call in mock_db.pool_lookup.call_args_list}
+    assert queried_names == {"atlas"}
+
+    fetch_calls = mock_db.pool_mock.fetch.call_args_list
+    assert any(
+        "butler = $1" in call.args[0]
+        and "consolidation_status = $2" in call.args[0]
+        and "atlas" in call.args[1:]
+        and "dead_letter" in call.args[1:]
+        for call in fetch_calls
+    )
+
+
+async def test_episodes_no_status_filter_omits_clause(app):
+    """Omitting ?status leaves consolidation_status out of the WHERE clause."""
+    rows = [_make_episode_row(butler="atlas")]
+    mock_db = _wire_memory_db(app, rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/episodes")
+
+    assert resp.status_code == 200
+    fetch_calls = mock_db.pool_mock.fetch.call_args_list
+    # One fetch per default pool ("atlas", "memory"); assert the exact count so
+    # the WHERE-clause check below cannot vacuously pass on an empty list.
+    assert len(fetch_calls) == 2
+    # consolidation_status appears in the SELECT column list, but must NOT be
+    # part of the WHERE clause when ?status is omitted.
+    assert all("consolidation_status = $" not in call.args[0] for call in fetch_calls)
+
+
+async def test_episodes_invalid_status_returns_422(app):
+    """An out-of-enum ?status value is rejected by FastAPI validation (422)."""
+    mock_db = _wire_memory_db(app, rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/episodes", params={"status": "bogus"})
+
+    assert resp.status_code == 422
+    # No pool should have been queried for an invalid request.
+    mock_db.pool_mock.fetch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

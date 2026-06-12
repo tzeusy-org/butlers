@@ -26,6 +26,7 @@ from butlers.api.models.memory import (
     _DEFAULT_EMBEDDING_MODEL,
     ButlerMemoryStats,
     CompactionLogEntry,
+    ConsolidationStatus,
     EntityDetail,
     EntityInfoEntry,
     EntitySummary,
@@ -301,6 +302,12 @@ async def get_memory_stats(
 async def list_episodes(
     butler: str | None = Query(None, description="Filter by butler name"),
     consolidated: bool | None = Query(None, description="Filter by consolidated status"),
+    status: ConsolidationStatus | None = Query(
+        None,
+        description=(
+            "Filter by consolidation lifecycle status (pending|consolidated|failed|dead_letter)"
+        ),
+    ),
     since: str | None = Query(None, description="Created after this timestamp"),
     until: str | None = Query(None, description="Created before this timestamp"),
     offset: int = Query(0, ge=0),
@@ -322,6 +329,11 @@ async def list_episodes(
         args.append(consolidated)
         idx += 1
 
+    if status is not None:
+        conditions.append(f"consolidation_status = ${idx}")
+        args.append(status.value)
+        idx += 1
+
     if since is not None:
         conditions.append(f"created_at >= ${idx}")
         args.append(since)
@@ -340,7 +352,8 @@ async def list_episodes(
         total = await pool.fetchval(f"SELECT count(*) FROM episodes{where}", *args) or 0
         rows = await pool.fetch(
             f"SELECT id, butler, session_id, content, importance, reference_count,"
-            f" consolidated, created_at, last_referenced_at, expires_at, metadata"
+            f" consolidated, consolidation_status, created_at, last_referenced_at,"
+            f" expires_at, metadata"
             f" FROM episodes{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -372,6 +385,7 @@ async def list_episodes(
             importance=float(r["importance"]),
             reference_count=r["reference_count"],
             consolidated=r["consolidated"],
+            consolidation_status=r["consolidation_status"],
             created_at=str(r["created_at"]),
             last_referenced_at=str(r["last_referenced_at"]) if r["last_referenced_at"] else None,
             expires_at=str(r["expires_at"]) if r["expires_at"] else None,
@@ -401,7 +415,8 @@ async def get_episode(
     async def _query_pool(_: str, pool: object):
         return await pool.fetchrow(
             "SELECT id, butler, session_id, content, importance, reference_count,"
-            " consolidated, created_at, last_referenced_at, expires_at, metadata"
+            " consolidated, consolidation_status, created_at, last_referenced_at,"
+            " expires_at, metadata"
             " FROM episodes WHERE id = $1",
             episode_id,
         )
@@ -424,6 +439,7 @@ async def get_episode(
             importance=float(r["importance"]),
             reference_count=r["reference_count"],
             consolidated=r["consolidated"],
+            consolidation_status=r["consolidation_status"],
             created_at=str(r["created_at"]),
             last_referenced_at=str(r["last_referenced_at"]) if r["last_referenced_at"] else None,
             expires_at=str(r["expires_at"]) if r["expires_at"] else None,
