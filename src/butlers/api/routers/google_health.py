@@ -60,7 +60,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from prometheus_client import Counter
 
 from butlers.api.models.google_health import (
@@ -197,6 +197,36 @@ async def _fetch_primary_google_account(shared_pool: Any) -> dict[str, Any] | No
             )
     except Exception:  # noqa: BLE001
         logger.debug("Failed to query public.google_accounts", exc_info=True)
+        return None
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def _fetch_google_account_by_email(shared_pool: Any, email: str) -> dict[str, Any] | None:
+    """Fetch a Google account row by email address, or None if not found.
+
+    Returns the same fields as ``_fetch_primary_google_account``.  Used for
+    per-account operations where the caller targets a specific (possibly
+    non-primary) account by email.
+    """
+    if shared_pool is None:
+        return None
+    try:
+        async with shared_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, entity_id, email, granted_scopes, status,
+                       last_token_refresh_at, metadata
+                FROM public.google_accounts
+                WHERE email = $1
+                  AND status = 'active'
+                LIMIT 1
+                """,
+                email,
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to query public.google_accounts by email=%s", email, exc_info=True)
         return None
     if row is None:
         return None
@@ -766,13 +796,27 @@ async def get_google_health_status(
 async def disconnect_google_health(
     request: Request,
     db_manager: Any = Depends(_get_db_manager),
+    account_email: str | None = Query(
+        default=None,
+        description=(
+            "Target a specific (possibly non-primary) Google account by email. "
+            "When omitted the primary account is targeted (legacy behaviour). "
+            "Must match a row in public.google_accounts with status='active'."
+        ),
+        alias="account_email",
+    ),
 ) -> GoogleHealthDisconnectResponse:
-    """Scope-selectively revoke Google Health access for the primary account.
+    """Scope-selectively revoke Google Health access for a Google account.
 
     Removes the three full Google Health scope URLs from
     ``public.google_accounts.granted_scopes`` while preserving every other
     scope. The refresh token is NOT revoked with Google — revoking it
     would kill Calendar / Drive / Gmail for the same account.
+
+    When ``account_email`` is provided the operation targets that specific
+    account (which may be non-primary).  When omitted the primary account is
+    targeted, preserving the original behaviour for callers that do not supply
+    the parameter.
 
     The Google Health connector detects the scope removal on its next
     ``granted_scopes`` check (within 300 s) and transitions to ``degraded``.
@@ -792,12 +836,22 @@ async def disconnect_google_health(
             scopes_removed=[],
         )
 
-    account = await _fetch_primary_google_account(shared_pool)
+    if account_email is not None:
+        account = await _fetch_google_account_by_email(shared_pool, account_email)
+        not_found_message = f"Google account {account_email!r} not found or not active."
+    else:
+        account = await _fetch_primary_google_account(shared_pool)
+        not_found_message = "No primary Google account connected — nothing to disconnect."
+
     if account is None:
-        logger.info("google_health.disconnect request_id=%s outcome=no_primary_account", request_id)
+        logger.info(
+            "google_health.disconnect request_id=%s account_email=%s outcome=no_account",
+            request_id,
+            account_email,
+        )
         return GoogleHealthDisconnectResponse(
             success=True,
-            message="No primary Google account connected — nothing to disconnect.",
+            message=not_found_message,
             scopes_removed=[],
         )
 
@@ -806,9 +860,10 @@ async def disconnect_google_health(
 
     if not present_health:
         logger.info(
-            "google_health.disconnect request_id=%s account_id=%s outcome=noop",
+            "google_health.disconnect request_id=%s account_id=%s account_email=%s outcome=noop",
             request_id,
             account["id"],
+            account.get("email"),
         )
         return GoogleHealthDisconnectResponse(
             success=True,
@@ -830,10 +885,11 @@ async def disconnect_google_health(
         )
 
     logger.info(
-        "google_health.disconnect request_id=%s account_id=%s "
+        "google_health.disconnect request_id=%s account_id=%s account_email=%s "
         "action=scope_strip removed=%d remaining=%d",
         request_id,
         account["id"],
+        account.get("email"),
         len(present_health),
         len(remaining),
     )

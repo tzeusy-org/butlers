@@ -43,15 +43,19 @@ export function useGoogleHealthStatus(options?: {
 
 /**
  * Scope-selective disconnect — strips only the three Google Health scope
- * URLs from the primary Google account's ``granted_scopes``. Calendar /
+ * URLs from the targeted Google account's ``granted_scopes``. Calendar /
  * Drive / Gmail scopes are preserved. On success invalidates both the
  * Google accounts cache (to refresh the scope-picker state) and the
  * Google Health status cache (to reflect the new scope set).
+ *
+ * When ``accountEmail`` is supplied the operation targets that specific
+ * (possibly non-primary) account.  When omitted the primary account is
+ * targeted (legacy behaviour).
  */
-export function useDisconnectGoogleHealth() {
+export function useDisconnectGoogleHealth(opts?: { accountEmail?: string }) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => disconnectGoogleHealth(),
+    mutationFn: () => disconnectGoogleHealth({ accountEmail: opts?.accountEmail }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: googleHealthKeys.all });
       queryClient.invalidateQueries({ queryKey: googleAccountsKeys.all });

@@ -809,13 +809,14 @@ export function PillBtn({
   onClick,
   disabled,
   className,
+  ...rest
 }: {
   children: React.ReactNode;
   variant?: "pill" | "commit" | "danger";
   onClick?: () => void;
   disabled?: boolean;
   className?: string;
-}) {
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "type" | "onClick" | "disabled" | "className">) {
   const base = cn(
     "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight",
     "disabled:pointer-events-none disabled:opacity-40",
@@ -828,6 +829,7 @@ export function PillBtn({
         onClick={onClick}
         disabled={disabled}
         className={cn(base, "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)]")}
+        {...rest}
       >
         {children}
       </button>
@@ -840,6 +842,7 @@ export function PillBtn({
         onClick={onClick}
         disabled={disabled}
         className={cn(base, "bg-transparent text-[var(--red)] border-[var(--red)]")}
+        {...rest}
       >
         {children}
       </button>
@@ -851,6 +854,7 @@ export function PillBtn({
       onClick={onClick}
       disabled={disabled}
       className={cn(base, "bg-transparent text-[var(--fg)] border-[var(--border-strong)]")}
+      {...rest}
     >
       {children}
     </button>

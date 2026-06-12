@@ -311,6 +311,11 @@ function GoogleAccountRow({
 }) {
   const setPrimaryMutation = useSetPrimaryAccount();
   const disconnectMutation = useDisconnectAccount();
+  // Per-account health revoke [bu-kma08]: each account row can revoke Health
+  // scopes independently via the account_email-scoped backend endpoint.
+  const revokeHealthMutation = useDisconnectGoogleHealth({
+    accountEmail: account.email ?? undefined,
+  });
 
   const [disconnectOpen, setDisconnectOpen] = React.useState(false);
   const [hardDelete, setHardDelete] = React.useState(false);
@@ -416,6 +421,14 @@ function GoogleAccountRow({
               aria-hidden="true"
             />
             <Mono size={9} color="var(--dim)">health</Mono>
+            <PillBtn
+              variant="danger"
+              onClick={() => revokeHealthMutation.mutate()}
+              disabled={revokeHealthMutation.isPending}
+              data-revoke-health={account.id}
+            >
+              {revokeHealthMutation.isPending ? "revoking…" : "revoke"}
+            </PillBtn>
           </span>
         ) : (
           <span
@@ -424,6 +437,13 @@ function GoogleAccountRow({
           >
             <PillBtn onClick={handleGrantHealth}>grant health</PillBtn>
           </span>
+        )}
+        {revokeHealthMutation.error && (
+          <Mono size={11} color="var(--red)">
+            {revokeHealthMutation.error instanceof Error
+              ? revokeHealthMutation.error.message
+              : "Health revoke failed."}
+          </Mono>
         )}
         {!isOnlyAccount && (
           <PillBtn
@@ -506,7 +526,12 @@ function ScopeSetPicker({
    *  [bu-3gekd] */
   primaryAccountEmail?: string;
 }) {
-  const disconnectHealthMutation = useDisconnectGoogleHealth();
+  // Revoke in the picker targets the primary account explicitly so the backend
+  // uses the account_email-scoped path even when called from the summary row.
+  // [bu-kma08]: per-account revoke is now also on the individual account rows.
+  const disconnectHealthMutation = useDisconnectGoogleHealth({
+    accountEmail: primaryAccountEmail,
+  });
   const [grantPending, setGrantPending] = React.useState<string | null>(null);
   const [grantError, setGrantError] = React.useState<string | null>(null);
 

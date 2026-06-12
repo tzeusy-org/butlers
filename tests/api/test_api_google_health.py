@@ -43,13 +43,28 @@ _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
 def _make_shared_pool(
-    *, primary_row, last_ingest_at=None, ingest_counts=None, captured_updates=None
+    *,
+    primary_row,
+    last_ingest_at=None,
+    ingest_counts=None,
+    captured_updates=None,
+    extra_accounts: dict | None = None,
 ):
+    """Build a fake asyncpg shared pool with configurable responses.
+
+    ``extra_accounts`` maps email -> row dict for non-primary account lookups
+    (used by per-account disconnect tests).
+    """
     resolved_counts = ingest_counts or {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+    _extra = extra_accounts or {}
     conn = AsyncMock()
 
     async def fake_fetchrow(query, *args):
         if "FROM public.google_accounts" in query:
+            if "WHERE is_primary = true" in query:
+                return primary_row
+            if "WHERE email = $1" in query and args:
+                return _extra.get(args[0])
             return primary_row
         if "FROM public.ingestion_events" in query:
             return resolved_counts
@@ -86,12 +101,14 @@ def _make_db(
     heartbeat_row=None,
     captured_updates=None,
     shared_available=True,
+    extra_accounts: dict | None = None,
 ):
     shared_pool = _make_shared_pool(
         primary_row=primary_row,
         last_ingest_at=last_ingest_at,
         ingest_counts=ingest_counts,
         captured_updates=captured_updates,
+        extra_accounts=extra_accounts,
     )
     swb_pool = AsyncMock()
     swb_pool.fetchrow = AsyncMock(return_value=heartbeat_row)
@@ -366,6 +383,135 @@ async def test_disconnect_no_account_is_noop():
         resp = await client.delete("/api/connectors/google-health/disconnect")
     assert resp.status_code == 200
     assert resp.json()["scopes_removed"] == []
+
+
+# ---------------------------------------------------------------------------
+# Per-account disconnect [bu-kma08]
+# ---------------------------------------------------------------------------
+
+
+async def test_disconnect_per_account_by_email_strips_health_scopes():
+    """?account_email=<non-primary email> targets that specific account."""
+    captured: list = []
+    primary_id = uuid.uuid4()
+    secondary_id = uuid.uuid4()
+
+    primary_row = {
+        "id": primary_id,
+        "entity_id": uuid.uuid4(),
+        "email": "owner@example.com",
+        "granted_scopes": [_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES],
+        "status": "active",
+        "last_token_refresh_at": None,
+        "metadata": {},
+    }
+    secondary_row = {
+        "id": secondary_id,
+        "entity_id": uuid.uuid4(),
+        "email": "work@example.com",
+        "granted_scopes": [_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES],
+        "status": "active",
+        "last_token_refresh_at": None,
+        "metadata": {},
+    }
+    db = _make_db(
+        primary_row=primary_row,
+        captured_updates=captured,
+        extra_accounts={"work@example.com": secondary_row},
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+    ) as client:
+        resp = await client.delete(
+            "/api/connectors/google-health/disconnect",
+            params={"account_email": "work@example.com"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert sorted(body["scopes_removed"]) == _ALL_HEALTH_SCOPES
+    # The update must have targeted the secondary account's ID, not the primary's.
+    assert len(captured) == 1
+    remaining, captured_id = captured[0]
+    assert captured_id == secondary_id
+    # Calendar scope preserved; health scopes stripped.
+    assert sorted(remaining) == [_CALENDAR_SCOPE]
+
+
+async def test_disconnect_per_account_idempotent_when_no_health_scopes():
+    """account_email with no health scopes → noop, success=True."""
+    secondary_row = {
+        "id": uuid.uuid4(),
+        "entity_id": uuid.uuid4(),
+        "email": "work@example.com",
+        "granted_scopes": [_CALENDAR_SCOPE],
+        "status": "active",
+        "last_token_refresh_at": None,
+        "metadata": {},
+    }
+    captured: list = []
+    db = _make_db(
+        primary_row=None,
+        captured_updates=captured,
+        extra_accounts={"work@example.com": secondary_row},
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+    ) as client:
+        resp = await client.delete(
+            "/api/connectors/google-health/disconnect",
+            params={"account_email": "work@example.com"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["scopes_removed"] == []
+    assert len(captured) == 0
+
+
+async def test_disconnect_per_account_not_found_is_noop():
+    """?account_email for an unknown account → success=True, scopes_removed=[]."""
+    db = _make_db(primary_row=None, captured_updates=[], extra_accounts={})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+    ) as client:
+        resp = await client.delete(
+            "/api/connectors/google-health/disconnect",
+            params={"account_email": "ghost@example.com"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["scopes_removed"] == []
+
+
+async def test_disconnect_without_account_email_still_targets_primary():
+    """Without account_email param, legacy primary-account behaviour is preserved."""
+    captured: list = []
+    acct_id = uuid.uuid4()
+    db = _make_db(
+        primary_row={
+            "id": acct_id,
+            "entity_id": uuid.uuid4(),
+            "email": "owner@example.com",
+            "granted_scopes": [_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES],
+            "status": "active",
+            "last_token_refresh_at": None,
+            "metadata": {},
+        },
+        captured_updates=captured,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+    ) as client:
+        resp = await client.delete("/api/connectors/google-health/disconnect")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert sorted(body["scopes_removed"]) == _ALL_HEALTH_SCOPES
+    assert len(captured) == 1
+    _, captured_id = captured[0]
+    assert captured_id == acct_id
 
 
 # ---------------------------------------------------------------------------

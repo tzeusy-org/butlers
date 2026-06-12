@@ -2638,11 +2638,22 @@ export function getGoogleHealthStatus(): Promise<GoogleHealthStatusResponse> {
   return apiFetch<GoogleHealthStatusResponse>("/connectors/google-health/status");
 }
 
-/** Scope-selectively disconnect Google Health — preserves Calendar/Drive. */
-export function disconnectGoogleHealth(): Promise<GoogleHealthDisconnectResponse> {
-  return apiFetch<GoogleHealthDisconnectResponse>("/connectors/google-health/disconnect", {
-    method: "DELETE",
-  });
+/**
+ * Scope-selectively disconnect Google Health — preserves Calendar/Drive.
+ *
+ * When ``accountEmail`` is provided the operation targets that specific account
+ * (which may be non-primary).  When omitted the primary account is targeted.
+ */
+export function disconnectGoogleHealth(opts?: {
+  accountEmail?: string;
+}): Promise<GoogleHealthDisconnectResponse> {
+  const params = new URLSearchParams();
+  if (opts?.accountEmail != null) params.set("account_email", opts.accountEmail);
+  const qs = params.toString();
+  return apiFetch<GoogleHealthDisconnectResponse>(
+    `/connectors/google-health/disconnect${qs ? `?${qs}` : ""}`,
+    { method: "DELETE" },
+  );
 }
 
 // ---------------------------------------------------------------------------
