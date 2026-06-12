@@ -13,7 +13,6 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { format, formatDistanceToNow } from "date-fns";
 import { Time } from "@/components/ui/time";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES } from "@/lib/entity-glosses";
@@ -24,7 +23,6 @@ import type {
   EntityFact,
   EntityFactStalenessBand,
   EntityFactsValidity,
-  EntityImportantDate,
   EntityInfoEntry,
   EntityTimelineItem,
   Fact,
@@ -35,7 +33,10 @@ import {
   telegramSendCode,
   telegramVerifyCode,
 } from "@/api/index";
+import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
 import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
+import { CoreDatesBlock } from "@/components/relationship/CoreDatesBlock";
+import { DeltaSinceLastVisitBanner } from "@/components/relationship/DeltaSinceLastVisitBanner";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
@@ -78,7 +79,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
 import {
-  useEntityDates,
   useEntityFacts,
   useEntityGifts,
   useEntityLoans,
@@ -764,25 +764,6 @@ function _firstActiveFact(
   return null;
 }
 
-function _ageOnNextBirthday(birthYear: number, occurrence: Date): number {
-  return occurrence.getFullYear() - birthYear;
-}
-
-function _formatMonthDay(month: number, day: number): string {
-  // Use a stable date so locale-formatting is consistent regardless of year.
-  const sample = new Date(2000, month - 1, day);
-  return format(sample, "MMM d");
-}
-
-function _formatCountdown(target: Date, now: Date): string {
-  const diffMs = target.getTime() - now.getTime();
-  const days = Math.round(diffMs / (24 * 60 * 60 * 1000));
-  if (days <= 0) return "today";
-  if (days === 1) return "tomorrow";
-  if (days < 30) return `in ${days} days`;
-  return `in ${formatDistanceToNow(target)}`;
-}
-
 function _familyFromFacts(
   facts: Fact[],
   entityId: string,
@@ -837,26 +818,11 @@ function ProfileSnapshot({
   entityId: string;
   facts: Fact[];
 }) {
-  const { data: dates, isLoading: datesLoading } = useEntityDates(entityId);
-  const [today] = useState(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  });
-
-  const birthday = useMemo(
-    () => (dates ?? []).find((d) => d.label.toLowerCase() === "birthday") ?? null,
-    [dates],
-  );
-
-  const otherUpcoming = useMemo(() => {
-    const list = (dates ?? []).filter(
-      (d) => d.label.toLowerCase() !== "birthday",
-    );
-    // Soft cap to the next two non-birthday dates.
-    return list.slice(0, 2);
-  }, [dates]);
-
+  // Date-kind facts (birthday, anniversaries, upcoming dates) are no longer
+  // matched client-side here — they are server-extracted by GET
+  // /entities/{id}/core-dates and rendered by <CoreDatesBlock> (bu-xzh76). This
+  // section keeps only the non-date profile rows derived from the entity's
+  // recent_facts.
   const placeFact = useMemo(
     () => _firstActiveFact(facts, _PLACE_PREDICATES, entityId),
     [facts, entityId],
@@ -871,21 +837,12 @@ function ProfileSnapshot({
   );
   const family = useMemo(() => _familyFromFacts(facts, entityId), [facts, entityId]);
 
-  const hasBirthday = !!birthday;
   const hasPlace = !!placeFact;
   const hasWork = !!workFact || !!roleFact;
   const hasFamily =
     family.outgoing.length > 0 || family.incoming.length > 0;
-  const hasUpcoming = otherUpcoming.length > 0;
 
-  if (
-    !hasBirthday &&
-    !hasPlace &&
-    !hasWork &&
-    !hasFamily &&
-    !hasUpcoming &&
-    !datesLoading
-  ) {
+  if (!hasPlace && !hasWork && !hasFamily) {
     return null;
   }
 
@@ -893,11 +850,6 @@ function ProfileSnapshot({
     <section className="space-y-3">
       <h2 className="text-lg font-semibold">Profile</h2>
       <dl className="divide-y divide-border border-y">
-        {hasBirthday && (
-          <ProfileRow label="Birthday">
-            <BirthdayValue date={birthday} today={today} />
-          </ProfileRow>
-        )}
         {hasPlace && placeFact && (
           <ProfileRow label="Lives in">
             <span>{placeFact.content}</span>
@@ -911,11 +863,6 @@ function ProfileSnapshot({
         {hasFamily && (
           <ProfileRow label="Family">
             <FamilyValue family={family} />
-          </ProfileRow>
-        )}
-        {hasUpcoming && (
-          <ProfileRow label="Upcoming">
-            <UpcomingValue dates={otherUpcoming} today={today} />
           </ProfileRow>
         )}
       </dl>
@@ -937,33 +884,6 @@ function ProfileRow({
       </dt>
       <dd className="text-sm">{children}</dd>
     </div>
-  );
-}
-
-function BirthdayValue({
-  date,
-  today,
-}: {
-  date: EntityImportantDate;
-  today: Date;
-}) {
-  const occurrence = new Date(date.upcoming_date);
-  const monthDay = _formatMonthDay(date.month, date.day);
-  const countdown = _formatCountdown(occurrence, today);
-  if (date.year) {
-    const age = _ageOnNextBirthday(date.year, occurrence);
-    return (
-      <span>
-        {monthDay}
-        <span className="text-muted-foreground"> · turns {age} {countdown}</span>
-      </span>
-    );
-  }
-  return (
-    <span>
-      {monthDay}
-      <span className="text-muted-foreground"> · {countdown}</span>
-    </span>
   );
 }
 
@@ -1047,30 +967,6 @@ function FamilyValue({
   );
 }
 
-function UpcomingValue({
-  dates,
-  today,
-}: {
-  dates: EntityImportantDate[];
-  today: Date;
-}) {
-  return (
-    <ul className="space-y-1">
-      {dates.map((d) => {
-        const occurrence = new Date(d.upcoming_date);
-        return (
-          <li key={`${d.contact_id}-${d.label}-${d.month}-${d.day}`}>
-            <span className="capitalize">{d.label}</span>
-            <span className="text-muted-foreground">
-              {" "}
-              · {_formatMonthDay(d.month, d.day)} ({_formatCountdown(occurrence, today)})
-            </span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Activity timeline — single feed with filter pills, replaces the tabbed view
@@ -2448,6 +2344,13 @@ export default function EntityDetailPage() {
               dunbarTier={entity.dunbar_tier ?? null}
               isPinned={dunbarPinned}
             />
+
+            {/* 90-day activity sparkline — quick-refresh affordance (entity v3) */}
+            <ActivitySparkline entityId={entityId} />
+
+            {/* Delta-since-last-visit banner — reads delta, then advances the
+                view mark (entity v3). Renders nothing on a first visit. */}
+            <DeltaSinceLastVisitBanner entityId={entityId} />
           </section>
 
           {mode === "editorial" ? (
@@ -2459,7 +2362,12 @@ export default function EntityDetailPage() {
                 entityType={entity.entity_type}
               />
 
-              {/* Profile snapshot — birthday, place, work, family, upcoming */}
+              {/* Core dates — server-extracted date-kind facts with next
+                  occurrence (entity v3; replaces client-side date matching). */}
+              <CoreDatesBlock entityId={entityId} />
+
+              {/* Profile snapshot — place, work, family (date-kind facts moved
+                  to <CoreDatesBlock> above). */}
               <ProfileSnapshot entityId={entityId} facts={entity.recent_facts} />
 
               {/* Activity timeline — primary content */}
@@ -2495,8 +2403,13 @@ export default function EntityDetailPage() {
               />
             </>
           ) : (
-            /* Workbench mode — dense sortable provenance grid with real provenance fields */
-            <ProvenanceGrid entityId={entity.id} />
+            <>
+              {/* Core dates — first-class section in both modes (entity v3). */}
+              <CoreDatesBlock entityId={entityId} />
+
+              {/* Workbench mode — dense sortable provenance grid with real provenance fields */}
+              <ProvenanceGrid entityId={entity.id} />
+            </>
           )}
 
           {/* Practical drawer — collapsed by default, owner setup forces it open */}

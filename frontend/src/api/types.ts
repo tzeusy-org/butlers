@@ -5509,6 +5509,130 @@ export interface EntityFactsParams {
 }
 
 // ---------------------------------------------------------------------------
+// Entity v3 quick-refresh endpoints (sparkline / delta / core-dates)
+// GET /api/butlers/relationship/entities/{id}/activity?bins=daily
+// POST /api/butlers/relationship/entities/{id}/view-mark
+// GET /api/butlers/relationship/entities/{id}/delta-facts
+// GET /api/butlers/relationship/entities/{id}/core-dates
+// bu-xzh76 (FE half of bu-bjvny / PR #2183)
+// ---------------------------------------------------------------------------
+
+/**
+ * One day's activity count for the 90-day sparkline.
+ *
+ * ``date`` is an ISO calendar date (``YYYY-MM-DD``). ``count`` is the number of
+ * merged activity entries (relationship facts + chronicler episodes) on that
+ * day. Zero-activity days are present with ``count=0`` — the sparkline renders
+ * quiet days honestly rather than collapsing them out.
+ */
+export interface ActivityBin {
+  date: string;
+  count: number;
+}
+
+/**
+ * Response for GET /api/butlers/relationship/entities/{id}/activity when
+ * ``bins_only=true``.
+ *
+ * ``bins`` is a dense, ascending-by-date series covering the full window (one
+ * entry per day, including zero-count days). The sparkline component consumes
+ * this directly.
+ */
+export interface ActivityBinsResponse {
+  bins: ActivityBin[];
+}
+
+/** Query parameters for the binned-activity (sparkline) endpoint. */
+export interface ActivityBinsParams {
+  /** ``"daily"`` requests the per-day series (the sparkline source). */
+  bins: "daily";
+  /** Binning window as ``"<N>d"`` (e.g. ``"90d"``). Defaults to 90d server-side. */
+  window?: string;
+  /** When true, return only ``{bins:[...]}`` and omit the merged stream. */
+  bins_only?: boolean;
+}
+
+/** Response for POST /api/butlers/relationship/entities/{id}/view-mark. */
+export interface ViewMarkResponse {
+  entity_id: string;
+  /** The timestamp the mark was upserted to (ISO 8601). */
+  marked_at: string;
+}
+
+/** Origin store of a delta fact row. */
+export type DeltaFactStore = "identity" | "narrative";
+
+/**
+ * One fact that changed since the entity's view mark.
+ *
+ * Carries the same provenance shape as the facts-drill rows so the detail page
+ * can highlight the delta in place. ``store`` discriminates identity vs
+ * narrative origin; ``changed_at`` is the per-store change timestamp that beat
+ * the view mark.
+ */
+export interface DeltaFactEntry {
+  id: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  object_kind: string;
+  src: string;
+  conf: number;
+  store: DeltaFactStore;
+  validity: string;
+  created_at: string;
+  changed_at: string;
+}
+
+/**
+ * Response for GET /api/butlers/relationship/entities/{id}/delta-facts.
+ *
+ * ``marked_at`` is the view mark the delta was computed against (``null`` on a
+ * first visit — no mark row exists yet, so ``items`` is empty and the frontend
+ * renders no banner). The endpoint never moves the mark; the caller posts the
+ * mark afterwards via the view-mark endpoint.
+ */
+export interface DeltaFactsResponse {
+  marked_at: string | null;
+  items: DeltaFactEntry[];
+}
+
+/**
+ * A date-kind fact with its owner-relevant next occurrence.
+ *
+ * Server-extracted from the facts API (not client-side string matching).
+ * ``predicate`` is the date-kind predicate (e.g. ``has-birthday``). ``value`` is
+ * the raw stored object (an ISO ``YYYY-MM-DD`` or ``--MM-DD`` partial date).
+ * ``next_occurrence`` is the next calendar occurrence of (month, day) on or
+ * after the request date; ``days_until`` is the integer day count to it.
+ */
+export interface CoreDateEntry {
+  id: string;
+  predicate: string;
+  value: string;
+  month: number;
+  day: number;
+  year: number | null;
+  next_occurrence: string;
+  days_until: number;
+  src: string;
+  conf: number;
+  verified: boolean;
+  staleness_band: string;
+}
+
+/**
+ * Response for GET /api/butlers/relationship/entities/{id}/core-dates.
+ *
+ * ``items`` are date-kind facts ordered by ``days_until`` ascending (the
+ * soonest upcoming date first), so the detail page surfaces the next occurrence
+ * without client-side sorting.
+ */
+export interface CoreDatesResponse {
+  items: CoreDateEntry[];
+}
+
+// ---------------------------------------------------------------------------
 // Secrets v2 — breaks catalogue (GET /api/secrets/breaks-catalogue)
 // bu-qo3sf
 // ---------------------------------------------------------------------------

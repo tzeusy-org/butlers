@@ -17,8 +17,11 @@ import {
   updateEntityContact,
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
+  getEntityActivityBins,
   getEntityConcentration,
+  getEntityCoreDates,
   getEntityDates,
+  getEntityDeltaFacts,
   getEntityFacts,
   getEntityGifts,
   getEntityLinkedContacts,
@@ -28,6 +31,7 @@ import {
   getEntityTimeline,
   getRelationshipEntityQueue,
   listRelationshipEntities,
+  markEntityView,
   mergeRelationshipEntities,
   promoteRelationshipEntity,
   revealEntitySecret,
@@ -94,6 +98,71 @@ export function useEntityDates(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-dates", entityId],
     queryFn: () => getEntityDates(entityId!),
+    enabled: !!entityId,
+  });
+}
+
+/**
+ * Fetch the 90-day daily activity-count series for an entity's sparkline (bu-xzh76).
+ *
+ * The response ``bins`` array is a dense, ascending-by-date series (one entry
+ * per day including zero-count days) over ``window`` (default 90d).
+ */
+export function useEntityActivityBins(
+  entityId: string | undefined,
+  params?: { window?: string },
+) {
+  return useQuery({
+    queryKey: ["entity-activity-bins", entityId, params?.window ?? "90d"],
+    queryFn: () => getEntityActivityBins(entityId!, params),
+    enabled: !!entityId,
+  });
+}
+
+/**
+ * Fetch facts changed since the entity's view mark — delta-since-last-visit (bu-xzh76).
+ *
+ * Read-only; the response is computed against the *current* mark before it
+ * moves. ``marked_at`` is null on a first visit (no banner renders). The detail
+ * page reads this, renders the banner, then posts the mark via
+ * {@link useMarkEntityView} (spec: delta read before the mark moves). Disable
+ * refetch-on-mount so the delta reflects the mark as it was on entry, not after
+ * the post-render view-mark write.
+ */
+export function useEntityDeltaFacts(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-delta-facts", entityId],
+    queryFn: () => getEntityDeltaFacts(entityId!),
+    enabled: !!entityId,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * Upsert the owner's "last viewed" mark for an entity (bu-xzh76).
+ *
+ * The detail page calls this *after* reading the delta facts for the current
+ * load, so the next visit's delta is computed relative to this mark.
+ */
+export function useMarkEntityView() {
+  return useMutation({
+    mutationFn: (entityId: string) => markEntityView(entityId),
+  });
+}
+
+/**
+ * Fetch the entity's date-kind facts with their next occurrence — core dates (bu-xzh76).
+ *
+ * Server-side extraction (``has-birthday``, anniversaries) with next occurrence,
+ * ``days_until``, and provenance per row — replaces client-side string matching.
+ * Items are ordered by ``days_until`` ascending (soonest first).
+ */
+export function useEntityCoreDates(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-core-dates", entityId],
+    queryFn: () => getEntityCoreDates(entityId!),
     enabled: !!entityId,
   });
 }

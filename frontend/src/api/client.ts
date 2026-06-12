@@ -262,6 +262,10 @@ import type {
   EntityGift,
   EntityLoan,
   EntityImportantDate,
+  ActivityBinsResponse,
+  DeltaFactsResponse,
+  ViewMarkResponse,
+  CoreDatesResponse,
   EntityTimelineItem,
   DunbarTierOverrideResponse,
   EntityFinderSearchResponse,
@@ -1981,6 +1985,79 @@ export function getEntityMessageThreads(
 export function getEntityDates(entityId: string): Promise<EntityImportantDate[]> {
   return apiFetch<EntityImportantDate[]>(
     `/relationship/entities/${encodeURIComponent(entityId)}/dates`,
+  );
+}
+
+/**
+ * Fetch the 90-day daily activity-count series for an entity's sparkline (bu-xzh76).
+ *
+ * Hits GET /api/butlers/relationship/entities/{id}/activity?bins=daily — returns
+ * a dense, ascending-by-date series (one entry per day including zero-count
+ * days) over ``window`` (default 90d). ``bins_only=true`` is always sent so the
+ * merged stream is omitted.
+ *
+ * Returns owner-only gate 403 when no owner entity is registered.
+ */
+export function getEntityActivityBins(
+  entityId: string,
+  params?: { window?: string },
+): Promise<ActivityBinsResponse> {
+  const qs = new URLSearchParams();
+  qs.set("bins", "daily");
+  qs.set("bins_only", "true");
+  if (params?.window != null) qs.set("window", params.window);
+  return apiFetch<ActivityBinsResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/activity?${qs.toString()}`,
+  );
+}
+
+/**
+ * Fetch facts changed since the entity's view mark — delta-since-last-visit (bu-xzh76).
+ *
+ * Hits GET /api/butlers/relationship/entities/{id}/delta-facts — read-only; it
+ * never moves the mark. The caller reads this on load, renders the banner, then
+ * posts the view mark via {@link markEntityView} (spec: the delta is read
+ * before the mark moves). ``marked_at`` is null on a first visit (no banner).
+ *
+ * Returns owner-only gate 403 when no owner entity is registered.
+ */
+export function getEntityDeltaFacts(entityId: string): Promise<DeltaFactsResponse> {
+  return apiFetch<DeltaFactsResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/delta-facts`,
+  );
+}
+
+/**
+ * Upsert the owner's "last viewed" mark for an entity (bu-xzh76).
+ *
+ * Hits POST /api/butlers/relationship/entities/{id}/view-mark — persists
+ * ``now()`` into ``relationship.entity_view_marks`` (one mark per entity). The
+ * frontend posts this only *after* reading {@link getEntityDeltaFacts}, so the
+ * next visit's delta is computed relative to this mark.
+ *
+ * Returns owner-only gate 403 when no owner entity is registered.
+ */
+export function markEntityView(entityId: string): Promise<ViewMarkResponse> {
+  return apiFetch<ViewMarkResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/view-mark`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * Fetch the entity's date-kind facts with their next occurrence — core dates (bu-xzh76).
+ *
+ * Hits GET /api/butlers/relationship/entities/{id}/core-dates — server-side
+ * extraction of date-kind predicates (``has-birthday``, anniversaries) with the
+ * next calendar occurrence, ``days_until``, and provenance per row. Replaces the
+ * former client-side string-matching on the generic facts list. Items are
+ * ordered by ``days_until`` ascending (soonest first).
+ *
+ * Returns owner-only gate 403 when no owner entity is registered.
+ */
+export function getEntityCoreDates(entityId: string): Promise<CoreDatesResponse> {
+  return apiFetch<CoreDatesResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/core-dates`,
   );
 }
 

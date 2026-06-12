@@ -62,6 +62,10 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityActivityBins: vi.fn(() => ({ data: { bins: [] }, isLoading: false, isError: false })),
+  useEntityDeltaFacts: vi.fn(() => ({ data: { marked_at: null, items: [] }, isSuccess: true })),
+  useMarkEntityView: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useEntityCoreDates: vi.fn(() => ({ data: { items: [] }, isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityFacts: vi.fn(() => ({
     data: { items: [], next_cursor: null, has_more: false },
