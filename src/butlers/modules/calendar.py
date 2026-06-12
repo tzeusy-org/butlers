@@ -129,6 +129,18 @@ class CalendarSyncTokenExpiredError(CalendarAuthError):
     """Raised when a sync token is expired or invalid; caller should do a full sync."""
 
 
+def _is_transient_connectivity_error(exc: BaseException) -> bool:
+    """Return true for transport failures that should retry on the next sync tick."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (httpx.TransportError, TimeoutError, ConnectionError)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class _GoogleOAuthCredentials(BaseModel):
     """OAuth client credentials required for refresh-token exchange."""
 
@@ -7020,7 +7032,13 @@ class CalendarModule(Module):
             try:
                 await self._push_internal_events_to_provider()
             except Exception as exc:
-                logger.error("Push to provider after projection failed: %s", exc, exc_info=True)
+                if _is_transient_connectivity_error(exc):
+                    logger.warning(
+                        "Push to provider after projection deferred by transient connectivity: %s",
+                        exc,
+                    )
+                else:
+                    logger.error("Push to provider after projection failed: %s", exc, exc_info=True)
             # Sleep for the configured interval before the next run.
             try:
                 await asyncio.sleep(interval_seconds)
