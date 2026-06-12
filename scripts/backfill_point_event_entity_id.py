@@ -91,29 +91,56 @@ _BATCH_SIZE = 500
 
 
 async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
-    """Return the entity_id of the owner contact, or None.
+    """Return the entity_id of the owner entity, or None.
 
-    Queries ``public.contacts WHERE 'owner' = ANY(roles)`` directly.
-    Returns None gracefully on any failure (missing table, no row, NULL id).
+    Queries ``public.entities WHERE 'owner' = ANY(roles)``, mirroring the
+    canonical logic in ``src/butlers/owner_bootstrap.py``.  Guards on whether
+    the ``public.entities`` table and its ``roles`` column exist before
+    querying, so the function is safe to call against any migration state.
+
+    Returns None gracefully on any failure (missing table/column, no row,
+    NULL id).
     """
     try:
-        row = await pool.fetchrow(
-            """
-            SELECT entity_id
-            FROM public.contacts
-            WHERE 'owner' = ANY(roles)
-            LIMIT 1
-            """
-        )
+        async with pool.acquire() as conn:
+            entities_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.entities') IS NOT NULL"
+            )
+            if not entities_table_exists:
+                logger.debug("resolve_owner_entity_id: public.entities does not exist")
+                return None
+
+            roles_column_exists = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'entities'
+                      AND column_name = 'roles'
+                )
+                """
+            )
+            if not roles_column_exists:
+                logger.debug("resolve_owner_entity_id: public.entities.roles column absent")
+                return None
+
+            row = await conn.fetchrow(
+                """
+                SELECT id
+                FROM public.entities
+                WHERE 'owner' = ANY(roles)
+                LIMIT 1
+                """
+            )
     except asyncpg.PostgresError:
         logger.debug("resolve_owner_entity_id: query failed", exc_info=True)
         return None
 
     if row is None:
-        logger.debug("resolve_owner_entity_id: no owner contact found")
+        logger.debug("resolve_owner_entity_id: no owner entity found")
         return None
 
-    raw = row["entity_id"]
+    raw = row["id"]
     if raw is None:
         return None
     if isinstance(raw, UUID):
@@ -246,8 +273,8 @@ async def run_backfill(
     owner_entity_id = await resolve_owner_entity_id(pool)
     if owner_entity_id is None:
         logger.error(
-            "Cannot resolve owner entity_id from public.contacts. "
-            "Ensure the owner contact exists and has an entity_id set."
+            "Cannot resolve owner entity_id from public.entities. "
+            "Ensure the owner entity exists with roles=['owner']."
         )
         return False
 
