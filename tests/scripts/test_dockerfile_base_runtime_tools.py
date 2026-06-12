@@ -16,5 +16,6 @@ def _dockerfile_base_text() -> str:
 def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
     text = _dockerfile_base_text()
     assert "git" in text
-    assert "uv/install.sh" in text
+    assert "python -m pip install --no-cache-dir uv" in text
+    assert "uv --version" in text
     assert "gh" in text
