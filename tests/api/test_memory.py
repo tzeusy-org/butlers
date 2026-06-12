@@ -7,6 +7,7 @@ Covers:
   - Filter present + unknown butler → empty 200 (pool never queried; early exit)
 - GET /api/memory/reembed/pending — count stale embeddings per tier
 - POST /api/memory/reembed — trigger a synchronous re-embed run
+- ?source_episode_id= filter on /api/memory/facts (episode provenance)
 """
 
 from __future__ import annotations
@@ -314,6 +315,109 @@ async def test_episodes_invalid_status_returns_422(app):
     assert resp.status_code == 422
     # No pool should have been queried for an invalid request.
     mock_db.pool_mock.fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/facts — source_episode_id filter
+# ---------------------------------------------------------------------------
+
+
+class _FactsPool:
+    """Fake pool for the facts list endpoint.
+
+    ``fetchval`` returns the precomputed total for the count query; ``fetch``
+    returns the configured fact rows for the facts query and an empty list for
+    any other query (e.g. public.entities name resolution).  Every ``fetch``
+    call is recorded so tests can assert the WHERE clause and bound args.
+    """
+
+    def __init__(self, *, rows: list[dict], total: int) -> None:
+        self._rows = [_make_record(r) for r in rows]
+        self._total = total
+        self.fetch_calls: list[tuple] = []
+
+    async def fetchval(self, query: str, *args: object):
+        return self._total
+
+    async def fetch(self, query: str, *args: object):
+        self.fetch_calls.append((query, args))
+        if "FROM facts" in query:
+            return self._rows
+        return []
+
+
+class _FactsDB:
+    """DatabaseManager stand-in returning a distinct _FactsPool per butler."""
+
+    def __init__(self, pools: dict[str, _FactsPool]) -> None:
+        self._pools = pools
+        self.butler_names = list(pools)
+
+    def pool(self, name: str) -> _FactsPool:
+        if name not in self._pools:
+            raise KeyError(f"No pool for butler: {name}")
+        return self._pools[name]
+
+
+async def test_facts_source_episode_id_filter_adds_where_clause(app):
+    """?source_episode_id binds a WHERE clause on the FK column."""
+    episode_id = str(uuid.uuid4())
+    fact_id = uuid.uuid4()
+    row = _make_fact_row(fact_id=fact_id)
+    row["source_episode_id"] = episode_id
+    pool = _FactsPool(rows=[row], total=1)
+    db = _FactsDB({"atlas": pool})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/facts", params={"source_episode_id": episode_id})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["source_episode_id"] == episode_id
+
+    # The WHERE clause filtered on source_episode_id with the episode id bound.
+    facts_fetches = [c for c in pool.fetch_calls if "FROM facts" in c[0]]
+    assert facts_fetches
+    assert any("source_episode_id = $1" in c[0] and episode_id in c[1] for c in facts_fetches)
+
+
+async def test_facts_nonexistent_episode_returns_empty_not_error(app):
+    """A valid-but-unmatched source_episode_id yields an empty 200, not an error."""
+    episode_id = str(uuid.uuid4())
+    pool = _FactsPool(rows=[], total=0)
+    db = _FactsDB({"atlas": pool})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/facts", params={"source_episode_id": episode_id})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+
+
+async def test_facts_source_episode_id_omitted_leaves_query_unfiltered(app):
+    """Omitting ?source_episode_id leaves the facts query without that clause."""
+    pool = _FactsPool(rows=[_make_fact_row(fact_id=uuid.uuid4())], total=1)
+    db = _FactsDB({"atlas": pool})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/facts")
+
+    assert resp.status_code == 200
+    facts_fetches = [c for c in pool.fetch_calls if "FROM facts" in c[0]]
+    assert facts_fetches
+    assert all("source_episode_id =" not in c[0] for c in facts_fetches)
 
 
 # ---------------------------------------------------------------------------

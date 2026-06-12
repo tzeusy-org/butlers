@@ -460,6 +460,9 @@ async def list_facts(
     validity: str | None = Query(None, description="Filter by validity"),
     permanence: str | None = Query(None, description="Filter by permanence"),
     subject: str | None = Query(None, description="Filter by subject"),
+    source_episode_id: str | None = Query(
+        None, description="Filter to facts derived from this episode"
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -492,6 +495,11 @@ async def list_facts(
     if subject is not None:
         conditions.append(f"subject = ${idx}")
         args.append(subject)
+        idx += 1
+
+    if source_episode_id is not None:
+        conditions.append(f"source_episode_id = ${idx}")
+        args.append(source_episode_id)
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
