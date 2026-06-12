@@ -1,4 +1,5 @@
 import { useState } from "react";
+import MemoryOverture from "@/components/memory/MemoryOverture";
 import MemoryTierCards from "@/components/memory/MemoryTierCards";
 import MemoryBrowser from "@/components/memory/MemoryBrowser";
 import MemoryActivityTimeline from "@/components/memory/MemoryActivityTimeline";
@@ -287,7 +288,9 @@ function InspectSection() {
 export default function MemoryPage() {
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold tracking-tight">Memory</h1>
+      {/* Overture (Bands 1 & 2): headline, Voice, KPI strip, pipeline band.
+          Answers "is remembering working" before any scrolling. */}
+      <MemoryOverture />
 
       {/* §10.4 §1: Tier flow (events → mid → long with counts) */}
       <MemoryTierCards />

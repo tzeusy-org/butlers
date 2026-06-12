@@ -1348,6 +1348,13 @@ export interface MemoryStats {
   established_rules: number;
   proven_rules: number;
   anti_pattern_rules: number;
+  /**
+   * Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
+   * Mirrors src/butlers/api/models/memory.py::MemoryStats.
+   */
+  last_consolidation_at: string | null;
+  last_consolidation_facts_produced: number | null;
+  dead_letter_episodes: number;
 }
 
 /** A recent memory activity event. */
