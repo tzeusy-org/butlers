@@ -137,6 +137,30 @@ Fact content is read later in isolation — on entity pages, in search results, 
 **Good:** `"Chloe suggested inviting Yu Han instead of [other person] because Yu Han is much further ahead in his career"`
 → Self-contained. Names the recommender, the subject, and the reason.
 
+### Canonical fact-store boundary: identity-contact data is NOT a memory fact
+
+Two stores, one rule for where a fact lives (`relationship-entity-lifecycle`
+"Canonical fact-store layering"; `module-memory` "Identity-contact data is out of
+scope for the memory facts store"):
+
+- **Identity-contact triples** — channel identifiers and identity predicates
+  (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`,
+  `has-website`, and any future contact predicate in
+  `relationship.entity_predicate_registry`) live ONLY in `relationship.entity_facts`,
+  written through the central writer `relationship_assert_fact()`. The Relationship
+  butler's `contact_create` / `contact_update` / `date_add` tools route these for
+  you — you do not assert them by hand.
+- **Narrative facts, episodes, and non-registry edge-facts** (preferences,
+  interests, `works_at` context, life events, free-form relationship notes) live in
+  the memory-module `facts` table via `memory_store_fact()`.
+
+**Do NOT call `memory_store_fact(predicate="has-email", ...)`** (or `has-phone`,
+`has-handle`, etc.). The writer rejects identity-contact predicates with a
+`ValueError` directing you to `relationship_assert_fact()`. Capture the surrounding
+*narrative* instead — e.g. store `predicate="works_at"` context, and let the
+contact's email/phone be recorded through the contact tools, which assert the
+`has-*` triple into the identity store.
+
 ## Step 5b: Extract and Store Edge-Facts (Relationship Between Entities)
 
 When the message references a relationship between two people (or a person and an organization), store an **edge-fact** by including `object_entity_id`:

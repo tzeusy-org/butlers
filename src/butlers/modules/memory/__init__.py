@@ -97,6 +97,16 @@ def _infer_recovery_steps(exc: ValueError) -> str:
             "and pass its UUID as object_entity_id to create a proper edge-fact."
         )
 
+    # Identity-contact predicate routed to the wrong store (canonical fact-store
+    # layering boundary).
+    if "out of scope for the memory facts store" in msg:
+        return (
+            "This is an identity-contact predicate (has-email, has-phone, "
+            "has-handle, has-address, has-birthday, has-website). Assert it via "
+            "relationship_assert_fact() into relationship.entity_facts instead. "
+            "Store only the surrounding narrative context as a memory fact."
+        )
+
     # Invalid permanence value.
     if "Invalid permanence" in msg:
         return (

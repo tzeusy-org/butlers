@@ -51,6 +51,44 @@ def normalize_predicate(predicate: str) -> str:
     return normalized.removeprefix("is_")
 
 
+# ---------------------------------------------------------------------------
+# Canonical fact-store layering — writer-side identity boundary
+# ---------------------------------------------------------------------------
+#
+# ``module-memory`` (entity-v3 delta) and ``relationship-entity-lifecycle``
+# ("Canonical fact-store layering is binding project-wide") forbid identity-
+# contact predicate data from landing in the memory-module ``facts`` table. Its
+# single write path is ``relationship_assert_fact()`` into
+# ``relationship.entity_facts``. The registry contact predicates are seeded in
+# ``relationship.entity_predicate_registry`` (migration
+# ``roster/relationship/migrations/014_predicate_registry.py``); this is the
+# normalized (snake_case) form that ``normalize_predicate`` produces from the
+# hyphenated registry names (``has-email`` -> ``has_email`` ...). Kept as a
+# small explicit set rather than a DB read so the boundary is enforced on the
+# pure write path without a query round-trip.
+_IDENTITY_REGISTRY_PREDICATES: frozenset[str] = frozenset(
+    {
+        "has_email",
+        "has_phone",
+        "has_handle",
+        "has_address",
+        "has_birthday",
+        "has_website",
+    }
+)
+
+
+def is_identity_registry_predicate(predicate: str) -> bool:
+    """Return True if *predicate* is a registry identity-contact predicate.
+
+    Expects the normalized (snake_case) predicate form produced by
+    :func:`normalize_predicate`. Identity-contact predicates (``has_email``,
+    ``has_phone``, ...) are owned by ``relationship.entity_facts`` and MUST NOT
+    be written to the memory-module ``facts`` table.
+    """
+    return predicate in _IDENTITY_REGISTRY_PREDICATES
+
+
 def _extract_request_context(
     request_context: dict[str, Any] | None,
 ) -> tuple[str, str | None]:
@@ -196,6 +234,20 @@ async def memory_store_fact(
     # tool concern, not a storage concern).  Internal callers of store_fact()
     # already use canonical snake_case predicates and bypass this path.
     predicate = normalize_predicate(predicate)
+
+    # Writer-side identity boundary (module-memory + relationship-entity-lifecycle
+    # "Canonical fact-store layering"): identity-contact predicates belong in
+    # relationship.entity_facts via relationship_assert_fact(), never in the
+    # memory-module facts table. Reject so no has-* identity row ever lands here.
+    if is_identity_registry_predicate(predicate):
+        raise ValueError(
+            f"Identity-contact predicate {predicate!r} is out of scope for the "
+            "memory facts store. Channel identifiers and identity predicates "
+            "(has-email, has-phone, has-handle, has-address, has-birthday, "
+            "has-website) MUST be asserted via relationship_assert_fact() into "
+            "relationship.entity_facts (canonical identity store). Store only the "
+            "narrative context (e.g. 'mentioned switching jobs') as a memory fact."
+        )
 
     parsed_entity_id = _uuid.UUID(entity_id) if entity_id is not None else None
     parsed_object_entity_id = _uuid.UUID(object_entity_id) if object_entity_id is not None else None

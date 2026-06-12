@@ -25,7 +25,10 @@ from butlers.modules.memory.tools import (
     memory_store_fact,
     memory_store_rule,
 )
-from butlers.modules.memory.tools.writing import normalize_predicate
+from butlers.modules.memory.tools.writing import (
+    is_identity_registry_predicate,
+    normalize_predicate,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -163,6 +166,84 @@ class TestMemoryStoreFact:
             )
         kw = m.call_args.kwargs
         assert kw["importance"] == 9.0 and kw["permanence"] == "stable" and kw["tags"] == ["ui"]
+
+
+# ---------------------------------------------------------------------------
+# Writer-side identity boundary (canonical fact-store layering)
+# ---------------------------------------------------------------------------
+
+
+class TestIdentityPredicateBoundary:
+    """Identity-contact predicates MUST NOT land in the memory facts table.
+
+    module-memory (entity-v3 delta) + relationship-entity-lifecycle
+    "Canonical fact-store layering": their single write path is
+    relationship_assert_fact() into relationship.entity_facts. memory_store_fact
+    rejects them before any storage write.
+    """
+
+    @pytest.mark.parametrize(
+        "predicate",
+        ["has_email", "has_phone", "has_handle", "has_address", "has_birthday", "has_website"],
+    )
+    def test_is_identity_registry_predicate_true_for_registry_predicates(
+        self, predicate: str
+    ) -> None:
+        assert is_identity_registry_predicate(predicate)
+
+    @pytest.mark.parametrize(
+        "predicate",
+        ["name", "city", "parent_of", "works_at", "likes", "phone_brand", "email_signature"],
+    )
+    def test_is_identity_registry_predicate_false_for_narrative_predicates(
+        self, predicate: str
+    ) -> None:
+        assert not is_identity_registry_predicate(predicate)
+
+    @pytest.mark.parametrize(
+        ("raw_predicate", "normalized"),
+        [
+            ("has-email", "has_email"),  # hyphenated registry form normalizes to snake_case
+            ("has_phone", "has_phone"),
+            ("Has-Handle", "has_handle"),  # mixed case still routed
+            ("has-address", "has_address"),
+            ("has-birthday", "has_birthday"),
+            ("has-website", "has_website"),
+        ],
+    )
+    async def test_rejects_identity_predicate_before_storage(
+        self,
+        pool: AsyncMock,
+        engine: MagicMock,
+        raw_predicate: str,
+        normalized: str,
+    ) -> None:
+        """An identity predicate raises ValueError and never reaches storage."""
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as store_fact:
+            with pytest.raises(ValueError) as excinfo:
+                await memory_store_fact(pool, engine, "user", raw_predicate, "alice@example.com")
+        # No storage write happened — the boundary fires before delegation.
+        store_fact.assert_not_called()
+        msg = str(excinfo.value)
+        assert "out of scope for the memory facts store" in msg
+        assert normalized in msg
+
+    async def test_narrative_predicate_still_stored(
+        self, pool: AsyncMock, engine: MagicMock
+    ) -> None:
+        """A narrative fact (non-registry predicate) is unaffected by the boundary."""
+        fact_id = uuid.uuid4()
+        with patch.object(
+            _helpers._storage,
+            "store_fact",
+            new_callable=AsyncMock,
+            return_value={"id": fact_id},
+        ) as store_fact:
+            result = await memory_store_fact(
+                pool, engine, "user", "works_at", "mentioned switching jobs"
+            )
+        store_fact.assert_awaited_once()
+        assert result == {"id": str(fact_id), "superseded_id": None}
 
 
 # ---------------------------------------------------------------------------
