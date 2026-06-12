@@ -71,3 +71,5 @@ dolt.host: localhost
 dolt.port: 3307
 
 export.path: "issues.export.jsonl"
+
+export.git-add: false
