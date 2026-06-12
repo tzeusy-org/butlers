@@ -10,6 +10,7 @@
  * - q:        submitted search string (NOT keystroke). Absent by default.
  * - kind:     search scope when q is set: 'all' | 'fact' | 'rule' | 'episode'. Default 'all'.
  * - validity: ledger filter: 'active' | 'fading' | 'superseded' | 'expired' | 'retracted'. Default 'active'.
+ * - maturity: rules filter: 'all' | 'candidate' | 'established' | 'proven' | 'anti_pattern'. Default 'all'.
  * - status:   daybook filter: 'pending' | 'consolidated' | 'dead_letter'. Absent by default (= all).
  * - offset:   pagination offset for the focused register. Default 0.
  *
@@ -28,6 +29,12 @@ import { useSearchParams } from 'react-router'
 export type MemoryRegister = 'facts' | 'rules' | 'episodes'
 export type MemorySearchKind = 'all' | 'fact' | 'rule' | 'episode'
 export type MemoryValidity = 'active' | 'fading' | 'superseded' | 'expired' | 'retracted'
+/**
+ * Rules-register maturity filter. `all` is the unfiltered default; the other
+ * four are exactly the API's maturity vocabulary
+ * (MEMORY_LANGUAGE.md §3b — lowercase, no aliasing).
+ */
+export type MemoryMaturity = 'all' | 'candidate' | 'established' | 'proven' | 'anti_pattern'
 export type MemoryEpisodeStatus = 'pending' | 'consolidated' | 'dead_letter'
 
 export interface MemoryUrlState {
@@ -39,6 +46,8 @@ export interface MemoryUrlState {
   kind: MemorySearchKind
   /** Ledger validity filter. Defaults to 'active' when absent. */
   validity: MemoryValidity
+  /** Rules-register maturity filter. Defaults to 'all' when absent. */
+  maturity: MemoryMaturity
   /** Daybook status filter. Null means "all statuses". */
   status: MemoryEpisodeStatus | null
   /** Pagination offset for the focused register. Defaults to 0 when absent. */
@@ -58,11 +67,19 @@ const VALID_VALIDITIES: MemoryValidity[] = [
   'expired',
   'retracted',
 ]
+const VALID_MATURITIES: MemoryMaturity[] = [
+  'all',
+  'candidate',
+  'established',
+  'proven',
+  'anti_pattern',
+]
 const VALID_STATUSES: MemoryEpisodeStatus[] = ['pending', 'consolidated', 'dead_letter']
 
 const DEFAULT_REGISTER: MemoryRegister = 'facts'
 const DEFAULT_KIND: MemorySearchKind = 'all'
 const DEFAULT_VALIDITY: MemoryValidity = 'active'
+const DEFAULT_MATURITY: MemoryMaturity = 'all'
 const DEFAULT_OFFSET = 0
 
 // ---------------------------------------------------------------------------
@@ -88,6 +105,13 @@ function parseValidity(raw: string | null): MemoryValidity {
     return raw as MemoryValidity
   }
   return DEFAULT_VALIDITY
+}
+
+function parseMaturity(raw: string | null): MemoryMaturity {
+  if (raw && (VALID_MATURITIES as string[]).includes(raw)) {
+    return raw as MemoryMaturity
+  }
+  return DEFAULT_MATURITY
 }
 
 function parseStatus(raw: string | null): MemoryEpisodeStatus | null {
@@ -130,6 +154,9 @@ export function serializeMemoryState(state: Partial<MemoryUrlState>): URLSearchP
   if (state.validity && state.validity !== DEFAULT_VALIDITY) {
     params.set('validity', state.validity)
   }
+  if (state.maturity && state.maturity !== DEFAULT_MATURITY) {
+    params.set('maturity', state.maturity)
+  }
   if (state.status) {
     params.set('status', state.status)
   }
@@ -146,6 +173,7 @@ export function parseMemoryState(searchParams: URLSearchParams): MemoryUrlState 
     q: parseQuery(searchParams.get('q')),
     kind: parseKind(searchParams.get('kind')),
     validity: parseValidity(searchParams.get('validity')),
+    maturity: parseMaturity(searchParams.get('maturity')),
     status: parseStatus(searchParams.get('status')),
     offset: parseOffset(searchParams.get('offset')),
   }
@@ -155,7 +183,7 @@ export function parseMemoryState(searchParams: URLSearchParams): MemoryUrlState 
 // Hook
 // ---------------------------------------------------------------------------
 
-const URL_KEYS = ['register', 'q', 'kind', 'validity', 'status', 'offset'] as const
+const URL_KEYS = ['register', 'q', 'kind', 'validity', 'maturity', 'status', 'offset'] as const
 
 /**
  * Read and write /memory URL state.

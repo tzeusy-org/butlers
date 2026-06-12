@@ -11,7 +11,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -23,8 +22,9 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import FactsRegister from "@/components/memory/FactsRegister";
-import { useEpisodes, useRules } from "@/hooks/use-memory";
-import type { EpisodeParams, RuleParams } from "@/api/types";
+import RulesRegister from "@/components/memory/RulesRegister";
+import { useEpisodes } from "@/hooks/use-memory";
+import type { EpisodeParams } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -44,29 +44,6 @@ const PAGE_SIZE = 20;
 // ---------------------------------------------------------------------------
 // Badge helpers
 // ---------------------------------------------------------------------------
-
-function maturityBadge(m: string) {
-  switch (m) {
-    case "proven":
-      return (
-        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-          proven
-        </Badge>
-      );
-    case "established":
-      return (
-        <Badge className="bg-sky-600 text-white hover:bg-sky-600/90">
-          established
-        </Badge>
-      );
-    case "candidate":
-      return <Badge variant="secondary">candidate</Badge>;
-    case "anti_pattern":
-      return <Badge variant="destructive">anti-pattern</Badge>;
-    default:
-      return <Badge variant="secondary">{m}</Badge>;
-  }
-}
 
 function truncate(s: string, len = 80) {
   return s.length > len ? s.slice(0, len) + "..." : s;
@@ -133,90 +110,6 @@ function TableSkeleton({ cols, rows = 5 }: { cols: number; rows?: number }) {
           ))}
         </div>
       ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Rules Tab
-// ---------------------------------------------------------------------------
-
-function RulesTab({ butlerScope }: { butlerScope?: string }) {
-  const navigate = useNavigate();
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(0);
-
-  const params: RuleParams = {
-    q: search || undefined,
-    scope: butlerScope,
-    offset: page * PAGE_SIZE,
-    limit: PAGE_SIZE,
-  };
-
-  const { data: response, isLoading } = useRules(params);
-  const rules = response?.data ?? [];
-  const total = response?.meta?.total ?? 0;
-
-  return (
-    <div className="space-y-4">
-      <Input
-        placeholder="Search rules..."
-        value={search}
-        onChange={(e) => {
-          setSearch(e.target.value);
-          setPage(0);
-        }}
-      />
-
-      {isLoading ? (
-        <TableSkeleton cols={5} />
-      ) : rules.length === 0 ? (
-        <p className="text-muted-foreground py-8 text-center text-sm">
-          No rules found.
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Content</TableHead>
-                <TableHead>Maturity</TableHead>
-                <TableHead>Effectiveness</TableHead>
-                <TableHead>Applied</TableHead>
-                <TableHead>Scope</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rules.map((r) => (
-                <TableRow
-                  key={r.id}
-                  className="cursor-pointer"
-                  onClick={() => navigate(`/memory/rules/${r.id}`)}
-                >
-                  <TableCell className="max-w-sm truncate">
-                    {truncate(r.content)}
-                  </TableCell>
-                  <TableCell>{maturityBadge(r.maturity)}</TableCell>
-                  <TableCell>
-                    {Math.round(r.effectiveness_score * 100)}%
-                  </TableCell>
-                  <TableCell>{r.applied_count}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{r.scope}</Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-
-      <PaginationControls
-        page={page}
-        total={total}
-        pageSize={PAGE_SIZE}
-        onPageChange={setPage}
-      />
     </div>
   );
 }
@@ -367,7 +260,7 @@ export default function MemoryBrowser({ butlerScope }: MemoryBrowserProps) {
           </TabsContent>
 
           <TabsContent value="rules">
-            <RulesTab butlerScope={butlerScope} />
+            <RulesRegister butlerScope={butlerScope} />
           </TabsContent>
 
           <TabsContent value="episodes">

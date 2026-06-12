@@ -32,6 +32,7 @@ describe('parseMemoryState', () => {
     expect(state.q).toBeNull()
     expect(state.kind).toBe('all')
     expect(state.validity).toBe('active')
+    expect(state.maturity).toBe('all')
     expect(state.status).toBeNull()
     expect(state.offset).toBe(0)
   })
@@ -67,6 +68,17 @@ describe('parseMemoryState', () => {
 
   it('falls back to active for an invalid validity', () => {
     expect(parseMemoryState(new URLSearchParams('validity=zombie')).validity).toBe('active')
+  })
+
+  it('parses all valid maturities', () => {
+    for (const m of ['all', 'candidate', 'established', 'proven', 'anti_pattern'] as const) {
+      const params = new URLSearchParams(`maturity=${m}`)
+      expect(parseMemoryState(params).maturity).toBe(m)
+    }
+  })
+
+  it('falls back to all for an invalid maturity', () => {
+    expect(parseMemoryState(new URLSearchParams('maturity=legendary')).maturity).toBe('all')
   })
 
   it('parses all valid episode statuses', () => {
@@ -129,6 +141,14 @@ describe('serializeMemoryState', () => {
     expect(serializeMemoryState({ validity: 'fading' }).get('validity')).toBe('fading')
   })
 
+  it('omits maturity=all (default)', () => {
+    expect(serializeMemoryState({ maturity: 'all' }).has('maturity')).toBe(false)
+  })
+
+  it('includes maturity when not the default', () => {
+    expect(serializeMemoryState({ maturity: 'anti_pattern' }).get('maturity')).toBe('anti_pattern')
+  })
+
   it('omits q when null', () => {
     expect(serializeMemoryState({ q: null }).has('q')).toBe(false)
   })
@@ -159,6 +179,7 @@ describe('serializeMemoryState', () => {
       q: null,
       kind: 'all',
       validity: 'active',
+      maturity: 'all',
       status: null,
       offset: 0,
     })
@@ -177,6 +198,7 @@ describe('round-trip: serializeMemoryState → parseMemoryState', () => {
       q: 'fatigue',
       kind: 'episode',
       validity: 'fading',
+      maturity: 'anti_pattern',
       status: 'consolidated',
       offset: 100,
     }
@@ -190,6 +212,7 @@ describe('round-trip: serializeMemoryState → parseMemoryState', () => {
       q: null,
       kind: 'all',
       validity: 'active',
+      maturity: 'all',
       status: null,
       offset: 0,
     }
