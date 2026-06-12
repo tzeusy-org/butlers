@@ -33,7 +33,7 @@ export default function EpisodeDetailPage() {
   const breadcrumbs = useMemo(
     () => [
       { label: "Memory", href: "/memory" },
-      { label: "Episodes", href: "/memory?tab=episodes" },
+      { label: "Episodes", href: "/memory?register=episodes" },
       { label: title },
     ],
     [title],

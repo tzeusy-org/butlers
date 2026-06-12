@@ -37,7 +37,7 @@ export default function RuleDetailPage() {
 
   const breadcrumbs = [
     { label: "Memory", href: "/memory" },
-    { label: "Rules", href: "/memory?tab=rules" },
+    { label: "Rules", href: "/memory?register=rules" },
     { label: "Rule" },
   ];
 

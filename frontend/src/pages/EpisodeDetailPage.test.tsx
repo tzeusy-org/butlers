@@ -159,7 +159,7 @@ describe("EpisodeDetailPage — content", () => {
     setEpisodeState(BASE_EPISODE);
     const html = renderPage();
     expect(html).toContain("/memory");
-    expect(html).toContain("/memory?tab=episodes");
+    expect(html).toContain("/memory?register=episodes");
   });
 });
 
