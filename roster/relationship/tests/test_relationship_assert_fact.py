@@ -111,6 +111,8 @@ async def pool(provisioned_postgres_pool):
                 conf        FLOAT       NOT NULL DEFAULT 1.0
                                 CHECK (conf >= 0.0 AND conf <= 1.0),
                 last_seen   TIMESTAMPTZ,
+                observed_at TIMESTAMPTZ,
+                metadata    JSONB,
                 weight      INT,
                 verified    BOOL        NOT NULL DEFAULT false,
                 "primary"   BOOL,
@@ -593,3 +595,136 @@ class TestAssertResultDict:
         assert d["outcome"] == "pending_approval"
         assert d["fact_id"] is None
         assert d["action_id"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests: observed_at stamping (entity v3, relationship-facts spec)
+# ---------------------------------------------------------------------------
+
+
+class TestObservedAt:
+    """Central writer stamps observed_at; default now(), explicit honoured."""
+
+    async def test_default_stamps_now(self, pool, entity):
+        """Asserting without observed_at stamps the assertion time (~now)."""
+        before = datetime.now(UTC)
+        result = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
+        )
+        after = datetime.now(UTC)
+        observed_at = await pool.fetchval(
+            "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
+            result.fact_id,
+        )
+        assert observed_at is not None
+        # Stamped to "now" — within the wall-clock window of the call.
+        assert before <= observed_at <= after
+
+    async def test_explicit_observed_at_is_honored(self, pool, entity):
+        """A backdated import value is written verbatim, NOT overwritten by now()."""
+        backdated = datetime(2024, 3, 1, 9, 30, 0, tzinfo=UTC)
+        result = await relationship_assert_fact(
+            pool,
+            entity,
+            _PRED_HAS_EMAIL,
+            "alice@example.com",
+            src="import",
+            observed_at=backdated,
+        )
+        observed_at = await pool.fetchval(
+            "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
+            result.fact_id,
+        )
+        assert observed_at == backdated
+
+    async def test_supersession_preserves_superseded_row_observed_at(self, pool, entity):
+        """On supersession each row carries its OWN observed_at; the old row keeps its."""
+        old_observed = datetime(2024, 1, 1, tzinfo=UTC)
+        new_observed = datetime(2026, 1, 1, tzinfo=UTC)
+
+        r1 = await relationship_assert_fact(
+            pool,
+            entity,
+            _PRED_HAS_EMAIL,
+            "alice@example.com",
+            src="source-a",
+            observed_at=old_observed,
+        )
+        r2 = await relationship_assert_fact(
+            pool,
+            entity,
+            _PRED_HAS_EMAIL,
+            "alice@example.com",
+            src="source-b",
+            observed_at=new_observed,
+        )
+        assert r2.outcome == AssertOutcome.superseded
+        assert r2.fact_id != r1.fact_id
+
+        # Superseded (old) row keeps its own observed_at — NOT overwritten.
+        old_observed_at = await pool.fetchval(
+            "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
+            r1.fact_id,
+        )
+        assert old_observed_at == old_observed
+
+        # New active row carries the new observed_at.
+        new_observed_at = await pool.fetchval(
+            "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
+            r2.fact_id,
+        )
+        assert new_observed_at == new_observed
+
+
+# ---------------------------------------------------------------------------
+# Tests: conf immutability (entity v3 — supersession only, never in-place)
+# ---------------------------------------------------------------------------
+
+
+class TestConfImmutability:
+    """conf is immutable after write: a changed conf supersedes, never mutates.
+
+    The DB-layer guarantee (this class) pairs with the source-scan guardrail in
+    ``test_conf_immutability_guardrail.py``.
+    """
+
+    async def test_changed_conf_supersedes_not_mutates(self, pool, entity):
+        r1 = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
+        )
+        r2 = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
+        )
+        assert r2.outcome == AssertOutcome.superseded
+        # New row inserted (different id), old row retained.
+        assert r2.fact_id != r1.fact_id
+
+    async def test_original_row_conf_unchanged_after_resupersede(self, pool, entity):
+        """The superseded row's stored conf is byte-identical to its write-time value."""
+        r1 = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
+        )
+        await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
+        )
+        old_conf = await pool.fetchval(
+            "SELECT conf FROM relationship.entity_facts WHERE id = $1", r1.fact_id
+        )
+        old_validity = await pool.fetchval(
+            "SELECT validity FROM relationship.entity_facts WHERE id = $1", r1.fact_id
+        )
+        # conf on the prior row is unchanged; only validity flipped to superseded.
+        assert abs(float(old_conf) - 0.9) < 1e-6
+        assert old_validity == "superseded"
+
+    async def test_new_active_row_carries_new_conf(self, pool, entity):
+        await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
+        )
+        r2 = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
+        )
+        new_conf = await pool.fetchval(
+            "SELECT conf FROM relationship.entity_facts WHERE id = $1", r2.fact_id
+        )
+        assert abs(float(new_conf) - 0.4) < 1e-6

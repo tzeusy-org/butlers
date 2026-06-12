@@ -5601,6 +5601,8 @@ async def list_entity_facts(
 
     Ordered by ``created_at DESC``.
     """
+    from butlers.tools.relationship.staleness import identity_staleness_band_sql
+
     pool = _pool(db)
 
     # Owner-only gate (Clause 12b).
@@ -5619,8 +5621,10 @@ async def list_entity_facts(
         entity_id,
     )
 
+    # Read-time staleness band, derived in SQL from the identity-store fallback
+    # chain COALESCE(observed_at, last_seen, created_at). Never stored on the row.
     rows = await pool.fetch(
-        """
+        f"""
         SELECT
             f.id,
             f.subject,
@@ -5634,7 +5638,8 @@ async def list_entity_facts(
             f.verified,
             f."primary",
             f.validity,
-            f.created_at
+            f.created_at,
+            {identity_staleness_band_sql("f")} AS staleness_band
         FROM relationship.entity_facts f
         WHERE f.subject  = $1
           AND f.validity = 'active'
@@ -5662,6 +5667,7 @@ async def list_entity_facts(
             primary=r["primary"],
             validity=r["validity"],
             created_at=r["created_at"],
+            staleness_band=r["staleness_band"],
         )
         for r in rows
     ]

@@ -1458,6 +1458,10 @@ class EntityFactEntry(BaseModel):
     primary: bool | None = None
     validity: str
     created_at: datetime
+    #: Read-time staleness band (``fresh`` / ``aging`` / ``stale``) derived from
+    #: ``COALESCE(observed_at, last_seen, created_at)`` — never stored on the row.
+    #: Confidence (``conf``) and staleness are separate axes (lifecycle §"Age").
+    staleness_band: str
 
 
 class EntityFactsResponse(BaseModel):

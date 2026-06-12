@@ -1517,6 +1517,7 @@ class TestEntityFacts:
         src: str = "relationship",
         weight: int | None = 5,
         last_seen: datetime | None = None,
+        staleness_band: str = "fresh",
     ) -> MagicMock:
         data = {
             "id": uuid4(),
@@ -1532,6 +1533,8 @@ class TestEntityFacts:
             "primary": None,
             "validity": "active",
             "created_at": _NOW,
+            # Derived in SQL by identity_staleness_band_sql() in the real query.
+            "staleness_band": staleness_band,
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])

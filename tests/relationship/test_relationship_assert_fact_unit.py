@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -112,6 +113,7 @@ async def test_supersession_insert_is_conflict_safe() -> None:
         src="source-b",
         conf=1.0,
         last_seen=None,
+        observed_at=datetime.now(UTC),
         weight=None,
         verified=False,
         primary=None,
@@ -210,6 +212,7 @@ async def test_owner_carveout_passes_dedup_match_and_rationale() -> None:
         src="reconciler",
         conf=1.0,
         last_seen=None,
+        observed_at=datetime.now(UTC),
         weight=None,
         verified=False,
         primary=True,
@@ -260,6 +263,7 @@ async def test_owner_carveout_inserts_with_caller_supplied_why() -> None:
         src="reconciler",
         conf=1.0,
         last_seen=None,
+        observed_at=datetime.now(UTC),
         weight=None,
         verified=False,
         primary=True,

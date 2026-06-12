@@ -250,6 +250,7 @@ async def _upsert_fact(
     src: str,
     conf: float,
     last_seen: datetime | None,
+    observed_at: datetime,
     weight: int | None,
     verified: bool,
     primary: bool | None,
@@ -258,6 +259,10 @@ async def _upsert_fact(
 
     Callers are responsible for wrapping this in a transaction when they need
     the supersession read-then-write pair to be atomic.
+
+    ``observed_at`` is stamped onto the new active row.  On supersession the
+    superseded row KEEPS its own ``observed_at`` (this function never rewrites
+    it — supersession only flips ``validity`` and ``updated_at``).
     """
     # 1. Check for an existing active row with the same (subject, predicate, object).
     existing = await conn.fetchrow(
@@ -305,23 +310,24 @@ async def _upsert_fact(
             """
             INSERT INTO relationship.entity_facts (
                 id, subject, predicate, object, object_kind,
-                src, conf, last_seen, weight, verified, "primary",
+                src, conf, last_seen, observed_at, weight, verified, "primary",
                 validity, created_at, updated_at
             )
             VALUES (
                 gen_random_uuid(), $1, $2, $3, $4,
-                $5, $6, $7, $8, $9, $10,
+                $5, $6, $7, $8, $9, $10, $11,
                 'active', now(), now()
             )
             ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
             DO UPDATE
-                SET src        = EXCLUDED.src,
-                    conf       = EXCLUDED.conf,
-                    last_seen  = EXCLUDED.last_seen,
-                    weight     = EXCLUDED.weight,
-                    verified   = EXCLUDED.verified,
-                    "primary"  = EXCLUDED."primary",
-                    updated_at = now()
+                SET src         = EXCLUDED.src,
+                    conf        = EXCLUDED.conf,
+                    last_seen   = EXCLUDED.last_seen,
+                    observed_at = EXCLUDED.observed_at,
+                    weight      = EXCLUDED.weight,
+                    verified    = EXCLUDED.verified,
+                    "primary"   = EXCLUDED."primary",
+                    updated_at  = now()
             RETURNING id
             """,
             subject,
@@ -331,6 +337,7 @@ async def _upsert_fact(
             src,
             conf,
             last_seen,
+            observed_at,
             weight,
             verified,
             primary,
@@ -344,23 +351,24 @@ async def _upsert_fact(
         """
         INSERT INTO relationship.entity_facts (
             id, subject, predicate, object, object_kind,
-            src, conf, last_seen, weight, verified, "primary",
+            src, conf, last_seen, observed_at, weight, verified, "primary",
             validity, created_at, updated_at
         )
         VALUES (
             gen_random_uuid(), $1, $2, $3, $4,
-            $5, $6, $7, $8, $9, $10,
+            $5, $6, $7, $8, $9, $10, $11,
             'active', now(), now()
         )
         ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
         DO UPDATE
-            SET src        = EXCLUDED.src,
-                conf       = EXCLUDED.conf,
-                last_seen  = EXCLUDED.last_seen,
-                weight     = EXCLUDED.weight,
-                verified   = EXCLUDED.verified,
-                "primary"  = EXCLUDED."primary",
-                updated_at = now()
+            SET src         = EXCLUDED.src,
+                conf        = EXCLUDED.conf,
+                last_seen   = EXCLUDED.last_seen,
+                observed_at = EXCLUDED.observed_at,
+                weight      = EXCLUDED.weight,
+                verified    = EXCLUDED.verified,
+                "primary"   = EXCLUDED."primary",
+                updated_at  = now()
         RETURNING id
         """,
         subject,
@@ -370,6 +378,7 @@ async def _upsert_fact(
         src,
         conf,
         last_seen,
+        observed_at,
         weight,
         verified,
         primary,
@@ -387,6 +396,7 @@ async def _assert_on_conn(
     src: str,
     conf: float,
     last_seen: datetime | None,
+    observed_at: datetime,
     weight: int | None,
     verified: bool,
     primary: bool | None,
@@ -422,6 +432,7 @@ async def _assert_on_conn(
         }
         if last_seen is not None:
             tool_args["last_seen"] = last_seen.isoformat()
+        tool_args["observed_at"] = observed_at.isoformat()
         if weight is not None:
             tool_args["weight"] = weight
         if primary is not None:
@@ -489,6 +500,7 @@ async def _assert_on_conn(
         src=src,
         conf=conf,
         last_seen=last_seen,
+        observed_at=observed_at,
         weight=weight,
         verified=verified,
         primary=primary,
@@ -515,6 +527,7 @@ async def relationship_assert_fact(
     object_kind: str = "literal",
     conf: float = 1.0,
     last_seen: datetime | None = None,
+    observed_at: datetime | None = None,
     weight: int | None = None,
     verified: bool = False,
     primary: bool | None = None,
@@ -548,6 +561,11 @@ async def relationship_assert_fact(
         Confidence in [0.0, 1.0] (default 1.0).
     last_seen:
         Timestamp of the most recent observation (nullable).
+    observed_at:
+        When the fact was actually observed, as distinct from the assertion
+        time. Defaults to ``now()`` when omitted. An explicit value (e.g. a
+        backdated import) is honoured verbatim. Stamped onto the new active row;
+        on supersession the superseded row keeps its own ``observed_at``.
     weight:
         Relational aggregation weight (nullable).
     verified:
@@ -584,6 +602,10 @@ async def relationship_assert_fact(
     if not (0.0 <= conf <= 1.0):
         raise ValueError(f"conf must be in [0.0, 1.0]; got {conf!r}.")
 
+    # Default observed_at to assertion time when the caller did not supply it.
+    # An explicit value (e.g. a backdated import) is honoured verbatim.
+    resolved_observed_at = observed_at if observed_at is not None else datetime.now(UTC)
+
     kwargs: dict[str, Any] = dict(
         subject=subject,
         predicate=predicate,
@@ -592,6 +614,7 @@ async def relationship_assert_fact(
         src=src,
         conf=conf,
         last_seen=last_seen,
+        observed_at=resolved_observed_at,
         weight=weight,
         verified=verified,
         primary=primary,

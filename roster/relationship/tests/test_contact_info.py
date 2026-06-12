@@ -91,6 +91,8 @@ async def pool(provisioned_postgres_pool):
                 src TEXT NOT NULL,
                 conf FLOAT NOT NULL DEFAULT 1.0 CHECK (conf >= 0.0 AND conf <= 1.0),
                 last_seen TIMESTAMPTZ,
+                observed_at TIMESTAMPTZ,
+                metadata JSONB,
                 weight INT,
                 verified BOOL NOT NULL DEFAULT false,
                 "primary" BOOL,
