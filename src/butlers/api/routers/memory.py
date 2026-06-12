@@ -198,11 +198,34 @@ async def get_memory_stats(
 ) -> ApiResponse[MemoryStats]:
     """Return aggregated counts across all memory tiers."""
 
-    async def _stats_for_pool(_: str, pool: object) -> dict[str, int]:
+    async def _stats_for_pool(butler_name: str, pool: object) -> dict[str, object]:
+        # Latest consolidation run for THIS pool's butler, read from the shared
+        # public.consolidation_runs audit table (core_119). Scoped per-butler so
+        # the fan-out picks the globally-latest run without double counting.
+        # Degrade gracefully when the audit table is absent (e.g. core_119 not
+        # yet applied) so the established episode/fact/rule counts still return.
+        try:
+            last_run = await pool.fetchrow(
+                "SELECT consolidated_at, facts_produced FROM public.consolidation_runs"
+                " WHERE butler = $1 ORDER BY consolidated_at DESC LIMIT 1",
+                butler_name,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to fetch latest consolidation run for butler %s; "
+                "omitting consolidation fields for this pool",
+                butler_name,
+                exc_info=True,
+            )
+            last_run = None
         return {
             "total_episodes": await pool.fetchval("SELECT count(*) FROM episodes") or 0,
             "unconsolidated_episodes": await pool.fetchval(
                 "SELECT count(*) FROM episodes WHERE consolidated = false"
+            )
+            or 0,
+            "dead_letter_episodes": await pool.fetchval(
+                "SELECT count(*) FROM episodes WHERE consolidation_status = 'dead_letter'"
             )
             or 0,
             "total_facts": await pool.fetchval("SELECT count(*) FROM facts") or 0,
@@ -231,6 +254,8 @@ async def get_memory_stats(
                 "SELECT count(*) FROM rules WHERE maturity = 'anti_pattern'"
             )
             or 0,
+            "last_consolidation_at": last_run["consolidated_at"] if last_run else None,
+            "last_consolidation_facts_produced": (last_run["facts_produced"] if last_run else None),
         }
 
     per_pool = await _fan_out_memory_queries(
@@ -240,9 +265,13 @@ async def get_memory_stats(
     )
 
     totals = MemoryStats()
+    # Track the globally-latest consolidation run across pools so the header band
+    # shows a single "last write-up" timestamp and its facts_produced count.
+    latest_consolidation_at = None
     for row in per_pool:
         totals.total_episodes += row["total_episodes"]
         totals.unconsolidated_episodes += row["unconsolidated_episodes"]
+        totals.dead_letter_episodes += row["dead_letter_episodes"]
         totals.total_facts += row["total_facts"]
         totals.active_facts += row["active_facts"]
         totals.fading_facts += row["fading_facts"]
@@ -251,6 +280,14 @@ async def get_memory_stats(
         totals.established_rules += row["established_rules"]
         totals.proven_rules += row["proven_rules"]
         totals.anti_pattern_rules += row["anti_pattern_rules"]
+
+        run_at = row["last_consolidation_at"]
+        if run_at is not None and (
+            latest_consolidation_at is None or run_at > latest_consolidation_at
+        ):
+            latest_consolidation_at = run_at
+            totals.last_consolidation_at = str(run_at)
+            totals.last_consolidation_facts_produced = row["last_consolidation_facts_produced"]
 
     return ApiResponse[MemoryStats](data=totals)
 

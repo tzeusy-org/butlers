@@ -212,6 +212,109 @@ async def test_episodes_butler_filter_combined_with_consolidated(app):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/memory/stats — consolidation fields
+# ---------------------------------------------------------------------------
+
+
+class _StatsPool:
+    """Fake pool that answers the /stats fan-out queries by SQL substring.
+
+    *counts* maps a SQL substring → integer fetchval result (defaults 0).
+    *last_run* maps butler name → fetchrow dict for public.consolidation_runs
+    (None when that butler has no run).
+    """
+
+    def __init__(
+        self,
+        *,
+        counts: dict[str, int] | None = None,
+        last_runs: dict[str, dict | None] | None = None,
+    ) -> None:
+        self._counts = counts or {}
+        self._last_runs = last_runs or {}
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        for needle, value in self._counts.items():
+            if needle in query:
+                return value
+        return 0
+
+    async def fetchrow(self, query: str, *args: object) -> dict | None:
+        if "consolidation_runs" in query:
+            butler = args[0]
+            return self._last_runs.get(butler)
+        return None
+
+
+class _StatsDB:
+    """DatabaseManager stand-in returning a distinct _StatsPool per butler."""
+
+    def __init__(self, pools: dict[str, _StatsPool]) -> None:
+        self._pools = pools
+        self.butler_names = list(pools)
+
+    def pool(self, name: str) -> _StatsPool:
+        if name not in self._pools:
+            raise KeyError(f"No pool for butler: {name}")
+        return self._pools[name]
+
+
+async def test_stats_consolidation_fields_aggregate_across_pools(app):
+    """dead_letter_episodes sums; last_consolidation picks the globally-latest run."""
+    older = datetime(2026, 6, 10, tzinfo=UTC)
+    newer = datetime(2026, 6, 12, tzinfo=UTC)
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(
+                counts={"consolidation_status = 'dead_letter'": 2},
+                last_runs={"atlas": {"consolidated_at": older, "facts_produced": 7}},
+            ),
+            "memory": _StatsPool(
+                counts={"consolidation_status = 'dead_letter'": 3},
+                last_runs={"memory": {"consolidated_at": newer, "facts_produced": 11}},
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["dead_letter_episodes"] == 5
+    # newer run (memory) wins over older (atlas)
+    assert data["last_consolidation_at"] == str(newer)
+    assert data["last_consolidation_facts_produced"] == 11
+
+
+async def test_stats_consolidation_fields_default_when_no_runs(app):
+    """No consolidation_runs rows → null timestamp/facts, dead_letter defaults to 0."""
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(counts={}, last_runs={"atlas": None}),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["last_consolidation_at"] is None
+    assert data["last_consolidation_facts_produced"] is None
+    assert data["dead_letter_episodes"] == 0
+    # Existing fields remain present (backward-compatible).
+    assert data["total_episodes"] == 0
+    assert data["total_facts"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Helpers for reembed endpoint tests
 # ---------------------------------------------------------------------------
 

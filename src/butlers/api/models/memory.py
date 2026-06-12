@@ -109,6 +109,10 @@ class MemoryStats(BaseModel):
     established_rules: int = 0
     proven_rules: int = 0
     anti_pattern_rules: int = 0
+    # Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
+    last_consolidation_at: str | None = None
+    last_consolidation_facts_produced: int | None = None
+    dead_letter_episodes: int = 0
 
 
 class EntitySummary(BaseModel):
