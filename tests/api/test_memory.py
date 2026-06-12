@@ -819,3 +819,107 @@ async def test_confirm_fact_503_when_no_pools_available(app):
         resp = await client.post(f"/api/memory/facts/{fact_id}/confirm")
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/facts/{fact_id}/retract
+# ---------------------------------------------------------------------------
+
+
+class _RetractPool:
+    """Fake pool for the retract endpoint.
+
+    Holds at most one fact row keyed by id.  ``fetchrow`` returns that row when
+    the id matches (used both for the initial locate via storage.forget_memory's
+    re-fetch and the post-retract re-fetch).  ``execute`` flips ``validity`` to
+    ``'retracted'`` and reports ``UPDATE 1``/``UPDATE 0`` exactly like asyncpg +
+    storage.forget_memory.  Entity-name resolution (public.entities) returns no
+    rows.
+    """
+
+    def __init__(self, *, fact: dict | None) -> None:
+        self._fact = fact
+        self.execute_calls: list[tuple] = []
+
+    async def fetchrow(self, query: str, *args: object):
+        if (
+            self._fact is not None
+            and "FROM facts WHERE id" in query
+            and args[0] == self._fact["id"]
+        ):
+            return _make_record(self._fact)
+        return None
+
+    async def fetch(self, query: str, *args: object):
+        # _resolve_entity_names queries public.entities — no linked entities here.
+        return []
+
+    async def execute(self, query: str, *args: object) -> str:
+        self.execute_calls.append((query, args))
+        if self._fact is not None and args[0] == self._fact["id"]:
+            self._fact["validity"] = "retracted"
+            return "UPDATE 1"
+        return "UPDATE 0"
+
+
+async def test_retract_fact_invalidates_and_returns_updated_fact(app):
+    """POST retract flips validity to 'retracted' and returns the updated Fact."""
+    fact_id = uuid.uuid4()
+    holding = _RetractPool(fact=_make_fact_row(fact_id=fact_id))
+    db = _ConfirmDB({"atlas": holding, "memory": _RetractPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/memory/facts/{fact_id}/retract")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["id"] == str(fact_id)
+    # validity was previously 'active' and is now 'retracted'.
+    assert data["validity"] == "retracted"
+    # The retracting UPDATE ran exactly once, on the pool that holds the fact.
+    assert len(holding.execute_calls) == 1
+    assert "validity = 'retracted'" in holding.execute_calls[0][0]
+
+
+async def test_retract_fact_404_when_not_found(app):
+    """POST retract returns 404 when no pool holds the fact."""
+    fact_id = uuid.uuid4()
+    db = _ConfirmDB({"atlas": _RetractPool(fact=None), "memory": _RetractPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/memory/facts/{fact_id}/retract")
+
+    assert resp.status_code == 404
+
+
+async def test_retract_fact_400_on_malformed_id(app):
+    """POST retract returns 400 when the path id is not a valid UUID."""
+    db = _ConfirmDB({"atlas": _RetractPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/memory/facts/not-a-uuid/retract")
+
+    assert resp.status_code == 400
+
+
+async def test_retract_fact_503_when_no_pools_available(app):
+    """POST retract returns 503 when no memory pools are registered."""
+    fact_id = uuid.uuid4()
+    db = _ConfirmDB({})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/memory/facts/{fact_id}/retract")
+
+    assert resp.status_code == 503
