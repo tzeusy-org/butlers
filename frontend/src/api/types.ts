@@ -222,6 +222,12 @@ export interface NotificationParams {
   until?: string;
 }
 
+/** Result of a bulk acknowledge-failed-notifications operation. */
+export interface AckFailedResult {
+  /** Number of notifications flipped from failed to read. */
+  acknowledged: number;
+}
+
 // ---------------------------------------------------------------------------
 // Issues
 // ---------------------------------------------------------------------------

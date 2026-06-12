@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import type { NotificationParams } from "@/api/types";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
@@ -15,6 +15,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  useAcknowledgeAllFailed,
+  useMarkNotificationRead,
   useNotifications,
   useNotificationStats,
 } from "@/hooks/use-notifications";
@@ -66,6 +68,8 @@ export default function NotificationsPage() {
   // Filter state
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [page, setPage] = useState(0);
+  // Track which notification IDs are pending individual acks for UX feedback
+  const [pendingAckIds, setPendingAckIds] = useState<Set<string>>(new Set());
 
   // Build API params from filter state
   const params: NotificationParams = {
@@ -86,6 +90,10 @@ export default function NotificationsPage() {
     isLoading: notificationsLoading,
     isError: notificationsError,
   } = useNotifications(params);
+
+  // Mutation hooks
+  const markReadMutation = useMarkNotificationRead();
+  const ackAllMutation = useAcknowledgeAllFailed();
 
   const notifications = notificationsResponse?.data ?? [];
   const meta = notificationsResponse?.meta;
@@ -115,14 +123,52 @@ export default function NotificationsPage() {
     filters.since !== "" ||
     filters.until !== "";
 
+  const handleMarkRead = useCallback(
+    (notificationId: string) => {
+      setPendingAckIds((prev) => new Set(prev).add(notificationId));
+      markReadMutation.mutate(notificationId, {
+        onSettled: () => {
+          setPendingAckIds((prev) => {
+            const next = new Set(prev);
+            next.delete(notificationId);
+            return next;
+          });
+        },
+      });
+    },
+    [markReadMutation],
+  );
+
+  const handleAcknowledgeAll = useCallback(() => {
+    ackAllMutation.mutate();
+  }, [ackAllMutation]);
+
+  // Compute whether there are any failed notifications in the stats
+  const failedCount = statsResponse?.data?.failed ?? 0;
+
   return (
     <div className="space-y-6">
       {/* Page heading */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
-        <p className="text-muted-foreground mt-1">
-          Monitor notification delivery across all butlers.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
+          <p className="text-muted-foreground mt-1">
+            Monitor notification delivery across all butlers.
+          </p>
+        </div>
+        {failedCount > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={ackAllMutation.isPending}
+            onClick={handleAcknowledgeAll}
+            className="shrink-0 mt-1"
+          >
+            {ackAllMutation.isPending
+              ? "Acknowledging…"
+              : `Acknowledge all failed (${failedCount})`}
+          </Button>
+        )}
       </div>
 
       {/* Stats bar */}
@@ -258,6 +304,8 @@ export default function NotificationsPage() {
               notifications={notifications}
               isLoading={false}
               hasActiveFilters={hasActiveFilters}
+              onMarkRead={handleMarkRead}
+              pendingAckIds={pendingAckIds}
             />
           )}
         </CardContent>

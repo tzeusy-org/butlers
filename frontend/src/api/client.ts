@@ -56,6 +56,7 @@ import type {
   Issue,
   Label,
   CursorPaginatedResponse,
+  AckFailedResult,
   NotificationParams,
   NotificationStats,
   NotificationSummary,
@@ -631,6 +632,23 @@ export function getButlerNotifications(
   const base = `/butlers/${encodeURIComponent(name)}/notifications`;
   const path = qs ? `${base}?${qs}` : base;
   return apiFetch<PaginatedResponse<NotificationSummary>>(path);
+}
+
+/** Mark a single notification as read (flips failed → read). */
+export function markNotificationRead(
+  notificationId: string,
+): Promise<ApiResponse<NotificationSummary>> {
+  return apiFetch<ApiResponse<NotificationSummary>>(
+    `/notifications/${encodeURIComponent(notificationId)}/read`,
+    { method: "PATCH" },
+  );
+}
+
+/** Acknowledge all failed notifications in bulk (flips all failed → read). */
+export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
+  return apiFetch<ApiResponse<AckFailedResult>>("/notifications/ack-failed", {
+    method: "POST",
+  });
 }
 
 // ---------------------------------------------------------------------------

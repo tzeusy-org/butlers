@@ -5,6 +5,7 @@ import { Time } from "@/components/ui/time";
 import type { NotificationSummary } from "@/api/types";
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -24,6 +25,10 @@ export interface NotificationFeedProps {
   isLoading?: boolean;
   /** When true, the empty state shows a hint that active filters may be hiding results. */
   hasActiveFilters?: boolean;
+  /** Called when the user clicks "Mark read" on a failed notification row. */
+  onMarkRead?: (notificationId: string) => void;
+  /** Set of notification IDs currently being acknowledged (shows loading state). */
+  pendingAckIds?: Set<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +107,8 @@ export function NotificationFeed({
   notifications,
   isLoading = false,
   hasActiveFilters = false,
+  onMarkRead,
+  pendingAckIds,
 }: NotificationFeedProps) {
   if (isLoading) {
     return <NotificationTableSkeleton />;
@@ -121,11 +128,13 @@ export function NotificationFeed({
           <TableHead>Channel</TableHead>
           <TableHead>Message</TableHead>
           <TableHead className="text-right">Time</TableHead>
+          {onMarkRead && <TableHead />}
         </TableRow>
       </TableHeader>
       <TableBody>
         {notifications.map((n) => {
           const displayStatus = n.effective_status ?? n.status;
+          const isPending = pendingAckIds?.has(n.id) ?? false;
           return (
           <TableRow
             key={n.id}
@@ -171,6 +180,21 @@ export function NotificationFeed({
             <TableCell className="text-muted-foreground text-right text-xs">
               <Time value={n.created_at} mode="relative" />
             </TableCell>
+            {onMarkRead && (
+              <TableCell className="text-right">
+                {displayStatus === "failed" && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={isPending}
+                    onClick={() => onMarkRead(n.id)}
+                    className="text-xs"
+                  >
+                    {isPending ? "Acknowledging…" : "Mark read"}
+                  </Button>
+                )}
+              </TableCell>
+            )}
           </TableRow>
           );
         })}

@@ -41,3 +41,10 @@ class NotificationStats(BaseModel):
     failed: int
     by_channel: dict[str, int]
     by_butler: dict[str, int]
+
+
+class AckFailedResult(BaseModel):
+    """Result of a bulk acknowledge-failed-notifications operation."""
+
+    acknowledged: int
+    """Number of notifications that were flipped from ``failed`` to ``read``."""

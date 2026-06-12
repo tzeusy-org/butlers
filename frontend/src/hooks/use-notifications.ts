@@ -2,12 +2,14 @@
  * TanStack Query hooks for the notifications API.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  acknowledgeAllFailed,
   getButlerNotifications,
   getNotifications,
   getNotificationStats,
+  markNotificationRead,
 } from "@/api/index.ts";
 import type { NotificationParams } from "@/api/index.ts";
 
@@ -36,5 +38,29 @@ export function useButlerNotifications(
     queryKey: ["butler-notifications", name, params],
     queryFn: () => getButlerNotifications(name, params),
     enabled: !!name,
+  });
+}
+
+/** Mark a single notification as read. Invalidates the notifications list and stats. */
+export function useMarkNotificationRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (notificationId: string) => markNotificationRead(notificationId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      queryClient.invalidateQueries({ queryKey: ["notification-stats"] });
+    },
+  });
+}
+
+/** Acknowledge all failed notifications in bulk. Invalidates list and stats. */
+export function useAcknowledgeAllFailed() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => acknowledgeAllFailed(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      queryClient.invalidateQueries({ queryKey: ["notification-stats"] });
+    },
   });
 }

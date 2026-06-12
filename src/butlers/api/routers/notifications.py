@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.models.notification import NotificationStats, NotificationSummary
+from butlers.api.models.notification import AckFailedResult, NotificationStats, NotificationSummary
 
 logger = logging.getLogger(__name__)
 _missing_notifications_table_warnings: set[str] = set()
@@ -445,3 +445,58 @@ async def mark_notification_read(
             created_at=row["created_at"],
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/notifications/ack-failed
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/ack-failed",
+    response_model=ApiResponse[AckFailedResult],
+)
+async def ack_failed_notifications(
+    db: DatabaseManager = Depends(_get_db_manager),
+    cache: BriefingCache = Depends(get_cache),
+) -> ApiResponse[AckFailedResult]:
+    """Acknowledge all failed notifications in bulk.
+
+    Flips every notification with ``status = 'failed'`` to ``status = 'read'``
+    and invalidates the briefing cache so the overview "Delivery pressure needs
+    review" badge clears immediately without waiting for TTL expiry.
+
+    Returns the count of notifications that were acknowledged.  Returns zero
+    when the Switchboard pool is unavailable or the notifications table does not
+    yet exist.
+    """
+    pool = _get_switchboard_pool(db)
+    if pool is None:
+        return ApiResponse(data=AckFailedResult(acknowledged=0))
+
+    try:
+        result = await pool.execute(
+            "UPDATE notifications SET status = 'read' WHERE status = 'failed'"
+        )
+    except Exception as exc:
+        if _is_missing_notifications_table_error(exc):
+            _log_missing_notifications_table_once(operation="ack_failed_notifications")
+            return ApiResponse(data=AckFailedResult(acknowledged=0))
+        raise
+
+    # asyncpg returns the command tag string, e.g. "UPDATE 12".
+    acknowledged = 0
+    if isinstance(result, str) and result.startswith("UPDATE "):
+        try:
+            acknowledged = int(result.split()[-1])
+        except (ValueError, IndexError):
+            pass
+
+    # Invalidate briefing cache so the attention badge reflects the new counts.
+    owner_id = await resolve_owner_id(pool)
+    if owner_id is not None:
+        cache.invalidate(owner_id)
+    else:
+        cache.invalidate_all()
+
+    return ApiResponse(data=AckFailedResult(acknowledged=acknowledged))
