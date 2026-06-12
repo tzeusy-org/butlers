@@ -1622,3 +1622,123 @@ class CoreDatesResponse(BaseModel):
     """
 
     items: list[CoreDateEntry]
+
+
+# ---------------------------------------------------------------------------
+# Merge-review: compare endpoint + dismissal (entity v3, relationship-merge-review)
+# ---------------------------------------------------------------------------
+
+
+class CompareRequest(BaseModel):
+    """Request body for ``POST /entities/compare``.
+
+    ``entity_a`` and ``entity_b`` are the two entity UUIDs to structurally diff.
+    The endpoint returns a server-computed, deterministic diff (no scoring, no
+    ranking, no generated text) — the duplicate evidence the owner reviews before
+    a merge-or-dismiss decision.
+    """
+
+    entity_a: UUID = Field(..., description="UUID of the first entity to compare.")
+    entity_b: UUID = Field(..., description="UUID of the second entity to compare.")
+
+
+class CompareFact(BaseModel):
+    """One fact row in a compare block, carrying full provenance.
+
+    Used for the per-entity ``identity_facts`` / ``narrative_facts`` blocks and
+    for the ``shared`` / ``divergent`` lists. ``last_seen`` is nullable and omitted
+    (``None``) on narrative-store rows, which have no ``last_seen`` column.
+    ``staleness_band`` is the read-time band (``fresh`` / ``aging`` / ``stale``)
+    derived per the originating store's COALESCE chain.
+
+    For ``shared`` / ``divergent`` entries (identity store only), ``entity_id``
+    identifies which entity the row belongs to so the two-column diff can place it.
+    """
+
+    id: UUID
+    entity_id: UUID
+    predicate: str
+    object: str
+    object_kind: str
+    store: Literal["identity", "narrative"]
+    src: str
+    conf: float
+    verified: bool
+    primary: bool | None = None
+    observed_at: datetime | None = None
+    last_seen: datetime | None = None
+    staleness_band: str
+
+
+class CompareEntitySummary(BaseModel):
+    """Identity summary of an entity inside a compare block."""
+
+    id: UUID
+    canonical_name: str
+    entity_type: str
+    aliases: list[str] = Field(default_factory=list)
+    tier: int | None = None
+    state: str
+
+
+class CompareEntityBlock(BaseModel):
+    """Per-entity block (``a`` or ``b``) in a compare response.
+
+    ``entity`` carries the identity summary (``tier`` is the pinned Dunbar tier
+    override, nullable). ``identity_facts`` are active ``relationship.entity_facts``
+    rows; ``narrative_facts`` are active memory-module narrative rows. Both lists
+    carry full provenance + ``staleness_band``.
+    """
+
+    entity: CompareEntitySummary
+    identity_facts: list[CompareFact]
+    narrative_facts: list[CompareFact]
+
+
+class CompareResponse(BaseModel):
+    """Response for ``POST /entities/compare`` — a structural diff only.
+
+    - ``a`` / ``b`` — per-entity blocks with identity + narrative facts.
+    - ``shared`` — identity-store rows present on BOTH entities with identical
+      ``(predicate, object)`` (the duplicate evidence). One pair of rows per match
+      (the ``a`` row then the ``b`` row).
+    - ``divergent`` — identity-store rows, ONLY for predicates whose registry
+      ``cardinality = 'single'`` and whose objects differ between the two entities
+      (the conflicts a merge must resolve). Multi-valued predicates union on merge
+      and never appear here.
+
+    There is no scoring, no ranking, no similarity percentage, and no generated
+    text of any kind.
+    """
+
+    a: CompareEntityBlock
+    b: CompareEntityBlock
+    shared: list[CompareFact]
+    divergent: list[CompareFact]
+
+
+class DismissPairRequest(BaseModel):
+    """Request body for ``POST /entities/dismiss-pair``.
+
+    Records a ``merge_reviews`` row with ``outcome = 'dismissed'`` for the pair,
+    capturing the shared-evidence snapshot at dismissal time. The dismissal
+    suppresses the pair from the duplicate-candidate queue bucket until new shared
+    evidence (a ``{predicate, shared_value}`` not in the snapshot) arises.
+    """
+
+    entity_a: UUID = Field(..., description="UUID of the first entity in the pair.")
+    entity_b: UUID = Field(..., description="UUID of the second entity in the pair.")
+
+
+class DismissPairResponse(BaseModel):
+    """Response for ``POST /entities/dismiss-pair``.
+
+    ``review_id`` is the UUID of the written ``merge_reviews`` audit row.
+    ``shared_facts`` echoes the evidence snapshot captured at dismissal time.
+    """
+
+    review_id: UUID
+    entity_a: UUID
+    entity_b: UUID
+    outcome: Literal["dismissed"]
+    shared_facts: list[CompareFact]

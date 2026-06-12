@@ -78,6 +78,8 @@ _CONCENTRATION_PATH = "/api/relationship/entities/concentration"
 _DISMISS_PATH = "/api/relationship/entities/queue/dismiss"
 _ACTIVITY_PATH = f"/api/relationship/entities/{_ENT_ID}/activity"
 _NEIGHBOURS_PATH = f"/api/relationship/entities/{_ENT_ID}/neighbours"
+_COMPARE_PATH = "/api/relationship/entities/compare"
+_DISMISS_PAIR_PATH = "/api/relationship/entities/dismiss-pair"
 
 
 # ---------------------------------------------------------------------------
@@ -1075,7 +1077,24 @@ class TestMergeEntities:
             yield mock_conn
 
         mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=owner_row)
+        # merge_entities computes the pre-transaction merge-review snapshot, which
+        # issues: fetchrow(owner gate), fetchrow(summary A), fetchrow(summary B),
+        # fetchrow(classify A), fetchrow(classify B); fetch(identity A/B,
+        # narrative A/B, single-cardinality predicates); then fetchval(INSERT
+        # merge_reviews RETURNING id) after the transaction.
+        summary_a = _make_compare_summary_row(entity_id=_ENT_ID)
+        summary_b = _make_compare_summary_row(entity_id=_ENT_ID_B)
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                owner_row,
+                summary_a,
+                summary_b,
+                _make_classify_row(),
+                _make_classify_row(),
+            ]
+        )
+        mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
+        mock_pool.fetchval = AsyncMock(return_value=uuid4())
         mock_pool.acquire = MagicMock(return_value=_acquire())
         return _wire_app(mock_pool), mock_pool
 
@@ -2205,3 +2224,445 @@ class TestEntityCoreDates:
         app, _ = self._make_app(entity_exists=False)
         resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/core-dates")
         assert resp.status_code == 404
+
+
+# ===========================================================================
+# POST /entities/compare — structural diff (entity v3, relationship-merge-review)
+# POST /entities/dismiss-pair — dismissal suppression key
+# ===========================================================================
+
+
+def _make_compare_summary_row(
+    *,
+    entity_id: UUID,
+    canonical_name: str = "Alice",
+    entity_type: str = "person",
+    aliases: list[str] | None = None,
+    tier: int | None = None,
+) -> MagicMock:
+    """Row returned by _COMPARE_SUMMARY_SQL (one per entity)."""
+    data = {
+        "id": entity_id,
+        "canonical_name": canonical_name,
+        "entity_type": entity_type,
+        "aliases": aliases or [],
+        "tier": tier,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    return row
+
+
+def _make_identity_compare_row(
+    *,
+    subject: UUID,
+    predicate: str,
+    object_val: str,
+    object_kind: str = "literal",
+    src: str = "relationship",
+    conf: float = 1.0,
+    verified: bool = True,
+    primary: bool | None = True,
+    observed_at: datetime | None = None,
+    last_seen: datetime | None = None,
+    staleness_band: str = "fresh",
+    fact_id: UUID | None = None,
+) -> MagicMock:
+    """Row for the identity-store compare fetch (relationship.entity_facts)."""
+    data = {
+        "id": fact_id or uuid4(),
+        "subject": subject,
+        "predicate": predicate,
+        "object": object_val,
+        "object_kind": object_kind,
+        "src": src,
+        "conf": conf,
+        "verified": verified,
+        "primary": primary,
+        "observed_at": observed_at,
+        "last_seen": last_seen,
+        "staleness_band": staleness_band,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    return row
+
+
+def _make_narrative_compare_row(
+    *,
+    subject: UUID,
+    predicate: str = "contact_note",
+    object_val: str = "met at conference",
+    src: str = "memory",
+    conf: float = 0.9,
+    observed_at: datetime | None = None,
+    staleness_band: str = "fresh",
+    fact_id: UUID | None = None,
+) -> MagicMock:
+    """Row for the narrative-store compare fetch (memory-module facts)."""
+    data = {
+        "id": fact_id or uuid4(),
+        "subject": subject,
+        "predicate": predicate,
+        "object": object_val,
+        "object_kind": "literal",
+        "src": src,
+        "conf": conf,
+        "verified": False,
+        "primary": None,
+        "observed_at": observed_at,
+        "staleness_band": staleness_band,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    return row
+
+
+def _make_single_predicate_row(predicate: str) -> MagicMock:
+    data = {"predicate": predicate}
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    return row
+
+
+def _wire_compare_app(
+    *,
+    owner_exists: bool = True,
+    summary_a: MagicMock | None = None,
+    summary_b: MagicMock | None = None,
+    identity_a: list | None = None,
+    identity_b: list | None = None,
+    narrative_a: list | None = None,
+    narrative_b: list | None = None,
+    classify_a: MagicMock | None = None,
+    classify_b: MagicMock | None = None,
+    single_predicates: list | None = None,
+    entity_exists: bool = True,
+) -> tuple[FastAPI, AsyncMock]:
+    """Wire an app for the compare/dismiss-pair endpoints.
+
+    fetchrow sequence (compare): owner, summary_a, summary_b, classify_a, classify_b
+      (summary rows are None when entity_exists=False → the snapshot raises 404)
+    fetch sequence (compare): identity_a, identity_b, narrative_a, narrative_b,
+                              single_predicate_rows
+    dismiss-pair additionally calls fetchval (INSERT merge_reviews RETURNING id).
+    """
+    owner_row = _make_owner_row() if owner_exists else None
+    if entity_exists:
+        sa = summary_a if summary_a is not None else _make_compare_summary_row(entity_id=_ENT_ID)
+        sb = summary_b if summary_b is not None else _make_compare_summary_row(entity_id=_ENT_ID_B)
+    else:
+        sa = None
+        sb = None
+    ca = classify_a if classify_a is not None else _make_classify_row()
+    cb = classify_b if classify_b is not None else _make_classify_row()
+    preds = single_predicates if single_predicates is not None else []
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, sa, sb, ca, cb])
+    mock_pool.fetch = AsyncMock(
+        side_effect=[
+            identity_a or [],
+            identity_b or [],
+            narrative_a or [],
+            narrative_b or [],
+            preds,
+        ]
+    )
+    # fetchval is used by dismiss-pair for the INSERT ... RETURNING id.
+    mock_pool.fetchval = AsyncMock(return_value=uuid4())
+    return _wire_app(mock_pool), mock_pool
+
+
+class TestCompareEntities:
+    """POST /entities/compare — structural diff (relationship-merge-review)."""
+
+    async def test_owner_gate_returns_403(self):
+        app, _ = _wire_compare_app(owner_exists=False)
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        _assert_owner_required(resp)
+
+    async def test_same_entity_returns_422(self):
+        app, _ = _wire_compare_app()
+        resp = await _post(app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID)})
+        assert resp.status_code == 422
+
+    async def test_blocks_carry_facts_from_both_stores_with_provenance(self):
+        """a/b blocks carry identity + narrative facts, each with full provenance."""
+        ident_a = [
+            _make_identity_compare_row(subject=_ENT_ID, predicate="has-email", object_val="a@x.com")
+        ]
+        narr_a = [_make_narrative_compare_row(subject=_ENT_ID, staleness_band="aging")]
+        app, _ = _wire_compare_app(
+            identity_a=ident_a,
+            identity_b=[],
+            narrative_a=narr_a,
+            narrative_b=[],
+        )
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        a_ident = body["a"]["identity_facts"][0]
+        assert a_ident["store"] == "identity"
+        assert a_ident["staleness_band"] == "fresh"
+        assert a_ident["src"] == "relationship"
+        assert "conf" in a_ident and "verified" in a_ident and "observed_at" in a_ident
+        a_narr = body["a"]["narrative_facts"][0]
+        assert a_narr["store"] == "narrative"
+        assert a_narr["staleness_band"] == "aging"
+        # Narrative rows omit last_seen (no such column).
+        assert a_narr["last_seen"] is None
+
+    async def test_shared_holds_identical_identity_pairs_only(self):
+        """shared = identity rows with identical (predicate, object) on BOTH; no narrative."""
+        ident_a = [
+            _make_identity_compare_row(
+                subject=_ENT_ID, predicate="has-email", object_val="alice@x.com"
+            )
+        ]
+        ident_b = [
+            _make_identity_compare_row(
+                subject=_ENT_ID_B, predicate="has-email", object_val="alice@x.com"
+            )
+        ]
+        narr_a = [_make_narrative_compare_row(subject=_ENT_ID)]
+        narr_b = [_make_narrative_compare_row(subject=_ENT_ID_B)]
+        app, _ = _wire_compare_app(
+            identity_a=ident_a,
+            identity_b=ident_b,
+            narrative_a=narr_a,
+            narrative_b=narr_b,
+            single_predicates=[_make_single_predicate_row("has-birthday")],
+        )
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        assert resp.status_code == 200
+        shared = resp.json()["shared"]
+        # The pair is emitted once per entity (A row + B row).
+        assert len(shared) == 2
+        assert {s["entity_id"] for s in shared} == {str(_ENT_ID), str(_ENT_ID_B)}
+        assert all(s["predicate"] == "has-email" for s in shared)
+        assert all(s["store"] == "identity" for s in shared)
+
+    async def test_divergent_only_single_cardinality_predicates(self):
+        """divergent = single-cardinality predicates with differing objects only."""
+        ident_a = [
+            _make_identity_compare_row(
+                subject=_ENT_ID, predicate="has-birthday", object_val="1990-01-01"
+            ),
+            # Multi-valued: different emails MUST NOT diverge (three-emails-three-rows).
+            _make_identity_compare_row(
+                subject=_ENT_ID, predicate="has-email", object_val="a@x.com"
+            ),
+        ]
+        ident_b = [
+            _make_identity_compare_row(
+                subject=_ENT_ID_B, predicate="has-birthday", object_val="1991-02-02"
+            ),
+            _make_identity_compare_row(
+                subject=_ENT_ID_B, predicate="has-email", object_val="b@x.com"
+            ),
+        ]
+        app, _ = _wire_compare_app(
+            identity_a=ident_a,
+            identity_b=ident_b,
+            single_predicates=[_make_single_predicate_row("has-birthday")],
+        )
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        assert resp.status_code == 200
+        divergent = resp.json()["divergent"]
+        preds = {d["predicate"] for d in divergent}
+        assert preds == {"has-birthday"}
+        # The differing has-email rows are NOT divergences (multi-valued).
+        assert "has-email" not in preds
+        # Both sides' conflicting birthday rows appear.
+        assert {d["object"] for d in divergent} == {"1990-01-01", "1991-02-02"}
+
+    async def test_same_single_value_not_divergent(self):
+        """A single-cardinality predicate with the SAME value on both is not divergent."""
+        ident_a = [
+            _make_identity_compare_row(
+                subject=_ENT_ID, predicate="has-birthday", object_val="1990-01-01"
+            )
+        ]
+        ident_b = [
+            _make_identity_compare_row(
+                subject=_ENT_ID_B, predicate="has-birthday", object_val="1990-01-01"
+            )
+        ]
+        app, _ = _wire_compare_app(
+            identity_a=ident_a,
+            identity_b=ident_b,
+            single_predicates=[_make_single_predicate_row("has-birthday")],
+        )
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["divergent"] == []
+        # Identical birthday IS shared evidence.
+        assert len(body["shared"]) == 2
+
+    async def test_entity_block_tier_nullable(self):
+        """The entity summary carries a nullable tier."""
+        sa = _make_compare_summary_row(entity_id=_ENT_ID, tier=5)
+        sb = _make_compare_summary_row(entity_id=_ENT_ID_B, tier=None)
+        app, _ = _wire_compare_app(summary_a=sa, summary_b=sb)
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["a"]["entity"]["tier"] == 5
+        assert body["b"]["entity"]["tier"] is None
+
+    async def test_unknown_entity_returns_404(self):
+        """An unknown/tombstoned entity yields 404."""
+        app, _ = _wire_compare_app(entity_exists=False)
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_MISSING_ENT_ID)}
+        )
+        assert resp.status_code == 404
+
+
+class TestDismissPair:
+    """POST /entities/dismiss-pair — writes a dismissed merge_reviews row."""
+
+    async def test_owner_gate_returns_403(self):
+        app, _ = _wire_compare_app(owner_exists=False)
+        resp = await _post(
+            app, _DISMISS_PAIR_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        _assert_owner_required(resp)
+
+    async def test_dismiss_writes_merge_review_row(self):
+        """A dismissal inserts a merge_reviews row (outcome=dismissed) and echoes evidence."""
+        ident_a = [
+            _make_identity_compare_row(
+                subject=_ENT_ID, predicate="has-email", object_val="alice@x.com"
+            )
+        ]
+        ident_b = [
+            _make_identity_compare_row(
+                subject=_ENT_ID_B, predicate="has-email", object_val="alice@x.com"
+            )
+        ]
+        app, pool = _wire_compare_app(identity_a=ident_a, identity_b=ident_b)
+        resp = await _post(
+            app, _DISMISS_PAIR_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["outcome"] == "dismissed"
+        assert "review_id" in body
+        # The shared evidence snapshot is echoed.
+        assert any(s["object"] == "alice@x.com" for s in body["shared_facts"])
+        # An INSERT into merge_reviews was issued.
+        insert_calls = [c for c in pool.fetchval.await_args_list if "merge_reviews" in str(c[0][0])]
+        assert insert_calls, "Expected an INSERT into relationship.merge_reviews"
+        assert "dismissed" in insert_calls[0][0]
+
+    async def test_same_entity_returns_422(self):
+        app, _ = _wire_compare_app()
+        resp = await _post(
+            app, _DISMISS_PAIR_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID)}
+        )
+        assert resp.status_code == 422
+
+    async def test_unknown_entity_returns_404(self):
+        app, _ = _wire_compare_app(entity_exists=False)
+        resp = await _post(
+            app, _DISMISS_PAIR_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_MISSING_ENT_ID)}
+        )
+        assert resp.status_code == 404
+
+
+class TestMergeWritesAuditRow:
+    """POST /entities/{id}/merge writes a merge_reviews row regardless of entry path."""
+
+    def _make_lock_row(self, entity_id: UUID, metadata: dict | None = None) -> MagicMock:
+        data = {"id": entity_id, "metadata": metadata or {}}
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        return row
+
+    async def test_merge_writes_merged_audit_row(self):
+        """A successful merge writes a merge_reviews row with outcome='merged'."""
+        owner_row = _make_owner_row()
+        summary_a = _make_compare_summary_row(entity_id=_ENT_ID)
+        summary_b = _make_compare_summary_row(entity_id=_ENT_ID_B)
+        classify_a = _make_classify_row()
+        classify_b = _make_classify_row()
+
+        # merge_entities fetchrow sequence: owner gate, then the pre-transaction
+        # snapshot (summary_a, summary_b, classify_a, classify_b).
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[owner_row, summary_a, summary_b, classify_a, classify_b]
+        )
+        # snapshot fetch: identity_a, identity_b, narrative_a, narrative_b, single-preds.
+        mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
+        # fetchval: review-row INSERT RETURNING id (after the transaction).
+        mock_pool.fetchval = AsyncMock(return_value=uuid4())
+
+        lock_rows = sorted(
+            [self._make_lock_row(_ENT_ID), self._make_lock_row(_ENT_ID_B)],
+            key=lambda r: r["id"],
+        )
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=lock_rows)
+        mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+        mock_conn.fetchval = AsyncMock(return_value=0)
+        mock_txn = AsyncMock()
+        mock_txn.__aenter__ = AsyncMock(return_value=None)
+        mock_txn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.transaction = MagicMock(return_value=mock_txn)
+
+        @asynccontextmanager
+        async def _acquire():
+            yield mock_conn
+
+        mock_pool.acquire = MagicMock(return_value=_acquire())
+
+        app = _wire_app(mock_pool)
+        resp = await _post(
+            app,
+            _MERGE_PATH,
+            {"entityA": str(_ENT_ID), "entityB": str(_ENT_ID_B), "keepAs": "B"},
+        )
+        assert resp.status_code == 200, resp.text
+        insert_calls = [
+            c for c in mock_pool.fetchval.await_args_list if "merge_reviews" in str(c[0][0])
+        ]
+        assert insert_calls, "Merge MUST write a merge_reviews audit row"
+        assert "merged" in insert_calls[0][0]
+
+
+class TestQueueDismissedPairSuppression:
+    """The queue + classify SQL suppress dismissed pairs (relationship-entity-lifecycle)."""
+
+    def test_queue_sql_references_dismissed_suppression(self):
+        """The queue duplicate-detection SQL filters out dismissed pairs.
+
+        Confirms the suppression clause is wired into the duplicate-candidate
+        derivation (deterministic, no LLM) in BOTH the queue dup-detected bucket
+        and ``_classify_entity_state``.
+        """
+        from pathlib import Path
+
+        router_src = (Path(__file__).resolve().parents[1] / "api" / "router.py").read_text(
+            encoding="utf-8"
+        )
+        assert "_dismissed_pair_suppression_sql" in router_src
+        # def + 2 call sites (queue bucket + classify CTE).
+        assert router_src.count("_dismissed_pair_suppression_sql(") >= 3
+        assert "merge_reviews mr" in router_src
+        assert "jsonb_array_elements(mr.shared_facts)" in router_src

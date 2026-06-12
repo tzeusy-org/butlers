@@ -149,6 +149,13 @@ if _models_path.exists():
         CoreDateEntry = _models_module.CoreDateEntry
         CoreDatesResponse = _models_module.CoreDatesResponse
         ContactEntityResolverResponse = _models_module.ContactEntityResolverResponse
+        CompareRequest = _models_module.CompareRequest
+        CompareFact = _models_module.CompareFact
+        CompareEntitySummary = _models_module.CompareEntitySummary
+        CompareEntityBlock = _models_module.CompareEntityBlock
+        CompareResponse = _models_module.CompareResponse
+        DismissPairRequest = _models_module.DismissPairRequest
+        DismissPairResponse = _models_module.DismissPairResponse
 
 logger = logging.getLogger(__name__)
 
@@ -3068,6 +3075,52 @@ _STALE_DAYS = 365
 #: Predicates used for deterministic duplicate-candidate detection.
 _DUP_DETECTION_PREDICATES = ("has-email", "has-phone")
 
+
+def _dismissed_pair_suppression_sql(entity_id_sql: str, predicate_sql: str, value_sql: str) -> str:
+    """SQL ``NOT EXISTS`` clause suppressing a dismissed duplicate-candidate row.
+
+    A duplicate-candidate row for the entity at ``entity_id_sql`` (e.g. ``e.id``
+    or a bound ``$1``) carrying evidence ``(predicate_sql, value_sql)`` is
+    suppressed iff a peer that shares that value was dismissed against this entity
+    AND the dismissal's ``shared_facts`` snapshot already contains a row with the
+    SAME ``(predicate, object)`` (per ``relationship-entity-lifecycle`` queue
+    derivation + ``relationship-merge-review`` dismissal-suppression). New shared
+    evidence — a ``{predicate, shared_value}`` NOT in the snapshot — is not
+    suppressed, so the pair re-raises on new evidence.
+
+    The clause is deterministic and order-independent on the pair: it checks both
+    ``(entity_a, entity_b)`` column orderings against the peer set.
+    """
+    return f"""
+        NOT EXISTS (
+            SELECT 1
+            FROM relationship.merge_reviews mr
+            WHERE mr.outcome = 'dismissed'
+              AND (
+                  mr.entity_a = {entity_id_sql}
+                  OR mr.entity_b = {entity_id_sql}
+              )
+              -- The other side of the dismissed pair must be a current peer that
+              -- shares this exact value with the entity.
+              AND EXISTS (
+                  SELECT 1 FROM relationship.entity_facts peer_f
+                  WHERE peer_f.predicate = {predicate_sql}
+                    AND peer_f.object = {value_sql}
+                    AND peer_f.validity = 'active'
+                    AND peer_f.subject <> {entity_id_sql}
+                    AND (peer_f.subject = mr.entity_a OR peer_f.subject = mr.entity_b)
+              )
+              -- The dismissal snapshot already covered this {{predicate, value}}.
+              AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(mr.shared_facts) AS sf
+                  WHERE sf->>'predicate' = {predicate_sql}
+                    AND sf->>'object' = {value_sql}
+              )
+        )
+    """
+
+
 #: Default and maximum page sizes for the queue endpoint.
 _QUEUE_DEFAULT_LIMIT = 50
 _QUEUE_MAX_LIMIT = 200
@@ -3144,6 +3197,7 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
                AND f_link.predicate = grp.predicate
                AND f_link.object = grp.object
                AND f_link.validity = 'active'
+            WHERE {_dismissed_pair_suppression_sql("$1", "grp.predicate", "grp.object")}
             LIMIT 1
         )
         SELECT
@@ -3323,6 +3377,7 @@ async def get_entities_queue(
            AND f_link.validity = 'active'
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND {_active_entity_condition("e")}
+          AND {_dismissed_pair_suppression_sql("e.id", "grp.predicate", "grp.object")}
     """
 
     # -------------------------------------------------------------------
@@ -6293,6 +6348,12 @@ async def merge_entities(
         target_id = body.entityB
         source_id = body.entityA
 
+    # Compute the merge-review evidence snapshot BEFORE the transaction mutates
+    # rows — the shared/divergent diff must reflect the pre-merge state. Every
+    # merge through this endpoint leaves a merge_reviews audit row regardless of
+    # entry path (spec: relationship-merge-review "Single-pair review UX").
+    merge_snapshot = await _compute_compare_snapshot(pool, body.entityA, body.entityB)
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             # 1. Lock both entities in deterministic UUID order to prevent deadlocks when
@@ -6435,11 +6496,413 @@ async def merge_entities(
                 source_id,
             )
 
+    # Write the merge-review audit row regardless of entry path (spec:
+    # "POST /entities/{id}/merge itself MUST write a merge_reviews audit row").
+    # When no compare context was supplied by the caller, the snapshot is
+    # computed server-side at merge time (above, before the transaction would
+    # mutate the rows — see _compute_compare_snapshot called pre-transaction).
+    await _write_merge_review(
+        pool,
+        entity_a=body.entityA,
+        entity_b=body.entityB,
+        shared_facts=merge_snapshot["shared"],
+        divergent_facts=merge_snapshot["divergent"],
+        outcome="merged",
+    )
+
     return MergeEntitiesResponse(
         kept_entity_id=target_id,
         tombstoned_entity_id=source_id,
         subject_facts_rewired=subject_facts_rewired,
         object_facts_rewired=object_facts_rewired,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/compare — structural diff (entity v3, relationship-merge-review)
+# POST /entities/dismiss-pair — dismissal suppression key
+# ---------------------------------------------------------------------------
+
+
+def _compare_fact_from_identity_row(r: Any) -> Any:
+    """Build a CompareFact from an identity-store (relationship.entity_facts) row."""
+    return CompareFact(
+        id=r["id"],
+        entity_id=r["subject"],
+        predicate=r["predicate"],
+        object=r["object"],
+        object_kind=r["object_kind"],
+        store="identity",
+        src=r["src"],
+        conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+        verified=r["verified"],
+        primary=r["primary"],
+        observed_at=r["observed_at"],
+        last_seen=r["last_seen"],
+        staleness_band=r["staleness_band"],
+    )
+
+
+def _compare_fact_from_narrative_row(r: Any) -> Any:
+    """Build a CompareFact from a narrative-store (memory-module facts) row.
+
+    Narrative rows have no ``last_seen`` column (``last_seen`` stays ``None``).
+    """
+    return CompareFact(
+        id=r["id"],
+        entity_id=r["subject"],
+        predicate=r["predicate"],
+        object=r["object"],
+        object_kind=r["object_kind"],
+        store="narrative",
+        src=r["src"],
+        conf=float(r["conf"]) if r["conf"] is not None else 1.0,
+        verified=r["verified"],
+        primary=r["primary"],
+        observed_at=r["observed_at"],
+        last_seen=None,
+        staleness_band=r["staleness_band"],
+    )
+
+
+async def _fetch_identity_facts_for_compare(pool, entity_id: UUID) -> list[Any]:
+    """Fetch active identity-store facts for an entity with staleness bands."""
+    from butlers.tools.relationship.staleness import identity_staleness_band_sql
+
+    return await pool.fetch(
+        f"""
+        SELECT
+            f.id,
+            f.subject,
+            f.predicate,
+            f.object,
+            f.object_kind,
+            f.src,
+            f.conf,
+            f.verified,
+            f."primary",
+            f.observed_at,
+            f.last_seen,
+            {identity_staleness_band_sql("f")} AS staleness_band
+        FROM relationship.entity_facts f
+        WHERE f.subject = $1
+          AND f.validity = 'active'
+        ORDER BY f.predicate, f.created_at DESC, f.id DESC
+        """,
+        entity_id,
+    )
+
+
+async def _fetch_narrative_facts_for_compare(pool, entity_id: UUID) -> list[Any]:
+    """Fetch active narrative-store facts (memory-module ``facts``) for an entity."""
+    from butlers.tools.relationship.staleness import narrative_staleness_band_sql
+
+    return await pool.fetch(
+        f"""
+        SELECT
+            f.id,
+            f.entity_id           AS subject,
+            f.predicate,
+            f.content             AS object,
+            'literal'::text       AS object_kind,
+            COALESCE(f.source_butler, 'memory')::text AS src,
+            f.confidence          AS conf,
+            false                 AS verified,
+            NULL::bool            AS "primary",
+            f.observed_at,
+            {narrative_staleness_band_sql("f")} AS staleness_band
+        FROM facts f
+        WHERE f.entity_id = $1
+          AND f.scope = 'relationship'
+          AND f.validity = 'active'
+        ORDER BY f.predicate, f.created_at DESC, f.id DESC
+        """,
+        entity_id,
+    )
+
+
+async def _fetch_single_cardinality_predicates(pool) -> set[str]:
+    """Return the set of predicates with ``cardinality = 'single'`` in the registry.
+
+    Single-cardinality predicates are the only ones that can DIVERGE on merge
+    (an entity holds at most one active value). Multi-valued predicates union on
+    merge and never conflict (the three-emails-three-rows rule).
+    """
+    rows = await pool.fetch(
+        """
+        SELECT predicate
+        FROM relationship.entity_predicate_registry
+        WHERE cardinality = 'single'
+        """
+    )
+    return {r["predicate"] for r in rows}
+
+
+def _derive_shared_and_divergent(
+    a_identity: list[Any],
+    b_identity: list[Any],
+    single_predicates: set[str],
+) -> tuple[list[Any], list[Any]]:
+    """Compute the ``shared`` and ``divergent`` lists from two identity-fact sets.
+
+    - ``shared``: rows where both entities hold an active row with identical
+      ``(predicate, object)``. Emitted as the A-row followed by the B-row.
+    - ``divergent``: rows for single-cardinality predicates that BOTH entities
+      hold but with DIFFERENT objects. Multi-valued predicates never diverge.
+
+    Deterministic: no scoring, no ranking, no generated text.
+    """
+    a_pairs = {(r["predicate"], r["object"]) for r in a_identity}
+    b_pairs = {(r["predicate"], r["object"]) for r in b_identity}
+    shared_keys = a_pairs & b_pairs
+
+    shared: list[Any] = []
+    for key in sorted(shared_keys):
+        a_row = next(r for r in a_identity if (r["predicate"], r["object"]) == key)
+        b_row = next(r for r in b_identity if (r["predicate"], r["object"]) == key)
+        shared.append(_compare_fact_from_identity_row(a_row))
+        shared.append(_compare_fact_from_identity_row(b_row))
+
+    # Divergent: single-cardinality predicates present on both with differing objects.
+    a_objs_by_pred: dict[str, set[str]] = {}
+    for r in a_identity:
+        if r["predicate"] in single_predicates:
+            a_objs_by_pred.setdefault(r["predicate"], set()).add(r["object"])
+    b_objs_by_pred: dict[str, set[str]] = {}
+    for r in b_identity:
+        if r["predicate"] in single_predicates:
+            b_objs_by_pred.setdefault(r["predicate"], set()).add(r["object"])
+
+    divergent: list[Any] = []
+    for predicate in sorted(set(a_objs_by_pred) & set(b_objs_by_pred)):
+        if a_objs_by_pred[predicate] == b_objs_by_pred[predicate]:
+            # Same single value on both → not a conflict.
+            continue
+        for r in a_identity:
+            if r["predicate"] == predicate and r["object"] not in b_objs_by_pred[predicate]:
+                divergent.append(_compare_fact_from_identity_row(r))
+        for r in b_identity:
+            if r["predicate"] == predicate and r["object"] not in a_objs_by_pred[predicate]:
+                divergent.append(_compare_fact_from_identity_row(r))
+
+    return shared, divergent
+
+
+async def _compute_compare_snapshot(pool, entity_a: UUID, entity_b: UUID) -> dict[str, Any]:
+    """Compute the full structural-diff snapshot for a pair of entities.
+
+    Returns a dict with ``a`` / ``b`` (CompareEntityBlock), ``shared`` and
+    ``divergent`` (lists of CompareFact). Reused by both the compare endpoint and
+    the merge endpoint's audit-row snapshot (computed server-side at merge time
+    when no compare context exists).
+
+    No scoring, no ranking, no generated text — deterministic structural diff.
+    """
+    a_summary_row, b_summary_row = await asyncio.gather(
+        pool.fetchrow(_COMPARE_SUMMARY_SQL, entity_a),
+        pool.fetchrow(_COMPARE_SUMMARY_SQL, entity_b),
+    )
+    # Fail fast on an unknown/tombstoned entity (the summary SQL excludes
+    # tombstoned rows). Raised as 404 to the caller (compare + merge endpoints).
+    if a_summary_row is None or b_summary_row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    a_identity, b_identity, a_narrative, b_narrative = await asyncio.gather(
+        _fetch_identity_facts_for_compare(pool, entity_a),
+        _fetch_identity_facts_for_compare(pool, entity_b),
+        _fetch_narrative_facts_for_compare(pool, entity_a),
+        _fetch_narrative_facts_for_compare(pool, entity_b),
+    )
+
+    (state_a, _), (state_b, _), single_predicates = await asyncio.gather(
+        _classify_entity_state(pool, entity_a),
+        _classify_entity_state(pool, entity_b),
+        _fetch_single_cardinality_predicates(pool),
+    )
+
+    shared, divergent = _derive_shared_and_divergent(a_identity, b_identity, single_predicates)
+
+    def _block(summary_row: Any, identity_rows: list[Any], narrative_rows: list[Any], state: str):
+        return CompareEntityBlock(
+            entity=CompareEntitySummary(
+                id=summary_row["id"],
+                canonical_name=summary_row["canonical_name"],
+                entity_type=summary_row["entity_type"],
+                aliases=list(summary_row["aliases"]) if summary_row["aliases"] else [],
+                tier=summary_row["tier"],
+                state=state,
+            ),
+            identity_facts=[_compare_fact_from_identity_row(r) for r in identity_rows],
+            narrative_facts=[_compare_fact_from_narrative_row(r) for r in narrative_rows],
+        )
+
+    return {
+        "a": _block(a_summary_row, a_identity, a_narrative, state_a),
+        "b": _block(b_summary_row, b_identity, b_narrative, state_b),
+        "shared": shared,
+        "divergent": divergent,
+    }
+
+
+#: Entity-summary SELECT for the compare blocks. ``tier`` is the pinned Dunbar
+#: tier override fact (nullable). Excludes tombstoned entities.
+_COMPARE_SUMMARY_SQL = """
+    SELECT
+        e.id,
+        e.canonical_name,
+        e.entity_type,
+        e.aliases,
+        (
+            SELECT (rf.object)::int
+            FROM relationship.entity_facts rf
+            WHERE rf.subject = e.id
+              AND rf.predicate = 'dunbar_tier_override'
+              AND rf.validity = 'active'
+            ORDER BY rf.created_at DESC
+            LIMIT 1
+        ) AS tier
+    FROM public.entities e
+    WHERE e.id = $1
+      AND (e.metadata->>'merged_into') IS NULL
+"""
+
+
+async def _write_merge_review(
+    pool,
+    *,
+    entity_a: UUID,
+    entity_b: UUID,
+    shared_facts: list[Any],
+    divergent_facts: list[Any],
+    outcome: str,
+) -> UUID:
+    """Insert a ``relationship.merge_reviews`` audit row, returning its id.
+
+    The evidence snapshot is serialized from CompareFact lists (JSON-mode dumps so
+    UUIDs/datetimes become strings). Rows are written at commit time only (no
+    pending state); both merge and dismissal write a row.
+    """
+    shared_json = json.dumps([f.model_dump(mode="json") for f in shared_facts])
+    divergent_json = json.dumps([f.model_dump(mode="json") for f in divergent_facts])
+    review_id = await pool.fetchval(
+        """
+        INSERT INTO relationship.merge_reviews
+            (entity_a, entity_b, shared_facts, divergent_facts, outcome, reviewed_at)
+        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, now())
+        RETURNING id
+        """,
+        entity_a,
+        entity_b,
+        shared_json,
+        divergent_json,
+        outcome,
+    )
+    return review_id
+
+
+@router.post("/entities/compare", response_model=CompareResponse)
+async def compare_entities(
+    body: CompareRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CompareResponse:
+    """Structural diff of two entities — the merge-review compare view.
+
+    Returns a server-computed, deterministic diff (no scoring, no ranking, no
+    similarity percentage, no generated text of any kind):
+
+    - ``a`` / ``b`` — per-entity blocks ``{entity (incl. nullable tier),
+      identity_facts, narrative_facts}`` with full provenance + ``staleness_band``
+      on every fact, reading BOTH stores.
+    - ``shared`` — identity-store rows present on BOTH entities with identical
+      ``(predicate, object)`` (the duplicate evidence). Narrative facts never
+      enter ``shared``.
+    - ``divergent`` — identity-store rows for predicates whose registry
+      ``cardinality = 'single'`` whose objects differ between the two entities.
+      Multi-valued predicates union on merge and never appear as divergences.
+
+    **Authorization**: owner-only gate (Clause 12a/12b) — returns HTTP 403 with
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    **Error codes:**
+    - ``403`` — owner entity not registered.
+    - ``404`` — either entity does not exist (or is tombstoned).
+    - ``422`` — ``entity_a == entity_b``.
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12a/12b) — roles-aware.
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+
+    if body.entity_a == body.entity_b:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "same_entity", "message": "entity_a and entity_b must be different."},
+        )
+
+    # Existence check (404 on unknown/tombstoned) is enforced inside the snapshot.
+    snapshot = await _compute_compare_snapshot(pool, body.entity_a, body.entity_b)
+
+    return CompareResponse(
+        a=snapshot["a"],
+        b=snapshot["b"],
+        shared=snapshot["shared"],
+        divergent=snapshot["divergent"],
+    )
+
+
+@router.post("/entities/dismiss-pair", response_model=DismissPairResponse)
+async def dismiss_pair(
+    body: DismissPairRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> DismissPairResponse:
+    """Dismiss a compared pair — writes a ``merge_reviews`` row (outcome=dismissed).
+
+    The dismissal row is the suppression key for the queue (per
+    ``relationship-entity-lifecycle`` queue derivation): the pair stays out of the
+    duplicate-candidate bucket until a ``{predicate, shared_value}`` not present in
+    the dismissal's ``shared_facts`` snapshot arises. The shared snapshot is
+    computed server-side at dismissal time so the suppression key is authoritative.
+
+    **Authorization**: owner-only gate (Clause 12a/12b) — HTTP 403
+    ``{"code": "owner_required"}`` when no owner entity is registered.
+
+    **Error codes:**
+    - ``403`` — owner entity not registered.
+    - ``404`` — either entity does not exist (or is tombstoned).
+    - ``422`` — ``entity_a == entity_b``.
+    """
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+
+    if body.entity_a == body.entity_b:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "same_entity", "message": "entity_a and entity_b must be different."},
+        )
+
+    # Existence check (404 on unknown/tombstoned) is enforced inside the snapshot.
+    snapshot = await _compute_compare_snapshot(pool, body.entity_a, body.entity_b)
+    shared = snapshot["shared"]
+    divergent = snapshot["divergent"]
+
+    review_id = await _write_merge_review(
+        pool,
+        entity_a=body.entity_a,
+        entity_b=body.entity_b,
+        shared_facts=shared,
+        divergent_facts=divergent,
+        outcome="dismissed",
+    )
+
+    return DismissPairResponse(
+        review_id=review_id,
+        entity_a=body.entity_a,
+        entity_b=body.entity_b,
+        outcome="dismissed",
+        shared_facts=shared,
     )
 
 

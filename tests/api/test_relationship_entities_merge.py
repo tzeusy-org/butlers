@@ -86,6 +86,49 @@ def _make_entity_row(
     return row
 
 
+def _make_compare_summary_row(*, entity_id: UUID) -> MagicMock:
+    """Row returned by ``_COMPARE_SUMMARY_SQL`` for the pre-merge audit snapshot.
+
+    ``merge_entities`` now computes a ``merge_reviews`` audit snapshot via
+    ``_compute_compare_snapshot`` before mutating rows (entity-v3
+    ``relationship-merge-review``). A present (non-tombstoned) entity yields a
+    summary row; a missing/tombstoned entity yields ``None`` (→ 404).
+    """
+    data = {
+        "id": entity_id,
+        "canonical_name": "Entity",
+        "entity_type": "person",
+        "aliases": [],
+        "tier": None,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+def _make_classify_row() -> MagicMock:
+    """Row returned by ``_classify_entity_state`` during the snapshot compute."""
+    data = {
+        "is_unidentified": False,
+        "is_dup_flagged": False,
+        "has_fresh_fact": True,
+        "last_seen": None,
+        "dup_predicate": None,
+        "dup_shared_value": None,
+        "dup_peer_entity_ids": None,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+def _is_present(row: MagicMock | None) -> bool:
+    """A row is a live entity iff present and not tombstoned (``merged_into``)."""
+    if row is None:
+        return False
+    return row["metadata"].get("merged_into") is None
+
+
 # ---------------------------------------------------------------------------
 # App/pool factory
 # ---------------------------------------------------------------------------
@@ -163,7 +206,34 @@ def _app_with_pool(
 
     mock_pool = AsyncMock()
     owner_row = _make_owner_row() if owner_exists else None
-    mock_pool.fetchrow = AsyncMock(side_effect=[owner_row])
+
+    # merge_entities computes a pre-transaction merge_reviews audit snapshot via
+    # _compute_compare_snapshot (entity-v3 relationship-merge-review). That issues,
+    # in order, on the pool: fetchrow(owner gate), fetchrow(summary A),
+    # fetchrow(summary B), fetchrow(classify A), fetchrow(classify B); fetch(identity
+    # A/B, narrative A/B, single-cardinality predicates); then, post-transaction,
+    # fetchval(INSERT merge_reviews RETURNING id). The summary fetch returns None for
+    # a missing/tombstoned entity → the snapshot raises 404 (matching the prior
+    # in-transaction 404 behaviour). Map source/target rows back to A/B by id.
+    rows_by_id: dict[UUID, MagicMock] = {}
+    for r in (source_row, target_row):
+        if r is not None:
+            rows_by_id[r["id"]] = r
+    summary_a = (
+        _make_compare_summary_row(entity_id=ENTITY_A_ID)
+        if _is_present(rows_by_id.get(ENTITY_A_ID))
+        else None
+    )
+    summary_b = (
+        _make_compare_summary_row(entity_id=ENTITY_B_ID)
+        if _is_present(rows_by_id.get(ENTITY_B_ID))
+        else None
+    )
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=[owner_row, summary_a, summary_b, _make_classify_row(), _make_classify_row()]
+    )
+    mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
+    mock_pool.fetchval = AsyncMock(return_value=uuid4())
     mock_pool.acquire = MagicMock(return_value=_acquire())
 
     mock_db = MagicMock(spec=DatabaseManager)
