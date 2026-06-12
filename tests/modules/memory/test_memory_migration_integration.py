@@ -55,7 +55,7 @@ _EXPECTED_MEMORY_TABLES = {
     "predicate_registry",
     "memory_policies",
     "rule_applications",
-    "embedding_versions",
+    # embedding_versions removed by mem_005 (dead table with 0 runtime references)
 }
 
 # ---------------------------------------------------------------------------
