@@ -123,6 +123,44 @@ services:
     volumes:
       - ./logs:/logs
 
+  # ── Log retention sidecar ─────────────────────────────────────────────
+  # Per-run stdout dirs (logs/YYYYMMDD_HHMMSS/) are written by the app and
+  # connector containers AS ROOT (they need HOME=/root for the LLM spawner
+  # and uv cache), so the host user cannot prune them without sudo. This
+  # sidecar runs as root with the same ./logs bind mount and reaps files
+  # older than LOG_RETAIN_DAYS on a daily cron, then prunes the emptied
+  # run dirs. It does an initial sweep on boot so a fresh stack reclaims
+  # disk immediately instead of waiting for the first cron tick.
+  #
+  # Note: this only manages the unmanaged per-run output.log dirs. The
+  # structured app logs under logs/{butlers,connectors,uvicorn} already
+  # self-rotate weekly + gzip via src/butlers/core/logging.py; a 3-day
+  # default would delete their .gz backups too, so retention is a coarse
+  # disk guard, not the system of record for those.
+  #
+  # Default schedule: 04:00 daily.  Override via LOG_CLEANUP_CRON.
+  # Default retention: 3 days.  Override via LOG_RETAIN_DAYS.
+  log-cleanup:
+    image: alpine:3.19
+    user: root
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        RETAIN="$${LOG_RETAIN_DAYS:-3}"
+        CRON="$${LOG_CLEANUP_CRON:-0 4 * * *}"
+        sweep() {
+          find /logs -type f -mtime +"$$RETAIN" -delete
+          find /logs -mindepth 1 -type d -empty -delete
+        }
+        echo "log-cleanup: retain=$${RETAIN}d schedule='$${CRON}' (initial sweep now)"
+        sweep
+        echo "$${CRON} find /logs -type f -mtime +$${RETAIN} -delete; find /logs -mindepth 1 -type d -empty -delete" \
+          | crontab -
+        exec crond -f -d 8
+    volumes:
+      - ./logs:/logs
+    restart: unless-stopped
+
   # ── Layer 1a: Dashboard + Frontend ────────────────────────────────────
 
   # ── Backup cron sidecar ───────────────────────────────────────────────
