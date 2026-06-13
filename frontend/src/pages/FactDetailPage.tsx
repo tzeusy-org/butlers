@@ -8,10 +8,9 @@
 //   - Entity anchors out: subject → /entities/:entity_id, object →
 //     /entities/:object_entity_id.
 //   - Supersession links, BOTH directions when present in the payload:
-//     `supersedes` (forward) AND `superseded by` (reverse). The forward link is
-//     the fact's own supersedes_id; the reverse link is only rendered when the
-//     payload carries a superseded_by id — which the backend does NOT yet supply
-//     (bu-awo8k.8 is not live), so in practice only the forward link shows.
+//     `supersedes` (forward, the fact's own supersedes_id) AND `superseded by`
+//     (reverse, the payload's superseded_by from bu-awo8k.8). Either link is
+//     omitted when its id is absent.
 //   - The commit footer (Confirm / Retract). Both endpoints are LIVE on main
 //     (bu-awo8k.3 / .4), so the footer ALWAYS renders here — never a dead button.
 //
@@ -184,13 +183,9 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
   // The server owns the fading threshold — dim the whole page on validity.
   const dimmed = fact.validity === "fading";
 
-  // Supersession id present in the payload (when set). The REVERSE lookup
-  // (superseded_by) is gated off (bu-awo8k.8 not live) and is intentionally
-  // never rendered — the backend does not supply it.
-  const supersededById =
-    typeof (fact as { superseded_by_id?: unknown }).superseded_by_id === "string"
-      ? ((fact as { superseded_by_id?: string }).superseded_by_id ?? null)
-      : null;
+  // Supersession, both directions: forward from the fact's own supersedes_id,
+  // reverse from the payload's superseded_by (bu-awo8k.8).
+  const supersededById = fact.superseded_by ?? null;
 
   // Provenance children: only render the section when at least one chain link
   // exists. Empty provenance OMITS the section entirely (no empty shell).

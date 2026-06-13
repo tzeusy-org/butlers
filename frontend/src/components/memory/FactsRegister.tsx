@@ -260,7 +260,7 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
   });
 
   // useFacts() returns PaginatedResponse<Fact> = { data: Fact[], meta }; unwrap
-  // .data before mapping (mirror MemoryOverture / MemoryTierCards unwrap).
+  // .data before mapping (mirror the MemoryOverture unwrap).
   const facts = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;

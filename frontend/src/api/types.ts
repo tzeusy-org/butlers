@@ -1307,6 +1307,8 @@ export interface Fact {
   source_episode_id: string | null;
   session_id: string | null;
   supersedes_id: string | null;
+  /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
+  superseded_by?: string | null;
   entity_id: string | null;
   entity_name: string | null;
   object_entity_id: string | null;

@@ -12,7 +12,8 @@
  *   - Empty provenance OMITS the PROVENANCE section (no empty shell).
  *   - The Confirm/Retract commit footer ALWAYS renders (both endpoints live)
  *     and is wired (clicking Confirm calls the mutation; Retract is one-step).
- *   - The reverse `superseded by` link is NEVER rendered (bu-awo8k.8 gated off).
+ *   - The reverse `superseded by` link renders iff the payload carries
+ *     superseded_by (bu-awo8k.8).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -173,8 +174,15 @@ describe("FactDetailPage", () => {
     expect(text).toContain("supersedes");
   });
 
-  it("NEVER renders a reverse 'superseded by' link (bu-awo8k.8 gated off)", () => {
-    // Even if the payload carried a superseded_by id, the page must not surface it.
+  it("renders the reverse 'superseded by' link when the payload carries superseded_by", () => {
+    setFact(makeFact({ source_episode_id: "ep-1", superseded_by: "new-13572468" }));
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).toContain("superseded by");
+    expect(text).toContain("new-1357");
+  });
+
+  it("omits the reverse link when superseded_by is absent", () => {
     setFact(makeFact({ source_episode_id: "ep-1" }) as Fact);
     mounted = render();
     const text = mounted.container.textContent ?? "";
