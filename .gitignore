@@ -105,3 +105,6 @@ package-lock.json
 # Point-in-time reports (reconciliations, parity evidence, audits) are not retained in-tree;
 # git history preserves prior ones. Migration scripts / e2e parity tests may regenerate them locally.
 docs/reports/
+
+# Per-bead verification/parity artifacts are point-in-time; not retained in-tree.
+.verification/
