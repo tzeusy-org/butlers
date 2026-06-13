@@ -184,6 +184,8 @@ class SessionSummary(BaseModel):
     duration_ms: int | None = None
     model: str | None = None
     complexity: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class ButlerConfigResponse(BaseModel):

@@ -55,7 +55,7 @@ def _get_db_manager() -> DatabaseManager:
 
 _SUMMARY_COLUMNS = (
     "id, prompt, trigger_source, request_id, success, started_at, completed_at, duration_ms, "
-    "model, complexity"
+    "model, complexity, input_tokens, output_tokens"
 )
 
 _DETAIL_COLUMNS = (
@@ -125,6 +125,8 @@ def _row_to_summary(row, *, butler: str | None = None) -> SessionSummary:
         duration_ms=row["duration_ms"],
         model=row["model"],
         complexity=row["complexity"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
     )
 
 

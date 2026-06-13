@@ -42,6 +42,8 @@ def _make_session_row(*, butler: str = "atlas") -> dict:
         "duration_ms": 500,
         "model": "claude-sonnet",
         "complexity": None,
+        "input_tokens": 1234,
+        "output_tokens": 567,
     }
 
 
@@ -152,6 +154,39 @@ async def test_sessions_has_more_false_on_last_page() -> None:
     body = resp.json()
     assert body["meta"]["total"] == 10
     assert body["meta"]["has_more"] is False
+
+
+async def test_sessions_rows_include_token_counts() -> None:
+    """Regression (bu-u3sga): /api/sessions list rows expose input/output_tokens.
+
+    The Sessions list 'Tokens' column was permanently '—' because the summary
+    projection/model dropped token fields. Each list row must carry them so the
+    frontend can render the column.
+    """
+    rows = [_make_session_row()]
+    app = _make_app_with_sessions(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions?limit=50")
+    assert resp.status_code == 200
+    item = resp.json()["data"][0]
+    assert item["input_tokens"] == 1234
+    assert item["output_tokens"] == 567
+
+
+async def test_butler_sessions_rows_include_token_counts() -> None:
+    """Regression (bu-u3sga): butler-scoped session list rows expose tokens."""
+    rows = [_make_session_row()]
+    app = _make_butler_app_with_sessions(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/butlers/atlas/sessions?limit=50")
+    assert resp.status_code == 200
+    item = resp.json()["data"][0]
+    assert item["input_tokens"] == 1234
+    assert item["output_tokens"] == 567
 
 
 async def test_sessions_offset_pagination() -> None:
