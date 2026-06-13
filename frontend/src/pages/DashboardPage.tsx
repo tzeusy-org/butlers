@@ -73,7 +73,8 @@ export default function DashboardPage() {
 
   // Derived values
   const model = deriveOverviewTriageModel({
-    butlers: butlersQuery.data?.data ?? [],
+    butlers: butlersQuery.isError ? [] : (butlersQuery.data?.data ?? []),
+    butlersError: butlersQuery.isError,
     costs: costQuery.isError ? null : costQuery.data?.data,
     issues: issuesQuery.data?.data ?? [],
     heartbeats: heartbeatQuery.isError ? null : heartbeatQuery.data?.data,
@@ -144,7 +145,7 @@ export default function DashboardPage() {
           style={{ display: "flex", flexDirection: "column", gap: "32px" }}
           aria-label="Operations and now"
         >
-          <ButlerIndex butlers={model.operationsRows} />
+          <ButlerIndex butlers={model.operationsRows} butlersError={model.butlersError} />
           <OperationsNowList rows={model.nowRows} />
         </div>
       </div>

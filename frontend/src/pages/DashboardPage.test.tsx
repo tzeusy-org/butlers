@@ -655,3 +655,49 @@ describe("DashboardPage -- OperationsNowList", () => {
     expect(html).toContain('href="/timeline"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Butler-health source failure (bu-k5d8c)
+//
+// Regression guard: a failing GET /api/butlers must NOT render as a serene,
+// healthy-looking empty page ("No butlers active."). It must surface a
+// degraded state — both in the ButlerIndex empty slot and as a named Now
+// error row — mirroring how the sibling sources surface their failures.
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- butler-health source failure", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+    // Heartbeats also depend on the same dead source in practice; clear them
+    // so the page genuinely has no butler rows to fall back on.
+    vi.mocked(useButlerHeartbeats).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Network error"),
+    } as AnyMock);
+    vi.mocked(useButlers).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Network error"),
+    } as AnyMock);
+  });
+
+  it("does NOT render the healthy-looking 'No butlers active.' empty state", () => {
+    const html = renderPage();
+    expect(html).not.toContain("No butlers active.");
+  });
+
+  it("surfaces a degraded 'Butler health source unavailable.' state in the index", () => {
+    const html = renderPage();
+    expect(html).toContain("Butler health source unavailable.");
+  });
+
+  it("renders a named 'Butler health: unavailable' Now error row when butlers query fails", () => {
+    const html = renderPage();
+    expect(html).toContain("Butler health: unavailable");
+    expect(html).toContain('href="/system"');
+  });
+});

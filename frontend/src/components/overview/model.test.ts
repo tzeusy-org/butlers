@@ -668,6 +668,28 @@ describe("deriveOverviewTriageModel", () => {
     expect(model.nowRows.some((row) => row.kind === "activity")).toBe(false);
   });
 
+  it("emits a named error row and sets butlersError when butlersError is true", () => {
+    const model = deriveOverviewTriageModel({
+      butlers: [],
+      butlersError: true,
+    });
+
+    const errorRow = model.nowRows.find((row) => row.id === "now:butlers:error");
+    expect(errorRow).toBeDefined();
+    expect(errorRow).toMatchObject({
+      kind: "error",
+      label: "Butler health: unavailable",
+      href: "/system",
+    });
+    expect(model.butlersError).toBe(true);
+  });
+
+  it("leaves butlersError false and emits no butler error row by default", () => {
+    const model = deriveOverviewTriageModel({ butlers: [] });
+    expect(model.butlersError).toBe(false);
+    expect(model.nowRows.some((row) => row.id === "now:butlers:error")).toBe(false);
+  });
+
   it("does not emit error rows when error flags are false", () => {
     const model = deriveOverviewTriageModel({
       notificationStats: notificationStats({ failed: 0 }),

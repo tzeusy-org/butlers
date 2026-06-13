@@ -31,6 +31,7 @@ export interface OverviewDerivationOptions {
 
 export interface OverviewDerivationInput {
   butlers?: ButlerSummary[];
+  butlersError?: boolean;
   costs?: SpendSummary | null;
   issues?: Issue[];
   heartbeats?: HeartbeatFacts | null;
@@ -97,6 +98,13 @@ export interface OverviewTriageModel {
   operationsRows: OverviewButlerIndexRow[];
   nowRows: OverviewNowRow[];
   hiddenOldIssueGroups: number;
+  /**
+   * True when the butler-health source (`GET /api/butlers`) failed to load.
+   * Distinguishes "the health source is down" from "there are genuinely no
+   * butlers", so the UI can surface a degraded state instead of a serene
+   * empty page. Mirrors the per-source error flags threaded into Now rows.
+   */
+  butlersError: boolean;
 }
 
 const DEFAULT_RECENT_ISSUE_HOURS = 24;
@@ -198,6 +206,7 @@ export function deriveOverviewTriageModel(
     operationsRows,
     nowRows,
     hiddenOldIssueGroups,
+    butlersError: input.butlersError ?? false,
   };
 }
 
@@ -415,6 +424,17 @@ function qaAttentionRows(summary: QaSummary | null | undefined): OverviewAttenti
 
 function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number): OverviewNowRow[] {
   const rows: OverviewNowRow[] = [];
+
+  if (input.butlersError) {
+    rows.push({
+      id: "now:butlers:error",
+      kind: "error",
+      label: "Butler health: unavailable",
+      detail: "Butler health data could not be loaded.",
+      href: "/system",
+    });
+  }
+
   const pendingApprovals = input.approvalMetrics?.total_pending ?? 0;
   if (pendingApprovals > 0) {
     rows.push({

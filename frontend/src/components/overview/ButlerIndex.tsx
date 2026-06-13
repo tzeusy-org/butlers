@@ -4,9 +4,16 @@ import type { OverviewButlerIndexRow } from "./model";
 
 interface ButlerIndexProps {
   butlers: OverviewButlerIndexRow[];
+  /**
+   * True when the butler-health source (`GET /api/butlers`) failed to load.
+   * When set, the empty state surfaces an explicit "source unreachable"
+   * message instead of the misleading "No butlers active." — an empty list
+   * over a dead source must not read as a healthy, quiet system.
+   */
+  butlersError?: boolean;
 }
 
-export function ButlerIndex({ butlers }: ButlerIndexProps) {
+export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps) {
   return (
     <Section eyebrow="Operations">
       <div role="list" aria-label="Operations">
@@ -85,7 +92,22 @@ export function ButlerIndex({ butlers }: ButlerIndexProps) {
             </span>
           </div>
         ))}
-        {butlers.length === 0 && (
+        {butlers.length === 0 && butlersError && (
+          <p
+            role="alert"
+            style={{
+              fontFamily: "var(--font-serif)",
+              fontSize: "14px",
+              fontStyle: "italic",
+              color: "var(--destructive, var(--muted-foreground))",
+              paddingTop: "10px",
+              paddingBottom: "10px",
+            }}
+          >
+            Butler health source unavailable.
+          </p>
+        )}
+        {butlers.length === 0 && !butlersError && (
           <p
             style={{
               fontFamily: "var(--font-serif)",
