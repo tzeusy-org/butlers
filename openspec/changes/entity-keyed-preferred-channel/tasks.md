@@ -6,12 +6,20 @@ the target DB per the `butlers-db-host-topology` memory before any migration.
 
 ## 1. Predicate + fact write (spec: relationship-facts)
 
-- [ ] 1.1 Seed `prefers-channel` into `relationship.entity_predicate_registry`
-  (`object_kind='literal'`, `cardinality='single'`) via relationship-chain migration
-- [ ] 1.2 `prefers-channel` assert path: single-valued supersession; retract on clear
-- [ ] 1.3 Write-time validation against the entity's existing `has-handle`/`has-email`/`has-phone`
-  facts; resolve OQ2 (handle channel-prefix reliability) first — degrade to "has any handle" if needed
-- [ ] 1.4 Unit tests: assert, supersede, retract, reject-unreachable, validation-degrade path
+- [x] 1.1 Seed `prefers-channel` into `relationship.entity_predicate_registry`
+  (`kind='override'`, `object_kind='literal'`, `cardinality='single'`) via relationship-chain
+  migration `rel_022` (kept off `kind='contact'` to stay out of the memory identity-predicate
+  rejection floor)
+- [x] 1.2 `prefers-channel` assert path: single-valued supersession; retract on clear
+  (`assert_prefers_channel` / `retract_prefers_channel` in `relationship_assert_fact.py`)
+- [x] 1.3 Write-time validation against the entity's existing `has-handle`/`has-email`/`has-phone`
+  facts. OQ2 RESOLVED — DEGRADE within the handle family: per-channel proof where the prefix
+  taxonomy is reliable (email→has-email, phone/sms→has-phone, telegram→has-handle:`telegram:`),
+  degrade every other handle channel (discord, linkedin, …) to "entity has ANY active has-handle"
+  because `_ef_channel_helpers`/rel_019 only prefix telegram handles
+- [x] 1.4 Unit tests: assert, supersede, retract, reject-unreachable, validation-degrade path
+  (`roster/relationship/tests/test_prefers_channel.py` +
+  `tests/migrations/test_prefers_channel_predicate_migration.py`)
 
 ## 2. Load-bearing resolution in notify (spec: core-notify)
 

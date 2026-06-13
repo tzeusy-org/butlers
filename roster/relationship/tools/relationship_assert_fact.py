@@ -770,3 +770,280 @@ async def retract_contact_info_fact(
 
     async with pool.acquire() as acquired_conn:
         return await _retract(acquired_conn)
+
+
+# ---------------------------------------------------------------------------
+# prefers-channel — single-valued preferred-outbound-channel predicate
+# ---------------------------------------------------------------------------
+#
+# entity-keyed-preferred-channel (group 1, bu-ctsgh). ``prefers-channel`` is an
+# ``override``-kind, ``object_kind='literal'``, ``cardinality='single'`` predicate
+# (seeded by rel_022). It records the channel an entity prefers to be reached on.
+# Unlike the generic central writer — which keys idempotency/supersession on
+# ``(subject, predicate, object)`` — a single-valued predicate must supersede ANY
+# prior active value for the subject when a *different* channel is asserted. The
+# dedicated path below enforces that, plus write-time reachability validation and
+# retract-on-clear.
+
+#: Canonical predicate name (kebab-case, matches the rel_022 registry seed).
+PREFERS_CHANNEL_PREDICATE = "prefers-channel"
+
+#: Channel name → the ``has-*`` predicate that proves reachability on that
+#: channel family. Channels not listed here have no clean per-channel proof and
+#: are validated via the degraded "any handle" path (see OQ2 resolution below).
+#:
+#: OQ2 resolution (design.md D2 / Open Question OQ2) — DEGRADE within the handle
+#: family. ``has-handle`` objects are channel-prefixed ONLY for telegram
+#: (``telegram:<id>``); discord/linkedin/twitter/"other" handles are stored
+#: verbatim with no channel prefix (``_ef_channel_helpers.encode_handle_object``
+#: prefixes telegram only, and rel_019's own docstring states telegram rows
+#: cannot be reliably distinguished from other handles inside entity_facts).
+#: Therefore the prefix taxonomy is reliable ONLY for telegram. We validate
+#: per-channel where reliable (email→has-email, phone/sms→has-phone,
+#: telegram→has-handle:telegram:) and DEGRADE every other handle channel
+#: (discord, linkedin, twitter, …) to "subject has ANY active has-handle fact",
+#: exactly as design.md sanctions when the taxonomy lacks a clean prefix.
+_CHANNEL_REACHABILITY: dict[str, tuple[str, str | None]] = {
+    # channel name : (has-* predicate, required object prefix or None)
+    "email": ("has-email", None),
+    "phone": ("has-phone", None),
+    "sms": ("has-phone", None),
+    "telegram": ("has-handle", "telegram:"),
+}
+
+#: Handle channels with no reliable channel prefix degrade to "any has-handle".
+#: This is the family proof predicate used for those channels.
+_DEGRADED_HANDLE_PREDICATE = "has-handle"
+
+
+async def _entity_has_reachability_fact(
+    conn: asyncpg.Connection,
+    subject: uuid.UUID,
+    channel: str,
+) -> bool:
+    """Return True if *subject* has an active contact fact proving reachability on *channel*.
+
+    See ``_CHANNEL_REACHABILITY`` and the OQ2 resolution note for the per-channel
+    vs. degraded-handle distinction.
+    """
+    mapping = _CHANNEL_REACHABILITY.get(channel)
+    if mapping is not None:
+        predicate, required_prefix = mapping
+        if required_prefix is None:
+            return bool(
+                await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM relationship.entity_facts
+                        WHERE subject     = $1
+                          AND predicate   = $2
+                          AND validity    = 'active'
+                          AND object_kind = 'literal'
+                    )
+                    """,
+                    subject,
+                    predicate,
+                )
+            )
+        return bool(
+            await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM relationship.entity_facts
+                    WHERE subject     = $1
+                      AND predicate   = $2
+                      AND validity    = 'active'
+                      AND object_kind = 'literal'
+                      AND object LIKE $3 || '%'
+                )
+                """,
+                subject,
+                predicate,
+                required_prefix,
+            )
+        )
+
+    # Degraded handle path: any active has-handle fact proves the entity is
+    # reachable on *some* handle channel, which is the best the taxonomy allows.
+    return bool(
+        await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM relationship.entity_facts
+                WHERE subject     = $1
+                  AND predicate   = $2
+                  AND validity    = 'active'
+                  AND object_kind = 'literal'
+            )
+            """,
+            subject,
+            _DEGRADED_HANDLE_PREDICATE,
+        )
+    )
+
+
+async def _supersede_active_prefers_channel(
+    conn: asyncpg.Connection,
+    subject: uuid.UUID,
+    *,
+    validity: str,
+) -> int:
+    """Mark every active ``prefers-channel`` row for *subject* with *validity*.
+
+    *validity* is ``'superseded'`` (new preference replaces old) or ``'retracted'``
+    (preference cleared). Returns the number of rows transitioned. Single-valued:
+    after a successful assert exactly one active row remains; after a clear, none.
+    """
+    status = await conn.execute(
+        """
+        UPDATE relationship.entity_facts
+        SET validity   = $3,
+            updated_at = now()
+        WHERE subject   = $1
+          AND predicate = $2
+          AND validity  = 'active'
+        """,
+        subject,
+        PREFERS_CHANNEL_PREDICATE,
+        validity,
+    )
+    # asyncpg execute() returns e.g. "UPDATE 2"; parse the affected-row count.
+    try:
+        return int(status.split()[-1])
+    except (ValueError, IndexError):  # pragma: no cover - defensive
+        return 0
+
+
+async def assert_prefers_channel(
+    pool: asyncpg.Pool,
+    subject: uuid.UUID,
+    channel: str,
+    *,
+    src: str = "relationship",
+    verified: bool = True,
+    conf: float = 1.0,
+    conn: asyncpg.Connection | None = None,
+) -> AssertResult:
+    """Assert *subject*'s preferred outbound *channel* (single-valued supersession).
+
+    Contract (entity-keyed-preferred-channel, relationship-facts spec):
+
+    1. **Reachability validation** — the assertion is rejected with a
+       :class:`ValueError` unless *subject* already has an active contact fact
+       for *channel* (``has-email`` / ``has-phone`` / ``has-handle`` of the
+       matching family). See the OQ2 resolution on ``_CHANNEL_REACHABILITY`` for
+       the per-channel vs. degraded-handle behavior.
+    2. **Single-valued supersession** — any prior active ``prefers-channel`` row
+       for *subject* (regardless of its object) is marked
+       ``validity='superseded'`` before the new active row is inserted, so
+       exactly one active ``prefers-channel`` triple remains.
+    3. **Idempotency** — re-asserting the same channel returns
+       :attr:`AssertOutcome.unchanged` without writing.
+
+    Owner carve-out is intentionally NOT applied here: the preferred channel is
+    an owner-facing dashboard control (owner setting their own / a contact's
+    preference), not an ingestion-driven mutation that needs approval. The
+    generic owner-approval path is reserved for ``has-*`` channel-identity writes.
+
+    Parameters mirror :func:`relationship_assert_fact`; *channel* is the bare
+    channel name (``"telegram"``, ``"email"``, ``"discord"``, …) stored verbatim
+    as the triple ``object``.
+
+    Raises
+    ------
+    ValueError
+        When *channel* is empty, or *subject* has no contact fact proving
+        reachability on *channel*.
+    """
+    if not channel or not channel.strip():
+        raise ValueError("prefers-channel requires a non-empty channel name.")
+    channel = channel.strip()
+
+    async def _do(c: asyncpg.Connection) -> AssertResult:
+        # Predicate must be registered (defensive — rel_022 seeds it).
+        await _validate_predicate(c, PREFERS_CHANNEL_PREDICATE)
+
+        # 1. Reachability validation — reject a preference the entity can't honor.
+        if not await _entity_has_reachability_fact(c, subject, channel):
+            raise ValueError(
+                f"Cannot prefer channel {channel!r} for entity {subject}: the entity "
+                f"has no active contact fact for that channel "
+                f"(expected a has-email / has-phone / has-handle of the {channel!r} "
+                f"family). Add the channel identity first, then set the preference."
+            )
+
+        # 2. Idempotency — same active channel already set → no write.
+        existing = await c.fetchrow(
+            """
+            SELECT id, src, conf, verified
+            FROM relationship.entity_facts
+            WHERE subject   = $1
+              AND predicate = $2
+              AND object    = $3
+              AND validity  = 'active'
+            """,
+            subject,
+            PREFERS_CHANNEL_PREDICATE,
+            channel,
+        )
+        if existing is not None and (
+            existing["src"] == src
+            and existing["conf"] == conf
+            and bool(existing["verified"]) == verified
+        ):
+            return AssertResult(outcome=AssertOutcome.unchanged, fact_id=existing["id"])
+
+        # 3. Single-valued supersession — retire ALL prior active values (any
+        #    object), then insert the new active row.
+        superseded = await _supersede_active_prefers_channel(c, subject, validity="superseded")
+        new_id = await c.fetchval(
+            """
+            INSERT INTO relationship.entity_facts (
+                id, subject, predicate, object, object_kind,
+                src, conf, verified, validity, created_at, updated_at
+            )
+            VALUES (
+                gen_random_uuid(), $1, $2, $3, 'literal',
+                $4, $5, $6, 'active', now(), now()
+            )
+            RETURNING id
+            """,
+            subject,
+            PREFERS_CHANNEL_PREDICATE,
+            channel,
+            src,
+            conf,
+            verified,
+        )
+        outcome = AssertOutcome.superseded if superseded else AssertOutcome.inserted
+        return AssertResult(outcome=outcome, fact_id=new_id)
+
+    if conn is not None:
+        return await _do(conn)
+    async with pool.acquire() as acquired_conn:
+        async with acquired_conn.transaction():
+            return await _do(acquired_conn)
+
+
+async def retract_prefers_channel(
+    pool: asyncpg.Pool,
+    subject: uuid.UUID,
+    *,
+    conn: asyncpg.Connection | None = None,
+) -> int:
+    """Clear *subject*'s preferred channel by retracting any active row.
+
+    Marks every active ``prefers-channel`` row for *subject*
+    ``validity='retracted'``. Returns the number of rows retracted (0 when no
+    preference was set). Idempotent: clearing an already-cleared preference is a
+    no-op returning 0.
+    """
+
+    async def _do(c: asyncpg.Connection) -> int:
+        return await _supersede_active_prefers_channel(c, subject, validity="retracted")
+
+    if conn is not None:
+        return await _do(conn)
+    async with pool.acquire() as acquired_conn:
+        async with acquired_conn.transaction():
+            return await _do(acquired_conn)

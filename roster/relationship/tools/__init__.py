@@ -89,9 +89,12 @@ from butlers.tools.relationship.notes import (
     note_search,
 )
 from butlers.tools.relationship.relationship_assert_fact import (
+    PREFERS_CHANNEL_PREDICATE,
     AssertOutcome,
     AssertResult,
+    assert_prefers_channel,
     relationship_assert_fact,
+    retract_prefers_channel,
 )
 from butlers.tools.relationship.relationship_lookup import (
     relationship_lookup,
@@ -166,6 +169,9 @@ __all__ = [
     "dunbar_tier_set",
     "AssertOutcome",
     "AssertResult",
+    "PREFERS_CHANNEL_PREDICATE",
+    "assert_prefers_channel",
+    "retract_prefers_channel",
     "fact_list",
     "fact_set",
     "relationship_assert_fact",
