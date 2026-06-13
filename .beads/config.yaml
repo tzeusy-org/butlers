@@ -8,9 +8,13 @@
 # Example: issue-prefix: "myproject" creates issues like "myproject-1", "myproject-2", etc.
 # issue-prefix: ""
 
-# Use no-db mode: load from JSONL, no SQLite, write back after each command
-# When true, bd will use .beads/issues.jsonl as the source of truth
-# instead of SQLite database
+# NOTE: This repo runs bd v1.0.x in Dolt-native mode (see sync.mode / dolt.*
+# below). The shared Dolt server (localhost:3307, db `butlers`) is the source of
+# truth — there is NO SQLite database and NO `bd sync` command. The legacy
+# SQLite/JSONL settings below (no-db, sync-branch) are inert in this mode and
+# kept only as documented defaults.
+#
+# Legacy no-db toggle (SQLite vs JSONL); ignored in Dolt-native mode.
 no-db: false
 
 # Disable daemon for RPC communication (forces direct database access)
@@ -42,12 +46,9 @@ no-auto-import: true
 # Use 'bd export --events' to trigger manually regardless of this setting.
 # events-export: false
 
-# Git branch for beads commits (bd sync will commit to this branch)
-# IMPORTANT: Set this for team projects so all clones use the same sync branch.
-# This setting persists across clones (unlike database config which is gitignored).
-# Can also use BEADS_SYNC_BRANCH env var for local override.
-# If not set, bd sync will require you to run 'bd config set sync.branch <branch>'.
-sync-branch: "beads-sync"
+# Legacy sync-branch setting — inert in Dolt-native mode (there is no `bd sync`
+# command and no beads-sync branch). Left commented out for historical reference.
+# sync-branch: "beads-sync"
 
 # Multi-repo configuration (experimental - bd-307)
 # Allows hydrating from multiple repositories and routing writes to the correct JSONL
@@ -66,10 +67,14 @@ sync-branch: "beads-sync"
 # - github.org
 # - github.repo
 
+# Active backend: Dolt-native. Mutations write directly to the shared Dolt
+# server and auto-commit to its history (durable without any sync/flush step).
 sync.mode: "dolt-native"
 dolt.host: localhost
 dolt.port: 3307
 
+# Git-tracked JSONL mirror. NEVER point this at issues.jsonl — on bd 1.0.4 that
+# triggers a full-reimport loop on every write. `bd export` refreshes this file.
 export.path: "issues.export.jsonl"
 
 export.git-add: false
