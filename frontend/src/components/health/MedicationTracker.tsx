@@ -49,7 +49,7 @@ function EmptyState() {
   return (
     <EmptyStateUI
       title="No medications found."
-      description="Medications appear here once they are added to your health record."
+      description="Medications appear here once the Health butler adds them to your record."
     />
   );
 }

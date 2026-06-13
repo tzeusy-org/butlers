@@ -1,3 +1,4 @@
+import { ButlerManagedNote } from "@/components/health/ButlerManagedNote";
 import MeasurementChart from "@/components/health/MeasurementChart";
 import {
   Card,
@@ -10,11 +11,12 @@ import {
 export default function MeasurementsPage() {
   return (
     <div className="space-y-6">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Measurements</h1>
         <p className="text-muted-foreground mt-1">
-          Track and visualize health measurements over time.
+          Visualize your health measurements over time.
         </p>
+        <ButlerManagedNote noun="Measurements" />
       </div>
 
       <Card>

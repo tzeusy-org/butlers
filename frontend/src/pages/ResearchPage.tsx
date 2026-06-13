@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useResearch } from "@/hooks/use-health";
+import { ButlerManagedNote } from "@/components/health/ButlerManagedNote";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 
 // ---------------------------------------------------------------------------
@@ -94,11 +95,12 @@ export default function ResearchPage() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Research</h1>
         <p className="text-muted-foreground mt-1">
           Health research notes, articles, and references.
         </p>
+        <ButlerManagedNote noun="Research notes" />
       </div>
 
       <Card>

@@ -1,3 +1,4 @@
+import { ButlerManagedNote } from "@/components/health/ButlerManagedNote";
 import MedicationTracker from "@/components/health/MedicationTracker";
 import {
   Card,
@@ -10,11 +11,12 @@ import {
 export default function MedicationsPage() {
   return (
     <div className="space-y-6">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Medications</h1>
         <p className="text-muted-foreground mt-1">
-          Manage medications and track dose adherence.
+          Your medications and dose adherence over time.
         </p>
+        <ButlerManagedNote noun="Medications" />
       </div>
 
       <Card>

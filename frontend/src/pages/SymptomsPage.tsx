@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useSymptoms } from "@/hooks/use-health";
+import { ButlerManagedNote } from "@/components/health/ButlerManagedNote";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 
 // ---------------------------------------------------------------------------
@@ -104,11 +105,12 @@ export default function SymptomsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Symptoms</h1>
         <p className="text-muted-foreground mt-1">
-          Track symptoms with severity ratings and occurrence dates.
+          Logged symptoms with their severity ratings and occurrence dates.
         </p>
+        <ButlerManagedNote noun="Symptoms" />
       </div>
 
       <Card>

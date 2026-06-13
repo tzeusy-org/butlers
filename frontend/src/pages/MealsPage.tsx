@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useMeals } from "@/hooks/use-health";
+import { ButlerManagedNote } from "@/components/health/ButlerManagedNote";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 
 // ---------------------------------------------------------------------------
@@ -120,11 +121,12 @@ export default function MealsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Meals</h1>
         <p className="text-muted-foreground mt-1">
-          Track meals, nutrition, and eating patterns.
+          Logged meals, nutrition, and eating patterns.
         </p>
+        <ButlerManagedNote noun="Meals" />
       </div>
 
       <Card>

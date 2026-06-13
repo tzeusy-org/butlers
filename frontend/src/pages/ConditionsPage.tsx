@@ -20,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useConditions } from "@/hooks/use-health";
+import { ButlerManagedNote } from "@/components/health/ButlerManagedNote";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 
 // ---------------------------------------------------------------------------
@@ -84,11 +85,12 @@ export default function ConditionsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Conditions</h1>
         <p className="text-muted-foreground mt-1">
           Health conditions and their current status.
         </p>
+        <ButlerManagedNote noun="Conditions" />
       </div>
 
       <Card>
