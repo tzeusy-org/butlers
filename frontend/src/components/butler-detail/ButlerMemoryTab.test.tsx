@@ -16,6 +16,10 @@
  * bead: bu-9l25l (epic bu-hdavr F.4)
  */
 
+// Raw component source — used by the butlerScope static-source guard below to
+// assert ButlerMemoryTab never imports any /memory house-ledger component.
+import butlerMemoryTabSource from "./ButlerMemoryTab.tsx?raw";
+
 import {
   afterAll,
   afterEach,
@@ -463,6 +467,46 @@ describe("ButlerMemoryTab", () => {
       renderTab();
       const rows = screen.queryAllByTestId("recent-write-row");
       expect(rows.length).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // butlerScope contract — regression guard for bu-2ix8d.9
+  //
+  // The dashboard-domain-pages spec requires the butler-scoped memory tab to
+  // filter all of its queries to a single butler (the historical "butlerScope"
+  // prop). The memory house-ledger redesign (PRs #2189-#2200) replaced the
+  // MemoryBrowser on /memory but ButlerMemoryTab is OUT OF SCOPE and must keep
+  // working. These tests lock that contract so any future bead that deletes or
+  // restyles MemoryBrowser cannot silently break the butler-detail tab.
+  // -------------------------------------------------------------------------
+  describe("butlerScope contract (regression — bu-2ix8d.9)", () => {
+    it("scopes BOTH data hooks to the supplied butler name", () => {
+      setupWithData();
+      renderTab("health");
+      // Per-butler stats hook receives the butler as its scope.
+      expect(vi.mocked(useButlerMemoryStats)).toHaveBeenCalledWith("health");
+      // Recent-writes hook receives the same butler scope (+ limit 10).
+      expect(vi.mocked(useMemoryRecentWrites)).toHaveBeenCalledWith("health", 10);
+    });
+
+    it("propagates a different butler name to both hooks", () => {
+      setupWithData();
+      renderTab("travel");
+      expect(vi.mocked(useButlerMemoryStats)).toHaveBeenCalledWith("travel");
+      expect(vi.mocked(useMemoryRecentWrites)).toHaveBeenCalledWith("travel", 10);
+      // The global, unscoped /memory hooks must not be the data source here.
+      expect(vi.mocked(useButlerMemoryStats)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(useMemoryRecentWrites)).toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT depend on MemoryBrowser or the /memory house-ledger components", () => {
+      // Static-source guard: deleting MemoryBrowser (or any redesigned /memory
+      // register) must never break ButlerMemoryTab. The tab is self-contained
+      // and pulls only from per-butler hooks + butler-detail atoms, so its
+      // source must not import any components/memory/* module.
+      expect(butlerMemoryTabSource).not.toMatch(/components\/memory\//);
+      expect(butlerMemoryTabSource).not.toMatch(/MemoryBrowser/);
     });
   });
 });
