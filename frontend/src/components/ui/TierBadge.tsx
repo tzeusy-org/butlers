@@ -8,7 +8,7 @@
 //            Mono 9px uppercase + 6px coloured dot."
 // Amendment 9: Reuses existing --tier-1..6 tokens only. No new tokens.
 //
-// Source: EntitiesPage.tsx:100-115 dunbarTierBadgeStyle() (extracted here).
+// Source: extracted from the former EntitiesPage dunbarTierBadgeStyle() helper.
 // ---------------------------------------------------------------------------
 
 import * as React from "react"
@@ -38,7 +38,7 @@ export interface TierBadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 
 /**
  * Map a raw Dunbar tier number to its CSS custom-property color.
- * Matches the logic from EntitiesPage.tsx:100-115 dunbarTierBadgeStyle().
+ * Matches the logic from the former EntitiesPage dunbarTierBadgeStyle() helper.
  */
 export function tierColor(tier: number): string {
   switch (tier) {

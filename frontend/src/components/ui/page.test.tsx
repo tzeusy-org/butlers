@@ -4,7 +4,7 @@
  *
  * Static-markup tests use renderToStaticMarkup (no DOM lifecycle needed).
  * A small set of DOM tests (document.title, Retry click) use createRoot + act,
- * following the project pattern in EntitiesPage.test.tsx and time.test.tsx.
+ * following the project pattern in time.test.tsx.
  */
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
