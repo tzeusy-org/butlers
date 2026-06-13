@@ -51,6 +51,7 @@ import {
   useCompareEntities,
   useDismissEntityPair,
   useDismissRelationshipEntityQueueItem,
+  useEntityFinderSearch,
   useForgetRelationshipEntity,
   useMergeRelationshipEntities,
   usePromoteRelationshipEntity,
@@ -164,6 +165,13 @@ beforeEach(() => {
     isError: false,
     error: null,
   } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+  // Default: toolbar/finder search returns nothing (empty query path).
+  vi.mocked(useEntityFinderSearch).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useEntityFinderSearch>);
 
   vi.mocked(usePromoteRelationshipEntity).mockReturnValue({
     mutateAsync: promoteMutateAsync,
@@ -889,5 +897,88 @@ describe("EntitiesIndexPage — duplicate-candidate queue card opens compare", (
     // No target-search dialog — the compare view opens straight for the pair.
     // DialogContent renders through a portal to document.body.
     expect(document.body.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Toolbar search (entity-v3: wired to the relationship search endpoint)
+// ---------------------------------------------------------------------------
+
+describe("EntitiesIndexPage — toolbar search", () => {
+  it("renders a toolbar search input", () => {
+    renderPage();
+    expect(
+      container.querySelector("[data-testid='entities-toolbar-search']"),
+    ).toBeTruthy();
+  });
+
+  it("filters the table to the search endpoint's ranked id set", () => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE, BOB]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+
+    // The search endpoint matches only Bob (e.g. by contact-fact value).
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: {
+        results: [
+          {
+            entity_id: BOB.id,
+            canonical_name: BOB.canonical_name,
+            entity_type: BOB.entity_type,
+            score: 70,
+            match_kind: "contact_fact",
+          },
+        ],
+        total: 1,
+        q: "hatch",
+        limit: 50,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntityFinderSearch>);
+
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+
+    renderPage();
+
+    const input = container.querySelector(
+      "[data-testid='entities-toolbar-search']",
+    ) as HTMLInputElement;
+    act(() => {
+      setter?.call(input, "hatch");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const table = container.querySelector("[data-testid='entity-table']");
+    expect(table?.textContent).toContain("Bob Hatch");
+    expect(table?.textContent).not.toContain("Alice Fogg");
+  });
+
+  it("passes the search query through to useEntityFinderSearch", () => {
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+
+    renderPage();
+
+    const input = container.querySelector(
+      "[data-testid='entities-toolbar-search']",
+    ) as HTMLInputElement;
+    act(() => {
+      setter?.call(input, "alice@x.com");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(vi.mocked(useEntityFinderSearch)).toHaveBeenCalledWith(
+      "alice@x.com",
+      { limit: 50 },
+    );
   });
 });

@@ -808,6 +808,10 @@ export function EntitiesIndexPage() {
   const [forgetSourceEntity, setForgetSourceEntity] = useState<ActionEntity | null>(null);
   const [comparePair, setComparePair] = useState<MergePair | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Toolbar search query. Wired to the relationship search endpoint (same
+  // deterministic ranking as the Cmd-K Finder) instead of a client-side
+  // substring pass. Spec: "Index toolbar search uses the search endpoint".
+  const [searchQuery, setSearchQuery] = useState("");
 
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
@@ -856,13 +860,31 @@ export function EntitiesIndexPage() {
   };
 
   const { data, isLoading, error } = useRelationshipEntities(params);
-  const entities = data?.items ?? [];
-  const total = data?.total ?? 0;
+  const allEntities = data?.items ?? [];
 
-  const rangeStart = total === 0 ? 0 : offset + 1;
-  const rangeEnd = Math.min(offset + PAGE_SIZE, total);
-  const hasMore = offset + PAGE_SIZE < total;
-  const hasPrev = offset > 0;
+  // Toolbar search: the search endpoint is authoritative for WHICH entities
+  // match (same ranking as the Finder); we filter the loaded rows in place to
+  // that ranked id set so the table keeps its rich relationship columns.
+  const { data: searchData } = useEntityFinderSearch(searchQuery, { limit: 50 });
+  const isSearching = searchQuery.trim().length > 0;
+  const entities = isSearching
+    ? (() => {
+        const byId = new Map(allEntities.map((e) => [e.id, e]));
+        // Preserve the search endpoint's score ordering; drop hits not present
+        // in the current page of loaded rows.
+        return (searchData?.results ?? [])
+          .map((r) => byId.get(r.entity_id))
+          .filter((e): e is RelationshipEntitySummary => e !== undefined);
+      })()
+    : allEntities;
+  const total = isSearching ? entities.length : (data?.total ?? 0);
+
+  // Offset pagination applies to the unfiltered list; an active toolbar search
+  // filters in place across the loaded page, so paging is suppressed.
+  const rangeStart = total === 0 ? 0 : isSearching ? 1 : offset + 1;
+  const rangeEnd = isSearching ? total : Math.min(offset + PAGE_SIZE, total);
+  const hasMore = !isSearching && offset + PAGE_SIZE < total;
+  const hasPrev = !isSearching && offset > 0;
 
   function handleTypeChange(type: EntityType) {
     setSearchParams(
@@ -931,6 +953,19 @@ export function EntitiesIndexPage() {
     >
       {/* SubpageTabs strip — Index is active */}
       <SubpageTabs />
+
+      {/* Toolbar search — queries the relationship search endpoint (same
+          ranking as the Cmd-K Finder), filtering the table in place. */}
+      <div className="mb-3">
+        <Input
+          type="search"
+          aria-label="Search entities"
+          placeholder="Search entities…"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          data-testid="entities-toolbar-search"
+        />
+      </div>
 
       {/* Filter chips */}
       <FilterChips

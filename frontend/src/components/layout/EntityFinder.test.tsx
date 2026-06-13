@@ -15,12 +15,39 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EntityFinder from "@/components/layout/EntityFinder";
-import { dispatchOpenEntityFinder } from "@/lib/entity-finder";
-import { useEntityFinderSearch } from "@/hooks/use-entities";
+import {
+  aggregateOwnerPinned,
+  dispatchOpenEntityFinder,
+} from "@/lib/entity-finder";
+import {
+  useEntityFinderSearch,
+  useEntityNeighbours,
+} from "@/hooks/use-entities";
+import type { NeighbourEntry } from "@/api/index.ts";
+
+/** Renders the current location path+search for navigation assertions. */
+function LocationProbe() {
+  const loc = useLocation();
+  return <span data-testid="loc">{`${loc.pathname}${loc.search}`}</span>;
+}
+
+/**
+ * Set a controlled <input>'s value the way React expects in tests: use the
+ * native value setter then dispatch a bubbling input event so React's onChange
+ * (and cmdk's onValueChange) fire.
+ */
+function typeInto(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -28,6 +55,7 @@ import { useEntityFinderSearch } from "@/hooks/use-entities";
 
 vi.mock("@/hooks/use-entities", () => ({
   useEntityFinderSearch: vi.fn(),
+  useEntityNeighbours: vi.fn(),
   useEntityLinkedContacts: vi.fn(),
   useEntityGifts: vi.fn(),
   useEntityLoans: vi.fn(),
@@ -35,6 +63,16 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityMessageThreads: vi.fn(),
   useEntityDates: vi.fn(),
   useUpdateEntityDunbarTier: vi.fn(),
+}));
+
+vi.mock("@/api/index", () => ({
+  getOwnerSetupStatus: vi.fn(async () => ({
+    entity_id: null,
+    has_name: false,
+    has_telegram: false,
+    has_telegram_chat_id: false,
+    has_email: false,
+  })),
 }));
 
 vi.mock("@/components/layout/nav-config", () => ({
@@ -69,6 +107,15 @@ function flush(): Promise<void> {
 }
 
 type UseEntityFinderSearchResult = ReturnType<typeof useEntityFinderSearch>;
+type UseEntityNeighboursResult = ReturnType<typeof useEntityNeighbours>;
+
+function mockNeighboursEmpty(): void {
+  vi.mocked(useEntityNeighbours).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as UseEntityNeighboursResult);
+}
 
 function mockSearchEmpty(): void {
   vi.mocked(useEntityFinderSearch).mockReturnValue({
@@ -99,6 +146,7 @@ describe("EntityFinder", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSearchEmpty();
+    mockNeighboursEmpty();
 
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -417,5 +465,268 @@ describe("EntityFinder", () => {
     expect(vi.mocked(useEntityFinderSearch)).toHaveBeenCalledWith("", {
       limit: 8,
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // entity-v3: preview pane + Tab-to-hop + empty-query owner-pinned set
+  // -------------------------------------------------------------------------
+
+  it("renders a footer documenting the hop key", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const footer = document.body.querySelector("[cmdk-root]")?.textContent ?? "";
+    expect(footer).toContain("hop");
+    expect(footer).toContain("open");
+  });
+
+  it("shows a preview pane for the active entity with its canned gloss", async () => {
+    mockSearchResults({
+      results: [
+        {
+          entity_id: "uuid-dana",
+          canonical_name: "Dana Scully",
+          entity_type: "person",
+          score: 100,
+          match_kind: "prefix",
+        },
+      ],
+      total: 1,
+      q: "dana",
+      limit: 8,
+    });
+
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    // Type a query so the finder leaves empty-query (pinned) mode.
+    const previewInput = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(previewInput, "dana");
+      await flush();
+    });
+
+    // cmdk auto-selects the first item; the preview pane mirrors it.
+    const preview = document.body.querySelector(
+      "[data-testid='entity-finder-preview']",
+    );
+    expect(preview).not.toBeNull();
+    expect(preview?.textContent).toContain("Dana Scully");
+    // The gloss is a non-empty canned string from entity-glosses.ts.
+    const gloss = document.body.querySelector(
+      "[data-testid='entity-finder-preview-gloss']",
+    );
+    expect((gloss?.textContent ?? "").length).toBeGreaterThan(0);
+  });
+
+  it("hops (navigates to /entities/hop?center=) when Tab is pressed on an active result", async () => {
+    mockSearchResults({
+      results: [
+        {
+          entity_id: "uuid-fox",
+          canonical_name: "Fox Mulder",
+          entity_type: "person",
+          score: 100,
+          match_kind: "prefix",
+        },
+      ],
+      total: 1,
+      q: "fox",
+      limit: 8,
+    });
+
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={["/dashboard"]}>
+            <EntityFinder />
+            <LocationProbe />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    // Type a query so the finder leaves empty-query (pinned) mode.
+    const hopInput = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(hopInput, "fox");
+      await flush();
+    });
+
+    // Preview mirrors the highlighted (first) entity before Tab.
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-preview']")
+        ?.textContent,
+    ).toContain("Fox Mulder");
+
+    const command = document.body.querySelector("[cmdk-root]") as HTMLElement;
+    await act(async () => {
+      command.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await flush();
+    });
+
+    const loc = document.body.querySelector("[data-testid='loc']")?.textContent;
+    expect(loc).toBe("/entities/hop?center=uuid-fox");
+    // Finder closes on hop.
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-input']"),
+    ).toBeNull();
+  });
+
+  it("renders the owner-pinned set when the query is empty", async () => {
+    // Empty query → search hook disabled → undefined data.
+    mockSearchEmpty();
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: {
+        neighbours: {
+          knows: [
+            {
+              entity_id: "n1",
+              canonical_name: "Pinned One",
+              direction: "forward",
+              src: "x",
+              conf: 1,
+              last_seen: null,
+              weight: 9,
+              verified: true,
+              primary: null,
+            },
+          ],
+        },
+        remainders: {},
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as UseEntityNeighboursResult);
+
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const pinned = document.body.querySelectorAll(
+      "[data-testid='entity-finder-pinned-item']",
+    );
+    expect(pinned.length).toBe(1);
+    expect(pinned[0].textContent).toContain("Pinned One");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure aggregation logic
+// ---------------------------------------------------------------------------
+
+describe("aggregateOwnerPinned", () => {
+  function n(
+    entity_id: string,
+    canonical_name: string,
+    weight: number | null,
+  ): NeighbourEntry {
+    return {
+      entity_id,
+      canonical_name,
+      direction: "forward",
+      src: "x",
+      conf: 1,
+      last_seen: null,
+      weight,
+      verified: true,
+      primary: null,
+    };
+  }
+
+  it("dedupes across predicates, sums COALESCE(weight,1), sorts desc, excludes owner, caps at limit", () => {
+    const neighbours: Record<string, NeighbourEntry[]> = {
+      knows: [n("a", "Alice", 3), n("b", "Bob", null), n("me", "Owner", 99)],
+      "works-with": [n("a", "Alice", 2), n("c", "Carol", 5)],
+    };
+    const out = aggregateOwnerPinned(neighbours, "me", 8);
+    // Alice (5) and Carol (5) tie; stable sort keeps first-seen order (Alice).
+    expect(out.map((x) => x.entity_id)).toEqual(["a", "c", "b"]);
+    // Alice: 3 + 2 = 5; Carol: 5; Bob: COALESCE(null,1) = 1.
+    expect(out.find((x) => x.entity_id === "a")?.weight).toBe(5);
+    expect(out.find((x) => x.entity_id === "b")?.weight).toBe(1);
+    // Owner excluded.
+    expect(out.find((x) => x.entity_id === "me")).toBeUndefined();
+  });
+
+  it("respects the limit", () => {
+    const neighbours: Record<string, NeighbourEntry[]> = {
+      knows: [n("a", "A", 5), n("b", "B", 4), n("c", "C", 3)],
+    };
+    expect(aggregateOwnerPinned(neighbours, null, 2).length).toBe(2);
+  });
+
+  it("returns [] for undefined neighbours", () => {
+    expect(aggregateOwnerPinned(undefined, "me")).toEqual([]);
   });
 });
