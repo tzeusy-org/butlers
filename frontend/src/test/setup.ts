@@ -36,3 +36,25 @@ if (typeof global.ResizeObserver === "undefined") {
 if (typeof window !== "undefined") {
   window.HTMLElement.prototype.scrollIntoView = function () {};
 }
+
+// ---------------------------------------------------------------------------
+// matchMedia — no-op stub for jsdom (required by usePrefersReducedMotion)
+//
+// jsdom does not implement window.matchMedia; components that read media
+// queries (e.g. the `prefers-reduced-motion` cross-fade gate) would otherwise
+// throw "window.matchMedia is not a function". The stub reports "no match"
+// (motion enabled) and exposes the listener API the hook subscribes to.
+// ---------------------------------------------------------------------------
+
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}

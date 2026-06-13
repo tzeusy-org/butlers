@@ -24,6 +24,7 @@
 import EpisodesRegister from "@/components/memory/EpisodesRegister";
 import FactsRegister from "@/components/memory/FactsRegister";
 import MemorySearch from "@/components/memory/MemorySearch";
+import RegisterCrossfade from "@/components/memory/RegisterCrossfade";
 import RulesRegister from "@/components/memory/RulesRegister";
 import SearchResults from "@/components/memory/SearchResults";
 import { Pill } from "@/components/ui/Pill";
@@ -85,11 +86,16 @@ export default function MemoryBrowser({ butlerScope }: MemoryBrowserProps) {
             ))}
           </div>
 
-          {register === "facts" && <FactsRegister butlerScope={butlerScope} />}
-          {register === "rules" && <RulesRegister butlerScope={butlerScope} />}
-          {register === "episodes" && (
-            <EpisodesRegister butlerScope={butlerScope} />
-          )}
+          {/* Opacity-only 200ms cross-fade on pill switch (MEMORY_LANGUAGE §8).
+              Keyed on `register` so a register's subtree is preserved across
+              unrelated re-renders — numerals never re-animate on a fade. */}
+          <RegisterCrossfade activeKey={register}>
+            {register === "facts" && <FactsRegister butlerScope={butlerScope} />}
+            {register === "rules" && <RulesRegister butlerScope={butlerScope} />}
+            {register === "episodes" && (
+              <EpisodesRegister butlerScope={butlerScope} />
+            )}
+          </RegisterCrossfade>
         </div>
       )}
     </div>

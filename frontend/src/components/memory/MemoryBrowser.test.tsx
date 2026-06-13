@@ -121,6 +121,29 @@ describe("MemoryBrowser", () => {
     expect(container.querySelector('[role="button"][aria-expanded]')).not.toBeNull();
   });
 
+  it("wraps the browse register in the §8 opacity cross-fade with the spec duration/easing", () => {
+    primeBrowse([makeEpisode()]);
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/memory?register=episodes"]}>
+          <MemoryBrowser />
+        </MemoryRouter>,
+      );
+    });
+
+    // The active register sits inside a cross-fade layer carrying an opacity-only
+    // transition at MEMORY_LANGUAGE §8's 200ms cubic-bezier(0.22, 1, 0.36, 1).
+    const layer = container.querySelector<HTMLElement>('[data-crossfade-layer="current"]');
+    expect(layer).not.toBeNull();
+    expect(layer!.style.transitionProperty).toBe("opacity");
+    expect(layer!.style.transitionDuration).toBe("200ms");
+    expect(layer!.style.transitionTimingFunction).toBe("cubic-bezier(0.22, 1, 0.36, 1)");
+    expect(layer!.style.transform).toBe(""); // no scale, no slide
+    // The register content lives inside the cross-fade layer.
+    expect(layer!.textContent).toContain(EPISODE_CONTENT);
+  });
+
   it("renders grouped results reusing register rows with full embedded data when q is set", () => {
     primeBrowse([]);
     // Each inspect result now carries the full register-shaped row (#2199) so
