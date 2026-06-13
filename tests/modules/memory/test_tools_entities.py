@@ -1031,3 +1031,195 @@ class TestMemoryEntityMergeMCPChroniclerWiring:
 
         # Merge succeeds; no chronicler SQL was attempted
         assert result["target_entity_id"] == TARGET_ID
+
+
+# ---------------------------------------------------------------------------
+# MCP tool — merge_reviews audit-row wiring (bu-csvop)
+# ---------------------------------------------------------------------------
+
+
+def _make_relationship_pool(
+    *,
+    a_identity_rows: list | None = None,
+    b_identity_rows: list | None = None,
+    single_cardinality_rows: list | None = None,
+) -> tuple[MagicMock, AsyncMock]:
+    """Build a mock relationship pool for compute_merge_evidence + write_merge_review.
+
+    pool.fetch side_effect order (compute_merge_evidence):
+      1. fetch_identity_facts(entity_a)
+      2. fetch_identity_facts(entity_b)
+      3. fetch_single_cardinality_predicates()
+    pool.fetchval handles the merge_reviews INSERT (write_merge_review).
+    """
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        side_effect=[
+            a_identity_rows or [],
+            b_identity_rows or [],
+            single_cardinality_rows or [],
+        ]
+    )
+    review_id = uuid.uuid4()
+    pool.fetchval = AsyncMock(return_value=review_id)
+    return pool, review_id
+
+
+def _register_memory_entity_merge_tool(mod, *, entity_merge_result):
+    """Register memory tools with a controllable entity_merge and capture the closure."""
+    from unittest.mock import patch
+
+    mcp = MagicMock()
+    registered: dict[str, object] = {}
+
+    def capture_tool():
+        def decorator(fn):
+            registered[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    mcp.tool.side_effect = capture_tool
+
+    fake_entities = MagicMock()
+    fake_entities.entity_merge = AsyncMock(return_value=entity_merge_result)
+    # The closure does `from butlers.modules.memory.tools import entities as _entities`,
+    # which resolves `entities` as an attribute on the parent package object — wire
+    # our fake there so `_entities.entity_merge` is the controllable AsyncMock.
+    fake_tools_pkg = MagicMock()
+    fake_tools_pkg.entities = fake_entities
+
+    async def _run():
+        with patch.dict(
+            "sys.modules",
+            {
+                "butlers.modules.memory.tools": fake_tools_pkg,
+                "butlers.modules.memory.tools.writing": MagicMock(),
+                "butlers.modules.memory.tools.reading": MagicMock(),
+                "butlers.modules.memory.tools.feedback": MagicMock(),
+                "butlers.modules.memory.tools.management": MagicMock(),
+                "butlers.modules.memory.tools.context": MagicMock(),
+                "butlers.modules.memory.tools.preferences": MagicMock(),
+                "butlers.modules.memory.tools.consolidation": MagicMock(),
+                "butlers.modules.memory.consolidation": MagicMock(),
+                "butlers.modules.memory.reembedding": MagicMock(),
+                "butlers.modules.memory.tools.entities": fake_entities,
+            },
+        ):
+            await mod.register_tools(mcp=mcp, config=None, db=mod._db, butler_name="memory")
+        return registered, fake_entities
+
+    return _run
+
+
+class TestMemoryEntityMergeMCPMergeReviewWiring:
+    """memory_entity_merge writes a relationship.merge_reviews audit row so that
+    session-side merges leave history regardless of entry path (bu-csvop;
+    relationship-merge-review spec).
+    """
+
+    async def test_mcp_tool_writes_merge_reviews_audit_row(self) -> None:
+        from butlers.modules.memory import MemoryModule
+
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="memory_pool")
+        mod._db = fake_db
+
+        rel_pool, review_id = _make_relationship_pool()
+
+        run = _register_memory_entity_merge_tool(
+            mod, entity_merge_result={"target_entity_id": TARGET_ID}
+        )
+        from unittest.mock import patch
+
+        with (
+            patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)),
+            patch.object(
+                mod, "_get_or_create_relationship_pool", new=AsyncMock(return_value=rel_pool)
+            ),
+        ):
+            registered, fake_entities = await run()
+            tool = registered["memory_entity_merge"]
+            result = await tool(source_entity_id=SOURCE_ID, target_entity_id=TARGET_ID)
+
+        # The underlying memory merge still ran and its result is returned verbatim.
+        assert result == {"target_entity_id": TARGET_ID}
+        fake_entities.entity_merge.assert_awaited_once()
+
+        # An audit row was written to relationship.merge_reviews with outcome='merged'.
+        rel_pool.fetchval.assert_awaited_once()
+        insert_sql = rel_pool.fetchval.await_args.args[0]
+        assert "INSERT INTO relationship.merge_reviews" in insert_sql
+        insert_args = rel_pool.fetchval.await_args.args[1:]
+        # entity_a, entity_b, shared_json, divergent_json, outcome
+        assert insert_args[0] == uuid.UUID(SOURCE_ID)
+        assert insert_args[1] == uuid.UUID(TARGET_ID)
+        assert insert_args[4] == "merged"
+
+    async def test_mcp_tool_computes_evidence_before_merge(self) -> None:
+        """The audit evidence is computed BEFORE entity_merge mutates rows so the
+        snapshot reflects the pre-merge state (matches the API merge endpoint)."""
+        from unittest.mock import patch
+
+        from butlers.modules.memory import MemoryModule
+
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="memory_pool")
+        mod._db = fake_db
+
+        rel_pool, _ = _make_relationship_pool()
+
+        order: list[str] = []
+        rel_pool.fetch = AsyncMock(side_effect=lambda *a, **k: order.append("evidence") or [])
+        rel_pool.fetchval = AsyncMock(
+            side_effect=lambda *a, **k: order.append("audit") or uuid.uuid4()
+        )
+
+        async def _record_merge(*a, **k):
+            order.append("merge")
+            return {"target_entity_id": TARGET_ID}
+
+        run = _register_memory_entity_merge_tool(mod, entity_merge_result=None)
+        with (
+            patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)),
+            patch.object(
+                mod, "_get_or_create_relationship_pool", new=AsyncMock(return_value=rel_pool)
+            ),
+        ):
+            registered, fake_entities = await run()
+            fake_entities.entity_merge = AsyncMock(side_effect=_record_merge)
+            tool = registered["memory_entity_merge"]
+            await tool(source_entity_id=SOURCE_ID, target_entity_id=TARGET_ID)
+
+        # evidence reads happen, THEN the merge, THEN the audit INSERT.
+        assert order[0] == "evidence"
+        assert "merge" in order
+        assert order.index("merge") < order.index("audit")
+
+    async def test_mcp_tool_merge_not_blocked_when_relationship_pool_unavailable(self) -> None:
+        """In a memory-only deployment (no relationship schema), the merge still
+        succeeds and simply skips the audit row (best-effort)."""
+        from unittest.mock import patch
+
+        from butlers.modules.memory import MemoryModule
+
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="memory_pool")
+        mod._db = fake_db
+
+        run = _register_memory_entity_merge_tool(
+            mod, entity_merge_result={"target_entity_id": TARGET_ID}
+        )
+        with (
+            patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)),
+            patch.object(mod, "_get_or_create_relationship_pool", new=AsyncMock(return_value=None)),
+        ):
+            registered, fake_entities = await run()
+            tool = registered["memory_entity_merge"]
+            result = await tool(source_entity_id=SOURCE_ID, target_entity_id=TARGET_ID)
+
+        assert result == {"target_entity_id": TARGET_ID}
+        fake_entities.entity_merge.assert_awaited_once()

@@ -44,6 +44,11 @@ _REPO_ROOT = _HERE.parents[3]  # repo root (roster/relationship/tests -> repo)
 _ROUTER = _ROSTER_ROOT / "api" / "router.py"
 _ENTITIES_TOOL = _REPO_ROOT / "src" / "butlers" / "modules" / "memory" / "tools" / "entities.py"
 _CONTACTS_TOOL = _ROSTER_ROOT / "tools" / "contacts.py"
+# Shared, model-free merge-review evidence + audit-row helpers (bu-csvop). The
+# deterministic structural-diff logic and the audit-row INSERT moved here out of
+# the router so both the API and session-side MCP merge paths share one definition;
+# the no-LLM invariant must follow the code to its new home.
+_MERGE_REVIEW_TOOL = _ROSTER_ROOT / "tools" / "merge_review.py"
 
 # Tokens that signal a model call: LLM-provider clients, the butler LLM-CLI
 # spawner, embedding services, or generated-prose completion calls. Case-
@@ -83,6 +88,14 @@ _ROUTER_MODEL_FREE_SYMBOLS = (
 _TOOL_MERGE_SYMBOLS: tuple[tuple[Path, str], ...] = (
     (_ENTITIES_TOOL, "entity_merge"),
     (_CONTACTS_TOOL, "contact_merge"),
+    # Shared merge-review evidence + audit-row helpers — the deterministic
+    # structural diff and audit INSERT that the router now delegates to.
+    (_MERGE_REVIEW_TOOL, "compute_merge_evidence"),
+    (_MERGE_REVIEW_TOOL, "derive_shared_and_divergent_rows"),
+    (_MERGE_REVIEW_TOOL, "fetch_identity_facts"),
+    (_MERGE_REVIEW_TOOL, "fetch_single_cardinality_predicates"),
+    (_MERGE_REVIEW_TOOL, "identity_row_to_review_json"),
+    (_MERGE_REVIEW_TOOL, "write_merge_review"),
 )
 
 

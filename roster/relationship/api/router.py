@@ -51,6 +51,15 @@ from butlers.tools.relationship._ef_channel_helpers import (
 from butlers.tools.relationship._ef_channel_helpers import (
     entity_facts_channels_by_entity as _entity_facts_channels_by_entity_shared,
 )
+from butlers.tools.relationship.merge_review import (
+    derive_shared_and_divergent_rows as _derive_shared_and_divergent_rows_shared,
+)
+from butlers.tools.relationship.merge_review import (
+    fetch_single_cardinality_predicates as _fetch_single_cardinality_predicates_shared,
+)
+from butlers.tools.relationship.merge_review import (
+    write_merge_review as _write_merge_review_shared,
+)
 
 # Load local models module
 _api_dir = Path(__file__).parent
@@ -6627,15 +6636,12 @@ async def _fetch_single_cardinality_predicates(pool) -> set[str]:
     Single-cardinality predicates are the only ones that can DIVERGE on merge
     (an entity holds at most one active value). Multi-valued predicates union on
     merge and never conflict (the three-emails-three-rows rule).
+
+    Delegates to the shared model-free implementation in
+    ``butlers.tools.relationship.merge_review`` so the API and session-side merge
+    paths share one definition.
     """
-    rows = await pool.fetch(
-        """
-        SELECT predicate
-        FROM relationship.entity_predicate_registry
-        WHERE cardinality = 'single'
-        """
-    )
-    return {r["predicate"] for r in rows}
+    return await _fetch_single_cardinality_predicates_shared(pool)
 
 
 def _derive_shared_and_divergent(
@@ -6650,41 +6656,16 @@ def _derive_shared_and_divergent(
     - ``divergent``: rows for single-cardinality predicates that BOTH entities
       hold but with DIFFERENT objects. Multi-valued predicates never diverge.
 
-    Deterministic: no scoring, no ranking, no generated text.
+    The deterministic structural diff itself lives in the shared model-free helper
+    ``merge_review.derive_shared_and_divergent_rows`` (the single source of truth
+    used by both the API and session-side merge paths); this wrapper adapts the
+    raw rows into ``CompareFact`` models for the API response.
     """
-    a_pairs = {(r["predicate"], r["object"]) for r in a_identity}
-    b_pairs = {(r["predicate"], r["object"]) for r in b_identity}
-    shared_keys = a_pairs & b_pairs
-
-    shared: list[Any] = []
-    for key in sorted(shared_keys):
-        a_row = next(r for r in a_identity if (r["predicate"], r["object"]) == key)
-        b_row = next(r for r in b_identity if (r["predicate"], r["object"]) == key)
-        shared.append(_compare_fact_from_identity_row(a_row))
-        shared.append(_compare_fact_from_identity_row(b_row))
-
-    # Divergent: single-cardinality predicates present on both with differing objects.
-    a_objs_by_pred: dict[str, set[str]] = {}
-    for r in a_identity:
-        if r["predicate"] in single_predicates:
-            a_objs_by_pred.setdefault(r["predicate"], set()).add(r["object"])
-    b_objs_by_pred: dict[str, set[str]] = {}
-    for r in b_identity:
-        if r["predicate"] in single_predicates:
-            b_objs_by_pred.setdefault(r["predicate"], set()).add(r["object"])
-
-    divergent: list[Any] = []
-    for predicate in sorted(set(a_objs_by_pred) & set(b_objs_by_pred)):
-        if a_objs_by_pred[predicate] == b_objs_by_pred[predicate]:
-            # Same single value on both → not a conflict.
-            continue
-        for r in a_identity:
-            if r["predicate"] == predicate and r["object"] not in b_objs_by_pred[predicate]:
-                divergent.append(_compare_fact_from_identity_row(r))
-        for r in b_identity:
-            if r["predicate"] == predicate and r["object"] not in a_objs_by_pred[predicate]:
-                divergent.append(_compare_fact_from_identity_row(r))
-
+    shared_rows, divergent_rows = _derive_shared_and_divergent_rows_shared(
+        a_identity, b_identity, single_predicates
+    )
+    shared = [_compare_fact_from_identity_row(r) for r in shared_rows]
+    divergent = [_compare_fact_from_identity_row(r) for r in divergent_rows]
     return shared, divergent
 
 
@@ -6779,25 +6760,20 @@ async def _write_merge_review(
     """Insert a ``relationship.merge_reviews`` audit row, returning its id.
 
     The evidence snapshot is serialized from CompareFact lists (JSON-mode dumps so
-    UUIDs/datetimes become strings). Rows are written at commit time only (no
-    pending state); both merge and dismissal write a row.
+    UUIDs/datetimes become strings) and handed to the shared model-free writer in
+    ``butlers.tools.relationship.merge_review`` — the single source of truth for
+    the audit-row INSERT used by both the API and session-side merge paths. Rows
+    are written at commit time only (no pending state); both merge and dismissal
+    write a row.
     """
-    shared_json = json.dumps([f.model_dump(mode="json") for f in shared_facts])
-    divergent_json = json.dumps([f.model_dump(mode="json") for f in divergent_facts])
-    review_id = await pool.fetchval(
-        """
-        INSERT INTO relationship.merge_reviews
-            (entity_a, entity_b, shared_facts, divergent_facts, outcome, reviewed_at)
-        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, now())
-        RETURNING id
-        """,
-        entity_a,
-        entity_b,
-        shared_json,
-        divergent_json,
-        outcome,
+    return await _write_merge_review_shared(
+        pool,
+        entity_a=entity_a,
+        entity_b=entity_b,
+        shared_facts=[f.model_dump(mode="json") for f in shared_facts],
+        divergent_facts=[f.model_dump(mode="json") for f in divergent_facts],
+        outcome=outcome,
     )
-    return review_id
 
 
 @router.post("/entities/compare", response_model=CompareResponse)

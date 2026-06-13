@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
@@ -195,6 +196,7 @@ class MemoryModule(Module):
         self._embedding_engine: Any = None
         self._config: MemoryModuleConfig = MemoryModuleConfig()
         self._chronicler_pool: Any = None  # Lazy pool for chronicler schema (episode repoint)
+        self._relationship_pool: Any = None  # Lazy pool for relationship schema (merge_reviews)
 
     @property
     def name(self) -> str:
@@ -229,6 +231,12 @@ class MemoryModule(Module):
             except Exception:
                 pass
             self._chronicler_pool = None
+        if self._relationship_pool is not None:
+            try:
+                await self._relationship_pool.close()
+            except Exception:
+                pass
+            self._relationship_pool = None
 
     def _get_pool(self):
         """Return the asyncpg pool, raising if not initialised."""
@@ -265,6 +273,39 @@ class MemoryModule(Module):
             await ch_db.connect()
             self._chronicler_pool = ch_db.pool
         return self._chronicler_pool
+
+    async def _get_or_create_relationship_pool(self) -> Any:
+        """Return a lazily-created asyncpg pool scoped to the relationship schema.
+
+        Used by ``memory_entity_merge`` to write a ``relationship.merge_reviews``
+        audit row so session-side merges leave history regardless of entry path
+        (spec: relationship-merge-review). Created on first call using the same
+        PostgreSQL connection details as ``self._db`` but with
+        ``search_path = relationship, public`` (mirrors the chronicler pool).
+        Returns ``None`` when the memory module is not initialised (e.g. in tests
+        that inject a mock pool directly into entity_merge).
+
+        The pool is closed in ``on_shutdown()``.
+        """
+        if self._db is None:
+            return None
+        if self._relationship_pool is None:
+            from butlers.db import Database
+
+            rel_db = Database(
+                db_name=self._db.db_name,
+                schema="relationship",
+                host=self._db.host,
+                port=self._db.port,
+                user=self._db.user,
+                password=self._db.password,
+                ssl=self._db.ssl,
+                min_pool_size=self._db.min_pool_size,
+                max_pool_size=self._db.max_pool_size,
+            )
+            await rel_db.connect()
+            self._relationship_pool = rel_db.pool
+        return self._relationship_pool
 
     def _get_embedding_engine(self):
         """Return the shared embedding engine for the configured model.
@@ -1172,6 +1213,15 @@ class MemoryModule(Module):
             tombstoned (excluded from future entity_resolve results). An audit event
             is emitted to memory_events.
 
+            A ``relationship.merge_reviews`` audit row is also written so this
+            session-side merge leaves history regardless of entry path (spec:
+            relationship-merge-review — "merges executed outside the dashboard flow
+            (e.g. session-side tooling) still leave history; when no compare context
+            exists, the merge endpoint computes the shared/divergent snapshot
+            server-side at merge time"). The audit write is best-effort: a failure
+            (e.g. the relationship schema is absent in a memory-only deployment)
+            never blocks the merge.
+
             Returns the updated target entity dict, or None if target not found.
             Raises ValueError if source entity not found or IDs are identical.
             """
@@ -1179,12 +1229,62 @@ class MemoryModule(Module):
             # chronicler_pool is None when the DB is not initialised (e.g. tests
             # that inject a mock pool directly into entity_merge). When provided,
             # episode_entities rows are re-pointed as part of the merge.
-            return await _entities.entity_merge(
+
+            # Compute the shared/divergent audit evidence BEFORE the merge mutates
+            # rows so the snapshot reflects the pre-merge state (matches the API
+            # merge endpoint). The relationship pool is None in memory-only
+            # deployments / tests with no DB — then we skip the audit row.
+            relationship_pool = await module._get_or_create_relationship_pool()
+            merge_evidence = None
+            if relationship_pool is not None:
+                try:
+                    from butlers.tools.relationship.merge_review import compute_merge_evidence
+
+                    merge_evidence = await compute_merge_evidence(
+                        relationship_pool,
+                        uuid.UUID(str(source_entity_id)),
+                        uuid.UUID(str(target_entity_id)),
+                    )
+                except Exception:
+                    logger.warning(
+                        "memory_entity_merge: failed to compute merge-review evidence "
+                        "(source=%s target=%s) — audit row will be skipped",
+                        source_entity_id,
+                        target_entity_id,
+                        exc_info=True,
+                    )
+
+            result = await _entities.entity_merge(
                 module._get_pool(),
                 source_entity_id,
                 target_entity_id,
                 chronicler_pool=chronicler_pool,
             )
+
+            # Write the merge_reviews audit row regardless of entry path. Best-effort:
+            # never block or fail the (already-committed) merge on an audit failure.
+            if relationship_pool is not None and merge_evidence is not None:
+                try:
+                    from butlers.tools.relationship.merge_review import write_merge_review
+
+                    await write_merge_review(
+                        relationship_pool,
+                        entity_a=uuid.UUID(str(source_entity_id)),
+                        entity_b=uuid.UUID(str(target_entity_id)),
+                        shared_facts=merge_evidence["shared"],
+                        divergent_facts=merge_evidence["divergent"],
+                        outcome="merged",
+                    )
+                except Exception:
+                    logger.warning(
+                        "memory_entity_merge: failed to write merge_reviews audit row "
+                        "(source=%s target=%s) — merge already committed",
+                        source_entity_id,
+                        target_entity_id,
+                        exc_info=True,
+                    )
+
+            return result
 
         # --- Cross-butler catalog search tool ---
 

@@ -655,6 +655,31 @@ async def contact_merge(
             import uuid as _uuid
 
             from butlers.modules.memory.tools.entities import entity_merge
+            from butlers.tools.relationship.merge_review import (
+                compute_merge_evidence,
+                write_merge_review,
+            )
+
+            # Compute the merge-review audit evidence BEFORE entity_merge + the
+            # entity_facts re-pointing below mutate rows, so the snapshot reflects
+            # the pre-merge state (spec: relationship-merge-review — every merge
+            # leaves a merge_reviews row "regardless of entry path"). Best-effort:
+            # never block the (already-committed) contact merge on an audit failure.
+            merge_evidence = None
+            try:
+                merge_evidence = await compute_merge_evidence(
+                    pool,
+                    _uuid.UUID(str(src_entity_id)),
+                    _uuid.UUID(str(tgt_entity_id)),
+                )
+            except Exception:
+                logger.warning(
+                    "contact_merge: failed to compute merge-review evidence "
+                    "(source=%s target=%s) — audit row will be skipped",
+                    src_entity_id,
+                    tgt_entity_id,
+                    exc_info=True,
+                )
 
             try:
                 await entity_merge(
@@ -813,6 +838,28 @@ async def contact_merge(
                     tgt_entity_id,
                     exc_info=True,
                 )
+
+            # Write the merge_reviews audit row regardless of entry path (spec:
+            # relationship-merge-review). Best-effort: the contact + entity merge
+            # above are already committed; an audit failure must not surface.
+            if merge_evidence is not None:
+                try:
+                    await write_merge_review(
+                        pool,
+                        entity_a=_uuid.UUID(str(src_entity_id)),
+                        entity_b=_uuid.UUID(str(tgt_entity_id)),
+                        shared_facts=merge_evidence["shared"],
+                        divergent_facts=merge_evidence["divergent"],
+                        outcome="merged",
+                    )
+                except Exception:
+                    logger.warning(
+                        "contact_merge: failed to write merge_reviews audit row "
+                        "(source=%s target=%s) — merge already committed",
+                        src_entity_id,
+                        tgt_entity_id,
+                        exc_info=True,
+                    )
 
     # Write-path cut-over (bu-k9ylx): the source entity's channel facts are
     # re-pointed to the target entity by the relationship.entity_facts

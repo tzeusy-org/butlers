@@ -134,6 +134,50 @@ async def pool(provisioned_postgres_pool):
                 created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        # contacts table used by the contact_merge MCP path. Created unqualified
+        # (search_path-resolved) like the `facts` table above so contact_merge's
+        # unqualified `SELECT ... FROM contacts` resolves it.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                name        TEXT,
+                entity_id   UUID,
+                archived_at TIMESTAMPTZ,
+                listed      BOOL        NOT NULL DEFAULT true,
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        # contact_merge re-points a fixed set of child tables in one transaction;
+        # a missing table aborts the whole transaction in Postgres, so create the
+        # minimal child tables it touches (single contact_id FK each is enough for
+        # the audit-row path under test).
+        for _child in (
+            "notes",
+            "interactions",
+            "dates",
+            "gifts",
+            "loans",
+            "group_members",
+            "contact_labels",
+            "contact_info",
+            "addresses",
+            "tasks",
+            "life_events",
+            "stay_in_touch",
+        ):
+            await p.execute(
+                f"CREATE TABLE IF NOT EXISTS {_child} "  # noqa: S608 — fixed literal names
+                "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), contact_id UUID)"
+            )
+        await p.execute(
+            "CREATE TABLE IF NOT EXISTS relationships "
+            "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), contact_a UUID, contact_b UUID)"
+        )
+        # contact_merge also re-points the legacy contacts-facts table named
+        # ``facts``; the narrative ``facts`` table created above has no contact_id,
+        # so add it (harmless — compute_merge_evidence reads entity_facts, not facts).
+        await p.execute("ALTER TABLE facts ADD COLUMN IF NOT EXISTS contact_id UUID")
         yield p
 
 
@@ -245,3 +289,45 @@ class TestContactsMergeNoStrandedTriples:
             source_id,
         )
         assert review_count == 1, "merge_entities must write exactly one merged audit row"
+
+    async def test_contact_merge_writes_merge_reviews_audit_row(self, pool):
+        """The session-side ``contact_merge`` MCP tool writes a merge_reviews audit
+        row regardless of entry path (bu-csvop; relationship-merge-review spec)."""
+        from butlers.tools.relationship.contacts import contact_merge
+
+        target_entity = await _insert_entity(pool, name="Bob (canonical)", roles=[])
+        source_entity = await _insert_entity(pool, name="Bob (duplicate)", roles=[])
+
+        # A shared channel triple becomes the audit "shared" evidence.
+        await _add_channel_fact(pool, target_entity, "has-email", "bob@work.com")
+        await _add_channel_fact(pool, source_entity, "has-email", "bob@work.com")
+
+        target_contact = await pool.fetchval(
+            "INSERT INTO contacts (name, entity_id) VALUES ($1, $2) RETURNING id",
+            "Bob (canonical)",
+            target_entity,
+        )
+        source_contact = await pool.fetchval(
+            "INSERT INTO contacts (name, entity_id) VALUES ($1, $2) RETURNING id",
+            "Bob (duplicate)",
+            source_entity,
+        )
+
+        await contact_merge(pool, source_id=source_contact, target_id=target_contact)
+
+        # contact_merge wrote a merged audit row for the underlying entities.
+        review = await pool.fetchrow(
+            """
+            SELECT shared_facts, outcome FROM relationship.merge_reviews
+            WHERE entity_a = $1 AND entity_b = $2 AND outcome = 'merged'
+            """,
+            source_entity,
+            target_entity,
+        )
+        assert review is not None, "contact_merge must write a merged merge_reviews row"
+        # The shared has-email evidence (one row per entity) is captured pre-merge.
+        import json as _json
+
+        shared = _json.loads(review["shared_facts"])
+        assert len(shared) == 2, f"expected the shared has-email pair in evidence, got {shared}"
+        assert {f["object"] for f in shared} == {"bob@work.com"}
