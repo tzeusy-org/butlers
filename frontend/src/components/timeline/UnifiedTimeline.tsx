@@ -1,5 +1,6 @@
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { useState } from "react";
+import { Link } from "react-router";
 
 import type { TimelineEvent } from "@/api/types.ts";
 import { Badge } from "@/components/ui/badge";
@@ -128,17 +129,25 @@ function groupEvents(events: TimelineEvent[]): DisplayEntry[] {
 // Single event row
 // ---------------------------------------------------------------------------
 
+/** Session-backed event types link to the session detail page. */
+function isSessionEvent(event: TimelineEvent): boolean {
+  return event.type === "session" || event.type === "error";
+}
+
+/** Build the cross-butler session detail href, scoping by butler when known. */
+function sessionDetailHref(event: TimelineEvent): string {
+  const base = `/sessions/${encodeURIComponent(event.id)}`;
+  return event.butler ? `${base}?butler=${encodeURIComponent(event.butler)}` : base;
+}
+
 function EventRow({ event }: { event: TimelineEvent }) {
   const [expanded, setExpanded] = useState(false);
+  const sessionLink = isSessionEvent(event) ? sessionDetailHref(event) : null;
 
   return (
     <li className="relative ml-4">
       <div className="absolute -left-[22px] mt-2 size-2.5 rounded-full border-2 border-background bg-muted-foreground/40" />
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-start gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/50"
-      >
+      <div className="flex w-full items-start gap-3 rounded-md px-2 py-2 transition-colors hover:bg-muted/50">
         <span className="text-xs text-muted-foreground shrink-0 w-[130px] pt-0.5">
           <Time value={event.timestamp} mode="absolute" precision="second" compact showTitle={false} />
         </span>
@@ -146,9 +155,24 @@ function EventRow({ event }: { event: TimelineEvent }) {
           {event.butler}
         </Badge>
         {eventTypeBadge(event.type)}
-        <span className="text-sm truncate">{event.summary}</span>
-      </button>
-      {expanded && (
+        {sessionLink ? (
+          <Link
+            to={sessionLink}
+            className="text-sm truncate text-left underline-offset-4 hover:underline"
+          >
+            {event.summary}
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="text-sm truncate text-left"
+          >
+            {event.summary}
+          </button>
+        )}
+      </div>
+      {expanded && !sessionLink && (
         <div className="ml-[130px] pl-2 pb-2">
           <pre className="rounded-md border bg-muted/30 p-3 text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
             {JSON.stringify(event.data, null, 2)}

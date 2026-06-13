@@ -2,7 +2,11 @@
 
 Provides two routers:
 
-- ``router`` — cross-butler endpoint at ``GET /api/sessions``
+- ``router`` — cross-butler endpoints:
+
+  - ``GET /api/sessions``
+  - ``GET /api/sessions/{session_id}``
+
 - ``butler_sessions_router`` — butler-scoped endpoints:
 
   - ``GET /api/butlers/{name}/sessions``
@@ -165,6 +169,44 @@ def _row_to_detail(row, *, butler: str | None = None) -> SessionDetail:
     )
 
 
+async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) -> SessionDetail:
+    """Attach best-effort process log and correction count to a SessionDetail.
+
+    Both lookups are best-effort: the backing tables may not exist yet in
+    every butler schema, so failures are logged at debug and swallowed. The
+    same enrichment is shared by the butler-scoped and cross-butler by-id
+    detail endpoints so both return an identical ``SessionDetail`` shape.
+    """
+    # Attach process log if available (best-effort — table may not exist yet)
+    try:
+        plog_row = await pool.fetchrow(
+            """
+            SELECT pid, exit_code, command, stderr, runtime_type,
+                   retry_attempted, retry_succeeded, result_source, attempt_count,
+                   created_at, expires_at
+            FROM session_process_logs
+            WHERE session_id = $1 AND expires_at >= now()
+            """,
+            session_id,
+        )
+        if plog_row is not None:
+            detail.process_log = ProcessLog(**dict(plog_row))
+    except Exception:
+        logger.debug("Could not fetch process log for session %s", session_id, exc_info=True)
+
+    # Attach correction count (best-effort — corrections table may not exist yet)
+    try:
+        correction_count = await pool.fetchval(
+            "SELECT count(*) FROM corrections WHERE target_session_id = $1",
+            session_id,
+        )
+        detail.correction_count = int(correction_count or 0)
+    except Exception:
+        logger.debug("Could not fetch correction count for session %s", session_id, exc_info=True)
+
+    return detail
+
+
 # ---------------------------------------------------------------------------
 # Cross-butler endpoint: GET /api/sessions
 # ---------------------------------------------------------------------------
@@ -225,6 +267,47 @@ async def list_sessions(
         data=page,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-butler detail: GET /api/sessions/{session_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{session_id}", response_model=ApiResponse[SessionDetail])
+async def get_session(
+    session_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SessionDetail]:
+    """Return full detail for a single session, resolving it across butlers.
+
+    Session ids are globally unique UUIDs but live in per-butler schemas, so
+    this endpoint fans out the detail lookup across every registered butler DB
+    via ``DatabaseManager.fan_out()`` and returns the first (and only) match.
+    The response is the same ``SessionDetail`` shape produced by the
+    butler-scoped ``GET /api/butlers/{name}/sessions/{session_id}`` path,
+    including best-effort process log and correction count.
+    """
+    detail_results = await db.fan_out(
+        f"SELECT {_DETAIL_COLUMNS} FROM sessions WHERE id = $1",
+        (session_id,),
+    )
+
+    owning_butler: str | None = None
+    row = None
+    for butler_name, rows in detail_results.items():
+        if rows:
+            owning_butler = butler_name
+            row = rows[0]
+            break
+
+    if row is None or owning_butler is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    detail = _row_to_detail(row, butler=owning_butler)
+    await _attach_session_extras(detail, db.pool(owning_butler), session_id)
+
+    return ApiResponse[SessionDetail](data=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -321,33 +404,7 @@ async def get_butler_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     detail = _row_to_detail(row, butler=name)
-
-    # Attach process log if available (best-effort — table may not exist yet)
-    try:
-        plog_row = await pool.fetchrow(
-            """
-            SELECT pid, exit_code, command, stderr, runtime_type,
-                   retry_attempted, retry_succeeded, result_source, attempt_count,
-                   created_at, expires_at
-            FROM session_process_logs
-            WHERE session_id = $1 AND expires_at >= now()
-            """,
-            session_id,
-        )
-        if plog_row is not None:
-            detail.process_log = ProcessLog(**dict(plog_row))
-    except Exception:
-        logger.debug("Could not fetch process log for session %s", session_id, exc_info=True)
-
-    # Attach correction count (best-effort — corrections table may not exist yet)
-    try:
-        correction_count = await pool.fetchval(
-            "SELECT count(*) FROM corrections WHERE target_session_id = $1",
-            session_id,
-        )
-        detail.correction_count = int(correction_count or 0)
-    except Exception:
-        logger.debug("Could not fetch correction count for session %s", session_id, exc_info=True)
+    await _attach_session_extras(detail, pool, session_id)
 
     return ApiResponse[SessionDetail](data=detail)
 
