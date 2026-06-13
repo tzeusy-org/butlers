@@ -802,7 +802,12 @@ export interface ContactDetail extends ContactSummary {
   preferred_channel: string | null;
 }
 
-/** Request body for PATCH /contacts/{id}. */
+/** Request body for PATCH /contacts/{id}.
+ *
+ * `preferred_channel` is NOT writable here — it is an entity-level preference
+ * written via PUT/DELETE /entities/{id}/preferred-channel (the entity-keyed
+ * `prefers-channel` fact), see setEntityPreferredChannel / clearEntityPreferredChannel.
+ */
 export interface ContactPatchRequest {
   full_name?: string | null;
   first_name?: string | null;
@@ -811,7 +816,6 @@ export interface ContactPatchRequest {
   company?: string | null;
   job_title?: string | null;
   roles?: string[] | null;
-  preferred_channel?: string | null;
 }
 
 /**

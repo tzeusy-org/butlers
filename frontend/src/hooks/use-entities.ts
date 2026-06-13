@@ -548,8 +548,9 @@ export function useUpdateEntityContact() {
  * Set an entity's preferred outbound channel via the entity-keyed
  * `prefers-channel` fact (entity-keyed-preferred-channel).
  *
- * Used by ContactChannelCard.PreferredChannelSelector. Replaces the COMPAT-ONLY
- * contact-keyed `usePatchContact` write of `contacts.preferred_channel`.
+ * Used by ContactChannelCard.PreferredChannelSelector. This is the sole write
+ * path for preferred channel — the former contact-keyed `usePatchContact` write
+ * of `contacts.preferred_channel` has been removed.
  * Invalidates entity-linked-contacts (carries preferred_channel) and entity-facts
  * on success.
  */

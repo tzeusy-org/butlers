@@ -1578,7 +1578,12 @@ async def patch_contact(
     COMPAT-ONLY: this contact-keyed endpoint remains until /contacts/:contactId
     is fully removed.  CRM field writes (full_name, company, job_title) will
     migrate to entity fact mutations after bu-k9ylx (write-path cut-over).
-    Preferred channel and label writes have the same migration dependency.
+    Label writes have the same migration dependency.
+
+    Preferred channel is NOT writable here: it is an entity-level preference
+    written via PUT/DELETE /entities/{id}/preferred-channel (the single-valued
+    ``prefers-channel`` fact), not the orphaned ``contacts.preferred_channel``
+    column.
 
     Supported fields: full_name, nickname, company, job_title, roles.
     This is the sole write path for role assignment.  Only provided
@@ -1645,13 +1650,12 @@ async def patch_contact(
 
     # Roles are updated on the entity, not the contact.
     # Handled separately below after the contact UPDATE.
-
-    if request.preferred_channel is not None:
-        # Empty string clears the preference
-        val = request.preferred_channel if request.preferred_channel else None
-        updates.append(f"preferred_channel = ${idx}")
-        args.append(val)
-        idx += 1
+    #
+    # preferred_channel is NOT writable here. It is an entity-level preference
+    # stored as the single-valued ``prefers-channel`` fact and written via
+    # PUT/DELETE /entities/{id}/preferred-channel (entity-keyed-preferred-channel).
+    # The orphaned ``public.contacts.preferred_channel`` CRM column is no longer
+    # mutated through this endpoint.
 
     if updates:
         updates.append("updated_at = now()")

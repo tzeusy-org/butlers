@@ -818,8 +818,10 @@ function ContactRow({
  *   - Reveal secured entries: useRevealEntityContactSecret
  *     (GET /relationship/entities/{entityId}/secrets/{infoId})
  *   - Legacy contact_info rows: read-only (write-blocked since PR #2021)
- *   - preferred_channel: COMPAT-ONLY patchContact (no entity-keyed path yet —
- *     preferred_channel lives on contacts.preferred_channel, not entity_facts)
+ *   - preferred_channel: entity-keyed via useSetPreferredChannel /
+ *     useClearPreferredChannel (PUT/DELETE /entities/{id}/preferred-channel),
+ *     backed by the single-valued `prefers-channel` fact. The orphaned
+ *     contacts.preferred_channel CRM column is no longer written.
  * - onLinkContact: callback to open the existing link/unlink flow on the host
  *   page. The actual link/unlink UI is NOT moved into this card.
  */

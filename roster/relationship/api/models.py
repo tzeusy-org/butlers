@@ -112,6 +112,10 @@ class ContactPatchRequest(BaseModel):
 
     All fields are optional; only provided fields are updated.
     ``roles`` is the sole write path for role assignment.
+
+    ``preferred_channel`` is NOT writable here: it is an entity-level preference
+    stored as the single-valued ``prefers-channel`` fact and written via
+    PUT/DELETE /entities/{id}/preferred-channel (entity-keyed-preferred-channel).
     """
 
     full_name: str | None = None
@@ -121,7 +125,6 @@ class ContactPatchRequest(BaseModel):
     company: str | None = None
     job_title: str | None = None
     roles: list[str] | None = None
-    preferred_channel: str | None = None
 
 
 class OwnerSetupStatus(BaseModel):

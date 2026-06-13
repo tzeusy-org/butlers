@@ -171,3 +171,95 @@ class TestClearPreferredChannel:
             resp = await _delete(app)
 
         assert resp.status_code == 404
+
+
+# ===========================================================================
+# COMPAT removal: contact-keyed preferred_channel write path is gone (bu-g0y3m)
+# ===========================================================================
+
+
+class TestContactKeyedWritePathRemoved:
+    """The legacy contact-keyed write of ``contacts.preferred_channel`` via
+    PATCH /contacts/{id} has been removed in favour of the entity-keyed
+    ``prefers-channel`` fact endpoints above. ``ContactPatchRequest`` no longer
+    carries the field, and PATCH /contacts/{id} must never UPDATE the column.
+    """
+
+    def test_contact_patch_request_has_no_preferred_channel_field(self):
+        # The router module is loaded dynamically at app startup; reach its
+        # ContactPatchRequest via the butler registry (mirrors the pattern in
+        # test_relationship_contact_info_migration._get_router_module).
+        app = create_app()
+        router_module = next(m for name, m in app.state.butler_routers if name == "relationship")
+        assert "preferred_channel" not in router_module.ContactPatchRequest.model_fields
+
+    async def test_patch_contact_does_not_write_preferred_channel_column(self):
+        """A PATCH carrying an (now-extra) preferred_channel key must not emit an
+        UPDATE that touches the preferred_channel column."""
+        from uuid import uuid4
+
+        contact_id = uuid4()
+        entity_id = uuid4()
+
+        mock_pool = AsyncMock()
+        # patch_contact only fetchrow's for the roles-entity lookup path when roles
+        # are provided; with just preferred_channel + first_name there are no extra
+        # reads. Provide a generic detail row for the trailing get_contact() call.
+        detail_row = MagicMock()
+        detail_data = {
+            "id": contact_id,
+            "full_name": "Alice",
+            "first_name": "Alice",
+            "last_name": None,
+            "nickname": None,
+            "notes": None,
+            "birthday": None,
+            "company": None,
+            "job_title": None,
+            "address": None,
+            "metadata": {},
+            "created_at": __import__("datetime").datetime.now(__import__("datetime").UTC),
+            "updated_at": __import__("datetime").datetime.now(__import__("datetime").UTC),
+            "roles": [],
+            "entity_id": entity_id,
+            "preferred_channel": None,
+            "last_interaction_at": None,
+        }
+        detail_row.__getitem__ = MagicMock(side_effect=lambda k: detail_data[k])
+        detail_row.get = MagicMock(side_effect=lambda k, d=None: detail_data.get(k, d))
+
+        async def _fetchrow(sql, *args):
+            # Return the contact detail row for the existence check + get_contact
+            # SELECT (both reference the contacts table by id); the secondary
+            # birthday/address lookups in get_contact get None.
+            if "FROM contacts" in sql or "preferred_channel" in sql:
+                return detail_row
+            return None
+
+        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        mock_pool.fetch = AsyncMock(return_value=[])
+        mock_pool.execute = AsyncMock(return_value="UPDATE 1")
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        for butler_name, router_module in app.state.butler_routers:
+            if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+                app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+                break
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # The extra preferred_channel key is silently ignored by the model.
+            resp = await client.patch(
+                f"/api/relationship/contacts/{contact_id}",
+                json={"first_name": "Alice", "preferred_channel": "telegram"},
+            )
+
+        assert resp.status_code == 200
+        # No executed UPDATE statement may mention the preferred_channel column.
+        for call in mock_pool.execute.await_args_list:
+            sql = call.args[0] if call.args else ""
+            assert "preferred_channel" not in sql
