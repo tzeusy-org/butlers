@@ -165,6 +165,17 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 - **AND** a chevron at the bottom-right of the glyph area indicates current state (rotated when expanded)
 - **AND** the group auto-expands when any child route is active
 
+#### Scenario: Sidebar Settings entry (single, un-nested)
+
+- **WHEN** the sidebar renders
+- **THEN** a `Settings` nav item links to `/settings`
+- **AND** no separate sidebar entries exist for `/settings/models`, `/settings/spend`, or `/settings/permissions` — these are reached via the Console panels
+
+#### Scenario: Sidebar Approvals badge source
+
+- **WHEN** the sidebar renders the `Approvals` nav item linking to `/approvals`
+- **THEN** the badge count reflects `header.open_approvals` from `GET /api/settings/console` (or the equivalent live count)
+
 #### Scenario: Footer status summary
 
 - **WHEN** the rail renders its footer
@@ -178,6 +189,8 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 ### Requirement: Full Route Map
 
 The router SHALL define all application routes as children of the root layout. All routes SHALL share the shell, header, error boundary, and sidebar.
+
+The route map SHALL include the Settings Console sub-routes and the ingestion dispatch console sub-routes as first-class child routes (not page-level `?tab=` state).
 
 #### Scenario: Top-level routes
 
@@ -193,7 +206,7 @@ The router SHALL define all application routes as children of the root layout. A
   - `/notifications` -- Notifications center
   - `/issues` -- Issues center
   - `/audit-log` -- Audit log
-  - `/approvals` -- Approvals queue
+  - `/approvals` -- Approvals queue (rendered by `ApprovalsPage`)
   - `/approvals/rules` -- Approval standing rules
   - `/calendar` -- Calendar workspace
   - `/contacts` -- Contacts list
@@ -201,8 +214,57 @@ The router SHALL define all application routes as children of the root layout. A
   - `/groups` -- Groups list
   - `/costs` -- Costs and usage (not in sidebar)
   - `/memory` -- Memory system
-  - `/settings` -- Local UI settings
-  - `/secrets` -- Secrets management
+  - `/ingestion` -- Ingestion Timeline ledger
+  - `/ingestion/connectors` -- Ingestion connector roster
+  - `/ingestion/connectors/:connectorType/:endpointIdentity` -- Ingestion connector detail (parameterized)
+  - `/ingestion/filters` -- Ingestion Filters pipeline
+  - `/settings` -- Settings Console (`SettingsConsolePage`; system-side only)
+  - `/settings/models` -- Settings model catalog (`SettingsModelsPage`)
+  - `/settings/spend` -- Settings spend (`SettingsSpendPage`)
+  - `/settings/permissions` -- Settings permissions (`SettingsPermissionsPage`)
+  - `/secrets` -- Secrets management (per-user OAuth provider setup lives here, not under `/settings`)
+
+#### Scenario: Settings Console routes
+
+- **WHEN** the frontend router is configured
+- **THEN** the following routes are registered, each rendering within the `RootLayout`:
+  - `/settings` → `SettingsConsolePage`
+  - `/settings/models` → `SettingsModelsPage`
+  - `/settings/spend` → `SettingsSpendPage`
+  - `/settings/permissions` → `SettingsPermissionsPage`
+- **AND** the legacy `/settings` → `SettingsPage` registration is REMOVED and `frontend/src/pages/SettingsPage.tsx` is DELETED in the same change
+- **AND** `/settings` is system-side only (catalog, spend, permissions, audit, webhooks)
+
+#### Scenario: Approvals route replacement
+
+- **WHEN** the frontend router is configured
+- **THEN** `/approvals` renders the new `ApprovalsPage` (rewritten in this change), not the legacy page
+
+#### Scenario: Per-user OAuth stays at /secrets
+
+- **WHEN** the frontend router is configured
+- **THEN** provider-setup cards (`GoogleOAuthSection`, `HomeAssistantSetupCard`, `OwnTracksSetupCard`, `SpotifySetupCard`, `SteamSetupCard`, `WhatsAppSetupCard`, `GoogleHealthStatusCard`) are consumed by `SecretsPage` and NOT by any `/settings/*` route
+- **AND** per-user OAuth (Google, Spotify, Telegram, Steam, etc.) lives on `/secrets` to keep `/settings` system-side only
+
+#### Scenario: Ingestion sub-routes share the dashboard shell
+
+- **WHEN** the owner opens `/ingestion/connectors`
+- **THEN** the route renders inside the root dashboard shell
+- **AND** the sidebar and page header remain present
+- **AND** the content is the ingestion connector roster, not a legacy tab panel
+- **AND** these ingestion routes are first-class child routes; the redesigned ingestion surface SHALL NOT rely on a single `/ingestion` component with page-level `?tab=` state as its primary route map
+
+#### Scenario: Ingestion connector detail is route-addressable
+
+- **WHEN** the owner opens `/ingestion/connectors/:connectorType/:endpointIdentity`
+- **THEN** the router loads the connector detail route directly
+- **AND** refresh or deep-link navigation preserves the selected connector
+
+#### Scenario: Legacy tab query state is compatibility only
+
+- **WHEN** a legacy `/ingestion?tab=filters` URL is visited
+- **THEN** the app normalizes it to `/ingestion/filters`
+- **AND** future route ownership remains in `dashboard-ingestion-dispatch-console` rather than the shell spec
 
 ### Requirement: Page Header with Breadcrumbs
 
@@ -640,4 +702,12 @@ Shared utilities SHALL underpin component styling and settings persistence.
 - **WHEN** `localStorage` read or write operations fail (e.g., in private browsing or quota exceeded)
 - **THEN** all settings functions silently catch errors and return fallback values
 - **AND** the application continues to function with default settings
+
+## Source References
+
+- PLAN.md §4 routes contract (`pr/overview/settings-refactor/PLAN.md`).
+- `about/heart-and-soul/design-language.md` — Sidebar/composition: 56px icon rail, one elevation, no nested nav.
+- `about/heart-and-soul/v1.md` — Per-user OAuth (Google, Spotify, Telegram, Steam, etc.) is explicitly out of v1 system-settings scope; OAuth setup remains on `/secrets` to keep `/settings` system-side only.
+- `about/heart-and-soul/vision.md` Non-Negotiable Rule 1 (composure) and Rule 6 (governing-document-driven scope).
+- Ingestion dispatch console route ownership: `dashboard-ingestion-dispatch-console` capability spec (first-class ingestion child routes; legacy `?tab=` state is compatibility only).
 

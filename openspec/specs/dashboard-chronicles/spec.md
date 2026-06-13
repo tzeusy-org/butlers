@@ -13,21 +13,26 @@ promoted from the `add-dashboard-chronicles` OpenSpec change upon archive.
 The dashboard SHALL expose a top-level route `/chronicles` rendered by
 a page component at `frontend/src/pages/ChroniclesPage.tsx`. The route
 SHALL render inside the standard dashboard shell (sidebar + header +
-error boundary).
+error boundary) and SHALL adopt the **editorial archetype** as defined
+in `about/heart-and-soul/design-language.md` for its landing surface.
 
-#### Scenario: Route renders inside shell
+#### Scenario: Editorial archetype landing
 
 - **WHEN** a user navigates to `/chronicles`
 - **THEN** the dashboard shell SHALL render with the sidebar present
-- **AND** the page content area SHALL render the Chronicles widgets
-  (time-window picker, source-state badge strip, Gantt, map,
-  aggregations panel)
+- **AND** the page content SHALL render the editorial archetype layout: a
+  serif Voice column on the left (DateEyebrow, status pill, Display
+  headline, Voice paragraph) and an index rail on the right (KPI strip,
+  attention list, and recent-days index)
+- **AND** the existing workspace components (Gantt, Map, Scrubber,
+  Aggregations, Drawer) SHALL be reachable via a `<ChroniclesDrilldownPanel>`
+  mounted below the editorial fold and lazy-loaded on first interaction
 - **AND** the route SHALL be wrapped in the dashboard's standard
-  `ErrorBoundary` so that widget failures do not crash the shell
+  `ErrorBoundary`
 
 #### Scenario: Operational timeline route preserved
 
-- **WHEN** Chronicles is added
+- **WHEN** Chronicles is rendered
 - **THEN** the existing `/timeline` route SHALL continue to render the
   unified operational stream of sessions, notifications, and errors
   unchanged
@@ -56,16 +61,22 @@ The sidebar nav config in `frontend/src/components/layout/nav-config.ts` SHALL p
 
 ### Requirement: Page-Level Invariants
 
-Chronicles page handlers (frontend hooks, render components) AND backend aggregate / source-state handlers SHALL NOT introduce LLM invocations or cross-schema reads beyond what Chronicler already owns.
+The Chronicles page SHALL keep frontend hooks, render components, and
+backend briefing / attention / KPI handlers inside Chronicler's existing
+ownership boundaries. These handlers SHALL NOT introduce LLM invocations
+or cross-schema reads beyond what Chronicler already owns.
 
 #### Scenario: No new LLM call paths
 
-- **WHEN** the page is rendered, scrolled, scrubbed, or auto-refreshed
-- **THEN** no LLM call SHALL be initiated by page-driven code
-- **AND** the only LLM-bearing user action permitted SHALL be an
-  explicit click that re-invokes the existing scheduled
-  `chronicler_day_close` Tier-2 entry point (RFC 0014 §D5),
-  rate-limited to 1 per day per window
+- **WHEN** the briefing, attention, KPI, or any page-driven endpoint is
+  invoked
+- **THEN** no LLM call SHALL be initiated by the request handler
+- **AND** the only LLM-bearing user action permitted SHALL be an explicit
+  click that re-invokes the existing scheduled `chronicler_day_close`
+  Tier-2 entry point via `POST /api/chronicler/aggregate/day-close/refresh`
+- **AND** the briefing endpoint SHALL source its `voice_paragraph` from
+  `chronicler.tier2_cache` (fresh or stale) or from a deterministic
+  templated fallback; it SHALL NOT call the LLM directly
 
 #### Scenario: No cross-schema reads
 
@@ -75,23 +86,132 @@ Chronicles page handlers (frontend hooks, render components) AND backend aggrega
 - **AND** a guardrail test SHALL fail any change that introduces a
   non-`chronicler.` schema reference in a Chronicles-page handler
 
+### Requirement: Editorial Briefing Endpoint
+
+The chronicler API SHALL expose `GET /api/chronicler/briefing?date=YYYY-MM-DD`
+returning a `ChroniclesBriefing` object whose `voice_paragraph` is sourced
+from the existing day-close Tier-2 cache or from a deterministic
+templated fallback. The endpoint SHALL NOT initiate an LLM call.
+
+#### Scenario: Response shape
+
+- **WHEN** the endpoint returns successfully
+- **THEN** the response body contains: `date`, `state_class` (one of
+  `urgent`, `busy`, `mild`, `quiet`), `headline` (string), `voice_paragraph`
+  (string), `voice_source` (one of `llm·cached`, `templated`, `stale`),
+  `kpi` (object), `attention_items` (array), `recent_days` (array)
+- **AND** every numeric field is `tabular-nums` safe (integer or fixed
+  decimal)
+
+#### Scenario: Day-close cache fresh
+
+- **WHEN** `chronicler.tier2_cache` has a row with
+  `cache_key = day_close:{date}` whose staleness check passes
+- **THEN** `voice_paragraph` is the cached `prose`
+- **AND** `voice_source` is `llm·cached`
+
+#### Scenario: Day-close cache stale
+
+- **WHEN** the cache row exists but the staleness check identifies an
+  invalidating change
+- **THEN** `voice_paragraph` is the cached prose
+- **AND** `voice_source` is `stale`
+
+#### Scenario: Day-close cache missing
+
+- **WHEN** no cache row exists for the requested date
+- **THEN** `voice_paragraph` is a deterministic templated string keyed by
+  `state_class` and the KPI shape
+- **AND** `voice_source` is `templated`
+
+#### Scenario: State classification
+
+- **WHEN** there is at least one attention item with severity `high`
+- **THEN** `state_class` is `urgent`
+- **WHEN** there are three or more attention items, none `high`
+- **THEN** `state_class` is `busy`
+- **WHEN** there are one or two attention items, none `high`
+- **THEN** `state_class` is `mild`
+- **WHEN** there are zero attention items
+- **THEN** `state_class` is `quiet`
+
+### Requirement: Editorial Attention Endpoint
+
+The chronicler API SHALL expose `GET /api/chronicler/attention` returning
+the list of attention items the briefing surfaces.
+
+#### Scenario: Anomaly source: short sleep
+
+- **WHEN** today's sleep_minutes is less than 0.7 × the median sleep_minutes
+  of the prior seven days
+- **THEN** an attention item with `kind = anomaly`, severity `medium`,
+  and a title naming "Short sleep" is included
+
+#### Scenario: Anomaly source: waking gap
+
+- **WHEN** the contiguous gap between consecutive episodes within the
+  window exceeds six hours during waking hours (06:00–22:00 in the
+  owner's timezone)
+- **THEN** one attention item per qualifying gap is included with
+  `kind = anomaly`, severity `low`
+
+#### Scenario: Source health degradation
+
+- **WHEN** any chronicler source-state row carries a non-null `last_error`
+  in the last twenty-four hours OR a non-null `inactive_reason`
+- **THEN** an attention item with `kind = source_health` is included,
+  severity `high` for `last_error`, severity `medium` for
+  `inactive_reason`, and an `action_href` pointing to the connector page
+
+#### Scenario: Open corrections
+
+- **WHEN** override rows exist whose target episode lies within the
+  active window and whose `corrected_tombstone_at` is null
+- **THEN** a single attention item with `kind = open_correction` is
+  included carrying the count of unresolved overrides
+
+### Requirement: Editorial KPI Endpoint
+
+The chronicler API SHALL expose `GET /api/chronicler/kpi?date=YYYY-MM-DD`
+returning the KPI snapshot the briefing also embeds.
+
+#### Scenario: KPI fields
+
+- **WHEN** the endpoint returns successfully
+- **THEN** the response includes `hours_by_top_lanes` (top three by
+  total minutes), `longest_episode_minutes`, `longest_episode_title`,
+  `longest_gap_minutes`, `sleep_minutes`, and `streaks` (a small object
+  with `sleep` and `exercise` integer streak counts)
+
 ### Requirement: Category Taxonomy Mapping
 
 A pure deterministic backend function SHALL map every
 `(source_name, episode_type)` pair to a stable category string. The
-frontend SHALL own the visual presentation (colour, label, icon)
-keyed off the returned category.
+frontend SHALL own the visual presentation (colour, label, icon) keyed
+off the returned category. The taxonomy SHALL retain its existing ten
+categories: `conversations`, `tasks`, `calendar`, `music`, `gaming`,
+`travel`, `sleep`, `meal`, `home`, `other`.
 
 #### Scenario: Deterministic mapping function
 
 - **WHEN** the backend computes the `category` field for an episode
   or aggregate bucket record
-- **THEN** the result SHALL be one of `work`, `calendar`, `music`,
-  `gaming`, `travel`, `sleep`, `meal`, `home`, or `other`
+- **THEN** the result SHALL be one of `conversations`, `tasks`,
+  `calendar`, `music`, `gaming`, `travel`, `sleep`, `meal`, `home`, or
+  `other`
 - **AND** the mapping function SHALL be pure (no I/O, no LLM)
 - **AND** a unit test SHALL assert that every `(source_name,
   episode_type)` projected by an active adapter maps to a non-`other`
   category
+
+#### Scenario: New episode types fold into existing categories
+
+- **WHEN** the backend computes the `category` field for an episode
+- **AND** the source / episode_type pair is one of the new types
+- **THEN** `(google_health.measurements, workout_episode) → other`
+- **AND** `(chronicler.focus_inferred, focus_block) → tasks`
+- **AND** `(chronicler.reading_inferred, reading_block) → tasks`
+- **AND** no new category string SHALL be introduced
 
 #### Scenario: Frontend lane taxonomy is source of truth for visuals
 
@@ -143,10 +263,22 @@ explicitly deferred.
 
 ### Requirement: Map Render Privacy Contract
 
-The map widget SHALL enforce privacy and tombstone rules at render
-time. Default API parameters SHALL produce a privacy-safe view; the
-frontend SHALL NOT relax defaults without an explicit user-toggle
-gated by a future settings surface.
+The map widget and Gantt swimlane SHALL enforce privacy and tombstone
+rules at render time. Default API parameters SHALL produce a
+privacy-safe view; the frontend SHALL NOT relax defaults without an
+explicit user-toggle gated by the `Per-Recipient Masking Toggle`
+requirement.
+
+The classification of a row as `sensitive` is a source-level decision
+made by the projection adapter — it does NOT imply that the dashboard
+viewer is untrusted. Per the owner-view doctrine in
+`about/heart-and-soul/security.md` L168–185, the Butlers instance has
+a single trusted viewer (the owner) and "the system does not apply
+differential privacy, anonymization, or special-purpose encryption to
+any data category." Adapters SHOULD therefore default to
+`privacy=normal` for owner-originated data; the `sensitive` tier exists
+for rows whose payload masks make sense for shared, screenshot, or
+third-party views once the per-recipient toggle is implemented.
 
 #### Scenario: Restricted episodes excluded entirely
 
@@ -163,10 +295,17 @@ gated by a future settings surface.
 #### Scenario: Sensitive episodes masked
 
 - **WHEN** an episode has `privacy_tier = sensitive`
+- **AND** the dashboard is rendering for the owner with no per-recipient
+  masking toggle engaged
 - **THEN** the Gantt SHALL render the lane bar as a generic masked
   entry (no title, no payload contents)
 - **AND** the map SHALL NOT plot any coordinates derived from that
   episode or its linked point events
+- **AND** the spec MAKES NO CLAIM about which adapters emit `sensitive`
+  rows by default — that decision lives with each projection adapter
+  per the owner-view doctrine. As of `core_086`, no in-tree adapter
+  defaults to `sensitive`; rows reach this tier only via per-row
+  corrections or future adapter changes.
 
 #### Scenario: Tombstoned data excluded by default
 
@@ -180,10 +319,78 @@ gated by a future settings surface.
 #### Scenario: Retention enforcement is upstream
 
 - **WHEN** retention windows expire on a source (e.g. OwnTracks
-  default 30-day retention per `security.md` L172–175)
+  default 30-day retention per `about/heart-and-soul/security.md`
+  L172–175)
 - **THEN** the projection adapter and storage layer SHALL drop expired
   rows
 - **AND** the map widget SHALL NOT add a separate retention filter
+
+### Requirement: Per-Recipient Masking Toggle
+
+The Chronicles dashboard SHALL gate the relaxation of `sensitive`-tier
+masking on an explicit viewer-context signal. The default rendering
+posture SHALL be fail-safe-closed: in the absence of a viewer-context
+that identifies the viewer as the owner, all `sensitive`-tier episodes
+and their derived map coordinates SHALL be rendered as masked
+envelopes per the `Sensitive episodes masked` scenario.
+
+This requirement is forward-looking. The current dashboard runs only
+for the owner behind session-cookie auth, so today the viewer is
+unconditionally the owner and `sensitive` masking is effectively
+inactive (because no in-tree adapter emits `sensitive` rows by
+default). The requirement codifies the contract the dashboard MUST
+satisfy *if* shared-link, screenshot-publish, or third-party viewer
+flows are added in the future.
+
+The shape of the viewer-context plumbing (session role enum, share-link
+tokens, screenshot-mode flag) is OUT OF SCOPE for this requirement —
+those decisions belong to the implementing change.
+
+#### Scenario: Owner viewer renders sensitive rows fully
+
+- **WHEN** the dashboard renders for a viewer whose viewer-context
+  identifies them as the owner
+- **AND** an episode has `privacy_tier = sensitive`
+- **THEN** the Gantt bar and map coordinates for that episode SHALL
+  render with full title and payload, exactly as if the episode were
+  `privacy_tier = normal`
+- **AND** no per-row toggle SHALL be required for the owner to see
+  their own data
+
+#### Scenario: Non-owner viewer triggers fail-safe masking
+
+- **WHEN** the dashboard renders for a viewer whose viewer-context
+  does NOT identify them as the owner (e.g. a share-link viewer, a
+  screenshot-publish render, a future third-party viewer)
+- **AND** an episode has `privacy_tier = sensitive`
+- **THEN** the Gantt SHALL render the lane bar as a generic masked
+  entry (no title, no payload contents) per the `Sensitive episodes
+  masked` scenario
+- **AND** the map SHALL NOT plot any coordinates derived from that
+  episode or its linked point events
+- **AND** there SHALL be no frontend escape hatch — relaxation of the
+  mask SHALL require an explicit owner-side configuration change, not
+  a viewer-side toggle
+
+#### Scenario: Absent viewer-context is treated as non-owner
+
+- **WHEN** the dashboard renders without a resolvable viewer-context
+  (e.g. unauthenticated request, missing session, malformed token)
+- **THEN** the page SHALL apply the non-owner masking posture
+  (fail-safe-closed)
+- **AND** the page MAY additionally redirect to authentication, but
+  SHALL NOT render unmasked `sensitive` content while the
+  viewer-context is unresolved
+
+#### Scenario: Toggle state is observable for audit
+
+- **WHEN** the dashboard renders for any viewer
+- **THEN** the rendered page SHALL expose the resolved viewer-context
+  classification (owner / non-owner / unresolved) in a way an
+  end-to-end test or audit log can read (e.g. a `data-viewer-role`
+  attribute on a stable container element)
+- **AND** the audit signal SHALL NOT itself be a vector for relaxing
+  the mask — reading the role does not change it
 
 ### Requirement: Day-Close Cache Invalidation
 
@@ -268,6 +475,34 @@ documented in this spec and in the change's design.md.
   `craft-and-care/performance-discipline.md` measure-before-optimize
 - **AND** any regression SHALL be discussed in the PR description
 
+### Requirement: Map Widget Style-Load Resilience
+
+The map widget SHALL defer source and layer mutations until the
+underlying MapLibre tile style has finished loading. Calling
+`map.addSource(...)` or `map.addLayer(...)` synchronously after
+`new maplibreGl.Map(...)` throws `Style is not done loading` because
+the style fetch is asynchronous; that exception bubbles into
+`MapErrorBoundary` and renders the user-visible `Failed to load the
+map. Try again` fallback even when valid trail or point data exists.
+
+#### Scenario: Trail-only first mount succeeds
+
+- **WHEN** the Chronicles page mounts the map widget for the first
+  time with `points = []` and `trailPoints` containing two or more
+  coordinate pairs
+- **THEN** the map canvas SHALL render the OSM tile layer plus the
+  trail line layer
+- **AND** the widget SHALL NOT fall through to the
+  `MapErrorBoundary` fallback
+
+#### Scenario: Trail data updates after style is loaded use setData
+
+- **WHEN** the map style has already loaded AND `trailPoints` updates
+- **THEN** the existing trail GeoJSON source SHALL be updated via
+  `setData(...)` rather than re-added
+- **AND** no re-mount of the map instance SHALL occur for trail-only
+  changes
+
 ### Requirement: Page Telemetry
 
 Backend handlers serving the page SHALL emit OTel spans for the new endpoints so that operational health is observable without log scraping. Client-side telemetry is out of scope for this change.
@@ -281,4 +516,18 @@ Backend handlers serving the page SHALL emit OTel spans for the new endpoints so
   `chronicler.aggregate.day_close`, or `chronicler.source_state`
 - **AND** the span SHALL record query latency and the resulting bucket
   count (or, for source-state and day-close, the row / cache state)
+
+## Source References
+
+- `about/heart-and-soul/design-language.md` — editorial archetype
+  definition for the Chronicles landing surface.
+- `about/heart-and-soul/security.md` L168–185 — owner-view doctrine
+  (single trusted viewer; no differential privacy/anonymization).
+- `about/heart-and-soul/security.md` L172–175 — OwnTracks default
+  30-day retention enforced upstream of the map widget.
+- RFC 0014 §D5 — scheduled `chronicler_day_close` Tier-2 entry point.
+- `craft-and-care/performance-discipline.md` — measure-before-optimize
+  discipline for the `maplibre-gl` bundle measurement.
+- `core_086` — baseline at which no in-tree projection adapter defaults
+  to the `sensitive` privacy tier.
 

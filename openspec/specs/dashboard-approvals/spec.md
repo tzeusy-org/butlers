@@ -1,4 +1,12 @@
-## MODIFIED Requirements
+## Purpose
+
+The dashboard-approvals capability defines the API surface and dashboard UX for
+the human-in-the-loop approvals queue: listing approval actions, viewing action
+detail, deciding actions (approve/deny/defer), managing notification policy
+(quiet hours), streaming lifecycle events, and surfacing autonomy promotion/
+demotion suggestions.
+
+## Requirements
 
 ### Requirement: Approvals action list API
 
@@ -18,6 +26,8 @@ The response MUST be a `PaginatedResponse<ApprovalAction>` where each `ApprovalA
 - `butler` -- string name of the butler that owns the action
 - `status` -- one of `"pending"`, `"approved"`, `"rejected"`, `"expired"`, `"executed"`
 - `description` -- string human-readable description of the action
+- `why` -- string | null serif paragraph explaining why human input is needed
+- `evidence` -- string[] | null array of mono evidence lines
 - `constraints` -- object mapping constraint names to their values (tool-specific structure)
 - `created_at` -- ISO 8601 timestamp when the action was created
 - `expires_at` -- ISO 8601 timestamp when the action will expire if not decided
@@ -26,6 +36,16 @@ The response MUST be a `PaginatedResponse<ApprovalAction>` where each `ApprovalA
 - `rule_id` -- string UUID of the rule that auto-approved (null if manual or not approved)
 - `execution_count` -- integer count of times this action has been executed (0 if not executed)
 - `target_contact` -- object (nullable) containing resolved target contact info: `id` (UUID), `name` (string), `roles` (string array). Null if the action does not target a specific contact.
+
+#### Scenario: List with new fields populated
+
+- **WHEN** `GET /api/approvals/actions` is called and the underlying `pending_actions` rows have `why` and `evidence` populated
+- **THEN** the response includes the `why` paragraph and `evidence` array on each `ApprovalAction` row.
+
+#### Scenario: List with legacy rows
+
+- **WHEN** `GET /api/approvals/actions` is called and the underlying `pending_actions` rows have `why = NULL` and `evidence = []` (pre-migration data)
+- **THEN** the response includes `why: null` and `evidence: []` on those rows; the rest of the row is unchanged.
 
 #### Scenario: Fetch pending approval actions
 
@@ -74,95 +94,123 @@ The response MUST be a `PaginatedResponse<ApprovalAction>` where each `ApprovalA
 
 ---
 
-### Requirement: Approvals queue dashboard page
+### Requirement: Approvals Page in Dispatch Language
 
-The frontend SHALL render an approvals dashboard page at `/approvals` displaying pending and managed approval actions with metrics, autonomy suggestions, and detail views.
+The dashboard SHALL render `/approvals` in the Dispatch design language as a replacement (not a duplicate) for the legacy approvals page.
 
-The page MUST contain the following sections:
-
-1. **Autonomy suggestions banner** (conditional, above metrics):
-   - Displayed only when pending promotion or demotion suggestions exist
-   - Shows suggestion cards with scope description, approval count, and confirm/dismiss actions
-
-2. **Metrics cards** at the top:
-   - Pending count card
-   - Approved count card (with trend from previous day/week)
-   - Rejected count card (with trend)
-   - Auto-approved count card (with trend)
-   - Average time-to-decision card
-   - Rules count badge
-   - Active suggestions count badge
-
-3. **Approval actions table** with:
-   - Columns: tool name, description (truncated), target contact (name and role badges), status badge, created timestamp, expiration countdown, action buttons
-   - Filterable by: tool name, status, date range
-   - Sortable by: created date, status
-   - Row click opens action detail dialog
-   - Action buttons: Approve, Reject, View Details
-
-4. **Pagination** for the actions list
-
-#### Scenario: Approvals page loads with metrics and suggestions
+#### Scenario: Approvals page layout
 
 - **WHEN** a user navigates to `/approvals`
-- **THEN** the page MUST display metric cards showing current pending count, approved/rejected/auto-approved counts
-- **AND** the pending actions table MUST be populated and sorted by created date descending
-- **AND** the rules count badge MUST show the total number of active rules
-- **AND** if pending suggestions exist, the autonomy suggestions banner MUST be displayed above the metrics
+- **THEN** the page renders, in vertical order:
+  - **Page header**: title "Approvals", mono eyebrow "system · approvals", clock.
+  - **Two-pane body**: left rail of pending approvals (rule-separated rows), right pane dossier of the selected approval.
+  - **Dossier body**: `title` headline (sans 500, 22px), `why` serif paragraph (`max-width: 50ch`), `evidence` mono lines (rule-separated), `proposed_action` summary, primary `Approve` commit button, secondary `Deny` and `Defer` pill buttons.
+  - **Policy section** below the body: quiet-hours editor (`start_hour`, `end_hour`, `timezone`).
+  - **History section** at the bottom: last 30 decided approvals from `GET /api/approvals/history`.
+- **AND** the page contains no Kanban-style columns, no charts, no cards.
 
-#### Scenario: Active suggestions count in metrics
+#### Scenario: Legacy page deleted in same PR
 
-- **WHEN** pending promotion or demotion suggestions exist
-- **THEN** the metrics section MUST include a badge showing the count of active suggestions
+- **WHEN** the new `ApprovalsPage` lands
+- **THEN** the legacy approvals component (the prior `ApprovalsPage` content) is REMOVED in the same PR
+- **AND** no parallel `/approvals/legacy` route exists.
 
-#### Scenario: Target contact shown in actions table
+#### Scenario: Target contact shown in approval dossier
 
 - **WHEN** a pending `notify` action targets contact "Chloe" with `roles = []`
-- **THEN** the actions table MUST display "Chloe" in the target contact column
+- **THEN** the dossier MUST display "Chloe" as the target contact
 - **AND** the role badges MUST be empty (non-owner)
 
 #### Scenario: Owner-targeted action shows owner badge
 
 - **WHEN** a pending action targets the owner contact with `roles = ['owner']`
-- **THEN** the target contact column MUST display the owner's name with an "owner" role badge
-
-#### Scenario: Filter actions by tool and status
-
-- **WHEN** a user selects `tool_name = "notify"` and `status = "pending"` in the filters
-- **THEN** the table MUST update to show only pending notify approval actions
-- **AND** the metric cards MUST update to reflect the filtered subset
-
-#### Scenario: Action detail dialog
-
-- **WHEN** a user clicks on an action row or "View Details" button
-- **THEN** a modal dialog MUST open showing:
-  - Action ID
-  - Tool name
-  - Description
-  - Full constraints (formatted JSON or key-value pairs)
-  - Target contact name, roles, and link to `/butlers/contacts/{contact_id}` (if applicable)
-  - Status and decision timestamp
-  - Decided-by information
-  - If approved/rejected: option to view or create related rule
-  - If pending: Approve and Reject buttons
-
-#### Scenario: Approve action from detail dialog
-
-- **WHEN** a user clicks "Approve" in the action detail dialog
-- **THEN** the approval call MUST be sent to `POST /api/approvals/actions/{actionId}/approve`
-- **AND** the dialog MUST close
-- **AND** the table MUST refresh showing the action's new status
+- **THEN** the dossier MUST display the owner's name with an "owner" role badge
 
 #### Scenario: Expiring action countdown
 
 - **WHEN** an action's expiration time is within 1 hour
-- **THEN** the expiration countdown in the table MUST display in a warning color (e.g., red or orange)
+- **THEN** the expiration countdown MUST display in a warning color (e.g., red or orange)
 
 #### Scenario: Empty state when no actions
 
-- **WHEN** a user navigates to `/approvals` with no pending or recent actions
+- **WHEN** a user navigates to `/approvals` with no pending or recent approvals
 - **THEN** the page MUST display an empty state message (e.g., "No pending approvals")
-- **AND** the metrics cards MUST show zero values
+
+### Requirement: Approvals Flat List API
+
+The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all` as a flat-list view complementing the existing `GET /api/approvals/actions` paginated list.
+
+#### Scenario: Filter by state
+
+- **WHEN** `GET /api/approvals?state=waiting` is called
+- **THEN** the response is `ApiResponse[ApprovalSummary[]]` containing only actions in `pending` state, ordered `created_at DESC`.
+- **WHEN** `GET /api/approvals?state=decided` is called
+- **THEN** the response contains actions in `approved | rejected | expired | executed` states.
+- **WHEN** `GET /api/approvals?state=all` is called or `state` is omitted
+- **THEN** all states are included.
+
+### Requirement: Approval Detail API
+
+The dashboard SHALL expose `GET /api/approvals/{id}` returning the full dossier for one approval.
+
+#### Scenario: Detail response shape
+
+- **WHEN** `GET /api/approvals/{id}` is called
+- **THEN** the response is `ApiResponse[ApprovalDetail]` with fields `id`, `title`, `butler`, `created_at` (alias `ts`), `expires_at` (alias `expires`), `why` (string | null — serif paragraph), `evidence` (string[] | null — mono lines), `proposed_action` (object describing the tool call being approved).
+- **AND** when `why` or `evidence` is null (legacy row), the UI renders a serif-italic empty state for the missing section.
+
+### Requirement: Approval Verbs
+
+The dashboard SHALL expose explicit verb endpoints for approve, deny, and defer.
+
+#### Scenario: Approve with optional edits
+
+- **WHEN** `POST /api/approvals/{id}/approve {edits?: object}` is called
+- **THEN** the action is approved with any supplied `edits` applied to its arguments
+- **AND** `audit.append("approval.approve", target=action_id, note=json.dumps(edits))` is invoked
+- **AND** the underlying tool is executed via the shared executor (existing module-approvals behavior).
+
+#### Scenario: Deny with reason
+
+- **WHEN** `POST /api/approvals/{id}/deny {reason?: str}` is called
+- **THEN** the action transitions to `rejected`
+- **AND** `audit.append("approval.deny", target=action_id, note=reason)` is invoked.
+
+#### Scenario: Defer with bounded hours
+
+- **WHEN** `POST /api/approvals/{id}/defer {hours: int}` is called
+- **THEN** the call is rejected with `422` unless `1 ≤ hours ≤ 168`
+- **AND** on success, the action's `expires_at` is extended by `hours` and the notification re-presentation timer is reset to `now + hours`
+- **AND** `audit.append("approval.defer", target=action_id, note=str(hours))` is invoked.
+
+### Requirement: Approvals Policy (Quiet Hours)
+
+The dashboard SHALL expose `GET/PUT /api/approvals/policy` to manage notification quiet hours.
+
+#### Scenario: Read policy
+
+- **WHEN** `GET /api/approvals/policy` is called
+- **THEN** the response is `ApiResponse[ApprovalsPolicy]` with `quiet_start_hour: int` (0–23), `quiet_end_hour: int` (0–23), `timezone: str` (IANA).
+
+#### Scenario: Update policy
+
+- **WHEN** `PUT /api/approvals/policy` is called with the same shape
+- **THEN** the singleton row is updated and `audit.append("approvals.policy")` is invoked.
+
+#### Scenario: Quiet hours suppress paging
+
+- **WHEN** the notification dispatcher is about to page the owner for a new approval
+- **THEN** if the current time in `timezone` falls within `[quiet_start_hour, quiet_end_hour)`, the page is deferred until `quiet_end_hour`
+- **AND** the approval is still created and visible in the dashboard immediately.
+
+### Requirement: Approvals Live Stream
+
+The dashboard SHALL expose `WS /api/approvals/stream` emitting approval lifecycle events.
+
+#### Scenario: Stream event shape
+
+- **WHEN** an approval transitions state
+- **THEN** an event `{type: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired", action_id, ts}` is broadcast.
 
 ---
 
@@ -282,3 +330,9 @@ The approvals dashboard page at `/approvals` SHALL include a new "Autonomy Sugge
 - **THEN** the dashboard MAY show an optional reason input
 - **AND** MUST call `POST /api/approvals/suggestions/{id}/dismiss`
 - **AND** the card MUST be removed from the suggestions section on success
+
+## Source References
+
+- PLAN.md §5 `/approvals` API surface and §6 Phase 6 implementation order.
+- `pr/overview/settings-refactor/settings-expanded.jsx :: ApprovalsPage` is the visual reference.
+- Reuses `audit.append()` from dashboard-audit-log on every mutation.

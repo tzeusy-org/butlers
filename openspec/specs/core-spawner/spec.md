@@ -260,7 +260,7 @@ The system prompt is read from `CLAUDE.md` in the butler's config directory. Inc
 - **AND** the invocation proceeds with the system prompt without context preamble
 
 ### Requirement: Dynamic Model Resolution at Spawn Time
-The spawner SHALL resolve the model dynamically at spawn time using the model catalog instead of reading a static model from `butler.toml`. The `trigger()` method gains a `complexity` parameter that drives model selection.
+The spawner SHALL resolve the model dynamically at spawn time using the model catalog instead of reading a static model from `butler.toml`. The `trigger()` method gains a `complexity` parameter that drives model selection. The spawner MAY use same-tier failover only after the initial catalog candidate has been selected.
 
 #### Scenario: Trigger with complexity parameter
 - **WHEN** `trigger(prompt, trigger_source, complexity="high")` is called
@@ -287,6 +287,59 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 #### Scenario: Session record includes model resolution metadata
 - **WHEN** a session is created via `session_create()`
 - **THEN** the session record includes: the resolved `model` (model_id from catalog or the static fallback constant), `runtime_type`, `complexity` tier, and resolution source (`catalog` or `static_fallback`)
+
+#### Scenario: Initial catalog candidate establishes failover tier
+- **WHEN** `resolve_model()` returns a catalog result for a trigger
+- **THEN** the spawner SHALL treat that result's effective complexity tier as the
+  failover tier for the logical session
+- **AND** subsequent automatic failover attempts SHALL use only that exact tier
+
+#### Scenario: Catalog resolution failure uses static fallback
+- **WHEN** initial catalog resolution returns `None` for every eligible tier or raises
+  before a catalog candidate is selected
+- **THEN** the spawner SHALL use the existing static fallback behavior
+- **AND** same-tier model failover SHALL NOT run because no catalog tier was established
+
+### Requirement: Runtime Failure Classification
+The spawner SHALL classify runtime failures before deciding whether automatic model
+failover is safe.
+
+#### Scenario: Systemic runtime failure is eligible
+- **WHEN** a runtime adapter fails before any side-effect-capable work is observed
+- **AND** the failure is classified as systemic infrastructure or provider failure
+- **THEN** the spawner MAY attempt same-tier model failover if another eligible
+  candidate exists
+
+#### Scenario: Captured tool calls make failure ineligible
+- **WHEN** captured tool calls for the failed attempt are non-empty
+- **THEN** the spawner SHALL classify the failure as not failover-eligible
+- **AND** it SHALL NOT start a second model attempt for the same logical session
+
+#### Scenario: Classifier defaults closed
+- **WHEN** the classifier receives an unknown exception type, ambiguous adapter error,
+  or incomplete process metadata
+- **THEN** it SHALL classify the failure as not failover-eligible
+
+### Requirement: Logical Session Attempt Orchestration
+The spawner SHALL keep automatic model failover attempts bounded and auditable.
+
+#### Scenario: Successful fallback completes logical session once
+- **WHEN** the primary model fails with a failover-eligible error
+- **AND** a fallback model succeeds
+- **THEN** exactly one logical session completion SHALL be recorded
+- **AND** the session's final model SHALL be the successful fallback model
+- **AND** provenance SHALL record the failed primary attempt
+
+#### Scenario: Non-eligible failure completes without retry
+- **WHEN** a runtime invocation fails with a non-failover-eligible error
+- **THEN** the spawner SHALL preserve existing failure behavior
+- **AND** it SHALL record no fallback invocation
+
+#### Scenario: Attempt cap prevents infinite retry
+- **WHEN** same-tier failover is active
+- **THEN** the number of attempts SHALL be bounded by the number of eligible same-tier
+  catalog candidates
+- **AND** no catalog entry SHALL be invoked more than once for the same logical session
 
 ### Requirement: Drain for Shutdown
 The spawner supports `stop_accepting()` to reject new triggers and `drain(timeout)` to wait for in-flight sessions to complete, cancelling remaining sessions after timeout.
@@ -400,3 +453,21 @@ Scope: v1-mandatory
 #### Scenario: Concurrency change requires restart
 - **WHEN** a user changes `max_concurrent` via the dashboard
 - **THEN** the change SHALL NOT take effect until the daemon is restarted
+
+### Requirement: Ingestion Event Propagation Through Trigger Pipeline
+`Spawner.trigger()` SHALL accept an optional `ingestion_event_id` parameter and pass it unchanged through `_run()` to `session_create()`. Callers that originate from a switchboard ingest (routing handlers in particular) SHALL provide this parameter so the resulting session row joins back to the `public.ingestion_events.id` that produced it. Internally-triggered sessions (tick, scheduler, manual trigger) MAY omit it.
+
+#### Scenario: Route handler propagates the ingestion event UUID
+- **WHEN** `route_inbox_processing` invokes `_spawner.trigger(...)` for a routed message
+- **THEN** the call SHALL pass `ingestion_event_id=<route_request_id>` (which is the same UUID7 the switchboard ingest writes into `public.ingestion_events.id`)
+- **AND** the resulting `{schema}.sessions` row SHALL have `ingestion_event_id = <route_request_id>`
+
+#### Scenario: Tick / schedule sessions omit ingestion event id
+- **WHEN** a scheduler-fired or tick-fired session calls `Spawner.trigger(...)`
+- **THEN** the call SHALL leave `ingestion_event_id` at its default (`None`)
+- **AND** the resulting session row SHALL have `ingestion_event_id = NULL`
+
+#### Scenario: Spawner trigger signature stable across runtimes
+- **WHEN** any runtime adapter (`opencode`, `codex`, `claude_code`) is invoked through the spawner
+- **THEN** the `ingestion_event_id` value SHALL remain a property of the session row only and SHALL NOT be exposed to the runtime process via env, prompt prefix, or MCP context
+- **AND** runtime adapters SHALL NOT accept this parameter — the propagation chain ends at `session_create`

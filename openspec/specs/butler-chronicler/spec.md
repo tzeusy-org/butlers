@@ -4,7 +4,7 @@
 
 The Chronicler butler is a domain butler that reconstructs past time from already-captured evidence across the Butlers ecosystem. It owns retrospective time reconstruction with point events, overlapping episodes, correction overlays, and source projection adapters. Chronicler reads from approved migration-tracked source surfaces, writes only to its own schema, preserves source provenance, precision, and uncertainty on every row, and never invokes an LLM per ingestion event. Per RFC 0014, Chronicler does not plan, schedule, dispatch, ingest externally, or notify.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Butler Identity and Wire Contract
 
@@ -52,9 +52,9 @@ evidence and SHALL NOT plan, schedule, dispatch, ingest externally, or notify.
 
 ### Requirement: Storage Shape
 
-The Chronicler schema SHALL contain point events, episodes, episode-event
-links, overrides, projection checkpoints, source adapter state, and
-idempotency keys.
+The Chronicler schema SHALL contain point events, episodes,
+**episode-entity links**, episode-event links, overrides, projection
+checkpoints, source adapter state, and idempotency keys.
 
 #### Scenario: Point events and episodes separated
 
@@ -77,6 +77,68 @@ idempotency keys.
 - **THEN** the stored row SHALL be updated in place via its
   `(source_name, source_ref)` idempotency key
 - **AND** no duplicate row SHALL be created
+- **AND** episode-entity links for the replayed episode SHALL be
+  replaced atomically (DELETE-then-INSERT within the same transaction)
+  so attendee removals and additions on the upstream source propagate
+  on the next adapter run
+
+#### Scenario: Episode-entity link cardinality
+
+- **WHEN** a multi-participant event (such as a Google Calendar meeting)
+  is projected as an episode
+- **THEN** exactly ONE row SHALL be inserted into `episodes` for the
+  upstream event, keyed by `(source_name, source_ref)` as today
+- **AND** every participant entity that the upstream source has already
+  resolved SHALL appear as a row in `episode_entities` referencing the
+  episode's `id` and the participant's `entity_id`
+- **AND** the participant's role SHALL be recorded as one of `'owner'`,
+  `'organizer'`, or `'participant'`
+- **AND** unresolved attendees (no entity match in `public.entities`)
+  SHALL NOT create rows; they remain visible in the source-side
+  payload but not in the chronicler join
+
+#### Scenario: Episode entity link table contract
+
+- **WHEN** the `chronicler.episode_entities` table is created
+- **THEN** its primary key SHALL be `(episode_id, entity_id)` to
+  enforce per-attendee idempotency
+- **AND** `episode_id` SHALL have an ON DELETE CASCADE reference to
+  `chronicler.episodes(id)` so episode tombstones cascade to the join
+- **AND** the table SHALL NOT enforce a foreign key on `entity_id`
+  against `public.entities(id)` (matching the existing
+  `chronicler.episodes.entity_id` convention so chronicler boots in
+  deployments where the relationship butler schema is not yet wired)
+
+#### Scenario: Derived owner column preserved during transition
+
+- **WHEN** an episode has at least one `episode_entities` row with
+  `role='owner'`
+- **THEN** the canonical `chronicler.episodes.entity_id` column SHALL
+  hold that same owner UUID
+- **AND** the adapter SHALL write both the column and the join in the
+  same transaction so they cannot drift
+- **AND** after the cleanup follow-up migration the
+  `episodes.entity_id` column SHALL be dropped, leaving the join table
+  as the sole entity surface
+
+#### Scenario: Missing upstream join table degrades gracefully
+
+- **WHEN** a calendar adapter runs against a butler schema whose
+  upstream `calendar_event_entities` table is absent (calendar module
+  not installed on this deployment)
+- **THEN** the adapter SHALL emit a debug-level log
+- **AND** it SHALL write only the owner row (if resolvable) into
+  `episode_entities`
+- **AND** it SHALL NOT raise
+
+#### Scenario: Multi-entity does NOT cross the LLM-free boundary
+
+- **WHEN** the calendar adapter resolves participants
+- **THEN** it SHALL read the entity set already resolved by the calendar
+  module's `_upsert_event_entities` write path
+- **AND** it SHALL NOT invoke an LLM for attendee classification or
+  entity resolution
+- **AND** the no-per-event-LLM invariant from RFC 0014 §D5 SHALL hold
 
 ### Requirement: Correction Overlay Model
 
@@ -199,11 +261,112 @@ requests to Chronicler.
 - **WHEN** a Spotify/Steam/OwnTracks/Google-Health event is ingested
 - **THEN** it SHALL route to its owning domain butler, NOT Chronicler
 
+### Requirement: Cross-Schema Fan-Out Collapse
+
+Chronicler projection adapters SHALL collapse a single upstream event mirrored across multiple butler schemas into exactly one chronicler episode by deriving the episode's `source_ref` from the upstream identifier (not the per-schema row id), so the persistent `(source_name, source_ref)` upsert key naturally dedups the fan-out independent of which schema the row was read from first.
+
+#### Scenario: Calendar event present in multiple butler schemas
+
+- **WHEN** the same Google Calendar event appears in three or more
+  `{schema}.calendar_event_instances` tables (because three or more
+  butlers have the calendar module enabled)
+- **THEN** `chronicler.episodes` SHALL contain exactly one row for
+  that upstream event
+- **AND** the episode's `source_ref` SHALL be derived from
+  `origin_instance_ref` (the upstream Google Calendar instance ID),
+  NOT from the per-schema `calendar_event_instances.id`
+
+#### Scenario: Same upstream instance synced under multiple event_id values within one schema
+
+- **WHEN** a butler schema's calendar sync inserts the same
+  `origin_instance_ref` under two different `calendar_events.id`
+  values (the unique key is `(event_id, origin_instance_ref)`, so
+  this is permitted)
+- **THEN** the chronicler projection SHALL still collapse them into
+  a single episode by keying on `origin_instance_ref` alone
+
+#### Scenario: In-run dedup is an optimisation, not the correctness layer
+
+- **WHEN** the projection adapter iterates butler schemas in a
+  single run
+- **THEN** the `seen_origin` short-circuit SHALL be keyed on the
+  same upstream identifier the persistent `source_ref` is derived
+  from
+- **AND** removing the in-run guard SHALL leave correctness intact
+  (the persistent upsert key is the source of truth); the in-run
+  guard is purely an efficiency hedge against redundant writes
+
+### Requirement: Episode Title Resolution Order
+
+Projection adapters that compose a human-readable episode title SHALL favour the most-specific available signal, SHALL NOT discard evidence already present in the source row when a fallback is taken, and SHALL document the resolution chain in the adapter docstring so it is deterministic and exhaustive.
+
+#### Scenario: Spotify session prefers track names over endpoint identity
+
+- **WHEN** a Spotify listening session has neither a `context_name`
+  nor a `context_uri`, but `track_names` is non-empty
+- **THEN** the resulting episode title SHALL surface the track
+  names (e.g. `Listened to Beneath the Blazing Sky`)
+- **AND** the title SHALL NOT degrade to `Spotify session
+  ({endpoint_identity})` while track names are still available
+
+#### Scenario: Routed conversation prefers resolved contact over channel
+
+- **WHEN** a routed `core.sessions` row has a non-NULL
+  `ingestion_event_id` AND the `(source_channel,
+  source_sender_identity)` pair joins to a known
+  `public.contacts.name`
+- **THEN** the episode title SHALL be `Conversation with
+  {display_name}`
+
+#### Scenario: Routed conversation falls back to channel when contact is unknown
+
+- **WHEN** the same row's contact is unresolved but the channel is
+  known
+- **THEN** the title SHALL be `Conversation via {channel}` (e.g.
+  `Conversation via telegram_user_client`)
+
+#### Scenario: Routed conversation only emits "unknown channel" when no signal is recoverable
+
+- **WHEN** the routed session has no `ingestion_event_id` AND no
+  resolvable channel
+- **THEN** the title MAY fall through to `Conversation via unknown
+  channel`
+- **AND** every routed session that DID arrive through a
+  switchboard ingest SHALL carry the ingestion event UUID so this
+  catch-all is reserved for genuinely identity-less invocations
+  (manual SQL, dashboard simulation, replay tooling)
+
+### Requirement: Day-Precision Episodes Anchor to Latest Observation
+
+Projection adapters whose source exposes only daily aggregates SHALL produce episodes with `precision = "day"` AND SHALL anchor the episode's end-of-day bound to the most recent observation timestamp inside the calendar day rather than always parking the bar at midnight UTC; when the daily aggregate exceeds the elapsed time since midnight, the episode start MAY clamp to start-of-day as documented best-effort behaviour for daily-aggregate sources.
+
+#### Scenario: Steam playtime row produces a non-midnight episode
+
+- **WHEN** a `connectors.steam_play_history` row has
+  `playtime_minutes = 65`, `date = 2026-05-01`, and
+  `recorded_at = 2026-05-01 16:24:00 UTC`
+- **THEN** the resulting `chronicler.episodes` row SHALL have
+  `start_at` near `15:19 UTC` and `end_at` near `16:24 UTC`
+- **AND** the episode's `precision` field SHALL be `"day"`
+
+#### Scenario: Daily playtime exceeds elapsed time
+
+- **WHEN** `playtime_minutes` exceeds the wall-clock duration from
+  start-of-day to the latest observation timestamp
+- **THEN** the episode's `start_at` MAY clamp to start-of-day UTC
+- **AND** the adapter SHALL log this clamp via its standard
+  warnings channel so operators can detect connector polling gaps
+  and accumulated overnight play
+
 ## Source References
 
+- Non-Negotiable Rule 1 (single-owner data sovereignty)
 - Non-Negotiable Rule 3 (MCP-only inter-butler communication)
+- Non-Negotiable Rule 4 (LLM reasoning is ephemeral)
 - Non-Negotiable Rule 5 (butler.toml is identity; specs describe behavior)
 - RFC 0006 (database schema isolation)
 - RFC 0009 (situational context bus — Chronicler reads but does not write)
 - RFC 0010 (cross-butler read surface precedent)
 - RFC 0014 (Chronicler retrospective time butler — full normative contract)
+  §D1 Storage Shape, §D3 Adapter Contract, §D5 Sparse Interpretation
+  Guardrails

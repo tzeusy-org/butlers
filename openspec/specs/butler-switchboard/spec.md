@@ -1,3 +1,9 @@
+## Purpose
+
+Defines the Switchboard's routing contract: which agents are eligible for user-message classification, how domain butlers receive routed messages, how misroutes are corrected and re-dispatched, and how passive source channels (including the wellness wearable/health-device channel) are validated and routed without LLM classification.
+
+## Requirements
+
 ### Requirement: Domain Butler Registry
 
 The Switchboard SHALL maintain a registry of all agents (butlers and staffers) and SHALL only route user messages to butler-typed agents. Staffer-typed agents are excluded from user-message classification but remain reachable for butler-to-staffer routing.
@@ -39,10 +45,6 @@ The Switchboard SHALL maintain a registry of all agents (butlers and staffers) a
 - **WHEN** `correct_route` is called with a `correct_butler` target
 - **THEN** the target SHALL be validated as a butler-typed agent (not a staffer)
 - **AND** if the target is a staffer, the tool SHALL return `status=failed` with a summary explaining that user messages cannot be re-dispatched to staffers
-
----
-
-## ADDED Requirements
 
 ### Requirement: Misroute Correction Re-dispatch
 The Switchboard SHALL expose a `correct_route` MCP tool that accepts a misroute correction request from any butler and re-dispatches the original message to the correct target butler. This tool is called by downstream butlers' `correct` tool when handling `misroute` correction type.
@@ -93,9 +95,25 @@ The Switchboard SHALL accept `wellness/google_health` as a valid ingestion sourc
 #### Scenario: Channel-provider pair validation
 
 - **WHEN** an ingest envelope arrives with `source.channel = "wellness"`
-- **THEN** the Switchboard SHALL validate that `source.provider` is `"google_health"` (the only allowed provider for this channel in v1)
-- **AND** the pair SHALL be registered in `_ALLOWED_PROVIDERS_BY_CHANNEL` as `{"wellness": frozenset({"google_health"})}`
-- **AND** envelopes with `source.channel = "wellness"` and a different provider SHALL be rejected with a validation error
+- **THEN** the Switchboard SHALL validate that `source.provider` is `"google_health"` OR `"home_assistant"` (the allowed providers for this channel)
+- **AND** the pair SHALL be registered in `_ALLOWED_PROVIDERS_BY_CHANNEL` as `{"wellness": frozenset({"google_health", "home_assistant"})}`
+- **AND** envelopes with `source.channel = "wellness"` and any other provider SHALL be rejected with a validation error
+
+#### Scenario: Home Assistant wellness envelope accepted
+
+- **WHEN** an ingest.v1 envelope arrives with `source.channel = "wellness"` and `source.provider = "home_assistant"`
+- **THEN** the envelope SHALL pass channel/provider validation
+- **AND** SHALL be routed by the existing `source_channel = "wellness"` rule (`route_to:health`) over the policy-bypass path with no LLM session spawned
+
+#### Scenario: Google Health wellness envelope unaffected
+
+- **WHEN** an ingest.v1 envelope arrives with `source.channel = "wellness"` and `source.provider = "google_health"`
+- **THEN** validation and routing behavior SHALL be identical to before the Home Assistant promotion
+
+#### Scenario: Unregistered provider still rejected
+
+- **WHEN** an ingest.v1 envelope arrives with `source.channel = "wellness"` and a provider other than `"google_health"` or `"home_assistant"`
+- **THEN** the envelope SHALL be rejected with the `invalid_source_provider` validation error
 
 ### Requirement: Wellness Ingest Event Shape
 

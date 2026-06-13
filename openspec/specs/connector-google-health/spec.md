@@ -4,51 +4,48 @@
 
 The Google Health connector is a standalone polling process that reads the owner's wellness data (sleep, heart rate, HRV, SpO2, breathing rate, steps, active minutes, VO2 max) from the Google Health API at `https://health.googleapis.com/v4/`, detects new or changed records via state diffing, normalizes events into `ingest.v1` envelopes, and submits them to the Switchboard. It reuses the existing Google OAuth infrastructure (`public.google_accounts`, `google-multi-account-oauth`). It is a pure polling-and-ingest connector and structurally mirrors `connector-spotify`.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Owner Account Discovery and Scope Verification
 
-The connector SHALL operate against the primary Google account in `public.google_accounts` and SHALL verify that the required Google Health scopes are granted before ingesting.
+The connector SHALL operate against **every** `public.google_accounts` row whose `status = 'active'` and whose `granted_scopes` contains all three Google Health scopes (`https://www.googleapis.com/auth/googlehealth.sleep`, `https://www.googleapis.com/auth/googlehealth.activity_and_fitness`, `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements`). It SHALL maintain independent per-account polling state and emit a heartbeat per account.
 
-#### Scenario: Startup with scopes granted
+#### Scenario: Startup with one or more accounts granting Health scopes
 
-- **WHEN** the connector starts and the primary Google account has all three Google Health scopes in `granted_scopes` (`https://www.googleapis.com/auth/googlehealth.sleep`, `https://www.googleapis.com/auth/googlehealth.activity_and_fitness`, `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements`)
-- **THEN** the connector SHALL report health status `healthy`
-- **AND** SHALL spawn per-resource polling loops
+- **WHEN** the connector starts and `public.google_accounts` contains one or more `status = 'active'` rows with all three Google Health scopes in `granted_scopes`
+- **THEN** the connector SHALL spawn per-resource polling loops for each such account
+- **AND** SHALL emit one heartbeat per account labelled `endpoint_identity = google_health:user:<email>`
+- **AND** SHALL report aggregate health status `healthy`
 
-#### Scenario: Startup with scopes missing
+#### Scenario: Startup with no health-scoped accounts
 
-- **WHEN** the connector starts and the primary Google account lacks one or more Google Health scopes
-- **THEN** the connector SHALL report health status `degraded`
+- **WHEN** no active `public.google_accounts` row carries all three Google Health scopes
+- **THEN** the connector SHALL report aggregate health status `degraded`
 - **AND** SHALL emit no envelopes
-- **AND** SHALL re-check `granted_scopes` every 300 seconds
+- **AND** SHALL re-check every 300 seconds
 
-#### Scenario: No primary Google account
+#### Scenario: Account added while running
 
-- **WHEN** the connector starts and `public.google_accounts` has no row with `is_primary = true`
-- **THEN** the connector SHALL report health status `degraded`
-- **AND** SHALL periodically re-scan
+- **WHEN** the connector is running and a new `google_accounts` row appears (status=active, all three Health scopes granted)
+- **THEN** within `scope_recheck_s` (default 300s) the connector SHALL spawn per-resource polling loops for the new account
+- **AND** SHALL emit a new heartbeat row for it
 
-#### Scenario: Non-primary accounts are ignored
+#### Scenario: Account loses health scopes mid-run
 
-- **WHEN** `public.google_accounts` contains multiple rows
-- **THEN** the connector SHALL poll only the primary account's wellness scopes
-- **AND** SHALL NOT poll non-primary accounts (single-owner v1 safety invariant)
-
-#### Scenario: Scope revocation mid-run
-
-- **WHEN** the connector is running and the primary account's `granted_scopes` loses Google Health scopes
-- **THEN** the connector SHALL transition to `degraded` and stop emitting new envelopes
+- **WHEN** the connector is running and one of the polled accounts loses any Google Health scope
+- **THEN** within `scope_recheck_s` the connector SHALL stop polling that account and close its heartbeat
+- **AND** SHALL continue polling any other still-eligible accounts uninterrupted
 
 ### Requirement: Owner Contact Info Registration
 
-The pairing flow SHALL pre-register the owner's Google Health identity as a `public.contact_info` row so that downstream identity resolution resolves `sender.identity` to the owner entity.
+The pairing flow SHALL pre-register each owner Google Health identity as its own `public.contact_info` row so that downstream identity resolution resolves `sender.identity` to the owner entity. One row per Google account.
 
-#### Scenario: Contact-info upsert on successful pairing
+#### Scenario: Contact-info upsert per account
 
-- **WHEN** the OAuth callback for `scope_set=health` completes successfully
-- **THEN** a row SHALL be upserted into `public.contact_info` with `type = "google_health"`, `value = <google_user_id>`, `entity_id = <owner_entity_id>`, `secured = false`
+- **WHEN** the OAuth callback for `scope_set=health` completes successfully for a given Google account
+- **THEN** a row SHALL be upserted into `public.contact_info` with `type = "google_health"`, `value = <google_user_id_for_that_account>`, `entity_id = <owner_entity_id>`, `secured = false`
 - **AND** re-running pairing for the same account SHALL be idempotent
+- **AND** multiple health-scoped accounts SHALL produce multiple `(type='google_health', value=<email_n>)` rows that share the same `entity_id`
 
 ### Requirement: OAuth Token Lifecycle via Shared Google Credential Pipeline
 
@@ -70,6 +67,23 @@ The connector SHALL NOT implement its own OAuth refresh logic. It SHALL delegate
 
 - **WHEN** the connector holds an access token
 - **THEN** the token SHALL live only in memory and SHALL NOT be written to the database, logs, or any file
+
+### Requirement: Per-Account Token Cache
+
+The connector SHALL maintain one access-token cache per account, keyed by `google_accounts.id`. Tokens MUST be minted via the scope-restricted refresh-token grant (per the existing `Scope-Restricted Access Token Minting` requirement) using that account's own refresh token.
+
+#### Scenario: Refresh token resolution per account
+
+- **WHEN** the connector needs a fresh access token for a given account
+- **THEN** it SHALL read the refresh token from `public.entity_info` keyed by that account's `companion_entity_id` (the existing companion-entity pattern in `google_credentials._resolve_entity_refresh_token`)
+- **AND** SHALL NOT use the shared `resolve_owner_entity_info` "primary account" helper for non-primary accounts
+
+#### Scenario: Mint isolation
+
+- **WHEN** a mint or refresh call fails for one account (transient network error, invalidated refresh token, etc.)
+- **THEN** that failure SHALL be confined to the failing account's polling loop
+- **AND** SHALL NOT block mints or polls for other accounts
+- **AND** the per-account heartbeat SHALL transition to `error` or `degraded` for the failing account only
 
 ### Requirement: Per-Resource Polling Loops
 
@@ -102,32 +116,41 @@ The connector SHALL run independent polling loops per data type bundle.
 
 ### Requirement: Ingest Envelope Construction
 
-The connector SHALL produce `ingest.v1` envelopes conformant with the shared connector contract.
+The connector SHALL produce `ingest.v1` envelopes conformant with the shared connector contract, whose identity fields disambiguate by account.
+
+#### Scenario: External event identity includes account scope
+
+- **WHEN** the connector emits any envelope
+- **THEN** `event.external_event_id` SHALL be `google_health:<email>:<resource>:<record_id>` (sleep) or `google_health:<email>:<resource>:<YYYY-MM-DD>` (daily summaries)
+- **AND** `source.endpoint_identity` SHALL be `google_health:user:<email>`
+- **AND** `control.idempotency_key` SHALL be `google_health:<email>:<resource>:<record_id>`
 
 #### Scenario: Wellness envelope shape
 
 - **WHEN** the connector emits any envelope
-- **THEN** the envelope SHALL have: `source.channel = "wellness"`, `source.provider = "google_health"`, `source.endpoint_identity = "google_health:user:<google_user_id>"`, `control.idempotency_key = "google_health:<resource>:<record_id>"`, `control.policy_tier = "default"`, `control.ingestion_tier = "full"`
+- **THEN** the envelope SHALL have: `source.channel = "wellness"`, `source.provider = "google_health"`, `source.endpoint_identity = "google_health:user:<email>"`, `control.idempotency_key = "google_health:<email>:<resource>:<record_id>"`, `control.policy_tier = "default"`, `control.ingestion_tier = "full"`
 
 #### Scenario: Sleep session envelope
 
 - **WHEN** the connector emits a sleep session event
-- **THEN** `event.external_event_id = "google_health:sleep_session:<session_id>"`
+- **THEN** `event.external_event_id = "google_health:<email>:sleep_session:<session_id>"`
 - **AND** `payload.normalized_text` SHALL be `"Slept <Xh Ym> (<efficiency>% efficiency)"`
 
 #### Scenario: Daily summary envelope
 
 - **WHEN** the connector emits a daily summary event
-- **THEN** `event.external_event_id = "google_health:<resource>:<YYYY-MM-DD>"`
+- **THEN** `event.external_event_id = "google_health:<email>:<resource>:<YYYY-MM-DD>"`
 - **AND** `payload.normalized_text` SHALL be a human-readable summary
 
 ### Requirement: Checkpoint Persistence
 
-#### Scenario: Cursor persistence per resource
+The connector SHALL persist per-resource cursors that disambiguate by account, so per-account polling state survives restarts without cross-account collisions.
+
+#### Scenario: Cursor key includes account identifier
 
 - **WHEN** a polling loop successfully submits an envelope
-- **THEN** the connector SHALL persist via `cursor_store.save_cursor(pool, connector_type="google_health", endpoint_identity="google_health:user:<google_user_id>:<resource>", cursor_value=...)`
-- **AND** the per-resource dimension SHALL be encoded into the `endpoint_identity` suffix
+- **THEN** the connector SHALL persist via `cursor_store.save_cursor(pool, connector_type="google_health", endpoint_identity="google_health:user:<email>:<account_uuid>:<resource>", cursor_value=...)`
+- **AND** the per-account dimension SHALL be encoded into the `endpoint_identity` between the email and the resource
 
 ### Requirement: Rate-Limit Discipline
 
@@ -145,7 +168,19 @@ The connector SHALL produce `ingest.v1` envelopes conformant with the shared con
 
 ### Requirement: Health Status Reporting
 
-The connector SHALL report health status via the shared heartbeat mechanism. Allowed states are `healthy | degraded | error` (no `broken` state).
+The connector SHALL report health status via the shared heartbeat mechanism. Allowed states are `healthy | degraded | error` (no `broken` state). With multiple accounts, the connector SHALL report one heartbeat row per account AND a connector-level aggregate.
+
+#### Scenario: Per-account heartbeat
+
+- **WHEN** the connector runs polling loops for a given account
+- **THEN** it SHALL emit a heartbeat row to `switchboard.connector_registry` with `connector_type = "google_health"` and `endpoint_identity = "google_health:user:<email>"`
+- **AND** the per-account `state` and `error_message` fields SHALL reflect only that account's polling outcome
+
+#### Scenario: Aggregate state computation
+
+- **WHEN** computing the connector-level aggregate `state` exposed on the connector's `/health` endpoint
+- **THEN** it SHALL be the worst-of state across all per-account heartbeats (`error` > `degraded` > `healthy`)
+- **AND** the per-account heartbeat rows SHALL remain individually queryable
 
 #### Scenario: Healthy heartbeat
 

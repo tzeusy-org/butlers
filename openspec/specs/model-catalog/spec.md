@@ -4,7 +4,7 @@
 
 The model catalog is the canonical registry of available model configurations for dynamic model routing. It defines named model aliases with runtime adapter types, model identifiers, extra CLI arguments, complexity tier assignments, and priority ordering. Per-butler overrides allow customization layered on top of global defaults. The `resolve_model()` function selects the appropriate model at spawn time.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Model Catalog Schema
 The system SHALL maintain a `public.model_catalog` table as the canonical registry of available model configurations. Each entry defines a named model alias, its runtime adapter type, the actual model identifier, optional extra CLI arguments, a complexity tier assignment, an enabled flag, and a priority for tie-breaking.
@@ -33,7 +33,7 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 - **THEN** it MUST be a JSON array of strings, where each string is a single CLI token (e.g. `["--config", "model_reasoning_effort=high"]`)
 
 ### Requirement: Model Alias Concept
-A model alias is a named configuration combining a base model with optional extra runtime arguments. Aliases are rows in the model catalog — there is no separate alias table. The alias serves as the human-readable identifier while `model_id` is the actual model string passed to the runtime adapter.
+A model alias is a named configuration combining a base model with optional extra runtime arguments. Aliases SHALL be rows in the model catalog — there is no separate alias table. The alias serves as the human-readable identifier while `model_id` is the actual model string passed to the runtime adapter.
 
 #### Scenario: Alias with extra args
 - **WHEN** a catalog entry has alias `gpt-5.4-high`, model_id `gpt-5.4`, and extra_args `["--config", "model_reasoning_effort=high"]`
@@ -69,7 +69,7 @@ The system SHALL maintain a `public.butler_model_overrides` table for per-butler
 - **THEN** the corresponding global catalog value is used (COALESCE semantics)
 
 ### Requirement: Model Resolution
-The system SHALL provide a `resolve_model(butler_name, complexity_tier)` function that selects the appropriate model configuration at spawn time by querying the catalog with butler-specific overrides applied.
+The system SHALL provide model resolution functions that select catalog entries at spawn time by querying the catalog with butler-specific overrides applied. The primary `resolve_model(butler_name, complexity_tier)` function selects the appropriate model configuration for initial spawn, and a next-candidate resolver supports same-tier failover.
 
 #### Scenario: Resolution with global defaults only
 - **WHEN** `resolve_model("finance", "medium")` is called and no overrides exist for `finance`
@@ -97,6 +97,33 @@ The system SHALL provide a `resolve_model(butler_name, complexity_tier)` functio
 - **WHEN** `resolve_model()` returns a match
 - **THEN** the return type is `tuple[str, str, list[str], UUID]` — `(runtime_type, model_id, extra_args, catalog_entry_id)`
 - **AND** `catalog_entry_id` is the UUID primary key of the matched `public.model_catalog` row
+
+#### Scenario: Next eligible same-tier candidate
+- **WHEN** the spawner requests the next eligible model after an attempted
+  `catalog_entry_id` fails or is skipped
+- **THEN** the resolver SHALL search only the exact effective complexity tier that
+  produced the original candidate
+- **AND** it SHALL apply global catalog values plus butler override COALESCE semantics
+- **AND** it SHALL exclude all previously attempted or skipped `catalog_entry_id` values
+- **AND** it SHALL return the next highest-priority enabled model in that same tier
+
+#### Scenario: Initial tier fallthrough remains separate
+- **WHEN** initial model resolution finds no candidate in the requested tier
+- **THEN** the existing canonical tier fallthrough behavior MAY select a candidate from
+  the next eligible tier
+- **AND** any subsequent failover attempts SHALL remain restricted to the effective tier
+  that produced that selected candidate
+
+#### Scenario: State filter applies to failover candidates
+- **WHEN** a next-candidate query evaluates model catalog rows
+- **THEN** models in error, offline, deprecated, rate-limited, anomaly, or disabled states
+  SHALL NOT be returned as failover candidates
+
+#### Scenario: Deterministic fallback ordering
+- **WHEN** multiple non-attempted candidates remain in the effective tier
+- **THEN** fallback ordering SHALL be deterministic by effective priority descending,
+  then `created_at ASC`, then `id ASC`
+- **AND** the resolver SHALL NOT return an already-attempted candidate
 
 ### Requirement: Seed Data Migration
 The system SHALL seed the model catalog with sensible defaults on first migration, covering known runtime adapters and common alias patterns.

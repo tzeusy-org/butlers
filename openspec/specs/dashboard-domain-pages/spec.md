@@ -17,7 +17,7 @@ The dashboard SHALL render a Measurements page at `/measurements` that displays 
 The page MUST contain:
 - A type selector displaying badge tabs for measurement types: `weight`, `blood_pressure`, `heart_rate`, `glucose`, `temperature`, `sleep`, `oxygen`. Clicking a type SHALL filter the chart and table to that type.
 - Date range filters (`since`/`until`) using date inputs, with a Clear button when any filter is active.
-- A Recharts `LineChart` in a `ResponsiveContainer` (height 288px). For `blood_pressure`, the chart MUST render two lines (systolic in blue `#3b82f6`, diastolic in rose `#f43f5e`). For all other types, a single blue line plotting the primary numeric value.
+- A Recharts `LineChart` in a `ResponsiveContainer` (height 288px). For `blood_pressure`, the chart MUST render two lines (systolic in `var(--category-1)` (blue), diastolic in `var(--category-5)` (rose)). For all other types, a single line in `var(--category-1)` (blue) plotting the primary numeric value.
 - A "Show/Hide raw data" toggle button. When expanded, the raw data table MUST display columns: Date, Type, Value (formatted compound JSONB), Notes.
 - Measurement values are compound JSONB objects (e.g., `{"systolic": 120, "diastolic": 80}`). The chart MUST extract numeric values from these objects using key-aware parsing. The table MUST format them as `key: value` pairs.
 
@@ -25,7 +25,7 @@ The page MUST contain:
 
 - **WHEN** the user selects `blood_pressure` as the measurement type
 - **AND** there are measurements with `value` containing `systolic` and `diastolic` keys
-- **THEN** the chart MUST render two lines: systolic (blue) and diastolic (rose)
+- **THEN** the chart MUST render two lines: systolic colored with `var(--category-1)` (blue) and diastolic colored with `var(--category-5)` (rose)
 - **AND** the chart tooltip MUST label them "Systolic" and "Diastolic"
 
 #### Scenario: Date range filtering resets chart
@@ -90,14 +90,14 @@ The dashboard SHALL render a Symptoms page at `/symptoms` displaying symptom ent
 The page MUST contain:
 - Filter controls: name text input, date range (From/To date inputs), Clear button when any filter is active. Changing any filter MUST reset pagination to page 0.
 - A table with columns: Name (bold), Severity (progress bar + numeric "X/10"), Occurred (datetime formatted), Notes (truncated), Condition (badge linking to condition_id or em-dash).
-- Severity visualization MUST use a 16px-wide progress bar: green for 1-3, amber for 4-6, red for 7-10.
+- Severity visualization MUST use a 16px-wide progress bar: `var(--severity-low)` (green) for 1-3, `var(--severity-medium)` (amber) for 4-6, `var(--severity-high)` (red) for 7-10.
 
 #### Scenario: Severity color mapping
 
 - **WHEN** a symptom has severity 2
-- **THEN** the severity bar MUST be green (#22c55e) at 20% width
+- **THEN** the severity bar MUST be colored `var(--severity-low)` at 20% width
 - **WHEN** a symptom has severity 8
-- **THEN** the severity bar MUST be red (#ef4444) at 80% width
+- **THEN** the severity bar MUST be colored `var(--severity-high)` at 80% width
 
 ---
 
@@ -170,7 +170,7 @@ The page MUST contain:
 #### Scenario: Label color determinism
 
 - **WHEN** a label named "family" has no explicit `color` set
-- **THEN** its badge color MUST be deterministically derived from a hash of "family" using the palette: `#3b82f6, #8b5cf6, #f59e0b, #14b8a6, #f43f5e, #6366f1, #06b6d4, #f97316`
+- **THEN** its badge color MUST be deterministically derived from a hash of "family" using the categorical palette: `var(--category-1)`, `var(--category-2)`, `var(--category-3)`, `var(--category-4)`, `var(--category-5)`, `var(--category-6)`, `var(--category-7)`, `var(--category-8)`
 - **AND** the same label MUST always render with the same color
 
 #### Scenario: Google sync with mixed results
@@ -1222,3 +1222,16 @@ Data freshness MUST follow domain-appropriate refresh intervals:
 | Memory stats, episodes, facts, rules | 30s | Memory consolidation runs periodically |
 | Memory recent activity (rail) | 15s | Fastest-updating view for real-time monitoring |
 | Cost summary and daily costs | 60s | Cost data accrues session-by-session |
+
+---
+
+## Source References
+
+- `frontend/src/index.css` — `--severity-low`, `--severity-medium`,
+  `--severity-high` token definitions (lines 67–69); `--category-1` through
+  `--category-8` definitions (lines 78–85). Both sets are also aliased into
+  Tailwind via `--color-severity-*` and `--color-category-*` (lines 263–281).
+- Epic bu-v1tt2 (Vertical C) — token system migration that introduced the named
+  CSS tokens; this spec change closes the remaining spec-code drift.
+- `about/heart-and-soul/design-language.md` — token exemption for `--chart-*`
+  palette (chart axis/line tokens are a separate axis; not replaced here).

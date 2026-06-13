@@ -46,6 +46,22 @@ The initial endpoint set SHALL include:
   `min_confidence`, `privacy_tier`, `source_ref_status`, `include_open`,
   `include_tombstoned`, `limit`, and `cursor` query parameters
 
+#### Scenario: Episodes filtered by participant entity
+
+- **WHEN** a client requests `/api/chronicler/episodes?participant_entity_id=<uuid>`
+- **THEN** the API SHALL return episodes that have at least one row in
+  `chronicler.episode_entities` referencing the supplied `entity_id`,
+  regardless of the role (`'owner'`, `'organizer'`, or `'participant'`)
+- **AND** the response SHALL preserve the existing pagination shape
+  (`items`, `next_cursor`, `has_more`)
+- **AND** the API SHALL also continue to accept the existing
+  `entity_id=<uuid>` parameter, which SHALL be interpreted as an
+  owner-only filter against the derived `chronicler.episodes.entity_id`
+  column during the transition window
+- **AND** the API SHALL NOT require both parameters; passing both SHALL
+  evaluate the participant-join filter and apply the owner-column
+  filter as a conjunctive constraint
+
 #### Scenario: Episode detail queried
 
 - **WHEN** a client requests `GET /api/chronicler/episodes/{episode_id}`
@@ -74,6 +90,28 @@ understand source evidence, uncertainty, privacy, and correction state.
   confidence, source references, source reference status, privacy tier,
   precision policy, retention policy, tombstone state, and active override
   status where present
+
+#### Scenario: Episode response includes participant entity set
+
+- **WHEN** an episode is returned by any Chronicler read endpoint
+  (`GET /api/chronicler/episodes`,
+  `GET /api/chronicler/episodes/{id}`, the entity-activity aggregator,
+  or any future endpoint that surfaces episode rows)
+- **THEN** the episode object SHALL include a `participant_entity_ids`
+  field of type `array<uuid>`
+- **AND** the array SHALL be the aggregated set of `entity_id` values
+  from `chronicler.episode_entities` for the episode, sorted by
+  role precedence (`'owner'` first, then `'organizer'`, then
+  `'participant'`) with `entity_id ASC` as the deterministic tiebreak
+  within a role bucket
+- **AND** the array SHALL be empty (`[]`, never null) when no
+  participants are linked
+- **AND** the existing `entity_id` field SHALL continue to be returned
+  during the transition window, equal to the owner participant when
+  present, else `null`
+- **AND** the array SHALL NOT include unresolved attendees (attendees
+  for whom the upstream calendar module did not resolve a
+  `public.entities` row)
 
 #### Scenario: Event response includes source semantics
 
@@ -382,6 +420,45 @@ The endpoints SHALL be:
 - **AND** no Tier-2 invocation SHALL occur
 
 
+### Requirement: Episode Participant Resolution Read Path
+
+The API SHALL expose participant entity membership as a first-class
+provenance facet of every episode response. This is the read side of the
+chronicler `episode_entities` storage shape introduced in
+`butler-chronicler`.
+
+#### Scenario: Aggregator endpoints surface participants
+
+- **WHEN** any chronicler aggregator endpoint
+  (`/api/chronicler/aggregate/by-category`,
+  `/api/chronicler/aggregate/by-day`,
+  `/api/chronicler/aggregate/day-close`) includes per-source breakdowns
+  or per-episode citations
+- **THEN** episode-level citation entries MAY include the
+  `participant_entity_ids` array but SHALL NOT include resolved
+  participant display names or any other personally identifying
+  information beyond the UUID set
+- **BECAUSE** display-name resolution is the relationship butler's
+  responsibility; chronicler returns stable IDs only
+
+#### Scenario: Privacy-tier filtering preserved
+
+- **WHEN** an episode is filtered out by privacy semantics (the
+  `restricted` server-side filter, or `sensitive` payload masking)
+- **THEN** the `participant_entity_ids` array SHALL be omitted from the
+  response together with the rest of the masked payload
+- **AND** `restricted` episodes SHALL remain invisible regardless of
+  the participant set; multi-entity tagging SHALL NOT create a side
+  channel that reveals restricted episodes to participants
+
+#### Scenario: Cursor-paginated participant filter is deterministic
+
+- **WHEN** `/api/chronicler/episodes?participant_entity_id=<uuid>` is
+  paginated via `cursor`
+- **THEN** the underlying ORDER BY SHALL remain `start_at DESC, id DESC`
+  (matching the existing list contract) so that adding the join does
+  not destabilize pagination
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)
@@ -391,3 +468,4 @@ The endpoints SHALL be:
 - RFC 0007 (Dashboard and API Surface)
 - RFC 0010 (Cross-Butler Briefing Exception)
 - RFC 0014 (Chronicler Time Butler, Draft)
+- RFC 0014 (Chronicler Time Butler) §D7 API Surface

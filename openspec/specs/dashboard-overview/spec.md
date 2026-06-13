@@ -5,190 +5,237 @@
 Defines the information hierarchy and content contract for the Butlers dashboard home
 page at `/`. The home page is the owner's primary health-at-a-glance view: it answers
 "is the system working right now?" rather than structural questions ("what is connected?").
-This spec establishes what regions the page renders, their visual priority order, and the
-data sources and component boundaries each region must satisfy. It does not specify visual
-design tokens, pixel-level layout, or API implementation details; those are governed by
-`about/heart-and-soul/design-language.md`, `dashboard-api`, and the `<Page>` archetype
-contract respectively.
+It is the editorial triage cockpit — the system speaking, naming what needs attention,
+and a quiet operational index. This spec establishes what surfaces the page renders, their
+visual priority order, and the data sources and component boundaries each surface must
+satisfy. It does not specify visual design tokens, pixel-level layout, or API
+implementation details; those are governed by `about/heart-and-soul/design-language.md`,
+`dashboard-api`, and the `<Page>` archetype contract respectively.
 
 ## Requirements
+
 ### Requirement: Home Page Information Hierarchy
 
-The home page at `/` SHALL render five regions in order, top to bottom:
+The home page at `/` SHALL render the editorial triage cockpit for the owner.
+It SHALL use the editorial archetype defined by
+`about/heart-and-soul/design-language.md` and
+`about/lay-and-land/frontend.md`: a two-column page where the left column is the
+system speaking and naming attention, and the right column is a quiet operational
+index.
 
-1. **Primary region**: sessions over time visualization (butler-colored stripe chart).
-2. **Secondary region**: recent moments feed (latest meaningful butler actions).
-3. **Secondary card grid**: operational alerts — failed notifications and active issues
-   in a two-column responsive grid (`lg:grid-cols-2`).
-4. **QA widget**: QA patrol status and active investigation stats (last patrol, status,
-   patrols/findings per 24h, dispatched investigations), rendered as a standalone
-   `<QaWidget />` card below the secondary grid.
-5. **Supporting strip**: demoted stat context (health, cost, pending approvals).
+The page SHALL render these surfaces:
 
-No region SHALL visually outrank the primary region. The supporting strip SHALL NOT
-use the same visual weight (card wrapper, large type) as the current four-stat grid.
+1. **Briefing**: the Voice surface rendered from `GET /api/dashboard/briefing`.
+2. **Needs attention**: a rule-separated attention list derived from
+   `GET /api/issues`.
+3. **Runtime KPI strip**: four promoted operational KPIs derived from
+   `GET /api/butlers` and `GET /api/approvals/metrics`.
+4. **Operations**: right-column butler scan list derived from `GET /api/butlers`
+   and `GET /api/spend/summary?period=today`.
+5. **Now**: right-column immediate operational items derived from existing
+   approval, QA, notification, and activity endpoints.
 
-#### Scenario: Primary region gets above-the-fold position
+The session stripe chart SHALL NOT be the primary region of the Overview page.
+No chart-first or card-grid requirement SHALL outrank the briefing, attention
+list, or KPI strip on `/`.
 
-- **WHEN** the home page renders at a standard desktop viewport (1280px wide, 800px tall)
-- **THEN** the session stripe chart SHALL be visible without scrolling
-- **AND** the supporting stat strip SHALL NOT occupy equal vertical real estate as the
-  chart
-- **AND** no other full-width card or graph SHALL precede the session stripe chart in
-  document order
+#### Scenario: Editorial cockpit renders instead of chart-first hierarchy
 
-#### Scenario: Topology graph is not the dominant element
+- **WHEN** a user navigates to `/`
+- **THEN** `DashboardPage` renders inside `<Page archetype="editorial" title="Overview">`
+- **AND** the page presents the briefing, `Needs attention`, runtime KPI strip,
+  `Operations`, and `Now` surfaces
+- **AND** no session stripe chart is required as the first or dominant region
+- **AND** the Overview does not require the old five-region chart-first order
+  (session chart, recent moments, secondary cards, QA widget, supporting strip)
 
-- **WHEN** the home page renders
-- **THEN** the topology graph SHALL NOT occupy the primary region
-- **AND** if the topology graph is present on the page, it SHALL render at reduced size
-  or as a secondary card below the session chart and recent moments feed
+#### Scenario: Existing endpoint data sources are sufficient
 
-### Requirement: Session Stripe Chart
+- **WHEN** the Overview composes its cockpit surfaces
+- **THEN** it uses the existing endpoint families named in this requirement
+- **AND** it SHALL NOT introduce a new Overview aggregation endpoint unless a
+  separate OpenSpec change justifies why the existing dashboard sources cannot
+  supply the required state
 
-The home page SHALL render a sessions-over-time chart as the primary visualization.
-The chart shows how many butler sessions occurred in each time bucket over the past
-24 hours, broken down by butler, using butler-colored stripes.
+### Requirement: Briefing Voice Surface
 
-#### Scenario: Chart renders sessions grouped by butler and time bucket
+The home page SHALL render the existing dashboard briefing as the first
+left-column surface. The briefing wire contract is owned by
+`dashboard-briefing`; `dashboard-overview` owns only the page composition that
+consumes it.
 
-- **WHEN** the session stripe chart renders with session data
-- **THEN** it SHALL display time on the x-axis (past 24 hours, divided into equal
-  buckets -- default 1-hour buckets)
-- **AND** session count on the y-axis
-- **AND** each butler's contribution SHALL be a distinct visual stripe (stacked bar
-  or stacked area), with a color derived deterministically from the butler's name
-  using the design token system (`--category-1` through `--category-8` mod 8, or
-  the equivalent chart token palette)
-- **AND** a legend SHALL identify each butler stripe by name
+#### Scenario: Briefing uses the six-field briefing response
 
-#### Scenario: Chart handles empty state
+- **WHEN** the briefing query succeeds
+- **THEN** the page renders `greet`, `headline`, `elaboration`, `source`,
+  `state_class`, and `generated_at` from `GET /api/dashboard/briefing`
+- **AND** the page does not require or render additional machine provenance
+  fields from that endpoint
 
-- **WHEN** no sessions exist in the past 24 hours
-- **THEN** the chart area SHALL render an explicit empty state: "No sessions in the
-  past 24 hours"
-- **AND** the empty state SHALL NOT display a chart with a zero-height bar
+#### Scenario: Briefing handles loading and fallback states
 
-#### Scenario: Chart handles loading state
+- **WHEN** the briefing query is fetching
+- **THEN** the status pill names the in-flight state
+- **AND** the Voice paragraph area remains stable
 
-- **WHEN** session data is being fetched
-- **THEN** a skeleton placeholder matching the chart's height SHALL render in place
-  of the chart
-- **AND** the skeleton SHALL use the standard `ChartSkeleton` component from the
-  skeleton library
+- **WHEN** the endpoint returns `source = "fallback"`
+- **THEN** the page renders the fallback paragraph without treating fallback as
+  an error state
 
-#### Scenario: Chart data source is the existing sessions API
+### Requirement: Needs Attention List
 
-- **WHEN** the chart fetches its data
-- **THEN** it SHALL query `GET /api/sessions` with `since` set to 24 hours ago and
-  a `limit` of 200 (the backend maximum) to cover the expected daily session volume
-- **AND** time bucketing SHALL be performed client-side on the returned session records
-  using each record's `started_at` timestamp
-- **AND** no new backend endpoint SHALL be required for this requirement
+The home page SHALL render a `Needs attention` list from the existing
+`GET /api/issues` response. The list is a rule-separated attention surface, not
+a card grid or table.
 
-#### Scenario: Chart auto-refreshes for the current day
+#### Scenario: Attention rows are derived from active issues
 
-- **WHEN** the chart is rendered on any day
-- **THEN** it SHALL auto-refresh at a 60-second interval so new sessions appear
-  without a manual page reload
-- **AND** the refresh SHALL use the existing `useAutoRefresh` hook pattern
+- **WHEN** `GET /api/issues` returns one or more `Issue` objects
+- **THEN** each row shows severity mark, issue description, butler/source detail,
+  optional error context, and a link when `link` is present
+- **AND** severity order is high/critical/error first, then
+  medium/warning/warn, then all other severities
+- **AND** within a severity tier, older unresolved issues sort before newer
+  issues when `first_seen_at` exists
 
-### Requirement: Recent Moments Feed
+#### Scenario: Stale issues are summarized
 
-The home page SHALL render a compact feed of recent meaningful butler actions below
-the session stripe chart. The feed answers: "What did my system actually do?"
+- **WHEN** an unresolved issue has `first_seen_at` older than 24 hours
+- **THEN** the row detail exposes that it is old/stale using a human-readable age
+  calculated relative to the owner's configured timezone
+- **AND** repeated old issues with the same `type` and `description` MAY collapse
+  into one summarized row when `occurrences` or `butlers` indicates multiplicity
+- **AND** the summary MUST name the affected butlers with human-readable names,
+  not raw machine identifiers
 
-#### Scenario: Feed renders the most recent sessions as action lines
+#### Scenario: Attention list handles empty, loading, and error states
 
-- **WHEN** the recent moments feed renders with session data
-- **THEN** it SHALL display the 5 to 10 most recent completed sessions, each as a
-  single line item
-- **AND** each line item SHALL include: relative time (e.g., "3 minutes ago"), the
-  butler name or a butler glyph, and a one-line summary derived from the session's
-  stored trigger source or prompt
-- **AND** each line item MAY include a link to the session detail page
+- **WHEN** issues are loading
+- **THEN** the list renders stable loading rows or an equivalent skeleton
 
-#### Scenario: Feed handles empty state
+- **WHEN** `GET /api/issues` succeeds with an empty array
+- **THEN** the list renders the serif Voice empty state `Nothing waiting.`
+- **AND** it does not render an empty table, blank card, or celebratory graphic
 
-- **WHEN** no completed sessions exist
-- **THEN** the feed SHALL render an explicit empty state message
-- **AND** it SHALL NOT render an empty list container
+- **WHEN** `GET /api/issues` fails
+- **THEN** the list renders a local error row for the attention surface
+- **AND** the rest of the Overview remains visible
 
-#### Scenario: Feed data source is the existing sessions API
+### Requirement: Runtime KPI Strip
 
-- **WHEN** the feed fetches data
-- **THEN** it SHALL use `GET /api/sessions` with a small `limit` (10) and no
-  additional time filter, returning the most recent sessions
-- **AND** it MAY reuse a warm TanStack Query cache already populated by the
-  stripe chart query if the query keys overlap
+The home page SHALL render a promoted four-cell runtime KPI strip. "Promoted"
+means the KPIs are part of the primary information hierarchy; it does not mean
+they use heavier card chrome. The strip SHALL remain hairline-divided,
+tabular-numeric, and visually calm.
 
-### Requirement: Secondary Card Grid
+#### Scenario: KPI cells have defined meanings
 
-Below the recent moments feed, the home page SHALL render a two-column secondary
-card grid (`grid gap-6 lg:grid-cols-2`) containing operational alert cards that
-provide below-the-fold context for system health monitoring.
+- **WHEN** the runtime KPI strip renders
+- **THEN** it includes exactly these four cells:
+  - `Total butlers`: count of `GET /api/butlers` rows where `type` is `"butler"`
+  - `Healthy`: count of butler rows whose `status` is `"ok"` or `"online"`
+  - `Sessions · 24h`: sum of `sessions_24h` across butler rows
+  - `Pending approvals`: `total_pending` from `GET /api/approvals/metrics`
+- **AND** every numeric value uses tabular numerals
 
-#### Scenario: Failed Notifications card renders in the left column
+#### Scenario: KPI strip handles loading and partial failure
 
-- **WHEN** the secondary card grid renders
-- **THEN** the left column SHALL render a "Failed Notifications" card showing
-  recent notification delivery failures across all butlers
-- **AND** if failed notifications exist, the card header SHALL display a destructive
-  badge with the failure count
-- **AND** if no failures exist, the card body SHALL render a success empty state:
-  "No failed notifications. All systems healthy."
+- **WHEN** either KPI source is still loading
+- **THEN** cells depending on unavailable data render an unavailable/loading
+  value without shifting layout
 
-#### Scenario: Issues panel renders in the right column
+- **WHEN** one KPI source fails
+- **THEN** cells backed by the failed source render an unavailable/error value
+- **AND** cells backed by the still-available source MAY continue rendering
 
-- **WHEN** the secondary card grid renders
-- **THEN** the right column SHALL render an `<IssuesPanel>` card showing active
-  butler issues
+### Requirement: Operations Index
 
-### Requirement: QA Widget
+The home page SHALL render a right-column `Operations` section summarizing the
+active domain butlers. The section is a scan list, not a chart.
 
-Below the secondary card grid, the home page SHALL render a standalone `<QaWidget />`
-card showing QA patrol status and investigation stats (last patrol timestamp, patrol
-status, patrols completed/findings in the past 24h, and active dispatched investigations).
-This widget was added as part of bu-yo4bt.9 (PR #1380) and is region 4 in the page's
-document order.
+#### Scenario: Operations rows join butler and spend summaries
 
-#### Scenario: QA widget renders below secondary cards
+- **WHEN** `GET /api/butlers` returns butler rows
+- **THEN** `Operations` renders only rows whose `type` is `"butler"`
+- **AND** each row shows the butler identity, session count from `sessions_24h`,
+  and today's spend from `GET /api/spend/summary?period=today` `by_butler`
+- **AND** missing spend data renders as an explicit zero or unavailable value,
+  not by hiding the row
 
-- **WHEN** the home page renders
-- **THEN** the `<QaWidget />` SHALL appear after the secondary card grid
-  (`Failed Notifications` + `IssuesPanel`) and before the supporting stat strip
-- **AND** the widget SHALL render as a standalone full-width card (not inside the
-  `lg:grid-cols-2` grid)
+#### Scenario: Operations handles empty, loading, and error states
 
-### Requirement: Supporting Stat Strip
+- **WHEN** butlers are loading
+- **THEN** `Operations` renders stable loading rows or an equivalent skeleton
 
-The home page SHALL retain the four cross-system context metrics (butler health,
-sessions today, estimated cost today, and pending approvals count) as a demoted
-supporting strip. The strip SHALL NOT dominate the layout.
+- **WHEN** no domain butlers are active
+- **THEN** `Operations` renders `No butlers active.`
 
-#### Scenario: Stat strip uses lower visual weight than the primary region
+- **WHEN** the butlers query fails
+- **THEN** `Operations` renders a local error state
+- **AND** the rest of the Overview remains visible
 
-- **WHEN** the supporting stat strip renders
-- **THEN** it SHALL NOT use `Card` wrappers for each metric
-- **AND** metric values SHALL use `text-sm font-medium tabular-nums` (not `text-2xl`)
-- **AND** metric labels SHALL use `text-xs text-muted-foreground`
-- **AND** the strip SHALL render as a single horizontal row (`flex flex-wrap`) with
-  a `border-t border-border pt-3` visual separator above it
-- **AND** the strip's visual weight SHALL be clearly subordinate to the session
-  stripe chart above it
+### Requirement: Now List
 
-#### Scenario: Stat strip retains all four metrics
+The home page SHALL render a right-column `Now` section for immediate
+operational items. In the first implementation this section is sourced from
+existing endpoints and does not require a new endpoint.
 
-- **WHEN** the supporting stat strip renders
-- **THEN** it SHALL display: (1) butler health ratio (healthy / total), (2) total
-  sessions today, (3) estimated cost today, (4) pending approvals count
-- **AND** all four metrics SHALL remain on the page even after Vertical D lands;
-  they are not removed, only demoted
+The acceptable first-source set is:
+
+- `GET /api/approvals/metrics` for pending approval count;
+- `GET /api/qa/summary` for QA patrol, finding, and dispatched-investigation
+  pressure;
+- `GET /api/qa/investigations` when the row needs active investigation or PR
+  detail beyond the summary counts;
+- `GET /api/notifications/stats` for failed notification pressure;
+- `GET /api/timeline` for recent activity, or `GET /api/sessions` when the
+  implementation only needs recent completed sessions.
+
+#### Scenario: Pending approvals appear in Now
+
+- **WHEN** `GET /api/approvals/metrics` returns `total_pending` greater than zero
+- **THEN** `Now` renders one immediate item naming the pending approval count
+- **AND** the item is labelled as an approval item
+
+#### Scenario: QA pressure appears in Now
+
+- **WHEN** `GET /api/qa/summary` reports novel findings, dispatched
+  investigations, an active patrol failure, or another current QA alert
+- **THEN** `Now` renders an immediate item naming the QA state in human-readable
+  terms
+- **AND** if active investigation or PR detail is needed, the page MAY read
+  `GET /api/qa/investigations` instead of introducing a new endpoint
+
+#### Scenario: Failed notification pressure appears in Now
+
+- **WHEN** `GET /api/notifications/stats` returns `failed` greater than zero
+- **THEN** `Now` renders an immediate item naming the failed notification count
+- **AND** the item is labelled as a notification item
+
+#### Scenario: Recent activity appears in Now
+
+- **WHEN** `GET /api/timeline` returns recent activity, or `GET /api/sessions`
+  returns recent completed sessions
+- **THEN** `Now` MAY render a compact recent activity item
+- **AND** the row links to the appropriate timeline or sessions surface when a
+  link is available
+
+#### Scenario: Now handles empty, loading, and error states
+
+- **WHEN** one or more `Now` sources are loading
+- **THEN** `Now` renders stable loading rows or an equivalent skeleton
+
+- **WHEN** every loaded `Now` source reports no actionable state
+- **THEN** `Now` renders `Nothing scheduled.`
+
+- **WHEN** a `Now` source fails
+- **THEN** `Now` renders a local error state for that source
+- **AND** the rest of the Overview remains visible
 
 ### Requirement: Page Archetype Compliance
 
-The home page SHALL adopt the Overview/Dashboard archetype as defined in
-`about/lay-and-land/frontend.md` (archetype A). The shared `<Page>` primitive
+The home page SHALL adopt the Editorial archetype as defined in
+`about/lay-and-land/frontend.md`. The shared `<Page>` primitive
 (`components/ui/page.tsx`) was shipped as part of Vertical A (bu-vj0h3) and
 `DashboardPage` was migrated to use it in bu-2okpr.6 (PR #1363). The primitive
 is no longer future-tense; it is the current implementation contract.
@@ -203,8 +250,24 @@ is no longer future-tense; it is the current implementation contract.
 #### Scenario: Page uses the shared Page primitive
 
 - **WHEN** `DashboardPage` renders
-- **THEN** it SHALL use `<Page archetype="overview" title="Overview">` as its
+- **THEN** it SHALL use `<Page archetype="editorial" title="Overview">` as its
   outermost container
-- **AND** the five content regions SHALL be direct children of `<Page>`, not
+- **AND** the cockpit surfaces SHALL be direct children of `<Page>`, not
   wrapped in a raw `<div className="space-y-6">`
 
+## Source References
+
+- `about/heart-and-soul/design-language.md` §Editorial archetype: the Overview
+  uses the Voice surface, status pill, attention list, KPI strip, and
+  right-column index.
+- `about/lay-and-land/frontend.md` §Editorial archetype layout: the Overview
+  frame is `<Page archetype="editorial">` with left-column narrative and
+  right-column scan lists.
+- `openspec/changes/dashboard-overview-briefing/specs/dashboard-briefing/spec.md`:
+  the briefing response remains the six-field API contract consumed by the
+  Overview page.
+- Current endpoint sources: `GET /api/dashboard/briefing`, `GET /api/issues`,
+  `GET /api/butlers`, `GET /api/spend/summary?period=today`,
+  `GET /api/approvals/metrics`, `GET /api/qa/summary`,
+  `GET /api/qa/investigations`, `GET /api/notifications/stats`,
+  `GET /api/timeline`, and `GET /api/sessions`.

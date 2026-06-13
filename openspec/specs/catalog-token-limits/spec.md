@@ -169,16 +169,28 @@ The system SHALL record token usage to the ledger whenever an adapter reports to
 - **THEN** no ledger row is written
 
 ### Requirement: Hard Block on Quota Exhaustion
-The system SHALL hard-block session spawning when a catalog entry's token quota is exhausted. Note: the pre-spawn check and post-spawn record are not atomic, so concurrent spawns targeting the same catalog entry can overshoot the limit by up to N sessions' worth of tokens (where N is the number of concurrent spawns). This is accepted — the limit is a guardrail, not a billing boundary.
+The system SHALL hard-block session spawning when a catalog entry's token quota is exhausted and no eligible same-tier fallback candidate is available. When an eligible model exists in the same effective complexity tier, the spawner SHALL fail over to it instead of hard-blocking. Note: the pre-spawn check and post-spawn record are not atomic, so concurrent spawns targeting the same catalog entry can overshoot the limit by up to N sessions' worth of tokens (where N is the number of concurrent spawns). This is accepted — the limit is a guardrail, not a billing boundary.
 
-#### Scenario: Spawner blocks on quota exceeded
-- **WHEN** the spawner calls `check_token_quota()` after `resolve_model()` and `allowed` is `False`
-- **THEN** the spawner does NOT invoke the adapter
-- **AND** returns a `SpawnerResult` with `success=False` and an error message indicating which window(s) are exhausted and current usage vs. limit
+#### Scenario: Spawner fails over on quota exhausted with same-tier candidate
+- **WHEN** the spawner checks quota for a catalog-resolved model before invocation
+- **AND** `check_token_quota()` returns `allowed=False`
+- **AND** another eligible model exists in the same effective complexity tier
+- **THEN** the spawner SHALL skip the exhausted candidate without invoking its adapter
+- **AND** retry pre-spawn checks with the next eligible same-tier candidate
+- **AND** record quota-skip provenance for the exhausted candidate
 
-#### Scenario: Discretion dispatcher blocks on quota exceeded
+#### Scenario: Spawner blocks on quota exhausted without same-tier candidate
+- **WHEN** the spawner checks quota for a catalog-resolved model before invocation
+- **AND** `check_token_quota()` returns `allowed=False`
+- **AND** no other eligible model exists in the same effective complexity tier
+- **THEN** the spawner SHALL NOT invoke any adapter
+- **AND** it SHALL return a `SpawnerResult` with `success=False`
+- **AND** the error message SHALL identify which quota window is exhausted and current usage versus limit
+
+#### Scenario: Discretion dispatcher remains hard-blocked
 - **WHEN** the discretion dispatcher resolves a model and `check_token_quota()` returns `allowed=False`
-- **THEN** the dispatcher raises `RuntimeError` with a message indicating quota exhaustion
+- **THEN** the dispatcher SHALL preserve the existing hard-block behavior (raises `RuntimeError` with a message indicating quota exhaustion)
+- **AND** it SHALL NOT use spawner model failover
 
 #### Scenario: Error message includes quota details
 - **WHEN** a spawn is blocked due to quota exhaustion
