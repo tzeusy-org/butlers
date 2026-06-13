@@ -27,6 +27,7 @@ import type {
   EntityTimelineItem,
   Fact,
   MessageThreadSummary,
+  NeighbourEntry,
 } from "@/api/types";
 import {
   getTelegramSessionStatus,
@@ -40,6 +41,11 @@ import { DeltaSinceLastVisitBanner } from "@/components/relationship/DeltaSinceL
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
+import { EntityMark } from "@/components/ui/EntityMark";
+import { Eyebrow } from "@/components/ui/Eyebrow";
+import { Row } from "@/components/ui/Row";
+import { Voice } from "@/components/ui/Voice";
+import { ConfBar, ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -79,12 +85,17 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
 import {
+  useArchiveRelationshipEntity,
+  useEntityActivityBins,
   useEntityFacts,
   useEntityGifts,
   useEntityLoans,
   useEntityMessageThreads,
+  useEntityNeighbours,
   useEntityTimeline,
+  useRelationshipEntities,
   useRelationshipEntityQueue,
+  useUpdateEntityDunbarTier,
 } from "@/hooks/use-entities";
 import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
 import {
@@ -1536,7 +1547,19 @@ const STALENESS_BADGE_VARIANT: Record<EntityFactStalenessBand, "default" | "seco
     stale: "outline",
   };
 
-function ProvenanceGrid({ entityId }: { entityId: string }) {
+function ProvenanceGrid({
+  entityId,
+  defaultStoreAll = false,
+}: {
+  entityId: string;
+  /**
+   * When true the grid opens showing BOTH stores (identity + narrative). The
+   * Workbench three-rail layout passes this so the spec's "dense grid over both
+   * stores" renders without an extra click; the Editorial drill defaults to
+   * identity-only.
+   */
+  defaultStoreAll?: boolean;
+}) {
   const [sort, setSort] = useState<ProvenanceSortState>({
     key: "last_observed_at",
     dir: "desc",
@@ -1544,7 +1567,7 @@ function ProvenanceGrid({ entityId }: { entityId: string }) {
   // History view: active (default) vs. superseded facts.
   const [validity, setValidity] = useState<EntityFactsValidity>("active");
   // Narrative layering: identity-only (default) vs. all stores.
-  const [storeAll, setStoreAll] = useState(false);
+  const [storeAll, setStoreAll] = useState(defaultStoreAll);
   // Keyset cursor stack: accumulated cursors driving the current visible window.
   // We re-derive the merged page from each loaded cursor (React Query caches per key).
   const [cursors, setCursors] = useState<string[]>([]);
@@ -1878,6 +1901,382 @@ function EntityDetailModeToggle({
 }
 
 // ---------------------------------------------------------------------------
+// Workbench three-rail layout (entity v3, dashboard-relationship
+// "Workbench three-rail layout"). Rendered inside archetype="overview".
+//
+// Layout: left context rail (~240px) · middle column (1fr) · right action
+// rail (~280px). The 44px Display headline is FORBIDDEN here — the identity
+// hero (already rendered above the rails) carries the name at text-2xl; the
+// rails are a dense curation workspace, not a re-skin of Editorial.
+// ---------------------------------------------------------------------------
+
+/** Format a raw predicate slug into a human label (deterministic, no prose). */
+function formatPredicateLabel(predicate: string): string {
+  return predicate.replaceAll("-", " ").replaceAll("_", " ");
+}
+
+/**
+ * A single top-relation row in the left rail: entity mark, name + predicate
+ * label, and the relational weight. Navigates to the neighbour's detail page.
+ */
+function WorkbenchRelationRow({
+  predicate,
+  neighbour,
+}: {
+  predicate: string;
+  neighbour: NeighbourEntry;
+}) {
+  return (
+    <Row
+      mark={<EntityMark name={neighbour.canonical_name} entityType="person" size={16} />}
+      meta={
+        <span className="font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+          ×{neighbour.weight ?? 1}
+        </span>
+      }
+      density="scan"
+      interactive
+      className="px-1"
+      data-testid="workbench-relation-row"
+    >
+      <Link to={`/entities/${neighbour.entity_id}`} className="block min-w-0">
+        <div className="truncate text-xs font-medium">{neighbour.canonical_name}</div>
+        <div className="font-mono text-[9px] uppercase leading-none tracking-[0.08em] text-[var(--dim)]">
+          {formatPredicateLabel(predicate)}
+        </div>
+      </Link>
+    </Row>
+  );
+}
+
+/**
+ * Left context rail: top relations by weight, the canned "introduced via"
+ * serif gloss, and the "shares identifiers with" amber-mono hint that opens
+ * the compare view for the duplicate pair.
+ */
+function WorkbenchContextRail({
+  entityId,
+  duplicatePeerId,
+  duplicatePeerName,
+  onOpenMergeReview,
+}: {
+  entityId: string;
+  duplicatePeerId: string | null;
+  duplicatePeerName: string | null;
+  onOpenMergeReview: () => void;
+}) {
+  const { data: neighboursData } = useEntityNeighbours(entityId, {
+    rank: "weight",
+    per_predicate: 6,
+  });
+
+  // Flatten the per-predicate neighbour groups into a single weight-ranked list
+  // of the top relations. Deterministic: weight DESC, then name ASC.
+  const topRelations = useMemo(() => {
+    const groups = neighboursData?.neighbours ?? {};
+    const flat: Array<{ predicate: string; neighbour: NeighbourEntry }> = [];
+    for (const [predicate, entries] of Object.entries(groups)) {
+      for (const neighbour of entries) flat.push({ predicate, neighbour });
+    }
+    flat.sort((a, b) => {
+      const w = (b.neighbour.weight ?? 0) - (a.neighbour.weight ?? 0);
+      if (w !== 0) return w;
+      return a.neighbour.canonical_name.localeCompare(b.neighbour.canonical_name);
+    });
+    return flat.slice(0, 8);
+  }, [neighboursData]);
+
+  // "Introduced via" is canned and deterministic — it names the strongest
+  // relation, not a generated narrative. Omitted when there are no relations.
+  const introduced = topRelations[0];
+
+  return (
+    <aside
+      className="space-y-5 lg:border-r lg:border-border lg:pr-5"
+      data-testid="workbench-context-rail"
+      aria-label="Context"
+    >
+      <section className="space-y-2">
+        <Eyebrow>top relations</Eyebrow>
+        {topRelations.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No relations yet.</p>
+        ) : (
+          <div>
+            {topRelations.map(({ predicate, neighbour }) => (
+              <WorkbenchRelationRow
+                key={`${predicate}:${neighbour.entity_id}`}
+                predicate={predicate}
+                neighbour={neighbour}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {introduced && (
+        <section className="space-y-2">
+          <Eyebrow>introduced via</Eyebrow>
+          <Voice variant="italic" className="text-xs text-[var(--mfg)]" data-testid="workbench-introduced-via">
+            {formatPredicateLabel(introduced.predicate)} · {introduced.neighbour.canonical_name}
+          </Voice>
+        </section>
+      )}
+
+      {duplicatePeerId && (
+        <section className="space-y-2">
+          <Eyebrow>shares identifiers with</Eyebrow>
+          <button
+            type="button"
+            data-testid="workbench-shares-identifiers"
+            onClick={onOpenMergeReview}
+            className="block text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {duplicatePeerName ?? "another entity"} — likely the same →
+          </button>
+        </section>
+      )}
+    </aside>
+  );
+}
+
+/** One cell of the four-cell KPI strip: mono eyebrow + tabular mega-number. */
+function WorkbenchKpiCell({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="px-3 py-2 first:pl-0" data-testid="workbench-kpi-cell">
+      <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 text-3xl font-medium tabular-nums leading-none tracking-[-0.03em]">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Middle-column KPI strip: relations / touches 90d / sources / contacts.
+ * All numerals tabular. No card chrome — a hairline-divided four-cell grid.
+ */
+function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
+  const { data: neighboursData } = useEntityNeighbours(entityId);
+  const { data: binsData } = useEntityActivityBins(entityId, { window: "90d" });
+  // Pull a wide-but-bounded facts window over both stores to count the distinct
+  // contributing sources and contact-fact rows. The grid below paginates; this
+  // count is a quick-glance KPI, not an exhaustive tally.
+  const { data: factsData } = useEntityFacts(entityId, { store: "all", limit: 200 });
+
+  const relations = useMemo(() => {
+    const groups = neighboursData?.neighbours ?? {};
+    return Object.values(groups).reduce((sum, entries) => sum + entries.length, 0);
+  }, [neighboursData]);
+
+  const touches90d = useMemo(() => {
+    const bins = binsData?.bins ?? [];
+    return bins.reduce((sum, bin) => sum + (bin.count ?? 0), 0);
+  }, [binsData]);
+
+  const facts = useMemo(() => factsData?.items ?? [], [factsData]);
+  const sources = useMemo(() => new Set(facts.map((f) => f.src)).size, [facts]);
+  const contacts = useMemo(
+    () => facts.filter((f) => f.predicate.startsWith("has-")).length,
+    [facts],
+  );
+
+  return (
+    <div
+      className="grid grid-cols-4 divide-x divide-border border-y border-border"
+      data-testid="workbench-kpi-strip"
+    >
+      <WorkbenchKpiCell label="relations" value={relations} />
+      <WorkbenchKpiCell label="touches 90d" value={touches90d} />
+      <WorkbenchKpiCell label="sources" value={sources} />
+      <WorkbenchKpiCell label="contacts" value={contacts} />
+    </div>
+  );
+}
+
+/** A single curation action — a quiet pill button, never colored (except red). */
+function CurationAction({
+  label,
+  onClick,
+  disabled = false,
+  destructive = false,
+  testId,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  destructive?: boolean;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onClick}
+      disabled={disabled}
+      className={
+        destructive
+          ? "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          : "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground transition-colors hover:border-foreground hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
+ * Per-fact confidence/staleness inspector row. Renders the two axes side by
+ * side — conf bar (amber when < 0.85) and staleness band (dim when stale) —
+ * plus source/verified marks. NEVER a single blended score.
+ */
+function WorkbenchInspectorRow({ fact }: { fact: EntityFact }) {
+  return (
+    <Row
+      density="scan"
+      className="px-0"
+      meta={
+        <div className="flex items-center gap-2">
+          <ConfBar conf={fact.conf} width={40} />
+          <StalenessBand band={fact.staleness_band} />
+        </div>
+      }
+      data-testid="workbench-inspector-row"
+    >
+      <div className="min-w-0">
+        <div className="truncate text-[11px] font-medium">
+          {formatPredicateLabel(fact.predicate)}
+        </div>
+        <ProvenanceMarks src={fact.src} verified={fact.verified} className="mt-0.5" />
+      </div>
+    </Row>
+  );
+}
+
+/**
+ * Right action rail: the duplicate warning panel (when duplicate-candidate),
+ * the curation action list, and the per-fact confidence/staleness inspector.
+ */
+function WorkbenchActionRail({
+  entityId,
+  isUnidentified,
+  duplicatePeerId,
+  onOpenMergeReview,
+  onPromote,
+  onPromoteTier,
+  onDemoteTier,
+  onEditAliases,
+  onEditContacts,
+  onArchive,
+  onForget,
+  duplicateEvidence,
+}: {
+  entityId: string;
+  isUnidentified: boolean;
+  duplicatePeerId: string | null;
+  onOpenMergeReview: () => void;
+  onPromote: () => void;
+  onPromoteTier: () => void;
+  onDemoteTier: () => void;
+  onEditAliases: () => void;
+  onEditContacts: () => void;
+  onArchive: () => void;
+  onForget: () => void;
+  duplicateEvidence: string | null;
+}) {
+  const { data: factsData } = useEntityFacts(entityId, { store: "all", limit: 20 });
+  const facts = useMemo(() => factsData?.items ?? [], [factsData]);
+
+  return (
+    <aside
+      className="space-y-5 lg:border-l lg:border-border lg:pl-5"
+      data-testid="workbench-action-rail"
+      aria-label="Curation"
+    >
+      {/* Duplicate warning panel — amber 1px border, atop the right rail. */}
+      {duplicatePeerId && (
+        <section
+          className="space-y-2 rounded-md border border-[var(--amber)] p-3"
+          data-testid="workbench-duplicate-panel"
+        >
+          <Eyebrow>duplicate candidate</Eyebrow>
+          {duplicateEvidence && (
+            <p className="font-mono text-[11px] leading-relaxed text-[var(--mfg)]">
+              {duplicateEvidence}
+            </p>
+          )}
+          <button
+            type="button"
+            data-testid="workbench-duplicate-commit"
+            onClick={onOpenMergeReview}
+            className="inline-flex items-center gap-1.5 rounded border border-[var(--amber)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--amber)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <Layers className="h-3.5 w-3.5" aria-hidden />
+            Review &amp; merge →
+          </button>
+        </section>
+      )}
+
+      <section className="space-y-2">
+        <Eyebrow>curation</Eyebrow>
+        <div className="space-y-1.5">
+          <CurationAction
+            label="Merge"
+            testId="workbench-action-merge"
+            onClick={onOpenMergeReview}
+            disabled={!duplicatePeerId}
+          />
+          {isUnidentified && (
+            <CurationAction label="Promote" testId="workbench-action-promote" onClick={onPromote} />
+          )}
+          <CurationAction
+            label="Promote tier"
+            testId="workbench-action-promote-tier"
+            onClick={onPromoteTier}
+          />
+          <CurationAction
+            label="Demote tier"
+            testId="workbench-action-demote-tier"
+            onClick={onDemoteTier}
+          />
+          <CurationAction
+            label="Edit aliases"
+            testId="workbench-action-edit-aliases"
+            onClick={onEditAliases}
+          />
+          <CurationAction
+            label="Edit contacts"
+            testId="workbench-action-edit-contacts"
+            onClick={onEditContacts}
+          />
+          <CurationAction label="Archive" testId="workbench-action-archive" onClick={onArchive} />
+          <CurationAction
+            label="Forget"
+            testId="workbench-action-forget"
+            onClick={onForget}
+            destructive
+          />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <Eyebrow>confidence · staleness</Eyebrow>
+        {facts.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No facts to inspect.</p>
+        ) : (
+          <div data-testid="workbench-inspector">
+            {facts.map((fact) => (
+              <WorkbenchInspectorRow key={`${fact.store}:${fact.id}`} fact={fact} />
+            ))}
+          </div>
+        )}
+      </section>
+    </aside>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // EntityDetailPage
 // ---------------------------------------------------------------------------
 
@@ -1922,6 +2321,8 @@ export default function EntityDetailPage() {
   const updateEntity = useUpdateEntity();
   const promoteEntity = usePromoteEntity();
   const forgetEntity = useForgetRelationshipEntity();
+  const archiveEntity = useArchiveRelationshipEntity();
+  const updateDunbarTier = useUpdateEntityDunbarTier();
 
   // Ref used by the ContactChannelCard "Link contact" CTA to scroll to the
   // practical drawer where the existing link/unlink flow lives.
@@ -1935,17 +2336,42 @@ export default function EntityDetailPage() {
   // "Single-pair review UX"). Duplicate evidence + the peer entity come from the
   // curation queue's duplicate-candidate bucket.
   const { data: queueData } = useRelationshipEntityQueue({ limit: 100 });
-  const duplicatePeerId = useMemo<string | null>(() => {
+  // The duplicate-candidate queue entry for this entity (if any). Drives both
+  // the duplicate-warning panel and the Workbench right-rail panel/evidence.
+  const duplicateEntry = useMemo(() => {
     if (!entityId) return null;
-    const entry = queueData?.items.find(
-      (item) => item.entity_id === entityId && item.bucket === "duplicate-candidate",
+    return (
+      queueData?.items.find(
+        (item) => item.entity_id === entityId && item.bucket === "duplicate-candidate",
+      ) ?? null
     );
-    const peers = entry?.evidence?.["peer_entity_ids"];
+  }, [queueData, entityId]);
+  const duplicatePeerId = useMemo<string | null>(() => {
+    const peers = duplicateEntry?.evidence?.["peer_entity_ids"];
     if (Array.isArray(peers) && peers.length > 0 && typeof peers[0] === "string") {
       return peers[0];
     }
     return null;
-  }, [queueData, entityId]);
+  }, [duplicateEntry]);
+  // Deterministic evidence string for the Workbench duplicate panel — assembled
+  // from the queue entry's structured evidence, never generated prose.
+  const duplicateEvidence = useMemo<string | null>(() => {
+    const ev = duplicateEntry?.evidence;
+    if (!ev) return null;
+    const predicate = typeof ev["predicate"] === "string" ? (ev["predicate"] as string) : null;
+    const sharedValue =
+      typeof ev["shared_value"] === "string" ? (ev["shared_value"] as string) : null;
+    if (predicate && sharedValue) {
+      return `Shares ${predicate.replaceAll("-", " ").replaceAll("_", " ")} ${sharedValue}`;
+    }
+    return "Shares an identifier with another entity";
+  }, [duplicateEntry]);
+  // Peer display name, when the peer also surfaces as a queue entry.
+  const duplicatePeerName = useMemo<string | null>(() => {
+    if (!duplicatePeerId) return null;
+    const peerEntry = queueData?.items.find((item) => item.entity_id === duplicatePeerId);
+    return peerEntry?.canonical_name ?? null;
+  }, [queueData, duplicatePeerId]);
   const [comparePair, setComparePair] = useState<{ entityA: string; entityB: string } | null>(
     null,
   );
@@ -1970,6 +2396,47 @@ export default function EntityDetailPage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [duplicatePeerId, openMergeReview]);
+
+  // Sibling navigation for the Detail keyboard map: `k`/`j` step to the
+  // previous/next entity in Index order (default scope), `Esc` returns to the
+  // Index. View-local handlers only — they never shadow the app-wide ⌘K/`/`.
+  // The sibling set is the relationship Index list (the most recent list scope).
+  const { data: siblingsData } = useRelationshipEntities({ limit: 200 });
+  const siblingIds = useMemo<string[]>(
+    () => siblingsData?.items.map((item) => item.id) ?? [],
+    [siblingsData],
+  );
+  const stepSibling = useCallback(
+    (delta: number) => {
+      if (!entityId || siblingIds.length === 0) return;
+      const idx = siblingIds.indexOf(entityId);
+      if (idx === -1) return;
+      const next = siblingIds[idx + delta];
+      if (next) void navigate(`/entities/${next}`);
+    },
+    [entityId, siblingIds, navigate],
+  );
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      if (e.key === "k") {
+        e.preventDefault();
+        stepSibling(-1);
+      } else if (e.key === "j") {
+        e.preventDefault();
+        stepSibling(1);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        void navigate("/entities");
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stepSibling, navigate]);
 
   const handleForgetConfirm = async () => {
     if (!entityId) return;
@@ -2076,6 +2543,61 @@ export default function EntityDetailPage() {
       },
     );
   };
+
+  // Workbench right-rail curation handlers. Tier promote/demote step along the
+  // canonical Dunbar ramp (5 = innermost … 1500 = outermost); promote moves
+  // closer (smaller tier), demote moves outward (larger tier).
+  const handlePromoteEntity = useCallback(() => {
+    if (!entityId) return;
+    promoteEntity.mutate(entityId, {
+      onSuccess: () => toast.success("Entity marked as confirmed."),
+      onError: (err) =>
+        toast.error(`Failed to confirm: ${err instanceof Error ? err.message : "Unknown error"}`),
+    });
+  }, [entityId, promoteEntity]);
+
+  const stepDunbarTier = useCallback(
+    (direction: "promote" | "demote") => {
+      if (!entityId || !entity) return;
+      const ramp = DUNBAR_TIER_VALUES;
+      const current = entity.dunbar_tier ?? ramp[ramp.length - 1];
+      const idx = ramp.indexOf(current as (typeof ramp)[number]);
+      const baseIdx = idx === -1 ? ramp.length - 1 : idx;
+      const nextIdx = direction === "promote" ? baseIdx - 1 : baseIdx + 1;
+      if (nextIdx < 0 || nextIdx >= ramp.length) {
+        toast.error(direction === "promote" ? "Already at the innermost tier." : "Already at the outermost tier.");
+        return;
+      }
+      const nextTier = ramp[nextIdx];
+      updateDunbarTier.mutate(
+        { entityId, tier: nextTier },
+        {
+          onSuccess: () => toast.success(`Tier set to ${nextTier}`),
+          onError: (err) => toast.error(`Failed to set tier: ${(err as Error).message}`),
+        },
+      );
+    },
+    [entityId, entity, updateDunbarTier],
+  );
+
+  const handleArchiveEntity = useCallback(() => {
+    if (!entityId) return;
+    archiveEntity.mutate(entityId, {
+      onSuccess: () => {
+        toast.success(`Archived ${entity?.canonical_name ?? "entity"}`);
+        void navigate("/entities");
+      },
+      onError: (err) => toast.error(`Failed to archive: ${(err as Error).message}`),
+    });
+  }, [entityId, entity, archiveEntity, navigate]);
+
+  const handleEditAliases = useCallback(() => {
+    setAddingAlias(true);
+  }, []);
+
+  const handleEditContacts = useCallback(() => {
+    practicalDrawerRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
 
   const isOwner = entity?.roles?.includes("owner") ?? false;
   const ownerNeedsSetup = isOwner && entity ? !entity.linked_contact_id : false;
@@ -2473,8 +2995,43 @@ export default function EntityDetailPage() {
               {/* Core dates — first-class section in both modes (entity v3). */}
               <CoreDatesBlock entityId={entityId} />
 
-              {/* Workbench mode — dense sortable provenance grid with real provenance fields */}
-              <ProvenanceGrid entityId={entity.id} />
+              {/* Workbench three-rail layout: context · workbench · curation.
+                  No 44px Display here (the identity hero above carries the name). */}
+              <div
+                className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_minmax(0,1fr)_280px]"
+                data-testid="workbench-three-rail"
+              >
+                <WorkbenchContextRail
+                  entityId={entity.id}
+                  duplicatePeerId={duplicatePeerId}
+                  duplicatePeerName={duplicatePeerName}
+                  onOpenMergeReview={openMergeReview}
+                />
+
+                <div className="min-w-0 space-y-5">
+                  <WorkbenchKpiStrip entityId={entity.id} />
+                  {/* Dense sortable provenance grid over BOTH stores. */}
+                  <ProvenanceGrid entityId={entity.id} defaultStoreAll />
+                </div>
+
+                <WorkbenchActionRail
+                  entityId={entity.id}
+                  isUnidentified={entity.unidentified}
+                  duplicatePeerId={duplicatePeerId}
+                  duplicateEvidence={duplicateEvidence}
+                  onOpenMergeReview={openMergeReview}
+                  onPromote={handlePromoteEntity}
+                  onPromoteTier={() => stepDunbarTier("promote")}
+                  onDemoteTier={() => stepDunbarTier("demote")}
+                  onEditAliases={handleEditAliases}
+                  onEditContacts={handleEditContacts}
+                  onArchive={handleArchiveEntity}
+                  onForget={() => {
+                    setForgetError(null);
+                    setForgetDialogOpen(true);
+                  }}
+                />
+              </div>
             </>
           )}
 

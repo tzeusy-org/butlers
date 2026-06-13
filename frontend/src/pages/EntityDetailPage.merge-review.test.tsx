@@ -56,6 +56,11 @@ vi.mock("@/hooks/use-entities", () => ({
   useMarkEntityView: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityCoreDates: vi.fn(() => ({ data: { items: [] }, isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useEntityNeighbours: vi.fn(() => ({ data: { neighbours: {}, remainders: {} } })),
+  useRelationshipEntities: vi.fn(() => ({
+    data: { items: [], total: 0, limit: 200, offset: 0 },
+  })),
+  useArchiveRelationshipEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityFacts: vi.fn(() => ({
     data: { items: [], next_cursor: null, has_more: false },
     isFetching: false,
