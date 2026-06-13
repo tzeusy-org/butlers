@@ -10,7 +10,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
-import NotificationsPage from "@/pages/NotificationsPage";
+import NotificationsPage, { STATUS_OPTIONS } from "@/pages/NotificationsPage";
 import {
   useAcknowledgeAllFailed,
   useMarkNotificationRead,
@@ -177,6 +177,17 @@ describe("NotificationsPage", () => {
     const html = renderPage();
     // Should not crash and should not render a notification list
     expect(html).not.toContain("No notifications found");
+  });
+
+  it("exposes Read and Retried in the status filter options", () => {
+    // The status filter must surface read/retried so those rows are not hidden
+    // (bu-5gf99). Assert against the exported options directly — the Radix
+    // <Select> portals its items, so closed-state SSR markup omits them.
+    const values = STATUS_OPTIONS.map((o) => o.value);
+    expect(values).toContain("read");
+    expect(values).toContain("retried");
+    expect(values).toContain("sent");
+    expect(values).toContain("failed");
   });
 
   it("calls useNotifications with params that omit sentinel filter values", () => {

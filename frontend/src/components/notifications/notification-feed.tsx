@@ -25,8 +25,15 @@ export interface NotificationFeedProps {
   isLoading?: boolean;
   /** When true, the empty state shows a hint that active filters may be hiding results. */
   hasActiveFilters?: boolean;
-  /** Called when the user clicks "Mark read" on a failed notification row. */
+  /** Called when the user clicks "Mark read" on any unread notification row. */
   onMarkRead?: (notificationId: string) => void;
+  /**
+   * Called when the user clicks "Dismiss" on a notification row. Dismiss is
+   * semantically identical to mark-read on the backend (both set
+   * ``status = 'read'`` via PATCH /{id}/read); this prop exists so the page can
+   * route it through the same mutation while keeping the affordance distinct.
+   */
+  onDismiss?: (notificationId: string) => void;
   /** Set of notification IDs currently being acknowledged (shows loading state). */
   pendingAckIds?: Set<string>;
 }
@@ -108,8 +115,11 @@ export function NotificationFeed({
   isLoading = false,
   hasActiveFilters = false,
   onMarkRead,
+  onDismiss,
   pendingAckIds,
 }: NotificationFeedProps) {
+  // Triage controls render whenever a triage handler is wired.
+  const hasTriageControls = Boolean(onMarkRead || onDismiss);
   if (isLoading) {
     return <NotificationTableSkeleton />;
   }
@@ -128,7 +138,7 @@ export function NotificationFeed({
           <TableHead>Channel</TableHead>
           <TableHead>Message</TableHead>
           <TableHead className="text-right">Time</TableHead>
-          {onMarkRead && <TableHead />}
+          {hasTriageControls && <TableHead />}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -180,18 +190,36 @@ export function NotificationFeed({
             <TableCell className="text-muted-foreground text-right text-xs">
               <Time value={n.created_at} mode="relative" />
             </TableCell>
-            {onMarkRead && (
+            {hasTriageControls && (
               <TableCell className="text-right">
-                {displayStatus === "failed" && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={isPending}
-                    onClick={() => onMarkRead(n.id)}
-                    className="text-xs"
-                  >
-                    {isPending ? "Acknowledging…" : "Mark read"}
-                  </Button>
+                {/* Triage controls apply to any actionable (unread) row — both
+                    sent and failed — not just failures. An already-read row has
+                    nothing left to triage, so it shows no control. */}
+                {displayStatus !== "read" && (
+                  <div className="flex items-center justify-end gap-2">
+                    {onMarkRead && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={isPending}
+                        onClick={() => onMarkRead(n.id)}
+                        className="text-xs"
+                      >
+                        {isPending ? "Acknowledging…" : "Mark read"}
+                      </Button>
+                    )}
+                    {onDismiss && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={isPending}
+                        onClick={() => onDismiss(n.id)}
+                        className="text-muted-foreground text-xs"
+                      >
+                        Dismiss
+                      </Button>
+                    )}
+                  </div>
                 )}
               </TableCell>
             )}

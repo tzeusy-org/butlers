@@ -33,11 +33,15 @@ const CHANNEL_OPTIONS = [
   { value: "email", label: "Email" },
 ] as const;
 
-const STATUS_OPTIONS = [
+// Exported for tests: the status filter must surface read/retried so those rows
+// are not hidden from the review-the-stream view (bu-5gf99).
+export const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "sent", label: "Sent" },
   { value: "failed", label: "Failed" },
   { value: "pending", label: "Pending" },
+  { value: "read", label: "Read" },
+  { value: "retried", label: "Retried" },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -138,6 +142,11 @@ export default function NotificationsPage() {
     },
     [markReadMutation],
   );
+
+  // Dismiss is semantically identical to mark-read: the backend exposes a single
+  // PATCH /{id}/read endpoint that sets status='read' for any status, so both
+  // affordances route through the same mutation.
+  const handleDismiss = handleMarkRead;
 
   const handleAcknowledgeAll = useCallback(() => {
     ackAllMutation.mutate();
@@ -305,6 +314,7 @@ export default function NotificationsPage() {
               isLoading={false}
               hasActiveFilters={hasActiveFilters}
               onMarkRead={handleMarkRead}
+              onDismiss={handleDismiss}
               pendingAckIds={pendingAckIds}
             />
           )}
