@@ -42,7 +42,11 @@ from typing import Any
 
 import asyncpg
 
-from .staleness import identity_staleness_band_sql, narrative_staleness_band_sql
+from .staleness import (
+    identity_staleness_band_sql,
+    narrative_scope_sql,
+    narrative_staleness_band_sql,
+)
 
 # ---------------------------------------------------------------------------
 # Ranking constants — MUST match GET /entities/search (router.py::search_entities).
@@ -364,6 +368,12 @@ async def _fetch_narrative_facts(
     omitted by the caller for narrative rows per the spec).  ``content`` is the
     object value; ``source_butler`` is the provenance src.
 
+    Scope-filtered per the canonical narrative read rule
+    (``staleness.narrative_scope_sql`` — ``scope IN ('relationship', 'global')``)
+    so this MCP tool surfaces the SAME fact set as the dashboard drill, delta
+    banner, and compare blocks (bu-3jrq3). It previously applied no scope filter,
+    which surfaced foreign-butler-scoped rows the dashboard hid.
+
     Read-only: this is a plain SELECT against the memory module's ``facts``
     table — no write to that module's surface.
     """
@@ -381,6 +391,7 @@ async def _fetch_narrative_facts(
             {narrative_staleness_band_sql("f")} AS staleness_band
         FROM facts f
         WHERE f.entity_id = $1
+          AND {narrative_scope_sql("f")}
           AND f.validity  = 'active'
         ORDER BY f.created_at DESC
         """,

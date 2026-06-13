@@ -5609,6 +5609,62 @@ def _decode_facts_cursor(cursor: str) -> tuple[datetime, str]:
         raise ValueError(f"Invalid cursor: {exc}") from exc
 
 
+async def _fetch_narrative_drill_facts(
+    pool,
+    entity_id: UUID,
+    *,
+    validity: str,
+    predicate: str | None,
+    limit: int,
+) -> list[Any]:
+    """Narrative-store facts for the entity facts drill (``store=all`` layer).
+
+    Scope-filtered per the canonical narrative read rule
+    (``staleness.narrative_scope_sql`` — ``scope IN ('relationship', 'global')``)
+    so the drill, delta banner, compare blocks, and the ``relationship_lookup``
+    MCP tool all surface the SAME fact set (bu-3jrq3).
+    """
+    from butlers.tools.relationship.staleness import (
+        narrative_scope_sql,
+        narrative_staleness_band_sql,
+    )
+
+    narr_args: list[Any] = [entity_id]
+    narr_where = ["f.entity_id = $1", narrative_scope_sql("f")]
+    # The narrative store records supersession via validity too.
+    narr_args.append(validity)
+    narr_where.append(f"f.validity = ${len(narr_args)}")
+    if predicate is not None:
+        narr_args.append(predicate)
+        narr_where.append(f"f.predicate = ${len(narr_args)}")
+
+    return await pool.fetch(
+        f"""
+        SELECT
+            f.id,
+            f.entity_id   AS subject,
+            f.predicate,
+            f.content     AS object,
+            'literal'::text AS object_kind,
+            COALESCE(f.source_butler, 'memory')::text AS src,
+            f.confidence  AS conf,
+            NULL::int     AS weight,
+            f.last_confirmed_at AS last_seen,
+            false         AS verified,
+            NULL::bool    AS "primary",
+            f.validity,
+            f.created_at,
+            {narrative_staleness_band_sql("f")} AS staleness_band
+        FROM facts f
+        WHERE {" AND ".join(narr_where)}
+        ORDER BY f.created_at DESC, f.id DESC
+        LIMIT ${len(narr_args) + 1}
+        """,
+        *narr_args,
+        limit,
+    )
+
+
 @router.get(
     "/entities/{entity_id}/facts",
     response_model=EntityFactsResponse,
@@ -5663,10 +5719,7 @@ async def list_entity_facts(
     Returns ``{"items": [], "next_cursor": null, "has_more": false}`` when no
     facts match.
     """
-    from butlers.tools.relationship.staleness import (
-        identity_staleness_band_sql,
-        narrative_staleness_band_sql,
-    )
+    from butlers.tools.relationship.staleness import identity_staleness_band_sql
 
     pool = _pool(db)
 
@@ -5757,39 +5810,8 @@ async def list_entity_facts(
     # are the Workbench grid's secondary layer; they ride the same page (no
     # independent cursor) so the cursor stays a pure identity-store keyset.
     if store == "all":
-        narr_args: list[Any] = [entity_id]
-        narr_where = ["f.entity_id = $1", "f.scope = 'relationship'"]
-        # The narrative store records supersession via validity too.
-        narr_args.append(validity)
-        narr_where.append(f"f.validity = ${len(narr_args)}")
-        if predicate is not None:
-            narr_args.append(predicate)
-            narr_where.append(f"f.predicate = ${len(narr_args)}")
-
-        narrative_rows = await pool.fetch(
-            f"""
-            SELECT
-                f.id,
-                f.entity_id   AS subject,
-                f.predicate,
-                f.content     AS object,
-                'literal'::text AS object_kind,
-                COALESCE(f.source_butler, 'memory')::text AS src,
-                f.confidence  AS conf,
-                NULL::int     AS weight,
-                f.last_confirmed_at AS last_seen,
-                false         AS verified,
-                NULL::bool    AS "primary",
-                f.validity,
-                f.created_at,
-                {narrative_staleness_band_sql("f")} AS staleness_band
-            FROM facts f
-            WHERE {" AND ".join(narr_where)}
-            ORDER BY f.created_at DESC, f.id DESC
-            LIMIT ${len(narr_args) + 1}
-            """,
-            *narr_args,
-            limit,
+        narrative_rows = await _fetch_narrative_drill_facts(
+            pool, entity_id, validity=validity, predicate=predicate, limit=limit
         )
         items.extend(
             EntityFactEntry(
@@ -6564,8 +6586,16 @@ async def _fetch_identity_facts_for_compare(pool, entity_id: UUID) -> list[Any]:
 
 
 async def _fetch_narrative_facts_for_compare(pool, entity_id: UUID) -> list[Any]:
-    """Fetch active narrative-store facts (memory-module ``facts``) for an entity."""
-    from butlers.tools.relationship.staleness import narrative_staleness_band_sql
+    """Fetch active narrative-store facts (memory-module ``facts``) for an entity.
+
+    Scope-filtered per the canonical narrative read rule
+    (``staleness.narrative_scope_sql`` — ``scope IN ('relationship', 'global')``)
+    so compare matches the drill, delta, and lookup surfaces (bu-3jrq3).
+    """
+    from butlers.tools.relationship.staleness import (
+        narrative_scope_sql,
+        narrative_staleness_band_sql,
+    )
 
     return await pool.fetch(
         f"""
@@ -6583,7 +6613,7 @@ async def _fetch_narrative_facts_for_compare(pool, entity_id: UUID) -> list[Any]
             {narrative_staleness_band_sql("f")} AS staleness_band
         FROM facts f
         WHERE f.entity_id = $1
-          AND f.scope = 'relationship'
+          AND {narrative_scope_sql("f")}
           AND f.validity = 'active'
         ORDER BY f.predicate, f.created_at DESC, f.id DESC
         """,
@@ -7218,6 +7248,40 @@ async def mark_entity_view(
     return ViewMarkResponse(entity_id=row["entity_id"], marked_at=row["marked_at"])
 
 
+async def _fetch_narrative_delta_facts(pool, entity_id: UUID, marked_at: datetime) -> list[Any]:
+    """Narrative-store facts changed since ``marked_at`` (delta banner).
+
+    Scope-filtered per the canonical narrative read rule
+    (``staleness.narrative_scope_sql`` — ``scope IN ('relationship', 'global')``)
+    so the delta banner matches the drill, compare, and lookup surfaces
+    (bu-3jrq3).
+    """
+    from butlers.tools.relationship.staleness import narrative_scope_sql
+
+    return await pool.fetch(
+        f"""
+        SELECT
+            f.id,
+            f.entity_id AS subject,
+            f.predicate,
+            f.content   AS object,
+            'literal'::text AS object_kind,
+            COALESCE(f.source_butler, 'memory')::text AS src,
+            f.confidence AS conf,
+            f.validity,
+            f.created_at,
+            GREATEST(f.created_at, COALESCE(f.last_confirmed_at, f.created_at)) AS changed_at
+        FROM facts f
+        WHERE f.entity_id = $1
+          AND {narrative_scope_sql("f")}
+          AND GREATEST(f.created_at, COALESCE(f.last_confirmed_at, f.created_at)) > $2
+        ORDER BY changed_at DESC, f.id DESC
+        """,
+        entity_id,
+        marked_at,
+    )
+
+
 @router.get("/entities/{entity_id}/delta-facts", response_model=DeltaFactsResponse)
 async def get_entity_delta_facts(
     entity_id: UUID,
@@ -7284,28 +7348,7 @@ async def get_entity_delta_facts(
             entity_id,
             marked_at,
         ),
-        pool.fetch(
-            """
-            SELECT
-                f.id,
-                f.entity_id AS subject,
-                f.predicate,
-                f.content   AS object,
-                'literal'::text AS object_kind,
-                COALESCE(f.source_butler, 'memory')::text AS src,
-                f.confidence AS conf,
-                f.validity,
-                f.created_at,
-                GREATEST(f.created_at, COALESCE(f.last_confirmed_at, f.created_at)) AS changed_at
-            FROM facts f
-            WHERE f.entity_id = $1
-              AND f.scope = 'relationship'
-              AND GREATEST(f.created_at, COALESCE(f.last_confirmed_at, f.created_at)) > $2
-            ORDER BY changed_at DESC, f.id DESC
-            """,
-            entity_id,
-            marked_at,
-        ),
+        _fetch_narrative_delta_facts(pool, entity_id, marked_at),
     )
 
     items: list[DeltaFactEntry] = [

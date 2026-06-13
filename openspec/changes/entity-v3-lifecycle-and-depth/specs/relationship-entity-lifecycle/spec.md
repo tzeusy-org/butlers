@@ -103,3 +103,16 @@ The two-store layering declared in this spec (registry identity/relational tripl
 - **WHEN** `memory_store_fact` is called with content shaped as a registry identity predicate (e.g. a `has-email` channel identifier)
 - **THEN** the writer-side boundary check MUST reject or route the assertion to `relationship_assert_fact()`
 - **AND** no identity-predicate row MUST land in the memory-module `facts` table
+
+### Requirement: Narrative-store reads use one scope predicate
+
+Every entity-anchored read of the memory-module `facts` table (narrative store) SHALL apply the identical scope filter `scope IN ('relationship', 'global')`. This is the single project-wide answer to "which narrative facts are visible to a relationship entity read." It MUST be enforced uniformly across all four narrative read surfaces — the dashboard facts drill (`GET /entities/{id}/facts?store=all`), the delta banner (`GET /entities/{id}/delta-facts`), the compare blocks (`POST /entities/compare`), and the `relationship_lookup` MCP tool — so the same fact set is visible (or hidden) in all of them or in none. Rationale: `memory_store_fact` defaults `scope = 'global'` and relationship runtime guidance routes edge-facts through it, so narrative facts routinely land at `global` scope; a filter of `scope = 'relationship'` alone would silently hide them from the dashboard while the lookup tool (which had no filter) still surfaced them. The predicate mirrors the memory module's own search semantics (`scope IN ('global', <butler_scope>)`): `global` facts are visible to every butler, this butler's own `relationship`-scoped facts are visible, and foreign butler scopes (e.g. `health`) stay hidden. This is read-side widening only — the memory module's `global` write default and decay lifecycle are unchanged.
+
+#### Scenario: A default-scope narrative fact is visible in every read surface
+- **WHEN** a narrative fact is stored against an entity via `memory_store_fact` with the default `scope = 'global'`
+- **THEN** it MUST appear in the facts drill, the delta banner, the compare blocks, AND the `relationship_lookup` tool
+- **AND** no narrative read surface MUST return a fact that another narrative read surface for the same entity and fact set hides
+
+#### Scenario: A foreign-scope narrative fact is hidden in every read surface
+- **WHEN** a narrative fact is stored against an entity under a foreign butler scope (e.g. `scope = 'health'`)
+- **THEN** it MUST NOT appear in any of the four narrative read surfaces
