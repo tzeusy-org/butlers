@@ -1411,6 +1411,15 @@ export interface MemoryInspectResult {
   butler: string | null;
   created_at: string;
   metadata: Record<string, unknown>;
+  /**
+   * Full register-shaped row for the matching kind. Exactly one of
+   * fact/rule/episode is populated server-side (matching `kind`), so search
+   * results render belief/maturity/importance identical to browse mode.
+   * Mirrors src/butlers/api/models/memory.py::MemoryInspectResult.
+   */
+  fact?: Fact | null;
+  rule?: MemoryRule | null;
+  episode?: Episode | null;
 }
 
 /** Query parameters for GET /api/memory/inspect. */

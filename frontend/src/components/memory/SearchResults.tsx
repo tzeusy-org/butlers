@@ -9,10 +9,11 @@
 // EpisodeRow). No fourth shape — a fact row here is byte-identical to a fact
 // row in browse mode.
 //
-// The inspect endpoint returns a uniform MemoryInspectResult; we adapt each
-// into its domain type (memory-derived inspectResultTo*), drawing extra fields
-// from `metadata` and using honest defaults otherwise (never a fabricated
-// belief numeral or harm count — color discipline §6 holds).
+// Each MemoryInspectResult carries a full register-shaped row (fact/rule/
+// episode, matching its kind — #2199); we adapt each into its domain type
+// (memory-derived inspectResultTo*), which prefers that embedded row so rows
+// render real belief / maturity / importance data identical to browse mode
+// (honest-default fallback only for rows that predate the embedded row).
 //
 // Empty result: one serif-italic line — "Nothing in the books." (§3d).
 //

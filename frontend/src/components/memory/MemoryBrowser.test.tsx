@@ -121,8 +121,10 @@ describe("MemoryBrowser", () => {
     expect(container.querySelector('[role="button"][aria-expanded]')).not.toBeNull();
   });
 
-  it("renders grouped results reusing register rows when q is set", () => {
+  it("renders grouped results reusing register rows with full embedded data when q is set", () => {
     primeBrowse([]);
+    // Each inspect result now carries the full register-shaped row (#2199) so
+    // results render real belief/maturity data identical to browse mode.
     const results: MemoryInspectResult[] = [
       {
         id: "fact-1",
@@ -130,7 +132,33 @@ describe("MemoryBrowser", () => {
         content: "ibuprofen, after meals",
         butler: "lifestyle",
         created_at: "2026-06-13T00:00:00Z",
-        metadata: { subject: "Owner", predicate: "preferred_pain_relief" },
+        metadata: {},
+        fact: {
+          id: "fact-1",
+          subject: "Owner",
+          predicate: "preferred_pain_relief",
+          content: "ibuprofen, after meals",
+          importance: 8,
+          confidence: 0.94,
+          decay_rate: 0, // 0 → effective == stored, renders the literal "0.94"
+          permanence: "stable",
+          source_butler: "lifestyle",
+          source_episode_id: null,
+          session_id: null,
+          supersedes_id: null,
+          entity_id: null,
+          entity_name: null,
+          object_entity_id: null,
+          object_entity_name: null,
+          validity: "active",
+          scope: "lifestyle",
+          reference_count: 0,
+          created_at: "2026-06-13T00:00:00Z",
+          last_referenced_at: null,
+          last_confirmed_at: "2026-06-13T00:00:00Z",
+          tags: [],
+          metadata: {},
+        },
       },
       {
         id: "rule-1",
@@ -138,7 +166,27 @@ describe("MemoryBrowser", () => {
         content: "Suggest a sleep study when fatigue is reported.",
         butler: "health",
         created_at: "2026-06-13T00:00:00Z",
-        metadata: { maturity: "proven" },
+        metadata: {},
+        rule: {
+          id: "rule-1",
+          content: "Suggest a sleep study when fatigue is reported.",
+          scope: "health",
+          maturity: "proven",
+          confidence: 0.8,
+          decay_rate: 0,
+          permanence: "stable",
+          effectiveness_score: 0.9,
+          applied_count: 12,
+          success_count: 11,
+          harmful_count: 0,
+          source_episode_id: null,
+          source_butler: "health",
+          created_at: "2026-06-13T00:00:00Z",
+          last_applied_at: null,
+          last_evaluated_at: null,
+          tags: [],
+          metadata: {},
+        },
       },
     ];
     vi.mocked(useMemoryInspect).mockReturnValue({
@@ -158,6 +206,11 @@ describe("MemoryBrowser", () => {
     expect(container.textContent).toContain("RULES · 1");
     expect(container.textContent).toContain("ibuprofen, after meals");
     expect(container.textContent).toContain("Suggest a sleep study");
+    // Real embedded belief data renders identical to browse mode: the fact's
+    // confidence numeral (0.94), its predicate, and the rule's maturity.
+    expect(container.textContent).toContain("0.94");
+    expect(container.textContent).toContain("preferred_pain_relief");
+    expect(container.textContent).toContain("proven");
     // Register pills are NOT shown in results mode (one affordance).
     // The fact row is a link to the fact detail (same shape as browse mode).
     expect(container.querySelector('[role="link"]')).not.toBeNull();

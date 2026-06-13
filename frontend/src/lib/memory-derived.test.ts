@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { Fact } from '@/api/types.ts'
+import type { Episode, Fact, MemoryRule } from '@/api/types.ts'
 import {
   consolidationGlyph,
   daysSince,
@@ -51,6 +51,50 @@ function makeFact(overrides: Partial<Fact> = {}): Fact {
     last_referenced_at: null,
     last_confirmed_at: null,
     tags: [],
+    metadata: {},
+    ...overrides,
+  }
+}
+
+/** Build a MemoryRule with sane defaults; override only what a test exercises. */
+function makeRule(overrides: Partial<MemoryRule> = {}): MemoryRule {
+  return {
+    id: 'rule-1',
+    content: 'always confirm before sending',
+    scope: 'global',
+    maturity: 'established',
+    confidence: 0.7,
+    decay_rate: 0.01,
+    permanence: 'standard',
+    effectiveness_score: 0.8,
+    applied_count: 6,
+    success_count: 5,
+    harmful_count: 1,
+    source_episode_id: null,
+    source_butler: null,
+    created_at: '2026-06-12T00:00:00.000Z',
+    last_applied_at: null,
+    last_evaluated_at: null,
+    tags: [],
+    metadata: {},
+    ...overrides,
+  }
+}
+
+/** Build an Episode with sane defaults; override only what a test exercises. */
+function makeEpisode(overrides: Partial<Episode> = {}): Episode {
+  return {
+    id: 'ep-1',
+    butler: 'lifestyle',
+    session_id: null,
+    content: 'discussed weekend plans',
+    importance: 7,
+    reference_count: 2,
+    consolidated: true,
+    consolidation_status: 'dead_letter',
+    created_at: '2026-06-12T00:00:00.000Z',
+    last_referenced_at: null,
+    expires_at: null,
     metadata: {},
     ...overrides,
   }
@@ -218,6 +262,28 @@ function makeInspect(overrides: Partial<MemoryInspectResult> = {}): MemoryInspec
 }
 
 describe('inspectResultToFact', () => {
+  it('prefers the embedded result.fact register row (real belief data)', () => {
+    const embedded = makeFact({
+      id: 'fact-99',
+      subject: 'Owner',
+      predicate: 'preferred_pain_relief',
+      confidence: 0.94,
+      decay_rate: 0.008,
+      permanence: 'stable',
+      validity: 'fading',
+      importance: 8,
+    })
+    const fact = inspectResultToFact(makeInspect({ fact: embedded }))
+    // The embedded row is returned verbatim — identical to browse mode.
+    expect(fact).toBe(embedded)
+    expect(fact.subject).toBe('Owner')
+    expect(fact.confidence).toBe(0.94)
+    expect(fact.decay_rate).toBe(0.008)
+    expect(fact.permanence).toBe('stable')
+    // Real fading state flows through (no longer forced to active).
+    expect(fact.validity).toBe('fading')
+  })
+
   it('pulls subject/predicate/confidence from metadata when present', () => {
     const fact = inspectResultToFact(
       makeInspect({
@@ -230,7 +296,7 @@ describe('inspectResultToFact', () => {
     expect(fact.content).toBe('ibuprofen, after meals')
   })
 
-  it('uses honest defaults when metadata is bare (active, no fabricated belief)', () => {
+  it('uses honest defaults when no embedded row and metadata is bare (active, no fabricated belief)', () => {
     const fact = inspectResultToFact(makeInspect({ butler: 'health', metadata: {} }))
     // No guessed fading state — never dims on a guess.
     expect(fact.validity).toBe('active')
@@ -242,7 +308,25 @@ describe('inspectResultToFact', () => {
 })
 
 describe('inspectResultToRule', () => {
-  it('defaults maturity to candidate and harm to 0 (zero red)', () => {
+  it('prefers the embedded result.rule register row (real maturity/tally)', () => {
+    const embedded = makeRule({
+      id: 'rule-99',
+      maturity: 'anti_pattern',
+      confidence: 0.3,
+      harmful_count: 4,
+      applied_count: 10,
+      success_count: 6,
+      effectiveness_score: 0.6,
+    })
+    const rule = inspectResultToRule(makeInspect({ kind: 'rule', rule: embedded }))
+    expect(rule).toBe(embedded)
+    expect(rule.maturity).toBe('anti_pattern')
+    expect(rule.harmful_count).toBe(4)
+    expect(rule.applied_count).toBe(10)
+    expect(rule.confidence).toBe(0.3)
+  })
+
+  it('defaults maturity to candidate and harm to 0 when no embedded row (zero red)', () => {
     const rule = inspectResultToRule(makeInspect({ kind: 'rule', metadata: {} }))
     expect(rule.maturity).toBe('candidate')
     expect(rule.harmful_count).toBe(0)
@@ -262,7 +346,20 @@ describe('inspectResultToRule', () => {
 })
 
 describe('inspectResultToEpisode', () => {
-  it('defaults to a colorless consolidated glyph (never a guessed dead-letter)', () => {
+  it('prefers the embedded result.episode register row (real importance/status)', () => {
+    const embedded = makeEpisode({
+      id: 'ep-99',
+      importance: 7,
+      consolidation_status: 'dead_letter',
+    })
+    const ep = inspectResultToEpisode(makeInspect({ kind: 'episode', episode: embedded }))
+    expect(ep).toBe(embedded)
+    // Real status flows through — the daybook glyph can now show dead-letter.
+    expect(ep.consolidation_status).toBe('dead_letter')
+    expect(ep.importance).toBe(7)
+  })
+
+  it('defaults to a colorless consolidated glyph when no embedded row (never a guessed dead-letter)', () => {
     const ep = inspectResultToEpisode(makeInspect({ kind: 'episode', metadata: {} }))
     expect(ep.consolidation_status).toBe('consolidated')
     expect(ep.importance).toBe(0)

@@ -251,13 +251,17 @@ export function consolidationGlyph(input: string | { status?: string | null }): 
 // Search-result adapters (MEMORY_LANGUAGE.md §3d)
 //
 // The unified search hits GET /api/memory/inspect, which returns a uniform
-// MemoryInspectResult (id · kind · content · butler · created_at · metadata) —
-// it does NOT carry the full register field set (no subject/predicate/confidence
-// for facts, no maturity/tally for rules, no importance/consolidation for
-// episodes). To honor "results render in the register shape of their kind, no
-// fourth shape" we adapt each result into its domain type, drawing extra fields
-// from `metadata` when the backend supplied them and falling back to neutral,
-// honest defaults otherwise (never a fabricated belief numeral or harm count).
+// MemoryInspectResult whose flat id · kind · content · butler · created_at
+// fields identify the result, PLUS exactly one full register-shaped row
+// (`fact` / `rule` / `episode`, matching `kind`) carrying the complete field
+// set — subject/predicate/confidence for facts, maturity/tally for rules,
+// importance/consolidation for episodes (see #2199 / bu-by2n0).
+//
+// Each adapter therefore PREFERS the embedded register row, so a search result
+// renders belief / maturity / importance data IDENTICAL to browse mode. The
+// `metadata`-with-honest-defaults path remains only as a safety fallback for
+// results that predate the embedded row (never a fabricated belief numeral or
+// harm count — color discipline §6 holds).
 //
 // These are pure (testable) and frontend-only: they reuse the existing register
 // row components verbatim, so a fact row in browse mode and results mode share
@@ -279,13 +283,15 @@ function metaNumber(meta: Record<string, unknown>, key: string): number | null {
 /**
  * Adapt an inspect result (kind === 'fact') into a Fact for the ledger row.
  *
- * subject/predicate/confidence/permanence/validity come from `metadata` when
- * present; otherwise the subject falls back to the source butler (or "—") and
- * the belief column carries no numeral (confidence 0 → effective 0, which the
- * ledger renders as `0.00`). Validity defaults to `active` so the row never
- * dims on a guessed fading state.
+ * Prefers the full `result.fact` register row (#2199) so the ledger renders
+ * real belief / permanence / validity data identical to browse mode. Falls
+ * back to `metadata`-with-honest-defaults only when no embedded row is present:
+ * the subject falls back to the source butler (or "—"), the belief column
+ * carries no numeral (confidence 0 → effective 0, rendered `0.00`), and
+ * validity defaults to `active` so the row never dims on a guessed fading state.
  */
 export function inspectResultToFact(result: MemoryInspectResult): Fact {
+  if (result.fact) return result.fact
   const meta = result.metadata ?? {}
   return {
     id: result.id,
@@ -317,10 +323,13 @@ export function inspectResultToFact(result: MemoryInspectResult): Fact {
 
 /**
  * Adapt an inspect result (kind === 'rule') into a MemoryRule for the directive
- * row. maturity/confidence/tally come from `metadata` when present; otherwise
- * maturity falls back to `candidate` and counts to 0 (zero harm → zero red).
+ * row. Prefers the full `result.rule` register row (#2199) so maturity /
+ * confidence / tally render identical to browse mode. Falls back to
+ * `metadata`-with-honest-defaults only when no embedded row is present:
+ * maturity defaults to `candidate` and counts to 0 (zero harm → zero red).
  */
 export function inspectResultToRule(result: MemoryInspectResult): MemoryRule {
+  if (result.rule) return result.rule
   const meta = result.metadata ?? {}
   return {
     id: result.id,
@@ -346,11 +355,14 @@ export function inspectResultToRule(result: MemoryInspectResult): MemoryRule {
 
 /**
  * Adapt an inspect result (kind === 'episode') into an Episode for the daybook
- * row. importance/consolidation_status come from `metadata` when present;
- * otherwise importance is 0 (muted time) and status defaults to `consolidated`
- * (a filled, colorless glyph — never a guessed dead-letter `✕`).
+ * row. Prefers the full `result.episode` register row (#2199) so importance and
+ * the consolidation glyph render identical to browse mode. Falls back to
+ * `metadata`-with-honest-defaults only when no embedded row is present:
+ * importance is 0 (muted time) and status defaults to `consolidated` (a filled,
+ * colorless glyph — never a guessed dead-letter `✕`).
  */
 export function inspectResultToEpisode(result: MemoryInspectResult): Episode {
+  if (result.episode) return result.episode
   const meta = result.metadata ?? {}
   const status = metaString(meta, 'consolidation_status') ?? 'consolidated'
   return {
