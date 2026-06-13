@@ -291,6 +291,17 @@ async def test_lookup_by_id_missing_entity_is_structured_miss():
     result = await relationship_lookup(pool, entity_id=eid)
     assert result["entity"] is None
     assert result["facts"] == []
+    assert result["recency"] is None
+    # Spec: a miss MUST carry a structured resolution block on the id path too —
+    # never a bare ``resolution: None`` (relationship-entity-lookup §"Miss is a
+    # value, not an error": {entity: null, resolution: {ambiguous: false,
+    # candidates: []}}).
+    assert result["resolution"] == {
+        "matched_on": None,
+        "score": None,
+        "ambiguous": False,
+        "candidates": [],
+    }
 
 
 async def test_lookup_tier_null_unless_override_pinned():

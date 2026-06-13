@@ -134,14 +134,46 @@ def staleness_band(
 
 
 def _band_case_sql(reference_sql: str) -> str:
-    """Build the band CASE expression over a reference-timestamp SQL fragment."""
+    """Build the band CASE expression over a reference-timestamp SQL fragment.
+
+    The bound comparison is ``>=`` (inclusive upper bound) so the SQL bands match
+    the Python :func:`_band_for_age_days` exactly at the day boundary. Python
+    classifies age ``≤ 30d`` as ``fresh`` (``age_days <= FRESH_MAX_DAYS``); at
+    *exactly* 30 days ago the reference equals ``now() - INTERVAL '30 days'``, so
+    a strict ``>`` would drop it to ``aging`` and silently disagree with Python.
+    ``>=`` keeps the exact-boundary row in ``fresh``, honouring the module
+    contract that the SQL and Python derivations are identical.
+    """
     return (
         "CASE "
-        f"WHEN {reference_sql} > now() - INTERVAL '{FRESH_MAX_DAYS} days' THEN 'fresh' "
-        f"WHEN {reference_sql} > now() - INTERVAL '{AGING_MAX_DAYS} days' THEN 'aging' "
+        f"WHEN {reference_sql} >= now() - INTERVAL '{FRESH_MAX_DAYS} days' THEN 'fresh' "
+        f"WHEN {reference_sql} >= now() - INTERVAL '{AGING_MAX_DAYS} days' THEN 'aging' "
         "ELSE 'stale' "
         "END"
     )
+
+
+def staleness_band_sql_for(reference_sql: str) -> str:
+    """SQL CASE expression classifying an arbitrary reference-timestamp fragment.
+
+    Use when the reference is not a fact-table column with the standard COALESCE
+    chain — e.g. a whole-entity ``last_seen`` already resolved into a bound query
+    parameter. Emits the SAME band CASE (and same inclusive thresholds) as
+    :func:`identity_staleness_band_sql` / :func:`narrative_staleness_band_sql`, so
+    every band derivation in the lookup path stays single-sourced from
+    ``FRESH_MAX_DAYS`` / ``AGING_MAX_DAYS``.
+
+    Parameters
+    ----------
+    reference_sql:
+        A SQL fragment evaluating to a ``timestamptz`` (e.g. ``"$1::timestamptz"``).
+
+    Returns
+    -------
+    str
+        A SQL expression evaluating to ``'fresh'`` / ``'aging'`` / ``'stale'``.
+    """
+    return _band_case_sql(reference_sql)
 
 
 def identity_staleness_band_sql(alias: str = "f") -> str:

@@ -28,6 +28,7 @@ from butlers.tools.relationship.staleness import (
     identity_staleness_band_sql,
     narrative_staleness_band_sql,
     staleness_band,
+    staleness_band_sql_for,
 )
 
 # A fixed "now" so every age computation is deterministic.
@@ -245,3 +246,30 @@ class TestSqlBuilders:
     def test_identity_sql_respects_alias(self):
         sql = identity_staleness_band_sql("alias_x")
         assert "alias_x.observed_at" in sql
+
+    def test_band_comparison_is_inclusive_to_match_python(self):
+        """SQL must use ``>=`` so the exact-boundary band matches the Python helper.
+
+        Python classifies age ``≤ FRESH_MAX_DAYS`` as ``fresh`` (inclusive). A
+        strict ``>`` in SQL would push the exact-30d row to ``aging`` and break
+        the module's "SQL and Python derivations are identical" contract. Guards
+        against regressing the comparison back to strict ``>``.
+        """
+        sqls = (
+            identity_staleness_band_sql("f"),
+            narrative_staleness_band_sql("f"),
+            staleness_band_sql_for("$1::timestamptz"),
+        )
+        # Assert the collection size before the loop so a regression that drops
+        # a builder cannot make this guard vacuously pass over an empty list.
+        assert len(sqls) == 3
+        for sql in sqls:
+            assert ">= now() - INTERVAL" in sql
+            # The strict form must NOT appear (would diverge from Python at the edge).
+            assert "> now() - INTERVAL" not in sql.replace(">= now() - INTERVAL", "")
+
+    def test_band_sql_for_reuses_thresholds(self):
+        sql = staleness_band_sql_for("$1::timestamptz")
+        assert f"INTERVAL '{FRESH_MAX_DAYS} days'" in sql
+        assert f"INTERVAL '{AGING_MAX_DAYS} days'" in sql
+        assert "$1::timestamptz" in sql

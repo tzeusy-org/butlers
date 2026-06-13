@@ -13,6 +13,17 @@ This delta extends `relationship-facts` additively: two nullable columns on `rel
 - **THEN** `relationship.entity_facts` MUST include nullable `observed_at` and `metadata`
 - **AND** existing rows MUST be readable throughout the migration (no exclusive table rewrite lock)
 
+> **Implementation note — `metadata` write/read wiring is DEFERRED (bu-ks6wd).** The
+> `metadata JSONB NULL` column exists (migration `021_entity_v3_lifecycle.py`) but is
+> not yet wired end-to-end: `relationship_assert_fact()` accepts no `metadata`
+> argument, no INSERT path populates it, and no read surface (the
+> `relationship_lookup` MCP tool or dashboard provenance payloads) projects it.
+> Wiring it (writer param → INSERT column → provenance payload) is the prerequisite
+> for the correction-lineage feature (`{correction_source, corrected_from}`) and
+> should land with that feature, since the provenance projection touches the
+> dashboard `router.py` surface and the central writer's INSERT — out of scope for
+> the lookup/staleness hygiene bundle that recorded this deferral.
+
 #### Scenario: Backfill is idempotent and batched
 - **WHEN** the backfill script runs twice
 - **THEN** the second run MUST be a no-op

@@ -46,6 +46,7 @@ from .staleness import (
     identity_staleness_band_sql,
     narrative_scope_sql,
     narrative_staleness_band_sql,
+    staleness_band_sql_for,
 )
 
 # ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ async def _resolve_ref(
                 (ARRAY_AGG(match_kind ORDER BY score DESC))[1] AS match_kind
             FROM (
                 -- Branch 1: prefix match on canonical_name or any alias (score=100)
-                SELECT e.id AS entity_id, $2 AS score, 'prefix'::text AS match_kind
+                SELECT e.id AS entity_id, $2::int AS score, 'prefix'::text AS match_kind
                 FROM public.entities e
                 WHERE (e.metadata->>'merged_into') IS NULL
                   AND (
@@ -126,7 +127,7 @@ async def _resolve_ref(
                 UNION ALL
 
                 -- Branch 2: contact-fact value match (score=70)
-                SELECT f.subject AS entity_id, $3 AS score, 'contact_fact'::text AS match_kind
+                SELECT f.subject AS entity_id, $3::int AS score, 'contact_fact'::text AS match_kind
                 FROM relationship.entity_facts f
                 WHERE f.predicate LIKE 'has-%'
                   AND f.object_kind = 'literal'
@@ -136,7 +137,7 @@ async def _resolve_ref(
                 UNION ALL
 
                 -- Branch 3: substring match on canonical_name or any alias (score=50)
-                SELECT e.id AS entity_id, $4 AS score, 'substring'::text AS match_kind
+                SELECT e.id AS entity_id, $4::int AS score, 'substring'::text AS match_kind
                 FROM public.entities e
                 WHERE (e.metadata->>'merged_into') IS NULL
                   AND (
@@ -150,7 +151,7 @@ async def _resolve_ref(
                 UNION ALL
 
                 -- Branch 4: predicate label match (score=30)
-                SELECT f.subject AS entity_id, $5 AS score, 'predicate'::text AS match_kind
+                SELECT f.subject AS entity_id, $5::int AS score, 'predicate'::text AS match_kind
                 FROM relationship.entity_facts f
                 WHERE f.predicate ILIKE ('%' || $1 || '%')
                   AND f.validity = 'active'
@@ -456,13 +457,13 @@ async def _fetch_recency(
     last_interaction_at = row["last_interaction_at"] if row else None
 
     # Derive whole-entity band from the identity chain reference (last_seen).
+    # Reuse the single staleness band builder so the thresholds and the exact
+    # boundary semantics stay identical to per-fact bands — no inline duplicate
+    # of the 30d/180d intervals here.
     band: str | None = None
     if last_seen is not None:
         band_row = await pool.fetchrow(
-            "SELECT CASE "
-            "WHEN $1::timestamptz > now() - INTERVAL '30 days' THEN 'fresh' "
-            "WHEN $1::timestamptz > now() - INTERVAL '180 days' THEN 'aging' "
-            "ELSE 'stale' END AS band",
+            f"SELECT {staleness_band_sql_for('$1::timestamptz')} AS band",
             last_seen,
         )
         band = band_row["band"] if band_row else None
@@ -539,11 +540,18 @@ async def relationship_lookup(
     header = await _fetch_entity_header(pool, resolved_id)
     if header is None:
         # entity_id supplied but not found (or tombstoned) → structured miss.
+        # Spec (relationship-entity-lookup §"Miss is a value, not an error"):
+        # a miss MUST carry a structured resolution block on BOTH paths, never a
+        # bare ``resolution: None``. The id-path miss never built a resolution
+        # (no ref to resolve), so synthesise the canonical empty-miss block; a
+        # ref that resolved then vanished keeps its existing resolution.
         return {
             "entity": None,
             "facts": [],
             "recency": None,
-            "resolution": resolution,
+            "resolution": resolution
+            if resolution is not None
+            else {"matched_on": None, "score": None, "ambiguous": False, "candidates": []},
         }
 
     identity_facts = await _fetch_identity_facts(pool, resolved_id)
