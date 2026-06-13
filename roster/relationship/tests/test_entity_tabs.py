@@ -721,15 +721,18 @@ class TestProvenanceContractOnTabEndpoints:
 def _make_linked_contact_row(**kwargs) -> MagicMock:
     """Build a MagicMock that behaves like an asyncpg Record for a contacts row.
 
-    Includes ``preferred_channel`` so the enriched endpoint can read it from
-    the main contacts query result.
+    The contacts SELECT only returns ``id`` and ``full_name``. ``preferred_channel``
+    is no longer read from this row — it is sourced from the entity-keyed
+    ``prefers-channel`` fact via a separate ``pool.fetchval`` (entity-keyed-
+    preferred-channel). ``email``/``phone`` are derived from entity_facts has-*
+    triples, not the contacts row. Extra kwargs (e.g. ``email``/``phone``) are
+    accepted for call-site compatibility but are not consumed by the endpoint.
     """
     data = {
         "id": uuid4(),
         "full_name": "Alice Example",
         "email": None,
         "phone": None,
-        "preferred_channel": None,
         **kwargs,
     }
     row = MagicMock()
@@ -780,6 +783,7 @@ def _app_with_pool_linked_contacts(
     label_rows: list | None = None,
     fact_rows: list | None = None,
     entity_info_rows: list | None = None,
+    preferred_channel: str | None = None,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app for the linked-contacts endpoint.
 
@@ -790,6 +794,12 @@ def _app_with_pool_linked_contacts(
       4. asyncio.gather → entity_info secured=true rows (bu-gfzin)
          (calls 2, 3, and 4 are concurrent via asyncio.gather)
 
+    It also makes two ``pool.fetchval`` calls:
+      1. entity-exists check (returns 1 or None → 404)
+      2. active prefers-channel fact object (entity-keyed-preferred-channel) —
+         issued inside the same asyncio.gather; returns the channel string or
+         None. This replaces the old public.contacts.preferred_channel column read.
+
     ``ci_rows`` was removed: channel identifiers now come exclusively from
     ``relationship.entity_facts`` has-* triples (bu-6ioq3 migration).
 
@@ -798,7 +808,8 @@ def _app_with_pool_linked_contacts(
     queries are never called so ``label_rows`` / ``fact_rows`` are irrelevant.
     """
     mock_pool = AsyncMock()
-    mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+    # fetchval call 1 → entity-exists (1 or None → 404); call 2 → preferred channel.
+    mock_pool.fetchval = AsyncMock(side_effect=[1 if entity_exists else None, preferred_channel])
 
     _contacts = contact_rows if contact_rows is not None else []
     _labels = label_rows if label_rows is not None else []
@@ -923,23 +934,32 @@ class TestEntityLinkedContacts:
         assert item["labels"][0]["color"] == "#ff0000"
 
     async def test_enriched_response_includes_preferred_channel(self):
-        """preferred_channel is included from the main contacts query."""
+        """preferred_channel is sourced from the entity-keyed prefers-channel fact.
+
+        entity-keyed-preferred-channel: the value now comes from the active
+        ``prefers-channel`` fact (a separate ``pool.fetchval``), not the orphaned
+        ``public.contacts.preferred_channel`` column.
+        """
         contact_id = uuid4()
-        contact_row = _make_linked_contact_row(
-            id=contact_id,
-            full_name="Carol",
-            preferred_channel="telegram",
+        contact_row = _make_linked_contact_row(id=contact_id, full_name="Carol")
+        # A telegram-prefixed has-handle proves telegram reachability.
+        ef_telegram = _make_ef_fact_row(
+            predicate="has-handle", object="telegram:123456", primary=True
         )
 
         app, _ = _app_with_pool_linked_contacts(
             contact_rows=[contact_row],
             label_rows=[],
+            fact_rows=[ef_telegram],
+            preferred_channel="telegram",
         )
         resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
 
         assert resp.status_code == 200
         item = resp.json()[0]
         assert item["preferred_channel"] == "telegram"
+        # Only channels the entity has a contact fact for are offered.
+        assert item["reachable_channels"] == ["telegram"]
 
     async def test_enriched_contact_info_empty_when_no_fact_rows(self):
         """contact_info defaults to [] when no entity_facts has-* rows exist."""

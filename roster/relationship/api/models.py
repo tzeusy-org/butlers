@@ -598,7 +598,17 @@ class LinkedContactSummary(BaseModel):
     ``labels`` mirrors the ``labels`` field on ``ContactDetail`` — the full list
     of label objects assigned to the contact.
 
-    ``preferred_channel`` mirrors the same field on ``ContactDetail``.
+    ``preferred_channel`` is the entity's active ``prefers-channel`` fact value
+    (entity-keyed-preferred-channel). It is sourced from
+    ``relationship.entity_facts`` (predicate ``prefers-channel``), NOT the
+    orphaned ``public.contacts.preferred_channel`` CRM column, and is attached
+    only to the first linked contact (entity-level, like ``contact_info``).
+
+    ``reachable_channels`` is the deliverable channel set the entity has a
+    contact fact for (``email``/``telegram`` proven by ``has-email`` /
+    ``has-handle:telegram:`` facts). The dashboard channel-preference control
+    offers only these channels. Mirrors group 1's reachability mapping; also
+    attached to the first linked contact only.
     """
 
     id: UUID
@@ -608,6 +618,7 @@ class LinkedContactSummary(BaseModel):
     contact_info: list[ContactInfoEntry] = Field(default_factory=list)
     labels: list[Label] = Field(default_factory=list)
     preferred_channel: str | None = None
+    reachable_channels: list[str] = Field(default_factory=list)
 
 
 class EntityImportantDate(BaseModel):
@@ -1177,6 +1188,40 @@ class DeleteContactResponse(BaseModel):
 
     deleted: bool
     fact_id: UUID
+
+
+class SetPreferredChannelRequest(BaseModel):
+    """Request body for ``PUT /entities/{id}/preferred-channel``.
+
+    ``channel`` is the bare channel name the entity prefers to be reached on
+    (e.g. ``"telegram"`` or ``"email"``). The backend rejects a channel the
+    entity has no contact fact for (reachability validation in
+    ``assert_prefers_channel``).
+    """
+
+    channel: str
+
+
+class SetPreferredChannelResponse(BaseModel):
+    """Response for ``PUT /entities/{id}/preferred-channel``.
+
+    ``outcome`` is one of ``inserted``, ``unchanged``, or ``superseded`` from
+    the single-valued ``prefers-channel`` assert path. ``channel`` echoes the
+    now-active preferred channel.
+    """
+
+    outcome: str
+    channel: str
+
+
+class ClearPreferredChannelResponse(BaseModel):
+    """Response for ``DELETE /entities/{id}/preferred-channel``.
+
+    ``cleared`` is the number of active ``prefers-channel`` rows retracted
+    (``0`` when no preference was set — the clear is idempotent).
+    """
+
+    cleared: int
 
 
 class UpdateContactRequest(BaseModel):

@@ -41,12 +41,8 @@ vi.mock("@/hooks/use-entities", () => ({
   useDeleteEntityContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useUpdateEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useRevealEntityContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
-}));
-
-// usePatchContact is still used by PreferredChannelSelector (COMPAT-ONLY for
-// preferred_channel — no entity-keyed path exists yet).
-vi.mock("@/hooks/use-contacts", () => ({
-  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetPreferredChannel: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useClearPreferredChannel: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
@@ -170,6 +166,7 @@ const CONTACT_ONE: LinkedContactSummary = {
     { id: "label-001", name: "Friend", color: null },
   ],
   preferred_channel: "telegram",
+  reachable_channels: ["email", "telegram"],
 };
 
 const CONTACT_TWO: LinkedContactSummary = {
@@ -182,6 +179,7 @@ const CONTACT_TWO: LinkedContactSummary = {
     { id: "label-002", name: "Work", color: "#1a73e8" },
   ],
   preferred_channel: null,
+  reachable_channels: [],
 };
 
 const SPARSE_CONTACT: LinkedContactSummary = {
@@ -192,6 +190,7 @@ const SPARSE_CONTACT: LinkedContactSummary = {
   contact_info: [CI_WEBSITE],
   labels: [],
   preferred_channel: null,
+  reachable_channels: [],
 };
 
 const SECURED_CONTACT: LinkedContactSummary = {
@@ -216,6 +215,7 @@ const SECURED_CONTACT: LinkedContactSummary = {
   ],
   labels: [],
   preferred_channel: null,
+  reachable_channels: ["email"],
 };
 
 // Contact with a secured entity_facts entry (bu-6m9an dual-dispatch).
@@ -243,6 +243,7 @@ const SECURED_ENTITY_FACTS_CONTACT: LinkedContactSummary = {
   ],
   labels: [],
   preferred_channel: null,
+  reachable_channels: ["email"],
 };
 
 // ---------------------------------------------------------------------------

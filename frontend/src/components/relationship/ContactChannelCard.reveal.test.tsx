@@ -37,12 +37,8 @@ vi.mock("@/hooks/use-entities", () => ({
   useDeleteEntityContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useUpdateEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useRevealEntityContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
-}));
-
-// usePatchContact is still used by PreferredChannelSelector (COMPAT-ONLY for
-// preferred_channel — no entity-keyed path exists yet).
-vi.mock("@/hooks/use-contacts", () => ({
-  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetPreferredChannel: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useClearPreferredChannel: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));

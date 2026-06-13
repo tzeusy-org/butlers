@@ -74,13 +74,13 @@ def _make_contact_row(
     *,
     contact_id: UUID | None = None,
     full_name: str = "Alice",
-    preferred_channel: str | None = None,
 ) -> MagicMock:
+    # The contacts query no longer selects preferred_channel — it now comes from
+    # the entity-keyed prefers-channel fact (see _make_app fetchval sequence).
     return _make_row(
         {
             "id": contact_id or _CONTACT_ID_A,
             "full_name": full_name,
-            "preferred_channel": preferred_channel,
         }
     )
 
@@ -149,6 +149,7 @@ def _make_app(
     label_rows: list | None = None,
     fact_rows: list | None = None,
     entity_info_rows: list | None = None,
+    preferred_channel: str | None = None,
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app with a mocked relationship DB pool.
 
@@ -158,11 +159,14 @@ def _make_app(
       3. entity_facts query   ⎥
       4. entity_info query    ⎦
 
-    pool.fetchval:
-      - entity-exists check (returns 1 or None)
+    pool.fetchval call sequence:
+      1. entity-exists check (returns 1 or None)
+      2. active prefers-channel fact object (entity-keyed-preferred-channel) —
+         sourced inside the same asyncio.gather; returns the channel string or
+         None. Replaces the old public.contacts.preferred_channel column read.
     """
-    # entity_exists → fetchval returns 1; else None → 404
-    mock_fetchval = AsyncMock(return_value=1 if entity_exists else None)
+    # fetchval call 1 → entity-exists (1 or None → 404); call 2 → preferred channel.
+    mock_fetchval = AsyncMock(side_effect=[1 if entity_exists else None, preferred_channel])
 
     # Build the side_effect sequence for pool.fetch:
     #   call 1 → contact_rows
@@ -570,3 +574,88 @@ class TestLinkedContactsSecuredEntityInfo:
         assert contact_info[0]["type"] == "email"
         assert contact_info[0]["value"] == _EMAIL
         assert contact_info[0]["secured"] is False
+
+
+class TestLinkedContactsPreferredChannel:
+    """preferred_channel + reachable_channels are entity-keyed (prefers-channel fact).
+
+    entity-keyed-preferred-channel (group 3): preferred_channel is sourced from
+    the active ``prefers-channel`` fact (a fetchval inside the gather), NOT the
+    orphaned public.contacts.preferred_channel column. reachable_channels is the
+    deliverable set the entity has a contact fact for (email/telegram).
+    """
+
+    async def test_preferred_channel_from_fact(self):
+        """An active prefers-channel fact populates preferred_channel."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        app, _ = _make_app(
+            contact_rows=[contact],
+            fact_rows=[fact],
+            preferred_channel="email",
+        )
+        resp = await _get(app)
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["preferred_channel"] == "email"
+
+    async def test_no_preference_yields_null(self):
+        """No active prefers-channel fact → preferred_channel is None."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        app, _ = _make_app(
+            contact_rows=[contact],
+            fact_rows=[fact],
+            preferred_channel=None,
+        )
+        resp = await _get(app)
+
+        assert resp.json()[0]["preferred_channel"] is None
+
+    async def test_reachable_channels_email_only(self):
+        """has-email alone → reachable_channels == ['email'] (no telegram)."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        app, _ = _make_app(contact_rows=[contact], fact_rows=[fact])
+        resp = await _get(app)
+
+        assert resp.json()[0]["reachable_channels"] == ["email"]
+
+    async def test_reachable_channels_telegram_requires_prefix(self):
+        """A telegram-prefixed has-handle → telegram reachable; email present too."""
+        contact = _make_contact_row()
+        fact_email = _make_fact_row(id=_FACT_ID, predicate="has-email", object=_EMAIL)
+        fact_tg = _make_fact_row(id=_FACT_ID_2, predicate="has-handle", object=_TELEGRAM_OBJECT)
+        app, _ = _make_app(contact_rows=[contact], fact_rows=[fact_email, fact_tg])
+        resp = await _get(app)
+
+        assert resp.json()[0]["reachable_channels"] == ["email", "telegram"]
+
+    async def test_bare_handle_does_not_make_telegram_reachable(self):
+        """A non-telegram-prefixed has-handle does NOT add telegram to the set."""
+        contact = _make_contact_row()
+        fact = _make_fact_row(predicate="has-handle", object="linkedin-handle")
+        app, _ = _make_app(contact_rows=[contact], fact_rows=[fact])
+        resp = await _get(app)
+
+        assert resp.json()[0]["reachable_channels"] == []
+
+    async def test_entity_level_fields_only_on_first_contact(self):
+        """preferred_channel + reachable_channels attach to the first contact only."""
+        contact_a = _make_contact_row(contact_id=_CONTACT_ID_A, full_name="Alice")
+        contact_b = _make_contact_row(contact_id=_CONTACT_ID_B, full_name="Bob")
+        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        app, _ = _make_app(
+            contact_rows=[contact_a, contact_b],
+            fact_rows=[fact],
+            preferred_channel="email",
+        )
+        resp = await _get(app)
+
+        body = resp.json()
+        alice = next(c for c in body if c["full_name"] == "Alice")
+        bob = next(c for c in body if c["full_name"] == "Bob")
+        assert alice["preferred_channel"] == "email"
+        assert alice["reachable_channels"] == ["email"]
+        assert bob["preferred_channel"] is None
+        assert bob["reachable_channels"] == []

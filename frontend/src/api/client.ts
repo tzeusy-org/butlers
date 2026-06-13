@@ -353,6 +353,9 @@ import type {
   DeleteEntityContactResponse,
   UpdateEntityContactRequest,
   UpdateEntityContactResponse,
+  SetPreferredChannelRequest,
+  SetPreferredChannelResponse,
+  ClearPreferredChannelResponse,
   EntityContactsResponse,
   TimelineSavedViewEntry,
   TimelineSavedViewCreateRequest,
@@ -1912,6 +1915,37 @@ export function updateEntityContact(
   return apiFetch<UpdateEntityContactResponse>(
     `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
     { method: "PUT", body: JSON.stringify(request) },
+  );
+}
+
+/**
+ * Set an entity's preferred outbound channel via the `prefers-channel` fact.
+ *
+ * Single-valued: supersedes any prior active preference. Returns 200 on
+ * success; 400 when the entity has no contact fact for `channel` (reachability
+ * validation), 403 when no owner entity is registered, 404 when the entity does
+ * not exist.
+ */
+export function setEntityPreferredChannel(
+  entityId: string,
+  request: SetPreferredChannelRequest,
+): Promise<SetPreferredChannelResponse> {
+  return apiFetch<SetPreferredChannelResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/preferred-channel`,
+    { method: "PUT", body: JSON.stringify(request) },
+  );
+}
+
+/**
+ * Clear an entity's preferred channel by retracting the active `prefers-channel`
+ * fact. Idempotent (`cleared: 0` when no preference was set).
+ */
+export function clearEntityPreferredChannel(
+  entityId: string,
+): Promise<ClearPreferredChannelResponse> {
+  return apiFetch<ClearPreferredChannelResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/preferred-channel`,
+    { method: "DELETE" },
   );
 }
 

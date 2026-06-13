@@ -4294,6 +4294,12 @@ export interface EntityTimelineItem {
  * Enriched with contact_info[], labels[], and preferred_channel so the
  * entity-card can render channel chips without N+1 getContact() calls.
  * contact_info only contains non-secured rows (secured=true rows are excluded).
+ *
+ * `preferred_channel` is sourced from the entity-keyed `prefers-channel` fact
+ * (entity-keyed-preferred-channel), not the orphaned contacts CRM column.
+ * `reachable_channels` is the deliverable channel set the entity has a contact
+ * fact for (`email`/`telegram`); the channel-preference control offers only
+ * these. Both are entity-level and attached to the first linked contact only.
  */
 export interface LinkedContactSummary {
   id: string;
@@ -4303,6 +4309,7 @@ export interface LinkedContactSummary {
   contact_info: ContactInfoEntry[];
   labels: Label[];
   preferred_channel: string | null;
+  reachable_channels: string[];
 }
 
 /** One row of message activity for an entity, grouped by channel + thread. */
@@ -6177,6 +6184,28 @@ export interface AddEntityContactResponse {
 export interface DeleteEntityContactResponse {
   deleted: boolean;
   fact_id: string;
+}
+
+/** Request body for PUT /entities/{id}/preferred-channel. */
+export interface SetPreferredChannelRequest {
+  channel: string;
+}
+
+/**
+ * Response for PUT /entities/{id}/preferred-channel.
+ *
+ * `outcome` is one of "inserted", "unchanged", or "superseded" from the
+ * single-valued `prefers-channel` assert path. `channel` echoes the now-active
+ * preferred channel.
+ */
+export interface SetPreferredChannelResponse {
+  outcome: string;
+  channel: string;
+}
+
+/** Response for DELETE /entities/{id}/preferred-channel. */
+export interface ClearPreferredChannelResponse {
+  cleared: number;
 }
 
 /** Request body for PUT /entities/{id}/contacts/{predicate}/{value_hash}. */

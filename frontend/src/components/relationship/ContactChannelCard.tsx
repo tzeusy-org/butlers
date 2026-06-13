@@ -17,10 +17,13 @@
  * for source=null entries for compat display of any legacy fixtures; no such entries
  * are returned by the current API.
  *
- *   patchContact (preferred_channel) — COMPAT-ONLY. preferred_channel lives on
- *     contacts.preferred_channel (CRM field); no entity_facts triple equivalent
- *     exists yet. The PATCH /contacts/{id} endpoint is kept for this sole write
- *     path until a triple-based model is added.
+ *   preferred_channel — entity-keyed via the `prefers-channel` fact
+ *     (entity-keyed-preferred-channel). Set/clear route to
+ *     PUT/DELETE /entities/{entityId}/preferred-channel
+ *     (useSetPreferredChannel / useClearPreferredChannel). The control offers
+ *     only the entity's `reachable_channels` (channels it has a contact fact
+ *     for). The legacy contact-keyed contacts.preferred_channel write path is
+ *     no longer used here.
  *
  * See: contact-detail parity inventory (point-in-time report, retired)
  */
@@ -44,8 +47,7 @@ import {
 } from "@/components/ui/select";
 import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
-import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
-import { usePatchContact } from "@/hooks/use-contacts";
+import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -544,34 +546,54 @@ function AddChannelInfoForm({
 }
 
 // ---------------------------------------------------------------------------
-// PreferredChannelSelector — COMPAT-ONLY write via patchContact
+// PreferredChannelSelector — entity-keyed write via the prefers-channel fact
 //
-// preferred_channel lives in contacts.preferred_channel (a CRM field, not a
-// triple). No entity-keyed endpoint exists for this field. Migration requires
-// bu-uhjxr to model preferred_channel as a fact in relationship.entity_facts.
+// Reads/writes the preferred channel through the entity-keyed `prefers-channel`
+// fact (entity-keyed-preferred-channel), NOT the orphaned
+// contacts.preferred_channel CRM column. Set routes to
+// useSetPreferredChannel (PUT /entities/{id}/preferred-channel); clear routes to
+// useClearPreferredChannel (DELETE). Only the entity's `reachableChannels`
+// (channels it has a contact fact for) are offered.
 // ---------------------------------------------------------------------------
 
-function PreferredChannelSelector({
-  contactId,
-  preferredChannel,
-  contactInfo,
-}: {
-  contactId: string;
-  preferredChannel: string | null;
-  contactInfo: ContactInfoEntry[];
-}) {
-  // COMPAT-ONLY: patchContact for preferred_channel — contact-keyed write.
-  // No entity-keyed alternative exists; preferred_channel is a CRM field on the
-  // contacts row, not yet modelled as an entity_facts triple (bu-uhjxr).
-  const patchContact = usePatchContact();
+// Deliverable channels the control can offer, with their display labels. A
+// channel is selectable only when present in the entity's reachableChannels set.
+const PREFERRED_CHANNEL_OPTIONS = [
+  { value: "telegram", label: "Telegram" },
+  { value: "email", label: "Email" },
+] as const;
 
-  const hasTelegram = contactInfo.some((ci) => ci.type === "telegram_chat_id");
-  const hasEmail = contactInfo.some((ci) => ci.type === "email");
+function PreferredChannelSelector({
+  entityId,
+  preferredChannel,
+  reachableChannels,
+}: {
+  entityId: string;
+  preferredChannel: string | null;
+  reachableChannels: string[];
+}) {
+  const setPreferredChannel = useSetPreferredChannel();
+  const clearPreferredChannel = useClearPreferredChannel();
+  const isPending = setPreferredChannel.isPending || clearPreferredChannel.isPending;
+
+  const reachable = new Set(reachableChannels);
 
   function handleChange(value: string) {
-    const preferred = value === "none" ? null : value;
-    patchContact.mutate(
-      { contactId, request: { preferred_channel: preferred } },
+    if (value === "none") {
+      clearPreferredChannel.mutate(
+        { entityId },
+        {
+          onSuccess: () => toast.success("Preferred channel cleared."),
+          onError: (err) =>
+            toast.error(
+              `Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`,
+            ),
+        },
+      );
+      return;
+    }
+    setPreferredChannel.mutate(
+      { entityId, channel: value },
       {
         onSuccess: () => toast.success("Preferred channel updated."),
         onError: (err) =>
@@ -588,19 +610,23 @@ function PreferredChannelSelector({
       <Select
         value={preferredChannel ?? "none"}
         onValueChange={handleChange}
-        disabled={patchContact.isPending}
+        disabled={isPending}
       >
         <SelectTrigger className="h-6 w-32 text-xs">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="none" className="text-xs">None</SelectItem>
-          <SelectItem value="telegram" className="text-xs" disabled={!hasTelegram}>
-            Telegram
-          </SelectItem>
-          <SelectItem value="email" className="text-xs" disabled={!hasEmail}>
-            Email
-          </SelectItem>
+          {PREFERRED_CHANNEL_OPTIONS.map((opt) => (
+            <SelectItem
+              key={opt.value}
+              value={opt.value}
+              className="text-xs"
+              disabled={!reachable.has(opt.value)}
+            >
+              {opt.label}
+            </SelectItem>
+          ))}
         </SelectContent>
       </Select>
     </div>
@@ -736,12 +762,18 @@ function ContactRow({
             </p>
           )}
 
-          {/* Preferred channel selector */}
-          <PreferredChannelSelector
-            contactId={contact.id}
-            preferredChannel={contact.preferred_channel}
-            contactInfo={contact.contact_info}
-          />
+          {/* Preferred channel selector — entity-keyed (prefers-channel fact).
+              preferred_channel + reachable_channels are entity-level and the
+              backend attaches them to the first linked contact only, so the
+              control renders once. We gate on reachable_channels being present
+              (the first contact) so non-first contacts don't show a duplicate. */}
+          {contact.reachable_channels.length > 0 || contact.preferred_channel ? (
+            <PreferredChannelSelector
+              entityId={entityId}
+              preferredChannel={contact.preferred_channel}
+              reachableChannels={contact.reachable_channels}
+            />
+          ) : null}
 
           {/* Add channel info form */}
           {addingInfo ? (

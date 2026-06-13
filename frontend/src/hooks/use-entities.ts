@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addEntityContact,
   archiveRelationshipEntity,
+  clearEntityPreferredChannel,
   compareRelationshipEntities,
   deleteEntityContact,
   dismissRelationshipEntityPair,
@@ -38,6 +39,7 @@ import {
   promoteRelationshipEntity,
   revealEntitySecret,
   searchRelationshipEntities,
+  setEntityPreferredChannel,
   updateEntityDunbarTier,
 } from "@/api/index.ts";
 import type {
@@ -538,6 +540,42 @@ export function useUpdateEntityContact() {
       void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+    },
+  });
+}
+
+/**
+ * Set an entity's preferred outbound channel via the entity-keyed
+ * `prefers-channel` fact (entity-keyed-preferred-channel).
+ *
+ * Used by ContactChannelCard.PreferredChannelSelector. Replaces the COMPAT-ONLY
+ * contact-keyed `usePatchContact` write of `contacts.preferred_channel`.
+ * Invalidates entity-linked-contacts (carries preferred_channel) and entity-facts
+ * on success.
+ */
+export function useSetPreferredChannel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId, channel }: { entityId: string; channel: string }) =>
+      setEntityPreferredChannel(entityId, { channel }),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
+    },
+  });
+}
+
+/**
+ * Clear an entity's preferred channel by retracting the active `prefers-channel`
+ * fact. Idempotent. Invalidates entity-linked-contacts and entity-facts.
+ */
+export function useClearPreferredChannel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId }: { entityId: string }) => clearEntityPreferredChannel(entityId),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
     },
   });
 }

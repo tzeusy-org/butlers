@@ -45,9 +45,18 @@ the target DB per the `butlers-db-host-topology` memory before any migration.
 
 ## 3. Dashboard cut-over (spec: dashboard-relationship)
 
-- [ ] 3.1 `ContactChannelCard` preference control reads/writes `prefers-channel` via the fact API
-- [ ] 3.2 Offer only channels the contact has a contact fact for
-- [ ] 3.3 Update/replace `ContactChannelCard` tests; gate on eslint + tsc + vitest
+- [x] 3.1 `ContactChannelCard` preference control reads/writes `prefers-channel` via the fact API
+  (entity-keyed `PUT`/`DELETE /entities/{id}/preferred-channel` →
+  `assert_prefers_channel`/`retract_prefers_channel`; `useSetPreferredChannel`/
+  `useClearPreferredChannel`; `list_entity_linked_contacts` now sources
+  `preferred_channel` from the `prefers-channel` fact, not `public.contacts`)
+- [x] 3.2 Offer only channels the contact has a contact fact for
+  (`reachable_channels` on `LinkedContactSummary`, derived server-side from the
+  entity's `has-email`/telegram-prefixed `has-handle` facts; selector gates options)
+- [x] 3.3 Update/replace `ContactChannelCard` tests; gate on eslint + tsc + vitest
+  (new `ContactChannelCard.preferred-channel.test.tsx`; backend
+  `test_relationship_preferred_channel.py` +
+  `test_relationship_entities_linked_contacts.py` preferred-channel coverage)
 
 ## 4. Remove orphaned compat surface (spec: contacts-identity) — bu-g0y3m
 

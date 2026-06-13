@@ -134,6 +134,9 @@ if _models_path.exists():
         AddContactRequest = _models_module.AddContactRequest
         AddContactResponse = _models_module.AddContactResponse
         DeleteContactResponse = _models_module.DeleteContactResponse
+        SetPreferredChannelRequest = _models_module.SetPreferredChannelRequest
+        SetPreferredChannelResponse = _models_module.SetPreferredChannelResponse
+        ClearPreferredChannelResponse = _models_module.ClearPreferredChannelResponse
         UpdateContactRequest = _models_module.UpdateContactRequest
         UpdateContactResponse = _models_module.UpdateContactResponse
         MergeEntitiesRequest = _models_module.MergeEntitiesRequest
@@ -373,6 +376,38 @@ def _ef_row_to_ci_entry(fr: Any) -> Any:
         predicate=fr["predicate"],
         value_hash=_contact_value_hash(raw_obj),
     )
+
+
+def _deliverable_channels_from_facts(fact_rows: list[Any]) -> list[str]:
+    """Return the deliverable channels the entity has a contact fact for.
+
+    Used by ``GET /entities/{id}/linked-contacts`` to tell the dashboard
+    channel-preference control which channels are selectable (spec scenario
+    "Only reachable channels are offered").
+
+    Restricted to the channels the dashboard preference control can offer
+    (``email``, ``telegram``) — the same deliverable set group 2's notify path
+    honors. Reachability proofs mirror group 1's ``_CHANNEL_REACHABILITY``:
+
+    - ``email``    ← an active ``has-email`` fact.
+    - ``telegram`` ← an active ``has-handle`` fact whose object is telegram-
+      prefixed (``telegram:…``), the only handle channel with a reliable prefix.
+
+    *fact_rows* are the entity's active ``has-*`` literal facts already fetched
+    by the caller (keys ``predicate``, ``object``). Order in the returned list
+    is stable (``email`` before ``telegram``) for deterministic rendering.
+    """
+    channels: list[str] = []
+    has_email = any(fr["predicate"] == "has-email" for fr in fact_rows)
+    has_telegram = any(
+        fr["predicate"] == "has-handle" and str(fr["object"]).startswith(_EF_TELEGRAM_HANDLE_PREFIX)
+        for fr in fact_rows
+    )
+    if has_email:
+        channels.append("email")
+    if has_telegram:
+        channels.append("telegram")
+    return channels
 
 
 def _first_ef_value(
@@ -4454,8 +4489,7 @@ async def list_entity_linked_contacts(
         """
         SELECT
             c.id,
-            c.name AS full_name,
-            c.preferred_channel
+            c.name AS full_name
         FROM public.contacts c
         WHERE c.entity_id = $1
           AND c.archived_at IS NULL
@@ -4473,7 +4507,7 @@ async def list_entity_linked_contacts(
     # entity_info secured rows (credentials) are fetched separately from entity_facts
     # non-secured channels; both belong to the entity and are attached to the first
     # linked contact.
-    label_rows, fact_rows, entity_info_rows = await asyncio.gather(
+    label_rows, fact_rows, entity_info_rows, preferred_channel = await asyncio.gather(
         pool.fetch(
             """
             SELECT cl.contact_id, l.id, l.name, l.color
@@ -4506,7 +4540,28 @@ async def list_entity_linked_contacts(
             """,
             entity_id,
         ),
+        # Active preferred outbound channel — sourced from the entity-keyed
+        # ``prefers-channel`` fact (entity-keyed-preferred-channel), NOT the
+        # orphaned public.contacts.preferred_channel CRM column.
+        pool.fetchval(
+            """
+            SELECT object
+            FROM relationship.entity_facts
+            WHERE subject   = $1
+              AND predicate = 'prefers-channel'
+              AND validity  = 'active'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            entity_id,
+        ),
     )
+
+    # Deliverable channel set the entity has a contact fact for. Mirrors group 1's
+    # reachability mapping (_CHANNEL_REACHABILITY): email proven by has-email,
+    # telegram by a telegram-prefixed has-handle. The dashboard channel-preference
+    # control offers only these.
+    reachable_channels = _deliverable_channels_from_facts(fact_rows)
 
     labels_by_contact: dict[UUID, list[Label]] = {cid: [] for cid in contact_ids}
     for lr in label_rows:
@@ -4559,7 +4614,10 @@ async def list_entity_linked_contacts(
             phone=phone_val if r["id"] == first_contact_id else None,
             contact_info=ci_by_contact.get(r["id"], []),
             labels=labels_by_contact.get(r["id"], []),
-            preferred_channel=r["preferred_channel"],
+            # preferred_channel + reachable_channels are entity-level (like
+            # contact_info); attach only to the first linked contact.
+            preferred_channel=preferred_channel if r["id"] == first_contact_id else None,
+            reachable_channels=(reachable_channels if r["id"] == first_contact_id else []),
         )
         for r in rows
     ]
@@ -5561,6 +5619,97 @@ async def update_entity_contact(
         retracted_fact_id=old_fact_id,
         fact=_row_to_contact_fact(fact_row),
     )
+
+
+# ---------------------------------------------------------------------------
+# PUT / DELETE /entities/{entity_id}/preferred-channel
+#
+# Entity-keyed preferred-outbound-channel control (entity-keyed-preferred-channel,
+# group 3). The dashboard ContactChannelCard sets/clears the preference through
+# the single-valued ``prefers-channel`` fact (group 1) rather than the orphaned
+# ``public.contacts.preferred_channel`` CRM column. ``assert_prefers_channel``
+# enforces reachability validation + single-valued supersession;
+# ``retract_prefers_channel`` clears it.
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/entities/{entity_id}/preferred-channel",
+    response_model=SetPreferredChannelResponse,
+)
+async def set_entity_preferred_channel(
+    entity_id: UUID,
+    body: SetPreferredChannelRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> SetPreferredChannelResponse:
+    """Set the entity's preferred outbound channel via the ``prefers-channel`` fact.
+
+    Single-valued: asserting a preference supersedes any prior active
+    ``prefers-channel`` row for the entity so exactly one remains.
+
+    Owner-only authz gate (Clause 12a): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist.
+
+    Returns 400 when *channel* is empty, or when the entity has no contact fact
+    proving reachability on that channel (e.g. preferring ``telegram`` when the
+    entity has no telegram handle) — the underlying ``assert_prefers_channel``
+    raises ``ValueError`` which is mapped to a 400 here.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import assert_prefers_channel
+
+    pool = _pool(db)
+
+    # Owner-only authz gate (Clause 12a — write surface).
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        result = await assert_prefers_channel(pool, entity_id, body.channel, src="relationship")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_preferred_channel", "message": str(exc)},
+        ) from exc
+
+    return SetPreferredChannelResponse(
+        outcome=result.outcome.value,
+        channel=body.channel.strip(),
+    )
+
+
+@router.delete(
+    "/entities/{entity_id}/preferred-channel",
+    response_model=ClearPreferredChannelResponse,
+)
+async def clear_entity_preferred_channel(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ClearPreferredChannelResponse:
+    """Clear the entity's preferred channel by retracting any active ``prefers-channel`` fact.
+
+    Idempotent: clearing an already-cleared preference returns ``cleared=0``.
+
+    Owner-only authz gate (Clause 12a): returns HTTP 403 with
+    ``{"code": "owner_required"}`` if no owner entity is registered.
+
+    Returns 404 if the entity does not exist.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import retract_prefers_channel
+
+    pool = _pool(db)
+
+    # Owner-only authz gate (Clause 12a — write surface).
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+
+    await _assert_entity_exists(pool, entity_id)
+
+    cleared = await retract_prefers_channel(pool, entity_id)
+    return ClearPreferredChannelResponse(cleared=cleared)
 
 
 # ---------------------------------------------------------------------------
