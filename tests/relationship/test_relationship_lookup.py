@@ -527,25 +527,91 @@ def test_mcp_tool_docstring_states_constraints():
 # In-session-only schedule guardrail — empty allowlist.
 #
 # No scheduled-task seed or roster cron/scheduled-prompt may invoke the tool.
-# Scan all roster/*/butler.toml [[butler.schedule]] seeds for the literal.
+# The lookup spec says to scan "scheduled-task seed definitions and roster
+# cron/scheduled-prompt files" for the literal ``relationship_lookup``. That
+# scope is BOTH:
+#   - roster/*/butler.toml          — the [[butler.schedule]] seed definitions
+#   - roster/*/.agents/skills/**/SKILL.md — the *bodies* of scheduled prompts
+#       (e.g. relationship-maintenance, upcoming-dates), which a scheduled
+#       session reads and could be told to call relationship_lookup from.
+# A skill instructing a scheduled session to call the lookup is exactly the
+# bypass the empty allowlist must reject, so both globs are scanned.
 # ---------------------------------------------------------------------------
 
 #: Empty allowlist — any occurrence is a violation requiring a Phase D cost review.
 _SCHEDULE_LOOKUP_ALLOWLIST: frozenset[str] = frozenset()
 
 
-def test_no_scheduled_seed_invokes_relationship_lookup():
+def _scheduling_source_paths() -> list[Path]:
+    """All roster files that define or carry scheduled-session instructions.
+
+    Globs are anchored on ``.agents`` (not the ``.claude -> .agents`` compat
+    symlink) so each SKILL.md is counted exactly once.
+    """
     roster = _REPO_ROOT / "roster"
+    paths = list(roster.glob("*/butler.toml"))
+    paths += list(roster.glob("*/.agents/skills/**/SKILL.md"))
+    return sorted(set(paths))
+
+
+def test_no_scheduled_seed_invokes_relationship_lookup():
     offenders: list[str] = []
-    for toml_path in sorted(roster.glob("*/butler.toml")):
-        text = toml_path.read_text()
+    for path in _scheduling_source_paths():
+        text = path.read_text()
         if "relationship_lookup" in text:
-            rel = str(toml_path.relative_to(_REPO_ROOT))
+            rel = str(path.relative_to(_REPO_ROOT))
             if rel not in _SCHEDULE_LOOKUP_ALLOWLIST:
                 offenders.append(rel)
     assert not offenders, (
         "relationship_lookup is referenced in scheduled-task seed files "
         f"{offenders}; the allowlist is empty by design (Phase D amendment 1 — "
         "the per-call LLM cost lives at the caller). Adding a schedule around "
-        "the lookup requires a new LLM-cost review, not a code change."
+        "the lookup (in a butler.toml seed OR a scheduled-prompt SKILL.md body) "
+        "requires a new LLM-cost review, not a code change."
+    )
+
+
+def test_schedule_scan_globs_cover_butler_toml_and_skill_prompts():
+    """The scan scope must include both seed TOMLs and scheduled-prompt SKILL.md files.
+
+    Guards against a future narrowing that drops the skill/prompt glob and thus
+    re-opens the bypass where a SKILL.md tells a scheduled session to call the tool.
+    """
+    paths = _scheduling_source_paths()
+    suffixes = {p.name for p in paths}
+    assert "butler.toml" in suffixes, "schedule scan must cover roster butler.toml seeds"
+    assert any(p.name == "SKILL.md" for p in paths), (
+        "schedule scan must cover roster scheduled-prompt SKILL.md bodies"
+    )
+    # The relationship butler's scheduled-prompt skills must be in scope.
+    rels = {str(p.relative_to(_REPO_ROOT)) for p in paths}
+    assert "roster/relationship/.agents/skills/relationship-maintenance/SKILL.md" in rels
+    assert "roster/relationship/.agents/skills/upcoming-dates/SKILL.md" in rels
+
+
+def test_schedule_scan_catches_lookup_literal_in_a_skill_prompt(tmp_path, monkeypatch):
+    """Synthetic red: a SKILL.md whose body invokes relationship_lookup is caught.
+
+    Builds a throwaway roster tree containing a scheduled-prompt SKILL.md that tells
+    a session to call ``relationship_lookup``, points the scan at it, and asserts the
+    widened glob flags it. The real roster tree stays green (no real skill violates).
+    """
+    fake_skill = (
+        tmp_path / "roster" / "relationship" / ".agents" / "skills" / "bad-schedule" / "SKILL.md"
+    )
+    fake_skill.parent.mkdir(parents=True, exist_ok=True)
+    fake_skill.write_text(
+        "# Bad scheduled prompt\n\n"
+        "When this scheduled session fires, call relationship_lookup(entity_ref=...).\n"
+    )
+    monkeypatch.setattr(
+        "tests.relationship.test_relationship_lookup._REPO_ROOT", tmp_path, raising=False
+    )
+
+    offenders: list[str] = []
+    for path in _scheduling_source_paths():
+        if "relationship_lookup" in path.read_text():
+            offenders.append(str(path.relative_to(tmp_path)))
+    assert offenders == ["roster/relationship/.agents/skills/bad-schedule/SKILL.md"], (
+        f"widened glob must catch a SKILL.md invoking the lookup; got {offenders}"
     )
