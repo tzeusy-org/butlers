@@ -25,6 +25,8 @@ from butlers.core.model_routing import (
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     _check_deprecated_tier,
+    _rule_condition_matches,
+    apply_spend_routing_rules,
     next_same_tier_candidate,
     resolve_model,
     resolve_model_with_effective_tier,
@@ -215,6 +217,54 @@ async def _insert_override(
         enabled,
         priority,
         complexity_tier,
+    )
+
+
+@pytest.mark.unit
+def test_rule_condition_matches_semantics() -> None:
+    """Spend-rule condition matching: AND of constraints, catch-all, list, case-insensitive."""
+    # Empty condition is a catch-all.
+    assert _rule_condition_matches({}, butler_name="general", complexity_tier="workhorse")
+
+    # Exact butler match.
+    assert _rule_condition_matches(
+        {"butler": "general"}, butler_name="general", complexity_tier="workhorse"
+    )
+    assert not _rule_condition_matches(
+        {"butler": "health"}, butler_name="general", complexity_tier="workhorse"
+    )
+
+    # complexity / tier aliases both work; case-insensitive.
+    assert _rule_condition_matches(
+        {"complexity": "WORKHORSE"}, butler_name="general", complexity_tier="workhorse"
+    )
+    assert _rule_condition_matches(
+        {"tier": "workhorse"}, butler_name="general", complexity_tier="workhorse"
+    )
+
+    # AND semantics: all constraints must hold.
+    assert _rule_condition_matches(
+        {"butler": "general", "complexity": "workhorse"},
+        butler_name="general",
+        complexity_tier="workhorse",
+    )
+    assert not _rule_condition_matches(
+        {"butler": "general", "complexity": "reasoning"},
+        butler_name="general",
+        complexity_tier="workhorse",
+    )
+
+    # List membership.
+    assert _rule_condition_matches(
+        {"butler": ["general", "health"]}, butler_name="health", complexity_tier="cheap"
+    )
+    assert not _rule_condition_matches(
+        {"butler": ["general", "health"]}, butler_name="travel", complexity_tier="cheap"
+    )
+
+    # Unknown constraint dimension fails closed (does NOT match-all).
+    assert not _rule_condition_matches(
+        {"weather": "sunny"}, butler_name="general", complexity_tier="workhorse"
     )
 
 
@@ -1098,3 +1148,168 @@ async def test_next_same_tier_no_mutation_of_round_robin_counter(pool: asyncpg.P
 
     # Counter must not have changed
     assert counter_before == counter_after
+
+
+# ---------------------------------------------------------------------------
+# Spend routing rules — apply_spend_routing_rules (model SELECTION override)
+# ---------------------------------------------------------------------------
+
+
+async def _insert_spend_rule(
+    pool: asyncpg.Pool,
+    *,
+    position: int,
+    condition: dict,
+    action: dict,
+) -> None:
+    import json
+
+    await pool.execute(
+        """
+        INSERT INTO public.spend_rules (position, condition, action)
+        VALUES ($1, $2::jsonb, $3::jsonb)
+        """,
+        position,
+        json.dumps(condition),
+        json.dumps(action),
+    )
+
+
+async def _resolved_tuple(pool: asyncpg.Pool, butler: str, tier: Complexity):
+    """Resolve a model and return the 5-tuple shape apply_spend_routing_rules expects."""
+    r = await resolve_model(pool, butler, tier, allow_tier_fallthrough=False)
+    assert r is not None
+    return r
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_overrides_resolved_model(pool: asyncpg.Pool) -> None:
+    """A matching routing rule re-routes the resolved model to the rule's target.
+
+    Pre-fix this assertion fails: rules were never consulted at dispatch, so the
+    tier-resolved model would be returned unchanged.
+    """
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    # Tier resolution would pick the expensive (higher-priority) workhorse model.
+    expensive_id = await _insert_catalog_entry(
+        pool,
+        alias="expensive",
+        model_id="claude-opus-expensive",
+        complexity_tier="workhorse",
+        priority=100,
+    )
+    cheap_id = await _insert_catalog_entry(
+        pool,
+        alias="cheap",
+        model_id="claude-haiku-cheap",
+        complexity_tier="workhorse",
+        priority=1,
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    assert resolved[1] == "claude-opus-expensive"
+    assert str(resolved[3]) == expensive_id
+
+    # Rule: route general/workhorse → the cheap model.
+    await _insert_spend_rule(
+        pool,
+        position=0,
+        condition={"butler": "general", "complexity": "workhorse"},
+        action={"model": "claude-haiku-cheap"},
+    )
+
+    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    assert routed[1] == "claude-haiku-cheap"
+    assert str(routed[3]) == cheap_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_first_match_wins(pool: asyncpg.Pool) -> None:
+    """Rules evaluate top-to-bottom (position ASC); the first matching rule wins."""
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    await _insert_catalog_entry(
+        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+    )
+    first_id = await _insert_catalog_entry(
+        pool, alias="first", model_id="first-target", complexity_tier="workhorse", priority=1
+    )
+    await _insert_catalog_entry(
+        pool, alias="second", model_id="second-target", complexity_tier="workhorse", priority=1
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    assert resolved[1] == "base-model"
+
+    # Two catch-all rules both match general/workhorse; position 0 must win.
+    await _insert_spend_rule(pool, position=0, condition={}, action={"model": "first-target"})
+    await _insert_spend_rule(pool, position=1, condition={}, action={"model": "second-target"})
+
+    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    assert routed[1] == "first-target"
+    assert str(routed[3]) == first_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_no_match_leaves_model_unchanged(pool: asyncpg.Pool) -> None:
+    """When no rule condition matches, the tier-resolved model is returned unchanged."""
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    base_id = await _insert_catalog_entry(
+        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+    )
+    await _insert_catalog_entry(
+        pool, alias="other", model_id="other-model", complexity_tier="workhorse", priority=1
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    assert resolved[1] == "base-model"
+
+    # Rule targets a DIFFERENT butler — does not match this dispatch.
+    await _insert_spend_rule(
+        pool, position=0, condition={"butler": "health"}, action={"model": "other-model"}
+    )
+
+    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    assert routed[1] == "base-model"
+    assert str(routed[3]) == base_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_unroutable_target_keeps_original(pool: asyncpg.Pool) -> None:
+    """A matched rule routing to a non-dispatchable model keeps the original (first-match-wins)."""
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    base_id = await _insert_catalog_entry(
+        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+    )
+    fallthrough_id = await _insert_catalog_entry(
+        pool,
+        alias="fallthrough",
+        model_id="fallthrough-model",
+        complexity_tier="workhorse",
+        priority=1,
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    assert resolved[1] == "base-model"
+
+    # First rule matches but routes to a model with no catalog row → unroutable.
+    # Second rule also matches and IS routable; first-match-wins means it must NOT
+    # be reached — the original model is kept.
+    await _insert_spend_rule(pool, position=0, condition={}, action={"model": "does-not-exist"})
+    await _insert_spend_rule(pool, position=1, condition={}, action={"model": "fallthrough-model"})
+
+    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    assert routed[1] == "base-model"
+    assert str(routed[3]) == base_id
+    assert str(fallthrough_id) != str(base_id)

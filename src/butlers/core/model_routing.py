@@ -372,6 +372,95 @@ WHERE tul.recorded_at >= date_trunc('month', now() AT TIME ZONE 'UTC')
 GROUP BY mc.model_id
 """
 
+# Load all spend routing rules in evaluation order (top-to-bottom = position ASC).
+# Each rule is a (condition JSONB, action JSONB) pair; evaluation is first-match-wins.
+_SPEND_RULES_SELECT_SQL = """
+SELECT id, condition, action
+FROM public.spend_rules
+ORDER BY position ASC
+"""
+
+# Resolve a single catalog entry by its priced model_id (the target a routing rule
+# routes TO).  Picks the highest-priority enabled, non-failed entry for the model so
+# the rule override lands on a real dispatchable row (and its real session_timeout /
+# extra_args / runtime_type).  Per-butler overrides are honored via COALESCE so a rule
+# routing to a model the butler has disabled yields no row (caller keeps the original).
+_RESOLVE_BY_MODEL_ID_SQL = """
+WITH candidates AS (
+    SELECT
+        mc.runtime_type,
+        mc.model_id,
+        mc.extra_args,
+        mc.id,
+        mc.session_timeout_s,
+        mc.created_at,
+        COALESCE(bmo.priority, mc.priority) AS effective_priority
+    FROM public.model_catalog mc
+    LEFT JOIN public.butler_model_overrides bmo
+        ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    WHERE mc.model_id = $2
+      AND COALESCE(bmo.enabled, mc.enabled) = true
+      AND mc.last_verified_ok IS DISTINCT FROM false
+)
+SELECT runtime_type, model_id, extra_args, id, session_timeout_s
+FROM candidates
+ORDER BY effective_priority DESC, created_at ASC, id ASC
+LIMIT 1
+"""
+
+
+def _coerce_rule_dict(raw: object) -> dict:
+    """Coerce an asyncpg JSONB column (dict or JSON string) to a dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _rule_condition_matches(
+    condition: dict,
+    *,
+    butler_name: str,
+    complexity_tier: str,
+) -> bool:
+    """Return True when a routing-rule condition matches the dispatch context.
+
+    A condition is a JSONB object of constraints; ALL constraints must hold for the
+    rule to match (logical AND).  An empty condition ``{}`` is a catch-all and matches
+    every dispatch.  Supported constraint keys:
+
+    - ``butler`` — the butler identity name (e.g. ``"general"``).
+    - ``complexity`` / ``tier`` — the canonical complexity tier (e.g. ``"workhorse"``).
+
+    Each constraint value may be a scalar (exact match) or a list (membership match).
+    Matching is case-insensitive on string values.  Unknown constraint keys cause the
+    rule NOT to match (fail-closed on unrecognized constraints), so a malformed or
+    forward-dated rule never silently routes every dispatch.
+    """
+    context = {
+        "butler": butler_name,
+        "complexity": complexity_tier,
+        "tier": complexity_tier,
+    }
+    for key, expected in condition.items():
+        if key not in context:
+            # Unknown constraint dimension — cannot evaluate; do not match.
+            return False
+        actual = context[key]
+        if isinstance(expected, list):
+            allowed = {str(v).lower() for v in expected}
+            if str(actual).lower() not in allowed:
+                return False
+        else:
+            if str(actual).lower() != str(expected).lower():
+                return False
+    return True
+
 
 def _parse_extra_args(raw_extra: object) -> list[str]:
     """Coerce asyncpg JSONB result for extra_args to list[str]."""
@@ -589,6 +678,155 @@ async def next_same_tier_candidate(
         row["id"],
         row["session_timeout_s"],
     )
+
+
+async def apply_spend_routing_rules(
+    pool: asyncpg.Pool,
+    butler_name: str,
+    complexity_tier: Complexity | str,
+    resolved: tuple[str, str, list[str], uuid.UUID, int],
+) -> tuple[str, str, list[str], uuid.UUID, int]:
+    """Apply operator-configured spend routing rules to a tier-resolved model.
+
+    The Settings → Spend page stores ordered routing rules in ``public.spend_rules``
+    (``condition`` JSONB → ``action`` JSONB, ``position``-sorted).  The UI promises
+    "rules evaluate top-to-bottom and the first match wins".  This function makes that
+    promise real: it runs AFTER tier-based resolution (``resolve_model*``) and BEFORE
+    the spawn-time DENY gates (token quota, spend ceiling, permissions), evaluating the
+    rules top-to-bottom and applying the first rule whose ``condition`` matches the
+    dispatch context.
+
+    Rule semantics
+    --------------
+    - ``condition`` (JSONB object): constraints ANDed together; an empty ``{}`` is a
+      catch-all.  Supported keys: ``butler`` and ``complexity`` (alias ``tier``).
+      Values may be scalars (exact match) or lists (membership).  See
+      ``_rule_condition_matches``.
+    - ``action.model`` (str): the priced ``model_id`` to route TO.  The matched model
+      is re-resolved against ``public.model_catalog`` (honoring per-butler overrides)
+      to the highest-priority enabled, non-failed entry for that ``model_id`` — so the
+      override lands on a real dispatchable catalog row with its own ``runtime_type``,
+      ``extra_args``, ``catalog_entry_id``, and ``session_timeout_s``.  Downstream
+      quota / ledger / failover therefore operate on the rule-selected model.
+
+    First match wins: once a rule's condition matches, evaluation stops — later rules
+    are not considered, exactly as the UI copy states.
+
+    Robustness
+    ----------
+    - A matched rule with no ``action.model`` (or routing to a model that resolves to
+      no dispatchable catalog row — e.g. disabled for this butler, or failed
+      verification) leaves the originally-resolved model UNCHANGED and logs a warning.
+      The rule is "first match wins" by condition; an unroutable target must not fall
+      through to a lower-priority rule or silently drop the dispatch.
+    - This helper is purely a model-SELECTION step.  It never blocks a dispatch — the
+      authorization (permissions) and budget (quota / ceiling) DENY gates are separate.
+    - Fail-open: any DB error or malformed rule data leaves ``resolved`` unchanged and
+      logs a warning, so a routing-rules failure never wedges spawns.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool connected to the butlers database.
+    butler_name:
+        The butler identity name driving the dispatch.
+    complexity_tier:
+        The requested complexity tier (``Complexity`` or canonical string).  Matched
+        against rule ``complexity``/``tier`` constraints.
+    resolved:
+        The tier-resolved model tuple
+        ``(runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s)``
+        produced by ``resolve_model`` / ``resolve_model_with_effective_tier``.
+
+    Returns
+    -------
+    tuple[str, str, list[str], uuid.UUID, int]
+        Either the rule-overridden model tuple (same shape as ``resolved``) when a
+        rule matched and routed to a dispatchable model, or ``resolved`` unchanged.
+    """
+    if isinstance(complexity_tier, Complexity):
+        tier_value = complexity_tier.value
+    else:
+        tier_value = _check_deprecated_tier(str(complexity_tier))
+
+    try:
+        rule_rows = await pool.fetch(_SPEND_RULES_SELECT_SQL)
+    except Exception:
+        logger.warning(
+            "apply_spend_routing_rules: failed to load spend_rules for butler=%s; "
+            "keeping tier-resolved model (fail-open)",
+            butler_name,
+            exc_info=True,
+        )
+        return resolved
+
+    for rule_row in rule_rows:
+        condition = _coerce_rule_dict(rule_row["condition"])
+        if not _rule_condition_matches(
+            condition, butler_name=butler_name, complexity_tier=tier_value
+        ):
+            continue
+
+        # First match wins — stop evaluating further rules regardless of outcome.
+        rule_id = rule_row["id"]
+        action = _coerce_rule_dict(rule_row["action"])
+        target_model = action.get("model")
+        if not target_model or not isinstance(target_model, str):
+            logger.warning(
+                "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s) but has no "
+                "action.model; keeping tier-resolved model %s",
+                rule_id,
+                butler_name,
+                tier_value,
+                resolved[1],
+            )
+            return resolved
+
+        try:
+            row = await pool.fetchrow(_RESOLVE_BY_MODEL_ID_SQL, butler_name, target_model)
+        except Exception:
+            logger.warning(
+                "apply_spend_routing_rules: rule %s matched but resolving target model %r "
+                "failed for butler=%s; keeping tier-resolved model %s (fail-open)",
+                rule_id,
+                target_model,
+                butler_name,
+                resolved[1],
+                exc_info=True,
+            )
+            return resolved
+
+        if row is None:
+            logger.warning(
+                "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s) routing to "
+                "model %r, but no dispatchable catalog entry resolves for it "
+                "(disabled/failed-verification?); keeping tier-resolved model %s",
+                rule_id,
+                butler_name,
+                tier_value,
+                target_model,
+                resolved[1],
+            )
+            return resolved
+
+        logger.info(
+            "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s); routed model %s -> %s",
+            rule_id,
+            butler_name,
+            tier_value,
+            resolved[1],
+            row["model_id"],
+        )
+        return (
+            row["runtime_type"],
+            row["model_id"],
+            _parse_extra_args(row["extra_args"]),
+            row["id"],
+            row["session_timeout_s"],
+        )
+
+    # No rule matched — tier-based resolution stands.
+    return resolved
 
 
 async def check_token_quota(

@@ -58,6 +58,7 @@ from butlers.core.mcp_urls import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
+    apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
     next_same_tier_candidate,
@@ -1691,6 +1692,52 @@ class Spawner:
             resolved_runtime_type,
             model,
         )
+
+        # ---------------------------------------------------------------------------
+        # Spend routing rules (public.spend_rules) — model SELECTION override
+        #
+        # The Settings → Spend page stores ordered routing rules (condition → action,
+        # position-sorted) and promises "rules evaluate top-to-bottom and the first
+        # match wins". Until now that copy was a lie: rules were stored, reorderable,
+        # and fed a decorative saved_7d analytics value, but were NEVER consulted at
+        # dispatch. Here we make the promise real — after tier resolution and BEFORE
+        # the spawn-time DENY gates (permissions / quota / ceiling). A matching rule
+        # re-routes the resolved model to the rule's target (action.model), re-resolved
+        # to a real dispatchable catalog row so downstream quota / failover / ledger all
+        # operate on the rule-selected model. This is a SELECTION step (which model),
+        # distinct from the authorization (permissions) and budget (quota/ceiling) DENY
+        # gates below. apply_spend_routing_rules fails open, so a rules error never
+        # wedges spawns. Only runs on a real catalog resolution (static_fallback has no
+        # catalog_entry_id to route from).
+        # ---------------------------------------------------------------------------
+        if catalog_entry_id is not None and self._pool is not None:
+            try:
+                (
+                    resolved_runtime_type,
+                    model,
+                    catalog_extra_args,
+                    catalog_entry_id,
+                    catalog_timeout_s,
+                ) = await apply_spend_routing_rules(
+                    self._pool,
+                    self._config.name,
+                    _failover_effective_tier or complexity,
+                    (
+                        resolved_runtime_type,
+                        model,
+                        catalog_extra_args,
+                        catalog_entry_id,
+                        catalog_timeout_s,
+                    ),
+                )
+            except Exception:
+                logger.warning(
+                    "Spend routing-rule evaluation failed for butler=%s; "
+                    "keeping tier-resolved model=%s",
+                    self._config.name,
+                    model,
+                    exc_info=True,
+                )
 
         # ---------------------------------------------------------------------------
         # Same-tier failover: quota-skip loop
