@@ -301,6 +301,9 @@ class ButlerDaemon:
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
+        # Switchboard-schema pool (butler_registry) used by the scheduler loop to
+        # gate scheduled dispatch on eligibility_state. Set during startup.
+        self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
         self.blob_store: S3BlobStore | None = None
@@ -1029,6 +1032,7 @@ class ButlerDaemon:
             get_switchboard_client=lambda: daemon.switchboard_client,
             get_db=lambda: daemon.db,
             completion_hooks=completion_hooks,
+            get_eligibility_pool=lambda: daemon._audit_pool,
         )
 
     async def _liveness_reporter_loop(self) -> None:

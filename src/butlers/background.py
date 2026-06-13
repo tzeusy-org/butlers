@@ -158,6 +158,7 @@ async def scheduler_loop(
     get_switchboard_client: Callable[[], Any],
     get_db: Callable[[], Any],
     completion_hooks: dict[str, Any] | None = None,
+    get_eligibility_pool: Callable[[], Any] | None = None,
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -198,6 +199,12 @@ async def scheduler_loop(
         Optional mapping of ``task_name → async callable`` forwarded to
         ``tick_fn`` on each invocation.  See ``tick()`` for the hook signature.
         When ``None``, no hooks are registered.
+    get_eligibility_pool:
+        Optional zero-argument callable returning the Switchboard-schema pool
+        (``butler_registry``) used to gate scheduled dispatch on
+        ``eligibility_state``.  Called lazily per tick so the pool is read after
+        startup wiring completes.  When ``None`` (or the callable returns
+        ``None``), no eligibility gating is applied and all ticks dispatch.
     """
 
     async def _scheduler_notify_fn(envelope: dict) -> None:
@@ -244,6 +251,7 @@ async def scheduler_loop(
     try:
         while True:
             await asyncio.sleep(interval)
+            eligibility_pool = get_eligibility_pool() if get_eligibility_pool is not None else None
             tick_task = asyncio.create_task(
                 tick_fn(
                     pool,
@@ -252,6 +260,7 @@ async def scheduler_loop(
                     butler_name=butler_name,
                     notify_fn=_scheduler_notify_fn,
                     completion_hooks=completion_hooks,
+                    eligibility_pool=eligibility_pool,
                 )
             )
             try:

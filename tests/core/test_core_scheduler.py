@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -220,6 +221,112 @@ async def test_tick_tolerates_legacy_schema_without_until_at(pool):
             assert count == 0
         finally:
             await tx.rollback()
+
+
+# ---------------------------------------------------------------------------
+# tick — eligibility gating (paused/quarantined butlers must not dispatch)
+# ---------------------------------------------------------------------------
+
+
+class _FakeEligibilityPool:
+    """Minimal asyncpg-pool stand-in for the Switchboard butler_registry.
+
+    ``resolve_routing_target`` issues a single ``fetchrow`` against
+    ``butler_registry``; when the stored eligibility_state already matches the
+    derived state (which it does for an explicit 'quarantined' row and for an
+    'active' row with a fresh last_seen_at), no reconcile UPDATE/INSERT runs, so
+    only ``fetchrow`` needs a real implementation here.
+    """
+
+    def __init__(self, *, name: str, eligibility_state: str):
+        self._name = name
+        self._eligibility_state = eligibility_state
+
+    async def fetchrow(self, _query, name):  # noqa: ANN001
+        if name != self._name:
+            return None
+        quarantined = self._eligibility_state == "quarantined"
+        return {
+            "name": name,
+            "endpoint_url": f"http://localhost:4200/{name}/sse",
+            "description": None,
+            "modules": json.dumps([]),
+            # Fresh heartbeat so an 'active' row derives to 'active', not 'stale'.
+            "last_seen_at": datetime.now(UTC),
+            "registered_at": datetime.now(UTC),
+            "eligibility_state": self._eligibility_state,
+            "liveness_ttl_seconds": 300,
+            "quarantined_at": datetime.now(UTC) if quarantined else None,
+            "quarantine_reason": "paused via dashboard" if quarantined else None,
+            "route_contract_min": 1,
+            "route_contract_max": 1,
+            "capabilities": json.dumps(["trigger"]),
+            "eligibility_updated_at": datetime.now(UTC),
+            "agent_type": "butler",
+        }
+
+
+async def test_tick_skips_dispatch_when_butler_quarantined(pool):
+    """A paused/quarantined butler must NOT dispatch its due cron tick."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    t1 = await schedule_create(pool, "gated-task", "*/1 * * * *", "should not run")
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t1, _past())
+
+    dispatch = _Dispatch()
+    eligibility_pool = _FakeEligibilityPool(name="butlerA", eligibility_state="quarantined")
+    count = await tick(
+        pool,
+        dispatch,
+        butler_name="butlerA",
+        eligibility_pool=eligibility_pool,
+    )
+
+    assert count == 0
+    assert dispatch.calls == []  # no dispatch attempted
+
+    # Skip (not defer): next_run_at must be preserved at the due time so the
+    # task does not advance while paused, and resumes naturally once eligible.
+    row = await pool.fetchrow(
+        "SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1", t1
+    )
+    assert row["next_run_at"] <= datetime.now(UTC)  # still due
+    assert row["last_run_at"] is None  # never ran
+
+
+async def test_tick_dispatches_when_butler_active(pool):
+    """An eligible (active) butler dispatches its due cron tick normally."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    t1 = await schedule_create(pool, "active-task", "*/1 * * * *", "run me")
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t1, _past())
+
+    dispatch = _Dispatch()
+    eligibility_pool = _FakeEligibilityPool(name="butlerA", eligibility_state="active")
+    count = await tick(
+        pool,
+        dispatch,
+        butler_name="butlerA",
+        eligibility_pool=eligibility_pool,
+    )
+
+    assert count == 1
+    assert dispatch.calls[0]["prompt"] == "run me"
+    assert dispatch.calls[0]["trigger_source"] == "schedule:active-task"
+
+
+async def test_tick_dispatches_when_no_eligibility_pool(pool):
+    """Without an eligibility_pool, ticks dispatch as before (backward compatible)."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    t1 = await schedule_create(pool, "ungated-task", "*/1 * * * *", "run me")
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t1, _past())
+
+    dispatch = _Dispatch()
+    count = await tick(pool, dispatch, butler_name="butlerA")
+
+    assert count == 1
+    assert dispatch.calls[0]["prompt"] == "run me"
 
 
 # ---------------------------------------------------------------------------

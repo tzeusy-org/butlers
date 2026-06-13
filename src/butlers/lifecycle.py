@@ -342,6 +342,10 @@ async def run_startup(daemon: Any) -> None:
 
     # 10a. Set up audit pool for daemon-side audit logging
     audit_pool = await daemon._create_audit_pool(pool)
+    # Expose the Switchboard-schema pool to the scheduler loop so it can gate
+    # scheduled dispatch on butler_registry.eligibility_state (paused/quarantined
+    # butlers must not fire cron/deadline ticks).
+    daemon._audit_pool = audit_pool
 
     # 10a-ii. Wire audit pool into modules that emit egress audit entries
     # (telegram_send, gmail_send, google_calendar_write).  This is a post-startup

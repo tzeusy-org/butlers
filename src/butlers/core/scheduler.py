@@ -1468,6 +1468,58 @@ async def _tick_deferred_notification_pass(
     return delivered
 
 
+async def _butler_dispatch_gated(
+    eligibility_pool: asyncpg.Pool | None,
+    butler_name: str | None,
+) -> str | None:
+    """Return a gate reason when scheduled dispatch must be suppressed.
+
+    A butler that has been paused/quarantined (or has gone stale) in the
+    Switchboard's ``butler_registry`` must NOT have its scheduled cron/deadline
+    ticks fire — otherwise pausing a butler in the dashboard leaves its cron
+    ticks running (the bug this guards against).
+
+    The canonical eligibility decision lives in the Switchboard registry, so we
+    reuse :func:`resolve_routing_target` (the same accessor the routing path
+    uses) rather than re-deriving the state here.  A target is gated for
+    scheduled dispatch under exactly the same default policy the router applies
+    to inbound routing: ``quarantined`` and ``stale`` are both gated, ``active``
+    is allowed.
+
+    Returns ``None`` when dispatch should proceed (eligible, or no gating
+    context available), or a human-readable reason string when dispatch must be
+    skipped.  Registry/lookup failures fail OPEN (return ``None``) so a
+    transient registry hiccup never silently freezes a healthy butler's
+    schedule.
+    """
+    if eligibility_pool is None or not butler_name:
+        return None
+
+    try:
+        from butlers.tools.switchboard.registry.registry import resolve_routing_target
+
+        target, error = await resolve_routing_target(
+            eligibility_pool,
+            butler_name,
+            allow_stale=False,
+            allow_quarantined=False,
+        )
+    except Exception:
+        # Registry unreachable / schema missing — fail open so scheduling keeps
+        # working for healthy butlers; do not gate on infrastructure errors.
+        logger.warning(
+            "Scheduler eligibility check failed for butler %r; proceeding with dispatch",
+            butler_name,
+            exc_info=True,
+        )
+        return None
+
+    if target is None:
+        # error is the registry's own reason string (e.g. quarantined/stale).
+        return error or f"Butler {butler_name!r} is not eligible for scheduled dispatch"
+    return None
+
+
 async def tick(
     pool: asyncpg.Pool,
     dispatch_fn,
@@ -1478,6 +1530,7 @@ async def tick(
     butler_name: str | None = None,
     notify_fn=None,
     completion_hooks: dict[str, Any] | None = None,
+    eligibility_pool: asyncpg.Pool | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -1535,6 +1588,17 @@ async def tick(
             Hook exceptions are logged and swallowed — a hook failure never
             blocks task progression or advances to the next tick.
             Job-mode tasks do NOT trigger completion hooks.
+        eligibility_pool: Optional asyncpg pool scoped to the Switchboard schema
+            (``butler_registry``).  When provided alongside *butler_name*, the
+            butler's eligibility is checked via the canonical
+            :func:`resolve_routing_target` accessor before any dispatch.  If the
+            butler is paused/quarantined (or stale), the deadline- and
+            cron-dispatch passes are SKIPPED — due ticks are dropped, not
+            queued, so a paused butler does not stampede catch-up dispatches on
+            resume.  ``next_run_at`` is left untouched while gated, so the
+            schedule resumes naturally on the next eligible tick.  When ``None``
+            (e.g. unit tests, or a context without a registry), no gating is
+            applied and all passes run as before.
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
@@ -1576,41 +1640,71 @@ async def tick(
                     exc_info=True,
                 )
 
-        # --- Pass 1: Deadline evaluation (before cron dispatch) ---
-        deadlines_evaluated, deadline_dispatched = await _tick_deadline_pass(
-            pool,
-            dispatch_fn,
-            now=now,
-            has_task_type_col=_has_task_type_col,
-            stagger_key=stagger_key,
-            max_stagger_seconds=max_stagger_seconds,
-            metrics=metrics,
-            active_seasons=active_seasons,
-        )
-        span.set_attribute("deadlines_evaluated", deadlines_evaluated)
-        span.set_attribute("deadline_dispatched", deadline_dispatched)
+        # ------------------------------------------------------------------
+        # Eligibility gate — a paused/quarantined (or stale) butler must NOT
+        # fire its scheduled deadline/cron ticks.  We consult the canonical
+        # Switchboard registry accessor (resolve_routing_target) so this matches
+        # the routing path's notion of "eligible".  When gated, both dispatch
+        # passes are SKIPPED outright (no catch-up queue): next_run_at is left
+        # untouched so the schedule resumes naturally once the butler is
+        # un-paused.  Event-chain bookkeeping (Pass 3) and deferred-notification
+        # flush (Pass 4) still run — neither spawns the gated butler.
+        # ------------------------------------------------------------------
+        dispatch_gate_reason = await _butler_dispatch_gated(eligibility_pool, butler_name)
+        span.set_attribute("dispatch_gated", dispatch_gate_reason is not None)
+
+        if dispatch_gate_reason is not None:
+            logger.info(
+                "Scheduler: skipping deadline/cron dispatch for butler %r — %s",
+                butler_name,
+                dispatch_gate_reason,
+            )
+            deadlines_evaluated = 0
+            deadline_dispatched = 0
+            span.set_attribute("deadlines_evaluated", 0)
+            span.set_attribute("deadline_dispatched", 0)
+        else:
+            # --- Pass 1: Deadline evaluation (before cron dispatch) ---
+            deadlines_evaluated, deadline_dispatched = await _tick_deadline_pass(
+                pool,
+                dispatch_fn,
+                now=now,
+                has_task_type_col=_has_task_type_col,
+                stagger_key=stagger_key,
+                max_stagger_seconds=max_stagger_seconds,
+                metrics=metrics,
+                active_seasons=active_seasons,
+            )
+            span.set_attribute("deadlines_evaluated", deadlines_evaluated)
+            span.set_attribute("deadline_dispatched", deadline_dispatched)
 
         # --- Pass 2: Cron dispatch ---
         # If task_type column doesn't exist (legacy schema), treat all rows as cron.
         # If it does exist, skip deadline tasks (handled in pass 1).
-        if _has_task_type_col:
-            cron_filter = "AND COALESCE(task_type, 'cron') = 'cron'"
-        else:
-            cron_filter = ""
-        _budget_col_select = ", max_token_budget" if _has_budget_col else ""
-        _until_at_select = ", until_at" if _has_until_at_col else ", NULL::timestamptz AS until_at"
-        rows = await pool.fetch(
-            f"""
-            SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
-                   complexity{_until_at_select}{_budget_col_select}
-            FROM scheduled_tasks
-            WHERE enabled = true
-              {cron_filter}
-              AND next_run_at <= $1
-            ORDER BY next_run_at
-            """,
-            now,
-        )
+        # When the butler is gated (paused/quarantined/stale), skip the cron
+        # fetch entirely so no rows are dispatched and next_run_at is preserved.
+        rows: list[asyncpg.Record] = []
+        if dispatch_gate_reason is None:
+            if _has_task_type_col:
+                cron_filter = "AND COALESCE(task_type, 'cron') = 'cron'"
+            else:
+                cron_filter = ""
+            _budget_col_select = ", max_token_budget" if _has_budget_col else ""
+            _until_at_select = (
+                ", until_at" if _has_until_at_col else ", NULL::timestamptz AS until_at"
+            )
+            rows = await pool.fetch(
+                f"""
+                SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
+                       complexity{_until_at_select}{_budget_col_select}
+                FROM scheduled_tasks
+                WHERE enabled = true
+                  {cron_filter}
+                  AND next_run_at <= $1
+                ORDER BY next_run_at
+                """,
+                now,
+            )
 
         tasks_due = len(rows)
         span.set_attribute("tasks_due", tasks_due)
