@@ -358,34 +358,50 @@ describe("EntityDetailPage — Workbench duplicate panel", () => {
 });
 
 describe("EntityDetailPage — Workbench keyboard map", () => {
+  // The Detail keyboard map is VIEW-LOCAL: it binds to the focused detail
+  // container via onKeyDown, never to window.
+  function detailRoot() {
+    return container.querySelector(
+      "[data-testid='entity-detail-root']",
+    ) as HTMLDivElement;
+  }
+
+  function dispatchKey(key: string, init: KeyboardEventInit = {}) {
+    act(() => {
+      detailRoot().dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, ...init }),
+      );
+    });
+  }
+
   it("j steps to the next sibling in Index order", () => {
     render();
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));
-    });
+    dispatchKey("j");
     expect(navigateMock).toHaveBeenCalledWith("/entities/sib-next");
   });
 
   it("k steps to the previous sibling in Index order", () => {
     render();
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" }));
-    });
+    dispatchKey("k");
     expect(navigateMock).toHaveBeenCalledWith("/entities/sib-prev");
   });
 
   it("Esc returns to the entities index", () => {
     render();
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    });
+    dispatchKey("Escape");
     expect(navigateMock).toHaveBeenCalledWith("/entities");
   });
 
   it("does not shadow Cmd-K (meta-modified keys are ignored)", () => {
     render();
+    dispatchKey("k", { metaKey: true });
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("the map is not window-global (window keydown does not navigate)", () => {
+    render();
     act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));
     });
     expect(navigateMock).not.toHaveBeenCalled();
   });

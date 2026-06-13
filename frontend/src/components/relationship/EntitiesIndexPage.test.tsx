@@ -870,8 +870,8 @@ describe("EntitiesIndexPage — bulk gutter merge (exactly two)", () => {
   });
 });
 
-describe("EntitiesIndexPage — duplicate-candidate queue card opens compare", () => {
-  it("opens the compare view directly for a duplicate-candidate with a known peer", () => {
+describe("EntitiesIndexPage — duplicate-candidate queue evidence drill", () => {
+  it("renders the shared value and each peer as a compare link", () => {
     vi.mocked(useRelationshipEntityQueue).mockReturnValue({
       data: makeQueueResponse([
         {
@@ -879,7 +879,23 @@ describe("EntitiesIndexPage — duplicate-candidate queue card opens compare", (
           canonical_name: "Dup One",
           entity_type: "person",
           bucket: "duplicate-candidate",
-          evidence: { predicate: "has-email", shared_value: "x@y.com", peer_entity_ids: ["ent-dup-2"] },
+          evidence: {
+            predicate: "has-email",
+            shared_value: "x@y.com",
+            peer_entity_ids: ["ent-dup-2"],
+          },
+          last_seen: null,
+        },
+        {
+          entity_id: "ent-dup-2",
+          canonical_name: "Dup Two",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: {
+            predicate: "has-email",
+            shared_value: "x@y.com",
+            peer_entity_ids: ["ent-dup-1"],
+          },
           last_seen: null,
         },
       ]),
@@ -889,14 +905,338 @@ describe("EntitiesIndexPage — duplicate-candidate queue card opens compare", (
     } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
 
     renderPage();
-    const mergeBtn = container.querySelector(
-      "button[aria-label='Merge Dup One']",
+    const drill = container.querySelector("[data-testid='queue-duplicate-evidence']");
+    expect(drill).toBeTruthy();
+    // Shared value is surfaced as evidence.
+    expect(drill?.textContent).toContain("x@y.com");
+    // The peer name (resolved off the queue) renders as a compare affordance.
+    const peerBtn = container.querySelector(
+      "button[aria-label='Compare Dup One with Dup Two']",
     ) as HTMLButtonElement;
-    expect(mergeBtn).toBeTruthy();
-    act(() => mergeBtn.click());
-    // No target-search dialog — the compare view opens straight for the pair.
-    // DialogContent renders through a portal to document.body.
+    expect(peerBtn).toBeTruthy();
+    expect(peerBtn.textContent).toContain("Dup Two");
+  });
+
+  it("opens the compare view pre-highlighted when a peer link is clicked", () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-dup-1",
+          canonical_name: "Dup One",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: {
+            predicate: "has-email",
+            shared_value: "x@y.com",
+            peer_entity_ids: ["ent-dup-2"],
+          },
+          last_seen: null,
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+    // Peer name unresolved (peer not in queue): aria-label falls back to "peer",
+    // the visible label to "Linked entity".
+    const peerBtn = container.querySelector(
+      "button[aria-label='Compare Dup One with peer']",
+    ) as HTMLButtonElement;
+    expect(peerBtn).toBeTruthy();
+    expect(peerBtn.textContent).toContain("Linked entity");
+    act(() => peerBtn.click());
+    // The compare view opens straight for the pair (no target picker).
     expect(document.body.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
+  });
+
+  it("falls back to the target picker for a duplicate flagged without a peer", () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-dup-1",
+          canonical_name: "Lone Dup",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: {},
+          last_seen: null,
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+    // No peer link; the metadata-only duplicate renders the Merge action that
+    // routes through the target picker.
+    expect(container.querySelector("[data-testid='queue-duplicate-peer']")).toBeNull();
+    expect(container.querySelector("button[aria-label='Merge Lone Dup']")).toBeTruthy();
+  });
+});
+
+describe("EntitiesIndexPage — queue evidence drill (stale + multi-peer)", () => {
+  it("shows the staleness age on a stale card", () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-s-001",
+          canonical_name: "Old Contact",
+          entity_type: "person",
+          bucket: "stale",
+          evidence: { last_seen: "2023-01-01T00:00:00Z" },
+          last_seen: "2023-01-01T00:00:00Z",
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+    const age = container.querySelector("[data-testid='queue-stale-age']");
+    expect(age).toBeTruthy();
+    expect(age?.textContent?.toLowerCase()).toContain("last seen");
+    // The stale card still links to detail.
+    const link = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.textContent?.trim() === "Old Contact",
+    );
+    expect(link?.getAttribute("href")).toBe("/entities/ent-s-001");
+  });
+
+  it("renders one comparable peer link per collision (multi-peer)", () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-dup-1",
+          canonical_name: "Dup One",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: {
+            predicate: "has-phone",
+            shared_value: "+15550001",
+            peer_entity_ids: ["ent-dup-2", "ent-dup-3"],
+          },
+          last_seen: null,
+        },
+        {
+          entity_id: "ent-dup-2",
+          canonical_name: "Dup Two",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: {},
+          last_seen: null,
+        },
+        {
+          entity_id: "ent-dup-3",
+          canonical_name: "Dup Three",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: {},
+          last_seen: null,
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+    expect(
+      container.querySelector("button[aria-label='Compare Dup One with Dup Two']"),
+    ).toBeTruthy();
+    expect(
+      container.querySelector("button[aria-label='Compare Dup One with Dup Three']"),
+    ).toBeTruthy();
+  });
+});
+
+describe("EntitiesIndexPage — bulk gutter", () => {
+  beforeEach(() => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE, BOB]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+  });
+
+  function selectRow(name: string) {
+    const checkbox = container.querySelector(
+      `input[type='checkbox'][aria-label='Select ${name}']`,
+    ) as HTMLInputElement;
+    act(() => checkbox.click());
+  }
+
+  it("renders a mono tabular selected-count caption", () => {
+    renderPage();
+    selectRow("Alice Fogg");
+    const count = container.querySelector("[data-testid='bulk-gutter-count']");
+    expect(count).toBeTruthy();
+    expect(count?.textContent).toContain("1");
+    expect(count?.className).toContain("font-mono");
+    // The numeral itself carries tabular-nums.
+    expect(count?.querySelector(".tabular-nums")?.textContent).toBe("1");
+  });
+
+  it("exposes archive, forget, merge and clear actions", () => {
+    renderPage();
+    selectRow("Alice Fogg");
+    expect(container.querySelector("[data-testid='gutter-archive']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='gutter-forget']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='gutter-merge']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='gutter-clear']")).toBeTruthy();
+  });
+
+  it("opens a serif confirm gloss for the forget action", () => {
+    renderPage();
+    selectRow("Alice Fogg");
+    selectRow("Bob Hatch");
+    const forgetBtn = container.querySelector(
+      "[data-testid='gutter-forget']",
+    ) as HTMLButtonElement;
+    act(() => forgetBtn.click());
+    const gloss = document.body.querySelector("[data-testid='bulk-confirm-gloss']");
+    expect(gloss).toBeTruthy();
+    // Canned gloss with exact count + irreversibility note.
+    expect(gloss?.textContent).toContain("Delete 2 entities");
+    expect(gloss?.textContent).toContain("cannot be undone");
+  });
+
+  it("forgets all selected entities on confirm", async () => {
+    renderPage();
+    selectRow("Alice Fogg");
+    selectRow("Bob Hatch");
+    const forgetBtn = container.querySelector(
+      "[data-testid='gutter-forget']",
+    ) as HTMLButtonElement;
+    act(() => forgetBtn.click());
+    const commit = document.body.querySelector(
+      "[data-testid='bulk-confirm-commit']",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      commit.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(forgetMutateAsync).toHaveBeenCalledWith("ent-alice-001");
+    expect(forgetMutateAsync).toHaveBeenCalledWith("ent-bob-002");
+  });
+
+  it("archives all selected entities on confirm", async () => {
+    renderPage();
+    selectRow("Alice Fogg");
+    const archiveBtn = container.querySelector(
+      "[data-testid='gutter-archive']",
+    ) as HTMLButtonElement;
+    act(() => archiveBtn.click());
+    const gloss = document.body.querySelector("[data-testid='bulk-confirm-gloss']");
+    expect(gloss?.textContent).toContain("Archive 1 entity");
+    const commit = document.body.querySelector(
+      "[data-testid='bulk-confirm-commit']",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      commit.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(archiveMutateAsync).toHaveBeenCalledWith("ent-alice-001");
+  });
+
+  it("keeps only the failed entities selected on partial failure", async () => {
+    // Alice succeeds, Bob fails: only Bob must remain selected for retry.
+    archiveMutateAsync.mockImplementation((id: string) =>
+      id === "ent-bob-002" ? Promise.reject(new Error("boom")) : Promise.resolve(undefined),
+    );
+    renderPage();
+    selectRow("Alice Fogg");
+    selectRow("Bob Hatch");
+    const archiveBtn = container.querySelector(
+      "[data-testid='gutter-archive']",
+    ) as HTMLButtonElement;
+    act(() => archiveBtn.click());
+    const commit = document.body.querySelector(
+      "[data-testid='bulk-confirm-commit']",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      commit.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(archiveMutateAsync).toHaveBeenCalledWith("ent-alice-001");
+    expect(archiveMutateAsync).toHaveBeenCalledWith("ent-bob-002");
+    // The failed entity (Bob) stays selected; the gutter still shows 1.
+    const count = container.querySelector("[data-testid='bulk-gutter-count']");
+    expect(count?.querySelector(".tabular-nums")?.textContent).toBe("1");
+    const bobCheckbox = container.querySelector(
+      "input[type='checkbox'][aria-label='Select Bob Hatch']",
+    ) as HTMLInputElement;
+    expect(bobCheckbox.checked).toBe(true);
+    const aliceCheckbox = container.querySelector(
+      "input[type='checkbox'][aria-label='Select Alice Fogg']",
+    ) as HTMLInputElement;
+    expect(aliceCheckbox.checked).toBe(false);
+  });
+});
+
+describe("EntitiesIndexPage — Index keyboard map (focused list container)", () => {
+  beforeEach(() => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE, BOB]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+  });
+
+  function dispatchKey(key: string, init: KeyboardEventInit = {}) {
+    const list = container.querySelector(
+      "[data-testid='entity-list-container']",
+    ) as HTMLDivElement;
+    act(() => {
+      list.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
+    });
+  }
+
+  it("binds the keyboard map to the focused list container, not window", () => {
+    renderPage();
+    const list = container.querySelector("[data-testid='entity-list-container']");
+    expect(list).toBeTruthy();
+    // The container is focusable (keyboard map is local to it).
+    expect(list?.getAttribute("tabindex")).toBe("0");
+    // A window-level keydown must NOT toggle selection (map is not global).
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='bulk-gutter']")).toBeNull();
+  });
+
+  it("Down moves the cursor and Space toggles selection at the cursor", () => {
+    renderPage();
+    dispatchKey("ArrowDown"); // cursor → row 0
+    dispatchKey(" "); // toggle select row 0
+    // The bulk gutter appears once a row is selected.
+    expect(container.querySelector("[data-testid='bulk-gutter']")).toBeTruthy();
+    const count = container.querySelector("[data-testid='bulk-gutter-count']");
+    expect(count?.textContent).toContain("1");
+  });
+
+  it("Shift+Down extends the selection range", () => {
+    renderPage();
+    dispatchKey("ArrowDown"); // cursor → row 0
+    dispatchKey("ArrowDown", { shiftKey: true }); // extend to row 1
+    const count = container.querySelector("[data-testid='bulk-gutter-count']");
+    expect(count?.textContent).toContain("2");
+    // Exactly-two selection enables the gutter merge.
+    const gutterMerge = container.querySelector(
+      "[data-testid='gutter-merge']",
+    ) as HTMLButtonElement;
+    expect(gutterMerge.disabled).toBe(false);
+  });
+
+  it("Escape clears the selection", () => {
+    renderPage();
+    dispatchKey("ArrowDown");
+    dispatchKey(" ");
+    expect(container.querySelector("[data-testid='bulk-gutter']")).toBeTruthy();
+    dispatchKey("Escape");
+    expect(container.querySelector("[data-testid='bulk-gutter']")).toBeNull();
   });
 });
 

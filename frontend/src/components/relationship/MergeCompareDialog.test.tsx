@@ -224,6 +224,49 @@ describe("MergeCompareDialog", () => {
     expect(dismissMutate).toHaveBeenCalledWith({ entity_a: "a1", entity_b: "b1" });
   });
 
+  it("pre-highlights the triggering shared-evidence row", async () => {
+    await act(async () => {
+      root.render(
+        <MergeCompareDialog
+          pair={{ entityA: "a1", entityB: "b1" }}
+          onOpenChange={() => {}}
+          highlightFact={{ predicate: "has-email", object: "alice@x.com" }}
+        />,
+      );
+    });
+    await flush();
+
+    const shared = document.querySelector('[data-testid="compare-shared"]');
+    const highlighted = shared?.querySelector('[data-highlighted="true"]');
+    expect(highlighted).not.toBeNull();
+    expect(highlighted?.textContent).toContain("alice@x.com");
+  });
+
+  it("does not highlight any row when no highlightFact is supplied", async () => {
+    await act(async () => {
+      root.render(
+        <MergeCompareDialog pair={{ entityA: "a1", entityB: "b1" }} onOpenChange={() => {}} />,
+      );
+    });
+    await flush();
+
+    expect(document.querySelector('[data-highlighted="true"]')).toBeNull();
+  });
+
+  it("renders shared/divergent counts as tabular numerals", async () => {
+    await act(async () => {
+      root.render(
+        <MergeCompareDialog pair={{ entityA: "a1", entityB: "b1" }} onOpenChange={() => {}} />,
+      );
+    });
+    await flush();
+
+    const shared = document.querySelector('[data-testid="compare-shared"]');
+    const count = shared?.querySelector(".tabular-nums");
+    expect(count).not.toBeNull();
+    expect(count?.textContent).toBe("1");
+  });
+
   it("disables commit actions until the diff has rendered", async () => {
     // Compare never resolves → buttons stay disabled (no merge bypasses review).
     compareMutate.mockReturnValue(new Promise(() => {}));

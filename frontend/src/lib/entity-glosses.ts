@@ -231,6 +231,45 @@ export function getEntityGloss({
 }
 
 // ---------------------------------------------------------------------------
+// Bulk-action confirmation glosses.
+//
+// Canned serif copy shown in the Index bulk-gutter confirm dialogs. Same voice
+// contract as the entity glosses above: clinical, terse, present tense, no
+// em-dashes, no celebration. NOT generated — a fixed two-line table keyed on
+// the action, with simple count substitution.
+//
+// Voice rules (DESIGN_LANGUAGE.md §8): past tense for events, present for
+// state; no first person; "the" over "your"; numbers exact.
+// ---------------------------------------------------------------------------
+
+export type BulkConfirmAction = "archive" | "forget"
+
+/**
+ * Return the canned serif confirmation gloss for a bulk gutter action.
+ *
+ * @param action ``"archive"`` (reversible) or ``"forget"`` (destructive).
+ * @param count  The number of selected entities the action will apply to.
+ * @returns      A single serif-italic sentence, exact count, no period of
+ *               explanation beyond the consequence.
+ *
+ * @example
+ *   getBulkConfirmGloss("archive", 3)
+ *   // => "Archive 3 entities. The records are preserved; their sources are tombstoned."
+ *   getBulkConfirmGloss("forget", 1)
+ *   // => "Delete 1 entity. This tombstones the record and retracts active facts. It cannot be undone."
+ */
+export function getBulkConfirmGloss(action: BulkConfirmAction, count: number): string {
+  const noun = count === 1 ? "entity" : "entities"
+  if (action === "forget") {
+    const subject = count === 1 ? "This tombstones the record" : "This tombstones the records"
+    return `Delete ${count} ${noun}. ${subject} and retracts active facts. It cannot be undone.`
+  }
+  const subject = count === 1 ? "The record is preserved" : "The records are preserved"
+  const src = count === 1 ? "its source is tombstoned" : "their sources are tombstoned"
+  return `Archive ${count} ${noun}. ${subject}; ${src}.`
+}
+
+// ---------------------------------------------------------------------------
 // Compile-time exhaustiveness check.
 //
 // This const assignment verifies that GLOSSES_BASE satisfies the full

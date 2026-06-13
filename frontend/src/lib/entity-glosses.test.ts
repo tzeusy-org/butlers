@@ -19,6 +19,7 @@
 import { describe, expect, it } from "vitest"
 import {
   getEntityGloss,
+  getBulkConfirmGloss,
   DUNBAR_TIER_VALUES,
   ENTITY_STATE_VALUES,
   ENTITY_TYPE_VALUES,
@@ -139,6 +140,46 @@ describe("entity-glosses anti-temptation guardrail", () => {
   it("getEntityGloss is a synchronous function (returns string, not Promise)", () => {
     const result = getEntityGloss({ tier: 50, state: "healthy", category: "person" })
     // If this were async it would return a Promise, not a string
+    expect(typeof result).toBe("string")
+    expect(result).not.toBeInstanceOf(Promise)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bulk gutter confirmation glosses.
+// ---------------------------------------------------------------------------
+
+describe("getBulkConfirmGloss", () => {
+  it("archives with an exact plural count and preservation note", () => {
+    const gloss = getBulkConfirmGloss("archive", 3)
+    expect(gloss).toBe(
+      "Archive 3 entities. The records are preserved; their sources are tombstoned.",
+    )
+  })
+
+  it("forgets with an exact count and irreversibility note", () => {
+    const gloss = getBulkConfirmGloss("forget", 2)
+    expect(gloss).toContain("Delete 2 entities")
+    expect(gloss).toContain("cannot be undone")
+  })
+
+  it("uses the singular noun for a count of one", () => {
+    expect(getBulkConfirmGloss("archive", 1)).toContain("Archive 1 entity.")
+    expect(getBulkConfirmGloss("forget", 1)).toContain("Delete 1 entity.")
+  })
+
+  it("contains no em-dashes or exclamation marks (voice contract)", () => {
+    for (const action of ["archive", "forget"] as const) {
+      for (const count of [1, 2, 9]) {
+        const gloss = getBulkConfirmGloss(action, count)
+        expect(gloss).not.toContain("—")
+        expect(gloss).not.toContain("!")
+      }
+    }
+  })
+
+  it("is synchronous (no LLM call)", () => {
+    const result = getBulkConfirmGloss("archive", 1)
     expect(typeof result).toBe("string")
     expect(result).not.toBeInstanceOf(Promise)
   })

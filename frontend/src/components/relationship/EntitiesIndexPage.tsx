@@ -17,8 +17,8 @@
  *       §Requirement: Entity index page
  */
 
-import { useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useCallback, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import {
   ArchiveIcon,
   CheckCircleIcon,
@@ -62,6 +62,7 @@ import {
 } from "@/hooks/use-entities";
 import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
+import { getBulkConfirmGloss, type BulkConfirmAction } from "@/lib/entity-glosses";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -104,26 +105,53 @@ type ActionEntity = {
   roles?: string[];
 };
 
-/** A pair of entity ids handed to the compare view (the merge-review surface). */
-type MergePair = { entityA: string; entityB: string };
+/** The shared-evidence row that triggered a compare (predicate + object). */
+type CompareTrigger = { predicate: string; object: string };
+
+/**
+ * A pair of entity ids handed to the compare view (the merge-review surface),
+ * optionally carrying the shared evidence that triggered it so the compare view
+ * can pre-highlight that row.
+ */
+type MergePair = { entityA: string; entityB: string; highlight?: CompareTrigger | null };
 
 function isOwner(entity: ActionEntity) {
   return entity.roles?.includes("owner") ?? false;
 }
 
 /**
- * Read the duplicate-candidate peer entity id from a queue entry's evidence.
+ * Read ALL duplicate-candidate peer entity ids from a queue entry's evidence.
  *
- * The shared-fact duplicate evidence carries ``peer_entity_ids`` (the entities
- * holding the same identifier). When present, the merge action can open the
- * compare view for that pair directly without a target search.
+ * The shared-fact duplicate evidence carries ``peer_entity_ids`` (every entity
+ * holding the same identifier). An entity can share an identifier with more than
+ * one peer; each peer is comparable independently, so the queue card renders one
+ * link per peer rather than collapsing to ``peer_entity_ids[0]``.
  */
-function peerEntityIdFromEvidence(evidence: Record<string, unknown>): string | null {
+function peerEntityIdsFromEvidence(evidence: Record<string, unknown>): string[] {
   const peers = evidence?.["peer_entity_ids"];
-  if (Array.isArray(peers) && peers.length > 0 && typeof peers[0] === "string") {
-    return peers[0];
+  if (!Array.isArray(peers)) return [];
+  return peers.filter((p): p is string => typeof p === "string");
+}
+
+/**
+ * Read the triggering shared evidence (predicate + value) from a duplicate
+ * entry, when present. Handed to the compare view so the matching shared row is
+ * pre-highlighted. Returns ``null`` when the entry was flagged by metadata only.
+ */
+function compareTriggerFromEvidence(
+  evidence: Record<string, unknown>,
+): CompareTrigger | null {
+  const predicate = evidence?.["predicate"];
+  const value = evidence?.["shared_value"];
+  if (typeof predicate === "string" && typeof value === "string") {
+    return { predicate, object: value };
   }
   return null;
+}
+
+/** Human-readable predicate label (deterministic, no prose). */
+function prettyPredicate(predicate: string): string {
+  return predicate.replaceAll("-", " ").replaceAll("_", " ");
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +295,57 @@ function ForgetEntityButton({
     >
       <TrashIcon />
     </Button>
+  );
+}
+
+/**
+ * Confirm dialog for a bulk gutter action (archive / forget). The body is the
+ * canned serif confirm gloss from entity-glosses.ts — no generated prose.
+ */
+function BulkConfirmDialog({
+  action,
+  count,
+  isPending,
+  onConfirm,
+  onOpenChange,
+}: {
+  action: BulkConfirmAction | null;
+  count: number;
+  isPending: boolean;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const title = action === "forget" ? "Delete entities" : "Archive entities";
+  const commitLabel = action === "forget" ? "Delete" : "Archive";
+  return (
+    <Dialog open={action !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription
+            className="italic"
+            style={{ fontFamily: "'Source Serif 4', Georgia, serif" }}
+            data-testid="bulk-confirm-gloss"
+          >
+            {action ? getBulkConfirmGloss(action, count) : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant={action === "forget" ? "destructive" : "default"}
+            disabled={isPending}
+            onClick={onConfirm}
+            data-testid="bulk-confirm-commit"
+          >
+            {isPending ? "Working…" : commitLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -503,6 +582,8 @@ interface EntityTableProps {
   onForgetEntity: (entity: ActionEntity) => void;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
+  /** Keyboard-cursor row index (``-1`` when no row is focused). */
+  cursor?: number;
 }
 
 function EntityTable({
@@ -512,6 +593,7 @@ function EntityTable({
   onForgetEntity,
   selectedIds,
   onToggleSelect,
+  cursor = -1,
 }: EntityTableProps) {
   if (isLoading) {
     return (
@@ -548,10 +630,13 @@ function EntityTable({
           </tr>
         </thead>
         <tbody>
-          {entities.map((entity) => (
+          {entities.map((entity, index) => (
             <tr
               key={entity.id}
-              className="border-b last:border-0 hover:bg-muted/50"
+              aria-selected={index === cursor || undefined}
+              className={`border-b last:border-0 hover:bg-muted/50 ${
+                index === cursor ? "bg-muted/60" : ""
+              }`}
             >
               <td className="py-2.5 pr-2">
                 <input
@@ -684,6 +769,11 @@ function QueueRail({
     );
   }
 
+  // Resolve peer entity ids to display names off the queue's own items — the
+  // duplicate evidence carries peer ids, not names, and a peer that needs
+  // attention also surfaces as its own queue entry. Deterministic; no fetch.
+  const nameById = new Map(items.map((e) => [e.entity_id, e.canonical_name]));
+
   // Group by bucket
   const unidentified = items.filter((e) => e.bucket === "unidentified");
   const duplicates = items.filter((e) => e.bucket === "duplicate-candidate");
@@ -696,6 +786,7 @@ function QueueRail({
           title="Unidentified"
           items={unidentified}
           accentColor="var(--amber)"
+          nameById={nameById}
           onMergeEntity={onMergeEntity}
           onComparePair={onComparePair}
         />
@@ -705,6 +796,7 @@ function QueueRail({
           title="Duplicate candidate"
           items={duplicates}
           accentColor="var(--amber)"
+          nameById={nameById}
           onMergeEntity={onMergeEntity}
           onComparePair={onComparePair}
         />
@@ -714,6 +806,7 @@ function QueueRail({
           title="Stale"
           items={stale}
           accentColor="var(--muted-foreground)"
+          nameById={nameById}
           onMergeEntity={onMergeEntity}
           onComparePair={onComparePair}
         />
@@ -722,16 +815,88 @@ function QueueRail({
   );
 }
 
+/**
+ * Render the duplicate-candidate evidence drill: the shared value, and each peer
+ * the entity collides with as a link that opens the compare view for that pair
+ * (carrying the triggering shared evidence so it pre-highlights). Falls back to
+ * the target picker when the entry was flagged by metadata only (no peer).
+ */
+function DuplicateEvidence({
+  entry,
+  nameById,
+  onMergeEntity,
+  onComparePair,
+}: {
+  entry: RelationshipQueueEntry;
+  nameById: Map<string, string>;
+  onMergeEntity: (entity: ActionEntity) => void;
+  onComparePair: (pair: MergePair) => void;
+}) {
+  const trigger = compareTriggerFromEvidence(entry.evidence);
+  const peerIds = peerEntityIdsFromEvidence(entry.evidence);
+
+  if (peerIds.length === 0) {
+    // No known peer — route through the target picker.
+    const actionEntity: ActionEntity = {
+      id: entry.entity_id,
+      canonical_name: entry.canonical_name,
+      entity_type: entry.entity_type,
+    };
+    return <MergeEntityButton entity={actionEntity} onSelect={onMergeEntity} />;
+  }
+
+  return (
+    <div className="mt-0.5 space-y-0.5" data-testid="queue-duplicate-evidence">
+      {trigger && (
+        <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--mfg)]">
+          {prettyPredicate(trigger.predicate)}{" "}
+          <span className="tabular-nums normal-case text-[var(--dim)]">{trigger.object}</span>
+        </p>
+      )}
+      <ul className="space-y-0.5">
+        {peerIds.map((peerId) => (
+          <li key={peerId} className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              data-testid="queue-duplicate-peer"
+              aria-label={`Compare ${entry.canonical_name} with ${nameById.get(peerId) ?? "peer"}`}
+              onClick={() =>
+                onComparePair({
+                  entityA: entry.entity_id,
+                  entityB: peerId,
+                  highlight: trigger,
+                })
+              }
+              className="min-w-0 truncate text-left text-xs text-[var(--amber)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--amber)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {nameById.get(peerId) ?? "Linked entity"}
+            </button>
+            <Link
+              to={`/entities/${peerId}`}
+              aria-label={`Open ${nameById.get(peerId) ?? "peer"}`}
+              className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground"
+            >
+              →
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function QueueSection({
   title,
   items,
   accentColor,
+  nameById,
   onMergeEntity,
   onComparePair,
 }: {
   title: string;
   items: RelationshipQueueEntry[];
   accentColor: string;
+  nameById: Map<string, string>;
   onMergeEntity: (entity: ActionEntity) => void;
   onComparePair: (pair: MergePair) => void;
 }) {
@@ -743,7 +908,7 @@ function QueueSection({
       >
         {title}
       </p>
-      <ul className="space-y-1">
+      <ul className="space-y-2">
         {items.map((entry) => {
           const actionEntity: ActionEntity = {
             id: entry.entity_id,
@@ -751,44 +916,47 @@ function QueueSection({
             entity_type: entry.entity_type,
           };
 
-          // Duplicate-candidate entries carry the peer entity in their evidence;
-          // their merge action opens the compare view for that pair directly.
-          // Unidentified entries have no known peer — route through the target
-          // picker so the owner selects the entity to compare against.
-          const peerId =
-            entry.bucket === "duplicate-candidate"
-              ? peerEntityIdFromEvidence(entry.evidence)
-              : null;
-
-          function handleMerge(selected: ActionEntity) {
-            if (peerId) {
-              onComparePair({ entityA: selected.id, entityB: peerId });
-            } else {
-              onMergeEntity(selected);
-            }
-          }
-
           return (
-            <li
-              key={entry.entity_id}
-              className="flex items-center justify-between gap-2 text-sm"
-            >
-              <Link
-                to={`/entities/${entry.entity_id}`}
-                className="min-w-0 truncate text-primary hover:underline"
-              >
-                {entry.canonical_name}
-              </Link>
-              <div className="flex shrink-0 gap-1">
-                {entry.bucket === "unidentified" && (
-                  <PromoteEntityButton entity={actionEntity} />
-                )}
-                {entry.bucket !== "stale" && (
-                  <MergeEntityButton entity={actionEntity} onSelect={handleMerge} />
-                )}
-                {entry.bucket === "stale" && <ArchiveEntityButton entity={actionEntity} />}
-                <DismissQueueItemButton entity={actionEntity} />
+            <li key={entry.entity_id} className="text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <Link
+                  to={`/entities/${entry.entity_id}`}
+                  className="min-w-0 truncate text-primary hover:underline"
+                >
+                  {entry.canonical_name}
+                </Link>
+                <div className="flex shrink-0 items-center gap-1">
+                  {entry.bucket === "unidentified" && (
+                    <>
+                      <PromoteEntityButton entity={actionEntity} />
+                      {/* No known peer — route through the target picker so the
+                          owner selects the entity to compare against. */}
+                      <MergeEntityButton entity={actionEntity} onSelect={onMergeEntity} />
+                    </>
+                  )}
+                  {entry.bucket === "stale" && <ArchiveEntityButton entity={actionEntity} />}
+                  <DismissQueueItemButton entity={actionEntity} />
+                </div>
               </div>
+              {/* Stale: surface the staleness age inline beside a detail link. */}
+              {entry.bucket === "stale" && entry.last_seen && (
+                <p
+                  className="font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--dim)]"
+                  data-testid="queue-stale-age"
+                >
+                  last seen <Time value={entry.last_seen} mode="relative" />
+                </p>
+              )}
+              {/* Duplicate-candidate: render the evidence drill (shared value +
+                  one comparable peer per collision). */}
+              {entry.bucket === "duplicate-candidate" && (
+                <DuplicateEvidence
+                  entry={entry}
+                  nameById={nameById}
+                  onMergeEntity={onMergeEntity}
+                  onComparePair={onComparePair}
+                />
+              )}
             </li>
           );
         })}
@@ -808,10 +976,26 @@ export function EntitiesIndexPage() {
   const [forgetSourceEntity, setForgetSourceEntity] = useState<ActionEntity | null>(null);
   const [comparePair, setComparePair] = useState<MergePair | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // The bulk gutter's archive/forget actions confirm through a serif-gloss
+  // dialog before committing. ``null`` means no confirm is open.
+  const [bulkConfirm, setBulkConfirm] = useState<BulkConfirmAction | null>(null);
   // Toolbar search query. Wired to the relationship search endpoint (same
   // deterministic ranking as the Cmd-K Finder) instead of a client-side
   // substring pass. Spec: "Index toolbar search uses the search endpoint".
   const [searchQuery, setSearchQuery] = useState("");
+
+  const archiveMutation = useArchiveRelationshipEntity();
+  const forgetMutation = useForgetRelationshipEntity();
+
+  // The focusable list container for the Index keyboard map. Bindings attach
+  // HERE (onKeyDown), never to window — the map is active only while the list
+  // has keyboard focus, so it never shadows app-wide shortcuts or other views.
+  const listRef = useRef<HTMLDivElement>(null);
+  // Cursor row for keyboard navigation (index into the visible rows). ``-1``
+  // means no row is focused yet.
+  const [cursor, setCursor] = useState(-1);
+  // Anchor for Shift+arrow range extension.
+  const [anchor, setAnchor] = useState<number | null>(null);
 
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
@@ -830,6 +1014,40 @@ export function EntitiesIndexPage() {
   function handleGutterMerge() {
     if (selectedList.length !== 2) return;
     setComparePair({ entityA: selectedList[0], entityB: selectedList[1] });
+  }
+
+  async function handleBulkConfirm() {
+    const action = bulkConfirm;
+    if (!action) return;
+    const ids = Array.from(selectedIds);
+    const mutate = action === "forget" ? forgetMutation : archiveMutation;
+    const verb = action === "forget" ? "Deleted" : "Archived";
+    // allSettled, not all: a partial failure must deselect only the entities
+    // that actually succeeded and keep the failed ones selected, so the owner
+    // can see and retry them. Promise.all would reject on the first failure and
+    // leave the whole (now-stale) selection in place.
+    const results = await Promise.allSettled(ids.map((id) => mutate.mutateAsync(id)));
+    const failedIds = ids.filter((_, i) => results[i].status === "rejected");
+    const succeeded = ids.length - failedIds.length;
+
+    if (succeeded > 0) {
+      toast.success(`${verb} ${succeeded} ${succeeded === 1 ? "entity" : "entities"}`);
+    }
+    if (failedIds.length > 0) {
+      const firstReason = results.find((r) => r.status === "rejected") as
+        | PromiseRejectedResult
+        | undefined;
+      const reason =
+        firstReason?.reason instanceof Error ? firstReason.reason.message : "Unknown error";
+      const noun = failedIds.length === 1 ? "entity" : "entities";
+      toast.error(
+        `${action === "forget" ? "Delete" : "Archive"} failed for ${failedIds.length} ${noun}: ${reason}`,
+      );
+    }
+
+    // Keep only the failed entities selected.
+    setSelectedIds(new Set(failedIds));
+    setBulkConfirm(null);
   }
 
   // URL is the source of truth for all filter chips.
@@ -885,6 +1103,67 @@ export function EntitiesIndexPage() {
   const rangeEnd = isSearching ? total : Math.min(offset + PAGE_SIZE, total);
   const hasMore = !isSearching && offset + PAGE_SIZE < total;
   const hasPrev = !isSearching && offset > 0;
+
+  // Index keyboard map (spec: "Index bulk-select gutter" keyboard map). Bound to
+  // the FOCUSED list container via onKeyDown — never window-global — so it is
+  // active only while the list holds keyboard focus and never shadows the
+  // app-wide Cmd-K / "/" shortcuts or other views.
+  //   ↑/↓            move the cursor
+  //   Space          toggle selection at the cursor
+  //   Shift+↑/↓      extend the selection range from the anchor
+  //   Esc            clear the selection
+  //   Enter          open the cursor row's detail page
+  const navigate = useNavigate();
+  const handleListKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      // Defer to inputs (the toolbar search lives outside this container, but
+      // guard anyway for embedded controls).
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      if (entities.length === 0) return;
+
+      const clamp = (n: number) => Math.max(0, Math.min(entities.length - 1, n));
+      const select = (from: number, to: number) => {
+        const lo = Math.min(from, to);
+        const hi = Math.max(from, to);
+        setSelectedIds(() => {
+          const next = new Set<string>();
+          for (let i = lo; i <= hi; i += 1) next.add(entities[i].id);
+          return next;
+        });
+      };
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        const nextCursor = clamp(cursor < 0 ? 0 : cursor + delta);
+        if (e.shiftKey) {
+          const base = anchor ?? (cursor < 0 ? 0 : cursor);
+          if (anchor === null) setAnchor(base);
+          select(base, nextCursor);
+        } else {
+          setAnchor(null);
+        }
+        setCursor(nextCursor);
+      } else if (e.key === " " || e.key === "Spacebar") {
+        // Guard a stale cursor (e.g. the list shrank under us).
+        if (cursor < 0 || cursor >= entities.length) return;
+        e.preventDefault();
+        toggleSelect(entities[cursor].id);
+        setAnchor(cursor);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setSelectedIds(new Set());
+        setAnchor(null);
+      } else if (e.key === "Enter") {
+        if (cursor < 0 || cursor >= entities.length) return;
+        e.preventDefault();
+        void navigate(`/entities/${entities[cursor].id}`);
+      }
+    },
+    [entities, cursor, anchor, navigate],
+  );
 
   function handleTypeChange(type: EntityType) {
     setSearchParams(
@@ -981,51 +1260,91 @@ export function EntitiesIndexPage() {
       <div className="flex gap-6">
         {/* Main column — entity table */}
         <div className="min-w-0 flex-1 space-y-4">
-          {/* Bulk gutter — merge action enabled only when exactly two rows selected */}
+          {/* Bulk gutter — slim, hairline-ruled (no card). The merge action is
+              enabled only when exactly two rows are selected; archive and forget
+              confirm through a serif-gloss dialog. */}
           {selectedList.length > 0 && (
             <div
-              className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-3 py-2"
+              className="flex items-center justify-between gap-2 border-y border-border py-1.5"
               data-testid="bulk-gutter"
             >
-              <span className="text-sm text-muted-foreground">
-                {selectedList.length} selected
-                {selectedList.length !== 2 ? " — select exactly two to merge" : ""}
+              <span
+                className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground"
+                data-testid="bulk-gutter-count"
+              >
+                <span className="tabular-nums">{selectedList.length}</span> selected
               </span>
-              <div className="flex gap-2">
-                <Button
+              <div className="flex items-center gap-3">
+                <button
                   type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setSelectedIds(new Set())}
-                >
-                  Clear
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
                   data-testid="gutter-merge"
                   disabled={selectedList.length !== 2}
                   onClick={handleGutterMerge}
+                  title={
+                    selectedList.length === 2
+                      ? "Compare and merge the two selected"
+                      : "Select exactly two to merge"
+                  }
+                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground disabled:opacity-40 disabled:no-underline disabled:hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
-                  <GitMergeIcon />
+                  <GitMergeIcon className="h-3.5 w-3.5" aria-hidden />
                   Merge
-                </Button>
+                </button>
+                <button
+                  type="button"
+                  data-testid="gutter-archive"
+                  onClick={() => setBulkConfirm("archive")}
+                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <ArchiveIcon className="h-3.5 w-3.5" aria-hidden />
+                  Archive
+                </button>
+                <button
+                  type="button"
+                  data-testid="gutter-forget"
+                  onClick={() => setBulkConfirm("forget")}
+                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--red)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--red)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <TrashIcon className="h-3.5 w-3.5" aria-hidden />
+                  Forget
+                </button>
+                <button
+                  type="button"
+                  data-testid="gutter-clear"
+                  onClick={() => setSelectedIds(new Set())}
+                  className="font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  Clear
+                </button>
               </div>
             </div>
           )}
-          <EntityTable
-            entities={entities}
-            isLoading={isLoading}
-            onMergeEntity={setMergeSourceEntity}
-            onForgetEntity={setForgetSourceEntity}
-            selectedIds={selectedIds}
-            onToggleSelect={toggleSelect}
-          />
+          {/* Focusable list container — the Index keyboard map binds HERE
+              (onKeyDown), never to window. */}
+          <div
+            ref={listRef}
+            tabIndex={0}
+            role="grid"
+            aria-label="Entity list"
+            onKeyDown={handleListKeyDown}
+            data-testid="entity-list-container"
+            className="rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <EntityTable
+              entities={entities}
+              isLoading={isLoading}
+              onMergeEntity={setMergeSourceEntity}
+              onForgetEntity={setForgetSourceEntity}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              cursor={cursor}
+            />
+          </div>
 
           {/* Pagination */}
           {total > 0 && (
             <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm tabular-nums text-muted-foreground">
                 Showing {rangeStart}&ndash;{rangeEnd} of {total.toLocaleString()}
               </p>
               <div className="flex gap-2">
@@ -1070,6 +1389,7 @@ export function EntitiesIndexPage() {
       )}
       <MergeCompareDialog
         pair={comparePair}
+        highlightFact={comparePair?.highlight ?? null}
         onOpenChange={(open) => {
           if (!open) setComparePair(null);
         }}
@@ -1079,6 +1399,15 @@ export function EntitiesIndexPage() {
         entity={forgetSourceEntity}
         onOpenChange={(open) => {
           if (!open) setForgetSourceEntity(null);
+        }}
+      />
+      <BulkConfirmDialog
+        action={bulkConfirm}
+        count={selectedList.length}
+        isPending={archiveMutation.isPending || forgetMutation.isPending}
+        onConfirm={handleBulkConfirm}
+        onOpenChange={(open) => {
+          if (!open) setBulkConfirm(null);
         }}
       />
     </Page>

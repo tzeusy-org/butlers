@@ -52,12 +52,53 @@ function prettyPredicate(predicate: string): string {
   return predicate.replaceAll("-", " ").replaceAll("_", " ");
 }
 
-/** One fact row with predicate, object, and provenance badges. */
-function FactRow({ fact }: { fact: CompareFact }) {
+/**
+ * The shared-evidence row that triggered this compare, when the entry point
+ * carries it (a queue duplicate card or the detail-page duplicate panel). The
+ * matching shared row is pre-highlighted so the operator sees the duplicate
+ * evidence first. Matched deterministically on ``(predicate, object)``.
+ */
+export interface CompareHighlightFact {
+  predicate: string;
+  object: string;
+}
+
+function factMatchesHighlight(
+  fact: CompareFact,
+  highlight: CompareHighlightFact | null | undefined,
+): boolean {
   return (
-    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs" data-testid="compare-fact">
-      <span className="font-medium capitalize text-foreground">{prettyPredicate(fact.predicate)}</span>
-      <span className="truncate text-muted-foreground" title={fact.object}>
+    highlight != null &&
+    fact.predicate === highlight.predicate &&
+    fact.object === highlight.object
+  );
+}
+
+/** One fact row with predicate, object, and provenance badges. */
+function FactRow({
+  fact,
+  highlighted = false,
+}: {
+  fact: CompareFact;
+  highlighted?: boolean;
+}) {
+  return (
+    <li
+      className={`flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs ${
+        highlighted ? "text-[var(--amber)]" : ""
+      }`}
+      data-testid="compare-fact"
+      data-highlighted={highlighted ? "true" : undefined}
+    >
+      <span
+        className={`font-medium capitalize ${highlighted ? "text-[var(--amber)]" : "text-foreground"}`}
+      >
+        {prettyPredicate(fact.predicate)}
+      </span>
+      <span
+        className={`truncate ${highlighted ? "text-[var(--amber)]" : "text-muted-foreground"}`}
+        title={fact.object}
+      >
         {fact.object}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -81,27 +122,39 @@ function FactRow({ fact }: { fact: CompareFact }) {
 /** A labelled group of fact rows; renders nothing when empty unless `showEmpty`. */
 function FactGroup({
   label,
+  count,
   facts,
   testid,
   emptyText,
+  highlight,
 }: {
   label: string;
+  /** Optional tabular-nums count rendered after the label. */
+  count?: number;
   facts: CompareFact[];
   testid: string;
   emptyText?: string;
+  highlight?: CompareHighlightFact | null;
 }) {
   if (facts.length === 0 && !emptyText) return null;
   return (
     <div data-testid={testid}>
       <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         {label}
+        {count !== undefined && (
+          <span className="ml-1 tabular-nums text-muted-foreground">{count}</span>
+        )}
       </p>
       {facts.length === 0 ? (
         <p className="text-xs italic text-muted-foreground">{emptyText}</p>
       ) : (
         <ul className="space-y-1">
           {facts.map((fact) => (
-            <FactRow key={`${fact.store}-${fact.id}`} fact={fact} />
+            <FactRow
+              key={`${fact.store}-${fact.id}`}
+              fact={fact}
+              highlighted={factMatchesHighlight(fact, highlight)}
+            />
           ))}
         </ul>
       )}
@@ -172,9 +225,20 @@ export interface MergeCompareDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Fired after a successful merge or dismiss so callers can clear selection. */
   onResolved?: () => void;
+  /**
+   * The shared-evidence row that triggered this compare, if the entry point
+   * carries it. The matching row in the shared-evidence group is pre-highlighted
+   * so the duplicate evidence reads first. Matched on ``(predicate, object)``.
+   */
+  highlightFact?: CompareHighlightFact | null;
 }
 
-export function MergeCompareDialog({ pair, onOpenChange, onResolved }: MergeCompareDialogProps) {
+export function MergeCompareDialog({
+  pair,
+  onOpenChange,
+  onResolved,
+  highlightFact,
+}: MergeCompareDialogProps) {
   const compare = useCompareEntities();
   const merge = useMergeRelationshipEntities();
   const dismiss = useDismissEntityPair();
@@ -282,18 +346,21 @@ export function MergeCompareDialog({ pair, onOpenChange, onResolved }: MergeComp
               />
             </div>
 
-            <div className="rounded-md border border-border bg-muted/30 p-3">
+            <div className="border-t border-border pt-3">
               <FactGroup
-                label={`Shared evidence (${diff.shared.length})`}
+                label="Shared evidence"
+                count={diff.shared.length}
                 facts={diff.shared}
                 testid="compare-shared"
                 emptyText="No shared identifiers."
+                highlight={highlightFact}
               />
             </div>
 
-            <div className="rounded-md border border-border bg-muted/30 p-3">
+            <div className="border-t border-border pt-3">
               <FactGroup
-                label={`Divergences (${diff.divergent.length})`}
+                label="Divergences"
+                count={diff.divergent.length}
                 facts={diff.divergent}
                 testid="compare-divergent"
                 emptyText="No conflicting facts."

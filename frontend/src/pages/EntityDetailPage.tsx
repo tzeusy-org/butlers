@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   ArrowDown,
@@ -2055,14 +2061,14 @@ function WorkbenchRelationRow({
  */
 function WorkbenchContextRail({
   entityId,
-  duplicatePeerId,
-  duplicatePeerName,
-  onOpenMergeReview,
+  duplicatePeers,
+  onOpenMergeReviewWith,
 }: {
   entityId: string;
-  duplicatePeerId: string | null;
-  duplicatePeerName: string | null;
-  onOpenMergeReview: () => void;
+  /** Every peer this entity shares an identifier with (id + resolved name). */
+  duplicatePeers: Array<{ id: string; name: string | null }>;
+  /** Open the compare view for this entity and the given peer. */
+  onOpenMergeReviewWith: (peerId: string) => void;
 }) {
   const { data: neighboursData } = useEntityNeighbours(entityId, {
     rank: "weight",
@@ -2121,17 +2127,22 @@ function WorkbenchContextRail({
         </section>
       )}
 
-      {duplicatePeerId && (
+      {duplicatePeers.length > 0 && (
         <section className="space-y-2">
           <Eyebrow>shares identifiers with</Eyebrow>
-          <button
-            type="button"
-            data-testid="workbench-shares-identifiers"
-            onClick={onOpenMergeReview}
-            className="block text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {duplicatePeerName ?? "another entity"} — likely the same →
-          </button>
+          <div className="space-y-1">
+            {duplicatePeers.map((peer) => (
+              <button
+                key={peer.id}
+                type="button"
+                data-testid="workbench-shares-identifiers"
+                onClick={() => onOpenMergeReviewWith(peer.id)}
+                className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {peer.name ?? "another entity"} — likely the same →
+              </button>
+            ))}
+          </div>
         </section>
       )}
     </aside>
@@ -2426,6 +2437,9 @@ export default function EntityDetailPage() {
   // Ref used by the ContactChannelCard "Link contact" CTA to scroll to the
   // practical drawer where the existing link/unlink flow lives.
   const practicalDrawerRef = useRef<HTMLDivElement>(null);
+  // View-local keyboard-map root. The Detail map (m / j / k / Esc) binds to this
+  // focusable container via onKeyDown, never to window.
+  const detailRootRef = useRef<HTMLDivElement>(null);
 
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [forgetError, setForgetError] = useState<string | null>(null);
@@ -2445,56 +2459,63 @@ export default function EntityDetailPage() {
       ) ?? null
     );
   }, [queueData, entityId]);
-  const duplicatePeerId = useMemo<string | null>(() => {
+  // ALL peer entities this entity shares an identifier with. An entity can
+  // collide with more than one peer; each is comparable independently, so we
+  // resolve every ``peer_entity_ids`` entry (no longer ``[0]`` only) and pair it
+  // with a display name resolved off the queue's own items.
+  const duplicatePeers = useMemo<Array<{ id: string; name: string | null }>>(() => {
     const peers = duplicateEntry?.evidence?.["peer_entity_ids"];
-    if (Array.isArray(peers) && peers.length > 0 && typeof peers[0] === "string") {
-      return peers[0];
-    }
-    return null;
-  }, [duplicateEntry]);
-  // Deterministic evidence string for the Workbench duplicate panel — assembled
-  // from the queue entry's structured evidence, never generated prose.
-  const duplicateEvidence = useMemo<string | null>(() => {
+    if (!Array.isArray(peers)) return [];
+    return peers
+      .filter((p): p is string => typeof p === "string")
+      .map((id) => ({
+        id,
+        name: queueData?.items.find((item) => item.entity_id === id)?.canonical_name ?? null,
+      }));
+  }, [duplicateEntry, queueData]);
+  // The primary peer drives the `m` key and the panel's default review action.
+  const duplicatePeerId = duplicatePeers[0]?.id ?? null;
+  // Triggering shared evidence (predicate + value), handed to the compare view
+  // so the matching shared row pre-highlights. Null when flagged by metadata.
+  const duplicateTrigger = useMemo<{ predicate: string; object: string } | null>(() => {
     const ev = duplicateEntry?.evidence;
     if (!ev) return null;
     const predicate = typeof ev["predicate"] === "string" ? (ev["predicate"] as string) : null;
     const sharedValue =
       typeof ev["shared_value"] === "string" ? (ev["shared_value"] as string) : null;
-    if (predicate && sharedValue) {
-      return `Shares ${predicate.replaceAll("-", " ").replaceAll("_", " ")} ${sharedValue}`;
+    return predicate && sharedValue ? { predicate, object: sharedValue } : null;
+  }, [duplicateEntry]);
+  // Deterministic evidence string for the Workbench duplicate panel — assembled
+  // from the queue entry's structured evidence, never generated prose.
+  const duplicateEvidence = useMemo<string | null>(() => {
+    if (!duplicateEntry) return null;
+    if (duplicateTrigger) {
+      return `Shares ${duplicateTrigger.predicate.replaceAll("-", " ").replaceAll("_", " ")} ${duplicateTrigger.object}`;
     }
     return "Shares an identifier with another entity";
-  }, [duplicateEntry]);
-  // Peer display name, when the peer also surfaces as a queue entry.
-  const duplicatePeerName = useMemo<string | null>(() => {
-    if (!duplicatePeerId) return null;
-    const peerEntry = queueData?.items.find((item) => item.entity_id === duplicatePeerId);
-    return peerEntry?.canonical_name ?? null;
-  }, [queueData, duplicatePeerId]);
-  const [comparePair, setComparePair] = useState<{ entityA: string; entityB: string } | null>(
-    null,
+  }, [duplicateEntry, duplicateTrigger]);
+  const [comparePair, setComparePair] = useState<{
+    entityA: string;
+    entityB: string;
+    highlight?: { predicate: string; object: string } | null;
+  } | null>(null);
+
+  const openMergeReviewWith = useCallback(
+    (peerId: string) => {
+      if (!entityId) return;
+      setComparePair({ entityA: entityId, entityB: peerId, highlight: duplicateTrigger });
+    },
+    [entityId, duplicateTrigger],
   );
-
   const openMergeReview = useCallback(() => {
-    if (!entityId || !duplicatePeerId) return;
-    setComparePair({ entityA: entityId, entityB: duplicatePeerId });
-  }, [entityId, duplicatePeerId]);
-
-  // `m` opens the merge-review compare view (only when duplicate evidence exists
-  // and no input/textarea/dialog is focused, and no modifier is held).
-  useEffect(() => {
     if (!duplicatePeerId) return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== "m" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
-      e.preventDefault();
-      openMergeReview();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [duplicatePeerId, openMergeReview]);
+    openMergeReviewWith(duplicatePeerId);
+  }, [duplicatePeerId, openMergeReviewWith]);
+
+  // `m` opens the merge-review compare view for the primary peer. The handler
+  // binds to a VIEW-LOCAL focusable container (see detailRootRef / onKeyDown
+  // below), never to window, so it is active only while this page holds focus
+  // and never shadows app-wide shortcuts or other routes' keyboard maps.
 
   // Sibling navigation for the Detail keyboard map: `k`/`j` step to the
   // previous/next entity in Index order (default scope), `Esc` returns to the
@@ -2516,13 +2537,24 @@ export default function EntityDetailPage() {
     [entityId, siblingIds, navigate],
   );
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
+  // The view-local Detail keyboard map. Bound to the page root via onKeyDown
+  // (detailRootRef + tabIndex below) — NEVER to window — so `m`/`j`/`k`/`Esc`
+  // are active only while this page holds keyboard focus and never shadow the
+  // app-wide ⌘K / "/" shortcuts or another route's bindings.
+  //   m            open the merge-review compare view (when a duplicate peer exists)
+  //   k / j        step to the previous / next entity in Index order
+  //   Esc          return to the Index
+  const handleDetailKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
-      if (e.key === "k") {
+      if (e.key === "m") {
+        if (!duplicatePeerId) return;
+        e.preventDefault();
+        openMergeReview();
+      } else if (e.key === "k") {
         e.preventDefault();
         stepSibling(-1);
       } else if (e.key === "j") {
@@ -2532,10 +2564,9 @@ export default function EntityDetailPage() {
         e.preventDefault();
         void navigate("/entities");
       }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [stepSibling, navigate]);
+    },
+    [duplicatePeerId, openMergeReview, stepSibling, navigate],
+  );
 
   const handleForgetConfirm = async () => {
     if (!entityId) return;
@@ -2764,7 +2795,13 @@ export default function EntityDetailPage() {
       actions={pageActions}
     >
       {entity && entityId && (
-        <>
+        <div
+          ref={detailRootRef}
+          tabIndex={0}
+          onKeyDown={handleDetailKeyDown}
+          data-testid="entity-detail-root"
+          className="outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
           {/* Duplicate-warning panel — "shares identifiers with" hint. Its merge
               action opens the compare view; `m` is the keyboard equivalent. */}
           {duplicatePeerId && (
@@ -3110,9 +3147,8 @@ export default function EntityDetailPage() {
               >
                 <WorkbenchContextRail
                   entityId={entity.id}
-                  duplicatePeerId={duplicatePeerId}
-                  duplicatePeerName={duplicatePeerName}
-                  onOpenMergeReview={openMergeReview}
+                  duplicatePeers={duplicatePeers}
+                  onOpenMergeReviewWith={openMergeReviewWith}
                 />
 
                 <div className="min-w-0 space-y-5">
@@ -3169,7 +3205,7 @@ export default function EntityDetailPage() {
             )}
           </PracticalDrawer>
           </div>
-        </>
+        </div>
       )}
     </Page>
 
@@ -3219,6 +3255,7 @@ export default function EntityDetailPage() {
     {/* Merge-review compare view (opened by `m` or the duplicate-warning panel) */}
     <MergeCompareDialog
       pair={comparePair}
+      highlightFact={comparePair?.highlight ?? null}
       onOpenChange={(open) => {
         if (!open) setComparePair(null);
       }}
