@@ -533,7 +533,7 @@ async def get_fact(
     """Return a single fact by ID."""
 
     async def _query_pool(_: str, pool: object):
-        return await pool.fetchrow(
+        row = await pool.fetchrow(
             "SELECT id, subject, predicate, content, importance, confidence,"
             " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
             " entity_id, object_entity_id, validity, scope, reference_count,"
@@ -542,16 +542,28 @@ async def get_fact(
             " FROM facts WHERE id = $1",
             fact_id,
         )
+        if row is None:
+            return None
+        # Reverse-lookup the fact that supersedes THIS one (if any).  Runs on the
+        # same pool that owns the fact, so we never cross butler schemas.
+        superseder = await pool.fetchrow(
+            "SELECT id FROM facts WHERE supersedes_id = $1 LIMIT 1",
+            fact_id,
+        )
+        return (row, superseder)
 
-    rows = await _fan_out_memory_queries(
+    results = await _fan_out_memory_queries(
         db,
         query_name="fact_by_id",
         query_fn=_query_pool,
     )
-    if not rows:
+    if not results:
         raise HTTPException(status_code=404, detail="Fact not found")
 
-    fact = _row_to_fact(rows[0])
+    row, superseder = results[0]
+    fact = _row_to_fact(row)
+    if superseder is not None:
+        fact.superseded_by = str(superseder["id"])
     await _resolve_entity_names(db, [fact])
     return ApiResponse[Fact](data=fact)
 

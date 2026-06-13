@@ -1301,3 +1301,123 @@ async def test_inspect_all_kinds_each_carry_their_register_payload(app):
     assert by_kind["fact"]["fact"] is not None
     assert by_kind["rule"]["rule"] is not None
     assert by_kind["episode"]["episode"] is not None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/facts/{fact_id} — superseded_by reverse lookup (bu-awo8k.8)
+# ---------------------------------------------------------------------------
+
+
+class _GetFactPool:
+    """Fake pool for the single-fact GET endpoint.
+
+    Holds at most one fact row keyed by id and an optional ``superseder_id`` —
+    the id of a (newer) fact whose ``supersedes_id`` points at the held fact.
+    ``fetchrow`` answers the two queries ``get_fact`` issues: the fact-by-id
+    SELECT and the reverse ``WHERE supersedes_id = $1`` lookup.  Entity-name
+    resolution (public.entities) returns no rows.
+    """
+
+    def __init__(self, *, fact: dict | None, superseder_id: uuid.UUID | None = None) -> None:
+        self._fact = fact
+        self._superseder_id = superseder_id
+
+    async def fetchrow(self, query: str, *args: object):
+        # get_fact passes the raw string path param; the held id is a UUID.
+        # asyncpg coerces; the fake matches on the string form.
+        wanted = str(self._fact["id"]) if self._fact is not None else None
+        got = str(args[0]) if args else None
+        if "WHERE supersedes_id" in query:
+            if self._superseder_id is not None and got == wanted:
+                return _make_record({"id": self._superseder_id})
+            return None
+        if "FROM facts WHERE id" in query and got == wanted:
+            return _make_record(self._fact)
+        return None
+
+    async def fetch(self, query: str, *args: object):
+        # _resolve_entity_names queries public.entities — no linked entities here.
+        return []
+
+
+async def test_get_fact_superseded_by_set_when_another_fact_supersedes_it(app):
+    """GET fact populates superseded_by with the id of the superseding fact."""
+    fact_id = uuid.uuid4()
+    superseder_id = uuid.uuid4()
+    holding = _GetFactPool(fact=_make_fact_row(fact_id=fact_id), superseder_id=superseder_id)
+    db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/facts/{fact_id}")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["id"] == str(fact_id)
+    assert data["superseded_by"] == str(superseder_id)
+    # Forward link is independent and unaffected.
+    assert data["supersedes_id"] is None
+
+
+async def test_get_fact_superseded_by_none_when_nothing_supersedes_it(app):
+    """GET fact leaves superseded_by None when no fact supersedes it."""
+    fact_id = uuid.uuid4()
+    holding = _GetFactPool(fact=_make_fact_row(fact_id=fact_id), superseder_id=None)
+    db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/facts/{fact_id}")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["id"] == str(fact_id)
+    assert data["superseded_by"] is None
+
+
+async def test_get_fact_preserves_existing_fields_additively(app):
+    """The superseded_by addition does not disturb existing Fact fields."""
+    fact_id = uuid.uuid4()
+    holding = _GetFactPool(
+        fact=_make_fact_row(
+            fact_id=fact_id,
+            subject="owner",
+            predicate="likes",
+            content="Owner likes tea",
+        ),
+        superseder_id=None,
+    )
+    db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/facts/{fact_id}")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["subject"] == "owner"
+    assert data["predicate"] == "likes"
+    assert data["content"] == "Owner likes tea"
+    assert data["validity"] == "active"
+    assert data["scope"] == "global"
+    assert data["importance"] == 5.0
+
+
+async def test_get_fact_404_when_not_found(app):
+    """GET fact returns 404 when no pool holds the fact."""
+    fact_id = uuid.uuid4()
+    db = _ConfirmDB({"atlas": _GetFactPool(fact=None), "memory": _GetFactPool(fact=None)})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/facts/{fact_id}")
+
+    assert resp.status_code == 404

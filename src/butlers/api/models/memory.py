@@ -62,6 +62,7 @@ class Fact(BaseModel):
     source_episode_id: str | None = None
     session_id: str | None = None
     supersedes_id: str | None = None
+    superseded_by: str | None = None
     entity_id: str | None = None
     entity_name: str | None = None
     object_entity_id: str | None = None
