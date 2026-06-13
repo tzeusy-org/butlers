@@ -355,7 +355,10 @@ async def run_backfill(
     if not dry_run:
         print(f"  Episodes updated (entity_id set): {summary['updated']}")
         print(f"  Episodes skipped (no mapping):    {summary['skipped']}")
-        print(f"  episode_entities rows attempted:  {summary['ee_upserted']} (ON CONFLICT DO NOTHING)")
+        print(
+            f"  episode_entities rows attempted:  {summary['ee_upserted']} "
+            "(ON CONFLICT DO NOTHING)"
+        )
     else:
         print("  (dry-run: no rows updated)")
 
