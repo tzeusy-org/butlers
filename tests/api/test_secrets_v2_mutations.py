@@ -281,6 +281,142 @@ def test_disconnect_404_on_missing_credential():
     assert resp.status_code == 404
 
 
+def test_disconnect_google_calls_revoke_url(monkeypatch):
+    """Regression (bu-hr3nt): Google disconnect revokes the token at Google.
+
+    Previously the disconnect endpoint deleted the entity_info row only and did
+    NOT revoke at the provider, leaving a live refresh token. It must now call
+    _revoke_oauth_token (Google revoke URL) with the old token, matching the
+    /rotate and DELETE /accounts/{id} siblings.
+    """
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-token-xyz")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url), **kwargs})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/disconnect")
+
+    assert resp.status_code == 200
+    assert revoke_calls, "Expected disconnect to call the Google revoke URL"
+    assert "oauth2.googleapis.com/revoke" in revoke_calls[0]["url"]
+    # The old token must be sent in the POST body (data=), not query params.
+    data = revoke_calls[0].get("data", {})
+    assert data.get("token") == "old-token-xyz", (
+        f"Expected old token in revoke body data, got: {data}"
+    )
+
+
+def test_disconnect_invokes_revoke_helper_with_old_token(monkeypatch):
+    """disconnect calls _revoke_oauth_token with the provider, type, and old token."""
+    import butlers.api.routers.secrets_v2 as _sv2
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="live-token")
+    mock_db = _make_db(user_row=row)
+
+    revoke_args: list[tuple] = []
+
+    async def _spy_revoke(provider, credential_type, old_value, **kwargs):
+        revoke_args.append((provider, credential_type, old_value))
+        return "succeeded"
+
+    monkeypatch.setattr(_sv2, "_revoke_oauth_token", _spy_revoke)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/disconnect")
+
+    assert resp.status_code == 200
+    assert revoke_args, "Expected disconnect to invoke _revoke_oauth_token"
+    provider_arg, type_arg, token_arg = revoke_args[0]
+    assert provider_arg == "google"
+    assert type_arg == "google_oauth_refresh"
+    assert token_arg == "live-token"
+
+
+def test_disconnect_google_revoke_failure_does_not_strand_row(monkeypatch):
+    """A Google-side revoke failure must NOT make disconnect return non-200."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-token")
+    mock_db = _make_db(user_row=row)
+
+    async def _fake_post(url, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/disconnect")
+
+    # Disconnect MUST succeed even when revoke fails.
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "disconnected"
+
+
+def test_disconnect_non_oauth_provider_does_not_call_revoke(monkeypatch):
+    """A non-OAuth credential type must not trigger a provider revoke HTTP call."""
+    import httpx
+
+    row = _make_entity_info_row(info_type="api_key", value="static-key")
+    mock_db = _make_db(user_row=row)
+
+    revoke_calls: list[dict] = []
+
+    async def _fake_post(url, **kwargs):
+        revoke_calls.append({"url": str(url)})
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.status_code = 200
+        return fake_resp
+
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(side_effect=_fake_post)
+
+    async def _fake_aenter(self):
+        return fake_client
+
+    async def _fake_aexit(self, *args):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
+    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/openai/disconnect")
+
+    assert resp.status_code == 200
+    assert not revoke_calls, "Non-OAuth disconnect must not call the revoke endpoint"
+
+
 # ---------------------------------------------------------------------------
 # Tests: POST /api/secrets/user/<provider>/probe
 # ---------------------------------------------------------------------------

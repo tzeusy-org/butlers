@@ -2741,9 +2741,12 @@ async def disconnect_user_credential(
     Deletes the matching ``public.entity_info`` row(s) for the provider and
     appends a ``disconnected`` audit row to ``public.audit_log``.
 
-    This is a hard delete.  The credential value is removed from the DB.
-    OAuth tokens are NOT revoked at the provider — the caller should
-    separately revoke the token if needed (or use the provider's dashboard).
+    This is a hard delete.  The credential value is removed from the DB and,
+    for OAuth credential types, the token is revoked at the provider via the
+    same ``_revoke_oauth_token`` helper used by ``/rotate`` and
+    ``DELETE /accounts/{id}``.  A revoke failure (Google-side error, network
+    issue) is logged and recorded in the audit note but does NOT strand the
+    local row — the delete still succeeds.
 
     Returns ``ApiResponse<{status: "disconnected"}>`` on success.
     Returns 404 when no matching credential exists.
@@ -2767,6 +2770,24 @@ async def disconnect_user_credential(
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
+    # Capture the old raw value before we delete it.  We need it for provider
+    # revocation.  _fetch_single_user_secret returns a UserSecretDetail which
+    # does NOT expose the raw value (fingerprint only), so we re-read it here.
+    old_raw_value: str | None = None
+    try:
+        _old_row = await shared_pool.fetchrow(
+            "SELECT value FROM public.entity_info WHERE id = $1",
+            UUID(detail.id),
+        )
+        if _old_row is not None:
+            old_raw_value = _old_row["value"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "disconnect_user_credential: could not read old value for revoke (provider=%s): %s",
+            provider,
+            exc,
+        )
+
     # Delete the row using the primary key from the fetched row.
     # Using id (PK) is safer than entity_id+LIKE which could match multiple rows
     # in multi-account scenarios.
@@ -2784,12 +2805,21 @@ async def disconnect_user_credential(
         )
         raise HTTPException(status_code=503, detail="Credential disconnect failed") from exc
 
+    # Revoke the old OAuth token at the provider — fire-and-forget.
+    # Mirrors /rotate and DELETE /accounts/{id}: a revoke failure is logged and
+    # surfaced in the audit note but must NOT strand the now-deleted local row.
+    revoke_status = "skipped"
+    if old_raw_value is not None:
+        revoke_status = await _revoke_oauth_token(
+            provider, detail.type, old_raw_value, shared_pool=shared_pool
+        )
+
     # Audit — fire-and-forget.
     await _write_credential_audit(
         shared_pool,
         action="disconnected",
         provider=provider,
-        note="Credential removed via disconnect endpoint",
+        note=f"Credential removed via disconnect endpoint; revoke_status={revoke_status}",
     )
 
     return ApiResponse[DisconnectStatus](data=DisconnectStatus(), meta=ApiMeta())
