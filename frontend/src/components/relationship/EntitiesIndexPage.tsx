@@ -45,6 +45,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { EntityMark } from "@/components/ui/EntityMark";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -486,28 +487,6 @@ function FilterChips({
 // Entity table
 // ---------------------------------------------------------------------------
 
-function EntityMark({ entityType }: { entityType: string }) {
-  // Type indicator glyph per §8.1 spec: P/O/L/X/@/E/G
-  const glyphs: Record<string, string> = {
-    person: "P",
-    organization: "O",
-    location: "L",
-    product: "X",
-    group: "G",
-    email: "@",
-    other: "E",
-  };
-  const glyph = glyphs[entityType] ?? "E";
-  return (
-    <span
-      className="inline-flex items-center justify-center h-5 w-5 rounded text-xs font-mono font-semibold tabular-nums bg-muted text-muted-foreground"
-      aria-label={entityType}
-    >
-      {glyph}
-    </span>
-  );
-}
-
 const DUNBAR_TIER_LABELS: Record<number, string> = {
   5: "Support Clique",
   15: "Sympathy Group",
@@ -583,7 +562,12 @@ function EntityTable({
                 />
               </td>
               <td className="py-2.5 pr-2">
-                <EntityMark entityType={entity.entity_type} />
+                <EntityMark
+                  name={entity.canonical_name}
+                  entityType={entity.entity_type}
+                  isOwner={entity.roles?.includes("owner")}
+                  isUnidentified={entity.metadata?.["unidentified"] === "true"}
+                />
               </td>
               <td className="py-2.5 pr-4">
                 <span className="inline-flex items-center gap-2">

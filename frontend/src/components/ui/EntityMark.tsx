@@ -40,8 +40,10 @@ const TYPE_GLYPHS: Record<string, string> = {
   person: "", // initials rendered separately
   organization: "O",
   place: "L",
+  location: "L", // alias of "place" — the entity list API emits "location"
   product: "X",
   account: "@",
+  email: "@", // alias of "account" — legacy entity type
   event: "E",
   group: "G",
   other: "?",
@@ -69,8 +71,10 @@ const TYPE_COLOR_SLOTS: Record<string, string> = {
   person: "var(--category-1)", // blue
   organization: "var(--category-4)", // teal
   place: "var(--category-7)", // cyan
+  location: "var(--category-7)", // cyan — alias of "place"
   product: "var(--category-3)", // amber
   account: "var(--category-6)", // mauve
+  email: "var(--category-6)", // mauve — alias of "account"
   event: "var(--category-2)", // violet
   group: "var(--category-8)", // orange
   other: "var(--category-5)", // rose

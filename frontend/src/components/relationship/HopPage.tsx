@@ -27,36 +27,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { EntityMark } from "@/components/ui/EntityMark";
 import { Page } from "@/components/ui/page";
 import { PredicateGroup } from "@/components/ui/PredicateGroup";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityNeighbours } from "@/hooks/use-entities";
-
-// ---------------------------------------------------------------------------
-// EntityMark glyph (mirrors EntitiesIndexPage inline variant)
-// ---------------------------------------------------------------------------
-
-function EntityMark({ entityType }: { entityType: string }) {
-  const glyphs: Record<string, string> = {
-    person: "P",
-    organization: "O",
-    location: "L",
-    product: "X",
-    group: "G",
-    email: "@",
-    other: "E",
-  };
-  const glyph = glyphs[entityType] ?? "E";
-  return (
-    <span
-      className="inline-flex items-center justify-center h-5 w-5 rounded text-xs font-mono font-semibold tabular-nums bg-muted text-muted-foreground"
-      aria-label={entityType}
-    >
-      {glyph}
-    </span>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Anchor entity card
@@ -100,7 +76,11 @@ function AnchorCard({ entityId }: AnchorCardProps) {
     <Card data-testid="anchor-card">
       <CardHeader>
         <div className="flex items-center gap-2">
-          <EntityMark entityType={data.entity_type} />
+          <EntityMark
+            name={data.canonical_name}
+            entityType={data.entity_type}
+            isOwner={data.roles.includes("owner")}
+          />
           <CardTitle className="text-xl">{data.canonical_name}</CardTitle>
           {data.roles.includes("owner") && (
             <Badge
