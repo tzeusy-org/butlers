@@ -5830,7 +5830,13 @@ async def list_entity_facts(
     # store=all appends labeled narrative rows after the identity page. These
     # are the Workbench grid's secondary layer; they ride the same page (no
     # independent cursor) so the cursor stays a pure identity-store keyset.
-    if store == "all":
+    #
+    # The narrative layer is appended ONCE, on the first page only (keyset is
+    # None). The cursor advances over the identity keyset alone, so without this
+    # guard every subsequent page would re-append the full narrative block,
+    # duplicating those rows across the paginated result. Gating on the first
+    # page keeps the narrative block a single, unduplicated secondary layer.
+    if store == "all" and keyset is None:
         narrative_rows = await _fetch_narrative_drill_facts(
             pool, entity_id, validity=validity, predicate=predicate, limit=limit
         )
@@ -6509,19 +6515,21 @@ async def merge_entities(
                 source_id,
             )
 
-    # Write the merge-review audit row regardless of entry path (spec:
-    # "POST /entities/{id}/merge itself MUST write a merge_reviews audit row").
-    # When no compare context was supplied by the caller, the snapshot is
-    # computed server-side at merge time (above, before the transaction would
-    # mutate the rows — see _compute_compare_snapshot called pre-transaction).
-    await _write_merge_review(
-        pool,
-        entity_a=body.entityA,
-        entity_b=body.entityB,
-        shared_facts=merge_snapshot["shared"],
-        divergent_facts=merge_snapshot["divergent"],
-        outcome="merged",
-    )
+            # 5. Write the merge-review audit row inside the SAME transaction as
+            # the rewire/tombstone (spec: "POST /entities/{id}/merge itself MUST
+            # write a merge_reviews audit row" — regardless of entry path). The
+            # snapshot was computed pre-transaction (see _compute_compare_snapshot)
+            # so the evidence reflects the pre-merge state; writing the audit row
+            # on `conn` (not `pool`) closes the crash window where a committed
+            # merge could leave no audit trail.
+            await _write_merge_review(
+                conn,
+                entity_a=body.entityA,
+                entity_b=body.entityB,
+                shared_facts=merge_snapshot["shared"],
+                divergent_facts=merge_snapshot["divergent"],
+                outcome="merged",
+            )
 
     return MergeEntitiesResponse(
         kept_entity_id=target_id,
@@ -6761,7 +6769,7 @@ _COMPARE_SUMMARY_SQL = """
 
 
 async def _write_merge_review(
-    pool,
+    executor,
     *,
     entity_a: UUID,
     entity_b: UUID,
@@ -6771,6 +6779,12 @@ async def _write_merge_review(
 ) -> UUID:
     """Insert a ``relationship.merge_reviews`` audit row, returning its id.
 
+    ``executor`` is any asyncpg executor exposing ``fetchval`` — a pool (the
+    dismissal path, which has no surrounding transaction) or a connection inside
+    an open transaction (the merge path, so the audit row commits atomically with
+    the rewire/tombstone and no crash window can leave a merge without its audit
+    row).
+
     The evidence snapshot is serialized from CompareFact lists (JSON-mode dumps so
     UUIDs/datetimes become strings) and handed to the shared model-free writer in
     ``butlers.tools.relationship.merge_review`` — the single source of truth for
@@ -6779,7 +6793,7 @@ async def _write_merge_review(
     write a row.
     """
     return await _write_merge_review_shared(
-        pool,
+        executor,
         entity_a=entity_a,
         entity_b=entity_b,
         shared_facts=[f.model_dump(mode="json") for f in shared_facts],
@@ -7379,14 +7393,31 @@ async def get_entity_delta_facts(
 # Core dates block (entity v3 — "Core dates block", server half)
 # ---------------------------------------------------------------------------
 
-#: Date-kind predicates whose object is an (optionally partial) ISO date and that
-#: carry an owner-relevant next occurrence. ``has-birthday`` is the seeded
-#: date-kind contact predicate (registry 014); anniversary/future date predicates
-#: are added here as the registry grows.
-_DATE_KIND_PREDICATES: tuple[str, ...] = (
-    "has-birthday",
-    "has-anniversary",
-)
+
+async def _fetch_date_kind_predicates(pool) -> list[str]:
+    """Return the registry predicates eligible to carry a date-kind object.
+
+    Date predicates are driven from ``relationship.entity_predicate_registry``
+    (dashboard spec "Core dates block": "future date predicates from the
+    registry") rather than a hardcoded list, so a new date contact predicate
+    surfaces in the core-dates block the moment it is seeded — no code change.
+
+    Eligibility is ``kind='contact' AND object_kind='literal'`` (the registry
+    families whose objects are literal strings that *may* be ISO dates, e.g.
+    ``has-birthday``). The caller still parses each row's object via
+    ``_parse_date_object`` and skips non-dates, so a contact-literal predicate
+    that never stores dates (``has-email``) contributes nothing — the registry
+    filter only narrows the candidate set; the date semantics stay value-driven.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT predicate
+        FROM relationship.entity_predicate_registry
+        WHERE kind = 'contact'
+          AND object_kind = 'literal'
+        """
+    )
+    return [r["predicate"] for r in rows]
 
 
 def _parse_date_object(value: str) -> tuple[int, int, int | None] | None:
@@ -7455,6 +7486,14 @@ async def get_entity_core_dates(
         return err
     await _assert_entity_exists(pool, entity_id)
 
+    # Date predicates are registry-driven (dashboard spec "Core dates block":
+    # "future date predicates from the registry") — not a hardcoded tuple. The
+    # value-level _parse_date_object filter below skips contact-literal rows that
+    # are not actually dates, so the registry filter only bounds the candidate set.
+    date_predicates = await _fetch_date_kind_predicates(pool)
+    if not date_predicates:
+        return CoreDatesResponse(items=[])
+
     rows = await pool.fetch(
         f"""
         SELECT
@@ -7472,7 +7511,7 @@ async def get_entity_core_dates(
           AND f.predicate = ANY($2::text[])
         """,
         entity_id,
-        list(_DATE_KIND_PREDICATES),
+        date_predicates,
     )
 
     today = date.today()

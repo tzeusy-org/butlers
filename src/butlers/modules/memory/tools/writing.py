@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -61,12 +62,19 @@ def normalize_predicate(predicate: str) -> str:
 # single write path is ``relationship_assert_fact()`` into
 # ``relationship.entity_facts``. The registry contact predicates are seeded in
 # ``relationship.entity_predicate_registry`` (migration
-# ``roster/relationship/migrations/014_predicate_registry.py``); this is the
-# normalized (snake_case) form that ``normalize_predicate`` produces from the
-# hyphenated registry names (``has-email`` -> ``has_email`` ...). Kept as a
-# small explicit set rather than a DB read so the boundary is enforced on the
-# pure write path without a query round-trip.
-_IDENTITY_REGISTRY_PREDICATES: frozenset[str] = frozenset(
+# ``roster/relationship/migrations/014_predicate_registry.py``).
+#
+# The module-memory spec is explicit that the boundary covers "future contact
+# predicates in relationship.entity_predicate_registry", so the rejection set is
+# registry-driven, not a fixed list. The static set below is the GUARANTEED FLOOR
+# (the predicates seeded at registry 014, in the normalized snake_case form that
+# ``normalize_predicate`` produces from the hyphenated registry names) — it is
+# always rejected even when the registry cannot be read. ``is_identity_registry_predicate``
+# additionally consults a TTL-cached snapshot of the live registry so a newly
+# seeded contact predicate is rejected without a code change, while a registry
+# read failure (e.g. a role without SELECT grant) degrades to the floor rather
+# than failing the write path open.
+_IDENTITY_REGISTRY_PREDICATE_FLOOR: frozenset[str] = frozenset(
     {
         "has_email",
         "has_phone",
@@ -77,16 +85,80 @@ _IDENTITY_REGISTRY_PREDICATES: frozenset[str] = frozenset(
     }
 )
 
+#: TTL for the cached registry contact-predicate snapshot, in seconds.
+_REGISTRY_PREDICATE_CACHE_TTL_S = 300.0
 
-def is_identity_registry_predicate(predicate: str) -> bool:
+#: Cache state: (expiry_monotonic, normalized predicate set). ``None`` until the
+#: first successful (or attempted) registry read.
+_registry_predicate_cache: tuple[float, frozenset[str]] | None = None
+
+
+async def _load_registry_contact_predicates(pool: Pool) -> frozenset[str]:
+    """Read the registry's contact predicates, normalized to snake_case.
+
+    Returns the floor on any failure (missing table, missing SELECT grant, DB
+    error) so the boundary check never fails open and never raises into the write
+    path. The hyphenated registry names (``has-email``) are run through
+    :func:`normalize_predicate` so they match the writer's normalized predicate.
+    """
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT predicate
+            FROM relationship.entity_predicate_registry
+            WHERE kind = 'contact'
+            """
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to floor, never fail open
+        logger.debug("registry contact-predicate read failed, using floor: %s", exc)
+        return _IDENTITY_REGISTRY_PREDICATE_FLOOR
+    registry = {normalize_predicate(r["predicate"]) for r in rows}
+    # Union with the floor so a registry that is somehow missing a seeded
+    # predicate can never relax the boundary below the guaranteed floor.
+    return _IDENTITY_REGISTRY_PREDICATE_FLOOR | registry
+
+
+async def refresh_identity_registry_predicates(pool: Pool) -> frozenset[str]:
+    """Refresh and return the cached registry identity-predicate set.
+
+    Caches the union of the static floor and the live registry contact
+    predicates for ``_REGISTRY_PREDICATE_CACHE_TTL_S`` seconds. Concurrent
+    callers within the TTL reuse the snapshot (no per-write query round-trip).
+    """
+    global _registry_predicate_cache
+    now = time.monotonic()
+    cached = _registry_predicate_cache
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    predicates = await _load_registry_contact_predicates(pool)
+    _registry_predicate_cache = (now + _REGISTRY_PREDICATE_CACHE_TTL_S, predicates)
+    return predicates
+
+
+def _reset_identity_registry_cache() -> None:
+    """Clear the registry-predicate cache (test hook)."""
+    global _registry_predicate_cache
+    _registry_predicate_cache = None
+
+
+def is_identity_registry_predicate(
+    predicate: str, registry_predicates: frozenset[str] | None = None
+) -> bool:
     """Return True if *predicate* is a registry identity-contact predicate.
 
     Expects the normalized (snake_case) predicate form produced by
     :func:`normalize_predicate`. Identity-contact predicates (``has_email``,
     ``has_phone``, ...) are owned by ``relationship.entity_facts`` and MUST NOT
     be written to the memory-module ``facts`` table.
+
+    ``registry_predicates`` is the registry-driven snapshot (see
+    :func:`refresh_identity_registry_predicates`); when omitted, only the static
+    floor is checked. Callers on the live write path pass the cached snapshot so
+    future-seeded contact predicates are rejected too.
     """
-    return predicate in _IDENTITY_REGISTRY_PREDICATES
+    if registry_predicates is not None and predicate in registry_predicates:
+        return True
+    return predicate in _IDENTITY_REGISTRY_PREDICATE_FLOOR
 
 
 def _extract_request_context(
@@ -238,8 +310,11 @@ async def memory_store_fact(
     # Writer-side identity boundary (module-memory + relationship-entity-lifecycle
     # "Canonical fact-store layering"): identity-contact predicates belong in
     # relationship.entity_facts via relationship_assert_fact(), never in the
-    # memory-module facts table. Reject so no has-* identity row ever lands here.
-    if is_identity_registry_predicate(predicate):
+    # memory-module facts table. The rejection set is registry-driven (the spec
+    # covers "future contact predicates in relationship.entity_predicate_registry")
+    # via a TTL-cached snapshot, with the static floor as the always-on guarantee.
+    registry_predicates = await refresh_identity_registry_predicates(pool)
+    if is_identity_registry_predicate(predicate, registry_predicates):
         raise ValueError(
             f"Identity-contact predicate {predicate!r} is out of scope for the "
             "memory facts store. Channel identifiers and identity predicates "

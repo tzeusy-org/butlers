@@ -191,7 +191,7 @@ async def compute_merge_evidence(
 
 
 async def write_merge_review(
-    pool: Any,
+    executor: Any,
     *,
     entity_a: UUID,
     entity_b: UUID,
@@ -201,6 +201,11 @@ async def write_merge_review(
 ) -> UUID:
     """Insert a ``relationship.merge_reviews`` audit row, returning its id.
 
+    ``executor`` is any asyncpg executor exposing ``fetchval`` — a pool or a
+    connection inside an open transaction. The merge path passes the active
+    connection so the audit row commits atomically with the merge mutations;
+    the dismissal path passes the pool (no surrounding transaction).
+
     ``shared_facts`` / ``divergent_facts`` are already-serialised JSON dicts (the
     ``CompareFact`` JSON shape — produced by ``compute_merge_evidence`` for the
     session-side paths, or by the API router from its ``CompareFact`` models). Rows
@@ -209,7 +214,7 @@ async def write_merge_review(
     """
     shared_json = json.dumps(shared_facts)
     divergent_json = json.dumps(divergent_facts)
-    review_id = await pool.fetchval(
+    review_id = await executor.fetchval(
         """
         INSERT INTO relationship.merge_reviews
             (entity_a, entity_b, shared_facts, divergent_facts, outcome, reviewed_at)

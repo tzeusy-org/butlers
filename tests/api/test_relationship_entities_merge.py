@@ -151,6 +151,10 @@ def _make_conn_mock(
       4. conn.execute(retract conflicting object-side rows)
       5. conn.fetchval(UPDATE object rows, RETURNING count)   → object_rewired
       6. conn.execute(UPDATE entities SET metadata=tombstone)
+      7. conn.fetchval(INSERT merge_reviews RETURNING id)     → review id
+            (entity-v3 bu-rag77: the audit row is now written INSIDE the merge
+            transaction on the connection, not post-commit on the pool, so a
+            crash cannot leave a merged pair with no audit row)
     """
     mock_conn = AsyncMock()
 
@@ -164,8 +168,9 @@ def _make_conn_mock(
 
     mock_conn.fetch = AsyncMock(return_value=fetch_rows)
 
-    # fetchval returns subject count then object count
-    mock_conn.fetchval = AsyncMock(side_effect=[subject_rewired, object_rewired])
+    # fetchval returns subject count, object count, then the merge_reviews id
+    # (the in-transaction audit INSERT).
+    mock_conn.fetchval = AsyncMock(side_effect=[subject_rewired, object_rewired, uuid4()])
 
     # execute is called for: retract subject conflicts, retract object conflicts, tombstone
     mock_conn.execute = AsyncMock(return_value="UPDATE 0")
@@ -235,6 +240,9 @@ def _app_with_pool(
     mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
     mock_pool.fetchval = AsyncMock(return_value=uuid4())
     mock_pool.acquire = MagicMock(return_value=_acquire())
+    # Expose the in-transaction connection so tests can assert the merge_reviews
+    # audit row is written on the connection (bu-rag77), not post-commit on pool.
+    mock_pool.merge_conn = mock_conn
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
@@ -539,3 +547,43 @@ class TestRewireCounts:
         body = resp.json()
         assert body["subject_facts_rewired"] == 10
         assert body["object_facts_rewired"] == 4
+
+
+class TestMergeReviewAuditRowIsInTransaction:
+    """The merge_reviews audit row is written inside the merge transaction.
+
+    bu-rag77 (entity-v3 hygiene): previously ``_write_merge_review`` ran AFTER the
+    transaction committed, leaving a crash window in which a merged + tombstoned
+    pair could exist with no audit row. The INSERT now runs on the in-transaction
+    connection so it commits atomically with the rewire/tombstone.
+    """
+
+    async def test_audit_insert_runs_on_connection_not_pool(self):
+        """The merge_reviews INSERT (RETURNING id) is issued on conn, not pool."""
+        src = _make_entity_row(entity_id=ENTITY_B_ID)
+        tgt = _make_entity_row(entity_id=ENTITY_A_ID)
+        app, mock_pool = _app_with_pool(source_row=src, target_row=tgt)
+
+        resp = await _post(
+            app,
+            {"entityA": str(ENTITY_A_ID), "entityB": str(ENTITY_B_ID), "keepAs": "A"},
+        )
+
+        assert resp.status_code == 200
+        # The two UPDATE-count fetchvals plus the audit INSERT = 3 conn.fetchval
+        # calls. The audit row must NOT be written on the pool (post-commit path).
+        assert mock_pool.merge_conn.fetchval.await_count == 3
+        merge_review_sql = [
+            call.args[0]
+            for call in mock_pool.merge_conn.fetchval.await_args_list
+            if "merge_reviews" in call.args[0]
+        ]
+        assert merge_review_sql, "merge_reviews INSERT was not issued on the connection"
+        # The pool's fetchval was used only for the pre-merge snapshot path, never
+        # for the audit INSERT.
+        pool_insert_calls = [
+            call.args[0]
+            for call in mock_pool.fetchval.await_args_list
+            if call.args and "INSERT INTO relationship.merge_reviews" in call.args[0]
+        ]
+        assert not pool_insert_calls, "audit row must not be written post-commit on the pool"

@@ -26,11 +26,28 @@ from butlers.modules.memory.tools import (
     memory_store_rule,
 )
 from butlers.modules.memory.tools.writing import (
+    _reset_identity_registry_cache,
     is_identity_registry_predicate,
     normalize_predicate,
+    refresh_identity_registry_predicates,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_registry_cache():
+    """Reset the module-global registry-predicate cache around every test."""
+    _reset_identity_registry_cache()
+    yield
+    _reset_identity_registry_cache()
+
+
+def _registry_pool(predicates: list[str]) -> AsyncMock:
+    """An asyncpg-pool mock whose registry fetch returns *predicates* as rows."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[{"predicate": p} for p in predicates])
+    return pool
 
 
 @pytest.fixture()
@@ -244,6 +261,88 @@ class TestIdentityPredicateBoundary:
             )
         store_fact.assert_awaited_once()
         assert result == {"id": str(fact_id), "superseded_id": None}
+
+
+# ---------------------------------------------------------------------------
+# Registry-driven identity boundary (future contact predicates)
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryDrivenIdentityBoundary:
+    """The rejection set is registry-driven, not a fixed list.
+
+    module-memory delta: the boundary covers "future contact predicates in
+    relationship.entity_predicate_registry". A newly seeded contact predicate is
+    rejected without a code change; a registry read failure degrades to the
+    static floor (never fails open, never raises into the write path).
+    """
+
+    async def test_future_registry_predicate_is_rejected(self, engine: MagicMock) -> None:
+        """A contact predicate present only in the live registry is rejected."""
+        # "has-fax" is NOT in the static floor — only the registry knows it.
+        pool = _registry_pool(["has-email", "has-fax"])
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as store_fact:
+            with pytest.raises(ValueError) as excinfo:
+                await memory_store_fact(pool, engine, "user", "has-fax", "+1-555-0100")
+        store_fact.assert_not_called()
+        assert "out of scope for the memory facts store" in str(excinfo.value)
+
+    async def test_floor_predicate_rejected_even_when_registry_empty(
+        self, engine: MagicMock
+    ) -> None:
+        """A floor predicate is rejected even if the registry returns nothing."""
+        pool = _registry_pool([])  # registry empty / unseeded
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as store_fact:
+            with pytest.raises(ValueError):
+                await memory_store_fact(pool, engine, "user", "has-email", "a@b.com")
+        store_fact.assert_not_called()
+
+    async def test_registry_read_failure_degrades_to_floor(self, engine: MagicMock) -> None:
+        """A registry read error must not fail the write path open or raise.
+
+        Floor predicates stay rejected; a narrative predicate still stores.
+        """
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=RuntimeError("no SELECT grant"))
+        # Floor predicate still rejected despite the registry read blowing up.
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock):
+            with pytest.raises(ValueError):
+                await memory_store_fact(pool, engine, "user", "has-phone", "+1")
+        # Narrative predicate unaffected — stored normally.
+        fact_id = uuid.uuid4()
+        with patch.object(
+            _helpers._storage,
+            "store_fact",
+            new_callable=AsyncMock,
+            return_value={"id": fact_id},
+        ) as store_fact:
+            result = await memory_store_fact(pool, engine, "user", "works_at", "context")
+        store_fact.assert_awaited_once()
+        assert result == {"id": str(fact_id), "superseded_id": None}
+
+    async def test_snapshot_unions_floor_and_registry(self) -> None:
+        """refresh_identity_registry_predicates returns floor ∪ registry, normalized."""
+        pool = _registry_pool(["has-fax"])  # registry omits the seeded floor
+        snapshot = await refresh_identity_registry_predicates(pool)
+        # Floor preserved even though the registry mock omitted it.
+        assert "has_email" in snapshot
+        # Registry-only predicate present, normalized to snake_case.
+        assert "has_fax" in snapshot
+
+    async def test_snapshot_is_cached_within_ttl(self) -> None:
+        """A second call within the TTL reuses the snapshot (no extra query)."""
+        pool = _registry_pool(["has-fax"])
+        await refresh_identity_registry_predicates(pool)
+        await refresh_identity_registry_predicates(pool)
+        # Only one registry read despite two refresh calls.
+        assert pool.fetch.await_count == 1
+
+    def test_explicit_snapshot_arg_rejects_registry_only_predicate(self) -> None:
+        """is_identity_registry_predicate honors an explicit registry snapshot."""
+        snapshot = frozenset({"has_email", "has_fax"})
+        assert is_identity_registry_predicate("has_fax", snapshot)
+        # Without the snapshot, a registry-only predicate is not in the floor.
+        assert not is_identity_registry_predicate("has_fax")
 
 
 # ---------------------------------------------------------------------------
