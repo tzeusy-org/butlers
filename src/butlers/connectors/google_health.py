@@ -106,6 +106,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthClient,
     GoogleHealthCredentialError,
     GoogleHealthError,
+    GoogleHealthForbiddenError,
     GoogleHealthRateLimitError,
     GoogleHealthSourcePreconditionError,
     exponential_backoff_delay,
@@ -1638,6 +1639,38 @@ class GoogleHealthConnector:
                     # Do NOT advance the cursor — reschedule after the delay.
                     state.next_poll_monotonic = time.monotonic() + delay
                     next_due = min(next_due, state.next_poll_monotonic)
+                    continue
+                except GoogleHealthForbiddenError as exc:
+                    # 403 is an access/authorisation problem (OAuth test-mode,
+                    # restricted-scope allowlist, or API not enabled) — NOT a
+                    # transient or credential failure.  Mark the source API as
+                    # unavailable with a distinct reason so the dashboard renders a
+                    # 'connector unavailable (403)' signal instead of an empty state.
+                    self._last_source_api_ok = False
+                    self._source_api_error_message = "api_forbidden"
+                    logger.warning(
+                        "GoogleHealthConnector: 403 Forbidden account=%s resource=%s "
+                        "(OAuth test-mode / scope allowlist / API access) — %s",
+                        ctx.email,
+                        state.bundle.resource,
+                        exc,
+                    )
+                    google_health_polls_total.labels(
+                        endpoint_identity=ctx.endpoint_identity,
+                        resource=state.bundle.resource,
+                        outcome="error",
+                    ).inc()
+                    interval = self._config.poll_intervals.get(
+                        state.bundle.resource, state.bundle.default_interval_s
+                    )
+                    state.next_poll_monotonic = time.monotonic() + interval
+                    next_due = min(next_due, state.next_poll_monotonic)
+                    hb = self._heartbeats.get(acct_id)
+                    if hb is not None:
+                        try:
+                            await hb._send_heartbeat()
+                        except Exception:  # noqa: BLE001
+                            pass
                     continue
                 except GoogleHealthSourcePreconditionError as exc:
                     self._last_source_api_ok = False

@@ -51,6 +51,14 @@ class AccountStatus(BaseModel):
     state: GoogleHealthConnectorState
     """Per-account operational state derived from connector_registry heartbeat."""
 
+    error_message: str | None = None
+    """Connector-reported failure reason from the heartbeat ``error_message``
+    column, surfaced verbatim when the account's state is ``degraded`` or
+    ``error``.  This is what lets the dashboard distinguish a *failing*
+    connector (e.g. a Google Health API 403 → ``api_forbidden``) from a
+    genuinely empty-but-healthy account.  ``None`` when the connector reports
+    no error (healthy) or no heartbeat row exists yet."""
+
     scopes_granted: list[str]
     """Full Google Health scope URLs granted for this account.  Empty when the
     account row exists but has not yet completed the OAuth flow."""
@@ -123,6 +131,13 @@ class GoogleHealthStatusResponse(BaseModel):
     state: GoogleHealthConnectorState
     """Machine-readable state flag — healthy / degraded / error / not_configured.
     Computed as worst-of across all per-account entries."""
+
+    error_message: str | None = None
+    """Connector-reported failure reason for the worst-of account, surfaced
+    verbatim when ``state`` is ``degraded`` or ``error``.  Lets the dashboard
+    render a 'connector unavailable' signal (e.g. a Google Health API 403)
+    instead of a silent empty state.  ``None`` when no account reports an
+    error or no heartbeat exists yet."""
 
     sleep_sessions_7d: int = 0
     """Count of sleep-session ingestion events in the last 7 days.

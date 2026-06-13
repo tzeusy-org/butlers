@@ -45,6 +45,7 @@ const BASE_STATUS: GoogleHealthStatusResponse = {
   rate_limit_remaining: null,
   test_mode: false,
   state: "not_configured",
+  error_message: null,
   sleep_sessions_7d: 0,
   daily_summaries_7d: 0,
   accounts: [],
@@ -69,6 +70,7 @@ const SINGLE_ACCOUNT_STATUS: GoogleHealthStatusResponse = {
     {
       email: "user@example.com",
       state: "healthy",
+      error_message: null,
       scopes_granted: HEALTH_SCOPES,
       last_ingest_at: "2026-05-25T10:00:00Z",
       last_token_refresh_at: null,
@@ -91,6 +93,7 @@ const MULTI_ACCOUNT_STATUS: GoogleHealthStatusResponse = {
     {
       email: "primary@example.com",
       state: "healthy",
+      error_message: null,
       scopes_granted: HEALTH_SCOPES,
       last_ingest_at: "2026-05-25T10:00:00Z",
       last_token_refresh_at: null,
@@ -101,6 +104,7 @@ const MULTI_ACCOUNT_STATUS: GoogleHealthStatusResponse = {
     {
       email: "secondary@example.com",
       state: "degraded",
+      error_message: null,
       scopes_granted: [HEALTH_SCOPES[0]],
       last_ingest_at: null,
       last_token_refresh_at: null,
@@ -189,6 +193,88 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
     };
     renderCard(error);
     expect(screen.getByTestId("account-state").textContent).toBe("error");
+  });
+});
+
+describe("GoogleHealthStatusCard — connector-failing (degraded) signal", () => {
+  afterEach(() => cleanup());
+
+  it("renders the connector-unavailable banner for a 403 (api_forbidden) degraded account", () => {
+    const forbidden: GoogleHealthStatusResponse = {
+      ...SINGLE_ACCOUNT_STATUS,
+      connected: false,
+      state: "degraded",
+      error_message: "api_forbidden",
+      accounts: [
+        {
+          ...SINGLE_ACCOUNT_STATUS.accounts[0],
+          state: "degraded",
+          error_message: "api_forbidden",
+        },
+      ],
+    };
+    renderCard(forbidden);
+    // The degraded signal must render — NOT a silent empty/healthy state.
+    const banner = screen.getByTestId("connector-error-banner");
+    expect(banner).toBeDefined();
+    expect(banner.textContent).toContain("unavailable");
+    expect(banner.textContent).toContain("403");
+  });
+
+  it("renders the banner for an error account (token_invalid)", () => {
+    const errored: GoogleHealthStatusResponse = {
+      ...SINGLE_ACCOUNT_STATUS,
+      connected: false,
+      state: "error",
+      error_message: "token_invalid",
+      accounts: [
+        {
+          ...SINGLE_ACCOUNT_STATUS.accounts[0],
+          state: "error",
+          error_message: "token_invalid",
+        },
+      ],
+    };
+    renderCard(errored);
+    const banner = screen.getByTestId("connector-error-banner");
+    expect(banner.textContent).toContain("unavailable");
+  });
+
+  it("does NOT render the banner for a healthy account (empty-but-healthy stays empty)", () => {
+    renderCard(SINGLE_ACCOUNT_STATUS);
+    expect(screen.queryByTestId("connector-error-banner")).toBeNull();
+  });
+
+  it("does NOT render the banner for a degraded account with no error_message", () => {
+    // Degraded-but-no-reason (e.g. stale heartbeat) is not a 'failing' signal.
+    const degradedNoReason: GoogleHealthStatusResponse = {
+      ...SINGLE_ACCOUNT_STATUS,
+      state: "degraded",
+      error_message: null,
+      accounts: [
+        { ...SINGLE_ACCOUNT_STATUS.accounts[0], state: "degraded", error_message: null },
+      ],
+    };
+    renderCard(degradedNoReason);
+    expect(screen.queryByTestId("connector-error-banner")).toBeNull();
+  });
+
+  it("renders a generic unavailable message with the raw code for unknown reasons", () => {
+    const unknown: GoogleHealthStatusResponse = {
+      ...SINGLE_ACCOUNT_STATUS,
+      state: "degraded",
+      error_message: "weird_new_code",
+      accounts: [
+        {
+          ...SINGLE_ACCOUNT_STATUS.accounts[0],
+          state: "degraded",
+          error_message: "weird_new_code",
+        },
+      ],
+    };
+    renderCard(unknown);
+    const banner = screen.getByTestId("connector-error-banner");
+    expect(banner.textContent).toContain("weird_new_code");
   });
 });
 

@@ -156,6 +156,7 @@ function makeHealthStatus(overrides: Partial<GoogleHealthStatusResponse> = {}): 
     rate_limit_remaining: null,
     test_mode: false,
     state: "healthy",
+    error_message: null,
     sleep_sessions_7d: 7,
     daily_summaries_7d: 3,
     accounts: [],

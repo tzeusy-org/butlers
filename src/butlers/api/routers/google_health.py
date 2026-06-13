@@ -360,7 +360,7 @@ async def _fetch_heartbeat_row(switchboard_pool: Any) -> dict[str, Any] | None:
         return None
     try:
         row = await switchboard_pool.fetchrow(
-            "SELECT cr.state, cr.last_heartbeat_at, cr.uptime_s"
+            "SELECT cr.state, cr.last_heartbeat_at, cr.uptime_s, cr.error_message"
             " FROM connector_registry cr"
             f" WHERE cr.connector_type = '{_CONNECTOR_TYPE}'"
             " ORDER BY cr.last_heartbeat_at DESC NULLS LAST"
@@ -449,6 +449,33 @@ def _extract_rate_limit_remaining(heartbeat: dict[str, Any] | None) -> int | Non
         return None
 
 
+def _extract_error_message(
+    heartbeat: dict[str, Any] | None,
+    state: GoogleHealthConnectorState,
+) -> str | None:
+    """Return the heartbeat's ``error_message`` when the state is non-healthy.
+
+    The connector writes a failure reason into ``connector_registry.error_message``
+    on every degraded/error heartbeat (e.g. ``api_forbidden`` for a Google Health
+    403, ``scope_missing``, ``token_invalid``, ``source_api_unreachable``).  We only
+    surface it when the derived state is ``degraded`` or ``error`` so a healthy
+    connector never carries a stale message — that distinction is exactly what lets
+    the dashboard tell a *failing* connector apart from an empty-but-healthy one.
+
+    Returns ``None`` for healthy / not_configured states, when no heartbeat exists,
+    or when the heartbeat carries no error message.
+    """
+    if state in (GoogleHealthConnectorState.healthy, GoogleHealthConnectorState.not_configured):
+        return None
+    if heartbeat is None:
+        return None
+    raw = heartbeat.get("error_message")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
 async def _fetch_heartbeat_rows_by_email(switchboard_pool: Any) -> dict[str, dict[str, Any]]:
     """Return all connector_registry heartbeat rows for Google Health keyed by email.
 
@@ -466,7 +493,7 @@ async def _fetch_heartbeat_rows_by_email(switchboard_pool: Any) -> dict[str, dic
     try:
         rows = await switchboard_pool.fetch(
             "SELECT cr.state, cr.last_heartbeat_at, cr.uptime_s,"
-            " cr.endpoint_identity, cr.metadata"
+            " cr.endpoint_identity, cr.metadata, cr.error_message"
             " FROM connector_registry cr"
             f" WHERE cr.connector_type = '{_CONNECTOR_TYPE}'"
             " ORDER BY cr.last_heartbeat_at DESC NULLS LAST"
@@ -629,9 +656,12 @@ async def _build_account_status(
     ingest_counts = await _fetch_per_account_ingest_counts(shared_pool, email)
     last_ingest_at = await _fetch_last_ingest_at_for_email(shared_pool, email)
 
+    error_message = _extract_error_message(heartbeat, state)
+
     return AccountStatus(
         email=email,
         state=state,
+        error_message=error_message,
         scopes_granted=granted_health,
         last_ingest_at=last_ingest_at,
         last_token_refresh_at=last_token_refresh_at,
@@ -748,6 +778,17 @@ async def get_google_health_status(
             e.rate_limit_remaining for e in account_entries if e.rate_limit_remaining is not None
         ]
         rate_limit_remaining = min(rlr_values) if rlr_values else None
+        # Top-level error_message = the worst-of account's message, so a single
+        # failing account surfaces a 'connector unavailable' signal at the summary
+        # level even when other accounts are healthy.
+        error_message = next(
+            (
+                e.error_message
+                for e in account_entries
+                if e.state == worst_state and e.error_message
+            ),
+            None,
+        )
     else:
         # No health-scoped accounts — fall back to primary-account-only path (original behaviour).
         heartbeat = await _fetch_heartbeat_row(switchboard_pool)
@@ -759,6 +800,7 @@ async def get_google_health_status(
             heartbeat=heartbeat,
         )
         rate_limit_remaining = _extract_rate_limit_remaining(heartbeat)
+        error_message = _extract_error_message(heartbeat, worst_state)
 
     account_id_str = str((account or {}).get("id")) if account else None
     logger.info(
@@ -780,6 +822,7 @@ async def get_google_health_status(
         rate_limit_remaining=rate_limit_remaining,
         test_mode=test_mode,
         state=worst_state,
+        error_message=error_message,
         sleep_sessions_7d=ingest_counts["sleep_sessions_7d"],
         daily_summaries_7d=ingest_counts["daily_summaries_7d"],
         accounts=account_entries,

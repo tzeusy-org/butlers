@@ -4020,6 +4020,13 @@ export interface GoogleHealthAccountStatus {
   email: string;
   /** Per-account operational state derived from connector_registry heartbeat. */
   state: GoogleHealthConnectorState;
+  /**
+   * Connector-reported failure reason (e.g. `api_forbidden` for a 403,
+   * `scope_missing`, `token_invalid`), surfaced when the state is `degraded`
+   * or `error`. Lets the UI distinguish a failing connector from an
+   * empty-but-healthy one. `null` when healthy or no heartbeat exists.
+   */
+  error_message: string | null;
   /** Full Google Health scope URLs granted for this account. */
   scopes_granted: string[];
   /** Most recent ingest timestamp for events from this account, or null. */
@@ -4048,6 +4055,11 @@ export interface GoogleHealthStatusResponse {
   /** metadata.google_health_test_mode on the primary Google account row. */
   test_mode: boolean;
   state: GoogleHealthConnectorState;
+  /**
+   * Worst-of account's connector failure reason, surfaced when `state` is
+   * `degraded` or `error`. `null` when no account reports an error.
+   */
+  error_message: string | null;
   /** Count of sleep-session ingestion events in the last 7 days. */
   sleep_sessions_7d: number;
   /** Count of daily-summary ingestion events in the last 7 days. */

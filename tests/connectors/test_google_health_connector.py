@@ -49,6 +49,7 @@ from butlers.connectors.google_health import (
 from butlers.connectors.google_health_client import (
     GoogleHealthClient,
     GoogleHealthCredentialError,
+    GoogleHealthForbiddenError,
     GoogleHealthRateLimitError,
     GoogleHealthSourcePreconditionError,
     exponential_backoff_delay,
@@ -421,6 +422,25 @@ async def test_client_429_without_retry_after_signals_backoff() -> None:
     with pytest.raises(GoogleHealthRateLimitError) as excinfo:
         await client.get_json("/anything")
     assert excinfo.value.retry_after is None
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_403_raises_forbidden_error() -> None:
+    """A 403 is an access/authorisation failure (test-mode / allowlist / API not
+    enabled) and must raise the distinct GoogleHealthForbiddenError so the
+    connector can surface a 'connector unavailable (403)' degraded signal."""
+    responses = [
+        httpx.Response(403, json={"error": {"code": 403, "message": "Forbidden"}}),
+    ]
+    transport = _StubTransport(responses)
+    http = httpx.AsyncClient(transport=transport, base_url="https://health.googleapis.com/v4")
+    fetcher = AsyncMock(return_value="token")
+    client = GoogleHealthClient(token_fetcher=fetcher, client=http)
+    with pytest.raises(GoogleHealthForbiddenError) as excinfo:
+        await client.get_json("/users/me/dataTypes/sleep/dataPoints:reconcile")
+    assert "403" in str(excinfo.value)
+    assert excinfo.value.path == "/users/me/dataTypes/sleep/dataPoints:reconcile"
     await http.aclose()
 
 

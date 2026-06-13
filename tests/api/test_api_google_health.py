@@ -21,6 +21,7 @@ from butlers.api.models.google_health import GoogleHealthConnectorState
 from butlers.api.routers.google_health import (
     GOOGLE_HEALTH_SCOPE_URLS,
     _derive_state,
+    _extract_error_message,
     _extract_rate_limit_remaining,
     _fetch_ingest_counts,
     _filter_health_scopes,
@@ -330,6 +331,76 @@ async def test_status_degraded_partial_scopes():
     body = resp.json()
     assert body["state"] == "degraded"
     assert body["scopes_granted"] == [_ALL_HEALTH_SCOPES[0]]
+
+
+@pytest.mark.parametrize(
+    "heartbeat,state,expected",
+    [
+        # 403 → api_forbidden surfaced when degraded.
+        ({"error_message": "api_forbidden"}, GoogleHealthConnectorState.degraded, "api_forbidden"),
+        # error state surfaces the message too.
+        ({"error_message": "token_invalid"}, GoogleHealthConnectorState.error, "token_invalid"),
+        # Healthy never carries a (stale) message.
+        ({"error_message": "api_forbidden"}, GoogleHealthConnectorState.healthy, None),
+        # not_configured never carries a message.
+        (
+            {"error_message": "api_forbidden"},
+            GoogleHealthConnectorState.not_configured,
+            None,
+        ),
+        # No heartbeat → no message.
+        (None, GoogleHealthConnectorState.degraded, None),
+        # Heartbeat without an error_message → None.
+        ({"state": "degraded"}, GoogleHealthConnectorState.degraded, None),
+        # Blank/whitespace error_message → None.
+        ({"error_message": "  "}, GoogleHealthConnectorState.degraded, None),
+    ],
+)
+def test_extract_error_message(heartbeat, state, expected):
+    assert _extract_error_message(heartbeat, state) == expected
+
+
+async def test_status_surfaces_403_as_degraded_signal():
+    """A 403'd connector must surface error_message='api_forbidden' so the
+    dashboard can render a 'connector unavailable' signal instead of an empty
+    state.  The account is fully scoped — the ONLY degraded signal is the
+    heartbeat's api_forbidden error.
+    """
+    now = datetime.now(UTC)
+    db = _make_db(
+        primary_row=_primary_row(granted_scopes=[_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES]),
+        heartbeat_row={
+            "state": "degraded",
+            "last_heartbeat_at": now,
+            "error_message": "api_forbidden",
+        },
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/connectors/google-health/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "degraded"
+    assert body["connected"] is False
+    # The degraded signal — distinguishes 'connector failing' from 'no data'.
+    assert body["error_message"] == "api_forbidden"
+
+
+async def test_status_healthy_has_no_error_message():
+    """A healthy connector must not carry a stale error_message."""
+    now = datetime.now(UTC)
+    db = _make_db(
+        primary_row=_primary_row(granted_scopes=[_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES]),
+        heartbeat_row={"state": "healthy", "last_heartbeat_at": now},
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/connectors/google-health/status")
+    body = resp.json()
+    assert body["state"] == "healthy"
+    assert body["error_message"] is None
 
 
 async def test_status_db_unavailable_returns_not_configured():

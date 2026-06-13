@@ -114,6 +114,27 @@ class GoogleHealthRateLimitError(GoogleHealthError):
         self.retry_after = retry_after
 
 
+class GoogleHealthForbiddenError(GoogleHealthError):
+    """Raised when the Google Health API returns HTTP 403 Forbidden.
+
+    A 403 on a Google Health resource is almost always an *access* problem
+    rather than a transient or credential problem: the OAuth grant is valid
+    (token refresh succeeded) but the project / account is not authorised to
+    call the Google Health API for that data — typically because the Google
+    Cloud project is still in OAuth test mode, the account is not on the
+    Google Health restricted-scope allowlist, or the API has not been enabled.
+
+    The connector surfaces this as a distinct degraded reason
+    (``api_forbidden``) so the dashboard can render a 'connector unavailable
+    (403)' signal instead of an indistinguishable empty state.
+    """
+
+    def __init__(self, path: str, body: str) -> None:
+        super().__init__(f"Google Health 403 Forbidden for {path}: {body}")
+        self.path = path
+        self.body = body
+
+
 class GoogleHealthSourcePreconditionError(GoogleHealthError):
     """Raised when Google Health rejects the source account state."""
 
@@ -287,6 +308,13 @@ class GoogleHealthClient:
                     f"Google Health authorization failed after refresh for {path}"
                 )
 
+            if response.status_code == 403:
+                # 403 is an access/authorisation problem (test-mode, allowlist,
+                # API not enabled) — terminal for this request and surfaced as a
+                # distinct degraded reason so the dashboard can flag the connector
+                # as unavailable rather than empty.
+                raise GoogleHealthForbiddenError(path, response.text[:200])
+
             if response.status_code == 429:
                 retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                 raise GoogleHealthRateLimitError(retry_after)
@@ -385,6 +413,7 @@ __all__ = [
     "GoogleHealthClient",
     "GoogleHealthCredentialError",
     "GoogleHealthError",
+    "GoogleHealthForbiddenError",
     "GoogleHealthRateLimitError",
     "GoogleHealthSourcePreconditionError",
     "TokenFetcher",

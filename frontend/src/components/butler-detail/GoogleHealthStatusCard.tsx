@@ -67,6 +67,53 @@ function toDotState(state: GoogleHealthConnectorState) {
 }
 
 // ---------------------------------------------------------------------------
+// Connector-failure (degraded/error) message helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a connector-reported `error_message` to a human-readable, owner-facing
+ * sentence. The connector emits short machine codes (e.g. `api_forbidden`,
+ * `scope_missing`); the dashboard turns them into actionable text so a failing
+ * connector reads as "unavailable" rather than as an empty / no-data state.
+ *
+ * Unknown codes fall through to a generic "unavailable" message that still
+ * carries the raw code so nothing is silently swallowed.
+ */
+function formatConnectorError(code: string): string {
+  switch (code) {
+    case "api_forbidden":
+      return "Google Health connector unavailable (403) — the Google Health API rejected the request. This usually means the OAuth grant is still in test mode or the account is not on the Google Health access allowlist.";
+    case "scope_missing":
+      return "Google Health connector unavailable — required Google Health scopes are missing. Re-grant the scopes in Settings.";
+    case "token_invalid":
+      return "Google Health connector unavailable — the Google account's authorization was revoked. Reconnect the account in Settings.";
+    case "source_api_unreachable":
+      return "Google Health connector unavailable — the Google Health API could not be reached.";
+    case "no_primary_account":
+      return "Google Health connector unavailable — no Google account is connected.";
+    default:
+      return `Google Health connector unavailable (${code}).`;
+  }
+}
+
+/**
+ * A connector-failure banner shown inside an account widget when the account's
+ * state is degraded/error AND the connector reported a failure reason. This is
+ * the degraded signal that distinguishes "connector failing" from "no data".
+ */
+function ConnectorErrorBanner({ code }: { code: string }) {
+  return (
+    <div
+      role="alert"
+      data-testid="connector-error-banner"
+      className="mb-3 rounded border border-[color:var(--red,oklch(0.62_0.20_25))]/40 bg-[color:var(--red,oklch(0.62_0.20_25))]/10 px-2.5 py-2 text-xs text-[color:var(--red,oklch(0.62_0.20_25))]"
+    >
+      {formatConnectorError(code)}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Scope-count summary helper
 // ---------------------------------------------------------------------------
 
@@ -124,6 +171,10 @@ function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
         </CardTitle>
       </CardHeader>
       <CardContent>
+        {(account.state === "degraded" || account.state === "error") &&
+        account.error_message ? (
+          <ConnectorErrorBanner code={account.error_message} />
+        ) : null}
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
           <dt className="text-muted-foreground">Scopes</dt>
           <dd className="text-right font-mono text-xs tabular-nums">
