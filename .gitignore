@@ -101,3 +101,7 @@ bu-b9xg/
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
 package-lock.json
+
+# Point-in-time reports (reconciliations, parity evidence, audits) are not retained in-tree;
+# git history preserves prior ones. Migration scripts / e2e parity tests may regenerate them locally.
+docs/reports/

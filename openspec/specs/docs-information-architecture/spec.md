@@ -336,19 +336,13 @@ docs/
     identity/
     operations/
     testing/
-  archive/
-    switchboard-message-inbox-migration.md
-    switchboard-spec-impl-delta-matrix.md
-    connector-ingestion-migration-delta-matrix.md
-    draft-discord.md
-    health-wearable-draft.md
-    home-assistant-draft.md
+  archive/                      # forward-looking design drafts only;
+    draft-discord.md            # dated migration/reconciliation snapshots are
+    health-wearable-draft.md    # point-in-time records and are not retained in-tree
+    home-assistant-draft.md     # (git history preserves them)
     photos-screenshots-draft.md
     voice-draft.md
     whatsapp-draft.md
     memory-improvements.md
     memory-improvements-pt2.md
-    self-healing-gen1.md
-    token-limits-gen1.md
-    discretion-layer-adapter-migration.md
 ```

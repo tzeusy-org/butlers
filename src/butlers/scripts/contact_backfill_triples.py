@@ -204,7 +204,8 @@ class BackfillStats:
     # Orphan contact rows (for report section)
     orphan_contacts: list[dict[str, Any]] = field(default_factory=list)
 
-    # entities.listed update outcomes (post-loop, Option A — contact-listed-flag-decision.md)
+    # entities.listed update outcomes (post-loop, Option A —
+    # docs/decisions/2026-05-19-contacts-listed-flag-migration.md)
     entities_listed_updated: int = 0  # total entity rows touched by the UPDATE
     entities_listed_false_count: int = 0  # entities whose listed=false after UPDATE
 
@@ -319,7 +320,7 @@ async def _update_entities_listed(
         entities_listed_updated: number of entity rows updated by the statement
         entities_listed_false_count: number of entities where listed=false after the UPDATE
 
-    See: docs/reports/contact-listed-flag-decision.md (Option A).
+    See: docs/decisions/2026-05-19-contacts-listed-flag-migration.md (Option A).
     """
     if not apply:
         # Dry-run: report what *would* change without writing.
@@ -347,7 +348,8 @@ async def _update_entities_listed(
 
     # Apply path: single UPDATE using bool_or aggregate across all contacts per entity.
     # Excludes tombstoned entities (metadata->>'merged_into' IS NOT NULL) per codebase
-    # pattern (see roster/relationship/api/router.py and contact-listed-flag-decision.md).
+    # pattern (see roster/relationship/api/router.py and
+    # docs/decisions/2026-05-19-contacts-listed-flag-migration.md).
     result = await pool.execute(
         f"""
         UPDATE public.entities
@@ -511,7 +513,7 @@ async def _run_backfill_with_pool(
             stats.errors += 1
 
     # --- Post-loop: propagate contacts.listed → entities.listed (Option A) ---
-    # See docs/reports/contact-listed-flag-decision.md for the decision rationale.
+    # See docs/decisions/2026-05-19-contacts-listed-flag-migration.md for the decision rationale.
     (
         stats.entities_listed_updated,
         stats.entities_listed_false_count,
@@ -627,7 +629,7 @@ first.  This section is the worklist for `contact_orphan_resolver.py`
 
 ---
 
-## entities.listed parity (Option A — contact-listed-flag-decision.md)
+## entities.listed parity (Option A — docs/decisions/2026-05-19-contacts-listed-flag-migration.md)
 
 | Metric | Value |
 |--------|-------|
@@ -661,7 +663,7 @@ with no contact rows in the snapshot were not touched and retain the default
 - **`entities.listed` merge rule:** OR across all contacts per entity.  A single
   `listed=true` contact keeps the entity visible.  Set `listed=false` only when
   every linked contact is archived.  Matches the semantics of `contact_archive()`
-  per `contact-listed-flag-decision.md` § Option A.
+  per `docs/decisions/2026-05-19-contacts-listed-flag-migration.md` § Option A.
 """
 
 

@@ -770,7 +770,7 @@ class TestCLIParseArgs:
 
 
 # ---------------------------------------------------------------------------
-# 15. entities.listed UPDATE (Option A — contact-listed-flag-decision.md)
+# 15. entities.listed UPDATE (Option A — docs/decisions/2026-05-19-contacts-listed-flag-migration.md)
 # ---------------------------------------------------------------------------
 #
 # Parametrize cases for the post-loop UPDATE that propagates contacts.listed

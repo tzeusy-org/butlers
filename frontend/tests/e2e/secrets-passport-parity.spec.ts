@@ -1,6 +1,6 @@
 // Secrets Passport -- full capability parity E2E tests [bu-ayp6v.13]
 //
-// Coverage: every capability from docs/reports/secrets-parity-reconciliation-2026-06-04.md §1
+// Coverage: every capability from the secrets-parity reconciliation (point-in-time report, retired) §1
 // (55 capabilities, C01-C55) across all passport pages and flows.
 //
 // Strategy: page.route() intercepts all API calls; tests click commit-pill buttons and

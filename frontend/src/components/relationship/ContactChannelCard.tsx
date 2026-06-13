@@ -22,7 +22,7 @@
  *     exists yet. The PATCH /contacts/{id} endpoint is kept for this sole write
  *     path until a triple-based model is added.
  *
- * See: docs/reports/contact-detail-parity-inventory-2026-05-25.md
+ * See: contact-detail parity inventory (point-in-time report, retired)
  */
 
 import { useEffect, useRef, useState } from "react";

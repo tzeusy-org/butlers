@@ -82,8 +82,8 @@ entity-anchored credential table in the `public` schema.
 This means:
 
 1. The contacts → triples migration epic (bu-uhjxr) and its bead 7 read-path cut-over
-   (bu-akads) **do not enumerate these callers in the reader inventory** (confirmed:
-   `docs/reports/contact-migration-read-path-inventory.md` does not list them). They
+   (bu-akads) **do not enumerate these callers in the reader inventory** (confirmed
+   against the contact-migration read-path inventory, since retired — see git history). They
    were never part of the `public.contact_info` migration scope.
 
 2. The `relationship.credentials` table (rel_016) was designed to receive rows
