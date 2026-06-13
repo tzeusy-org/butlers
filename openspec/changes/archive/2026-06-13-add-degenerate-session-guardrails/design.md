@@ -1,3 +1,15 @@
+> **Reconciliation note (bu-6fguq, archived 2026-06-13).** This design document
+> records the *original aspiration*. The code that actually shipped diverged from
+> several decisions below. The authoritative, reconciled behavior is in this
+> change's delta specs (synced into `openspec/specs/`) and summarized in
+> `proposal.md` / `tasks.md`. In particular, decisions 1, 3, 4 (in-flight
+> cancellation), 6 (SIGTERM→grace→SIGKILL), and the telemetry/dashboard items were
+> NOT implemented as described: guardrails are **post-session** checks raising
+> `RuntimeError` with marker strings; thresholds are **static module constants**
+> (not seed-config/accessor HOT fields); there is **no healing exemption**; and the
+> OpenCode timeout does a **single `proc.kill()`**. Read the delta specs, not this
+> document, for what the system does.
+
 ## Context
 
 A lifestyle butler session (`46f18840-4f74-4e0a-a3bf-cafa2b579f3a`, 2026-04-15) consumed 2.7M input tokens over 7m16s. The root cause was a tight loop: the agent called `memory_entity_resolve` with `name=null`, the tool returned `[]` as a successful-looking result, and the agent — with no signal that anything was wrong — retried the same call 41 times. Each retry replayed the full conversation as input context, which is why the input-token bill exploded while tool-call output was tiny.

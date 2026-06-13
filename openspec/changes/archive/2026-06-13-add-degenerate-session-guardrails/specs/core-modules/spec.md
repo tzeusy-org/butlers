@@ -5,7 +5,7 @@ MCP tools registered by modules SHALL raise an exception on invalid input rather
 
 The motivating failure mode: a looping agent that invokes a tool with `null` arguments must see a typed error, not an empty list. Returning an empty list makes the failing call indistinguishable from a well-formed call that simply matched nothing, and rewards the agent for retrying.
 
-This rule is cross-cutting: it applies to every MCP tool in every module. A follow-up audit is required (tracked separately); this requirement establishes the normative contract so new tools comply by construction.
+This rule is cross-cutting: it applies to every MCP tool in every module. It establishes the normative contract so new tools comply by construction; existing tools are brought into compliance incrementally as they are touched (the `memory_entity_resolve` tool that triggered the motivating incident already complies — see `module-memory`).
 
 #### Scenario: Missing required argument raises
 - **WHEN** a module's MCP tool is invoked with a required argument missing or set to `null`

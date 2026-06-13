@@ -3,10 +3,10 @@
 ## Purpose
 Manages ephemeral AI runtime invocations for a butler, including locked-down MCP config generation, multi-runtime adapter support, semaphore-based concurrency control, session lifecycle logging, credential isolation, memory context injection, and trace-correlated telemetry.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Multi-Runtime Adapter Support
-The spawner delegates to a `RuntimeAdapter` abstract base class. Four concrete adapters are registered: `claude` (ClaudeCodeAdapter via subprocess), `codex` (CodexAdapter via subprocess), `gemini` (GeminiAdapter via subprocess), and `opencode` (OpenCodeAdapter via subprocess). Each adapter implements `invoke()`, `build_config_file()`, `parse_system_prompt_file()`, `binary_name`, `create_worker()`, and `reset()`.
+The spawner SHALL delegate to a `RuntimeAdapter` abstract base class. Four concrete adapters are registered: `claude` (ClaudeCodeAdapter via subprocess), `codex` (CodexAdapter via subprocess), `gemini` (GeminiAdapter via subprocess), and `opencode` (OpenCodeAdapter via subprocess). Each adapter SHALL implement `invoke()`, `build_config_file()`, `parse_system_prompt_file()`, `binary_name`, `create_worker()`, and `reset()`.
 
 The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) keyed by runtime type. When model resolution selects a runtime type different from the TOML-configured adapter, the spawner instantiates the required adapter on demand via `get_adapter(type).create_worker()` and caches it for reuse.
 
@@ -135,7 +135,7 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **AND** other adapters are instantiated lazily on first use
 
 ### Requirement: Ephemeral MCP Config Generation
-Each invocation generates a locked-down MCP configuration pointing exclusively at this butler's MCP server URL. The runtime session ID is appended as a query parameter to the MCP URL for tool-call-to-session correlation.
+Each invocation SHALL generate a locked-down MCP configuration pointing exclusively at this butler's MCP server URL. The runtime session ID SHALL be appended as a query parameter to the MCP URL for tool-call-to-session correlation.
 
 #### Scenario: MCP config includes only butler's server
 - **WHEN** the spawner prepares an invocation
@@ -143,7 +143,7 @@ Each invocation generates a locked-down MCP configuration pointing exclusively a
 - **AND** the entry's URL points to `http://localhost:<port>/sse` (or `/mcp`) with the runtime session ID as a query parameter
 
 ### Requirement: Concurrency Control
-The spawner uses an `asyncio.Semaphore` with a configurable concurrency limit (`max_concurrent_sessions`, default 1). When all slots are occupied, new triggers queue up to `max_queued_sessions` (default 100) before being rejected.
+The spawner SHALL use an `asyncio.Semaphore` with a configurable concurrency limit (`max_concurrent_sessions`, default 1). When all slots are occupied, new triggers SHALL queue up to `max_queued_sessions` (default 100) before being rejected.
 
 #### Scenario: Serial dispatch (default)
 - **WHEN** `max_concurrent_sessions=1` and a trigger arrives while another session is in-flight
@@ -204,7 +204,7 @@ Each invocation creates a session record before the runtime call and completes i
 - **THEN** no healing dispatch occurs for that exception
 
 ### Requirement: Trigger Source Tracking
-Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>`. The trigger source is passed through to session creation for audit.
+Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>`. The trigger source SHALL be passed through to session creation for audit.
 
 #### Scenario: Schedule trigger source
 - **WHEN** a task named `daily_digest` fires via the scheduler
@@ -220,7 +220,7 @@ Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, an
 - **AND** the spawner's except block checks `trigger_source` BEFORE creating the dispatch task
 
 ### Requirement: Credential Isolation
-The spawner builds an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials are resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars do not leak through.
+The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
 
 #### Scenario: Only declared credentials are passed
 - **WHEN** the spawner builds the runtime environment
@@ -228,7 +228,7 @@ The spawner builds an explicit environment dict for the runtime process containi
 - **AND** other host environment variables are excluded
 
 ### Requirement: Memory Context Injection
-When the memory module is enabled, the spawner fetches memory context via `fetch_memory_context()` before invocation and appends it to the system prompt. On successful completion, it stores the session output as an episode via `store_session_episode()`. Both operations are fail-open (log and continue).
+When the memory module is enabled, the spawner SHALL fetch memory context via `fetch_memory_context()` before invocation and append it to the system prompt. On successful completion, it SHALL store the session output as an episode via `store_session_episode()`. Both operations SHALL be fail-open (log and continue).
 
 #### Scenario: Memory context injected into system prompt
 - **WHEN** the memory module is enabled and context is available
@@ -342,7 +342,7 @@ The spawner SHALL keep automatic model failover attempts bounded and auditable.
 - **AND** no catalog entry SHALL be invoked more than once for the same logical session
 
 ### Requirement: Drain for Shutdown
-The spawner supports `stop_accepting()` to reject new triggers and `drain(timeout)` to wait for in-flight sessions to complete, cancelling remaining sessions after timeout.
+The spawner SHALL support `stop_accepting()` to reject new triggers and `drain(timeout)` to wait for in-flight sessions to complete, cancelling remaining sessions after timeout.
 
 #### Scenario: Drain completes within timeout
 - **WHEN** `drain(timeout=30.0)` is called and all sessions finish within 30 seconds
@@ -471,3 +471,51 @@ Scope: v1-mandatory
 - **WHEN** any runtime adapter (`opencode`, `codex`, `claude_code`) is invoked through the spawner
 - **THEN** the `ingestion_event_id` value SHALL remain a property of the session row only and SHALL NOT be exposed to the runtime process via env, prompt prefix, or MCP context
 - **AND** runtime adapters SHALL NOT accept this parameter — the propagation chain ends at `session_create`
+
+### Requirement: Degenerate Session Guardrails
+The spawner SHALL evaluate a session for degenerate behavior after the runtime invocation returns and the tool-call records have been merged, and SHALL terminate the session (by raising `RuntimeError`) when any guardrail is exceeded. Detection is runtime-agnostic: the checks consume the same merged tool-call list and token usage the spawner already reads for session logging, so every registered adapter (`claude`, `codex`, `gemini`, `opencode`) is covered uniformly.
+
+Guardrails are evaluated as **post-session checks**, not in-flight cancellation. The runtime subprocess has already exited by the time the checks run; the guardrail decides whether the completed session counts as a success or a typed failure. The checks run in a fixed order and the first to trip wins: degenerate loop → tool-call budget → token budget.
+
+Three independent budgets SHALL be enforced, each OR-combined with the others:
+
+1. **Consecutive-identical-call count** (`_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD`, default `6`): The maximum run of back-to-back tool calls sharing one `(name, input_fingerprint)` signature. Only *adjacent* duplicates count; any non-identical call resets the streak. The signature uses the call's `input_fingerprint` when present, otherwise a canonical fingerprint of the call's `input`/`args`/`arguments`/`parameters` payload.
+2. **Cumulative tool-call count** (`max_tool_calls`, default `_DEFAULT_MAX_TOOL_CALLS = 0`): Total tool calls observed in the merged session list. A value of `0` disables the check (the shipped default leaves it off).
+3. **Cumulative input tokens** (`max_token_budget`, default `None`): Sum of `input_tokens` reported by the adapter for the session. `None` disables the check.
+
+These thresholds are spawner-level parameters / module constants, not `RuntimeConfigAccessor` HOT fields and not `RuntimeSeedConfig` columns. The defaults above are the shipped values; callers MAY pass overrides through `trigger()` / the internal invoke path.
+
+#### Scenario: Consecutive identical tool calls trip the loop detector
+- **WHEN** a completed session's merged tool-call list contains `_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD` or more consecutive calls sharing one `(name, input_fingerprint)` signature
+- **THEN** the spawner SHALL raise `RuntimeError` whose message begins with `degenerate_tool_loop:` and names the looping tool
+- **AND** the session SHALL be recorded with `success=False` and the guardrail message in the session `error` column
+- **AND** the tool calls that ran SHALL be preserved on the failed session record
+
+#### Scenario: Non-identical intervening call resets the streak
+- **WHEN** a session issues identical calls `A, A, A`, then a different call `B`, then `A` again
+- **THEN** the consecutive-identical streak SHALL reset at `B`
+- **AND** the session SHALL NOT be flagged as a degenerate loop unless a single uninterrupted run of identical calls reaches the threshold
+
+#### Scenario: Tool-call budget exceeded
+- **WHEN** the cumulative tool-call count for a session exceeds a configured non-zero `max_tool_calls`
+- **THEN** the spawner SHALL raise `RuntimeError` whose message begins with `tool_call_budget_exceeded:`
+- **AND** the session SHALL be recorded with `success=False`
+
+#### Scenario: Tool-call budget disabled by default
+- **WHEN** `max_tool_calls` is `0` (the shipped default `_DEFAULT_MAX_TOOL_CALLS`)
+- **THEN** the tool-call budget check SHALL be skipped regardless of how many tool calls the session made
+
+#### Scenario: Input-token budget exceeded
+- **WHEN** the session's reported cumulative `input_tokens` exceeds a configured `max_token_budget`
+- **THEN** the spawner SHALL raise `RuntimeError` whose message begins with `token_budget_exceeded:`
+- **AND** the session SHALL be recorded with `success=False`
+
+#### Scenario: Token budget disabled when unset or usage unknown
+- **WHEN** `max_token_budget` is `None`, or the adapter reported no `input_tokens` for the session
+- **THEN** the token-budget check SHALL be skipped
+
+#### Scenario: Guardrail termination suppresses same-tier failover
+- **WHEN** a guardrail raises `RuntimeError` from the post-invocation success path
+- **THEN** the failover classifier SHALL recognise the guardrail marker substring in the exception message (`degenerate_tool_loop`, `tool_call_budget_exceeded`, `token_budget_exceeded`)
+- **AND** SHALL classify the failure as not failover-eligible so no automatic retry is attempted
+- **AND** the suppressed-failover metric SHALL be recorded for observability
