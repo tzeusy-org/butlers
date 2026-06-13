@@ -158,6 +158,62 @@ class TestSendEmailBehavior:
             )
 
 
+class TestEmailSendPermissionEnforcement:
+    """The email.send permission gates _send_email (the MCP send path + route.execute).
+
+    Mirrors the spawn gate: a revoked grant blocks the SMTP send outright
+    (PermissionDenied raised before any SMTP traffic); a granted/default grant
+    lets the send proceed. The gate consults public.permissions via
+    butlers.modules.email.require_permission, which fails open on DB error.
+
+    [bu-tzlq6]
+    """
+
+    async def test_send_blocked_when_email_send_revoked(self) -> None:
+        """Revoked email.send blocks the send before any SMTP call.
+
+        Pre-fix this fails: the matrix was ignored, so the send proceeded.
+        """
+        from butlers.core.permissions import PermissionDenied
+
+        mod = EmailModule()
+        mod._butler_name = "test-butler"
+
+        with (
+            patch(
+                "butlers.modules.email.require_permission",
+                new_callable=AsyncMock,
+                side_effect=PermissionDenied("test-butler", "email.send", "revoked by owner"),
+            ),
+            patch.object(mod, "_smtp_send") as mock_smtp,
+        ):
+            with pytest.raises(PermissionDenied):
+                await mod._send_email("a@b.com", "Hi", "body")
+        mock_smtp.assert_not_called()
+
+    async def test_send_allowed_when_email_send_granted(self) -> None:
+        """Granted (require_permission returns None) lets the send proceed."""
+        mod = EmailModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+
+        with (
+            patch(
+                "butlers.modules.email.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock),
+            patch.object(
+                mod, "_smtp_send", return_value={"status": "sent", "to": "a@b.com", "subject": "Hi"}
+            ) as mock_smtp,
+        ):
+            result = await mod._send_email("a@b.com", "Hi", "body")
+
+        assert result["status"] == "sent"
+        mock_smtp.assert_called_once()
+
+
 class TestEmailModuleExtraStatusFields:
     """extra_status_fields() emits OAuth/credential health based on google_accounts."""
 

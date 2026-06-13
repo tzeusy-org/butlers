@@ -520,6 +520,101 @@ class TestCalendarWriteTools:
 
 
 # ---------------------------------------------------------------------------
+# Permissions-matrix enforcement (public.permissions: calendar.write) [bu-tzlq6]
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarWritePermissionEnforcement:
+    """The calendar.write permission gates create/update/delete event writes.
+
+    Mirrors the spawn gate: a revoked grant blocks the provider write outright
+    (PermissionDenied raised before any provider call); a granted/default grant
+    lets the write proceed. The gate consults public.permissions via
+    butlers.modules.calendar.require_permission, which fails open on DB error.
+    """
+
+    async def _make_module(self) -> tuple[CalendarModule, _ProviderDouble, _StubMCP]:
+        created = _make_event(
+            title="BUTLER: Team Sync", butler_generated=True, butler_name="general"
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        return mod, provider, mcp
+
+    async def test_create_blocked_when_calendar_write_revoked(self):
+        """Revoked calendar.write blocks the create before any provider write.
+
+        Pre-fix this fails: the matrix was ignored, so the create proceeded.
+        """
+        from butlers.core.permissions import PermissionDenied
+
+        _, provider, mcp = await self._make_module()
+        with patch(
+            "butlers.modules.calendar.require_permission",
+            new_callable=AsyncMock,
+            side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
+        ):
+            with pytest.raises(PermissionDenied):
+                await mcp.tools["calendar_create_event"](
+                    title="Team Sync",
+                    start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+                    end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+                )
+        assert provider.create_calls == []
+
+    async def test_update_blocked_when_calendar_write_revoked(self):
+        from butlers.core.permissions import PermissionDenied
+
+        _, provider, mcp = await self._make_module()
+        with patch(
+            "butlers.modules.calendar.require_permission",
+            new_callable=AsyncMock,
+            side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
+        ):
+            with pytest.raises(PermissionDenied):
+                await mcp.tools["calendar_update_event"](event_id="evt-1", title="New")
+        assert provider.update_calls == []
+
+    async def test_delete_blocked_when_calendar_write_revoked(self):
+        from butlers.core.permissions import PermissionDenied
+
+        _, provider, mcp = await self._make_module()
+        with patch(
+            "butlers.modules.calendar.require_permission",
+            new_callable=AsyncMock,
+            side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
+        ):
+            with pytest.raises(PermissionDenied):
+                await mcp.tools["calendar_delete_event"](event_id="evt-1")
+        assert provider.delete_calls == []
+
+    async def test_create_allowed_when_calendar_write_granted(self):
+        """Granted (require_permission returns None) lets the create proceed."""
+        _, provider, mcp = await self._make_module()
+        with patch(
+            "butlers.modules.calendar.require_permission",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = await mcp.tools["calendar_create_event"](
+                title="Team Sync",
+                start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+                end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            )
+        assert len(provider.create_calls) == 1
+        assert result["event"]["butler_generated"] is True
+
+
+# ---------------------------------------------------------------------------
 # google_calendar_write egress audit emission
 # ---------------------------------------------------------------------------
 

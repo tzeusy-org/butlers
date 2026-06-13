@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from butlers.core.permissions import CROSS_BUTLER_PERMISSION, check_permission
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
 
@@ -333,6 +334,29 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         from datetime import UTC, datetime
 
         from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+
+        # --- Permissions-matrix enforcement (public.permissions: cross_butler) ---
+        # route_to_butler is the cross-butler dispatch path: the Switchboard
+        # invokes another butler on this butler's behalf. The matrix governs
+        # whether this butler may invoke other butlers via the Switchboard. A
+        # cell flipped to granted=false blocks the cross-butler call outright
+        # (an authorization decision). Mirrors the spawn gate: consult the matrix
+        # at the decision point, return an observable denial. check_permission
+        # fails open, so a DB error never wedges routing.
+        _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
+        if not _cb_perm.allowed:
+            _cb_msg = (
+                f"Permission denied: butler '{butler_name}' is not granted "
+                f"'{CROSS_BUTLER_PERMISSION}'"
+            )
+            if _cb_perm.reason:
+                _cb_msg += f" (reason: {_cb_perm.reason})"
+            logger.warning(
+                "route_to_butler blocked by permissions matrix for butler=%s: %s",
+                butler_name,
+                _cb_msg,
+            )
+            return {"status": "error", "butler": butler, "error": _cb_msg}
 
         _routing_ctx = _routing_ctx_var.get() or {}
         if not isinstance(_routing_ctx, dict):

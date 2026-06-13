@@ -48,6 +48,17 @@ logger = logging.getLogger(__name__)
 # This is the primary capability the matrix governs at the spawn choke point.
 SPAWN_PERMISSION = "spawn"
 
+# The remaining seeded vocabulary (core_121). Each names a governed capability
+# enforced at its own call site (mirroring the spawn gate):
+#   cross_butler   — invoking another butler via the Switchboard (route_to_butler).
+#   notify         — sending an owner-facing notification (notify() core tool).
+#   email.send     — sending email on the owner's behalf (email module _send_email).
+#   calendar.write — creating/modifying/deleting calendar events (calendar module).
+CROSS_BUTLER_PERMISSION = "cross_butler"
+NOTIFY_PERMISSION = "notify"
+EMAIL_SEND_PERMISSION = "email.send"
+CALENDAR_WRITE_PERMISSION = "calendar.write"
+
 _PERMISSION_SELECT_SQL = """
 SELECT granted, reason
 FROM public.permissions

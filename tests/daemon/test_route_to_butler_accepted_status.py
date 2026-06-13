@@ -278,3 +278,62 @@ async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
     captured.clear()
     await fn(butler="health", prompt="test")
     assert captured["input"]["complexity"] == "workhorse"
+
+
+# ---------------------------------------------------------------------------
+# Permissions-matrix enforcement (public.permissions: cross_butler) [bu-tzlq6]
+# ---------------------------------------------------------------------------
+
+
+async def test_route_to_butler_blocked_when_cross_butler_revoked(tmp_path: Path) -> None:
+    """Revoked cross_butler blocks the dispatch before the switchboard route runs.
+
+    Mirrors the spawn gate: a granted=false cell denies the cross-butler call
+    outright (observable error), and the underlying route is never invoked.
+    Pre-fix this fails: the matrix was ignored, so the route proceeded.
+    """
+    from butlers.core.permissions import PermissionStatus
+
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+    _, fn = await _start_switchboard_and_capture_route_to_butler(
+        butler_dir, patches, mock_route=mock_route
+    )
+    assert fn is not None
+
+    with patch(
+        "butlers.core_tools._switchboard.check_permission",
+        new_callable=AsyncMock,
+        return_value=PermissionStatus(allowed=False, explicit=True, reason="revoked by owner"),
+    ):
+        result = await fn(butler="health", prompt="test")
+
+    assert result["status"] == "error"
+    assert "permission denied" in result.get("error", "").lower()
+    assert result["butler"] == "health"
+    mock_route.assert_not_awaited()
+
+
+async def test_route_to_butler_allowed_when_cross_butler_granted(tmp_path: Path) -> None:
+    """Granted/default cross_butler lets the dispatch proceed to the route."""
+    from butlers.core.permissions import PermissionStatus
+
+    patches = _patch_infra()
+    (tmp_path / "granted").mkdir(exist_ok=True)
+    butler_dir = _make_switchboard_dir(tmp_path / "granted")
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+    _, fn = await _start_switchboard_and_capture_route_to_butler(
+        butler_dir, patches, mock_route=mock_route
+    )
+    assert fn is not None
+
+    with patch(
+        "butlers.core_tools._switchboard.check_permission",
+        new_callable=AsyncMock,
+        return_value=PermissionStatus(allowed=True, explicit=True, reason="default"),
+    ):
+        result = await fn(butler="health", prompt="test")
+
+    assert result["status"] == "accepted"
+    mock_route.assert_awaited_once()
