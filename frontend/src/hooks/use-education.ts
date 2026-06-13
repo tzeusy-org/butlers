@@ -289,7 +289,9 @@ export function useRequestCurriculum() {
   return useMutation({
     mutationFn: (body: CurriculumRequestBody) => requestEducationCurriculum(body),
     onSuccess: () => {
-      toast.success("Curriculum requested — the butler will set it up shortly");
+      toast.success(
+        "Curriculum requested — the butler will set it up within a few minutes and message you to begin",
+      );
       qc.invalidateQueries({ queryKey: ["education", "mind-maps"] });
     },
     onError: (error: Error & { status?: number }) => {

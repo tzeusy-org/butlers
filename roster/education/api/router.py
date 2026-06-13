@@ -639,7 +639,14 @@ async def submit_curriculum_request(
     body: CurriculumRequestBody = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CurriculumRequestResponse:
-    """Submit a request for the butler to create a new curriculum."""
+    """Submit a request for the butler to create a new curriculum.
+
+    The request is stored under the ``pending_curriculum_request`` state key and is
+    drained by the ``drain-curriculum-request`` scheduled task (see
+    ``roster/education/butler.toml``), which calls ``teaching_flow_start`` to actually
+    create the mind map + kick off diagnostic calibration, then clears the key. The
+    one-pending-at-a-time guard (409 below) releases once the drain consumes the key.
+    """
     pool = _pool(db)
 
     topic = body.topic.strip()
