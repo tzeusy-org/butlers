@@ -1387,7 +1387,21 @@ async def test_notify_schema_and_channels(butler_dir: Path) -> None:
     assert "notify.v1" in description
 
     params = notify_tool["parameters"]
-    assert set(params["properties"]["channel"]["enum"]) == {"telegram", "email", "whatsapp"}
+    channel_schema = params["properties"]["channel"]
+    # `channel` is optional (`Literal[...] | None`), so its JSON schema may carry
+    # the enum at the top level OR inside an `anyOf` branch (string-enum branch +
+    # null branch). Extract the enum robustly from whichever shape is generated.
+    if "enum" in channel_schema:
+        channel_enum = set(channel_schema["enum"])
+        permits_null = channel_schema.get("type") == "null"
+    else:
+        branches = channel_schema.get("anyOf", [])
+        channel_enum = {v for b in branches for v in b.get("enum", [])}
+        permits_null = any(b.get("type") == "null" for b in branches)
+    assert channel_enum == {"telegram", "email", "whatsapp"}
+    # Optional contract: the schema must permit null/omission of channel.
+    permits_omission = permits_null or "channel" not in params.get("required", [])
+    assert permits_omission, f"channel must be optional; schema={channel_schema!r}"
 
     # Unsupported channel → error
     patches2 = _patch_infra()

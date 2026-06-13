@@ -173,9 +173,17 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
         @tool_span("notify", butler_name=butler_name)
         async def notify(
             channel: Annotated[
-                Literal["telegram", "email", "whatsapp"],
-                Field(description="Delivery channel. Allowed values: telegram | email | whatsapp."),
-            ],
+                Literal["telegram", "email", "whatsapp"] | None,
+                Field(
+                    description=(
+                        "Delivery channel. Allowed values: telegram | email | whatsapp. "
+                        "Optional: when omitted together with a contact_id, the channel is "
+                        "resolved from the contact entity's preferred channel (falling back to "
+                        "telegram, then email). When omitted without a contact_id, delivery "
+                        "defaults to telegram."
+                    )
+                ),
+            ] = None,
             message: Annotated[
                 str | None,
                 Field(description="Message text. Required for send/reply intents."),
@@ -295,6 +303,30 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               }
             }
             """
+            # --- Channel resolution (entity-keyed-preferred-channel, group 2) ---
+            # `channel` is optional. A forced channel always wins. When the caller
+            # leaves it unspecified, resolve the outbound channel:
+            #   - contact-targeted → honour the contact entity's `prefers-channel`
+            #     fact when deliverable, else fall back to telegram → email;
+            #   - no contact_id → default to telegram (the historical owner-page
+            #     channel), preserving prior behaviour for callers that relied on
+            #     a channel always being present.
+            # The forced channel is never overridden, so preference is consulted
+            # only here, before any channel-dependent validation runs.
+            if channel is None:
+                resolved_channel: str | None = None
+                if contact_id is not None:
+                    _resolve_pool = daemon.db.pool if daemon.db is not None else None
+                    if _resolve_pool is not None:
+                        from butlers.identity import resolve_outbound_channel
+
+                        resolved_channel = await resolve_outbound_channel(
+                            _resolve_pool,
+                            contact_id,
+                            deliverable_channels={"telegram", "email"},
+                        )
+                channel = resolved_channel or "telegram"
+
             # Validate message is present (not required for react intent)
             if intent != "react" and message is None:
                 logger.error(

@@ -665,3 +665,123 @@ class TestNotifyEmailRecipientValidation:
                 contact_id=uuid.UUID("00000000-0000-0000-0000-000000000099"),
             )
         assert result3["status"] == "pending_approval"
+
+
+@pytest.mark.asyncio
+class TestNotifyChannelResolution:
+    """Group 2 (bu-upbit) — optional channel + preferred-channel resolution wiring.
+
+    notify() resolves the outbound channel when the caller omits it:
+      - forced channel always wins (preference resolver is NOT consulted)
+      - omitted + contact_id → resolve_outbound_channel decides the channel
+      - omitted + no contact_id → telegram default (back-compat)
+    """
+
+    async def test_forced_channel_wins_resolver_not_consulted(self, butler_dir: Path) -> None:
+        """An explicit channel arg bypasses preferred-channel resolution entirely."""
+        patches = _patch_infra()
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        contact_id = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+        mock_resolve = AsyncMock(return_value="email")  # would pick email if asked
+        with (
+            patch("butlers.identity.resolve_outbound_channel", new=mock_resolve),
+            patch.object(
+                daemon,
+                "_resolve_contact_channel_identifier",
+                new=AsyncMock(return_value="210454304"),
+            ),
+        ):
+            result = await notify_fn(channel="telegram", message="Forced", contact_id=contact_id)
+        assert result["status"] == "ok"
+        # Forced channel → resolver never called.
+        mock_resolve.assert_not_awaited()
+        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
+            "delivery"
+        ]
+        assert delivery["channel"] == "telegram"
+
+    async def test_omitted_channel_with_contact_id_resolves_preference(
+        self, butler_dir: Path
+    ) -> None:
+        """channel=None + contact_id → resolve_outbound_channel picks the channel."""
+        patches = _patch_infra()
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        contact_id = uuid.UUID("00000000-0000-0000-0000-0000000000a2")
+        mock_resolve = AsyncMock(return_value="telegram")
+        mock_identifier = AsyncMock(return_value="210454304")
+        with (
+            patch("butlers.identity.resolve_outbound_channel", new=mock_resolve),
+            patch.object(daemon, "_resolve_contact_channel_identifier", new=mock_identifier),
+        ):
+            result = await notify_fn(message="Hi", contact_id=contact_id)
+        assert result["status"] == "ok"
+        mock_resolve.assert_awaited_once()
+        # Resolver called with the contact and notify's deliverable set.
+        _, kwargs = mock_resolve.await_args
+        assert mock_resolve.await_args.args[1] == contact_id
+        assert kwargs["deliverable_channels"] == {"telegram", "email"}
+        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
+            "delivery"
+        ]
+        assert delivery["channel"] == "telegram"
+        # The contact-channel identifier resolver was driven by the chosen channel.
+        mock_identifier.assert_awaited_once_with(
+            contact_id=contact_id, channel="telegram", msg_context=None
+        )
+
+    async def test_omitted_channel_no_contact_id_defaults_telegram(self, butler_dir: Path) -> None:
+        """channel=None + no contact_id → telegram default; resolver not consulted."""
+        patches = _patch_infra()
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        mock_resolve = AsyncMock(return_value="email")
+        with (
+            patch("butlers.identity.resolve_outbound_channel", new=mock_resolve),
+            patch.object(
+                daemon,
+                "_resolve_default_notify_recipient",
+                new=AsyncMock(return_value="210454304"),
+            ),
+        ):
+            result = await notify_fn(message="Owner ping")
+        assert result["status"] == "ok"
+        # No contact_id → preference resolution is not attempted.
+        mock_resolve.assert_not_awaited()
+        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
+            "delivery"
+        ]
+        assert delivery["channel"] == "telegram"
+
+    async def test_resolver_none_falls_back_to_telegram_default(self, butler_dir: Path) -> None:
+        """channel=None + contact_id but resolver returns None → telegram default."""
+        patches = _patch_infra()
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        contact_id = uuid.UUID("00000000-0000-0000-0000-0000000000a3")
+        with (
+            patch(
+                "butlers.identity.resolve_outbound_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                daemon,
+                "_resolve_contact_channel_identifier",
+                new=AsyncMock(return_value="210454304"),
+            ),
+        ):
+            result = await notify_fn(message="Hi", contact_id=contact_id)
+        assert result["status"] == "ok"
+        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
+            "delivery"
+        ]
+        assert delivery["channel"] == "telegram"
