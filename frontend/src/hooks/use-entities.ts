@@ -13,7 +13,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addEntityContact,
   archiveRelationshipEntity,
+  compareRelationshipEntities,
   deleteEntityContact,
+  dismissRelationshipEntityPair,
   updateEntityContact,
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
@@ -40,6 +42,8 @@ import {
 } from "@/api/index.ts";
 import type {
   AddEntityContactRequest,
+  CompareEntitiesRequest,
+  DismissEntityPairRequest,
   UpdateEntityContactRequest,
   EntityFactsParams,
   NeighboursParams,
@@ -385,6 +389,37 @@ export function useMergeRelationshipEntities() {
       invalidateRelationshipEntityIndex(queryClient);
       void queryClient.invalidateQueries({ queryKey: ["relationship-entity", request.entityA] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entity", request.entityB] });
+    },
+  });
+}
+
+/**
+ * Compute the merge-review structural diff of two entities (relationship-merge-review).
+ *
+ * A mutation (not a query) because the compare view is opened on demand from an
+ * entry point (queue card, Index gutter, detail-page `m` key, Workbench panel).
+ * The returned data is the {@link CompareEntitiesResponse} diff: ``a`` / ``b``
+ * blocks plus ``shared`` (duplicate evidence) and ``divergent`` (conflicts).
+ */
+export function useCompareEntities() {
+  return useMutation({
+    mutationFn: (request: CompareEntitiesRequest) => compareRelationshipEntities(request),
+  });
+}
+
+/**
+ * Dismiss a compared duplicate-candidate pair (relationship-merge-review).
+ *
+ * Writes a ``merge_reviews`` row with ``outcome = 'dismissed'`` and suppresses
+ * the pair from the queue's duplicate-candidate bucket until new shared evidence
+ * arises. Invalidates the curation queue so the dismissed pair disappears.
+ */
+export function useDismissEntityPair() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: DismissEntityPairRequest) => dismissRelationshipEntityPair(request),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entity-queue"] });
     },
   });
 }

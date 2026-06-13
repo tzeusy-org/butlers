@@ -4460,6 +4460,90 @@ export interface MergeRelationshipEntitiesResponse {
   object_facts_rewired: number;
 }
 
+// ---------------------------------------------------------------------------
+// Merge-review compare — POST /api/relationship/entities/compare (relationship-merge-review)
+// ---------------------------------------------------------------------------
+
+/** Request body for POST /api/relationship/entities/compare. */
+export interface CompareEntitiesRequest {
+  entity_a: string;
+  entity_b: string;
+}
+
+/**
+ * One fact row in a compare block, carrying full provenance.
+ *
+ * Used for the per-entity ``identity_facts`` / ``narrative_facts`` lists and for
+ * the ``shared`` / ``divergent`` lists. ``entity_id`` identifies which entity the
+ * row belongs to so the two-column diff can place it. ``last_seen`` is null on
+ * narrative-store rows (no ``last_seen`` column).
+ */
+export interface CompareFact {
+  id: string;
+  entity_id: string;
+  predicate: string;
+  object: string;
+  object_kind: string;
+  store: "identity" | "narrative";
+  src: string;
+  conf: number;
+  verified: boolean;
+  primary?: boolean | null;
+  observed_at?: string | null;
+  last_seen?: string | null;
+  staleness_band: string;
+}
+
+/** Identity summary of an entity inside a compare block. ``tier`` is nullable. */
+export interface CompareEntitySummary {
+  id: string;
+  canonical_name: string;
+  entity_type: string;
+  aliases: string[];
+  tier: number | null;
+  state: string;
+}
+
+/** Per-entity block (``a`` or ``b``) in a compare response. */
+export interface CompareEntityBlock {
+  entity: CompareEntitySummary;
+  identity_facts: CompareFact[];
+  narrative_facts: CompareFact[];
+}
+
+/**
+ * Response for POST /api/relationship/entities/compare — a structural diff only.
+ *
+ * - ``a`` / ``b`` — per-entity blocks with identity + narrative facts.
+ * - ``shared`` — identity-store rows present on BOTH entities with identical
+ *   ``(predicate, object)`` (the duplicate evidence). One pair of rows per match.
+ * - ``divergent`` — identity-store rows for single-cardinality predicates whose
+ *   objects differ between the two entities (the conflicts a merge must resolve).
+ *
+ * No scoring, no ranking, no similarity percentage, no generated text.
+ */
+export interface CompareEntitiesResponse {
+  a: CompareEntityBlock;
+  b: CompareEntityBlock;
+  shared: CompareFact[];
+  divergent: CompareFact[];
+}
+
+/** Request body for POST /api/relationship/entities/dismiss-pair. */
+export interface DismissEntityPairRequest {
+  entity_a: string;
+  entity_b: string;
+}
+
+/** Response for POST /api/relationship/entities/dismiss-pair. */
+export interface DismissEntityPairResponse {
+  review_id: string;
+  entity_a: string;
+  entity_b: string;
+  outcome: "dismissed";
+  shared_facts: CompareFact[];
+}
+
 /** Response for POST /api/butlers/relationship/entities/queue/dismiss. */
 export interface DismissRelationshipEntityQueueResponse {
   dismissed: Array<{

@@ -279,6 +279,10 @@ import type {
   RelationshipEntityListParams,
   RelationshipQueueResponse,
   DismissRelationshipEntityQueueResponse,
+  CompareEntitiesRequest,
+  CompareEntitiesResponse,
+  DismissEntityPairRequest,
+  DismissEntityPairResponse,
   MergeRelationshipEntitiesRequest,
   MergeRelationshipEntitiesResponse,
   PromoteRelationshipEntityRequest,
@@ -2213,6 +2217,46 @@ export function mergeRelationshipEntities(
     `/relationship/entities/${encodeURIComponent(request.entityA)}/merge`,
     { method: "POST", body: JSON.stringify(request) },
   );
+}
+
+/**
+ * Compute the structural diff of two entities — the merge-review compare view
+ * (relationship-merge-review "Compare endpoint").
+ *
+ * Hits POST /api/relationship/entities/compare. Returns a server-computed,
+ * deterministic diff: ``a`` / ``b`` per-entity blocks, ``shared`` (identical
+ * identity-store rows = the duplicate evidence), and ``divergent`` (single-
+ * cardinality predicate conflicts a merge must resolve). No scoring, ranking,
+ * similarity score, or generated text.
+ *
+ * Returns owner-only gate 403 when no owner entity is registered; 404 when
+ * either entity is unknown/tombstoned; 422 when ``entity_a == entity_b``.
+ */
+export function compareRelationshipEntities(
+  request: CompareEntitiesRequest,
+): Promise<CompareEntitiesResponse> {
+  return apiFetch<CompareEntitiesResponse>("/relationship/entities/compare", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * Dismiss a compared duplicate-candidate pair — writes a ``merge_reviews`` row
+ * with ``outcome = 'dismissed'`` (relationship-merge-review "Dismissal").
+ *
+ * Hits POST /api/relationship/entities/dismiss-pair. The dismissal suppresses
+ * the pair from the duplicate-candidate queue bucket until new shared evidence
+ * (a ``{predicate, shared_value}`` not in the snapshot) arises. The shared
+ * snapshot is computed server-side at dismissal time.
+ */
+export function dismissRelationshipEntityPair(
+  request: DismissEntityPairRequest,
+): Promise<DismissEntityPairResponse> {
+  return apiFetch<DismissEntityPairResponse>("/relationship/entities/dismiss-pair", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
 }
 
 /** Fetch relational neighbours grouped by predicate for an entity (§9.2, bu-4wn79).

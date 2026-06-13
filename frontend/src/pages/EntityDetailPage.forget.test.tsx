@@ -90,6 +90,10 @@ vi.mock("@/hooks/use-entities", () => ({
     isFetching: false,
     error: null,
   })),
+  useRelationshipEntityQueue: vi.fn(() => ({ data: { items: [], total: 0, limit: 100, offset: 0 } })),
+  useCompareEntities: vi.fn(() => ({ mutateAsync: vi.fn(), reset: vi.fn(), isPending: false })),
+  useDismissEntityPair: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useMergeRelationshipEntities: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
 vi.mock("@/hooks/use-contacts", () => ({

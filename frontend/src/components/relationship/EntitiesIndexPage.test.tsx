@@ -33,6 +33,8 @@ vi.mock("@/hooks/use-entities", () => ({
   useForgetRelationshipEntity: vi.fn(),
   useDismissRelationshipEntityQueueItem: vi.fn(),
   useMergeRelationshipEntities: vi.fn(),
+  useCompareEntities: vi.fn(),
+  useDismissEntityPair: vi.fn(),
   // Other exports from use-entities that the module re-exports
   useEntityLinkedContacts: vi.fn(),
   useEntityGifts: vi.fn(),
@@ -46,6 +48,8 @@ vi.mock("@/hooks/use-entities", () => ({
 
 import {
   useArchiveRelationshipEntity,
+  useCompareEntities,
+  useDismissEntityPair,
   useDismissRelationshipEntityQueueItem,
   useForgetRelationshipEntity,
   useMergeRelationshipEntities,
@@ -181,6 +185,28 @@ beforeEach(() => {
     mutateAsync: mergeMutateAsync,
     isPending: false,
   } as unknown as ReturnType<typeof useMergeRelationshipEntities>);
+  vi.mocked(useCompareEntities).mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue({
+      a: {
+        entity: { id: "a", canonical_name: "A", entity_type: "person", aliases: [], tier: null, state: "active" },
+        identity_facts: [],
+        narrative_facts: [],
+      },
+      b: {
+        entity: { id: "b", canonical_name: "B", entity_type: "person", aliases: [], tier: null, state: "active" },
+        identity_facts: [],
+        narrative_facts: [],
+      },
+      shared: [],
+      divergent: [],
+    }),
+    reset: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useCompareEntities>);
+  vi.mocked(useDismissEntityPair).mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue({}),
+    isPending: false,
+  } as unknown as ReturnType<typeof useDismissEntityPair>);
 
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -791,5 +817,77 @@ describe("EntitiesIndexPage — combined URL params", () => {
     expect(firstCall?.entity_type).toEqual(["person"]);
     expect(firstCall?.state).toBe("unidentified");
     expect(firstCall?.has).toBe("contact");
+  });
+});
+
+describe("EntitiesIndexPage — bulk gutter merge (exactly two)", () => {
+  beforeEach(() => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE, BOB]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+  });
+
+  function selectRow(name: string) {
+    const checkbox = container.querySelector(
+      `input[type='checkbox'][aria-label='Select ${name}']`,
+    ) as HTMLInputElement;
+    act(() => checkbox.click());
+  }
+
+  it("disables the gutter merge action with one row selected", () => {
+    renderPage();
+    selectRow("Alice Fogg");
+    const gutterMerge = container.querySelector(
+      "[data-testid='gutter-merge']",
+    ) as HTMLButtonElement;
+    expect(gutterMerge).toBeTruthy();
+    expect(gutterMerge.disabled).toBe(true);
+  });
+
+  it("enables the gutter merge action when exactly two rows are selected and opens compare", () => {
+    renderPage();
+    selectRow("Alice Fogg");
+    selectRow("Bob Hatch");
+    const gutterMerge = container.querySelector(
+      "[data-testid='gutter-merge']",
+    ) as HTMLButtonElement;
+    expect(gutterMerge.disabled).toBe(false);
+    act(() => gutterMerge.click());
+    // The compare view (merge-review surface) opens for the selected pair.
+    // DialogContent renders through a portal to document.body.
+    expect(document.body.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
+  });
+});
+
+describe("EntitiesIndexPage — duplicate-candidate queue card opens compare", () => {
+  it("opens the compare view directly for a duplicate-candidate with a known peer", () => {
+    vi.mocked(useRelationshipEntityQueue).mockReturnValue({
+      data: makeQueueResponse([
+        {
+          entity_id: "ent-dup-1",
+          canonical_name: "Dup One",
+          entity_type: "person",
+          bucket: "duplicate-candidate",
+          evidence: { predicate: "has-email", shared_value: "x@y.com", peer_entity_ids: ["ent-dup-2"] },
+          last_seen: null,
+        },
+      ]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntityQueue>);
+
+    renderPage();
+    const mergeBtn = container.querySelector(
+      "button[aria-label='Merge Dup One']",
+    ) as HTMLButtonElement;
+    expect(mergeBtn).toBeTruthy();
+    act(() => mergeBtn.click());
+    // No target-search dialog — the compare view opens straight for the pair.
+    // DialogContent renders through a portal to document.body.
+    expect(document.body.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   ArrowDown,
@@ -84,7 +84,9 @@ import {
   useEntityLoans,
   useEntityMessageThreads,
   useEntityTimeline,
+  useRelationshipEntityQueue,
 } from "@/hooks/use-entities";
+import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
 import {
   useEntity,
   useForgetRelationshipEntity,
@@ -1928,6 +1930,47 @@ export default function EntityDetailPage() {
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [forgetError, setForgetError] = useState<string | null>(null);
 
+  // Merge-review entry point: the detail page's `m` key opens the compare view
+  // when duplicate evidence exists for this entity (relationship-merge-review
+  // "Single-pair review UX"). Duplicate evidence + the peer entity come from the
+  // curation queue's duplicate-candidate bucket.
+  const { data: queueData } = useRelationshipEntityQueue({ limit: 100 });
+  const duplicatePeerId = useMemo<string | null>(() => {
+    if (!entityId) return null;
+    const entry = queueData?.items.find(
+      (item) => item.entity_id === entityId && item.bucket === "duplicate-candidate",
+    );
+    const peers = entry?.evidence?.["peer_entity_ids"];
+    if (Array.isArray(peers) && peers.length > 0 && typeof peers[0] === "string") {
+      return peers[0];
+    }
+    return null;
+  }, [queueData, entityId]);
+  const [comparePair, setComparePair] = useState<{ entityA: string; entityB: string } | null>(
+    null,
+  );
+
+  const openMergeReview = useCallback(() => {
+    if (!entityId || !duplicatePeerId) return;
+    setComparePair({ entityA: entityId, entityB: duplicatePeerId });
+  }, [entityId, duplicatePeerId]);
+
+  // `m` opens the merge-review compare view (only when duplicate evidence exists
+  // and no input/textarea/dialog is focused, and no modifier is held).
+  useEffect(() => {
+    if (!duplicatePeerId) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "m" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      e.preventDefault();
+      openMergeReview();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [duplicatePeerId, openMergeReview]);
+
   const handleForgetConfirm = async () => {
     if (!entityId) return;
     setForgetError(null);
@@ -2101,6 +2144,29 @@ export default function EntityDetailPage() {
     >
       {entity && entityId && (
         <>
+          {/* Duplicate-warning panel — "shares identifiers with" hint. Its merge
+              action opens the compare view; `m` is the keyboard equivalent. */}
+          {duplicatePeerId && (
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--amber)]/40 bg-[var(--amber)]/5 px-3 py-2 text-sm"
+              data-testid="duplicate-warning-panel"
+            >
+              <span className="text-foreground">
+                Shares identifiers with another entity — this may be a duplicate.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-testid="duplicate-warning-review"
+                onClick={openMergeReview}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                Review merge <span className="ml-1 text-xs text-muted-foreground">(m)</span>
+              </Button>
+            </div>
+          )}
+
           {/* Identity hero — name, type, badges, aliases, roles */}
           <section className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
@@ -2485,6 +2551,14 @@ export default function EntityDetailPage() {
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    {/* Merge-review compare view (opened by `m` or the duplicate-warning panel) */}
+    <MergeCompareDialog
+      pair={comparePair}
+      onOpenChange={(open) => {
+        if (!open) setComparePair(null);
+      }}
+    />
     </>
   );
 }

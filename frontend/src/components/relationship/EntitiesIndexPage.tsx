@@ -55,11 +55,11 @@ import {
   useDismissRelationshipEntityQueueItem,
   useEntityFinderSearch,
   useForgetRelationshipEntity,
-  useMergeRelationshipEntities,
   usePromoteRelationshipEntity,
   useRelationshipEntities,
   useRelationshipEntityQueue,
 } from "@/hooks/use-entities";
+import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
 
 // ---------------------------------------------------------------------------
@@ -103,8 +103,26 @@ type ActionEntity = {
   roles?: string[];
 };
 
+/** A pair of entity ids handed to the compare view (the merge-review surface). */
+type MergePair = { entityA: string; entityB: string };
+
 function isOwner(entity: ActionEntity) {
   return entity.roles?.includes("owner") ?? false;
+}
+
+/**
+ * Read the duplicate-candidate peer entity id from a queue entry's evidence.
+ *
+ * The shared-fact duplicate evidence carries ``peer_entity_ids`` (the entities
+ * holding the same identifier). When present, the merge action can open the
+ * compare view for that pair directly without a target search.
+ */
+function peerEntityIdFromEvidence(evidence: Record<string, unknown>): string | null {
+  const peers = evidence?.["peer_entity_ids"];
+  if (Array.isArray(peers) && peers.length > 0 && typeof peers[0] === "string") {
+    return peers[0];
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,16 +321,27 @@ function MergeEntityButton({
   );
 }
 
-function EntityMergeDialog({
+/**
+ * Pick a merge target for a source entity, then open the compare view.
+ *
+ * Used when no duplicate peer is known up-front — the unidentified-card merge
+ * action and the table-row merge action (spec: the unidentified queue card
+ * "opens the compare view for the unidentified entity and an owner-selected
+ * target entity"). The owner searches for a target; confirming hands the pair to
+ * the compare view via {@link onPickPair}. This dialog never merges directly —
+ * every merge routes through the compare view first.
+ */
+function MergeTargetPickerDialog({
   sourceEntity,
   onOpenChange,
+  onPickPair,
 }: {
   sourceEntity: ActionEntity | null;
   onOpenChange: (open: boolean) => void;
+  onPickPair: (pair: MergePair) => void;
 }) {
   const [search, setSearch] = useState("");
   const [targetId, setTargetId] = useState<string | null>(null);
-  const mergeMutation = useMergeRelationshipEntities();
   const { data, isFetching } = useEntityFinderSearch(search, { limit: 8 });
 
   const candidates = (data?.results ?? []).filter(
@@ -328,19 +357,10 @@ function EntityMergeDialog({
     }
   }
 
-  async function handleMerge() {
+  function handleContinue() {
     if (!sourceEntity || !selectedTarget) return;
-    try {
-      await mergeMutation.mutateAsync({
-        entityA: sourceEntity.id,
-        entityB: selectedTarget.entity_id,
-        keepAs: "B",
-      });
-      toast.success(`Merged ${sourceEntity.canonical_name} into ${selectedTarget.canonical_name}`);
-      handleClose(false);
-    } catch (err) {
-      toast.error(`Merge failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    }
+    onPickPair({ entityA: sourceEntity.id, entityB: selectedTarget.entity_id });
+    handleClose(false);
   }
 
   return (
@@ -349,8 +369,8 @@ function EntityMergeDialog({
         <DialogHeader>
           <DialogTitle>Merge entity</DialogTitle>
           <DialogDescription>
-            Merge {sourceEntity?.canonical_name} into an existing entity. The selected target
-            survives.
+            Find the entity to compare with {sourceEntity?.canonical_name}. You will review the
+            differences before any merge is committed.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -391,12 +411,8 @@ function EntityMergeDialog({
           <Button type="button" variant="outline" onClick={() => handleClose(false)}>
             Cancel
           </Button>
-          <Button
-            type="button"
-            disabled={!selectedTarget || mergeMutation.isPending}
-            onClick={handleMerge}
-          >
-            {mergeMutation.isPending ? "Merging..." : "Merge"}
+          <Button type="button" disabled={!selectedTarget} onClick={handleContinue}>
+            Compare
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -506,9 +522,18 @@ interface EntityTableProps {
   isLoading: boolean;
   onMergeEntity: (entity: ActionEntity) => void;
   onForgetEntity: (entity: ActionEntity) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
 }
 
-function EntityTable({ entities, isLoading, onMergeEntity, onForgetEntity }: EntityTableProps) {
+function EntityTable({
+  entities,
+  isLoading,
+  onMergeEntity,
+  onForgetEntity,
+  selectedIds,
+  onToggleSelect,
+}: EntityTableProps) {
   if (isLoading) {
     return (
       <div className="space-y-2">
@@ -533,6 +558,7 @@ function EntityTable({ entities, isLoading, onMergeEntity, onForgetEntity }: Ent
       <table className="w-full text-sm" data-testid="entity-table">
         <thead>
           <tr className="border-b text-left text-muted-foreground">
+            <th className="pb-2 pr-2 font-medium w-8" aria-label="Select" />
             <th className="pb-2 pr-2 font-medium w-8" aria-label="Type" />
             <th className="pb-2 pr-4 font-medium">Name</th>
             <th className="pb-2 pr-4 font-medium">Tier</th>
@@ -548,6 +574,14 @@ function EntityTable({ entities, isLoading, onMergeEntity, onForgetEntity }: Ent
               key={entity.id}
               className="border-b last:border-0 hover:bg-muted/50"
             >
+              <td className="py-2.5 pr-2">
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${entity.canonical_name}`}
+                  checked={selectedIds.has(entity.id)}
+                  onChange={() => onToggleSelect(entity.id)}
+                />
+              </td>
               <td className="py-2.5 pr-2">
                 <EntityMark entityType={entity.entity_type} />
               </td>
@@ -624,7 +658,13 @@ function EntityTable({ entities, isLoading, onMergeEntity, onForgetEntity }: Ent
 // Curation queue right rail (9.5)
 // ---------------------------------------------------------------------------
 
-function QueueRail({ onMergeEntity }: { onMergeEntity: (entity: ActionEntity) => void }) {
+function QueueRail({
+  onMergeEntity,
+  onComparePair,
+}: {
+  onMergeEntity: (entity: ActionEntity) => void;
+  onComparePair: (pair: MergePair) => void;
+}) {
   const { data, isLoading, isError, error } = useRelationshipEntityQueue({ limit: 20 });
 
   if (isLoading) {
@@ -673,6 +713,7 @@ function QueueRail({ onMergeEntity }: { onMergeEntity: (entity: ActionEntity) =>
           items={unidentified}
           accentColor="var(--amber)"
           onMergeEntity={onMergeEntity}
+          onComparePair={onComparePair}
         />
       )}
       {duplicates.length > 0 && (
@@ -681,6 +722,7 @@ function QueueRail({ onMergeEntity }: { onMergeEntity: (entity: ActionEntity) =>
           items={duplicates}
           accentColor="var(--amber)"
           onMergeEntity={onMergeEntity}
+          onComparePair={onComparePair}
         />
       )}
       {stale.length > 0 && (
@@ -689,6 +731,7 @@ function QueueRail({ onMergeEntity }: { onMergeEntity: (entity: ActionEntity) =>
           items={stale}
           accentColor="var(--muted-foreground)"
           onMergeEntity={onMergeEntity}
+          onComparePair={onComparePair}
         />
       )}
     </div>
@@ -700,11 +743,13 @@ function QueueSection({
   items,
   accentColor,
   onMergeEntity,
+  onComparePair,
 }: {
   title: string;
   items: RelationshipQueueEntry[];
   accentColor: string;
   onMergeEntity: (entity: ActionEntity) => void;
+  onComparePair: (pair: MergePair) => void;
 }) {
   return (
     <div>
@@ -722,6 +767,23 @@ function QueueSection({
             entity_type: entry.entity_type,
           };
 
+          // Duplicate-candidate entries carry the peer entity in their evidence;
+          // their merge action opens the compare view for that pair directly.
+          // Unidentified entries have no known peer — route through the target
+          // picker so the owner selects the entity to compare against.
+          const peerId =
+            entry.bucket === "duplicate-candidate"
+              ? peerEntityIdFromEvidence(entry.evidence)
+              : null;
+
+          function handleMerge(selected: ActionEntity) {
+            if (peerId) {
+              onComparePair({ entityA: selected.id, entityB: peerId });
+            } else {
+              onMergeEntity(selected);
+            }
+          }
+
           return (
             <li
               key={entry.entity_id}
@@ -738,7 +800,7 @@ function QueueSection({
                   <PromoteEntityButton entity={actionEntity} />
                 )}
                 {entry.bucket !== "stale" && (
-                  <MergeEntityButton entity={actionEntity} onSelect={onMergeEntity} />
+                  <MergeEntityButton entity={actionEntity} onSelect={handleMerge} />
                 )}
                 {entry.bucket === "stale" && <ArchiveEntityButton entity={actionEntity} />}
                 <DismissQueueItemButton entity={actionEntity} />
@@ -760,6 +822,27 @@ export function EntitiesIndexPage() {
   const [offset, setOffset] = useState(0);
   const [mergeSourceEntity, setMergeSourceEntity] = useState<ActionEntity | null>(null);
   const [forgetSourceEntity, setForgetSourceEntity] = useState<ActionEntity | null>(null);
+  const [comparePair, setComparePair] = useState<MergePair | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const selectedList = Array.from(selectedIds);
+
+  // The bulk gutter's merge action is enabled only when EXACTLY two rows are
+  // selected (spec: "enabled only when exactly two rows are selected"). It opens
+  // the compare view for that pair before any merge can be committed.
+  function handleGutterMerge() {
+    if (selectedList.length !== 2) return;
+    setComparePair({ entityA: selectedList[0], entityB: selectedList[1] });
+  }
 
   // URL is the source of truth for all filter chips.
   // Repeated ?type=person&type=organization activates multiple type chips.
@@ -879,11 +962,45 @@ export function EntitiesIndexPage() {
       <div className="flex gap-6">
         {/* Main column — entity table */}
         <div className="min-w-0 flex-1 space-y-4">
+          {/* Bulk gutter — merge action enabled only when exactly two rows selected */}
+          {selectedList.length > 0 && (
+            <div
+              className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-3 py-2"
+              data-testid="bulk-gutter"
+            >
+              <span className="text-sm text-muted-foreground">
+                {selectedList.length} selected
+                {selectedList.length !== 2 ? " — select exactly two to merge" : ""}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  Clear
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  data-testid="gutter-merge"
+                  disabled={selectedList.length !== 2}
+                  onClick={handleGutterMerge}
+                >
+                  <GitMergeIcon />
+                  Merge
+                </Button>
+              </div>
+            </div>
+          )}
           <EntityTable
             entities={entities}
             isLoading={isLoading}
             onMergeEntity={setMergeSourceEntity}
             onForgetEntity={setForgetSourceEntity}
+            selectedIds={selectedIds}
+            onToggleSelect={toggleSelect}
           />
 
           {/* Pagination */}
@@ -920,17 +1037,25 @@ export function EntitiesIndexPage() {
           aria-label="Curation queue"
         >
           <p className="text-sm font-semibold text-foreground">Queue</p>
-          <QueueRail onMergeEntity={setMergeSourceEntity} />
+          <QueueRail onMergeEntity={setMergeSourceEntity} onComparePair={setComparePair} />
         </aside>
       </div>
       {mergeSourceEntity !== null && (
-        <EntityMergeDialog
+        <MergeTargetPickerDialog
           sourceEntity={mergeSourceEntity}
           onOpenChange={(open) => {
             if (!open) setMergeSourceEntity(null);
           }}
+          onPickPair={setComparePair}
         />
       )}
+      <MergeCompareDialog
+        pair={comparePair}
+        onOpenChange={(open) => {
+          if (!open) setComparePair(null);
+        }}
+        onResolved={() => setSelectedIds(new Set())}
+      />
       <ForgetEntityDialog
         entity={forgetSourceEntity}
         onOpenChange={(open) => {
