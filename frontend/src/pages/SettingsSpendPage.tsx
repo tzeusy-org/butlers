@@ -26,6 +26,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
 import { useSpendStream } from "@/hooks/use-spend-stream"
+import { useModelCatalog } from "@/hooks/use-model-catalog"
+import type { ComplexityTier } from "@/api/types"
 import { cn } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
@@ -114,6 +116,32 @@ function reorderRule(id: string, position: number): Promise<unknown> {
     body: JSON.stringify({ position }),
   })
 }
+
+// Create a routing rule. The shape mirrors the dispatch-time evaluator in
+// src/butlers/core/model_routing.py:apply_spend_routing_rules — condition keys
+// are `butler` and/or `complexity` (alias `tier`), ANDed together; an empty
+// condition is a catch-all. action.model is a priced model_id the matched
+// dispatch routes TO. Omitting `position` appends the rule to the end.
+function createRule(body: {
+  condition: Record<string, unknown>
+  action: Record<string, unknown>
+}): Promise<{ data: SpendRule }> {
+  return apiFetch<{ data: SpendRule }>("/spend/rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+}
+
+// Canonical complexity tiers (model_routing.Complexity), highest → lowest.
+const COMPLEXITY_TIERS: ComplexityTier[] = [
+  "reasoning",
+  "workhorse",
+  "cheap",
+  "specialty",
+  "local",
+  "legacy",
+]
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -534,8 +562,144 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Create-rule form — collects a condition (butler + complexity, both optional,
+// ANDed) and an action (target model, required). Produces a rule whose shape
+// the dispatch-time evaluator actually matches and routes on. An empty
+// condition is a valid catch-all.
+// ---------------------------------------------------------------------------
+
+interface CreateRuleFormProps {
+  onCancel: () => void
+  onCreated: () => void
+}
+
+function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
+  const queryClient = useQueryClient()
+  const { data: catalogData } = useModelCatalog()
+
+  const [butler, setButler] = useState("")
+  const [complexity, setComplexity] = useState<"" | ComplexityTier>("")
+  const [model, setModel] = useState("")
+
+  const createMutation = useMutation({
+    mutationFn: createRule,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
+      toast.success("Rule created")
+      onCreated()
+    },
+    onError: () => toast.error("Failed to create rule"),
+  })
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const targetModel = model.trim()
+    if (!targetModel) {
+      toast.error("Choose a target model")
+      return
+    }
+    // Build the condition with only the constraints the user supplied; both keys
+    // are optional and ANDed by the evaluator. An empty object is a catch-all.
+    const condition: Record<string, unknown> = {}
+    if (butler.trim()) condition.butler = butler.trim()
+    if (complexity) condition.complexity = complexity
+    createMutation.mutate({ condition, action: { model: targetModel } })
+  }
+
+  // Distinct, sorted target model_ids from the catalog (dedup across tiers).
+  const modelIds = useMemo(() => {
+    const models = catalogData?.data ?? []
+    return Array.from(new Set(models.map((m) => m.model_id))).sort()
+  }, [catalogData])
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      data-testid="create-rule-form"
+      className="mb-4 flex flex-col gap-3 border border-border/60 p-3"
+    >
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <label className="flex flex-col gap-1">
+          <Eyebrow>Butler (optional)</Eyebrow>
+          <input
+            type="text"
+            aria-label="Butler condition"
+            placeholder="any butler"
+            className="text-xs border rounded px-2 py-1 bg-background"
+            value={butler}
+            onChange={(e) => setButler(e.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <Eyebrow>Complexity (optional)</Eyebrow>
+          <select
+            aria-label="Complexity condition"
+            className="text-xs border rounded px-2 py-1 bg-background"
+            value={complexity}
+            onChange={(e) => setComplexity(e.target.value as "" | ComplexityTier)}
+          >
+            <option value="">any tier</option>
+            {COMPLEXITY_TIERS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <Eyebrow>Route to model</Eyebrow>
+          <select
+            aria-label="Target model"
+            className="text-xs border rounded px-2 py-1 bg-background"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            <option value="">select a model…</option>
+            {modelIds.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Matches dispatches where{" "}
+        <span className="font-mono">
+          {butler.trim() || complexity
+            ? [
+                butler.trim() ? `butler = ${butler.trim()}` : null,
+                complexity ? `complexity = ${complexity}` : null,
+              ]
+                .filter(Boolean)
+                .join(" and ")
+            : "any dispatch (catch-all)"}
+        </span>{" "}
+        and routes them to{" "}
+        <span className="font-mono">{model.trim() || "…"}</span>.
+      </p>
+      <div className="flex items-center gap-2">
+        <Button type="submit" size="sm" className="text-xs h-7" disabled={createMutation.isPending}>
+          Create rule
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-xs h-7"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
 function SpendRulesSection() {
   const queryClient = useQueryClient()
+  const [creating, setCreating] = useState(false)
   const { data, isLoading } = useQuery({
     queryKey: ["spend-rules"],
     queryFn: fetchRules,
@@ -568,11 +732,30 @@ function SpendRulesSection() {
             Evaluated top-to-bottom; first match wins. Drag rows to reorder.
           </p>
         </div>
-        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] tabular-nums text-muted-foreground">
-          {rules.length} {rules.length === 1 ? "rule" : "rules"}
-        </span>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] tabular-nums text-muted-foreground">
+            {rules.length} {rules.length === 1 ? "rule" : "rules"}
+          </span>
+          {!creating && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs h-7"
+              data-testid="add-rule-button"
+              onClick={() => setCreating(true)}
+            >
+              + Add rule
+            </Button>
+          )}
+        </div>
       </div>
       <div className="p-4">
+        {creating && (
+          <CreateRuleForm
+            onCancel={() => setCreating(false)}
+            onCreated={() => setCreating(false)}
+          />
+        )}
         {isLoading ? (
           <div className="space-y-2">
             {[1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
