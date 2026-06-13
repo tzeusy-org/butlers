@@ -296,6 +296,29 @@ def _build_lane_definitions(
     return lanes
 
 
+def _resolve_primary_calendar_id(
+    sources: list[CalendarWorkspaceSourceFreshness],
+) -> str | None:
+    """Identify the primary provider calendar from connected sources.
+
+    Google stamps the user's primary calendar with an ``id`` equal to the
+    account email, and calendar discovery records that email in each source's
+    ``metadata["account_email"]``. The primary calendar is therefore the
+    user-lane source whose ``calendar_id`` matches its own ``account_email``.
+
+    This is resolved from the DB-backed sources rather than a live MCP call,
+    which can return null when the calendar module's in-memory primary has not
+    been hydrated. Returns ``None`` when no primary can be identified.
+    """
+    for source in sources:
+        if source.lane != "user" or not source.calendar_id:
+            continue
+        account_email = (source.metadata or {}).get("account_email")
+        if isinstance(account_email, str) and account_email == source.calendar_id:
+            return source.calendar_id
+    return None
+
+
 async def _fetch_sources(
     db: DatabaseManager,
     *,
@@ -361,9 +384,17 @@ async def _fetch_sources(
     for butler_name, rows in results.items():
         for row in rows:
             payload = dict(row)
-            payload.setdefault(
-                "butler_name", butler_name if payload.get("lane") == "butler" else None
-            )
+            # The owning butler for a source is the schema (``db_butler``) the
+            # row was fetched from. The ``s.butler_name`` column is only
+            # populated for butler-lane calendars; for user-lane provider
+            # calendars it is NULL even though the source lives in (and is
+            # mutated through) a specific butler schema. Fall back to the
+            # fan-out schema so user-lane writable calendars resolve to an
+            # owning butler and remain submittable. NOTE: ``setdefault`` is
+            # insufficient here because the SELECT always materializes the
+            # ``butler_name`` key (possibly as None).
+            if not payload.get("butler_name"):
+                payload["butler_name"] = butler_name
             payload["db_butler"] = butler_name
             flattened.append(payload)
     return flattened
@@ -698,20 +729,6 @@ async def get_workspace_meta(
     source_rows = await _fetch_sources(db)
     connected_sources = [_to_source_freshness(row) for row in source_rows]
 
-    writable_calendars: list[CalendarWorkspaceWritableCalendar] = []
-    for source in connected_sources:
-        if source.lane != "user" or not source.writable or not source.calendar_id:
-            continue
-        writable_calendars.append(
-            CalendarWorkspaceWritableCalendar(
-                source_key=source.source_key,
-                provider=source.provider,
-                calendar_id=source.calendar_id,
-                display_name=source.display_name,
-                butler_name=source.butler_name,
-            )
-        )
-
     # Dedup sources by source_key — fan_out across butler schemas can return
     # the same provider source from multiple schemas.
     seen_keys: set[str] = set()
@@ -722,10 +739,18 @@ async def get_workspace_meta(
         seen_keys.add(source.source_key)
         deduped_sources.append(source)
 
-    # Rebuild writable calendars from deduped list with formatted display names.
-    writable_calendars = []
+    # Build writable calendars from the deduped list with formatted display
+    # names. Only include *submittable* calendars — those that resolve to an
+    # owning butler — so the create-event dropdown cannot offer a calendar that
+    # fails at submit with "Could not resolve owning butler". For user-lane
+    # provider calendars the owning butler is the schema the source lives in;
+    # ``_fetch_sources`` backfills ``butler_name`` from that schema.
+    writable_calendars: list[CalendarWorkspaceWritableCalendar] = []
     for source in deduped_sources:
         if source.lane != "user" or not source.writable or not source.calendar_id:
+            continue
+        if not source.butler_name:
+            # Unsubmittable: no owning butler could be resolved.
             continue
         writable_calendars.append(
             CalendarWorkspaceWritableCalendar(
@@ -743,15 +768,18 @@ async def get_workspace_meta(
             )
         )
 
-    # Resolve primary calendar ID from the first calendar-enabled butler.
-    primary_calendar_id: str | None = None
-    calendar_butlers = db.butlers_with_module("calendar")
-    if calendar_butlers:
-        try:
-            status = await _call_mcp_tool(mgr, calendar_butlers[0], "calendar_sync_status", {})
-            primary_calendar_id = status.get("calendar_id")
-        except Exception:
-            logger.debug("Unable to resolve primary calendar ID from MCP", exc_info=True)
+    primary_calendar_id = _resolve_primary_calendar_id(deduped_sources)
+
+    # Fall back to a live MCP lookup only when the DB sources do not identify a
+    # primary (e.g. discovery has not yet stamped ``account_email`` metadata).
+    if primary_calendar_id is None:
+        calendar_butlers = db.butlers_with_module("calendar")
+        if calendar_butlers:
+            try:
+                status = await _call_mcp_tool(mgr, calendar_butlers[0], "calendar_sync_status", {})
+                primary_calendar_id = status.get("calendar_id")
+            except Exception:
+                logger.debug("Unable to resolve primary calendar ID from MCP", exc_info=True)
 
     data = CalendarWorkspaceMetaResponse(
         connected_sources=deduped_sources,

@@ -638,6 +638,85 @@ describe("CalendarWorkspacePage", () => {
     );
   });
 
+  it("excludes unsubmittable (null-butler) calendars from the create-event dropdown", async () => {
+    // One submittable calendar (butler resolves) and one unsubmittable one
+    // whose butler_name is null — selecting it would fail at submit with
+    // "Could not resolve owning butler", so it must not appear in the dropdown.
+    setWorkspaceMetaState({
+      data: {
+        data: {
+          capabilities: {
+            views: ["user", "butler"],
+            filters: { butlers: true, sources: true, timezone: true },
+            sync: { global: true, by_source: true },
+          },
+          connected_sources: [
+            {
+              source_id: "source-1",
+              source_key: "google:primary",
+              source_kind: "provider_event",
+              lane: "user",
+              provider: "google",
+              calendar_id: "primary",
+              butler_name: "general",
+              display_name: "Primary",
+              writable: true,
+              metadata: {},
+              cursor_name: "provider_sync",
+              last_synced_at: "2026-03-01T10:00:00Z",
+              last_success_at: "2026-03-01T10:00:00Z",
+              last_error_at: null,
+              last_error: null,
+              full_sync_required: false,
+              sync_state: "fresh",
+              staleness_ms: 1000,
+            },
+          ],
+          writable_calendars: [
+            {
+              source_key: "google:primary",
+              provider: "google",
+              calendar_id: "primary",
+              display_name: "Primary",
+              butler_name: "general",
+            },
+            {
+              source_key: "google:orphan",
+              provider: "google",
+              calendar_id: "orphan",
+              display_name: "Orphan",
+              butler_name: null,
+            },
+          ],
+          lane_definitions: [],
+          default_timezone: "UTC",
+          primary_calendar_id: null,
+        },
+        meta: {},
+      },
+    } as Partial<UseWorkspaceMetaResult>);
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    const openCreateButton = document.querySelector(
+      'button[aria-label="Create user event"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    const select = dialog?.querySelector("#event-source") as HTMLSelectElement;
+    expect(select).toBeDefined();
+
+    const optionValues = Array.from(select.querySelectorAll("option")).map(
+      (option) => (option as HTMLOptionElement).value,
+    );
+    expect(optionValues).toContain("google:primary");
+    expect(optionValues).not.toContain("google:orphan");
+  });
+
   it("updates user event through workspace mutation endpoint", async () => {
     const mutateAsync = vi.fn().mockResolvedValue({
       data: {

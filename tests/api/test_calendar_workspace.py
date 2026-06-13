@@ -88,6 +88,7 @@ def _workspace_source_row(
     provider: str,
     calendar_id: str | None = None,
     writable: bool = False,
+    metadata: dict | None = None,
 ) -> dict:
     synced_at = datetime.now(tz=UTC)
     return {
@@ -100,7 +101,7 @@ def _workspace_source_row(
         "butler_name": butler_name,
         "display_name": source_key,
         "writable": writable,
-        "source_metadata": {"projection": "test"},
+        "source_metadata": metadata if metadata is not None else {"projection": "test"},
         "cursor_name": "provider_sync" if lane == "user" else "projection",
         "last_synced_at": synced_at,
         "last_success_at": synced_at,
@@ -253,3 +254,89 @@ async def test_sync_all_triggers_each_target_butler(app):
     data = resp.json()["data"]
     assert data["scope"] == "all"
     assert data["triggered_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Meta — primary resolver + submittable writable calendars (bu-608g8)
+# ---------------------------------------------------------------------------
+
+
+async def test_meta_resolves_primary_from_account_email(app):
+    """The primary resolver must identify the primary calendar from DB sources.
+
+    Google's primary calendar has an ``id`` equal to the account email, which
+    discovery records in ``metadata.account_email``. The resolver returns that
+    calendar_id (not null) without needing a live MCP call.
+    """
+    account_email = "owner@example.com"
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:owner@example.com",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id=account_email,
+                writable=True,
+                metadata={"account_email": account_email},
+            ),
+            _workspace_source_row(
+                source_key="provider:google:work",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="work@example.com",
+                writable=True,
+                metadata={"account_email": account_email},
+            ),
+        ]
+    }
+    app, _, _ = _build_app(app, source_rows=source_rows, calendar_butlers=["general"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/meta")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["primary_calendar_id"] == account_email
+
+
+async def test_meta_writable_calendars_carry_owning_butler(app):
+    """User-lane writable calendars must resolve to an owning butler.
+
+    ``s.butler_name`` is NULL for user-lane provider calendars; the owning
+    butler is the schema (db_butler) the source lives in. Writable calendars
+    must surface that butler so they are submittable, and only submittable
+    calendars are returned.
+    """
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="owner@example.com",
+                writable=True,
+                metadata={"account_email": "owner@example.com"},
+            )
+        ]
+    }
+    app, _, _ = _build_app(app, source_rows=source_rows, calendar_butlers=["general"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/meta")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    writable = data["writable_calendars"]
+    assert len(writable) == 1
+    assert writable[0]["butler_name"] == "general"
+    assert writable[0]["calendar_id"] == "owner@example.com"

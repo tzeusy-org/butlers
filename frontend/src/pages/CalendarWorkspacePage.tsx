@@ -583,7 +583,18 @@ export default function CalendarWorkspacePage() {
     () => metaQuery.data?.data.connected_sources ?? [],
     [metaQuery.data?.data.connected_sources],
   );
-  const writableCalendars = metaQuery.data?.data.writable_calendars ?? [];
+  const writableCalendars = useMemo(
+    () => metaQuery.data?.data.writable_calendars ?? [],
+    [metaQuery.data?.data.writable_calendars],
+  );
+  // Only calendars that resolve to an owning butler can actually be submitted;
+  // a null butler_name fails at submit with "Could not resolve owning butler".
+  // Filter the create-event dropdown to these so users can't pick an
+  // unsubmittable calendar.
+  const submittableCalendars = useMemo(
+    () => writableCalendars.filter((calendar) => Boolean(calendar.butler_name)),
+    [writableCalendars],
+  );
   const defaultTimezone = metaQuery.data?.data.default_timezone || timezone;
   const primaryCalendarId = metaQuery.data?.data.primary_calendar_id ?? null;
 
@@ -924,15 +935,16 @@ export default function CalendarWorkspacePage() {
   }
 
   function openUserCreateDialog(forDate?: Date) {
-    if (writableCalendars.length === 0) {
+    if (submittableCalendars.length === 0) {
       toast.error("No writable calendar sources are available for user events.");
       return;
     }
 
     const preferredSource =
-      selectedSourceKey !== "all" && writableCalendars.some((c) => c.source_key === selectedSourceKey)
+      selectedSourceKey !== "all" &&
+      submittableCalendars.some((c) => c.source_key === selectedSourceKey)
         ? selectedSourceKey
-        : writableCalendars[0].source_key;
+        : submittableCalendars[0].source_key;
     const { startAtLocal, endAtLocal } = defaultFormWindow(forDate ?? anchor);
 
     setUserEventDialogMode("create");
@@ -955,12 +967,12 @@ export default function CalendarWorkspacePage() {
       return;
     }
 
-    const fallbackSource = writableCalendars[0]?.source_key ?? entry.source_key;
+    const fallbackSource = submittableCalendars[0]?.source_key ?? entry.source_key;
 
     setUserEventDialogMode("edit");
     setActiveUserEntry(entry);
     setUserEventForm({
-      sourceKey: writableCalendars.some((calendar) => calendar.source_key === entry.source_key)
+      sourceKey: submittableCalendars.some((calendar) => calendar.source_key === entry.source_key)
         ? entry.source_key
         : fallbackSource,
       title: entry.title,
@@ -1324,7 +1336,7 @@ export default function CalendarWorkspacePage() {
   }
 
   const syncButtonLabel = syncMutation.isPending ? "Syncing..." : "Sync now";
-  const canCreateUserEvents = view === "user" && writableCalendars.length > 0;
+  const canCreateUserEvents = view === "user" && submittableCalendars.length > 0;
 
   return (
     <div className="flex flex-col h-full overflow-hidden gap-6">
@@ -2054,7 +2066,7 @@ export default function CalendarWorkspacePage() {
                   }
                   disabled={userEventMutation.isPending}
                 >
-                  {writableCalendars.map((calendar) => (
+                  {submittableCalendars.map((calendar) => (
                     <option key={calendar.source_key} value={calendar.source_key}>
                       {calendar.display_name || calendar.calendar_id}
                     </option>
