@@ -34,6 +34,7 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
 
 vi.mock("@/hooks/use-butlers", () => ({
   useRuntimeConfig: vi.fn(() => ({ data: null, isLoading: false })),
+  usePatchRuntimeConfig: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-butler-management", () => ({
@@ -51,6 +52,7 @@ import {
   useButlerMemoryAccess,
   useKillButler,
 } from "@/hooks/use-butler-management";
+import { useRuntimeConfig, usePatchRuntimeConfig } from "@/hooks/use-butlers";
 import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
@@ -236,5 +238,91 @@ describe("PromptEditModal — mutation wiring", () => {
 
     expect(toast.error).toHaveBeenCalledWith("Failed to save system prompt");
     expect(screen.getByPlaceholderText("Enter system prompt…")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: RuntimeConfigCard mounted on the Manage tab (bu-dr03f.3)
+//
+// The editable runtime-config card was previously orphaned (mounted nowhere);
+// these tests pin it to the Manage tab's §1 Identity & routing section and
+// confirm an edit drives usePatchRuntimeConfig.
+// ---------------------------------------------------------------------------
+
+const RUNTIME_CONFIG = {
+  butler_name: "general",
+  core_groups: ["infra"] as string[] | null,
+  max_concurrent: 3,
+  max_queued: 10,
+  seeded_at: null,
+  updated_at: "2026-06-14T00:00:00Z",
+  field_tiers: { max_concurrent: "cold", max_queued: "cold", core_groups: "cold" } as Record<
+    string,
+    "hot" | "cold"
+  >,
+};
+
+describe("RuntimeConfigCard — mounted on Manage tab", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: RUNTIME_CONFIG,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+  });
+  afterEach(() => cleanup());
+
+  it("renders the editable Runtime Config card with a Save control", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+
+    renderTab();
+
+    // The orphaned read-only ConfigRows are gone; the editable card title is present.
+    expect(screen.getByText("Runtime Config")).toBeTruthy();
+    expect(screen.getByText("Save")).toBeTruthy();
+  });
+
+  it("surfaces the cold (restart required) tier badge for ceiling fields", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+
+    renderTab();
+
+    // Cold fields render the honest "restart required" badge.
+    expect(screen.getAllByText("restart required").length).toBeGreaterThan(0);
+  });
+
+  it("editing a field and saving calls usePatchRuntimeConfig.mutateAsync with the patch", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ restart_required: ["max_concurrent"] });
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync,
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+
+    renderTab();
+
+    // Edit the Max Concurrent input (first number input in the card).
+    const numberInputs = document.querySelectorAll('input[type="number"]');
+    expect(numberInputs.length).toBeGreaterThan(0);
+    fireEvent.change(numberInputs[0], { target: { value: "5" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save"));
+    });
+
+    expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ max_concurrent: 5 }),
+    );
   });
 });

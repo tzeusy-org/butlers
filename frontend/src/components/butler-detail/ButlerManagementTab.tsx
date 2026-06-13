@@ -18,6 +18,7 @@ import { useButlerMemoryAccess, useButlerPrompt, useButlerTools, useKillButler, 
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
 import { useRuntimeConfig } from "@/hooks/use-butlers";
 import { cn } from "@/lib/utils";
+import RuntimeConfigCard from "./RuntimeConfigCard";
 
 interface Props {
   butlerName: string;
@@ -123,10 +124,13 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
             three exhausted attempts the butler pauses and an approval is opened.
           </p>
         </div>
-        <div>
-          <ConfigRow label="Concurrency" value={rc?.max_concurrent ?? "—"} />
-          <ConfigRow label="Queue limit" value={rc?.max_queued ?? "—"} />
-        </div>
+        {/*
+          Editable runtime-config (concurrency / queue / core groups). Replaces the
+          former read-only ConfigRows so the Manage tab is the single editable surface
+          for these fields. RuntimeConfigCard surfaces hot vs cold (restart-required)
+          tiers and the post-save "restart required for ..." notice.
+        */}
+        <RuntimeConfigCard butlerName={butlerName} />
       </div>
     </Section>
   );
