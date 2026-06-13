@@ -26,6 +26,7 @@ from croniter import croniter as _croniter
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from butlers.core.audit import write_audit_entry
+from butlers.core.permissions import CALENDAR_WRITE_PERMISSION, require_permission
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_update as _schedule_update
@@ -2800,6 +2801,7 @@ class CalendarModule(Module):
             Fail-closed: provider errors return a structured error dict rather than
             silently dropping the mutation (spec section 4.4 / 15.2).
             """
+            await module._require_calendar_write_permission()
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
@@ -3054,6 +3056,7 @@ class CalendarModule(Module):
             Fail-closed: provider errors return a structured error dict rather than
             silently dropping the mutation (spec section 4.4 / 15.2).
             """
+            await module._require_calendar_write_permission()
             normalized_event_id = event_id.strip()
             if not normalized_event_id:
                 raise ValueError("event_id must be a non-empty string")
@@ -3396,6 +3399,7 @@ class CalendarModule(Module):
             Returns status="deleted" on success, or status="not_found" when
             the event did not exist (already deleted — treated as success).
             """
+            await module._require_calendar_write_permission()
             normalized_event_id = event_id.strip()
             if not normalized_event_id:
                 raise ValueError("event_id must be a non-empty string")
@@ -7058,6 +7062,19 @@ class CalendarModule(Module):
         if self._provider is None:
             raise RuntimeError("Calendar provider is not initialized; call on_startup first")
         return self._provider
+
+    async def _require_calendar_write_permission(self) -> None:
+        """Enforce the public.permissions ``calendar.write`` grant for this butler.
+
+        The Settings → Permissions matrix governs whether this butler may create,
+        update, or delete calendar events. A cell flipped to granted=false blocks
+        the write outright via :class:`PermissionDenied` (an authorization
+        decision). Mirrors the spawn gate: consult the matrix at the decision
+        point, before any provider write. require_permission fails open, so a DB
+        error never wedges calendar writes.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        await require_permission(pool, self._butler_name, CALENDAR_WRITE_PERMISSION)
 
     def _require_config(self) -> CalendarConfig:
         if self._config is None:

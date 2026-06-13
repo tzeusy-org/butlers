@@ -21,6 +21,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.core.audit import write_audit_entry
+from butlers.core.permissions import EMAIL_SEND_PERMISSION, require_permission
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -413,7 +414,20 @@ class EmailModule(Module):
             conn.logout()
 
     async def _send_email(self, to: str, subject: str, body: str) -> dict:
-        """Send email via SMTP. Uses asyncio.to_thread for blocking SMTP calls."""
+        """Send email via SMTP. Uses asyncio.to_thread for blocking SMTP calls.
+
+        Permissions-matrix enforcement (public.permissions: email.send): the
+        Settings → Permissions matrix governs whether this butler may send email
+        on the owner's behalf. A cell flipped to granted=false blocks the send
+        outright via :class:`PermissionDenied` (an authorization decision).
+        Mirrors the spawn gate: consult the matrix at the decision point before
+        any SMTP traffic. require_permission fails open, so a DB error never
+        wedges delivery. Gating ``_send_email`` covers both the
+        ``email_send_message`` MCP tool and the messenger route.execute path
+        (which calls ``module._send_email`` directly).
+        """
+        _perm_pool = self._pool or self._audit_pool
+        await require_permission(_perm_pool, self._butler_name, EMAIL_SEND_PERMISSION)
         try:
             result = await asyncio.to_thread(self._smtp_send, to, subject, body)
         except Exception as exc:

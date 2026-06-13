@@ -271,6 +271,58 @@ class TestNotifyReactIntent:
         assert nr["delivery"]["emoji"] == "🔥"
         assert nr["delivery"]["intent"] == "react"
 
+    async def test_notify_blocked_when_notify_permission_revoked(self, butler_dir: Path) -> None:
+        """Revoked notify permission blocks notify() before reaching the switchboard.
+
+        Mirrors the spawn gate: a granted=false cell denies the notification
+        outright (observable error), and the switchboard client is never called.
+        Pre-fix this fails: the matrix was ignored, so delivery proceeded.
+
+        [bu-tzlq6]
+        """
+        from butlers.core.permissions import PermissionStatus
+
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = self._mock_ok_client()
+
+        with patch(
+            "butlers.core_tools._notifications.check_permission",
+            new_callable=AsyncMock,
+            return_value=PermissionStatus(allowed=False, explicit=True, reason="revoked by owner"),
+        ):
+            result = await notify_fn(channel="telegram", message="hello", intent="send")
+
+        assert result["status"] == "error"
+        assert "permission denied" in result["error"].lower()
+        daemon.switchboard_client.call_tool.assert_not_called()
+
+    async def test_notify_allowed_when_notify_permission_granted(self, butler_dir: Path) -> None:
+        """Granted/default notify permission lets the notification proceed."""
+        from butlers.core.permissions import PermissionStatus
+
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = self._mock_ok_client()
+
+        with patch(
+            "butlers.core_tools._notifications.check_permission",
+            new_callable=AsyncMock,
+            return_value=PermissionStatus(allowed=True, explicit=False),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="",
+                intent="react",
+                emoji="👍",
+                request_context={"source_thread_identity": "123:456"},
+            )
+
+        assert result["status"] == "ok"
+        daemon.switchboard_client.call_tool.assert_called_once()
+
 
 class TestNotifyReactContract:
     """Test suite for notify.v1 contract validation of react intent."""

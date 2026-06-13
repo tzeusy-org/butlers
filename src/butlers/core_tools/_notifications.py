@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from butlers.config import ButlerType
+from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
@@ -303,6 +304,29 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               }
             }
             """
+            # --- Permissions-matrix enforcement (public.permissions: notify) ---
+            # The Settings → Permissions matrix governs whether this butler may
+            # send owner-facing notifications. A cell flipped to granted=false
+            # blocks notify() outright (an authorization decision). Mirrors the
+            # spawn gate: consult the matrix at the decision point, return an
+            # observable denial. check_permission fails open, so a DB error never
+            # wedges delivery.
+            _perm_pool = daemon.db.pool if daemon.db is not None else None
+            _notify_perm = await check_permission(_perm_pool, butler_name, NOTIFY_PERMISSION)
+            if not _notify_perm.allowed:
+                _perm_msg = (
+                    f"Permission denied: butler '{butler_name}' is not granted "
+                    f"'{NOTIFY_PERMISSION}'"
+                )
+                if _notify_perm.reason:
+                    _perm_msg += f" (reason: {_notify_perm.reason})"
+                logger.warning(
+                    "notify() blocked by permissions matrix for butler=%s: %s",
+                    butler_name,
+                    _perm_msg,
+                )
+                return {"status": "error", "error": _perm_msg}
+
             # --- Channel resolution (entity-keyed-preferred-channel, group 2) ---
             # `channel` is optional. A forced channel always wins. When the caller
             # leaves it unspecified, resolve the outbound channel:
