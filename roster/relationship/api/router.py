@@ -3655,9 +3655,18 @@ async def get_entities_concentration(
     # -------------------------------------------------------------------
     # 1. Fetch predicate tabs from registry (kind='relational').
     # -------------------------------------------------------------------
+    # NOTE: ``entity_predicate_registry`` has NO ``label`` column (see migration
+    # 014_predicate_registry) — only predicate/kind/object_kind/description.
+    # Derive a human-readable label from the kebab-case predicate slug in SQL:
+    # ``initcap(replace(predicate, '-', ' '))`` turns ``partner-of`` → ``Partner
+    # Of`` and ``knows`` → ``Knows``. Sort by the derived label for a stable,
+    # alphabetical tab strip.
     tab_rows = await pool.fetch(
         """
-        SELECT predicate, label, description
+        SELECT
+            predicate,
+            initcap(replace(predicate, '-', ' ')) AS label,
+            description
         FROM relationship.entity_predicate_registry
         WHERE kind = 'relational'
         ORDER BY label ASC
