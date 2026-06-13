@@ -72,8 +72,6 @@ if _models_path.exists():
         Label = _models_module.Label
         UpcomingDate = _models_module.UpcomingDate
         ContactInfoEntry = _models_module.ContactInfoEntry
-        ContactMergeRequest = _models_module.ContactMergeRequest
-        ContactMergeResponse = _models_module.ContactMergeResponse
         ContactPatchRequest = _models_module.ContactPatchRequest
         CreateContactInfoRequest = _models_module.CreateContactInfoRequest
         CreateContactInfoResponse = _models_module.CreateContactInfoResponse
@@ -462,6 +460,7 @@ async def list_contacts(
     email_by_contact: dict[UUID, str | None] = {cid: None for cid in contact_ids}
     phone_by_contact: dict[UUID, str | None] = {cid: None for cid in contact_ids}
     last_interaction_by_contact: dict[UUID, Any] = {cid: None for cid in contact_ids}
+    entity_by_contact: dict[UUID, UUID | None] = {cid: None for cid in contact_ids}
 
     if contact_ids:
         # Batch-fetch entity_ids and interaction data; labels run in parallel.
@@ -492,6 +491,10 @@ async def list_contacts(
                 contact_ids,
             ),
         )
+        # Surface the linked entity per contact so the dashboard contacts-merge
+        # surfaces can route through the audited entity-merge compare view (bu-f0i4w).
+        for cid, eid in entity_map.items():
+            entity_by_contact[cid] = eid
         # Collect non-null entity_ids to batch-fetch channel facts.
         entity_ids_for_contacts = [(cid, eid) for cid, eid in entity_map.items() if eid is not None]
         unique_entity_ids = list({eid for _, eid in entity_ids_for_contacts})
@@ -519,6 +522,7 @@ async def list_contacts(
             phone=phone_by_contact.get(row["id"]),
             labels=labels_by_contact.get(row["id"], []),
             last_interaction_at=last_interaction_by_contact.get(row["id"]),
+            entity_id=entity_by_contact.get(row["id"]),
         )
         for row in rows
     ]
@@ -1818,97 +1822,15 @@ async def confirm_contact(
 
 
 # ---------------------------------------------------------------------------
-# POST /contacts/{contact_id}/merge
+# Contact merge was removed (bu-f0i4w): the dashboard contacts-merge surfaces
+# now route through the audited entity-merge flow (POST /entities/{id}/merge,
+# `merge_entities`), which renders the compare view first, re-points
+# relationship.entity_facts atomically, and writes a merge_reviews audit row
+# regardless of entry path (spec: relationship-merge-review). The old
+# POST /contacts/{id}/merge endpoint called memory `entity_merge`, which never
+# touched relationship.entity_facts — stranding the source entity's channel
+# triples — and wrote no audit row, bypassing the review requirement.
 # ---------------------------------------------------------------------------
-
-
-@router.post("/contacts/{contact_id}/merge", response_model=ContactMergeResponse)
-async def merge_contact(
-    contact_id: UUID,
-    request: ContactMergeRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ContactMergeResponse:
-    """Merge a temp contact into a target contact.
-
-    Moves all contact_info from the source (temp) contact to the target,
-    attempts entity_merge if both contacts have entity_ids, then deletes
-    the source contact.
-
-    ``contact_id`` in the URL is the **target** (survives).
-    ``source_contact_id`` in the request body is the **temp** (deleted).
-    """
-    pool = _pool(db)
-
-    source_id = request.source_contact_id
-
-    # Validate target contact exists
-    target_row = await pool.fetchrow(
-        "SELECT id, entity_id FROM contacts WHERE id = $1 AND archived_at IS NULL",
-        contact_id,
-    )
-    if target_row is None:
-        raise HTTPException(status_code=404, detail="Target contact not found")
-
-    # Validate source contact exists
-    source_row = await pool.fetchrow(
-        "SELECT id, entity_id FROM contacts WHERE id = $1",
-        source_id,
-    )
-    if source_row is None:
-        raise HTTPException(status_code=404, detail="Source contact not found")
-
-    if contact_id == source_id:
-        raise HTTPException(status_code=400, detail="Source and target contacts must be different")
-
-    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only and is no
-    # longer re-pointed here. The source entity's channel facts are re-pointed to
-    # the target entity by entity_merge on relationship.entity_facts (below).
-    # contact_info_moved is reported as 0 — channel identifiers now live only in
-    # the triple store, which the merge consolidates via entity_merge.
-    contact_info_moved = 0
-
-    # Attempt entity_merge if both have entity_ids
-    entity_merged = False
-    src_entity_id = source_row["entity_id"]
-    tgt_entity_id = target_row["entity_id"]
-
-    if src_entity_id is not None and tgt_entity_id is not None:
-        try:
-            from butlers.modules.memory.tools.entities import entity_merge
-
-            memory_pool = await _get_memory_pool(db)
-            # Wire chronicler pool so episode_entities rows are re-pointed.
-            # Returns None when chronicler is not registered — no-op path.
-            ch_pool = _get_chronicler_pool(db)
-
-            if memory_pool is not None:
-                await entity_merge(
-                    memory_pool,
-                    str(src_entity_id),
-                    str(tgt_entity_id),
-                    chronicler_pool=ch_pool,
-                )
-                entity_merged = True
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "merge_contact: entity_merge failed for %s -> %s, continuing without it",
-                src_entity_id,
-                tgt_entity_id,
-                exc_info=True,
-            )
-
-    # Delete the source contact (cascades to remaining references if any)
-    await pool.execute(
-        "DELETE FROM contacts WHERE id = $1",
-        source_id,
-    )
-
-    return ContactMergeResponse(
-        target_contact_id=contact_id,
-        source_contact_id=source_id,
-        contact_info_moved=contact_info_moved,
-        entity_merged=entity_merged,
-    )
 
 
 # ---------------------------------------------------------------------------

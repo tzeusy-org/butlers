@@ -8,7 +8,8 @@ import { toast } from "sonner";
 
 import { getContacts } from "@/api/client";
 import type { ContactSummary, Label } from "@/api/types";
-import { useArchiveContact, useDeleteContact, useMergeContact, useUnarchiveContact } from "@/hooks/use-contacts";
+import { useArchiveContact, useDeleteContact, useUnarchiveContact } from "@/hooks/use-contacts";
+import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -112,6 +113,17 @@ function EmptyState() {
 // MergeDialog
 // ---------------------------------------------------------------------------
 
+/**
+ * MergeDialog — picks the target contact, then hands the pair to
+ * MergeCompareDialog so the merge runs through the audited compare → merge_reviews
+ * flow keyed on entity UUIDs (relationship-merge-review spec; bu-f0i4w). The old
+ * contact-id bypass (POST /contacts/{id}/merge) stranded entity_facts triples and
+ * wrote no audit row, so it was removed.
+ *
+ * Merge requires both contacts to be linked to an entity. A contact with no
+ * entity cannot participate (nothing to consolidate in the entity graph), so such
+ * candidates are not selectable and a source without an entity short-circuits.
+ */
 function MergeDialog({
   open,
   onOpenChange,
@@ -125,7 +137,8 @@ function MergeDialog({
   const [results, setResults] = useState<ContactSummary[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<ContactSummary | null>(null);
-  const mergeMutation = useMergeContact();
+  // The pair handed to the compare view; non-null opens MergeCompareDialog.
+  const [comparePair, setComparePair] = useState<{ entityA: string; entityB: string } | null>(null);
 
   // Reset state when dialog opens/closes
   useEffect(() => {
@@ -159,88 +172,114 @@ function MergeDialog({
     return () => clearTimeout(timeout);
   }, [mergeSearch, sourceContact.id]);
 
-  async function handleMerge() {
-    if (!selectedTarget) return;
-    await mergeMutation.mutateAsync({
-      contactId: selectedTarget.id,
-      request: { source_contact_id: sourceContact.id },
-    });
-    onOpenChange(false);
+  const sourceHasEntity = sourceContact.entity_id != null;
+
+  function handleReview() {
+    if (!selectedTarget || !selectedTarget.entity_id || !sourceContact.entity_id) return;
+    // Target survives (entityA, keepAs="A" default); source is absorbed.
+    setComparePair({ entityA: selectedTarget.entity_id, entityB: sourceContact.entity_id });
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Merge Contact</DialogTitle>
-          <DialogDescription>
-            Merge <strong>{sourceContact.full_name}</strong> into another contact.
-            Search by name or paste a contact ID.
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Merge Contact</DialogTitle>
+            <DialogDescription>
+              Merge <strong>{sourceContact.full_name}</strong> into another contact.
+              You will review the comparison before the merge is committed.
+            </DialogDescription>
+          </DialogHeader>
 
-        <div className="space-y-3 py-2">
-          <Input
-            placeholder="Search by name or ID..."
-            value={mergeSearch}
-            onChange={(e) => {
-              setMergeSearch(e.target.value);
-              setSelectedTarget(null);
-            }}
-            autoFocus
-          />
+          {!sourceHasEntity ? (
+            <p className="text-muted-foreground py-2 text-sm">
+              This contact is not linked to an entity yet, so it cannot be merged.
+            </p>
+          ) : (
+            <div className="space-y-3 py-2">
+              <Input
+                placeholder="Search by name..."
+                value={mergeSearch}
+                onChange={(e) => {
+                  setMergeSearch(e.target.value);
+                  setSelectedTarget(null);
+                }}
+                autoFocus
+              />
 
-          {isSearching && (
-            <p className="text-muted-foreground text-sm">Searching...</p>
-          )}
+              {isSearching && (
+                <p className="text-muted-foreground text-sm">Searching...</p>
+              )}
 
-          {!isSearching && mergeSearch.trim() && results.length === 0 && (
-            <p className="text-muted-foreground text-sm">No matching contacts found.</p>
-          )}
+              {!isSearching && mergeSearch.trim() && results.length === 0 && (
+                <p className="text-muted-foreground text-sm">No matching contacts found.</p>
+              )}
 
-          {results.length > 0 && (
-            <div className="max-h-48 space-y-1 overflow-y-auto">
-              {results.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className={`w-full rounded-md border px-3 py-2 text-left text-sm transition-colors ${
-                    selectedTarget?.id === c.id
-                      ? "border-primary bg-accent"
-                      : "hover:bg-accent/50"
-                  }`}
-                  onClick={() => setSelectedTarget(c)}
-                >
-                  <span className="font-medium">{c.full_name}</span>
-                  {c.email && (
-                    <span className="text-muted-foreground ml-2 text-xs">{c.email}</span>
-                  )}
-                  <span className="text-muted-foreground ml-2 font-mono text-xs">{c.id}</span>
-                </button>
-              ))}
+              {results.length > 0 && (
+                <div className="max-h-48 space-y-1 overflow-y-auto">
+                  {results.map((c) => {
+                    const linked = c.entity_id != null;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        disabled={!linked}
+                        className={`w-full rounded-md border px-3 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                          selectedTarget?.id === c.id
+                            ? "border-primary bg-accent"
+                            : "hover:bg-accent/50"
+                        }`}
+                        onClick={() => setSelectedTarget(c)}
+                      >
+                        <span className="font-medium">{c.full_name}</span>
+                        {c.email && (
+                          <span className="text-muted-foreground ml-2 text-xs">{c.email}</span>
+                        )}
+                        {!linked && (
+                          <span className="text-muted-foreground ml-2 text-xs italic">
+                            (no entity)
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {selectedTarget && (
+                <p className="text-sm">
+                  Will merge into: <strong>{selectedTarget.full_name}</strong>
+                </p>
+              )}
             </div>
           )}
 
-          {selectedTarget && (
-            <p className="text-sm">
-              Will merge into: <strong>{selectedTarget.full_name}</strong>
-            </p>
-          )}
-        </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleReview}
+              disabled={!sourceHasEntity || !selectedTarget || selectedTarget.entity_id == null}
+            >
+              Review &amp; merge
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleMerge}
-            disabled={!selectedTarget || mergeMutation.isPending}
-          >
-            {mergeMutation.isPending ? "Merging..." : "Merge"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <MergeCompareDialog
+        pair={comparePair}
+        onOpenChange={(o) => {
+          if (!o) setComparePair(null);
+        }}
+        onResolved={() => {
+          setComparePair(null);
+          onOpenChange(false);
+        }}
+      />
+    </>
   );
 }
 

@@ -125,8 +125,6 @@ import type {
   ThreadOverrideEntry,
   ThreadOverrideUpsert,
   ContactInfoEntry,
-  ContactMergeRequest,
-  ContactMergeResponse,
   ContactPatchRequest,
   CreateContactInfoRequest,
   CreateContactInfoResponse,
@@ -139,7 +137,6 @@ import type {
   LinkEntityResponse,
   CreateAndLinkEntityRequest,
   CreateAndLinkEntityResponse,
-  MergeEntityResponse,
   IngestionEventSummary,
   IngestionEventSession,
   IngestionEventRollup,
@@ -1120,17 +1117,6 @@ export function patchContact(
   );
 }
 
-/** Merge a temp/pending contact into an existing contact. */
-export function mergeContact(
-  contactId: string,
-  request: ContactMergeRequest,
-): Promise<ContactMergeResponse> {
-  return apiFetch<ContactMergeResponse>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/merge`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
 /** Confirm a pending disambiguation contact as a new known contact. */
 export function confirmContact(contactId: string): Promise<ContactDetail> {
   return apiFetch<ContactDetail>(
@@ -1771,17 +1757,6 @@ export function updateEntity(
   return apiFetch<ApiResponse<EntitySummary>>(
     `/memory/entities/${encodeURIComponent(entityId)}`,
     { method: "PATCH", body: JSON.stringify(request) },
-  );
-}
-
-/** Merge source entity into target entity. */
-export function mergeEntity(
-  targetEntityId: string,
-  sourceEntityId: string,
-): Promise<MergeEntityResponse> {
-  return apiFetch<MergeEntityResponse>(
-    `/memory/entities/${encodeURIComponent(targetEntityId)}/merge`,
-    { method: "POST", body: JSON.stringify({ source_entity_id: sourceEntityId }) },
   );
 }
 

@@ -43,9 +43,9 @@ import {
 import {
   useConfirmContact,
   useContacts,
-  useMergeContact,
   usePendingContacts,
 } from "@/hooks/use-contacts";
+import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
 import { Time } from "@/components/ui/time";
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,8 @@ interface MergeDialogProps {
 function MergeDialog({ pendingContact, open, onOpenChange }: MergeDialogProps) {
   const [search, setSearch] = useState("");
   const [selectedContact, setSelectedContact] = useState<ContactSummary | null>(null);
-  const mergeMutation = useMergeContact();
+  // The pair handed to the audited compare view; non-null opens MergeCompareDialog.
+  const [comparePair, setComparePair] = useState<{ entityA: string; entityB: string } | null>(null);
 
   // Fetch contacts matching search for selection
   const { data: searchResults, isLoading: isSearching } = useContacts(
@@ -72,23 +73,15 @@ function MergeDialog({ pendingContact, open, onOpenChange }: MergeDialogProps) {
     (c) => c.id !== pendingContact.id,
   );
 
-  function handleConfirmMerge() {
-    if (!selectedContact) return;
-    // The pending contact is the source; selected is the target
-    // We merge INTO the selected contact (target), so call merge on selectedContact
-    mergeMutation.mutate(
-      {
-        contactId: selectedContact.id,
-        request: { source_contact_id: pendingContact.id },
-      },
-      {
-        onSuccess: () => {
-          onOpenChange(false);
-          setSearch("");
-          setSelectedContact(null);
-        },
-      },
-    );
+  // The unidentified-card merge entry point of the relationship-merge-review
+  // spec: open the compare view for the pending entity and an owner-selected
+  // target entity. Both must be linked to an entity to merge in the graph.
+  const pendingHasEntity = pendingContact.entity_id != null;
+
+  function handleReview() {
+    if (!selectedContact || !selectedContact.entity_id || !pendingContact.entity_id) return;
+    // Target (selected) survives; the pending contact's entity is absorbed.
+    setComparePair({ entityA: selectedContact.entity_id, entityB: pendingContact.entity_id });
   }
 
   function handleClose() {
@@ -98,80 +91,108 @@ function MergeDialog({ pendingContact, open, onOpenChange }: MergeDialogProps) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Merge Contact</DialogTitle>
-          <DialogDescription>
-            Merge <strong>{pendingContact.full_name}</strong> into an existing contact.
-            The pending contact will be removed and its data moved to the target.
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={open} onOpenChange={handleClose}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Merge Contact</DialogTitle>
+            <DialogDescription>
+              Merge <strong>{pendingContact.full_name}</strong> into an existing contact.
+              You will review the comparison before the merge is committed.
+            </DialogDescription>
+          </DialogHeader>
 
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm font-medium">Search for target contact</label>
-            <Input
-              className="mt-1"
-              placeholder="Type a name or email..."
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setSelectedContact(null);
-              }}
-            />
-          </div>
+          {!pendingHasEntity ? (
+            <p className="text-sm text-muted-foreground">
+              This pending contact is not linked to an entity yet, so it cannot be merged.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium">Search for target contact</label>
+                <Input
+                  className="mt-1"
+                  placeholder="Type a name or email..."
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setSelectedContact(null);
+                  }}
+                />
+              </div>
 
-          {isSearching && <Skeleton className="h-20 w-full" />}
+              {isSearching && <Skeleton className="h-20 w-full" />}
 
-          {!isSearching && candidates.length > 0 && (
-            <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
-              {candidates.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors ${
-                    selectedContact?.id === c.id ? "bg-muted font-medium" : ""
-                  }`}
-                  onClick={() => setSelectedContact(c)}
-                >
-                  <span className="font-medium">{c.full_name}</span>
-                  {c.email && (
-                    <span className="text-muted-foreground ml-2">{c.email}</span>
+              {!isSearching && candidates.length > 0 && (
+                <div className="border rounded-md divide-y max-h-48 overflow-y-auto">
+                  {candidates.map((c) => {
+                    const linked = c.entity_id != null;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        disabled={!linked}
+                        className={`w-full text-left px-3 py-2 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${
+                          selectedContact?.id === c.id ? "bg-muted font-medium" : ""
+                        }`}
+                        onClick={() => setSelectedContact(c)}
+                      >
+                        <span className="font-medium">{c.full_name}</span>
+                        {c.email && (
+                          <span className="text-muted-foreground ml-2">{c.email}</span>
+                        )}
+                        {!linked && (
+                          <span className="text-muted-foreground ml-2 text-xs italic">
+                            (no entity)
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!isSearching && search.length >= 2 && candidates.length === 0 && (
+                <p className="text-sm text-muted-foreground">No contacts found.</p>
+              )}
+
+              {selectedContact && (
+                <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm dark:border-blue-800 dark:bg-blue-950">
+                  <span className="font-medium">Selected: </span>
+                  {selectedContact.full_name}
+                  {selectedContact.email && (
+                    <span className="text-muted-foreground ml-1">({selectedContact.email})</span>
                   )}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {!isSearching && search.length >= 2 && candidates.length === 0 && (
-            <p className="text-sm text-muted-foreground">No contacts found.</p>
-          )}
-
-          {selectedContact && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm dark:border-blue-800 dark:bg-blue-950">
-              <span className="font-medium">Selected: </span>
-              {selectedContact.full_name}
-              {selectedContact.email && (
-                <span className="text-muted-foreground ml-1">({selectedContact.email})</span>
+                </div>
               )}
             </div>
           )}
-        </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={handleClose}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleConfirmMerge}
-            disabled={!selectedContact || mergeMutation.isPending}
-          >
-            {mergeMutation.isPending ? "Merging..." : "Merge"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <DialogFooter>
+            <Button variant="outline" onClick={handleClose}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleReview}
+              disabled={!pendingHasEntity || !selectedContact || selectedContact.entity_id == null}
+            >
+              Review &amp; merge
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <MergeCompareDialog
+        pair={comparePair}
+        onOpenChange={(o) => {
+          if (!o) setComparePair(null);
+        }}
+        onResolved={() => {
+          setComparePair(null);
+          handleClose();
+        }}
+      />
+    </>
   );
 }
 

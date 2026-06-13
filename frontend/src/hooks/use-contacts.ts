@@ -23,13 +23,11 @@ import {
   getPendingContacts,
   getUnlinkedContacts,
   linkEntity,
-  mergeContact,
   patchContact,
   patchContactInfo,
   getUpcomingDates,
 } from "@/api/index.ts";
 import type {
-  ContactMergeRequest,
   ContactPatchRequest,
   CreateAndLinkEntityRequest,
   CreateContactInfoRequest,
@@ -98,23 +96,6 @@ export function usePatchContact() {
     onSuccess: (_, { contactId }) => {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
-  });
-}
-
-/** Merge a pending contact into an existing contact. */
-export function useMergeContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ contactId, request }: { contactId: string; request: ContactMergeRequest }) =>
-      mergeContact(contactId, request),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["pending-contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      toast.success("Contacts merged successfully");
-    },
-    onError: (err) => {
-      toast.error(`Merge failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     },
   });
 }

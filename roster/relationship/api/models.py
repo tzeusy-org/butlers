@@ -83,6 +83,10 @@ class ContactSummary(BaseModel):
     labels: list[Label] = Field(default_factory=list)
     last_interaction_at: datetime | None = None
     warmth: float | None = None
+    # Linked entity (memory graph). Surfaced so the dashboard contacts-merge
+    # surfaces can route through the audited entity-merge compare view (bu-f0i4w).
+    # None for legacy/unlinked contacts; merge actions guard on this being set.
+    entity_id: UUID | None = None
 
 
 class ContactDetail(ContactSummary):
@@ -96,9 +100,9 @@ class ContactDetail(ContactSummary):
     metadata: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
-    # Identity fields (added by contacts-identity-model migration)
+    # Identity fields (added by contacts-identity-model migration).
+    # ``entity_id`` is inherited from ContactSummary (bu-f0i4w).
     roles: list[str] = Field(default_factory=list)
-    entity_id: UUID | None = None
     contact_info: list[ContactInfoEntry] = Field(default_factory=list)
     preferred_channel: str | None = None
 
@@ -118,25 +122,6 @@ class ContactPatchRequest(BaseModel):
     job_title: str | None = None
     roles: list[str] | None = None
     preferred_channel: str | None = None
-
-
-class ContactMergeRequest(BaseModel):
-    """Request body for POST /contacts/{id}/merge.
-
-    Merges the temp contact identified by ``source_contact_id`` into
-    the contact identified by the URL path parameter (target).
-    """
-
-    source_contact_id: UUID
-
-
-class ContactMergeResponse(BaseModel):
-    """Response for POST /contacts/{id}/merge."""
-
-    target_contact_id: UUID
-    source_contact_id: UUID
-    contact_info_moved: int
-    entity_merged: bool
 
 
 class OwnerSetupStatus(BaseModel):

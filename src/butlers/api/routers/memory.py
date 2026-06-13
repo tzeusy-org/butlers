@@ -85,20 +85,6 @@ def _any_pool(db: DatabaseManager) -> object:
     raise HTTPException(status_code=503, detail="No database pools available")
 
 
-def _chronicler_pool_from_db(db: DatabaseManager) -> object | None:
-    """Return the chronicler butler's pool if registered, otherwise None.
-
-    The chronicler pool is scoped to the ``chronicler`` schema and is used
-    to re-point ``chronicler.episode_entities`` rows during entity_merge.
-    Returns None when the chronicler butler is not registered in this deployment
-    — the merge proceeds without episode_entities repointing in that case.
-    """
-    try:
-        return db.pool("chronicler")
-    except KeyError:
-        return None
-
-
 async def _fan_out_memory_queries(
     db: DatabaseManager,
     *,
@@ -1419,95 +1405,15 @@ async def set_linked_contact(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/entities/{entity_id}/merge
+# POST /api/memory/entities/{entity_id}/merge was removed (bu-f0i4w).
+#
+# It merged memory `facts` via `entity_merge` with no compare view, no
+# merge_reviews audit row, no relationship.entity_facts repoint, and no
+# roles-aware owner gate — an unaudited bypass of the relationship-merge-review
+# spec. Its only frontend caller (EntitiesPage) was removed in PR #2206, leaving
+# it unreachable from the dashboard. The audited entity-merge surface is
+# POST /api/relationship/entities/{id}/merge.
 # ---------------------------------------------------------------------------
-
-
-class _MergeEntityRequest(BaseModel):
-    source_entity_id: str
-
-
-class _MergeEntityResponse(BaseModel):
-    target_entity_id: str
-    source_entity_id: str
-    facts_repointed: int
-    facts_superseded: int = 0
-    edge_facts_repointed: int = 0
-    edge_facts_superseded: int = 0
-    aliases_added: int = 0
-
-
-@router.post("/entities/{entity_id}/merge", response_model=_MergeEntityResponse)
-async def merge_entity(
-    entity_id: str,
-    body: _MergeEntityRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> _MergeEntityResponse:
-    """Merge source entity into target entity (this entity).
-
-    Re-points all facts from source to target, unions aliases/metadata/roles,
-    tombstones the source entity, and re-links any contacts.
-    """
-    import uuid as _uuid
-
-    from butlers.modules.memory.tools.entities import entity_merge
-
-    all_pools = _memory_pools(db)
-    if not all_pools:
-        raise HTTPException(status_code=503, detail="No database pools available")
-    pool = all_pools[0][1]  # primary pool for entity operations
-    extra_pools = [p for _, p in all_pools[1:]]
-
-    target_id = str(_uuid.UUID(entity_id))
-    source_id = str(_uuid.UUID(body.source_entity_id))
-
-    if target_id == source_id:
-        raise HTTPException(status_code=400, detail="Cannot merge entity into itself")
-
-    # Prevent merging owner entities as SOURCE — merge tombstones the source,
-    # which would bypass the deletion restriction on owner entities.
-    # Merging INTO the owner (as target) is allowed since the target survives.
-    row = await pool.fetchrow(
-        "SELECT roles FROM public.entities WHERE id = $1",
-        _uuid.UUID(source_id),
-    )
-    if row and "owner" in (list(row["roles"]) if row["roles"] else []):
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot merge owner entity (source would be tombstoned)",
-        )
-
-    # Wire chronicler pool so that episode_entities rows are re-pointed during
-    # the merge. Returns None when the chronicler butler is not registered in
-    # this deployment — merge proceeds without episode repointing in that case.
-    chronicler_pool = _chronicler_pool_from_db(db)
-
-    try:
-        result = await entity_merge(
-            pool,
-            source_id,
-            target_id,
-            extra_pools=extra_pools,
-            chronicler_pool=chronicler_pool,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    if result is None:
-        raise HTTPException(status_code=404, detail="Target entity not found")
-
-    # Re-link contacts from source entity to target entity
-    await pool.execute(
-        "UPDATE public.contacts SET entity_id = $1, updated_at = now() WHERE entity_id = $2",
-        _uuid.UUID(target_id),
-        _uuid.UUID(source_id),
-    )
-
-    return _MergeEntityResponse(
-        target_entity_id=target_id,
-        source_entity_id=source_id,
-        facts_repointed=result["facts_repointed"],
-    )
 
 
 # ---------------------------------------------------------------------------

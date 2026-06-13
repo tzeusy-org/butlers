@@ -757,6 +757,10 @@ export interface ContactSummary {
   labels: Label[];
   last_interaction_at: string | null;
   warmth?: number | null;
+  /** Linked memory-graph entity; null for legacy/unlinked contacts.
+   * Surfaced so contacts-merge surfaces can route through the audited
+   * entity-merge compare view (bu-f0i4w). */
+  entity_id: string | null;
 }
 
 /** A single contact_info entry (phone, email, address, etc.).
@@ -792,9 +796,8 @@ export interface ContactDetail extends ContactSummary {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
-  // Identity fields
+  // Identity fields (entity_id is inherited from ContactSummary)
   roles: string[];
-  entity_id: string | null;
   contact_info: ContactInfoEntry[];
   preferred_channel: string | null;
 }
@@ -809,19 +812,6 @@ export interface ContactPatchRequest {
   job_title?: string | null;
   roles?: string[] | null;
   preferred_channel?: string | null;
-}
-
-/** Request body for POST /contacts/{id}/merge. */
-export interface ContactMergeRequest {
-  source_contact_id: string;
-}
-
-/** Response for POST /contacts/{id}/merge. */
-export interface ContactMergeResponse {
-  target_contact_id: string;
-  source_contact_id: string;
-  contact_info_moved: number;
-  entity_merged: boolean;
 }
 
 /**
@@ -1501,17 +1491,6 @@ export interface EntitySummary {
   updated_at: string;
   dunbar_tier: number | null;
   dunbar_score: number | null;
-}
-
-/** Response for POST /memory/entities/{id}/merge. */
-export interface MergeEntityResponse {
-  target_entity_id: string;
-  source_entity_id: string;
-  facts_repointed: number;
-  facts_superseded: number;
-  edge_facts_repointed: number;
-  edge_facts_superseded: number;
-  aliases_added: number;
 }
 
 /** A single entity_info row (credentials, identifiers, etc.). */
