@@ -1,4 +1,4 @@
-"""Tests for sw_014 message_inbox scanner recovery index migration."""
+"""Tests for sw_015 message_inbox scanner recovery index migration."""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ _MIGRATION_PATH = (
     / "roster"
     / "switchboard"
     / "migrations"
-    / "014_message_inbox_scanner_processing_index.py"
+    / "015_message_inbox_scanner_processing_index.py"
 )
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("sw_014", _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("sw_015", _MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -39,8 +39,8 @@ def _collect_execute_calls(fn_name: str) -> list[str]:
 
 def test_revision_chain() -> None:
     mod = _load_migration()
-    assert mod.revision == "sw_014"
-    assert mod.down_revision == "sw_013"
+    assert mod.revision == "sw_015"
+    assert mod.down_revision == "sw_014"
     assert mod.branch_labels is None
     assert mod.depends_on is None
 

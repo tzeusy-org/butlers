@@ -1,7 +1,7 @@
 """Add an index for DurableBuffer expired processing-row recovery.
 
-Revision ID: sw_014
-Revises: sw_013
+Revision ID: sw_015
+Revises: sw_014
 Create Date: 2026-06-12 00:00:00.000000
 
 The DurableBuffer cold-path scanner periodically reclaims ``message_inbox`` rows
@@ -16,8 +16,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "sw_014"
-down_revision = "sw_013"
+revision = "sw_015"
+down_revision = "sw_014"
 branch_labels = None
 depends_on = None
 
