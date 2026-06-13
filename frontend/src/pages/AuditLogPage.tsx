@@ -33,8 +33,9 @@ const EMPTY_FILTERS: FilterState = {
 
 function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
   return {
-    // actor from filter bar (not the ?actor= deep-link chip)
-    actor: "",
+    // Hydrate the actor filter bar from the ?actor= deep-link so the input
+    // reflects the active actor filter (e.g. arriving from a passport link).
+    actor: searchParams.get("actor") ?? "",
     action: searchParams.get("action") ?? "",
     since: searchParams.get("since") ?? "",
   };
@@ -69,7 +70,7 @@ export default function AuditLogPage() {
     ...(actorFilter ? { actor: actorFilter } : {}),
   };
 
-  const { data: auditResponse, isLoading } = useAuditLog(params);
+  const { data: auditResponse, isLoading, isError } = useAuditLog(params);
   const entries = auditResponse?.data ?? [];
   const meta = auditResponse?.meta;
   const total = meta?.total ?? 0;
@@ -195,7 +196,7 @@ export default function AuditLogPage() {
               <Input
                 id="filter-action"
                 type="text"
-                placeholder="e.g. credential_set"
+                placeholder="e.g. model.priority"
                 value={filters.action}
                 onChange={(e) => handleFilterChange("action", e.target.value)}
                 className="w-48"
@@ -236,7 +237,7 @@ export default function AuditLogPage() {
       {/* Audit log table */}
       <Card>
         <CardContent>
-          <AuditLogTable entries={entries} isLoading={isLoading} />
+          <AuditLogTable entries={entries} isLoading={isLoading} isError={isError} />
         </CardContent>
       </Card>
 

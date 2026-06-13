@@ -36,6 +36,15 @@ function makeAuditResponse(entries: AuditLogEntry[] = []) {
       meta: { total: entries.length, offset: 0, limit: 20, has_more: false },
     },
     isLoading: false,
+    isError: false,
+  };
+}
+
+function makeAuditErrorResponse() {
+  return {
+    data: undefined,
+    isLoading: false,
+    isError: true,
   };
 }
 
@@ -118,6 +127,14 @@ describe("AuditLogPage — ?actor= deep-link", () => {
     expect(calls.length).toBeGreaterThan(0);
     const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
     expect(params.actor).toBe("cli-abc123");
+  });
+
+  it("hydrates the actor filter input from ?actor= deep-link", () => {
+    setupDefaults();
+    const html = renderPage("/audit-log?actor=cli-abc123");
+    // The actor filter <input> value should reflect the deep-link actor.
+    expect(html).toContain('id="filter-actor"');
+    expect(html).toContain('value="cli-abc123"');
   });
 
   it("renders the actor filter chip when ?actor= is present", () => {
@@ -247,5 +264,39 @@ describe("AuditLogPage — table renders new-schema rows", () => {
     expect(html).toContain("credential_set");
     expect(html).toContain("session_start");
     expect(html).toContain("qa");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Action filter placeholder uses a real action name
+// ---------------------------------------------------------------------------
+
+describe("AuditLogPage — action filter placeholder", () => {
+  it("uses a real action name as the action filter placeholder", () => {
+    setupDefaults();
+    const html = renderPage("/audit-log");
+    // The placeholder must be a real action (e.g. model.priority), not the
+    // non-existent "credential_set".
+    expect(html).toContain('placeholder="e.g. model.priority"');
+    expect(html).not.toContain('placeholder="e.g. credential_set"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error state — a failed fetch (e.g. 503) shows an error, not "no entries"
+// ---------------------------------------------------------------------------
+
+describe("AuditLogPage — error state", () => {
+  it("renders an unavailable error state (not the empty state) when the fetch fails", () => {
+    vi.mocked(useAuditLog).mockReturnValue(
+      makeAuditErrorResponse() as unknown as ReturnType<typeof useAuditLog>,
+    );
+    vi.mocked(useButlers).mockReturnValue(
+      makeEmptyButlersResponse() as unknown as ReturnType<typeof useButlers>,
+    );
+
+    const html = renderPage("/audit-log");
+    expect(html).toContain("Audit log unavailable.");
+    expect(html).not.toContain("No audit entries found.");
   });
 });

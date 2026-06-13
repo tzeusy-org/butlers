@@ -19,6 +19,7 @@ import {
 interface AuditLogTableProps {
   entries: AuditLogEntry[];
   isLoading?: boolean;
+  isError?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,11 +45,22 @@ function LoadingSkeleton() {
 // AuditLogTable
 // ---------------------------------------------------------------------------
 
-export default function AuditLogTable({ entries, isLoading }: AuditLogTableProps) {
+export default function AuditLogTable({ entries, isLoading, isError }: AuditLogTableProps) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   function toggleExpanded(id: number) {
     setExpandedId((prev) => (prev === id ? null : id));
+  }
+
+  // Surface fetch failures (e.g. a 503 from an un-migrated audit table) as an
+  // explicit error state rather than an honest-looking "no entries" empty state.
+  if (!isLoading && isError) {
+    return (
+      <EmptyState
+        title="Audit log unavailable."
+        description="Failed to load audit log entries. The audit log may be temporarily unavailable — try again shortly."
+      />
+    );
   }
 
   if (!isLoading && entries.length === 0) {
