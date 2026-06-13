@@ -180,6 +180,7 @@ export {
   getRuleSuggestions,
   rejectAction,
   retryAction,
+  retryApproval,
   revokeApprovalRule,
   setPrimaryCalendar,
   syncCalendarWorkspace,

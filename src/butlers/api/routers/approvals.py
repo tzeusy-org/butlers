@@ -678,6 +678,8 @@ async def approve_action(
     action_resp = ApprovalAction(
         **{k: result[k] for k in ApprovalAction.model_fields if k in result}
     )
+    # Honest dispatch status (see approve_approval): only 'executed' actually ran.
+    action_resp.dispatched = action_resp.status == "executed"
     # Emit stream event
     _emit_kind_legacy = "executed" if action_resp.status == "executed" else "approved"
     emit_approvals_event(
@@ -835,7 +837,9 @@ async def retry_action(
         updated_row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
     pa = PendingAction.from_row(updated_row or row)
     tc = await _resolve_target_contact(db_mgr, pa)
-    return ApiResponse(data=_pending_action_to_api(pa, action_butler, tc))
+    action_resp = _pending_action_to_api(pa, action_butler, tc)
+    action_resp.dispatched = action_resp.status == "executed"
+    return ApiResponse(data=action_resp)
 
 
 @router.post("/actions/{action_id}/reject")
@@ -1959,6 +1963,10 @@ async def approve_approval(
     action_resp = ApprovalAction(
         **{k: result[k] for k in ApprovalAction.model_fields if k in result}
     )
+    # Honest dispatch status: the action only ran if it reached 'executed'.
+    # 'approved' means approved-but-not-yet-dispatched (e.g. no reachable daemon);
+    # it stays retry-able. Surface this so the FE never claims success falsely.
+    action_resp.dispatched = action_resp.status == "executed"
     # Emit stream event: approved → executed if dispatch succeeded, else just approved
     _emit_kind = "executed" if action_resp.status == "executed" else "approved"
     emit_approvals_event(
@@ -2087,6 +2095,77 @@ async def defer_approval(
         new_expires_at=new_expires_at.isoformat(),
     )
     return ApiResponse(data=_pending_action_to_api(pa, action_butler, tc))
+
+
+@router.post("/{action_id}/retry")
+async def retry_approval(
+    action_id: str,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
+) -> ApiResponse[ApprovalAction]:
+    """Retry dispatch for an approved-but-un-run action — POST /api/approvals/{id}/retry.
+
+    Dispatch-language mirror of ``/actions/{id}/retry`` for the Approvals/Dispatch
+    page. Only actions stuck in ``approved`` (approved by a human but never
+    dispatched, e.g. no reachable butler daemon at approve time) can be retried.
+    The response carries the honest ``dispatched`` flag so the FE can tell
+    whether the retry actually ran the action.
+    """
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    action_butler, target_pool = found
+
+    async with target_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+
+    status = row["status"]
+    if status != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot retry action with status '{status}'; "
+                "only 'approved' actions can be retried"
+            ),
+        )
+
+    if row.get("execution_result") is not None:
+        raise HTTPException(status_code=409, detail="Action already has an execution result")
+
+    tool_name = row["tool_name"]
+    raw_args = row["tool_args"]
+    tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+
+    dispatch_result = await _dispatch_approved_action(
+        mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args
+    )
+
+    if dispatch_result is None:
+        raise HTTPException(status_code=502, detail="No reachable butler to dispatch action")
+
+    # Re-read the row to get the final state after execution.
+    async with target_pool.acquire() as conn:
+        updated_row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+    pa = PendingAction.from_row(updated_row or row)
+    tc = await _resolve_target_contact(db_mgr, pa)
+    action_resp = _pending_action_to_api(pa, action_butler, tc)
+    action_resp.dispatched = action_resp.status == "executed"
+    emit_approvals_event(
+        "executed" if action_resp.status == "executed" else "approved",
+        action_id,
+        butler=action_butler,
+        tool_name=action_resp.tool_name,
+        status=action_resp.status,
+    )
+    return ApiResponse(data=action_resp)
 
 
 # ---------------------------------------------------------------------------

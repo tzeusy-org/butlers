@@ -30,6 +30,7 @@ import {
   getApprovalsFlat,
   getApprovalsHistory,
   getApprovalsPolicy,
+  retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
@@ -158,7 +159,19 @@ function Dossier({
 
   const approveMut = useMutation({
     mutationFn: () => approveApproval(actionId),
-    onSuccess: () => { toast.success("Approved"); invalidate(); },
+    onSuccess: (res) => {
+      // Honest outcome: the action only ran if the backend dispatched it
+      // (status "executed" / dispatched=true). Otherwise it is approved but
+      // un-run and stays retry-able — do not claim success.
+      const action = res?.data;
+      const ran = action?.dispatched === true || action?.status === "executed";
+      if (ran) {
+        toast.success("Approved & dispatched");
+      } else {
+        toast.warning("Approved — queued, not yet run. Retry from History.");
+      }
+      invalidate();
+    },
     onError: (e: Error) => toast.error(`Approve failed: ${e.message}`),
   });
 
@@ -553,6 +566,41 @@ function PolicySection() {
 // History section
 // ---------------------------------------------------------------------------
 
+function RetryDispatchButton({ actionId }: { actionId: string }) {
+  const qc = useQueryClient();
+  const retryMut = useMutation({
+    mutationFn: () => retryApproval(actionId),
+    onSuccess: (res) => {
+      const action = res?.data;
+      const ran = action?.dispatched === true || action?.status === "executed";
+      if (ran) {
+        toast.success("Dispatched");
+      } else {
+        toast.warning("Still not run — no reachable butler");
+      }
+      qc.invalidateQueries({ queryKey: Q.history() });
+      qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+    },
+    onError: (e: Error) => toast.error(`Retry failed: ${e.message}`),
+  });
+
+  return (
+    <button
+      onClick={() => retryMut.mutate()}
+      disabled={retryMut.isPending}
+      className={[
+        "shrink-0 py-0.5 px-2 rounded text-[10px] font-mono uppercase tracking-wide border",
+        "border-border text-foreground transition-colors",
+        retryMut.isPending
+          ? "opacity-50 cursor-not-allowed"
+          : "hover:border-foreground/40",
+      ].join(" ")}
+    >
+      {retryMut.isPending ? "retrying…" : "Retry dispatch"}
+    </button>
+  );
+}
+
 function HistorySection() {
   const { data, isLoading } = useQuery({
     queryKey: Q.history(),
@@ -583,6 +631,9 @@ function HistorySection() {
             {item.status}
           </span>
           <span className="text-sm truncate flex-1">{item.tool_name.replace(/_/g, " ")}</span>
+          {/* "approved" in History = approved-but-un-run (dispatch silently
+              failed). Offer a retry; "executed" rows ran successfully. */}
+          {item.status === "approved" && <RetryDispatchButton actionId={item.id} />}
           <span className="font-mono text-xs text-muted-foreground shrink-0">{item.butler}</span>
           <span className="font-mono text-[10px] text-muted-foreground shrink-0">
             {fmtTs(item.created_at)}

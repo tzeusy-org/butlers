@@ -46,6 +46,15 @@ class ApprovalAction(BaseModel):
     target_contact: TargetContact | None = None
     why: str | None = None
     evidence: list[str] = Field(default_factory=list)
+    dispatched: bool = Field(
+        default=False,
+        description=(
+            "True when the approved action was actually dispatched and executed "
+            "(status 'executed'). False when it was approved but not yet run "
+            "(e.g. no reachable butler daemon); such actions remain in 'approved' "
+            "state and can be retried."
+        ),
+    )
 
 
 class ApprovalDetail(BaseModel):

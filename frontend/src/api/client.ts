@@ -2553,6 +2553,15 @@ export function approveApproval(
   );
 }
 
+export function retryApproval(
+  actionId: string,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/${encodeURIComponent(actionId)}/retry`,
+    { method: "POST" },
+  );
+}
+
 export function denyApproval(
   actionId: string,
   request?: ApprovalDenyRequest,

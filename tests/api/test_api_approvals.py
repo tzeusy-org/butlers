@@ -549,6 +549,188 @@ async def test_approve_audits_action(app):
     assert approve_audits[0]["target"] == str(action_id)
 
 
+async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
+    """Regression (bu-j1xkd): approve with no reachable butler must NOT claim it ran.
+
+    When no daemon can dispatch the action, the row stays status='approved'
+    (un-run). The API response must surface dispatched=False / status='approved'
+    so the FE does not falsely toast success.
+    """
+    from unittest.mock import patch
+
+    import butlers.api.routers.audit as audit_router
+    from butlers.api.routers.approvals import _get_db_manager
+
+    action_id = uuid4()
+    pending_row = _make_pending_row(status="pending")
+    pending_row["id"] = action_id
+
+    # approve_action returns the row in 'approved' state (dispatch not yet run).
+    approved_result = {
+        "id": str(action_id),
+        "tool_name": "send_email",
+        "tool_args": {"to": "user@example.com", "subject": "Hello"},
+        "status": "approved",
+        "requested_at": _NOW.isoformat(),
+        "butler": "general",
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": "dashboard:rest-api",
+        "decided_at": _NOW.isoformat(),
+        "execution_result": None,
+        "approval_rule_id": None,
+    }
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
+    mock_conn.execute = AsyncMock()
+
+    def fetchval_side(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return 1
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    mock_pool.fetchrow = AsyncMock(return_value=pending_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    # No reachable butlers — get_client raises so _dispatch_approved_action
+    # exhausts its targets and returns None (action stays 'approved').
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    mock_mcp.get_client = AsyncMock(side_effect=RuntimeError("no daemon"))
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
+        return 1
+
+    with patch.object(audit_router, "append", fake_append):
+        with patch(
+            "butlers.modules.approvals.operations.approve_action",
+            AsyncMock(return_value=approved_result),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(f"/api/approvals/{action_id}/approve", json={})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    assert body["status"] == "approved"
+    assert body["dispatched"] is False
+
+
+async def test_approve_daemon_reachable_reports_dispatched(app):
+    """Regression (bu-j1xkd): approve that actually dispatches reports executed.
+
+    When a daemon runs the tool, the row reaches status='executed' and the
+    response must report dispatched=True.
+    """
+    from unittest.mock import patch
+
+    import butlers.api.routers.audit as audit_router
+    import butlers.modules.approvals.operations as approvals_ops
+    from butlers.api.routers.approvals import _get_db_manager
+
+    action_id = uuid4()
+    pending_row = _make_pending_row(status="pending")
+    pending_row["id"] = action_id
+
+    approved_result = {
+        "id": str(action_id),
+        "tool_name": "send_email",
+        "tool_args": {"to": "user@example.com", "subject": "Hello"},
+        "status": "approved",
+        "requested_at": _NOW.isoformat(),
+        "butler": "general",
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": "dashboard:rest-api",
+        "decided_at": _NOW.isoformat(),
+        "execution_result": None,
+        "approval_rule_id": None,
+    }
+    # After dispatch, mark_executed returns the row in 'executed' state.
+    executed_result = {**approved_result, "status": "executed", "execution_result": {"ok": True}}
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
+    mock_conn.execute = AsyncMock()
+
+    def fetchval_side(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return 1
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    mock_pool.fetchrow = AsyncMock(return_value=pending_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    # A reachable butler whose call_tool succeeds (non-error MCP result).
+    mcp_result = MagicMock()
+    mcp_result.is_error = False
+    mcp_result.content = []
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(return_value=mcp_result)
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = ["general"]
+    mock_mcp.get_client = AsyncMock(return_value=mock_client)
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
+        return 1
+
+    with patch.object(audit_router, "append", fake_append):
+        with patch.object(approvals_ops, "approve_action", AsyncMock(return_value=approved_result)):
+            with patch.object(
+                approvals_ops, "mark_executed", AsyncMock(return_value=executed_result)
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.post(f"/api/approvals/{action_id}/approve", json={})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    assert body["status"] == "executed"
+    assert body["dispatched"] is True
+
+
 async def test_deny_audits_action(app):
     """POST /api/approvals/{id}/deny calls audit.append('approval.deny', ...)."""
     from unittest.mock import patch

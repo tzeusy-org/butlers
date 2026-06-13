@@ -1607,6 +1607,14 @@ export interface ApprovalAction {
   target_contact?: TargetContact | null;
   why?: string | null;
   evidence?: string[];
+  /**
+   * True when the approved action was actually dispatched and executed
+   * (status "executed"). False when it was approved but not yet run (e.g. no
+   * reachable butler daemon) — such actions stay in "approved" state and can be
+   * retried via POST /api/approvals/{id}/retry. Never treat a 200 approve
+   * response as success without checking this.
+   */
+  dispatched?: boolean;
 }
 
 /** Compact summary for GET /api/approvals flat-list endpoint. */
