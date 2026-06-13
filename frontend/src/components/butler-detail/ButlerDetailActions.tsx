@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 
 import { triggerButler } from "@/api/index.ts";
@@ -60,6 +60,7 @@ export function ButlerDetailActions({
 }: ButlerDetailActionsProps) {
   const { data: registryResponse, isLoading: registryLoading } = useRegistry();
   const setEligibility = useSetEligibility();
+  const navigate = useNavigate();
 
   const [isForceRunning, setIsForceRunning] = useState(false);
 
@@ -74,8 +75,13 @@ export function ButlerDetailActions({
     if (isForceRunning) return;
     setIsForceRunning(true);
     try {
-      await triggerButler(butlerName, "Run your scheduled tick now.", "medium");
+      const response = await triggerButler(butlerName, "Run your scheduled tick now.", "medium");
       toast.success("Force run triggered");
+      // Link the operator straight to the spawned session rather than dropping
+      // the returned session_id on the floor.
+      if (response.session_id) {
+        navigate(`/sessions/${response.session_id}`);
+      }
     } catch {
       toast.error("Failed to trigger force run");
     } finally {

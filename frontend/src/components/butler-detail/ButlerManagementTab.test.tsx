@@ -40,18 +40,25 @@ vi.mock("@/hooks/use-butlers", () => ({
 vi.mock("@/hooks/use-butler-management", () => ({
   useButlerPrompt: vi.fn(),
   useUpdateButlerPrompt: vi.fn(),
+  useButlerPromptHistory: vi.fn(),
   useButlerTools: vi.fn(),
   useButlerMemoryAccess: vi.fn(),
   useKillButler: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-model-catalog", () => ({
+  useResolveModel: vi.fn(),
+}));
+
 import {
   useButlerPrompt,
   useUpdateButlerPrompt,
+  useButlerPromptHistory,
   useButlerTools,
   useButlerMemoryAccess,
   useKillButler,
 } from "@/hooks/use-butler-management";
+import { useResolveModel } from "@/hooks/use-model-catalog";
 import { useRuntimeConfig, usePatchRuntimeConfig } from "@/hooks/use-butlers";
 import { toast } from "sonner";
 
@@ -100,6 +107,31 @@ function setupDefaultHooks(mutateFn = vi.fn()) {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useKillButler>);
+
+  vi.mocked(useButlerPromptHistory).mockReturnValue({
+    data: { data: [] },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useButlerPromptHistory>);
+
+  vi.mocked(useResolveModel).mockReturnValue({
+    data: {
+      data: {
+        butler_name: "general",
+        complexity: "medium",
+        runtime_type: "codex",
+        model_id: "claude-opus-4-8",
+        extra_args: [],
+        session_timeout_s: 1800,
+        resolved: true,
+        quota_blocked: false,
+        usage_24h: 0,
+        limit_24h: null,
+        usage_30d: 0,
+        limit_30d: null,
+      },
+    },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useResolveModel>);
 }
 
 /** Open the PromptEditModal by clicking "edit prompt →". */
@@ -324,5 +356,121 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
     expect(mutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ max_concurrent: 5 }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: §1 model display + session timeout (bu-dr03f.4)
+//
+// The old §1 rendered a fake "configured" literal for the model. It now shows
+// the resolved model_id (from the model catalog, "medium" tier) and the
+// resolved per-session timeout, both read-only with a deep link to the Models
+// tab — session_timeout_s lives on public.model_catalog (core_073), not
+// runtime_config.
+// ---------------------------------------------------------------------------
+
+describe("§1 model display + session timeout", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: RUNTIME_CONFIG,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+  });
+  afterEach(() => cleanup());
+
+  it("shows the resolved model_id instead of a fake 'configured' literal", () => {
+    renderTab();
+    expect(screen.getByText("claude-opus-4-8")).toBeTruthy();
+    expect(screen.queryByText("configured")).toBeNull();
+  });
+
+  it("surfaces the resolved session timeout and a link to the Models tab", () => {
+    renderTab();
+    expect(screen.getByText("1800s")).toBeTruthy();
+    expect(screen.getByText("edit in models →")).toBeTruthy();
+  });
+
+  it("shows 'not configured' when the model does not resolve", () => {
+    vi.mocked(useResolveModel).mockReturnValue({
+      data: {
+        data: {
+          butler_name: "general",
+          complexity: "medium",
+          runtime_type: null,
+          model_id: null,
+          extra_args: [],
+          session_timeout_s: null,
+          resolved: false,
+          quota_blocked: false,
+          usage_24h: 0,
+          limit_24h: null,
+          usage_30d: 0,
+          limit_30d: null,
+        },
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useResolveModel>);
+    renderTab();
+    expect(screen.getByText("not configured")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: prompt diff modal (bu-dr03f.4)
+//
+// The "diff vs v{n-1}" affordance was a dead preventDefault link. It now opens
+// a modal that diffs the current head against the prior version using the
+// prompt-history reader.
+// ---------------------------------------------------------------------------
+
+describe("prompt diff modal", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: RUNTIME_CONFIG,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+    // Head is version 2 so the "diff vs v1" link renders.
+    vi.mocked(useButlerPrompt).mockReturnValue({
+      data: { data: { version: 2, prompt: "line a\nline c", updated_by: "owner" } },
+      isLoading: false,
+    } as ReturnType<typeof useButlerPrompt>);
+    vi.mocked(useButlerPromptHistory).mockReturnValue({
+      data: {
+        data: [
+          { butler_name: "general", prompt: "line a\nline c", version: 2, updated_at: "", updated_by: "owner" },
+          { butler_name: "general", prompt: "line a\nline b", version: 1, updated_at: "", updated_by: "owner" },
+        ],
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useButlerPromptHistory>);
+  });
+  afterEach(() => cleanup());
+
+  it("opens a diff modal showing added/removed lines instead of a dead link", () => {
+    renderTab();
+    fireEvent.click(screen.getByText("diff vs v1 →"));
+    // Modal header references the version range.
+    expect(screen.getByText(/diff · v1 → v2/)).toBeTruthy();
+    // The changed lines appear in the diff body.
+    expect(screen.getByText("line b")).toBeTruthy();
+    expect(screen.getByText("line c")).toBeTruthy();
   });
 });

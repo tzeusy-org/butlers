@@ -14,9 +14,9 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 
-import { useButlerMemoryAccess, useButlerPrompt, useButlerTools, useKillButler, useUpdateButlerPrompt } from "@/hooks/use-butler-management";
+import { useButlerMemoryAccess, useButlerPrompt, useButlerPromptHistory, useButlerTools, useKillButler, useUpdateButlerPrompt } from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
-import { useRuntimeConfig } from "@/hooks/use-butlers";
+import { useResolveModel } from "@/hooks/use-model-catalog";
 import { cn } from "@/lib/utils";
 import RuntimeConfigCard from "./RuntimeConfigCard";
 
@@ -106,22 +106,48 @@ function ConfigRow({ label, value }: { label: string; value: React.ReactNode }) 
 // ---------------------------------------------------------------------------
 
 function IdentitySection({ butlerName }: { butlerName: string }) {
-  const { data: rc } = useRuntimeConfig(butlerName);
+  // Model + per-session timeout are owned by the model catalog (resolved per
+  // complexity tier), not runtime_config — core_073 moved session_timeout_s onto
+  // public.model_catalog. We surface the resolved "medium"-tier model read-only
+  // here and defer all model/timeout editing to the Models tab.
+  const { data: resolved, isLoading } = useResolveModel(butlerName, "medium");
+  const r = resolved?.data;
 
   return (
     <Section n={1} title="Identity & routing" hint="model, fallback chain, schedule, ceilings">
       <div className="grid grid-cols-2 gap-8">
         <div>
-          <MonoCaption className="mb-2 block">model · fallback chain</MonoCaption>
+          <div className="mb-2 flex items-baseline justify-between gap-3">
+            <MonoCaption>model · medium tier</MonoCaption>
+            <Link
+              to={`/butlers/${butlerName}?tab=models`}
+              className="font-mono text-[10px] text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            >
+              edit in models →
+            </Link>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded border border-border bg-muted/30 px-2 py-1 font-mono text-[11px] text-foreground">
-              <span className="text-green-600 dark:text-green-400">primary · </span>
-              {rc ? "configured" : "—"}
+              <span className="text-green-600 dark:text-green-400">resolved · </span>
+              {isLoading ? "…" : r?.resolved && r.model_id ? r.model_id : "not configured"}
             </span>
+          </div>
+          <div className="mt-3 flex flex-col gap-1.5">
+            <ConfigRow
+              label="Session timeout"
+              value={
+                isLoading
+                  ? "…"
+                  : r?.resolved && r.session_timeout_s != null
+                    ? `${r.session_timeout_s}s`
+                    : "—"
+              }
+            />
           </div>
           <p className="mt-3 font-serif text-xs italic leading-relaxed text-muted-foreground">
             On primary failure the runtime tries each fallback in order with a 2s timeout. After
-            three exhausted attempts the butler pauses and an approval is opened.
+            three exhausted attempts the butler pauses and an approval is opened. Model selection and
+            the per-session timeout are managed in the Models tab.
           </p>
         </div>
         {/*
@@ -143,6 +169,7 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
 function SystemPromptSection({ butlerName }: { butlerName: string }) {
   const { data, isLoading } = useButlerPrompt(butlerName);
   const [showEdit, setShowEdit] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
 
   const pv = data?.data;
   const version = pv?.version ?? 0;
@@ -164,13 +191,13 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
               history · {version} version{version !== 1 ? "s" : ""} →
             </Link>
             {version > 1 && (
-              <a
-                href="#"
+              <button
+                type="button"
                 className="font-mono text-[11px] text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                onClick={(e) => e.preventDefault()}
+                onClick={() => setShowDiff(true)}
               >
                 diff vs v{version - 1} →
-              </a>
+              </button>
             )}
           </div>
         ) : null
@@ -207,7 +234,133 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
       {showEdit && (
         <PromptEditModal butlerName={butlerName} onClose={() => setShowEdit(false)} currentPrompt={prompt} />
       )}
+
+      {/* Diff modal — current head vs previous version */}
+      {showDiff && (
+        <PromptDiffModal
+          butlerName={butlerName}
+          currentVersion={version}
+          onClose={() => setShowDiff(false)}
+        />
+      )}
     </Section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Prompt diff modal — line-level diff of the current head vs the prior version.
+// Pulls both versions from the prompt-history reader (newest-first).
+// ---------------------------------------------------------------------------
+
+type DiffLine = { type: "added" | "removed" | "same"; text: string };
+
+/** Minimal LCS-based line diff. Sufficient for short system prompts. */
+function diffLines(a: string, b: string): DiffLine[] {
+  const aLines = a.split("\n");
+  const bLines = b.split("\n");
+  const n = aLines.length;
+  const m = bLines.length;
+  // LCS length table.
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] =
+        aLines[i] === bLines[j]
+          ? lcs[i + 1][j + 1] + 1
+          : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (aLines[i] === bLines[j]) {
+      out.push({ type: "same", text: aLines[i] });
+      i++;
+      j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      out.push({ type: "removed", text: aLines[i] });
+      i++;
+    } else {
+      out.push({ type: "added", text: bLines[j] });
+      j++;
+    }
+  }
+  while (i < n) out.push({ type: "removed", text: aLines[i++] });
+  while (j < m) out.push({ type: "added", text: bLines[j++] });
+  return out;
+}
+
+function PromptDiffModal({
+  butlerName,
+  currentVersion,
+  onClose,
+}: {
+  butlerName: string;
+  currentVersion: number;
+  onClose: () => void;
+}) {
+  // Fetch enough history to include the current head and the prior version.
+  const { data, isLoading } = useButlerPromptHistory(butlerName, { limit: 50 });
+  const versions = data?.data ?? [];
+
+  const current = versions.find((v) => v.version === currentVersion);
+  const previous = versions.find((v) => v.version === currentVersion - 1);
+
+  const lines =
+    current && previous ? diffLines(previous.prompt, current.prompt) : [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-border bg-background p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <span className="font-mono text-[11px] uppercase tracking-[0.10em] text-muted-foreground">
+            diff · v{currentVersion - 1} → v{currentVersion} · {butlerName}
+          </span>
+          <button
+            type="button"
+            className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </div>
+        {isLoading ? (
+          <div className="h-40 w-full animate-pulse rounded bg-muted" />
+        ) : !current || !previous ? (
+          <p className="font-mono text-[11px] text-muted-foreground">
+            Could not load both versions to diff.
+          </p>
+        ) : (
+          <div className="overflow-auto rounded border border-border bg-muted/10 p-3 font-mono text-[11px] leading-relaxed">
+            {lines.map((line, idx) => (
+              <div
+                key={idx}
+                className={cn(
+                  "whitespace-pre-wrap",
+                  line.type === "added" &&
+                    "bg-green-500/10 text-green-700 dark:text-green-400",
+                  line.type === "removed" &&
+                    "bg-red-500/10 text-red-700 dark:text-red-400",
+                  line.type === "same" && "text-muted-foreground",
+                )}
+              >
+                <span className="select-none opacity-60">
+                  {line.type === "added" ? "+ " : line.type === "removed" ? "- " : "  "}
+                </span>
+                {line.text || " "}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
