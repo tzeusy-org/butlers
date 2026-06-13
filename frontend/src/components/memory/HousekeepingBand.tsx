@@ -38,6 +38,7 @@ import {
   embeddingDriftSentence,
   formatCompactionCounts,
   formatUpdatedStamp,
+  isValidRetentionKind,
   reembedDoneLine,
 } from "@/lib/memory-housekeeping";
 import { cn } from "@/lib/utils";
@@ -113,6 +114,11 @@ function RetentionPolicies() {
   // touches it; the dirty set is the keys whose values differ from the row.
   const [edits, setEdits] = useState<Map<string, RetentionEdit>>(new Map());
 
+  // Kinds skipped at save time because they fail the backend's kind guard.
+  // Rows are server-sourced so this is defensive, but a malformed kind must
+  // never reach the PUT — we surface the skip rather than silently drop it.
+  const [skippedKinds, setSkippedKinds] = useState<string[]>([]);
+
   function baselineFor(kind: string): RetentionEdit {
     const row = policies.find((p) => p.kind === kind);
     return { ttl_days: row?.ttl_days ?? null, max_rows: row?.max_rows ?? null };
@@ -157,8 +163,15 @@ function RetentionPolicies() {
 
   function handleSave() {
     if (!isDirty || updateMutation.isPending) return;
-    // Only existing kinds are ever editable, so every entry is a valid kind.
-    const entries: UpdateRetentionPolicyEntry[] = dirtyKinds.map((kind) => {
+    // Defensive guard: rows are server-sourced and the grid offers no kind
+    // creation, but validate each dirty kind against the backend's accepted
+    // set before send. Invalid kinds are skipped (surfaced below) rather than
+    // PUT — a bad kind must never reach the API.
+    const validKinds = dirtyKinds.filter(isValidRetentionKind);
+    const skipped = dirtyKinds.filter((kind) => !isValidRetentionKind(kind));
+    setSkippedKinds(skipped);
+    if (validKinds.length === 0) return;
+    const entries: UpdateRetentionPolicyEntry[] = validKinds.map((kind) => {
       const edit = edits.get(kind) ?? baselineFor(kind);
       return { kind, ttl_days: edit.ttl_days, max_rows: edit.max_rows };
     });
@@ -168,7 +181,10 @@ function RetentionPolicies() {
         // Clear local edits on success: the query invalidates and re-fetches
         // with the new `updated` stamps, and the Save pill disappears because
         // no row is dirty any longer. No toast — the stamp is the confirmation.
-        onSuccess: () => setEdits(new Map()),
+        onSuccess: () => {
+          setEdits(new Map());
+          setSkippedKinds([]);
+        },
       },
     );
   }
@@ -238,6 +254,13 @@ function RetentionPolicies() {
             </div>
           ))}
         </div>
+      )}
+
+      {skippedKinds.length > 0 && (
+        <Mono muted className="text-[var(--red)]">
+          skipped invalid {skippedKinds.length === 1 ? "kind" : "kinds"}:{" "}
+          {skippedKinds.join(", ")}
+        </Mono>
       )}
 
       {updateMutation.isError && (

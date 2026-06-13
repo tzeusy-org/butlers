@@ -215,6 +215,72 @@ describe("HousekeepingBand", () => {
     expect(arg.policies).toEqual([{ kind: "event", ttl_days: 45, max_rows: 50000 }]);
   });
 
+  it("validates kinds with isValidRetentionKind and skips an invalid kind before PUT", () => {
+    // Defensive client-side guard (bu-itute): rows are server-sourced, but a
+    // kind outside the backend's accepted set must never reach the PUT. Edit
+    // both an invalid and a valid row; only the valid kind is sent.
+    wire({
+      policies: [
+        policy({ kind: "event", ttl_days: 30, max_rows: 50000 }),
+        policy({ kind: "bogus", ttl_days: 10, max_rows: 100 }),
+      ],
+    });
+    mounted = render();
+
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    const ttlEvent = mounted.container.querySelector<HTMLInputElement>(
+      'input[aria-label="event ttl days"]',
+    )!;
+    const ttlBogus = mounted.container.querySelector<HTMLInputElement>(
+      'input[aria-label="bogus ttl days"]',
+    )!;
+    act(() => {
+      setter.call(ttlEvent, "45");
+      ttlEvent.dispatchEvent(new Event("input", { bubbles: true }));
+      setter.call(ttlBogus, "99");
+      ttlBogus.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const save = Array.from(mounted.container.querySelectorAll("button")).find(
+      (b) => /save/i.test(b.textContent ?? ""),
+    )!;
+    act(() => save.click());
+
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    const arg = updateMutate.mock.calls[0][0] as {
+      policies: { kind: string; ttl_days: number | null; max_rows: number | null }[];
+    };
+    // Valid kind sent; invalid "bogus" kind skipped (never reaches the PUT).
+    expect(arg.policies).toEqual([{ kind: "event", ttl_days: 45, max_rows: 50000 }]);
+    expect(arg.policies.map((p) => p.kind)).not.toContain("bogus");
+    // The skipped kind is surfaced rather than silently dropped.
+    expect((mounted.container.textContent ?? "").toLowerCase()).toContain("bogus");
+  });
+
+  it("does not call the PUT when every dirty kind is invalid", () => {
+    wire({ policies: [policy({ kind: "bogus", ttl_days: 10, max_rows: 100 })] });
+    mounted = render();
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    const ttlBogus = mounted.container.querySelector<HTMLInputElement>(
+      'input[aria-label="bogus ttl days"]',
+    )!;
+    act(() => {
+      setter.call(ttlBogus, "99");
+      ttlBogus.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const save = Array.from(mounted.container.querySelectorAll("button")).find(
+      (b) => /save/i.test(b.textContent ?? ""),
+    )!;
+    act(() => save.click());
+    expect(updateMutate).not.toHaveBeenCalled();
+  });
+
   it("keeps exactly one Save commit pill across multiple dirty rows", () => {
     wire({
       policies: [policy({ kind: "event" }), policy({ kind: "fact", ttl_days: null, max_rows: null })],
