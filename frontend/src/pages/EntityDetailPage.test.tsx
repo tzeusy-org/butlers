@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
-import { useEntityFacts } from "@/hooks/use-entities";
+import { useEntityDeltaFacts, useEntityFacts } from "@/hooks/use-entities";
 import type { EntityDetail, EntityFact } from "@/api/types";
 
 // Mock react-router's useParams and useSearchParams so we can control both
@@ -264,6 +264,72 @@ describe("EntityDetailPage — facts section", () => {
     expect(html).toContain("/sessions/2e513477-a432-4d68-952b-b95226df0aa1?butler=general");
     expect(html).toContain("Load more facts");
     expect(html).toContain("1 of 2");
+  });
+
+  it("highlights fact rows that changed since the last visit (delta highlight)", () => {
+    // Spec ("Delta-since-last-visit"): "a highlight treatment on the delta
+    // rows". The delta-facts response carries the changed fact ids; the
+    // matching fact row gets a data-delta marker.
+    setEntityState({
+      ...BASE_ENTITY,
+      fact_count: 1,
+      recent_facts_total: 1,
+      recent_facts: [
+        {
+          id: "fact-changed",
+          subject: "user",
+          predicate: "prefers",
+          content: "tea",
+          importance: 5,
+          confidence: 0.9,
+          decay_rate: 0.008,
+          permanence: "standard",
+          source_butler: "general",
+          source_episode_id: null,
+          session_id: null,
+          supersedes_id: null,
+          entity_id: "entity-001",
+          entity_name: "Test Owner",
+          object_entity_id: null,
+          object_entity_name: null,
+          validity: "active",
+          scope: "global",
+          reference_count: 1,
+          created_at: "2025-01-01T12:00:00Z",
+          last_referenced_at: null,
+          last_confirmed_at: null,
+          tags: [],
+          metadata: {},
+        },
+      ],
+    });
+    // Mark "fact-changed" as a delta against a prior visit mark.
+    vi.mocked(useEntityDeltaFacts).mockReturnValue({
+      data: {
+        marked_at: "2024-12-01T00:00:00Z",
+        items: [
+          {
+            id: "fact-changed",
+            subject: "user",
+            predicate: "prefers",
+            object: "tea",
+            object_kind: "literal",
+            src: "relationship",
+            conf: 0.9,
+            store: "identity",
+            validity: "active",
+            created_at: "2025-01-01T12:00:00Z",
+            changed_at: "2025-01-01T12:00:00Z",
+          },
+        ],
+      },
+      isSuccess: true,
+    } as unknown as ReturnType<typeof useEntityDeltaFacts>);
+
+    const html = renderPage();
+
+    expect(html).toContain('data-delta="true"');
+    expect(html).toContain("delta-fact-row");
   });
 });
 

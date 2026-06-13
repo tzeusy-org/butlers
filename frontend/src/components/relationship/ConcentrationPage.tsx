@@ -28,6 +28,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
+import {
+  ProvenanceMarks,
+  stalenessBandForTimestamp,
+} from "@/components/ui/Provenance";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
@@ -207,7 +211,33 @@ function ConcentrationRow({ entry, rank, maxWeight, onOpen }: ConcentrationRowPr
             {sharePercent}
           </Badge>
 
-          {entry.last_seen != null && <Time value={entry.last_seen} mode="relative" />}
+          {/* Provenance marks — src + verified (spec: "each row carries its
+              `src` and `verified` marks"). Quiet attribution, not a score. */}
+          <ProvenanceMarks
+            src={entry.src}
+            verified={entry.verified}
+            data-testid="concentration-provenance"
+          />
+
+          {/* Staleness dim treatment on `last_seen`: a row whose most-recent
+              observation is stale visibly recedes (spec). The band is derived
+              from the timestamp with the same thresholds as the server. */}
+          {entry.last_seen != null && (
+            <span
+              data-stale={
+                stalenessBandForTimestamp(entry.last_seen) === "stale"
+                  ? "true"
+                  : undefined
+              }
+              className={
+                stalenessBandForTimestamp(entry.last_seen) === "stale"
+                  ? "opacity-40"
+                  : undefined
+              }
+            >
+              <Time value={entry.last_seen} mode="relative" />
+            </span>
+          )}
         </span>
       </button>
     </li>

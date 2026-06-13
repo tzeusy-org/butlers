@@ -334,6 +334,57 @@ describe("ConcentrationPage — entity rows", () => {
     // Alice: 48.0% share
     expect(badges[0]?.textContent).toContain("48.0%");
   });
+
+  it("renders src and verified provenance marks per row", () => {
+    // Spec ("Provenance rendering in the UI"): each Concentration row carries
+    // its `src` and `verified` marks.
+    renderPage("/entities/concentration");
+    const marks = container.querySelectorAll(
+      "[data-testid='concentration-provenance']",
+    );
+    expect(marks.length).toBe(2);
+    // Alice: src=relationship, verified=false → unverified mark.
+    const alice = container.querySelector("[data-entity-id='ent-alice-001']");
+    const aliceMark = alice?.querySelector(
+      "[data-testid='concentration-provenance']",
+    );
+    expect(aliceMark?.textContent).toContain("relationship");
+    expect(
+      aliceMark?.querySelector("[data-verified='false']"),
+    ).toBeTruthy();
+    // Bob: verified=true → verified mark.
+    const bob = container.querySelector("[data-entity-id='ent-bob-002']");
+    const bobMark = bob?.querySelector(
+      "[data-testid='concentration-provenance']",
+    );
+    expect(bobMark?.querySelector("[data-verified='true']")).toBeTruthy();
+  });
+
+  it("applies a stale dim treatment on last_seen for stale rows", () => {
+    // Spec: "a staleness dim treatment on `last_seen`". A row last seen well
+    // over the stale threshold (>180 days) receives the dim treatment; a
+    // recently-seen row does not.
+    const STALE_RESPONSE: ConcentrationResponse = {
+      ...KNOWS_RESPONSE,
+      items: [
+        { ...KNOWS_RESPONSE.items[0], last_seen: "2020-01-01T00:00:00Z" },
+        { ...KNOWS_RESPONSE.items[1], last_seen: new Date().toISOString() },
+      ],
+    };
+    vi.mocked(useEntityConcentration).mockReturnValue({
+      data: STALE_RESPONSE,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityConcentration>);
+
+    renderPage("/entities/concentration");
+    const staleRow = container.querySelector("[data-entity-id='ent-alice-001']");
+    expect(staleRow?.querySelector("[data-stale='true']")).toBeTruthy();
+    const freshRow = container.querySelector("[data-entity-id='ent-bob-002']");
+    expect(freshRow?.querySelector("[data-stale='true']")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

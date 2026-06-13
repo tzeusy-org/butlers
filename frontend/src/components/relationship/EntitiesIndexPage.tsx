@@ -634,8 +634,15 @@ function EntityTable({
             <tr
               key={entity.id}
               aria-selected={index === cursor || undefined}
-              className={`border-b last:border-0 hover:bg-muted/50 ${
-                index === cursor ? "bg-muted/60" : ""
+              data-cursor={index === cursor || undefined}
+              // Keyboard cursor focus = 2px left border, no glow (spec
+              // "Keyboard maps per view": "Focus states MUST be visible per the
+              // design language (2px left border, no glow)"). The transparent
+              // border on non-cursored rows keeps the table from reflowing.
+              className={`border-b border-l-2 last:border-b-0 hover:bg-muted/50 ${
+                index === cursor
+                  ? "border-l-foreground bg-muted/40"
+                  : "border-l-transparent"
               }`}
             >
               <td className="py-2.5 pr-2">

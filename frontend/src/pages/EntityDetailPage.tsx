@@ -94,6 +94,7 @@ import { useContacts } from "@/hooks/use-contacts";
 import {
   useArchiveRelationshipEntity,
   useEntityActivityBins,
+  useEntityDeltaFacts,
   useEntityFacts,
   useEntityGifts,
   useEntityLoans,
@@ -1409,6 +1410,15 @@ function FactsSection({
     [provenanceData],
   );
 
+  // Delta-since-last-visit highlight (spec: "a highlight treatment on the delta
+  // rows"). Shares the banner's cached delta-facts query (same queryKey), so no
+  // extra request. The set is empty on a first visit (no mark) — no highlight.
+  const { data: deltaData } = useEntityDeltaFacts(entityId);
+  const deltaFactIds = useMemo(
+    () => new Set((deltaData?.items ?? []).map((d) => d.id)),
+    [deltaData],
+  );
+
   const grouped = useMemo(() => {
     const map = new Map<string, Fact[]>();
     for (const fact of facts) {
@@ -1449,6 +1459,7 @@ function FactsSection({
                     fact={fact}
                     entityId={entityId}
                     provenance={_provenanceForFact(fact, provenanceIndex)}
+                    isDelta={deltaFactIds.has(fact.id)}
                   />
                 ))}
               </ul>
@@ -1477,10 +1488,13 @@ function FactRow({
   fact,
   entityId,
   provenance,
+  isDelta = false,
 }: {
   fact: Fact;
   entityId: string;
   provenance: EntityFact | null;
+  /** True when this fact changed since the owner's last visit (delta highlight). */
+  isDelta?: boolean;
 }) {
   const isIncoming =
     fact.object_entity_id === entityId && fact.entity_id !== entityId;
@@ -1492,7 +1506,17 @@ function FactRow({
   const hasProvenance = provenance != null;
 
   return (
-    <li className="py-2 text-sm">
+    <li
+      data-delta={isDelta || undefined}
+      data-testid={isDelta ? "delta-fact-row" : undefined}
+      // Delta highlight: a 2px left border marks facts changed since the last
+      // visit (spec "Delta-since-last-visit": "a highlight treatment on the
+      // delta rows"). Matches the design-language focus treatment (left border,
+      // no glow); the transparent border keeps unchanged rows from reflowing.
+      className={`border-l-2 py-2 pl-2 text-sm ${
+        isDelta ? "border-l-[var(--amber)]" : "border-l-transparent"
+      }`}
+    >
       <div className="grid grid-cols-[auto_1fr_auto] items-baseline gap-3">
         <span className="text-muted-foreground text-xs capitalize">
           {fact.predicate.replaceAll("_", " ")}

@@ -1217,6 +1217,19 @@ describe("EntitiesIndexPage — Index keyboard map (focused list container)", ()
     expect(count?.textContent).toContain("1");
   });
 
+  it("marks the cursored row with a 2px left border (design-language focus)", () => {
+    // Spec ("Keyboard maps per view"): "Focus states MUST be visible per the
+    // design language (2px left border, no glow)."
+    renderPage();
+    dispatchKey("ArrowDown"); // cursor → row 0
+    const cursored = container.querySelector("tr[data-cursor='true']");
+    expect(cursored).toBeTruthy();
+    expect(cursored?.className).toContain("border-l-2");
+    expect(cursored?.className).toContain("border-l-foreground");
+    // No glow/ring on the cursor treatment.
+    expect(cursored?.className).not.toContain("ring");
+  });
+
   it("Shift+Down extends the selection range", () => {
     renderPage();
     dispatchKey("ArrowDown"); // cursor → row 0
