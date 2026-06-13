@@ -1,3 +1,11 @@
+> **RECONCILIATION NOTE (bu-mjcmk, archived 2026-06-13).** These tasks describe
+> the originally-proposed build (incl. `?tz=` chain and `"UTC"` default). The
+> capability shipped under bu-ldj6y (commit `11c01dc51`) with different decisions;
+> the delta specs were reconciled to the as-built code and synced into
+> `openspec/specs/`. The task checkboxes below are historical and were NOT
+> re-verified against the as-built code line by line; see the proposal banner for
+> the actual as-built behavior.
+
 ## 1. Spec Landing
 
 - [ ] 1.1 Land this proposal, design, specs, and tasks via standard OpenSpec review

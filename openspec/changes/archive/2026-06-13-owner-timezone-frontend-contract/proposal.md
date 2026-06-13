@@ -1,3 +1,29 @@
+> **RECONCILIATION NOTE (bu-mjcmk, archived 2026-06-13).** The owner-timezone
+> context was implemented under a **different** bead (bu-ldj6y, commit `11c01dc51`)
+> with materially different decisions than the original delta specs below. Rather
+> than rewrite shipped, working code, the delta specs were **reconciled to the
+> as-built implementation** (the lower-risk path) and synced into
+> `openspec/specs/owner-timezone-context/spec.md` and
+> `openspec/specs/dashboard-shell/spec.md`. The text below is the **original
+> proposal as written** and is preserved for history; where it diverges from the
+> as-built code, the synced capability specs are authoritative.
+>
+> As-built vs. originally-proposed divergences (now reflected in the synced specs):
+> - Provider lives at `frontend/src/components/ui/timezone-context.tsx`
+>   (proposed: `frontend/src/lib/`).
+> - Named `AppTimezoneProvider` / `AppTimezoneContext` (proposed: `TimezoneProvider`).
+> - `DEFAULT_TZ = "Asia/Singapore"` and the App applies it as fallback
+>   (proposed: `"UTC"` deterministic default). Browser locale is still never used.
+> - No `?tz=` URL-param step and no `Intl.supportedValuesOf` validation — the App
+>   resolves `GET /api/settings/general` → `DEFAULT_TZ` only (proposed: a 3-step
+>   `?tz=` → settings → `"UTC"` chain). The provider is a thin context injector and
+>   does not fetch.
+> - Chronicles was **consolidated** onto the shared context via re-export aliases
+>   (`ChroniclesTimezoneProvider` = `AppTimezoneProvider`, `useChroniclesTimezone`
+>   = `useTimezone`), rather than kept as an isolated separate provider.
+> - `<Time>` correctly calls `useTimezone()` internally; its override prop is named
+>   `timezone` (proposed: `tz`).
+
 ## Why
 
 The dashboard's `<Time>` component (bu-v1tt2.2) and every page that renders timestamps need

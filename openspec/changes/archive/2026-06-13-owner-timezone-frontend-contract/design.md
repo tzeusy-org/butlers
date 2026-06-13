@@ -1,3 +1,11 @@
+> **RECONCILIATION NOTE (bu-mjcmk, archived 2026-06-13).** Implemented under
+> bu-ldj6y (commit `11c01dc51`) with materially different decisions than the
+> design below. The delta specs were reconciled to the as-built code and synced
+> into `openspec/specs/`. The design text below is preserved for history; the
+> synced `owner-timezone-context` / `dashboard-shell` specs are authoritative.
+> See the proposal banner for the full divergence list (provider path/name,
+> `DEFAULT_TZ="Asia/Singapore"`, no `?tz=` chain, Chronicles consolidated via aliases).
+
 ## Context
 
 The dashboard currently has timezone-awareness only in Chronicles. The existing pattern:

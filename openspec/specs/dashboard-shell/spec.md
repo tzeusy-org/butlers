@@ -54,6 +54,45 @@ The application SHALL boot via a React 18 StrictMode render. The provider hierar
 - **AND** the default retry count is 1 (one retry after initial failure)
 - **AND** these defaults can be overridden per-query by individual hooks
 
+### Requirement: Owner Timezone Resolution (cross-cutting shell contract)
+
+The dashboard application shell SHALL provide a dashboard-wide owner timezone context so that
+every page renders timestamps in the owner's configured timezone without per-page setup. The
+full behavior of the context, hook, default, and `<Time>` consumption is defined by the
+`owner-timezone-context` capability spec; this section records how the provider integrates
+into the shell's provider hierarchy.
+
+#### Scenario: AppTimezoneProvider is mounted at App level
+
+- **WHEN** the application boots
+- **THEN** `AppTimezoneProvider` (from `frontend/src/components/ui/timezone-context.tsx`) is
+  mounted inside `QueryClientProvider` and wrapping `RouterProvider`
+- **AND** every route in the application can call `useTimezone()` without any per-page setup
+
+#### Scenario: Provider hierarchy with timezone context
+
+- **WHEN** the `App` component renders
+- **THEN** the provider order from outermost to innermost is:
+  `StrictMode` > `QueryClientProvider` > `AppTimezoneProvider` > `RouterProvider`
+- **AND** `AppTimezoneProvider` is placed inside `QueryClientProvider` so the App can use
+  `useGeneralSettings()` (TanStack Query) to fetch the owner's timezone from
+  `GET /api/settings/general` and pass the resolved value into the provider's `timezone` prop
+
+#### Scenario: Timezone source of truth is GET /api/settings/general
+
+- **WHEN** the App resolves the owner's timezone
+- **THEN** the source is `GET /api/settings/general` → `.timezone` (IANA name), with
+  `DEFAULT_TZ` (`"Asia/Singapore"`) as the fallback until that value is available
+- **AND** the existing general settings endpoint is used (no new endpoint is required)
+- **AND** browser locale (`Intl.DateTimeFormat().resolvedOptions().timeZone`) is never used
+
+#### Scenario: Full cross-cutting contract reference
+
+- **WHEN** any dashboard page or component renders a timestamp
+- **THEN** it uses `<Time>` which calls `useTimezone()` internally
+- **AND** pages do NOT thread timezone as a prop to child components
+- **AND** the behavior is defined by the `owner-timezone-context` capability spec
+
 ### Requirement: Root Layout Composition
 
 The root layout SHALL be a single route wrapper that composes the shell structure. All page routes render as children of this layout via React Router's `<Outlet />`.
