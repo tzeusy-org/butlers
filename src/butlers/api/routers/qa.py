@@ -39,6 +39,7 @@ All reads/writes query ``public.qa_patrols``, ``public.qa_findings``,
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -53,6 +54,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import (
+    MCPClientManager,
+    get_mcp_manager,
+)
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -563,9 +568,22 @@ class QaTrends(BaseModel):
 
 
 class ForcePatrolResponse(BaseModel):
-    """Response from a force-patrol request."""
+    """Response from a force-patrol request.
+
+    ``triggered`` reports whether a patrol cycle was actually kicked off — either
+    in-process (when ``_get_force_patrol_fn`` is wired, e.g. embedded/daemon use)
+    or, in the typical standalone dashboard deployment, by crossing the process
+    boundary into the QA daemon via its ``force_patrol`` MCP tool.  It is
+    ``False`` only when no patrol could be started (no in-process callable AND no
+    reachable daemon, or the patrol was skipped — e.g. one is already running).
+
+    ``accepted`` mirrors ``triggered`` for backward compatibility with existing
+    dashboard clients.  Callers MUST surface ``triggered`` honestly instead of
+    claiming a patrol ran when it did not (the latent no-op fixed in bu-lcbzw).
+    """
 
     accepted: bool
+    triggered: bool = False
     message: str
 
 
@@ -2360,6 +2378,117 @@ async def get_qa_trends(
 
 
 # ---------------------------------------------------------------------------
+# Cross-process force-patrol via the QA daemon's force_patrol MCP tool
+# ---------------------------------------------------------------------------
+
+#: Name of the daemon-side QA MCP tool that triggers an immediate patrol cycle.
+_FORCE_PATROL_TOOL = "force_patrol"
+
+#: Timeout for the cross-process MCP call to the QA daemon.  A patrol can run a
+#: full scan synchronously, so allow generous headroom.
+_MCP_FORCE_PATROL_TIMEOUT_S = 120.0
+
+
+async def _force_patrol_via_daemon(
+    mcp_mgr: MCPClientManager,
+) -> dict | None:
+    """Invoke the QA daemon's ``force_patrol`` MCP tool and return its result dict.
+
+    The dashboard API runs in a separate process from the butler daemon and has
+    no QA module, so it cannot run a patrol directly.  This calls the
+    daemon-side ``force_patrol`` tool (registered by the QA module) so the patrol
+    actually runs in the daemon process where the patrol machinery lives.
+
+    The tool is hosted by the QA staffer butler.  If that butler is unreachable
+    (e.g. not running), we fall back to any other registered butler that exposes
+    the tool — but in practice only the QA butler wires the QA module, so the
+    fallback simply confirms no daemon can run the patrol.
+
+    Returns
+    -------
+    dict | None
+        The parsed patrol-result payload (``{"status": ..., ...}``) when a
+        daemon ran the patrol; ``None`` when no daemon could be reached or the
+        tool call failed on every candidate.
+    """
+    # Try the QA butler first, then any other registered butler.
+    candidates = [_QA_BUTLER_NAME] + [n for n in mcp_mgr.butler_names if n != _QA_BUTLER_NAME]
+
+    for candidate in candidates:
+        try:
+            client = await asyncio.wait_for(
+                mcp_mgr.get_client(candidate),
+                timeout=_MCP_FORCE_PATROL_TIMEOUT_S,
+            )
+        except Exception:
+            # ButlerUnreachableError, TimeoutError, or any connection failure.
+            logger.debug(
+                "force-patrol: butler %s unreachable; trying next",
+                candidate,
+                exc_info=True,
+            )
+            continue
+
+        try:
+            mcp_result = await asyncio.wait_for(
+                client.call_tool(_FORCE_PATROL_TOOL, {}),
+                timeout=_MCP_FORCE_PATROL_TIMEOUT_S,
+            )
+        except Exception:
+            # Tool not registered on this butler, or the call failed — try next.
+            logger.debug(
+                "force-patrol: force_patrol call failed on butler %s; trying next",
+                candidate,
+                exc_info=True,
+            )
+            await mcp_mgr.invalidate_client(candidate)
+            continue
+
+        # Parse the tool result payload (a JSON dict from _handle_force_patrol).
+        if not mcp_result.is_error and mcp_result.content:
+            for block in mcp_result.content:
+                text = getattr(block, "text", None)
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(payload, dict):
+                    logger.info(
+                        "force-patrol: ran via butler %s force_patrol tool (status=%s)",
+                        candidate,
+                        payload.get("status"),
+                    )
+                    return payload
+                break
+
+        logger.warning(
+            "force-patrol: butler %s force_patrol returned no usable result",
+            candidate,
+        )
+
+    return None
+
+
+def _force_patrol_message(result: dict) -> tuple[bool, str]:
+    """Map a patrol-result dict into ``(triggered, message)``.
+
+    A ``status`` of ``"skipped"`` means the patrol did not run (e.g. one is
+    already in progress, or the module is disabled).
+    """
+    triggered = result.get("status") not in ("skipped",)
+    if triggered:
+        message = (
+            f"Patrol triggered: {result.get('status', 'unknown')} "
+            f"({result.get('findings_count', 0)} findings)"
+        )
+    else:
+        message = f"Patrol skipped: {result.get('reason', 'unknown')}"
+    return triggered, message
+
+
+# ---------------------------------------------------------------------------
 # POST /api/qa/force-patrol — request an immediate patrol cycle
 # ---------------------------------------------------------------------------
 
@@ -2367,28 +2496,32 @@ async def get_qa_trends(
 @router.post("/force-patrol", response_model=ApiResponse[ForcePatrolResponse], status_code=202)
 async def force_patrol(
     force_patrol_fn=Depends(_get_force_patrol_fn),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ForcePatrolResponse]:
     """Request an immediate patrol cycle.
 
-    When the QA module is available in-process (daemon mode), the patrol runs
-    synchronously and the result is returned.  In standalone API mode (no
-    callable wired) the response is ``accepted=False`` with an informational
-    message — no action is taken.
+    When the QA module is available in-process (embedded/daemon mode, via a
+    ``_get_force_patrol_fn`` override) the patrol runs synchronously in-process
+    and the result is returned.
+
+    In the typical standalone dashboard deployment the API runs in a separate
+    process from the QA daemon and has no QA module, so it crosses the process
+    boundary by invoking the daemon's ``force_patrol`` MCP tool via the
+    ``MCPClientManager``.  That tool runs the patrol in the daemon process where
+    the patrol machinery lives.  When a daemon runs the patrol the response
+    reports ``triggered=True``; when no daemon can be reached (e.g. the QA butler
+    is not running) it reports ``triggered=False`` with a truthful message.
 
     Override ``_get_force_patrol_fn`` via ``app.dependency_overrides`` to wire
-    the live QA module callable in daemon deployments.
+    the live QA module callable in embedded deployments.
     """
     if force_patrol_fn is not None:
         try:
             result = await force_patrol_fn()
-            accepted = result.get("status") not in ("skipped",)
-            message = (
-                f"Patrol triggered: {result.get('status', 'unknown')} "
-                f"({result.get('findings_count', 0)} findings)"
-                if accepted
-                else f"Patrol skipped: {result.get('reason', 'unknown')}"
+            triggered, message = _force_patrol_message(result)
+            return ApiResponse(
+                data=ForcePatrolResponse(accepted=triggered, triggered=triggered, message=message)
             )
-            return ApiResponse(data=ForcePatrolResponse(accepted=accepted, message=message))
         except Exception as exc:  # noqa: BLE001
             error_code = uuid.uuid4().hex
             logger.exception("force-patrol callable raised [error_code=%s]", error_code)
@@ -2397,13 +2530,28 @@ async def force_patrol(
                 detail=f"Force patrol failed [error_code={error_code}]",
             ) from exc
 
-    # Standalone mode — no in-process callable wired; patrol cannot be triggered.
-    # The dashboard affordance is still available but has no effect until the
-    # QA module callable is injected via ``app.dependency_overrides``.
+    # Standalone mode — no in-process callable wired.  Cross the process boundary
+    # by invoking the QA daemon's ``force_patrol`` MCP tool, which runs the patrol
+    # in the daemon process where the patrol machinery lives.
+    result = await _force_patrol_via_daemon(mcp_mgr)
+    if result is not None:
+        triggered, message = _force_patrol_message(result)
+        return ApiResponse(
+            data=ForcePatrolResponse(accepted=triggered, triggered=triggered, message=message)
+        )
+
+    # The QA daemon could not be reached (e.g. butler not running) or rejected
+    # the call.  Report triggered=False so the UI does not falsely claim a patrol
+    # ran.
+    logger.warning(
+        "force-patrol: QA daemon unreachable via MCP; no patrol was triggered. "
+        "Ensure the QA staffer butler daemon is running with the qa module enabled."
+    )
     return ApiResponse(
         data=ForcePatrolResponse(
             accepted=False,
-            message="Force patrol is only supported when the QA daemon is running in-process.",
+            triggered=False,
+            message=("Force patrol unavailable — QA daemon unreachable, no patrol triggered."),
         )
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -12,6 +13,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_mcp_manager
 from butlers.api.routers.qa import (
     _fetch_model_from_catalog,
     _get_credentials_status_fn,
@@ -130,6 +132,41 @@ def _r(row: dict[str, Any]) -> _MockRecord:
     return _MockRecord(row)
 
 
+def _make_mcp_manager(*, butler_names: list[str] | None = None) -> MagicMock:
+    """Build a mock MCPClientManager with no reachable daemons by default."""
+    mgr = MagicMock()
+    mgr.butler_names = butler_names or []
+    # No daemons reachable by default — get_client raises for every name.
+    mgr.get_client = AsyncMock(side_effect=RuntimeError("no daemon"))
+    mgr.invalidate_client = AsyncMock()
+    return mgr
+
+
+def _make_mcp_manager_with_tool_result(
+    payload: dict[str, Any],
+    *,
+    butler_names: list[str] | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    """Build a mock MCPClientManager whose client returns ``payload`` from call_tool.
+
+    Returns ``(manager, client_mock)`` so tests can assert on the call_tool spy.
+    """
+    block = MagicMock()
+    block.text = json.dumps(payload)
+    tool_result = MagicMock()
+    tool_result.is_error = False
+    tool_result.content = [block]
+
+    client_mock = MagicMock()
+    client_mock.call_tool = AsyncMock(return_value=tool_result)
+
+    mgr = MagicMock()
+    mgr.butler_names = butler_names or ["qa"]
+    mgr.get_client = AsyncMock(return_value=client_mock)
+    mgr.invalidate_client = AsyncMock()
+    return mgr, client_mock
+
+
 def _build_app(
     *,
     fetch_rows: list[dict[str, Any]] | None = None,
@@ -139,6 +176,7 @@ def _build_app(
     fetch_side_effect: Any = None,
     fetchrow_side_effect: Any = None,
     fetchval_side_effect: Any = None,
+    mcp_manager: MagicMock | None = None,
 ) -> tuple[Any, MagicMock]:
     """Build a test FastAPI app with a mocked database pool."""
     mock_pool = AsyncMock()
@@ -164,6 +202,7 @@ def _build_app(
 
     app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager or _make_mcp_manager()
     return app, mock_pool
 
 
@@ -1011,12 +1050,14 @@ class TestKnownIssueDismissal:
 
 class TestForcePatrol:
     async def test_force_patrol_standalone_and_with_fn(self) -> None:
-        """Standalone (no fn): 202 accepted=False. With fn: accepted=True with status in message. Raising fn: 503."""
-        # Standalone mode
+        """Standalone (no fn, no daemon): 202 triggered=False. With fn: triggered=True
+        with status in message. Raising fn: 503."""
+        # Standalone mode — no in-process fn AND no reachable daemon.
         r = await _call(_build_app()[0], "post", "/api/qa/force-patrol")
         assert (
             r.status_code == 202
             and r.json()["data"]["accepted"] is False
+            and r.json()["data"]["triggered"] is False
             and "message" in r.json()["data"]
         )
 
@@ -1035,6 +1076,7 @@ class TestForcePatrol:
         r2 = await _call(app2, "post", "/api/qa/force-patrol")
         assert (
             r2.json()["data"]["accepted"] is True
+            and r2.json()["data"]["triggered"] is True
             and "findings_dispatched" in r2.json()["data"]["message"]
         )
 
@@ -1044,6 +1086,71 @@ class TestForcePatrol:
         app3, _ = _build_app()
         app3.dependency_overrides[_get_force_patrol_fn] = lambda: _failing
         assert (await _call(app3, "post", "/api/qa/force-patrol")).status_code == 503
+
+    async def test_force_patrol_dispatches_via_daemon_mcp_and_reports_triggered(self) -> None:
+        """Cross-process path: with no in-process fn, force-patrol invokes the QA daemon
+        force_patrol MCP tool and reports triggered=True on success.
+
+        Pre-fix this endpoint was a silent no-op in the standalone dashboard process
+        (it returned accepted=False without ever calling the daemon). Post-fix it
+        crosses the process boundary via MCPClientManager.call_tool.
+        """
+        mgr, client_mock = _make_mcp_manager_with_tool_result(
+            {
+                "status": "findings_dispatched",
+                "patrol_id": str(uuid.uuid4()),
+                "findings_count": 2,
+                "novel_count": 1,
+                "dispatched_count": 1,
+                "sources_polled": ["log_scanner"],
+            },
+            butler_names=["qa"],
+        )
+        app, _ = _build_app(mcp_manager=mgr)
+
+        r = await _call(app, "post", "/api/qa/force-patrol")
+
+        assert r.status_code == 202
+        body = r.json()["data"]
+        assert body["triggered"] is True
+        assert body["accepted"] is True
+        assert "findings_dispatched" in body["message"]
+
+        # The regression assertion: the daemon force_patrol tool was actually
+        # invoked (on the QA butler) — not a silent no-op.
+        mgr.get_client.assert_awaited_with("qa")
+        client_mock.call_tool.assert_awaited_once_with("force_patrol", {})
+
+    async def test_force_patrol_daemon_unreachable_reports_not_triggered(self) -> None:
+        """No in-process fn AND no reachable daemon → force-patrol must NOT claim it ran."""
+        mgr = _make_mcp_manager(butler_names=["qa"])
+        app, _ = _build_app(mcp_manager=mgr)
+
+        r = await _call(app, "post", "/api/qa/force-patrol")
+
+        assert r.status_code == 202
+        body = r.json()["data"]
+        assert body["triggered"] is False
+        assert body["accepted"] is False
+        assert "unreachable" in body["message"].lower()
+        # We attempted to reach the QA daemon before giving up.
+        mgr.get_client.assert_awaited()
+
+    async def test_force_patrol_daemon_skip_reports_not_triggered(self) -> None:
+        """Daemon reachable but patrol already running → status 'skipped' → triggered=False."""
+        mgr, client_mock = _make_mcp_manager_with_tool_result(
+            {"status": "skipped", "reason": "patrol_already_running"},
+            butler_names=["qa"],
+        )
+        app, _ = _build_app(mcp_manager=mgr)
+
+        r = await _call(app, "post", "/api/qa/force-patrol")
+
+        assert r.status_code == 202
+        body = r.json()["data"]
+        assert body["triggered"] is False
+        assert "patrol_already_running" in body["message"]
+        client_mock.call_tool.assert_awaited_once_with("force_patrol", {})
 
 
 class TestListDismissals:

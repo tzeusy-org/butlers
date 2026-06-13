@@ -3907,6 +3907,8 @@ export interface QaTrends {
 /** Response from POST /api/qa/force-patrol */
 export interface ForcePatrolResponse {
   accepted: boolean;
+  /** Whether a patrol cycle was actually triggered (in-process or via the QA daemon MCP tool). */
+  triggered?: boolean;
   message: string;
 }
 
