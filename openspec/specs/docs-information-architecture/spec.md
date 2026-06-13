@@ -320,8 +320,6 @@ docs/
       state.md
       observability.md
       performance.md
-    benchmark-report.md
-    test-audit-report.md
   roadmap/
     index.md
     project-plan.md

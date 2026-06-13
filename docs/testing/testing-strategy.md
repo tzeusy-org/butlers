@@ -113,5 +113,3 @@ The `pyproject.toml` `filterwarnings` section suppresses known noise:
 ## Related Pages
 
 - [Markers and Fixtures](markers-and-fixtures.md) -- Detailed fixture reference
-- [Benchmark Report](benchmark-report.md) -- Performance benchmark results
-- [Test Audit Report](test-audit-report.md) -- Coverage audit

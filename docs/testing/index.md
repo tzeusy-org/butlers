@@ -7,5 +7,3 @@
 - [Testing Strategy](testing-strategy.md) — test pyramid, unit vs integration vs E2E
 - [Markers and Fixtures](markers-and-fixtures.md) — pytest markers, shared fixtures, parallel execution
 - [E2E Suite](e2e/) — end-to-end test documentation
-- [Benchmark Report](benchmark-report.md) — performance benchmarks
-- [Test Audit Report](test-audit-report.md) — test coverage audit

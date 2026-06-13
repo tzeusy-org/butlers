@@ -148,5 +148,3 @@ Tests can use this to skip gracefully when Docker is not installed.
 ## Related Pages
 
 - [Testing Strategy](testing-strategy.md) -- Test pyramid and quality gates
-- [Benchmark Report](benchmark-report.md) -- Performance results
-- [Test Audit Report](test-audit-report.md) -- Coverage analysis

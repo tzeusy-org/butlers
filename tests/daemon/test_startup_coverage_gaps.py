@@ -1,4 +1,4 @@
-"""Tests for startup steps with zero coverage per BASELINE.md.
+"""Tests for startup steps that had zero coverage at daemon-decomposition baseline.
 
 Covers:
 - Step 1b: configure_logging is called with butler name and level from config
