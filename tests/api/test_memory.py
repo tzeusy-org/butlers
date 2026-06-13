@@ -1122,3 +1122,182 @@ async def test_retract_fact_503_when_no_pools_available(app):
         resp = await client.post(f"/api/memory/facts/{fact_id}/retract")
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/inspect — register-shaped result rows (bu-by2n0)
+# ---------------------------------------------------------------------------
+
+
+def _make_rule_row(
+    *,
+    rule_id: uuid.UUID,
+    content: str = "Always confirm before deleting",
+    maturity: str = "established",
+) -> dict:
+    """Build a dict mimicking an asyncpg Record for the rules table."""
+    return {
+        "id": rule_id,
+        "content": content,
+        "scope": "global",
+        "maturity": maturity,
+        "confidence": 0.7,
+        "decay_rate": 0.01,
+        "permanence": "standard",
+        "effectiveness_score": 0.42,
+        "applied_count": 9,
+        "success_count": 7,
+        "harmful_count": 2,
+        "source_episode_id": None,
+        "source_butler": "atlas",
+        "created_at": _NOW,
+        "last_applied_at": None,
+        "last_evaluated_at": None,
+        "tags": None,
+        "metadata": None,
+    }
+
+
+class _InspectPool:
+    """Fake pool for the inspect endpoint.
+
+    Routes ``fetch`` by FROM clause: episode/fact/rule queries return their
+    configured rows; the entity-name resolution query (public.entities) and any
+    other query return an empty list.  Records every fetch for query assertions.
+    """
+
+    def __init__(
+        self,
+        *,
+        episodes: list[dict] | None = None,
+        facts: list[dict] | None = None,
+        rules: list[dict] | None = None,
+    ) -> None:
+        self._episodes = [_make_record(r) for r in (episodes or [])]
+        self._facts = [_make_record(r) for r in (facts or [])]
+        self._rules = [_make_record(r) for r in (rules or [])]
+        self.fetch_calls: list[tuple] = []
+
+    async def fetchval(self, query: str, *args: object):
+        return 0
+
+    async def fetch(self, query: str, *args: object):
+        self.fetch_calls.append((query, args))
+        if "FROM episodes" in query:
+            return self._episodes
+        if "FROM facts" in query:
+            return self._facts
+        if "FROM rules" in query:
+            return self._rules
+        return []
+
+
+def _inspect_db(pool: _InspectPool) -> _FactsDB:
+    """Single-butler DatabaseManager stand-in for inspect tests."""
+    return _FactsDB({"atlas": pool})  # type: ignore[arg-type]
+
+
+async def test_inspect_fact_result_carries_full_register_fields(app):
+    """A fact inspect result embeds the full Fact register row (subject/confidence/...)."""
+    fact_id = uuid.uuid4()
+    row = _make_fact_row(fact_id=fact_id, subject="owner", predicate="likes")
+    pool = _InspectPool(facts=[row])
+    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "fact"})
+
+    assert resp.status_code == 200
+    results = resp.json()["data"]
+    assert len(results) == 1
+    r = results[0]
+    # Backward-compat flat fields still present.
+    assert r["id"] == str(fact_id)
+    assert r["kind"] == "fact"
+    assert "content" in r
+    assert "metadata" in r
+    # New register-shaped fact payload mirrors GET /facts.
+    assert r["fact"] is not None
+    assert r["fact"]["subject"] == "owner"
+    assert r["fact"]["predicate"] == "likes"
+    assert r["fact"]["confidence"] == 0.9
+    assert r["fact"]["validity"] == "active"
+    assert r["fact"]["permanence"] == "standard"
+    # Other kinds' payloads are absent.
+    assert r["rule"] is None
+    assert r["episode"] is None
+
+
+async def test_inspect_rule_result_carries_maturity_and_tally(app):
+    """A rule inspect result embeds the full Rule register row (maturity + counts)."""
+    rule_id = uuid.uuid4()
+    row = _make_rule_row(rule_id=rule_id, maturity="proven")
+    pool = _InspectPool(rules=[row])
+    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
+
+    assert resp.status_code == 200
+    results = resp.json()["data"]
+    assert len(results) == 1
+    r = results[0]
+    assert r["id"] == str(rule_id)
+    assert r["kind"] == "rule"
+    assert r["rule"] is not None
+    assert r["rule"]["maturity"] == "proven"
+    assert r["rule"]["applied_count"] == 9
+    assert r["rule"]["success_count"] == 7
+    assert r["rule"]["harmful_count"] == 2
+    assert r["fact"] is None
+    assert r["episode"] is None
+
+
+async def test_inspect_episode_result_carries_importance_and_status(app):
+    """An episode inspect result embeds the full Episode register row."""
+    row = _make_episode_row(content="Logged in", consolidation_status="dead_letter")
+    pool = _InspectPool(episodes=[row])
+    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "episode"})
+
+    assert resp.status_code == 200
+    results = resp.json()["data"]
+    assert len(results) == 1
+    r = results[0]
+    assert r["kind"] == "episode"
+    assert r["episode"] is not None
+    assert r["episode"]["importance"] == 0.5
+    assert r["episode"]["consolidation_status"] == "dead_letter"
+    assert r["episode"]["consolidated"] is False
+    assert r["fact"] is None
+    assert r["rule"] is None
+
+
+async def test_inspect_all_kinds_each_carry_their_register_payload(app):
+    """Unscoped inspect returns one of each kind, each with its register payload."""
+    pool = _InspectPool(
+        episodes=[_make_episode_row()],
+        facts=[_make_fact_row(fact_id=uuid.uuid4())],
+        rules=[_make_rule_row(rule_id=uuid.uuid4())],
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect")
+
+    assert resp.status_code == 200
+    results = resp.json()["data"]
+    by_kind = {r["kind"]: r for r in results}
+    assert by_kind["fact"]["fact"] is not None
+    assert by_kind["rule"]["rule"] is not None
+    assert by_kind["episode"]["episode"] is not None

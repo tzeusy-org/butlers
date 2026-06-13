@@ -242,7 +242,14 @@ class CompactionLogEntry(BaseModel):
 
 
 class MemoryInspectResult(BaseModel):
-    """A single result from the memory inspect search."""
+    """A single result from the memory inspect search.
+
+    The flat ``id``/``kind``/``content``/``butler``/``created_at``/``metadata``
+    fields identify the result uniformly across kinds.  In addition, exactly one
+    of ``fact``/``rule``/``episode`` is populated with the full register-shaped
+    row for the matching kind, so search results can render the same belief /
+    maturity / importance data as browse mode (no honest-default fallback).
+    """
 
     id: str
     kind: str  # "episode", "fact", "rule"
@@ -250,6 +257,10 @@ class MemoryInspectResult(BaseModel):
     butler: str | None = None
     created_at: str
     metadata: dict = {}
+    # Exactly one of these is set, matching ``kind`` — the full register row.
+    fact: Fact | None = None
+    rule: Rule | None = None
+    episode: Episode | None = None
 
 
 # ---------------------------------------------------------------------------

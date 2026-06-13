@@ -376,23 +376,7 @@ async def list_episodes(
     merged_rows = _sort_rows_by_created_at(merged_rows)
     rows = merged_rows[offset : offset + limit]
 
-    data = [
-        Episode(
-            id=str(r["id"]),
-            butler=r["butler"],
-            session_id=str(r["session_id"]) if r["session_id"] else None,
-            content=r["content"],
-            importance=float(r["importance"]),
-            reference_count=r["reference_count"],
-            consolidated=r["consolidated"],
-            consolidation_status=r["consolidation_status"],
-            created_at=str(r["created_at"]),
-            last_referenced_at=str(r["last_referenced_at"]) if r["last_referenced_at"] else None,
-            expires_at=str(r["expires_at"]) if r["expires_at"] else None,
-            metadata=_parse_jsonb(r["metadata"]),
-        )
-        for r in rows
-    ]
+    data = [_row_to_episode(r) for r in rows]
 
     return PaginatedResponse[Episode](
         data=data,
@@ -429,23 +413,7 @@ async def get_episode(
     if not rows:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    r = rows[0]
-    return ApiResponse[Episode](
-        data=Episode(
-            id=str(r["id"]),
-            butler=r["butler"],
-            session_id=str(r["session_id"]) if r["session_id"] else None,
-            content=r["content"],
-            importance=float(r["importance"]),
-            reference_count=r["reference_count"],
-            consolidated=r["consolidated"],
-            consolidation_status=r["consolidation_status"],
-            created_at=str(r["created_at"]),
-            last_referenced_at=str(r["last_referenced_at"]) if r["last_referenced_at"] else None,
-            expires_at=str(r["expires_at"]) if r["expires_at"] else None,
-            metadata=_parse_jsonb(r["metadata"]),
-        )
-    )
+    return ApiResponse[Episode](data=_row_to_episode(rows[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -1785,6 +1753,29 @@ async def promote_entity(
 # ---------------------------------------------------------------------------
 
 
+def _row_to_episode(r) -> Episode:
+    """Convert an asyncpg Record to an Episode model.
+
+    Expects the episodes column set used by the list/get/inspect endpoints
+    (id, butler, session_id, content, importance, reference_count, consolidated,
+    consolidation_status, created_at, last_referenced_at, expires_at, metadata).
+    """
+    return Episode(
+        id=str(r["id"]),
+        butler=r["butler"],
+        session_id=str(r["session_id"]) if r["session_id"] else None,
+        content=r["content"],
+        importance=float(r["importance"]),
+        reference_count=r["reference_count"],
+        consolidated=r["consolidated"],
+        consolidation_status=r["consolidation_status"],
+        created_at=str(r["created_at"]),
+        last_referenced_at=str(r["last_referenced_at"]) if r["last_referenced_at"] else None,
+        expires_at=str(r["expires_at"]) if r["expires_at"] else None,
+        metadata=_parse_jsonb(r["metadata"]),
+    )
+
+
 def _row_to_fact(r) -> Fact:
     """Convert an asyncpg Record to a Fact model."""
     return Fact(
@@ -2129,6 +2120,12 @@ async def inspect_memory(
     target_kinds = [kind] if kind else list(_INSPECT_VALID_KINDS)
     row_limit = offset + limit
 
+    # Each result carries the full register row for its kind (`fact`/`rule`/
+    # `episode`) in addition to the flat id/kind/content/butler/created_at/
+    # metadata fields, so search results render the same belief/maturity/
+    # importance data as browse mode.  We SELECT the same column sets the list
+    # endpoints use and reuse their serialization helpers (_row_to_fact /
+    # _row_to_rule / _row_to_episode) to keep the row shapes identical.
     async def _query_pool(_: str, pool: object) -> list[dict]:
         results: list[dict] = []
 
@@ -2141,7 +2138,9 @@ async def inspect_memory(
                 ep_args.append(q)
                 idx += 1
             ep_rows = await pool.fetch(
-                f"SELECT id, butler, content, created_at, metadata"
+                f"SELECT id, butler, session_id, content, importance, reference_count,"
+                f" consolidated, consolidation_status, created_at, last_referenced_at,"
+                f" expires_at, metadata"
                 f" FROM episodes{ep_cond}"
                 f" ORDER BY created_at DESC"
                 f" LIMIT ${idx}",
@@ -2149,14 +2148,16 @@ async def inspect_memory(
                 row_limit,
             )
             for r in ep_rows:
+                episode = _row_to_episode(r)
                 results.append(
                     {
-                        "id": str(r["id"]),
+                        "id": episode.id,
                         "kind": "episode",
-                        "content": r["content"] or "",
-                        "butler": r["butler"],
-                        "created_at": str(r["created_at"]),
-                        "metadata": _parse_jsonb(r["metadata"]),
+                        "content": episode.content or "",
+                        "butler": episode.butler,
+                        "created_at": episode.created_at,
+                        "metadata": episode.metadata,
+                        "episode": episode,
                     }
                 )
 
@@ -2169,7 +2170,11 @@ async def inspect_memory(
                 fact_args.append(q)
                 idx += 1
             fact_rows = await pool.fetch(
-                f"SELECT id, source_butler, content, created_at, metadata"
+                f"SELECT id, subject, predicate, content, importance, confidence,"
+                f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+                f" entity_id, object_entity_id, validity, scope, reference_count,"
+                f" created_at, last_referenced_at,"
+                f" last_confirmed_at, tags, metadata"
                 f" FROM facts{fact_cond}"
                 f" ORDER BY created_at DESC"
                 f" LIMIT ${idx}",
@@ -2177,14 +2182,16 @@ async def inspect_memory(
                 row_limit,
             )
             for r in fact_rows:
+                fact = _row_to_fact(r)
                 results.append(
                     {
-                        "id": str(r["id"]),
+                        "id": fact.id,
                         "kind": "fact",
-                        "content": r["content"] or "",
-                        "butler": r["source_butler"],
-                        "created_at": str(r["created_at"]),
-                        "metadata": _parse_jsonb(r["metadata"]),
+                        "content": fact.content or "",
+                        "butler": fact.source_butler,
+                        "created_at": fact.created_at,
+                        "metadata": fact.metadata,
+                        "fact": fact,
                     }
                 )
 
@@ -2197,7 +2204,10 @@ async def inspect_memory(
                 rule_args.append(q)
                 idx += 1
             rule_rows = await pool.fetch(
-                f"SELECT id, source_butler, content, created_at, metadata"
+                f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
+                f" effectiveness_score, applied_count, success_count, harmful_count,"
+                f" source_episode_id, source_butler, created_at, last_applied_at,"
+                f" last_evaluated_at, tags, metadata"
                 f" FROM rules{rule_cond}"
                 f" ORDER BY created_at DESC"
                 f" LIMIT ${idx}",
@@ -2205,14 +2215,16 @@ async def inspect_memory(
                 row_limit,
             )
             for r in rule_rows:
+                rule = _row_to_rule(r)
                 results.append(
                     {
-                        "id": str(r["id"]),
+                        "id": rule.id,
                         "kind": "rule",
-                        "content": r["content"] or "",
-                        "butler": r["source_butler"],
-                        "created_at": str(r["created_at"]),
-                        "metadata": _parse_jsonb(r["metadata"]),
+                        "content": rule.content or "",
+                        "butler": rule.source_butler,
+                        "created_at": rule.created_at,
+                        "metadata": rule.metadata,
+                        "rule": rule,
                     }
                 )
         return results
@@ -2228,6 +2240,12 @@ async def inspect_memory(
     total = len(merged)
     page = merged[offset : offset + limit]
 
+    # Resolve entity_id → canonical_name for the embedded fact payloads, mirroring
+    # GET /facts so the ledger row can label related entities the same way.
+    page_facts = [r["fact"] for r in page if r["kind"] == "fact" and r["fact"] is not None]
+    if page_facts:
+        await _resolve_entity_names(db, page_facts)
+
     data = [
         MemoryInspectResult(
             id=r["id"],
@@ -2236,6 +2254,9 @@ async def inspect_memory(
             butler=r["butler"],
             created_at=r["created_at"],
             metadata=r["metadata"],
+            fact=r.get("fact"),
+            rule=r.get("rule"),
+            episode=r.get("episode"),
         )
         for r in page
     ]
