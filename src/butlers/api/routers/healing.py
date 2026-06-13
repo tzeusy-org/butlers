@@ -28,13 +28,14 @@ When ``_get_dispatch_fn`` returns a callable the row is created with status
 the response reports ``dispatched=true``.
 
 When ``_get_dispatch_fn`` returns ``None`` (the typical dashboard deployment)
-the row is created with status ``investigating`` but NO agent is spawned, and
-the response reports ``dispatched=false`` with a truthful ``detail`` message.
-The daemon does not adopt orphan rows during normal runtime — it only reaps
-them as ``timeout``/``failed`` on restart via ``recover_stale_attempts`` — so
-the retry does not progress until a daemon-side dispatch path is wired (see the
-follow-up bead recommended in bu-cnvg7.2).  Callers MUST surface ``dispatched``
-honestly instead of claiming the investigation was re-dispatched.
+the row is created with status ``investigating`` and the retry endpoint crosses
+the process boundary by invoking the daemon's ``retry_healing`` MCP tool via the
+``MCPClientManager``.  That tool spawns the healing agent in the daemon process
+(where the spawner lives) by calling ``redispatch_attempt_by_id``.  When a
+daemon accepts the re-dispatch the response reports ``dispatched=true``; when no
+daemon can be reached (e.g. the owning butler is not running) it reports
+``dispatched=false`` with a truthful ``detail`` message.  Callers MUST surface
+``dispatched`` honestly instead of claiming the investigation was re-dispatched.
 
 Callers that override ``_get_dispatch_fn`` must return an async callable
 conforming to ``DispatchCallable`` (see class definition below).
@@ -42,6 +43,8 @@ conforming to ``DispatchCallable`` (see class definition below).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -51,6 +54,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import (
+    MCPClientManager,
+    get_mcp_manager,
+)
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.tracking import (
@@ -336,6 +343,107 @@ async def get_healing_attempt(
 
 
 # ---------------------------------------------------------------------------
+# Cross-process re-dispatch via the daemon's retry_healing MCP tool
+# ---------------------------------------------------------------------------
+
+#: Name of the daemon-side self_healing MCP tool that re-dispatches a retry.
+_RETRY_HEALING_TOOL = "retry_healing"
+
+#: Timeout for the cross-process MCP call to the daemon.
+_MCP_RETRY_TIMEOUT_S = 30.0
+
+
+async def _redispatch_via_daemon(
+    mcp_mgr: MCPClientManager,
+    butler_name: str,
+    attempt_id: uuid.UUID,
+) -> bool:
+    """Invoke the daemon's ``retry_healing`` MCP tool for *attempt_id*.
+
+    The dashboard API runs in a separate process from the butler daemon and
+    has no spawner, so it cannot dispatch a healing agent directly.  This calls
+    the daemon-side ``retry_healing`` tool (registered by the self_healing
+    module) so the actual spawn happens in the daemon process.
+
+    The tool is hosted by the butler that owns the failing session.  If that
+    butler is unreachable (e.g. not running), we fall back to trying every
+    registered butler that exposes the tool — any butler with the self_healing
+    module shares the same ``public.healing_attempts`` table and can re-dispatch
+    the row.
+
+    Returns
+    -------
+    bool
+        ``True`` if a daemon reported a successful re-dispatch
+        (``accepted=True``); ``False`` if no daemon could be reached or every
+        daemon rejected the re-dispatch.
+    """
+    # Try the owning butler first, then any other registered butler.
+    candidates = [butler_name] + [n for n in mcp_mgr.butler_names if n != butler_name]
+
+    for candidate in candidates:
+        try:
+            client = await asyncio.wait_for(
+                mcp_mgr.get_client(candidate),
+                timeout=_MCP_RETRY_TIMEOUT_S,
+            )
+        except Exception:
+            # ButlerUnreachableError, TimeoutError, or any connection failure.
+            logger.debug(
+                "retry: butler %s unreachable for retry_healing; trying next",
+                candidate,
+                exc_info=True,
+            )
+            continue
+
+        try:
+            mcp_result = await asyncio.wait_for(
+                client.call_tool(_RETRY_HEALING_TOOL, {"attempt_id": str(attempt_id)}),
+                timeout=_MCP_RETRY_TIMEOUT_S,
+            )
+        except Exception:
+            # Tool not registered on this butler, or call failed — try next.
+            logger.debug(
+                "retry: retry_healing call failed on butler %s; trying next",
+                candidate,
+                exc_info=True,
+            )
+            await mcp_mgr.invalidate_client(candidate)
+            continue
+
+        # Parse the tool result payload to confirm acceptance.
+        accepted = False
+        if not mcp_result.is_error and mcp_result.content:
+            for block in mcp_result.content:
+                text = getattr(block, "text", None)
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("accepted") is True:
+                    accepted = True
+                break
+
+        if accepted:
+            logger.info(
+                "retry: re-dispatched attempt=%s via butler %s retry_healing tool",
+                attempt_id,
+                candidate,
+            )
+            return True
+
+        logger.warning(
+            "retry: butler %s retry_healing did not accept attempt=%s",
+            candidate,
+            attempt_id,
+        )
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # POST /api/healing/attempts/{attempt_id}/retry — create new attempt
 # ---------------------------------------------------------------------------
 
@@ -350,6 +458,7 @@ async def retry_healing_attempt(
     background_tasks: BackgroundTasks,
     db: DatabaseManager = Depends(_get_db_manager),
     dispatch_fn: DispatchCallable | None = Depends(_get_dispatch_fn),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> RetryResponse:
     """Create a new healing attempt for the same fingerprint as an existing attempt
     and dispatch the healing agent.
@@ -450,7 +559,8 @@ async def retry_healing_attempt(
     )
 
     if dispatch_fn is not None:
-        # Dispatch callable is available — schedule healing agent in the background.
+        # In-process dispatch callable is available (embedded use / tests).
+        # Schedule the healing agent in the background.
         background_tasks.add_task(
             dispatch_fn,
             attempt_id=new_attempt_id,
@@ -469,20 +579,32 @@ async def retry_healing_attempt(
         dispatched = True
         detail = "Investigation re-dispatched."
     else:
-        # No in-process dispatch available (dashboard API is a separate process
-        # from the butler daemon).  The row is created as 'investigating' but NO
-        # agent is spawned here.  The daemon does not adopt orphan rows during
-        # normal runtime, so the investigation only progresses if a daemon-side
-        # dispatch path is wired (future work).  We MUST report dispatched=False
-        # so the UI does not falsely claim the investigation was re-dispatched.
-        logger.warning(
-            "No dispatch function available for retry attempt=%s; "
-            "row queued with status='investigating' but NO agent spawned. "
-            "Override _get_dispatch_fn dependency to enable immediate dispatch.",
-            new_attempt_id,
-        )
-        dispatched = False
-        detail = "Retry queued — no agent dispatched (daemon dispatch not wired)."
+        # No in-process dispatch callable (the typical dashboard deployment —
+        # the dashboard API runs in a separate process from the butler daemon
+        # and has no spawner).  Cross the process boundary by invoking the
+        # daemon's ``retry_healing`` MCP tool, which spawns the healing agent
+        # in the daemon process where the spawner lives.
+        dispatched = await _redispatch_via_daemon(mcp_mgr, butler_name, new_attempt_id)
+        if dispatched:
+            logger.info(
+                "Healing dispatch scheduled via daemon MCP for retry attempt=%s fingerprint=%s",
+                new_attempt_id,
+                fingerprint[:12],
+            )
+            detail = "Investigation re-dispatched."
+        else:
+            # The daemon could not be reached (e.g. butler not running) or it
+            # rejected the re-dispatch.  The row remains 'investigating' but no
+            # agent was spawned.  Report dispatched=False so the UI does not
+            # falsely claim the investigation was re-dispatched.
+            logger.warning(
+                "Daemon MCP re-dispatch unavailable for retry attempt=%s; "
+                "row queued with status='investigating' but NO agent spawned. "
+                "Ensure the owning butler daemon is running with the "
+                "self_healing module enabled.",
+                new_attempt_id,
+            )
+            detail = "Retry queued — daemon unreachable, no agent dispatched."
 
     return RetryResponse(
         attempt_id=new_row["id"],

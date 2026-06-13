@@ -46,6 +46,7 @@ from butlers.core.healing import (
     list_attempts,
     reap_stale_worktrees,
     recover_stale_attempts,
+    redispatch_attempt_by_id,
 )
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
@@ -349,6 +350,30 @@ class SelfHealingModule(Module):
                 returns the 5 most recent attempts for this butler.
             """
             return await module._handle_get_healing_status(fingerprint=fingerprint)
+
+        @mcp.tool()
+        async def retry_healing(attempt_id: str) -> dict:
+            """Re-dispatch a healing investigation by attempt id.
+
+            This is the daemon-side entry point for the dashboard "retry"
+            action.  The dashboard API runs in a separate process from the
+            butler daemon and has no spawner, so it cannot dispatch a healing
+            agent directly.  Instead it inserts a fresh ``investigating`` row
+            and calls this tool, which spawns the healing agent in the daemon
+            process where the spawner lives.
+
+            The 10-gate admission-control sequence is intentionally bypassed —
+            the operator explicitly requested the retry and the row already
+            exists.  Returns ``{accepted, fingerprint, reason, attempt_id}``
+            immediately; the healing agent runs asynchronously.
+
+            Parameters
+            ----------
+            attempt_id:
+                UUID string of the ``investigating`` healing attempt row to
+                re-dispatch (created by the dashboard retry endpoint).
+            """
+            return await module._handle_retry_healing(attempt_id=attempt_id)
 
     # ------------------------------------------------------------------
     # Tool handlers
@@ -721,6 +746,58 @@ class SelfHealingModule(Module):
             "attempts": [_serialize_attempt(a) for a in butler_attempts],
             "message": f"Found {len(butler_attempts)} healing attempt(s)",
         }
+
+    async def _handle_retry_healing(self, attempt_id: str) -> dict:
+        """Core handler for the ``retry_healing`` MCP tool.
+
+        Re-dispatches an existing ``investigating`` healing attempt by id,
+        spawning the healing agent in the daemon process (where the spawner
+        lives).  Returns a standard ``{accepted, fingerprint, reason}`` dict.
+        """
+        try:
+            parsed_id = uuid.UUID(str(attempt_id))
+        except (ValueError, AttributeError, TypeError):
+            return {
+                "accepted": False,
+                "reason": "invalid_attempt_id",
+                "message": f"Not a valid UUID: {attempt_id!r}",
+            }
+
+        if self._pool is None or self._spawner is None:
+            return {
+                "accepted": False,
+                "attempt_id": str(parsed_id),
+                "reason": "not_configured",
+                "message": "Self-healing module not fully initialised (no DB pool or spawner)",
+            }
+
+        healing_cfg = HealingConfig.from_module_config(self._config.model_dump())
+
+        # Prune completed watchdog tasks before dispatching.
+        self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
+
+        result = await redispatch_attempt_by_id(
+            pool=self._pool,
+            attempt_id=parsed_id,
+            config=healing_cfg,
+            repo_root=self._repo_root,
+            spawner=self._spawner,
+            task_registry=self._watchdog_tasks,
+            gh_token=None,
+            metrics=getattr(self._spawner, "_metrics", None),
+        )
+
+        response: dict = {
+            "accepted": result.accepted,
+            "fingerprint": result.fingerprint,
+            "reason": result.reason,
+            "attempt_id": str(result.attempt_id) if result.attempt_id else str(parsed_id),
+        }
+        if result.accepted:
+            response["message"] = "Healing agent re-dispatched"
+        else:
+            response["message"] = f"Re-dispatch rejected: {result.reason}"
+        return response
 
     # ------------------------------------------------------------------
     # Runtime wiring (called by daemon after register_tools)

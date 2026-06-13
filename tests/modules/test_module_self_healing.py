@@ -70,6 +70,7 @@ class TestToolRegistration:
         await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
         assert "report_error" in registered
         assert "get_healing_status" in registered
+        assert "retry_healing" in registered
 
     def test_tool_metadata_marks_sensitive_args(self) -> None:
         mod = _make_module()
@@ -144,6 +145,56 @@ class TestReportErrorBehavior:
         assert inner["source_butler"] == "relay-butler"
         assert inner["context"] == "relay context"
         assert len(inner["fingerprint"]) == 64
+
+
+class TestRetryHealingTool:
+    async def test_retry_healing_invalid_uuid_returns_error(self) -> None:
+        mod = _make_module()
+        result = await mod._handle_retry_healing(attempt_id="not-a-uuid")
+        assert result["accepted"] is False
+        assert result["reason"] == "invalid_attempt_id"
+
+    async def test_retry_healing_not_configured_returns_error(self) -> None:
+        mod = _make_module()
+        # No pool/spawner wired.
+        result = await mod._handle_retry_healing(attempt_id=str(uuid.uuid4()))
+        assert result["accepted"] is False
+        assert result["reason"] == "not_configured"
+
+    async def test_retry_healing_redispatches_existing_attempt(self, monkeypatch) -> None:
+        """The tool calls redispatch_attempt_by_id with the parsed attempt id."""
+        from butlers.core.healing import DispatchResult
+
+        mod = _make_module()
+        mod._pool = MagicMock()
+        mod._spawner = MagicMock()
+
+        attempt_id = uuid.uuid4()
+        captured: dict = {}
+
+        async def fake_redispatch(*, pool, attempt_id, config, repo_root, spawner, **kwargs):
+            captured["attempt_id"] = attempt_id
+            captured["pool"] = pool
+            captured["spawner"] = spawner
+            return DispatchResult(
+                accepted=True,
+                fingerprint="f" * 64,
+                reason="dispatched",
+                attempt_id=attempt_id,
+            )
+
+        monkeypatch.setattr(
+            "butlers.modules.self_healing.redispatch_attempt_by_id", fake_redispatch
+        )
+
+        result = await mod._handle_retry_healing(attempt_id=str(attempt_id))
+
+        assert result["accepted"] is True
+        assert result["reason"] == "dispatched"
+        assert result["attempt_id"] == str(attempt_id)
+        assert captured["attempt_id"] == attempt_id
+        assert captured["pool"] is mod._pool
+        assert captured["spawner"] is mod._spawner
 
 
 class TestSerializeAttempt:

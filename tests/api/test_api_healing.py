@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_mcp_manager
 from butlers.api.routers.healing import _get_db_manager, _get_dispatch_fn
 
 pytestmark = pytest.mark.unit
@@ -88,12 +90,23 @@ class _MockRecord(dict):
             raise AttributeError(name) from None
 
 
+def _make_mcp_manager(*, butler_names: list[str] | None = None) -> MagicMock:
+    """Build a mock MCPClientManager with no reachable daemons by default."""
+    mgr = MagicMock()
+    mgr.butler_names = butler_names or []
+    # No daemons reachable by default — get_client raises for every name.
+    mgr.get_client = AsyncMock(side_effect=RuntimeError("no daemon"))
+    mgr.invalidate_client = AsyncMock()
+    return mgr
+
+
 def _build_app(
     *,
     fetch_rows: list[dict[str, Any]] | None = None,
     fetchrow_result: dict[str, Any] | None = None,
     fetchval_result: Any = 0,
     db_pool_raises: Any = None,
+    mcp_manager: MagicMock | None = None,
 ) -> tuple[Any, MagicMock]:
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[_MockRecord(r) for r in (fetch_rows or [])])
@@ -111,6 +124,7 @@ def _build_app(
 
     app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager or _make_mcp_manager()
     return app, mock_pool
 
 
@@ -219,9 +233,11 @@ def _retry_fetchrow_sequence(
     return [_MockRecord(original), None, _MockRecord(inserted)]
 
 
-async def test_retry_without_dispatch_fn_reports_not_dispatched():
-    """Default deployment: no spawner → retry must NOT claim re-dispatch."""
-    app, mock_pool = _build_app()
+async def test_retry_without_dispatch_fn_daemon_unreachable_reports_not_dispatched():
+    """No in-process spawner AND no reachable daemon → retry must NOT claim re-dispatch."""
+    # Mock manager registers a butler but its daemon is unreachable.
+    mgr = _make_mcp_manager(butler_names=["general"])
+    app, mock_pool = _build_app(mcp_manager=mgr)
     mock_pool.fetchrow = AsyncMock(side_effect=_retry_fetchrow_sequence())
 
     async with httpx.AsyncClient(
@@ -236,6 +252,45 @@ async def test_retry_without_dispatch_fn_reports_not_dispatched():
     assert body["dispatched"] is False
     assert "re-dispatched" not in body["detail"].lower()
     assert body["status"] == "investigating"
+    # We attempted the owning butler's daemon before giving up.
+    mgr.get_client.assert_awaited()
+
+
+async def test_retry_redispatches_via_daemon_mcp_and_reports_dispatched():
+    """Cross-process path: retry invokes the daemon retry_healing MCP tool and reports True."""
+    mgr = _make_mcp_manager(butler_names=["general"])
+    app, mock_pool = _build_app(mcp_manager=mgr)
+    seq = _retry_fetchrow_sequence()
+    mock_pool.fetchrow = AsyncMock(side_effect=seq)
+    new_attempt_id = seq[2]["id"]
+
+    # The daemon's MCP client accepts the re-dispatch.
+    accepted_block = MagicMock()
+    accepted_block.text = json.dumps({"accepted": True, "reason": "dispatched"})
+    tool_result = MagicMock()
+    tool_result.is_error = False
+    tool_result.content = [accepted_block]
+
+    client_mock = MagicMock()
+    client_mock.call_tool = AsyncMock(return_value=tool_result)
+    mgr.get_client = AsyncMock(return_value=client_mock)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["dispatched"] is True
+    assert body["detail"] == "Investigation re-dispatched."
+
+    # The regression assertion: the daemon retry_healing tool was actually
+    # called with the NEW attempt's id — not a silent no-op.
+    mgr.get_client.assert_awaited_with("general")
+    client_mock.call_tool.assert_awaited_once_with(
+        "retry_healing", {"attempt_id": str(new_attempt_id)}
+    )
 
 
 async def test_retry_with_dispatch_fn_invokes_dispatch_and_reports_dispatched():

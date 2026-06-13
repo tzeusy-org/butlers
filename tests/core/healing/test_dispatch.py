@@ -25,6 +25,7 @@ from butlers.core.healing.dispatch import (
     _build_healing_prompt,
     _run_healing_session,
     dispatch_healing,
+    redispatch_attempt_by_id,
 )
 from butlers.core.healing.fingerprint import FingerprintResult
 
@@ -622,3 +623,102 @@ async def test_dispatch_healing_novelty_join_emits_event(tmp_path: Path) -> None
     mock_event.assert_awaited_once()
     assert mock_event.call_args.kwargs.get("decision") == "novelty_join"
     assert mock_event.call_args.kwargs.get("attempt_id") == existing_attempt_id
+
+
+# ---------------------------------------------------------------------------
+# redispatch_attempt_by_id — cross-process retry path (bu-qpx26)
+# ---------------------------------------------------------------------------
+
+
+def _make_attempt_row(
+    *,
+    attempt_id: uuid.UUID,
+    status: str = "investigating",
+    butler_name: str = "email",
+) -> dict:
+    return {
+        "id": attempt_id,
+        "fingerprint": "a" * 64,
+        "butler_name": butler_name,
+        "status": status,
+        "severity": 2,
+        "exception_type": "builtins.ValueError",
+        "call_site": "src/foo.py:bar",
+        "sanitized_msg": "connection failed",
+    }
+
+
+@pytest.mark.unit
+async def test_redispatch_attempt_by_id_spawns_for_investigating_row(tmp_path: Path) -> None:
+    """An existing investigating row is re-dispatched: worktree + healing task spawned."""
+    attempt_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.healing.dispatch.get_attempt",
+            new_callable=AsyncMock,
+            return_value=_make_attempt_row(attempt_id=attempt_id),
+        ),
+        patch(
+            "butlers.core.healing.dispatch.create_healing_worktree",
+            new_callable=AsyncMock,
+            return_value=(tmp_path / "wt/abc", "self-healing/email/abc"),
+        ),
+        patch(
+            "butlers.core.healing.dispatch.update_attempt_status",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("asyncio.create_task") as mock_create_task,
+    ):
+        mock_create_task.return_value = MagicMock()
+        result = await redispatch_attempt_by_id(
+            pool=_make_pool_all_pass(),
+            attempt_id=attempt_id,
+            config=_make_config(),
+            repo_root=tmp_path,
+            spawner=_make_spawner(),
+        )
+    assert result.accepted is True
+    assert result.reason == "dispatched"
+    assert result.attempt_id == attempt_id
+    # healing task + watchdog task both scheduled.
+    assert mock_create_task.call_count == 2
+
+
+@pytest.mark.unit
+async def test_redispatch_attempt_by_id_missing_row(tmp_path: Path) -> None:
+    """A missing attempt id is rejected without spawning."""
+    with patch(
+        "butlers.core.healing.dispatch.get_attempt",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        result = await redispatch_attempt_by_id(
+            pool=_make_pool_all_pass(),
+            attempt_id=uuid.uuid4(),
+            config=_make_config(),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+    assert result.accepted is False
+    assert result.reason == "not_found"
+
+
+@pytest.mark.unit
+async def test_redispatch_attempt_by_id_rejects_terminal_row(tmp_path: Path) -> None:
+    """A row not in 'investigating' status is rejected (avoids spawning on terminal rows)."""
+    attempt_id = uuid.uuid4()
+    with patch(
+        "butlers.core.healing.dispatch.get_attempt",
+        new_callable=AsyncMock,
+        return_value=_make_attempt_row(attempt_id=attempt_id, status="failed"),
+    ):
+        result = await redispatch_attempt_by_id(
+            pool=_make_pool_all_pass(),
+            attempt_id=attempt_id,
+            config=_make_config(),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+    assert result.accepted is False
+    assert result.reason == "not_investigating"

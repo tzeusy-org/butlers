@@ -1573,3 +1573,183 @@ async def redispatch_pending_attempt(
         reason="dispatched",
         attempt_id=attempt_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-process retry re-dispatch (dashboard → daemon)
+# ---------------------------------------------------------------------------
+
+
+async def redispatch_attempt_by_id(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    config: HealingConfig,
+    repo_root: Path,
+    spawner,  # Spawner instance — typed as Any to avoid circular import
+    task_registry: list[asyncio.Task] | None = None,
+    gh_token: str | None = None,
+    metrics: ButlerMetrics | None = None,
+) -> DispatchResult:
+    """Re-dispatch an already-``investigating`` healing attempt by its id.
+
+    This is the daemon-side entry point for the dashboard "retry" action.  The
+    dashboard API runs in a separate process from the butler daemon and has no
+    spawner, so it cannot dispatch directly.  Instead it inserts a fresh
+    ``investigating`` row and then invokes the daemon's ``retry_healing`` MCP
+    tool, which calls this function in the daemon process where the spawner
+    lives.
+
+    Unlike :func:`dispatch_healing`, this bypasses the 10-gate admission-control
+    sequence (novelty, cooldown, concurrency, circuit-breaker, severity, …): the
+    operator intentionally requested the retry and the row already exists.  Like
+    :func:`redispatch_pending_attempt`, it creates a worktree and spawns the
+    healing agent as a background task.
+
+    The attempt MUST already be in ``investigating`` status (the retry endpoint
+    creates it that way).  This function does not transition status before
+    spawning; the spawned session and watchdog own all subsequent transitions.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    attempt_id:
+        UUID of the ``investigating`` row created by the retry endpoint.
+    config:
+        ``HealingConfig`` for the butler.
+    repo_root:
+        Absolute path to the repository root (for worktree creation).
+    spawner:
+        The butler's ``Spawner`` instance.
+    task_registry:
+        Optional list to which the watchdog task will be appended.
+    gh_token:
+        GitHub token for ``gh pr create``.  Falls back to ``GH_TOKEN`` env var.
+    metrics:
+        Optional ``ButlerMetrics`` for recovery phase instrumentation.
+
+    Returns
+    -------
+    DispatchResult
+        ``accepted=True`` with ``reason="dispatched"`` when the agent was
+        scheduled; otherwise an explanatory rejection result.  Never raises.
+    """
+    try:
+        attempt_row = await get_attempt(pool, attempt_id)
+    except Exception as fetch_exc:
+        logger.warning(
+            "redispatch_attempt_by_id: failed to fetch attempt=%s: %s",
+            attempt_id,
+            fetch_exc,
+        )
+        return DispatchResult(accepted=False, fingerprint=None, reason="internal_error")
+
+    if attempt_row is None:
+        logger.warning("redispatch_attempt_by_id: attempt not found: %s", attempt_id)
+        return DispatchResult(accepted=False, fingerprint=None, reason="not_found")
+
+    fingerprint: str = attempt_row["fingerprint"]
+    butler_name: str = attempt_row["butler_name"]
+    status: str = attempt_row["status"]
+
+    if status != "investigating":
+        logger.warning(
+            "redispatch_attempt_by_id: attempt=%s is in status=%s, expected 'investigating'",
+            attempt_id,
+            status,
+        )
+        return DispatchResult(
+            accepted=False,
+            fingerprint=fingerprint,
+            reason="not_investigating",
+            attempt_id=attempt_id,
+        )
+
+    fp = FingerprintResult(
+        fingerprint=fingerprint,
+        severity=attempt_row["severity"],
+        exception_type=attempt_row["exception_type"],
+        call_site=attempt_row["call_site"],
+        sanitized_message=attempt_row.get("sanitized_msg") or "",
+    )
+
+    # Create a worktree for the healing agent.
+    try:
+        worktree_path, branch_name = await create_healing_worktree(
+            repo_root, butler_name, fingerprint
+        )
+    except WorktreeCreationError as wt_exc:
+        logger.warning(
+            "redispatch_attempt_by_id: worktree creation failed (attempt=%s): %s",
+            attempt_id,
+            wt_exc,
+        )
+        await update_attempt_status(
+            pool,
+            attempt_id,
+            "failed",
+            error_detail=(f"Worktree creation failed on retry: {wt_exc.git_output or str(wt_exc)}"),
+        )
+        return DispatchResult(
+            accepted=False,
+            fingerprint=fingerprint,
+            reason="worktree_creation_failed",
+            attempt_id=attempt_id,
+        )
+
+    # Record the worktree path and branch on the (already investigating) row.
+    await update_attempt_status(
+        pool,
+        attempt_id,
+        "investigating",
+        branch_name=branch_name,
+        worktree_path=str(worktree_path),
+    )
+
+    logger.info(
+        "redispatch_attempt_by_id: re-dispatching attempt=%s fingerprint=%s branch=%s",
+        attempt_id,
+        fingerprint[:12],
+        branch_name,
+    )
+
+    healing_task = asyncio.create_task(
+        _run_healing_session(
+            pool=pool,
+            repo_root=repo_root,
+            attempt_id=attempt_id,
+            branch_name=branch_name,
+            worktree_path=worktree_path,
+            fp=fp,
+            butler_name=butler_name,
+            trigger_source="retry",
+            agent_context=None,
+            config=config,
+            spawner=spawner,
+            gh_token=gh_token,
+            metrics=metrics,
+        ),
+        name=f"healing-{attempt_id}",
+    )
+
+    watchdog_task = asyncio.create_task(
+        _timeout_watchdog(
+            pool=pool,
+            attempt_id=attempt_id,
+            repo_root=repo_root,
+            branch_name=branch_name,
+            healing_task=healing_task,
+            timeout_minutes=config.timeout_minutes,
+        ),
+        name=f"healing-watchdog-{attempt_id}",
+    )
+
+    if task_registry is not None:
+        task_registry.append(watchdog_task)
+
+    return DispatchResult(
+        accepted=True,
+        fingerprint=fingerprint,
+        reason="dispatched",
+        attempt_id=attempt_id,
+    )
