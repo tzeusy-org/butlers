@@ -15,7 +15,7 @@ The relationship butler SHALL expose an MCP tool `relationship_lookup(entity_id=
 
 #### Scenario: Lookup by reference resolves deterministically
 - **WHEN** a butler session calls `relationship_lookup(entity_ref="Northwind Plumbing")`
-- **THEN** resolution MUST follow the deterministic search ranking defined in the `dashboard-relationship` Finder requirement (prefix 100 > substring 80 > alias/contact-value 70 > predicate label 30, `last_seen DESC` then `tier ASC` tie-break)
+- **THEN** resolution MUST follow the deterministic search ranking defined in the `dashboard-relationship` Finder requirement (prefix 100 > contact-value 70 > substring 50 > predicate label 30, `last_seen DESC` then `tier ASC` tie-break)
 - **AND** the response MUST include `resolution.matched_on` and `resolution.score`
 
 #### Scenario: Ambiguous reference returns candidates, not a guess
