@@ -59,7 +59,7 @@ vi.mock('@/hooks/use-ingestion', () => ({
 }))
 
 vi.mock('@/hooks/use-ingestion-rules', () => ({
-  useIngestionRules: (params?: { enabled?: boolean }) =>
+  useIngestionRules: (params?: { enabled?: boolean; archived?: boolean }) =>
     mockUseIngestionRules(params),
   useUpdateIngestionRule: () => ({
     mutate: mockUpdateMutate,
@@ -235,14 +235,17 @@ function setupDefaultMocks(
     isLoading: false,
   })
 
-  // useIngestionRules is called twice per render — { enabled: true } for active
-  // rules and { enabled: false } for archived. Switch on the param so the mock
-  // survives re-renders (editor open/close triggers extra renders).
-  mockUseIngestionRules.mockImplementation((params?: { enabled?: boolean }) => ({
-    data: { data: params?.enabled === false ? archivedRules : activeRules },
-    isLoading: false,
-    isError: false,
-  }))
+  // useIngestionRules is called twice per render — active rules (default params)
+  // and archived rules ({ archived: true }). Switch on the PARAMS arg so the mock
+  // survives re-renders (editor open/close triggers extra renders). The archived
+  // view must request ?archived=true, NOT ?enabled=false (the original bug).
+  mockUseIngestionRules.mockImplementation(
+    (params?: { enabled?: boolean; archived?: boolean }) => ({
+      data: { data: params?.archived === true ? archivedRules : activeRules },
+      isLoading: false,
+      isError: false,
+    }),
+  )
 
   mockUsePriorityContacts.mockReturnValue({
     data: { data: [] as PriorityContactEntry[] },
@@ -907,6 +910,82 @@ describe('ArchivedRulesSection: restore action', () => {
     const errEl = container.querySelector('[data-testid="archived-rules-restore-error"]')
     expect(errEl).not.toBeNull()
     expect(errEl?.textContent).toContain('Failed to restore')
+  })
+})
+
+// ============================================================================
+// Regression: archived view queries ?archived=true (was ?enabled=false)
+// bu-rnljv.3 — the archived-rules call must pass { archived: true } as the
+// hook's PARAMS argument (query string), not { enabled: false } (which is
+// neither the right param nor a react-query option), so the soft-deleted rules
+// are actually fetched and rendered.
+// ============================================================================
+
+describe('FiltersPipeline: archived view requests archived=true', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    mockUseIngestionRules.mockClear()
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('calls useIngestionRules with { archived: true } and never { enabled: false }', () => {
+    setupDefaultMocks({}, [], [makeArchivedRule({ id: 'arch-001' })])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const paramCalls = mockUseIngestionRules.mock.calls.map((c) => c[0])
+
+    // The archived view must request archived=true.
+    expect(paramCalls).toContainEqual({ archived: true })
+
+    // The buggy { enabled: false } params shape must never be used.
+    for (const params of paramCalls) {
+      expect(params).not.toEqual({ enabled: false })
+    }
+  })
+
+  it('renders archived rows returned by the archived=true query', () => {
+    setupDefaultMocks(
+      {},
+      [],
+      [
+        makeArchivedRule({ id: 'arch-001', name: 'Old block rule' }),
+        makeArchivedRule({ id: 'arch-002', name: 'Retired routing rule' }),
+      ],
+    )
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    // Section renders with the archived rows (count of 2 in the header).
+    const count = container.querySelector('[data-testid="archived-rules-count"]')
+    expect(count?.textContent).toContain('2')
+
+    // Expand to confirm the rows are the archived rules.
+    const toggle = container.querySelector('[data-testid="archived-rules-toggle"]')
+    act(() => { ;(toggle as HTMLButtonElement).click() })
+
+    expect(
+      container.querySelector('[data-testid="archived-rule-row-arch-001"]'),
+      'archived row arch-001 missing',
+    ).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="archived-rule-row-arch-002"]'),
+      'archived row arch-002 missing',
+    ).not.toBeNull()
+  })
+
+  it('renders an empty archived section when no rules are archived', () => {
+    setupDefaultMocks({}, [], [])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    // No archived rules -> section is not rendered at all.
+    expect(
+      container.querySelector('[data-testid="archived-rules-section"]'),
+    ).toBeNull()
   })
 })
 

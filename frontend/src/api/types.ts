@@ -2768,6 +2768,11 @@ export interface IngestionRuleListParams {
   rule_type?: string;
   action?: string;
   enabled?: boolean;
+  /**
+   * When true, return soft-deleted (archived) rules instead of the active set.
+   * Powers the archived-rules view (and its restore affordance).
+   */
+  archived?: boolean;
 }
 
 // ---------------------------------------------------------------------------

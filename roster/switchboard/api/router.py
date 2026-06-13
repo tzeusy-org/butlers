@@ -2882,15 +2882,26 @@ async def list_ingestion_rules(
     rule_type: str | None = Query(None, description="Filter by rule_type"),
     action: str | None = Query(None, description="Filter by action"),
     enabled: bool | None = Query(None, description="Filter by enabled state"),
+    archived: bool = Query(
+        False,
+        description=(
+            "When true, return soft-deleted (archived) rules (deleted_at set) "
+            "instead of the active set. Powers the archived-rules view."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[IngestionRule]]:
-    """List active (non-deleted) ingestion rules with optional filters.
+    """List ingestion rules with optional filters.
+
+    By default returns active (non-deleted) rules. When ``archived=true`` is
+    passed, returns soft-deleted rules (``deleted_at IS NOT NULL``) so the
+    dashboard can show and restore what was previously deleted.
 
     Results are ordered by priority ASC, created_at ASC, id ASC per design.md D4.
     """
     pool = _pool(db)
 
-    conditions = ["deleted_at IS NULL"]
+    conditions = ["deleted_at IS NOT NULL"] if archived else ["deleted_at IS NULL"]
     args: list[Any] = []
     idx = 1
 
@@ -3055,9 +3066,13 @@ async def update_ingestion_rule(
     """Partially update an ingestion rule.
 
     Supports partial fields: scope, condition, action, priority, enabled,
-    name, description. Returns 404 when the rule does not exist or has been
-    soft-deleted. Validates scope-action and rule_type-scope compatibility
-    using the effective (potentially updated) values.
+    name, description. Returns 404 when the rule does not exist. Validates
+    scope-action and rule_type-scope compatibility using the effective
+    (potentially updated) values.
+
+    Restore semantics: an archived (soft-deleted) rule can be restored by
+    PATCHing ``enabled=true``; this also clears ``deleted_at`` so the rule
+    re-enters the active set. This backs the archived-rules "restore" affordance.
     """
     pool = _pool(db)
 
@@ -3069,11 +3084,13 @@ async def update_ingestion_rule(
     existing = await pool.fetchrow(
         "SELECT id, scope, rule_type, condition, action, priority, enabled,"
         " name, description, created_by, created_at, updated_at, deleted_at"
-        " FROM ingestion_rules WHERE id = $1 AND deleted_at IS NULL",
+        " FROM ingestion_rules WHERE id = $1",
         rule_id,
     )
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
+
+    is_archived = existing["deleted_at"] is not None
 
     # Determine effective values for cross-field validation
     effective_scope = body.scope if body.scope is not None else existing["scope"]
@@ -3123,6 +3140,21 @@ async def update_ingestion_rule(
     if body.description is not None:
         updates["description"] = body.description
 
+    # Restore (unarchive): re-enabling an archived rule clears deleted_at so it
+    # re-enters the active set. An archived rule cannot be edited in place — the
+    # only permitted transition is restore (enabled=true).
+    if is_archived:
+        if body.enabled is True:
+            updates["deleted_at"] = None
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Ingestion rule '{rule_id}' is archived; restore it with "
+                    "enabled=true before editing."
+                ),
+            )
+
     if not updates:
         return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(existing))
 
@@ -3145,9 +3177,12 @@ async def update_ingestion_rule(
 
     args.append(rule_id)
 
+    # No deleted_at guard here: `existing` was fetched by id and the archived
+    # transition was validated above (only restore is permitted). Restoring a
+    # rule must be able to clear deleted_at, which this WHERE would otherwise block.
     row = await pool.fetchrow(
         f"UPDATE ingestion_rules SET {', '.join(set_parts)}"
-        f" WHERE id = ${idx} AND deleted_at IS NULL"
+        f" WHERE id = ${idx}"
         f" RETURNING id, scope, rule_type, condition, action, priority, enabled,"
         f"           name, description, created_by, created_at, updated_at, deleted_at",
         *args,

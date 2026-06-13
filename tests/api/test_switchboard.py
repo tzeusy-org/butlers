@@ -268,6 +268,43 @@ async def test_ingestion_rules_condition_jsonb_decoded(app):
     assert isinstance(resp.json()["data"][0]["condition"], dict)
 
 
+async def test_ingestion_rules_list_active_excludes_deleted(app):
+    """Default list filters to non-deleted rules (deleted_at IS NULL)."""
+    _app, mock_pool = _app_with_mock(app, fetch_rows=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/ingestion-rules")
+    assert resp.status_code == 200
+    query = mock_pool.fetch.await_args.args[0]
+    assert "deleted_at IS NULL" in query
+    assert "deleted_at IS NOT NULL" not in query
+
+
+async def test_ingestion_rules_list_archived_returns_soft_deleted(app):
+    """?archived=true scopes the query to soft-deleted rules (deleted_at set).
+
+    Regression for bu-rnljv.3: the archived view must request ?archived=true,
+    not ?enabled=false. Without backend support the param was silently ignored
+    and the archived view was permanently empty.
+    """
+    archived_row = dict(_GLOBAL_RULE)
+    archived_row["enabled"] = False
+    archived_row["deleted_at"] = "2026-04-01T00:00:00+00:00"
+    _app, mock_pool = _app_with_mock(app, fetch_rows=[archived_row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/ingestion-rules?archived=true")
+    assert resp.status_code == 200
+    query = mock_pool.fetch.await_args.args[0]
+    assert "deleted_at IS NOT NULL" in query
+    assert "deleted_at IS NULL" not in query
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["deleted_at"] is not None
+
+
 async def test_ingestion_rules_create_global_201(app):
     app, mock_pool = _app_with_mock(app)
     mock_pool.fetchrow = AsyncMock(
@@ -331,6 +368,66 @@ async def test_ingestion_rules_validation_errors(app, bad_payload, exp_status):
     ) as client:
         resp = await client.post("/api/switchboard/ingestion-rules", json=bad_payload)
     assert resp.status_code == exp_status
+
+
+async def test_ingestion_rules_restore_archived_clears_deleted_at(app):
+    """PATCH enabled=true on an archived rule restores it (clears deleted_at).
+
+    Backs the archived-rules "restore" affordance (bu-rnljv.3). The PATCH must be
+    able to target a soft-deleted rule and clear deleted_at on re-enable.
+    """
+    rule_id = _GLOBAL_RULE["id"]
+    archived_existing = dict(_GLOBAL_RULE)
+    archived_existing["enabled"] = False
+    archived_existing["deleted_at"] = "2026-04-01T00:00:00+00:00"
+
+    restored_row = dict(_GLOBAL_RULE)
+    restored_row["enabled"] = True
+    restored_row["deleted_at"] = None
+
+    _app, _mock_pool = _app_with_mock(
+        app,
+        fetchrow_side_effects=[
+            _make_row(archived_existing),  # SELECT existing (no deleted filter)
+            _make_row({"name": "finance"}),  # _assert_route_to_eligible lookup
+            _make_row(restored_row),  # UPDATE ... RETURNING
+        ],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            f"/api/switchboard/ingestion-rules/{rule_id}",
+            json={"enabled": True},
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["enabled"] is True
+    assert data["deleted_at"] is None
+
+
+async def test_ingestion_rules_patch_archived_without_restore_409(app):
+    """Editing an archived rule without restoring it is rejected with 409."""
+    rule_id = _GLOBAL_RULE["id"]
+    archived_existing = dict(_GLOBAL_RULE)
+    archived_existing["enabled"] = False
+    archived_existing["deleted_at"] = "2026-04-01T00:00:00+00:00"
+
+    _app, _mock_pool = _app_with_mock(
+        app,
+        fetchrow_side_effects=[
+            _make_row(archived_existing),  # SELECT existing
+            _make_row({"name": "finance"}),  # eligibility lookup (if reached)
+        ],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            f"/api/switchboard/ingestion-rules/{rule_id}",
+            json={"priority": 5},
+        )
+    assert resp.status_code == 409
 
 
 async def test_ingestion_rules_delete_nonexistent_404(app):

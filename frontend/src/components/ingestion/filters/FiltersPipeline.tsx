@@ -12,8 +12,8 @@
  *
  * Data sources:
  * - usePipelineStats("24h")        → PipelineStats (funnel counts)
- * - useIngestionRules()            → all active rules
- * - useIngestionRules({enabled:false}) → archived rules (requires ?archived=true)
+ * - useIngestionRules({enabled:true})  → active rules
+ * - useIngestionRules({archived:true}) → archived (soft-deleted) rules via ?archived=true
  *
  * Priority senders: rules with action starting with "route" and
  * rule_type="priority_sender" (or scope="priority").
@@ -93,14 +93,15 @@ export function FiltersPipeline() {
     isError: rulesError,
   } = useIngestionRules({ enabled: true })
 
-  // Archived rules (soft-deleted = deleted_at is set, but still returned when ?archived=true)
-  // The backend returns deleted rules with enabled=false and deleted_at set when
-  // archived=true is passed. We use enabled=false to fetch them if that param works,
-  // otherwise use the full list and filter locally.
+  // Archived rules (soft-deleted = deleted_at is set). The backend returns these
+  // only when ?archived=true is passed; this is the PARAMS argument (query
+  // string), NOT the react-query options. Passing { enabled: false } here was a
+  // bug: it queried ?enabled=false (active, disabled rules — none) and left the
+  // archived view permanently empty.
   const {
     data: archivedRulesResp,
     isLoading: archivedLoading,
-  } = useIngestionRules({ enabled: false })
+  } = useIngestionRules({ archived: true })
 
   const updateRule = useUpdateIngestionRule()
   const deleteRule = useDeleteIngestionRule()
@@ -123,9 +124,9 @@ export function FiltersPipeline() {
   // -------------------------------------------------------------------------
 
   const allActiveRules: IngestionRule[] = activeRulesResp?.data ?? []
-  const archivedRules: IngestionRule[] = (archivedRulesResp?.data ?? []).filter(
-    (r) => !r.enabled || r.deleted_at != null,
-  )
+  // ?archived=true already scopes the response to soft-deleted rules
+  // (deleted_at set); no client-side filtering needed.
+  const archivedRules: IngestionRule[] = archivedRulesResp?.data ?? []
 
   const priorityContacts = priorityContactsResp?.data ?? []
   const contactCandidates = contactsResp?.contacts ?? []
