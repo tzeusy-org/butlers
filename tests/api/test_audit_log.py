@@ -266,8 +266,15 @@ def _make_audit_app(rows: list[dict], total: int | None = None) -> tuple:
     mock_pool.fetchval = AsyncMock(return_value=total)
     mock_pool.fetch = AsyncMock(return_value=[_make_record(r) for r in rows])
 
+    # Empty legacy (switchboard.dashboard_audit_log) source so the merged read
+    # path exercises only the canonical public.audit_log rows by default.
+    sw_pool = AsyncMock()
+    sw_pool.fetchval = AsyncMock(return_value=0)
+    sw_pool.fetch = AsyncMock(return_value=[])
+
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = mock_pool
+    mock_db.pool.return_value = sw_pool
 
     app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -366,19 +373,23 @@ def test_list_audit_log_order_ts_desc():
     assert "ORDER BY ts DESC" in sql
 
 
-def test_list_audit_log_offset_param_passed_to_sql():
-    """offset parameter is included in the SQL OFFSET clause."""
+def test_list_audit_log_offset_overfetches_head_for_merge():
+    """The canonical query over-fetches offset+limit rows so the in-memory merge
+    with the legacy source has enough candidates to slice the requested page.
+
+    Offset itself is applied in Python after merging both sources (the legacy
+    dashboard_audit_log rows must interleave by ts), so the canonical SQL caps
+    at LIMIT (offset+limit) and carries no SQL OFFSET clause.
+    """
     app, mock_pool, _ = _make_audit_app([])
     client = TestClient(app)
     client.get("/api/audit-log?offset=50&limit=25")
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
-    # offset and limit are the last two args; OFFSET should appear in SQL
-    assert "OFFSET" in sql
+    assert "LIMIT" in sql
     args = fetch_call[1:]
-    # offset=50 should be second-to-last, limit=25 should be last
-    assert args[-2] == 50
-    assert args[-1] == 25
+    # Last positional arg is the head (offset + limit = 75).
+    assert args[-1] == 75
 
 
 def test_list_audit_log_offset_reflected_in_meta():

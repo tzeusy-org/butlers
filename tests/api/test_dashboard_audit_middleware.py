@@ -431,6 +431,9 @@ class TestAuditReadEndpoint:
         mock_pool.fetch = AsyncMock(return_value=[])
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = mock_pool
+        # The merged read path also queries the legacy dashboard_audit_log via
+        # the switchboard pool (bu-isi4i); reuse the empty pool.
+        mock_db.pool.return_value = mock_pool
 
         app = create_app(api_key="")
         app.dependency_overrides[_audit_get_db] = lambda: mock_db

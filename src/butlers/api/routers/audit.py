@@ -23,7 +23,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 from asyncpg.exceptions import UndefinedTableError
@@ -76,6 +76,105 @@ def _empty_audit_page(*, offset: int, limit: int) -> PaginatedResponse[AuditLogE
     return PaginatedResponse[AuditLogEntry](
         data=[],
         meta=PaginationMeta(total=0, offset=offset, limit=limit),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy dashboard_audit_log → AuditLogEntry normalisation (bu-isi4i)
+# ---------------------------------------------------------------------------
+#
+# Several mutation sites (runtime_config, schedules, state, calendar workspace,
+# the dashboard audit middleware) write ONLY to the Switchboard butler's
+# ``dashboard_audit_log`` table via ``log_audit_entry`` / ``emit_dashboard_audit``.
+# The /audit-log read endpoint reads ``public.audit_log`` and so those mutations
+# were invisible.  Rather than migrate every writer (broad, high-regression),
+# the read endpoint UNIONs both sources: it normalises ``dashboard_audit_log``
+# rows into the ``AuditLogEntry`` shape so they appear alongside the canonical
+# ``public.audit_log`` rows.  Writers are untouched (lowest regression).
+
+
+def _coerce_uuid(value: object) -> uuid.UUID | None:
+    """Best-effort coerce a value to a UUID, returning None on failure."""
+    if isinstance(value, uuid.UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return uuid.UUID(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _legacy_synthetic_id(row_id: object) -> int:
+    """Derive a stable, collision-free synthetic int id for a legacy row.
+
+    ``public.audit_log`` ids are positive ``BIGSERIAL`` values.  Legacy
+    ``dashboard_audit_log`` rows are keyed by UUID, which has no int form, so we
+    map each UUID to a *negative* int (deterministic per UUID).  Negative ids
+    never collide with the positive ids of the canonical table and remain stable
+    across requests, so the frontend (which uses ``id`` only as a React key /
+    expand toggle) renders both sources without conflict.  The per-id endpoint
+    ``GET /api/audit-log/{id}`` still resolves only positive ids against
+    ``public.audit_log``; legacy rows are list-only by design.
+    """
+    parsed = _coerce_uuid(row_id)
+    if parsed is None:
+        # Fall back to a hash of the stringified id; still negative + stable.
+        seed = abs(hash(str(row_id)))
+    else:
+        seed = parsed.int
+    # Keep within signed 63-bit range, then negate (offset by 1 so 0 -> -1).
+    return -((seed % ((1 << 62) - 1)) + 1)
+
+
+def _normalize_dashboard_row(row: Any) -> AuditLogEntry:
+    """Map a ``dashboard_audit_log`` record into an ``AuditLogEntry``.
+
+    Field mapping
+    -------------
+    - ``id``     → deterministic negative synthetic int (see ``_legacy_synthetic_id``)
+    - ``ts``     ← ``created_at``
+    - ``actor``  ← ``user_context.principal`` (falls back to ``butler``)
+    - ``action`` ← ``operation``
+    - ``target`` ← ``request_summary.path`` when present
+    - ``note``   ← compact ``result``/``error`` summary
+    - ``ip``     ← ``user_context.client_ip`` / ``forwarded_for`` when present
+    - ``request_id`` ← ``request_summary.trace_id`` when it parses as a UUID
+    """
+    user_context = row["user_context"] or {}
+    request_summary = row["request_summary"] or {}
+    if not isinstance(user_context, dict):
+        user_context = {}
+    if not isinstance(request_summary, dict):
+        request_summary = {}
+
+    butler = row["butler"]
+    actor = user_context.get("principal") or butler
+
+    ip_value = user_context.get("client_ip") or user_context.get("forwarded_for")
+    ip_str = str(ip_value) if ip_value else None
+
+    target = request_summary.get("path")
+    target_str = str(target) if target else None
+
+    result = row["result"]
+    error = row["error"]
+    if error:
+        note = f"{result}: {error}"
+    else:
+        note = result or None
+
+    request_id = _coerce_uuid(request_summary.get("trace_id"))
+
+    return AuditLogEntry(
+        id=_legacy_synthetic_id(row["id"]),
+        ts=row["created_at"],
+        actor=actor,
+        action=row["operation"],
+        target=target_str,
+        note=note,
+        ip=ip_str,
+        request_id=request_id,
     )
 
 
@@ -280,39 +379,130 @@ async def list_audit_log(
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    # Count query
+    # Count query (canonical source)
     count_sql = f"SELECT count(*) FROM public.audit_log{where_clause}"
     try:
-        total = await pool.fetchval(count_sql, *args) or 0
+        canonical_total = await pool.fetchval(count_sql, *args) or 0
     except UndefinedTableError:
         raise HTTPException(
             status_code=503,
             detail="Audit log is not available — migration core_092 may not have run",
         )
 
-    # Data query with offset + limit pagination
-    data_sql = (
+    # Canonical data query.  We over-fetch (OFFSET 0, LIMIT offset+limit) so that
+    # after merging with the legacy source below we have enough candidates to
+    # slice the correct page.  Per-source ordering is ts DESC.
+    head = offset + limit
+    canonical_sql = (
         f"SELECT id, ts, actor, action, target, note, ip, request_id "
         f"FROM public.audit_log{where_clause} "
         f"ORDER BY ts DESC "
-        f"OFFSET ${idx} LIMIT ${idx + 1}"
+        f"LIMIT ${idx}"
     )
-    args.extend([offset, limit])
 
     try:
-        rows = await pool.fetch(data_sql, *args)
+        canonical_rows = await pool.fetch(canonical_sql, *args, head)
     except UndefinedTableError:
         raise HTTPException(
             status_code=503,
             detail="Audit log is not available — migration core_092 may not have run",
         )
 
-    entries = [AuditLogEntry.from_record(row) for row in rows]
+    entries = [AuditLogEntry.from_record(row) for row in canonical_rows]
+
+    # ------------------------------------------------------------------
+    # Legacy source: switchboard.dashboard_audit_log (bu-isi4i).
+    #
+    # Mutations from runtime_config / schedules / state / calendar workspace /
+    # the dashboard audit middleware write only here.  We fold them into the
+    # same result set so they become visible on /audit-log.  The legacy table
+    # has no ``target`` column, so the credential-key filter (``?key=``) can
+    # never match a legacy row — when ?key= is set we skip this source entirely
+    # to preserve the credential-key filter's exact semantics.
+    # ------------------------------------------------------------------
+    legacy_total = 0
+    if normalised_key is None:
+        legacy_total, legacy_entries = await _fetch_legacy_entries(
+            db,
+            since=since,
+            actor=actor,
+            action=action,
+            limit=head,
+        )
+        entries.extend(legacy_entries)
+
+    # Merge: order the combined set by ts DESC, then slice the requested page.
+    entries.sort(key=lambda e: e.ts, reverse=True)
+    page = entries[offset : offset + limit]
 
     return PaginatedResponse[AuditLogEntry](
-        data=entries,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+        data=page,
+        meta=PaginationMeta(total=canonical_total + legacy_total, offset=offset, limit=limit),
     )
+
+
+async def _fetch_legacy_entries(
+    db: DatabaseManager,
+    *,
+    since: datetime | None,
+    actor: str | None,
+    action: str | None,
+    limit: int,
+) -> tuple[int, list[AuditLogEntry]]:
+    """Fetch + normalise rows from ``switchboard.dashboard_audit_log``.
+
+    Returns ``(total, entries)``.  Degrades gracefully to ``(0, [])`` when the
+    switchboard pool or table is unavailable so the canonical source still
+    renders.  Filters are mapped onto the legacy column shape:
+
+    - ``since``  → ``created_at >= $``
+    - ``action`` → ``operation = $``   (operation is the legacy action label)
+    - ``actor``  → ``butler = $`` OR ``user_context->>'principal' = $``
+    """
+    try:
+        sw_pool = db.pool("switchboard")
+    except KeyError:
+        return 0, []
+
+    conditions: list[str] = []
+    args: list[object] = []
+    idx = 1
+
+    if since is not None:
+        conditions.append(f"created_at >= ${idx}")
+        args.append(since)
+        idx += 1
+
+    if action is not None:
+        conditions.append(f"operation = ${idx}")
+        args.append(action)
+        idx += 1
+
+    if actor is not None:
+        conditions.append(f"(butler = ${idx} OR user_context->>'principal' = ${idx})")
+        args.append(actor)
+        idx += 1
+
+    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    count_sql = f"SELECT count(*) FROM dashboard_audit_log{where_clause}"
+    data_sql = (
+        f"SELECT id, butler, operation, request_summary, result, error, "
+        f"user_context, created_at "
+        f"FROM dashboard_audit_log{where_clause} "
+        f"ORDER BY created_at DESC "
+        f"LIMIT ${idx}"
+    )
+
+    try:
+        total = await sw_pool.fetchval(count_sql, *args) or 0
+        rows = await sw_pool.fetch(data_sql, *args, limit)
+    except UndefinedTableError:
+        # Legacy table not migrated (e.g. switchboard not provisioned) — the
+        # canonical source still renders.
+        return 0, []
+
+    return total, [_normalize_dashboard_row(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------
