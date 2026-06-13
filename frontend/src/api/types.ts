@@ -3775,9 +3775,9 @@ export interface QaPrSummary {
   state: "drafted" | "open" | "merged" | "closed";
   title: string;
   branch: string;
-  ci_status: "passing" | "failing" | "pending" | "unknown";
-  additions: number;
-  deletions: number;
+  ci_status: "passing" | "failing" | "pending" | "unknown" | null;
+  additions: number | null;
+  deletions: number | null;
   opened_at: string;
   merged_at: string | null;
   url: string;

@@ -59,7 +59,10 @@ export function PRPanel({ pr, whyThisFix, diffSnapshot, className }: PRPanelProp
           {pr.title}
         </h3>
         <p className="font-mono text-[10px] leading-none text-muted-foreground tnum">
-          {pr.branch} · ci {pr.ci_status} · +{pr.additions} / -{pr.deletions}
+          {pr.branch} · ci {pr.ci_status ?? "unavailable"}
+          {pr.additions !== null && pr.deletions !== null
+            ? ` · +${pr.additions} / -${pr.deletions}`
+            : ""}
         </p>
       </div>
 

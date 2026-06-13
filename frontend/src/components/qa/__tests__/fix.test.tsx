@@ -64,6 +64,22 @@ describe("QA dossier fix-column components", () => {
     expect(screen.getByText("2026-05-15T04:00:00Z").tagName).toBe("TIME");
   });
 
+  it("test_pr_panel_renders_unavailable_ci_and_hides_diff_stats", () => {
+    // The backend does not track CI status or diff stats for QA PRs, so those
+    // fields arrive as null. The panel must say "unavailable" and omit the
+    // "+N / -N" placeholder rather than asserting fabricated "+0 / -0" data
+    // (bu-cnvg7.3).
+    render(
+      <PRPanel
+        pr={{ ...pr, ci_status: null, additions: null, deletions: null }}
+        whyThisFix={null}
+      />,
+    );
+
+    expect(screen.getByText("agent/bu-fxf19 · ci unavailable")).toBeTruthy();
+    expect(screen.queryByText(/\+\d+ \/ -\d+/)).toBeNull();
+  });
+
   it("test_pr_panel_omits_empty_diff_preview", () => {
     render(<PRPanel pr={pr} whyThisFix="The failing runtime ignored catalog timeouts." diffSnapshot={[]} />);
 

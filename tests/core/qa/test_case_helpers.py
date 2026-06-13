@@ -9,7 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from butlers.api.routers.qa import QaCaseDossier, QaCaseSummary, QaJournalEvent, QaPrSummary
+from butlers.api.routers.qa import (
+    QaCaseDossier,
+    QaCaseSummary,
+    QaJournalEvent,
+    QaPrSummary,
+    _row_to_pr_summary,
+)
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.severity import headline_for_case, short_id_from_uuid, state_of_case
 
@@ -178,3 +184,29 @@ def test_case_api_models_import_and_validate() -> None:
     assert dossier.pr is not None
     assert dossier.pr.ci_status == "pending"
     assert dossier.journal[0].step == "flagged"
+
+
+def test_row_to_pr_summary_does_not_fabricate_ci_or_diff_stats() -> None:
+    """CI status and diff stats are not tracked locally, so the dossier PR
+    summary must report them as unavailable (``None``) rather than asserting a
+    fabricated ``"unknown"`` / ``+0/-0`` placeholder (bu-cnvg7.3)."""
+    now = datetime.now(UTC)
+    row = {
+        "status": "pr_open",
+        "pr_url": "https://github.com/Tzeusy/butlers/pull/1653",
+        "pr_number": 1653,
+        "branch_name": "agent/bu-z34mk",
+        "created_at": now,
+        "closed_at": None,
+    }
+
+    summary = _row_to_pr_summary(row)
+
+    assert summary is not None
+    assert summary.number == 1653
+    assert summary.state == "open"
+    assert summary.branch == "agent/bu-z34mk"
+    # The honest fix: no fabricated CI/diff data.
+    assert summary.ci_status is None
+    assert summary.additions is None
+    assert summary.deletions is None

@@ -352,9 +352,12 @@ class QaPrSummary(BaseModel):
     state: Literal["drafted", "open", "merged", "closed"]
     title: str
     branch: str
-    ci_status: Literal["passing", "failing", "pending", "unknown"]
-    additions: int
-    deletions: int
+    # CI status and diff stats are not tracked locally (no GitHub fetch path
+    # exists yet — see bu-cnvg7.3). ``None`` means "unavailable", which the UI
+    # renders honestly instead of asserting a "unknown" / "+0/-0" placeholder.
+    ci_status: Literal["passing", "failing", "pending", "unknown"] | None = None
+    additions: int | None = None
+    deletions: int | None = None
     opened_at: datetime
     merged_at: datetime | None = None
     url: str
@@ -949,9 +952,12 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
         state=pr_state,
         title=f"PR #{pr_number}",
         branch=branch,
-        ci_status="unknown",
-        additions=0,
-        deletions=0,
+        # Left as None: the healing_attempts row carries no CI status or diff
+        # stat, and there is no GitHub fetch path to populate them. Emitting
+        # None keeps the dossier honest rather than fabricating "unknown" / 0.
+        ci_status=None,
+        additions=None,
+        deletions=None,
         opened_at=row["created_at"],
         merged_at=row.get("closed_at") if pr_state == "merged" else None,
         url=pr_url,
