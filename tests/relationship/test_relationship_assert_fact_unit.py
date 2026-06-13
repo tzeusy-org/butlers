@@ -88,7 +88,13 @@ def test_telegram_username_maps_to_has_handle() -> None:
 
 
 async def test_supersession_insert_is_conflict_safe() -> None:
-    """Concurrent supersession must not use a plain insert for the new active row."""
+    """The replacement insert must be conflict-safe via DO NOTHING (never DO UPDATE).
+
+    Spec (bu-be16a): an ON CONFLICT ... DO UPDATE would overwrite conf/observed_at
+    on an existing active row in place. The race-safe contract is
+    ``INSERT ... ON CONFLICT DO NOTHING`` plus a re-read/retry that routes any
+    collision through supersession.
+    """
     old_id = uuid.uuid4()
     new_id = uuid.uuid4()
     conn = AsyncMock()
@@ -101,6 +107,7 @@ async def test_supersession_insert_is_conflict_safe() -> None:
             "last_seen": None,
         }
     )
+    # The supersession UPDATE reports one row flipped active -> superseded.
     conn.execute = AsyncMock(return_value="UPDATE 1")
     conn.fetchval = AsyncMock(return_value=new_id)
 
@@ -123,7 +130,14 @@ async def test_supersession_insert_is_conflict_safe() -> None:
     assert result.outcome == AssertOutcome.superseded
     assert "ON CONFLICT (subject, predicate, object)" in insert_sql
     assert "WHERE validity = 'active'" in insert_sql
-    assert "DO UPDATE" in insert_sql
+    assert "DO NOTHING" in insert_sql
+    assert "DO UPDATE" not in insert_sql
+
+    # The supersession UPDATE must be guarded on the row id AND validity='active'
+    # so a lost race re-reads instead of double-superseding.
+    update_sql = conn.execute.call_args.args[0]
+    assert "validity   = 'superseded'" in update_sql or "validity = 'superseded'" in update_sql
+    assert "validity = 'active'" in update_sql
 
 
 # ---------------------------------------------------------------------------

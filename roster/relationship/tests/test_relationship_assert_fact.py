@@ -19,6 +19,7 @@ Spec anchor: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/s
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -28,6 +29,7 @@ import pytest
 
 from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
+    _insert_active_fact,
     relationship_assert_fact,
 )
 
@@ -728,3 +730,253 @@ class TestConfImmutability:
             "SELECT conf FROM relationship.entity_facts WHERE id = $1", r2.fact_id
         )
         assert abs(float(new_conf) - 0.4) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Tests: concurrent-writer race (bu-be16a)
+# ---------------------------------------------------------------------------
+#
+# Spec (relationship-facts / lifecycle): no code path may execute an in-place
+# UPDATE of conf on an existing ACTIVE row. Supersession is the only path, and
+# superseded rows keep their own observed_at. The central writer's INSERT uses
+# ON CONFLICT DO NOTHING + re-read/retry, so a concurrent collision NEVER
+# overwrites conf/observed_at on the row that already holds the active slot.
+
+
+def _bigger_pool(provisioned_postgres_pool):
+    """Provision a pool with enough connections for concurrent writers."""
+    return provisioned_postgres_pool(min_pool_size=2, max_pool_size=8)
+
+
+async def _provision_schema(p: asyncpg.Pool) -> None:
+    """Create the minimal relationship schema used by these tests.
+
+    Mirrors the per-test ``pool`` fixture above so the concurrency tests can run
+    on a higher-capacity pool.
+    """
+    await p.execute("""
+        CREATE TABLE IF NOT EXISTS public.entities (
+            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            canonical_name TEXT        NOT NULL DEFAULT '',
+            name           TEXT        NOT NULL DEFAULT '',
+            entity_type    TEXT        NOT NULL DEFAULT 'person',
+            aliases        TEXT[]      NOT NULL DEFAULT '{}',
+            metadata       JSONB       DEFAULT '{}'::jsonb,
+            roles          TEXT[]      NOT NULL DEFAULT '{}',
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+    await p.execute("""
+        CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
+            predicate   TEXT        NOT NULL PRIMARY KEY,
+            kind        TEXT        NOT NULL,
+            object_kind TEXT        NOT NULL,
+            description TEXT,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    await p.execute("""
+        INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
+        VALUES ('has-email', 'contact', 'literal', 'Email address for the entity.')
+        ON CONFLICT (predicate) DO NOTHING
+    """)
+    await p.execute("""
+        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
+            id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+            subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
+            predicate   TEXT        NOT NULL,
+            object      TEXT        NOT NULL,
+            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
+            src         TEXT        NOT NULL,
+            conf        FLOAT       NOT NULL DEFAULT 1.0
+                            CHECK (conf >= 0.0 AND conf <= 1.0),
+            last_seen   TIMESTAMPTZ,
+            observed_at TIMESTAMPTZ,
+            metadata    JSONB,
+            weight      INT,
+            verified    BOOL        NOT NULL DEFAULT false,
+            "primary"   BOOL,
+            validity    TEXT        NOT NULL DEFAULT 'active'
+                            CHECK (validity IN ('active', 'retracted', 'superseded')),
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    await p.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
+            ON relationship.entity_facts (subject, predicate, object)
+            WHERE validity = 'active'
+    """)
+
+
+class TestConcurrentWriterRace:
+    """Two writers asserting the same triple with different conf must NOT mutate
+    an existing active row in place — the collision routes through supersession,
+    and every row keeps its own observed_at.
+    """
+
+    async def test_forced_race_supersedes_without_mutating_active_row(
+        self, provisioned_postgres_pool
+    ):
+        """Deterministically force the read-then-insert race.
+
+        Sequence (single asyncio task, interleaved by hand):
+          1. Writer-A reads: no active row.
+          2. A *competing* writer inserts the active row first (conf=0.9).
+          3. Writer-A's INSERT ... ON CONFLICT DO NOTHING returns None (the slot
+             is taken) — proving we do NOT overwrite the competitor's row.
+          4. The full writer (relationship_assert_fact) then routes A's intent
+             (conf=0.4) through supersession.
+
+        Acceptance: exactly one superseded + one active row, BOTH keeping their
+        original observed_at; the superseded row keeps conf=0.9, the active row
+        carries conf=0.4.
+        """
+        async with _bigger_pool(provisioned_postgres_pool) as p:
+            await _provision_schema(p)
+            entity = await p.fetchval(
+                "INSERT INTO public.entities (canonical_name, roles) "
+                "VALUES ('Alice Foo', '{}') RETURNING id"
+            )
+            obs_a = datetime(2026, 1, 1, tzinfo=UTC)
+            obs_b = datetime(2026, 2, 2, tzinfo=UTC)
+
+            async with p.acquire() as conn:
+                # 1. Writer-A reads: confirm no active row yet.
+                pre = await conn.fetchrow(
+                    "SELECT id FROM relationship.entity_facts "
+                    "WHERE subject=$1 AND predicate=$2 AND object=$3 AND validity='active'",
+                    entity,
+                    _PRED_HAS_EMAIL,
+                    "alice@example.com",
+                )
+                assert pre is None
+
+                # 2. Competing writer wins the slot first (conf=0.9).
+                competitor_id = await _insert_active_fact(
+                    conn,
+                    subject=entity,
+                    predicate=_PRED_HAS_EMAIL,
+                    object="alice@example.com",
+                    object_kind="literal",
+                    src="competitor",
+                    conf=0.9,
+                    last_seen=None,
+                    observed_at=obs_a,
+                    weight=None,
+                    verified=False,
+                    primary=None,
+                )
+                assert competitor_id is not None
+
+                # 3. Writer-A's own DO NOTHING insert must NOT overwrite the slot.
+                lost = await _insert_active_fact(
+                    conn,
+                    subject=entity,
+                    predicate=_PRED_HAS_EMAIL,
+                    object="alice@example.com",
+                    object_kind="literal",
+                    src="writer-a",
+                    conf=0.4,
+                    last_seen=None,
+                    observed_at=obs_b,
+                    weight=None,
+                    verified=False,
+                    primary=None,
+                )
+                assert lost is None  # DO NOTHING → no in-place mutation
+
+            # 4. Now the full writer routes A's intent through supersession.
+            result = await relationship_assert_fact(
+                p,
+                entity,
+                _PRED_HAS_EMAIL,
+                "alice@example.com",
+                src="writer-a",
+                conf=0.4,
+                observed_at=obs_b,
+            )
+            assert result.outcome == AssertOutcome.superseded
+
+            rows = await p.fetch(
+                "SELECT id, conf, observed_at, validity FROM relationship.entity_facts "
+                "WHERE subject=$1 AND predicate=$2 AND object=$3 ORDER BY created_at",
+                entity,
+                _PRED_HAS_EMAIL,
+                "alice@example.com",
+            )
+            by_validity = {r["validity"]: r for r in rows}
+            assert set(by_validity) == {"superseded", "active"}, rows
+            assert len(rows) == 2
+
+            # Superseded row: the competitor's, conf + observed_at untouched.
+            superseded = by_validity["superseded"]
+            assert superseded["id"] == competitor_id
+            assert abs(float(superseded["conf"]) - 0.9) < 1e-6
+            assert superseded["observed_at"] == obs_a
+
+            # Active row: writer-A's, with its own conf + observed_at.
+            active = by_validity["active"]
+            assert abs(float(active["conf"]) - 0.4) < 1e-6
+            assert active["observed_at"] == obs_b
+
+    async def test_concurrent_double_assert_one_active_one_superseded(
+        self, provisioned_postgres_pool
+    ):
+        """Two real concurrent writers (gather) on the same triple, different conf.
+
+        The unique partial index on the active slot serialises the writers; the
+        DO NOTHING + retry path resolves the collision via supersession. Final
+        state: exactly one active + one superseded row, both retaining their
+        original observed_at, regardless of which writer wins the slot first.
+        """
+        async with _bigger_pool(provisioned_postgres_pool) as p:
+            await _provision_schema(p)
+            entity = await p.fetchval(
+                "INSERT INTO public.entities (canonical_name, roles) "
+                "VALUES ('Alice Foo', '{}') RETURNING id"
+            )
+            obs_a = datetime(2025, 6, 1, tzinfo=UTC)
+            obs_b = datetime(2025, 7, 1, tzinfo=UTC)
+
+            async def writer(src: str, conf: float, observed_at: datetime):
+                return await relationship_assert_fact(
+                    p,
+                    entity,
+                    _PRED_HAS_EMAIL,
+                    "alice@example.com",
+                    src=src,
+                    conf=conf,
+                    observed_at=observed_at,
+                )
+
+            # Fire both writers concurrently.
+            await asyncio.gather(
+                writer("writer-a", 0.9, obs_a),
+                writer("writer-b", 0.4, obs_b),
+            )
+
+            rows = await p.fetch(
+                "SELECT conf, observed_at, validity FROM relationship.entity_facts "
+                "WHERE subject=$1 AND predicate=$2 AND object=$3",
+                entity,
+                _PRED_HAS_EMAIL,
+                "alice@example.com",
+            )
+            validities = sorted(r["validity"] for r in rows)
+            assert validities == ["active", "superseded"], rows
+            assert len(rows) == 2
+
+            # Both observed_at values survive verbatim — neither writer's
+            # observed_at was overwritten in place. (Order/winner is racy, but the
+            # SET of observed_at values must be exactly {obs_a, obs_b}.)
+            observed = {r["observed_at"] for r in rows}
+            assert observed == {obs_a, obs_b}, observed
+
+            # The active row's conf matches its observed_at's writer (no in-place
+            # conf mutation could have crossed them).
+            active = next(r for r in rows if r["validity"] == "active")
+            expected_active_conf = 0.9 if active["observed_at"] == obs_a else 0.4
+            assert abs(float(active["conf"]) - expected_active_conf) < 1e-6

@@ -240,6 +240,67 @@ async def _create_pending_action(
     return action_id
 
 
+# Bounded retry budget for the concurrent-writer race. Each attempt re-reads
+# the current active row and routes through supersession; a non-zero budget only
+# matters when a competing writer keeps replacing the active row between our read
+# and our insert, which is self-limiting in practice.
+_MAX_UPSERT_ATTEMPTS = 5
+
+
+async def _insert_active_fact(
+    conn: asyncpg.Connection,
+    *,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+    object_kind: str,
+    src: str,
+    conf: float,
+    last_seen: datetime | None,
+    observed_at: datetime,
+    weight: int | None,
+    verified: bool,
+    primary: bool | None,
+) -> uuid.UUID | None:
+    """Insert a new ACTIVE row, returning its id, or ``None`` on conflict.
+
+    Uses ``ON CONFLICT ... DO NOTHING`` so a concurrent writer that already holds
+    the active (subject, predicate, object) slot is NEVER mutated in place —
+    crucially, ``conf`` and ``observed_at`` on the existing active row are left
+    untouched (spec: conf is immutable, superseded rows keep their observed_at).
+    A ``None`` return signals the caller to re-read and route the collision
+    through normal supersession.
+    """
+    return await conn.fetchval(
+        """
+        INSERT INTO relationship.entity_facts (
+            id, subject, predicate, object, object_kind,
+            src, conf, last_seen, observed_at, weight, verified, "primary",
+            validity, created_at, updated_at
+        )
+        VALUES (
+            gen_random_uuid(), $1, $2, $3, $4,
+            $5, $6, $7, $8, $9, $10, $11,
+            'active', now(), now()
+        )
+        ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
+        DO NOTHING
+        RETURNING id
+        """,
+        subject,
+        predicate,
+        object,
+        object_kind,
+        src,
+        conf,
+        last_seen,
+        observed_at,
+        weight,
+        verified,
+        primary,
+    )
+
+
 async def _upsert_fact(
     conn: asyncpg.Connection,
     *,
@@ -263,127 +324,115 @@ async def _upsert_fact(
     ``observed_at`` is stamped onto the new active row.  On supersession the
     superseded row KEEPS its own ``observed_at`` (this function never rewrites
     it — supersession only flips ``validity`` and ``updated_at``).
+
+    Concurrency contract (spec: conf immutable, observed_at preserved): every
+    write goes through ``INSERT ... ON CONFLICT DO NOTHING``. We NEVER issue an
+    in-place ``DO UPDATE`` that would overwrite ``conf``/``observed_at`` on an
+    existing active row. When the unique active-slot index rejects our insert
+    (another writer holds the slot), we re-read and retry, so the collision is
+    resolved by normal supersession — the prior active row is marked
+    ``superseded`` (keeping its own ``conf``/``observed_at``) before a fresh
+    active row is inserted.
     """
-    # 1. Check for an existing active row with the same (subject, predicate, object).
-    existing = await conn.fetchrow(
-        """
-        SELECT id, src, conf, verified, last_seen
-        FROM relationship.entity_facts
-        WHERE subject   = $1
-          AND predicate = $2
-          AND object    = $3
-          AND validity  = 'active'
-        """,
-        subject,
-        predicate,
-        object,
-    )
-
-    if existing is not None:
-        old_id: uuid.UUID = existing["id"]
-
-        # 2. Compare provenance fields to detect supersession.
-        prov_changed = (
-            existing["src"] != src
-            or existing["conf"] != conf
-            or bool(existing["verified"]) != verified
-            or existing["last_seen"] != last_seen
-        )
-
-        if not prov_changed:
-            # Idempotent: same identity + same provenance → no write.
-            return AssertResult(outcome=AssertOutcome.unchanged, fact_id=old_id)
-
-        # 3. Supersession: mark old row as superseded, insert new active row.
-        await conn.execute(
+    for _ in range(_MAX_UPSERT_ATTEMPTS):
+        # 1. Check for an existing active row with the same (subject, predicate, object).
+        existing = await conn.fetchrow(
             """
-            UPDATE relationship.entity_facts
-            SET validity   = 'superseded',
-                updated_at = now()
-            WHERE id = $1
-            """,
-            old_id,
-        )
-        # Keep the replacement insert conflict-safe as well: overlapping
-        # reconciler runs can supersede the same old active row concurrently.
-        new_id = await conn.fetchval(
-            """
-            INSERT INTO relationship.entity_facts (
-                id, subject, predicate, object, object_kind,
-                src, conf, last_seen, observed_at, weight, verified, "primary",
-                validity, created_at, updated_at
-            )
-            VALUES (
-                gen_random_uuid(), $1, $2, $3, $4,
-                $5, $6, $7, $8, $9, $10, $11,
-                'active', now(), now()
-            )
-            ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
-            DO UPDATE
-                SET src         = EXCLUDED.src,
-                    conf        = EXCLUDED.conf,
-                    last_seen   = EXCLUDED.last_seen,
-                    observed_at = EXCLUDED.observed_at,
-                    weight      = EXCLUDED.weight,
-                    verified    = EXCLUDED.verified,
-                    "primary"   = EXCLUDED."primary",
-                    updated_at  = now()
-            RETURNING id
+            SELECT id, src, conf, verified, last_seen
+            FROM relationship.entity_facts
+            WHERE subject   = $1
+              AND predicate = $2
+              AND object    = $3
+              AND validity  = 'active'
             """,
             subject,
             predicate,
             object,
-            object_kind,
-            src,
-            conf,
-            last_seen,
-            observed_at,
-            weight,
-            verified,
-            primary,
         )
-        return AssertResult(outcome=AssertOutcome.superseded, fact_id=new_id)
 
-    # 4. No existing active row → insert.
-    # The ON CONFLICT clause guards against a race between the read above and
-    # this insert (e.g. concurrent calls from the reconciler).
-    new_id = await conn.fetchval(
-        """
-        INSERT INTO relationship.entity_facts (
-            id, subject, predicate, object, object_kind,
-            src, conf, last_seen, observed_at, weight, verified, "primary",
-            validity, created_at, updated_at
+        if existing is not None:
+            old_id: uuid.UUID = existing["id"]
+
+            # 2. Compare provenance fields to detect supersession.
+            prov_changed = (
+                existing["src"] != src
+                or existing["conf"] != conf
+                or bool(existing["verified"]) != verified
+                or existing["last_seen"] != last_seen
+            )
+
+            if not prov_changed:
+                # Idempotent: same identity + same provenance → no write.
+                return AssertResult(outcome=AssertOutcome.unchanged, fact_id=old_id)
+
+            # 3. Supersession: retract the specific old row we just read, then
+            #    insert the replacement. The UPDATE is guarded on the row id AND
+            #    validity='active' so a racing supersession of the same row only
+            #    succeeds once; if we lose that race, rowcount is 0 and we retry.
+            status = await conn.execute(
+                """
+                UPDATE relationship.entity_facts
+                SET validity   = 'superseded',
+                    updated_at = now()
+                WHERE id = $1
+                  AND validity = 'active'
+                """,
+                old_id,
+            )
+            if status == "UPDATE 0":
+                # Another writer already superseded this row out from under us.
+                # Re-read and start over so we supersede the current active row.
+                continue
+
+            new_id = await _insert_active_fact(
+                conn,
+                subject=subject,
+                predicate=predicate,
+                object=object,
+                object_kind=object_kind,
+                src=src,
+                conf=conf,
+                last_seen=last_seen,
+                observed_at=observed_at,
+                weight=weight,
+                verified=verified,
+                primary=primary,
+            )
+            if new_id is None:
+                # A competing writer slipped a new active row into the slot
+                # between our UPDATE and our INSERT. We have already correctly
+                # superseded the row we observed; loop to supersede theirs too
+                # rather than overwriting it in place.
+                continue
+            return AssertResult(outcome=AssertOutcome.superseded, fact_id=new_id)
+
+        # 4. No existing active row → insert. DO NOTHING (never DO UPDATE) so a
+        #    concurrent writer's active row is never mutated in place; on conflict
+        #    we re-read and route the collision through supersession above.
+        new_id = await _insert_active_fact(
+            conn,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            object_kind=object_kind,
+            src=src,
+            conf=conf,
+            last_seen=last_seen,
+            observed_at=observed_at,
+            weight=weight,
+            verified=verified,
+            primary=primary,
         )
-        VALUES (
-            gen_random_uuid(), $1, $2, $3, $4,
-            $5, $6, $7, $8, $9, $10, $11,
-            'active', now(), now()
-        )
-        ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
-        DO UPDATE
-            SET src         = EXCLUDED.src,
-                conf        = EXCLUDED.conf,
-                last_seen   = EXCLUDED.last_seen,
-                observed_at = EXCLUDED.observed_at,
-                weight      = EXCLUDED.weight,
-                verified    = EXCLUDED.verified,
-                "primary"   = EXCLUDED."primary",
-                updated_at  = now()
-        RETURNING id
-        """,
-        subject,
-        predicate,
-        object,
-        object_kind,
-        src,
-        conf,
-        last_seen,
-        observed_at,
-        weight,
-        verified,
-        primary,
+        if new_id is None:
+            # Lost the insert race: an active row now exists. Re-read so we either
+            # report `unchanged` (identical provenance) or supersede it.
+            continue
+        return AssertResult(outcome=AssertOutcome.inserted, fact_id=new_id)
+
+    raise RuntimeError(
+        "relationship_assert_fact: exhausted supersession retries under contention "
+        f"for (subject={subject}, predicate={predicate}, object={object})."
     )
-    return AssertResult(outcome=AssertOutcome.inserted, fact_id=new_id)
 
 
 async def _assert_on_conn(
