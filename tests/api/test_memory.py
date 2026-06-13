@@ -594,6 +594,47 @@ async def test_stats_consolidation_fields_aggregate_across_pools(app):
     assert data["last_consolidation_facts_produced"] == 11
 
 
+async def test_stats_facts_produced_tracks_latest_run_not_max(app):
+    """facts_produced reflects the LATEST run's value, even when it is smaller.
+
+    Regression guard: a buggy MAX/SUM over facts_produced would pass the
+    sibling aggregate test (where the newest run also has the most facts).
+    Here the globally-latest run has *fewer* facts than an older run, so any
+    implementation that picks the largest (or sums) facts_produced fails.
+    """
+    older = datetime(2026, 6, 10, tzinfo=UTC)
+    newer = datetime(2026, 6, 12, tzinfo=UTC)
+    db = _StatsDB(
+        {
+            # Older run with a LARGE facts_produced.
+            "atlas": _StatsPool(
+                counts={"consolidation_status = 'dead_letter'": 1},
+                last_runs={"atlas": {"consolidated_at": older, "facts_produced": 99}},
+            ),
+            # Globally-latest run, but with a SMALL facts_produced.
+            "memory": _StatsPool(
+                counts={"consolidation_status = 'dead_letter'": 4},
+                last_runs={"memory": {"consolidated_at": newer, "facts_produced": 2}},
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # last_consolidation_at = MAX(consolidated_at) across pools.
+    assert data["last_consolidation_at"] == str(newer)
+    # facts_produced follows the LATEST run (2), NOT the max (99) or sum (101).
+    assert data["last_consolidation_facts_produced"] == 2
+    # dead_letter_episodes = SUM across pools.
+    assert data["dead_letter_episodes"] == 5
+
+
 async def test_stats_consolidation_fields_default_when_no_runs(app):
     """No consolidation_runs rows → null timestamp/facts, dead_letter defaults to 0."""
     db = _StatsDB(
