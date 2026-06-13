@@ -98,6 +98,43 @@ const STALENESS_LABELS: Record<EntityFactStalenessBand, string> = {
   stale: "Stale",
 }
 
+/**
+ * Upper bound (inclusive) of the `fresh` band, in days. Mirrors the server-side
+ * canonical thresholds (`roster/relationship/tools/staleness.py`): age ≤ 30 is
+ * fresh, 30 < age ≤ 180 is aging, above 180 is stale.
+ */
+export const FRESH_MAX_DAYS = 30
+/** Upper bound (inclusive) of the `aging` band, in days. Above this is `stale`. */
+export const AGING_MAX_DAYS = 180
+
+/** Milliseconds per day. */
+const MS_PER_DAY = 86_400_000
+
+/**
+ * Derive a staleness band from an observation timestamp, using the same
+ * thresholds as the server's identity/narrative staleness SQL. This exists for
+ * surfaces that carry a raw `occurred_at`/`last_received_at` but no server-side
+ * `staleness_band` (e.g. the latest-interactions block reads through the
+ * timeline and message-thread endpoints). A null/unparseable timestamp is
+ * treated as `stale` (we cannot vouch for its freshness).
+ *
+ * @param when - ISO timestamp, Date, or null.
+ * @param now - reference "now" (defaults to the current time; injectable for tests).
+ */
+export function stalenessBandForTimestamp(
+  when: string | Date | null | undefined,
+  now: Date = new Date(),
+): EntityFactStalenessBand {
+  if (when == null) return "stale"
+  const ts = when instanceof Date ? when : new Date(when)
+  const ms = ts.getTime()
+  if (Number.isNaN(ms)) return "stale"
+  const ageDays = (now.getTime() - ms) / MS_PER_DAY
+  if (ageDays <= FRESH_MAX_DAYS) return "fresh"
+  if (ageDays <= AGING_MAX_DAYS) return "aging"
+  return "stale"
+}
+
 export interface StalenessBandProps extends React.HTMLAttributes<HTMLSpanElement> {
   /** Read-time freshness band. */
   band: EntityFactStalenessBand

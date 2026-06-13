@@ -16,6 +16,7 @@ import {
   ConfBar,
   ProvenanceMarks,
   StalenessBand,
+  stalenessBandForTimestamp,
 } from "./Provenance"
 
 // ---------------------------------------------------------------------------
@@ -145,5 +146,31 @@ describe("ProvenanceMarks: src + verified", () => {
   it("uses no hex literals (token discipline)", () => {
     const html = renderToStaticMarkup(<ProvenanceMarks src="relationship" verified />)
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}\b/)
+  })
+})
+
+describe("stalenessBandForTimestamp: server-aligned thresholds", () => {
+  const now = new Date("2026-06-13T00:00:00Z")
+  const daysAgo = (n: number) =>
+    new Date(now.getTime() - n * 86_400_000).toISOString()
+
+  it("is fresh at the 30-day boundary (inclusive)", () => {
+    expect(stalenessBandForTimestamp(daysAgo(0), now)).toBe("fresh")
+    expect(stalenessBandForTimestamp(daysAgo(30), now)).toBe("fresh")
+  })
+
+  it("is aging between 30 and 180 days", () => {
+    expect(stalenessBandForTimestamp(daysAgo(31), now)).toBe("aging")
+    expect(stalenessBandForTimestamp(daysAgo(180), now)).toBe("aging")
+  })
+
+  it("is stale above 180 days", () => {
+    expect(stalenessBandForTimestamp(daysAgo(181), now)).toBe("stale")
+    expect(stalenessBandForTimestamp(daysAgo(1000), now)).toBe("stale")
+  })
+
+  it("treats null / unparseable timestamps as stale", () => {
+    expect(stalenessBandForTimestamp(null, now)).toBe("stale")
+    expect(stalenessBandForTimestamp("not-a-date", now)).toBe("stale")
   })
 })

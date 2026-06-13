@@ -38,6 +38,7 @@ import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
 import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
 import { CoreDatesBlock } from "@/components/relationship/CoreDatesBlock";
 import { DeltaSinceLastVisitBanner } from "@/components/relationship/DeltaSinceLastVisitBanner";
+import { LatestInteractionsBlock } from "@/components/relationship/LatestInteractionsBlock";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
@@ -1339,6 +1340,43 @@ const _FACT_GROUP_ORDER = [
   "Other",
 ];
 
+/**
+ * Index the per-fact provenance (the facts-drill `EntityFact` rows) by
+ * predicate, so an editorial fact row can reveal its `src` / `verified` /
+ * staleness on demand. The editorial list itself renders from `recent_facts`
+ * (which carry no provenance); this is the spec's "facts drill endpoint is the
+ * canonical fact-level read for ... Editorial provenance reveals".
+ */
+function _indexProvenanceByPredicate(
+  facts: EntityFact[],
+): Map<string, EntityFact[]> {
+  const map = new Map<string, EntityFact[]>();
+  for (const fact of facts) {
+    const list = map.get(fact.predicate) ?? [];
+    list.push(fact);
+    map.set(fact.predicate, list);
+  }
+  return map;
+}
+
+/**
+ * Resolve the provenance row for an editorial fact: match by predicate, then —
+ * when a predicate has several rows — narrow by object/content equality. Returns
+ * null when no drill row corresponds (no invented provenance).
+ */
+function _provenanceForFact(
+  fact: Fact,
+  index: Map<string, EntityFact[]>,
+): EntityFact | null {
+  const candidates = index.get(fact.predicate);
+  if (!candidates || candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  const target = (fact.content ?? "").trim();
+  return (
+    candidates.find((c) => (c.object ?? "").trim() === target) ?? candidates[0]
+  );
+}
+
 function FactsSection({
   entityId,
   facts,
@@ -1354,6 +1392,17 @@ function FactsSection({
   isFetching: boolean;
   onLoadMore: () => void;
 }) {
+  // One drill read over both stores feeds every row's on-demand provenance
+  // reveal — no per-row fetch.
+  const { data: provenanceData } = useEntityFacts(entityId, {
+    store: "all",
+    limit: 200,
+  });
+  const provenanceIndex = useMemo(
+    () => _indexProvenanceByPredicate(provenanceData?.items ?? []),
+    [provenanceData],
+  );
+
   const grouped = useMemo(() => {
     const map = new Map<string, Fact[]>();
     for (const fact of facts) {
@@ -1389,7 +1438,12 @@ function FactsSection({
               </h3>
               <ul className="divide-y divide-border border-y">
                 {list.map((fact) => (
-                  <FactRow key={fact.id} fact={fact} entityId={entityId} />
+                  <FactRow
+                    key={fact.id}
+                    fact={fact}
+                    entityId={entityId}
+                    provenance={_provenanceForFact(fact, provenanceIndex)}
+                  />
                 ))}
               </ul>
             </div>
@@ -1413,50 +1467,95 @@ function FactsSection({
   );
 }
 
-function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
+function FactRow({
+  fact,
+  entityId,
+  provenance,
+}: {
+  fact: Fact;
+  entityId: string;
+  provenance: EntityFact | null;
+}) {
   const isIncoming =
     fact.object_entity_id === entityId && fact.entity_id !== entityId;
   const created = new Date(fact.created_at);
+  // On-demand provenance reveal: default row chrome stays clean (spec:
+  // "Editorial — on-demand ... the row chrome itself stays clean"). The
+  // affordance only shows when there is provenance to reveal.
+  const [revealed, setRevealed] = useState(false);
+  const hasProvenance = provenance != null;
 
   return (
-    <li className="grid grid-cols-[auto_1fr_auto] items-baseline gap-3 py-2 text-sm">
-      <span className="text-muted-foreground text-xs capitalize">
-        {fact.predicate.replaceAll("_", " ")}
-      </span>
-      <span className="min-w-0 truncate">
-        {isIncoming ? (
-          <>
+    <li className="py-2 text-sm">
+      <div className="grid grid-cols-[auto_1fr_auto] items-baseline gap-3">
+        <span className="text-muted-foreground text-xs capitalize">
+          {fact.predicate.replaceAll("_", " ")}
+        </span>
+        <span className="min-w-0 truncate">
+          {isIncoming ? (
+            <>
+              <Link
+                to={`/entities/${fact.entity_id}`}
+                className="text-primary hover:underline"
+              >
+                {fact.entity_name ?? fact.subject}
+              </Link>
+              <span className="text-muted-foreground"> → this entity</span>
+            </>
+          ) : fact.object_entity_id ? (
             <Link
-              to={`/entities/${fact.entity_id}`}
+              to={`/entities/${fact.object_entity_id}`}
               className="text-primary hover:underline"
             >
-              {fact.entity_name ?? fact.subject}
+              {fact.object_entity_name ?? fact.content}
             </Link>
-            <span className="text-muted-foreground"> → this entity</span>
-          </>
-        ) : fact.object_entity_id ? (
-          <Link
-            to={`/entities/${fact.object_entity_id}`}
-            className="text-primary hover:underline"
-          >
-            {fact.object_entity_name ?? fact.content}
-          </Link>
-        ) : (
-          fact.content
-        )}
-      </span>
-      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-        <Time value={created} mode="absolute" precision="day" />
-        {fact.session_id && (
-          <Link
-            to={sessionDetailHref(fact.session_id, fact.source_butler)}
-            className="text-primary ml-2 hover:underline"
-            title={fact.session_id}
-          >
-            session
-          </Link>
-        )}
-      </span>
+          ) : (
+            fact.content
+          )}
+        </span>
+        <span className="text-muted-foreground flex shrink-0 items-center gap-2 text-xs tabular-nums">
+          <Time value={created} mode="absolute" precision="day" />
+          {fact.session_id && (
+            <Link
+              to={sessionDetailHref(fact.session_id, fact.source_butler)}
+              className="text-primary hover:underline"
+              title={fact.session_id}
+            >
+              session
+            </Link>
+          )}
+          {hasProvenance && (
+            <button
+              type="button"
+              data-testid={`fact-provenance-toggle-${fact.id}`}
+              aria-expanded={revealed}
+              aria-label={
+                revealed ? "Hide provenance" : "Reveal provenance"
+              }
+              onClick={() => setRevealed((v) => !v)}
+              className="rounded px-1 font-mono text-[10px] leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {revealed ? "−" : "i"}
+            </button>
+          )}
+        </span>
+      </div>
+      {hasProvenance && revealed && (
+        <div
+          data-testid={`fact-provenance-reveal-${fact.id}`}
+          className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 text-xs"
+        >
+          {/* Two distinct axes — confidence and staleness — never blended. */}
+          <span className="flex items-center gap-1.5">
+            <span className="text-muted-foreground text-[10px] uppercase tracking-[0.08em]">
+              conf
+            </span>
+            <ConfBar conf={provenance.conf} width={40} />
+          </span>
+          <StalenessBand band={provenance.staleness_band} />
+          <ProvenanceMarks src={provenance.src} verified={provenance.verified} />
+        </div>
+      )}
     </li>
   );
 }
@@ -2954,6 +3053,10 @@ export default function EntityDetailPage() {
                   occurrence (entity v3; replaces client-side date matching). */}
               <CoreDatesBlock entityId={entityId} />
 
+              {/* Latest interactions — most-recent touch per channel, read
+                  through the existing thread + timeline endpoints (entity v3). */}
+              <LatestInteractionsBlock entityId={entityId} />
+
               {/* Profile snapshot — place, work, family (date-kind facts moved
                   to <CoreDatesBlock> above). */}
               <ProfileSnapshot entityId={entityId} facts={entity.recent_facts} />
@@ -2994,6 +3097,10 @@ export default function EntityDetailPage() {
             <>
               {/* Core dates — first-class section in both modes (entity v3). */}
               <CoreDatesBlock entityId={entityId} />
+
+              {/* Latest interactions — first-class section in both modes
+                  (entity v3); most-recent touch per channel. */}
+              <LatestInteractionsBlock entityId={entityId} />
 
               {/* Workbench three-rail layout: context · workbench · curation.
                   No 44px Display here (the identity hero above carries the name). */}

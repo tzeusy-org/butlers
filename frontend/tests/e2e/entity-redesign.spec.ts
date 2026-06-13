@@ -361,8 +361,10 @@ test.describe("entity-redesign: entity detail page", () => {
     // The dunbar_tier_override item content should appear in the feed
     await expect(page.getByText("Tier set to 2")).toBeVisible();
 
-    // The interaction item content should also appear
-    await expect(page.getByText("Caught up over coffee")).toBeVisible();
+    // The interaction item content should also appear. The same summary now also
+    // surfaces in the LatestInteractionsBlock (latest touch per channel), so use
+    // .first() to assert presence without tripping strict mode.
+    await expect(page.getByText("Caught up over coffee").first()).toBeVisible();
 
     // The dunbar_tier_override predicate renders as "dunbar tier override"
     // (predicate.replaceAll('_', ' ') — see TimelineRow in EntityDetailPage.tsx)
@@ -437,8 +439,11 @@ test.describe("entity-redesign: entity detail page", () => {
     await expect(page.getByText("None recorded")).not.toBeVisible();
 
     // ---- ActivityTimeline: seeded items appear in the "All" feed ----
+    // "Met for lunch on the waterfront" is the most-recent in-person interaction,
+    // so it also surfaces in the LatestInteractionsBlock; use .first() to assert
+    // presence without tripping strict mode.
     await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
-    await expect(page.getByText("Met for lunch on the waterfront")).toBeVisible();
+    await expect(page.getByText("Met for lunch on the waterfront").first()).toBeVisible();
     await expect(page.getByText("Prefers tea over coffee")).toBeVisible();
 
     // Filter pill counts — each seeded kind increments its pill count
@@ -460,8 +465,11 @@ test.describe("entity-redesign: entity detail page", () => {
     await expect(page.getByText("Borrowed umbrella").first()).toBeVisible({ timeout: TIMEOUT_MS });
 
     // ---- MessageThreadsSection: thread snippet from email channel ----
+    // This snippet is also the most-recent email touch in the
+    // LatestInteractionsBlock; use .first() to assert presence without tripping
+    // strict mode.
     await expect(
-      page.getByText("Looking forward to catching up soon!"),
+      page.getByText("Looking forward to catching up soon!").first(),
     ).toBeVisible({ timeout: TIMEOUT_MS });
 
     // ---- FactsSection: facts from entity.recent_facts in the entity mock ----
