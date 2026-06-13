@@ -1,255 +1,282 @@
+// ---------------------------------------------------------------------------
+// FactDetailPage — the fact's editorial detail page. (bu-2ix8d.7)
+//
+// Shares the DetailSkeleton shape with the rule and episode pages. Fact-specific
+// pieces:
+//   - The decay-arithmetic line (mono, honest): confidence · decay · last
+//     confirmed · effective.
+//   - Entity anchors out: subject → /entities/:entity_id, object →
+//     /entities/:object_entity_id.
+//   - Supersession links, BOTH directions when present in the payload:
+//     `supersedes` (forward) AND `superseded by` (reverse). The forward link is
+//     the fact's own supersedes_id; the reverse link is only rendered when the
+//     payload carries a superseded_by id — which the backend does NOT yet supply
+//     (bu-awo8k.8 is not live), so in practice only the forward link shows.
+//   - The commit footer (Confirm / Retract). Both endpoints are LIVE on main
+//     (bu-awo8k.3 / .4), so the footer ALWAYS renders here — never a dead button.
+//
+// Binding docs:
+// - pr/overview/memory-redesign/prompts/06-detail-pages.md "Fact" + "Commit footer"
+// - pr/overview/memory-redesign/VISION.md (commit pills)
+// ---------------------------------------------------------------------------
+
+import { type ReactElement, useState } from "react";
 import { Link, useParams } from "react-router";
 
-import { Badge } from "@/components/ui/badge";
-import { Time } from "@/components/ui/time";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { permanenceBadge, PercentageProgressBar } from "@/components/memory/badges";
-import { DetailPage } from "@/components/layout/DetailPage";
-import { useFact } from "@/hooks/use-memory";
+  DetailEyebrow,
+  DetailHeading,
+  DetailSkeleton,
+  KVBand,
+  ProvenanceLink,
+  ProvenanceSection,
+  StateLine,
+} from "@/components/memory/DetailSkeleton";
+import { Mono } from "@/components/ui/Mono";
+import { Voice } from "@/components/ui/Voice";
+import { useConfirmFact, useFact, useRetractFact } from "@/hooks/use-memory";
+import { decayArithmeticLine, permanenceTag } from "@/lib/memory-derived";
+import { cn } from "@/lib/utils";
+import type { Fact } from "@/api/types.ts";
 
-function validityBadge(v: string) {
-  switch (v) {
-    case "active":
-      return (
-        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-          active
-        </Badge>
-      );
-    case "fading":
-      return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600">
-          fading
-        </Badge>
-      );
-    case "superseded":
-      return <Badge variant="secondary">superseded</Badge>;
-    case "expired":
-      return <Badge variant="destructive">expired</Badge>;
-    default:
-      return <Badge variant="secondary">{v}</Badge>;
-  }
+// ---------------------------------------------------------------------------
+// Date helper
+// ---------------------------------------------------------------------------
+
+/** `2026-06-02` local date, or "—" for an unparseable timestamp. */
+function fmtDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-export default function FactDetailPage() {
-  const { factId } = useParams<{ factId: string }>();
-  const { data, isLoading, error } = useFact(factId ?? null);
-  const fact = data?.data;
+// ---------------------------------------------------------------------------
+// Subject / object entity anchors
+// ---------------------------------------------------------------------------
 
-  const breadcrumbs = [
-    { label: "Memory", href: "/memory" },
-    { label: "Facts", href: "/memory" },
-    { label: fact?.subject ?? factId ?? "Fact" },
-  ];
+/** Underlined entity anchor out to /entities/:id, or plain text when unlinked. */
+function EntityAnchor({
+  id,
+  name,
+  fallback,
+}: {
+  id: string | null;
+  name: string | null;
+  fallback: string;
+}) {
+  const label = name ?? fallback;
+  if (!id) return <span>{label}</span>;
+  return (
+    <Link
+      to={`/entities/${id}`}
+      className="underline [text-underline-offset:3px] hover:text-[var(--fg)]"
+    >
+      {label}
+    </Link>
+  );
+}
 
-  const title = fact?.subject ?? factId ?? "Fact";
-  const subtitle = fact?.predicate;
+// ---------------------------------------------------------------------------
+// Commit footer (Confirm / Retract)
+// ---------------------------------------------------------------------------
+
+/**
+ * The only mutations on the entire memory surface. Both endpoints are live, so
+ * this footer always renders. `Confirm` is the single commit-class pill
+ * (fg-on-bg); `Retract` is secondary (bordered). Retract requires a one-step
+ * confirm: the pill becomes `Retract — confirm?` for 5s, no modal.
+ */
+function CommitFooter({ fact }: { fact: Fact }) {
+  const confirmMutation = useConfirmFact();
+  const retractMutation = useRetractFact();
+  const [retractArmed, setRetractArmed] = useState(false);
+
+  const busy = confirmMutation.isPending || retractMutation.isPending;
+
+  const onRetract = () => {
+    if (!retractArmed) {
+      setRetractArmed(true);
+      // Disarm after 5s if the owner does not follow through.
+      window.setTimeout(() => setRetractArmed(false), 5000);
+      return;
+    }
+    setRetractArmed(false);
+    retractMutation.mutate(fact.id);
+  };
 
   return (
-    <DetailPage
-      record={{ title, subtitle, type: "fact" }}
-      breadcrumbs={breadcrumbs}
-      loading={isLoading}
-      error={error ?? null}
-      pulse={null}
-      primary={
-        fact ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                {fact.entity_id ? (
-                  <Link
-                    to={`/entities/${fact.entity_id}`}
-                    className="text-primary hover:underline"
-                  >
-                    {fact.entity_name ?? fact.subject}
-                  </Link>
-                ) : (
-                  fact.subject
-                )}
-              </CardTitle>
-              <p className="text-muted-foreground text-sm">{fact.predicate}</p>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Content */}
-              <div>
-                <p className="text-muted-foreground mb-1 text-sm font-medium">
-                  Content
-                </p>
-                <div className="rounded-md bg-muted/30 p-4">
-                  <p className="text-sm whitespace-pre-wrap break-words">
-                    {fact.object_entity_id ? (
-                      <Link
-                        to={`/entities/${fact.object_entity_id}`}
-                        className="text-primary hover:underline"
-                      >
-                        {fact.object_entity_name ?? fact.content}
-                      </Link>
-                    ) : (
-                      fact.content
-                    )}
-                  </p>
-                </div>
-              </div>
+    <footer className="flex flex-col gap-3 border-t border-[var(--border-soft)] pt-5">
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Confirm — the commit pill (fg-on-bg). */}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => confirmMutation.mutate(fact.id)}
+          className={cn(
+            "inline-flex h-7 items-center rounded-full px-3.5",
+            "font-mono text-[11px] font-medium",
+            "bg-[var(--fg)] text-[var(--bg)]",
+            "transition-opacity hover:opacity-90",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+            "disabled:pointer-events-none disabled:opacity-40",
+          )}
+        >
+          Confirm
+        </button>
+        <Voice variant="italic" as="span" className="text-[13px] text-[var(--mfg)]">
+          Re-inks the fact: resets decay from today.
+        </Voice>
+      </div>
 
-              {/* Status row */}
-              <div className="flex flex-wrap items-center gap-4">
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Validity
-                  </p>
-                  {validityBadge(fact.validity)}
-                </div>
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Scope
-                  </p>
-                  <Badge variant="outline">{fact.scope}</Badge>
-                </div>
-              </div>
-
-              {/* Metrics */}
-              <div className="flex gap-6 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Decay rate: </span>
-                  <span className="tabular-nums">{fact.decay_rate}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">
-                    Reference count:{" "}
-                  </span>
-                  <span className="tabular-nums">{fact.reference_count}</span>
-                </div>
-              </div>
-
-              {/* Provenance */}
-              <div className="space-y-1 text-sm">
-                <p className="text-muted-foreground text-xs font-medium">
-                  Provenance
-                </p>
-                <div className="flex flex-wrap gap-4">
-                  {fact.source_butler && (
-                    <div>
-                      <span className="text-muted-foreground">
-                        Source butler:{" "}
-                      </span>
-                      <Badge variant="outline">{fact.source_butler}</Badge>
-                    </div>
-                  )}
-                  {fact.source_episode_id && (
-                    <div>
-                      <span className="text-muted-foreground">
-                        Source episode:{" "}
-                      </span>
-                      <Link
-                        to={`/memory/episodes/${fact.source_episode_id}`}
-                        className="text-primary hover:underline"
-                      >
-                        {fact.source_episode_id}
-                      </Link>
-                    </div>
-                  )}
-                  {fact.supersedes_id && (
-                    <div>
-                      <span className="text-muted-foreground">
-                        Supersedes:{" "}
-                      </span>
-                      <Link
-                        to={`/memory/facts/${fact.supersedes_id}`}
-                        className="text-primary hover:underline"
-                      >
-                        {fact.supersedes_id}
-                      </Link>
-                    </div>
-                  )}
-                  {!fact.source_butler &&
-                    !fact.source_episode_id &&
-                    !fact.supersedes_id && (
-                      <span className="text-muted-foreground">
-                        No provenance data.
-                      </span>
-                    )}
-                </div>
-              </div>
-
-              {/* Tags */}
-              {fact.tags.length > 0 && (
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Tags
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {fact.tags.map((tag) => (
-                      <Badge key={tag} variant="secondary">
-                        {tag}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Metadata */}
-              {Object.keys(fact.metadata).length > 0 && (
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Metadata
-                  </p>
-                  <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto">
-                    {JSON.stringify(fact.metadata, null, 2)}
-                  </pre>
-                </div>
-              )}
-
-              {/* Timestamps */}
-              <div className="flex flex-wrap gap-6 text-xs text-muted-foreground">
-                <span>
-                  Created: <Time value={fact.created_at} mode="absolute" />
-                </span>
-                {fact.last_referenced_at && (
-                  <span>
-                    Last referenced:{" "}
-                    <Time value={fact.last_referenced_at} mode="absolute" />
-                  </span>
-                )}
-                {fact.last_confirmed_at && (
-                  <span>
-                    Last confirmed:{" "}
-                    <Time value={fact.last_confirmed_at} mode="absolute" />
-                  </span>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ) : null
-      }
-      supporting={
-        fact ? (
-          <>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Confidence</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <PercentageProgressBar value={fact.confidence} label="Confidence" />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Permanence</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {permanenceBadge(fact.permanence)}
-              </CardContent>
-            </Card>
-          </>
-        ) : null
-      }
-      auxiliary={null}
-      practical={null}
-    />
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Retract — secondary (bordered, not colored). One-step confirm. */}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onRetract}
+          className={cn(
+            "inline-flex h-7 items-center rounded-full px-3.5",
+            "font-mono text-[11px] font-medium",
+            "border border-[var(--border)] bg-transparent text-[var(--fg)]",
+            "transition-colors hover:border-[var(--fg)]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+            "disabled:pointer-events-none disabled:opacity-40",
+          )}
+        >
+          {retractArmed ? "Retract — confirm?" : "Retract"}
+        </button>
+        <Voice variant="italic" as="span" className="text-[13px] text-[var(--mfg)]">
+          Marks the record incorrect; agents stop retrieving it.
+        </Voice>
+      </div>
+    </footer>
   );
+}
+
+// ---------------------------------------------------------------------------
+// FactDetailPage
+// ---------------------------------------------------------------------------
+
+interface FactDetailPageProps {
+  /** Reference instant for the decay line. Injectable for deterministic tests. */
+  now?: Date;
+}
+
+export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
+  const { factId } = useParams<{ factId: string }>();
+  const { data, isLoading } = useFact(factId ?? null);
+  const fact = data?.data;
+
+  if (!fact) {
+    return (
+      <DetailSkeleton backHref="/memory" backLabel="ledger">
+        <Voice variant="italic" className="py-6 text-[var(--mfg)]">
+          {isLoading ? "Reading the ledger…" : "This fact is not in the ledger."}
+        </Voice>
+      </DetailSkeleton>
+    );
+  }
+
+  // The server owns the fading threshold — dim the whole page on validity.
+  const dimmed = fact.validity === "fading";
+
+  // Supersession id present in the payload (when set). The REVERSE lookup
+  // (superseded_by) is gated off (bu-awo8k.8 not live) and is intentionally
+  // never rendered — the backend does not supply it.
+  const supersededById =
+    typeof (fact as { superseded_by_id?: unknown }).superseded_by_id === "string"
+      ? ((fact as { superseded_by_id?: string }).superseded_by_id ?? null)
+      : null;
+
+  // Provenance children: only render the section when at least one chain link
+  // exists. Empty provenance OMITS the section entirely (no empty shell).
+  const provenanceLinks = [
+    fact.source_episode_id != null ? (
+      <ProvenanceLink
+        key="episode"
+        to={`/memory/episodes/${fact.source_episode_id}`}
+        label={`derived from episode ${shortFragment(fact.source_episode_id)}`}
+      />
+    ) : null,
+    fact.supersedes_id != null ? (
+      <ProvenanceLink
+        key="supersedes"
+        to={`/memory/facts/${fact.supersedes_id}`}
+        label={`supersedes ${shortFragment(fact.supersedes_id)}`}
+      />
+    ) : null,
+    supersededById != null ? (
+      <ProvenanceLink
+        key="superseded-by"
+        to={`/memory/facts/${supersededById}`}
+        label={`superseded by ${shortFragment(supersededById)}`}
+      />
+    ) : null,
+  ].filter((x): x is ReactElement => x != null);
+
+  return (
+    <DetailSkeleton backHref="/memory" backLabel="ledger">
+      <DetailEyebrow kind="fact" id={fact.id} />
+
+      {/* Heading: the content is the headline. */}
+      <DetailHeading dimmed={dimmed}>{fact.content}</DetailHeading>
+
+      {/* State line — lifecycle in the API's words. */}
+      <StateLine
+        dimmed={dimmed}
+        fragments={[
+          fact.validity,
+          `${fact.permanence} permanence`,
+          fact.scope ? `${fact.scope} scope` : null,
+        ]}
+      />
+
+      {/* Decay arithmetic — one honest mono line. */}
+      <Mono
+        muted={dimmed}
+        className={cn("tabular-nums", dimmed && "text-[var(--dim)]")}
+      >
+        {decayArithmeticLine(fact, now)}
+      </Mono>
+
+      {/* KV band — empty keys omitted. */}
+      <KVBand
+        entries={[
+          { key: "subject", value: <EntityAnchor id={fact.entity_id} name={fact.entity_name} fallback={fact.subject} /> },
+          { key: "predicate", value: <span className="font-mono text-[11px]">{fact.predicate}</span> },
+          {
+            key: "object",
+            value:
+              fact.object_entity_id != null || fact.object_entity_name != null ? (
+                <EntityAnchor id={fact.object_entity_id} name={fact.object_entity_name} fallback={fact.content} />
+              ) : null,
+          },
+          { key: "permanence", value: <span className="font-mono text-[11px] tabular-nums">{permanenceTag(fact.permanence)}</span> },
+          { key: "created", value: <Mono>{fmtDate(fact.created_at)}</Mono> },
+          { key: "last referenced", value: fact.last_referenced_at ? <Mono>{fmtDate(fact.last_referenced_at)}</Mono> : null },
+          { key: "last confirmed", value: fact.last_confirmed_at ? <Mono>{fmtDate(fact.last_confirmed_at)}</Mono> : null },
+          { key: "references", value: <Mono>{fact.reference_count}</Mono> },
+          { key: "source butler", value: fact.source_butler ? <Mono>{fact.source_butler}</Mono> : null },
+          { key: "tags", value: fact.tags.length > 0 ? fact.tags.join(", ") : null },
+        ]}
+      />
+
+      {/* Provenance & cross-references — omitted when empty. */}
+      <ProvenanceSection>
+        {provenanceLinks.length > 0 ? <>{provenanceLinks}</> : null}
+      </ProvenanceSection>
+
+      {/* Commit footer — both endpoints live, always rendered. */}
+      <CommitFooter fact={fact} />
+    </DetailSkeleton>
+  );
+}
+
+/** First 8 chars of an id for inline provenance labels (no hyphen strip). */
+function shortFragment(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id;
 }

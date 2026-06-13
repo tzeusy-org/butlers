@@ -1,7 +1,20 @@
+/**
+ * Component tests for RuleDetailPage — the rule's editorial detail page
+ * (bu-2ix8d.7).
+ *
+ * Acceptance (pr/overview/memory-redesign/prompts/06-detail-pages.md "Rule"):
+ *   - Shared skeleton: eyebrow (RULE · <short id>), heading = directive text,
+ *     state line, KV band — exactly one <h1>, no "Details" chrome.
+ *   - Outcome record two-line format (applied/helpful/harmful/effectiveness).
+ *   - The `harmful` fragment is --red ONLY when > 0 (zero harm → zero red).
+ *   - Provenance `derived from episode` renders when source_episode_id set,
+ *     and the section is omitted otherwise.
+ *   - No commit footer (mutations live only on the fact page).
+ */
+
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import RuleDetailPage from "@/pages/RuleDetailPage";
 import { useRule } from "@/hooks/use-memory";
@@ -19,7 +32,7 @@ vi.mock("@/hooks/use-memory", () => ({
 type UseRuleResult = ReturnType<typeof useRule>;
 
 const BASE_RULE: MemoryRule = {
-  id: "rule-001",
+  id: "abcd1234-0000-0000-0000-000000000000",
   content: "Always confirm before deleting records",
   scope: "global",
   maturity: "established",
@@ -30,7 +43,7 @@ const BASE_RULE: MemoryRule = {
   applied_count: 12,
   success_count: 10,
   harmful_count: 0,
-  source_episode_id: "ep-7",
+  source_episode_id: "ep-7abcdef0",
   source_butler: "general",
   created_at: "2025-02-01T08:00:00Z",
   last_applied_at: "2025-04-01T14:00:00Z",
@@ -39,7 +52,7 @@ const BASE_RULE: MemoryRule = {
   metadata: {},
 };
 
-function setRuleState(rule: MemoryRule | null, opts: Partial<UseRuleResult> = {}) {
+function setRule(rule: MemoryRule | null, opts: Partial<UseRuleResult> = {}) {
   vi.mocked(useRule).mockReturnValue({
     data: rule ? { data: rule } : undefined,
     isLoading: false,
@@ -48,146 +61,79 @@ function setRuleState(rule: MemoryRule | null, opts: Partial<UseRuleResult> = {}
   } as UseRuleResult);
 }
 
-function renderPage(): string {
-  const queryClient = new QueryClient();
+function html(): string {
   return renderToStaticMarkup(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <RuleDetailPage />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <RuleDetailPage />
+    </MemoryRouter>,
   );
 }
 
-describe("RuleDetailPage — layout", () => {
+describe("RuleDetailPage", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("renders a single H1 (no double-H1 regression)", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    const h1Matches = html.match(/<h1[^>]*>/g) ?? [];
-    expect(h1Matches.length).toBe(1);
+  it("renders the editorial skeleton with a single H1 = directive text", () => {
+    setRule(BASE_RULE);
+    const out = html();
+    expect((out.match(/<h1[^>]*>/g) ?? []).length).toBe(1);
+    expect(out).toContain("Always confirm before deleting records");
+    expect(out).toContain("RULE · ABCD1234");
+    // State line in the API's words
+    expect(out).toContain("established");
+    expect(out).toContain("permanent permanence");
   });
 
-  it("renders the rule content as the page title", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("Always confirm before deleting records");
+  it("renders the outcome record (applied/helpful/harmful/effectiveness)", () => {
+    setRule(BASE_RULE);
+    const out = html();
+    expect(out).toContain("applied 12");
+    expect(out).toContain("helpful 10");
+    expect(out).toContain("harmful 0");
+    expect(out).toContain("effectiveness 0.75");
+    expect(out).toContain("last applied 2025-04-01");
+    expect(out).toContain("last evaluated 2025-04-15");
   });
 
-  it("renders the type pill with 'rule'", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("rule");
+  it("does NOT color the harmful fragment when harmful_count is 0", () => {
+    setRule({ ...BASE_RULE, harmful_count: 0 });
+    const out = html();
+    // The harmful span must not carry the --red token when harm is zero.
+    expect(out).not.toMatch(/var\(--red\)[^<]*harmful 0/);
+    expect(out).not.toMatch(/harmful 0[^<]*var\(--red\)/);
   });
 
-  it("renders breadcrumbs back to memory and rules", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("/memory");
-    expect(html).toContain("Rules");
+  it("colors the harmful fragment --red when harmful_count > 0", () => {
+    setRule({ ...BASE_RULE, harmful_count: 4 });
+    const out = html();
+    expect(out).toContain("harmful 4");
+    expect(out).toContain("var(--red)");
   });
 
-  it("truncates rule title to 80 chars with ellipsis", () => {
-    const longContent = "a".repeat(100); // 100 chars, longer than 80
-    setRuleState({ ...BASE_RULE, content: longContent });
-    const html = renderPage();
-    // Should contain the truncated title in the H1 (79 chars + ellipsis)
-    expect(html).toMatch(new RegExp("<h1[^>]*>" + "a".repeat(79) + "…</h1>"));
+  it("renders provenance derived-from-episode when source_episode_id set", () => {
+    setRule(BASE_RULE);
+    const out = html();
+    expect(out).toContain("PROVENANCE");
+    expect(out).toContain("derived from episode");
   });
 
-  it("does not truncate rule title under 80 chars", () => {
-    const shortContent = "Keep this content as-is";
-    setRuleState({ ...BASE_RULE, content: shortContent });
-    const html = renderPage();
-    // Should contain the untruncated content in the H1
-    expect(html).toMatch(new RegExp("<h1[^>]*>Keep this content as-is</h1>"));
-  });
-});
-
-describe("RuleDetailPage — body content", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+  it("omits the PROVENANCE section when no source episode", () => {
+    setRule({ ...BASE_RULE, source_episode_id: null });
+    const out = html();
+    expect(out).not.toContain("PROVENANCE");
   });
 
-  it("renders maturity badge", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("established");
+  it("renders no commit footer (no Confirm/Retract buttons)", () => {
+    setRule(BASE_RULE);
+    const out = html();
+    expect(out).not.toContain("Confirm");
+    expect(out).not.toContain("Retract");
   });
 
-  it("renders permanence badge", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("permanent");
-    expect(html).toContain("Permanence");
-  });
-
-  it("renders effectiveness progress bar", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("Effectiveness");
-    expect(html).toContain("75%");
-  });
-
-  it("renders confidence progress bar", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("Confidence");
-    expect(html).toContain("90%");
-  });
-
-  it("renders applied/success/harmful counts", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("Applied");
-    expect(html).toContain("12");
-    expect(html).toContain("Successes");
-    expect(html).toContain("10");
-    expect(html).toContain("Harmful");
-  });
-
-  it("renders provenance when source_butler and source_episode_id are set", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("general");
-    expect(html).toContain("ep-7");
-  });
-
-  it("renders tags", () => {
-    setRuleState(BASE_RULE);
-    const html = renderPage();
-    expect(html).toContain("safety");
-    expect(html).toContain("ux");
-  });
-
-  it("renders 'No provenance data' when no provenance fields set", () => {
-    setRuleState({
-      ...BASE_RULE,
-      source_butler: null,
-      source_episode_id: null,
-    });
-    const html = renderPage();
-    expect(html).toContain("No provenance data");
-  });
-});
-
-describe("RuleDetailPage — async states", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  it("renders loading state without rule content", () => {
-    setRuleState(null, { isLoading: true } as Partial<UseRuleResult>);
-    const html = renderPage();
-    expect(html).not.toContain("Always confirm");
-  });
-
-  it("renders nothing when rule data is absent and not loading", () => {
-    setRuleState(null);
-    const html = renderPage();
-    expect(html).not.toContain("Effectiveness");
+  it("renders a not-found voice line when the rule is absent", () => {
+    setRule(null);
+    const out = html();
+    expect(out).toContain("not on the books");
   });
 });

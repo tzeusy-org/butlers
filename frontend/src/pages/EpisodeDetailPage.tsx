@@ -1,157 +1,153 @@
-import { useMemo } from "react";
-import { useParams } from "react-router";
+// ---------------------------------------------------------------------------
+// EpisodeDetailPage — the episode's editorial detail page. (bu-2ix8d.7)
+//
+// Shares the DetailSkeleton shape with the fact and rule pages. Episode-specific
+// pieces:
+//   - The heading is the first line of content; full content renders below in a
+//     readable sans measure (~65ch) — the detail page is where the body lives.
+//   - Session id (mono) linking to the session log page when present.
+//   - Importance, retention class, and the consolidation glyph + WORD in mono
+//     (`◦ pending`). The detail page is the one place the glyph gets its word.
+//   - Provenance: facts derived from this episode (GET /facts?source_episode_id
+//     — bu-awo8k.6, LIVE). The section is OMITTED when no facts were derived
+//     (list nothing rather than fake it).
+//
+// No commit footer — mutations live only on the fact page.
+//
+// Binding docs:
+// - pr/overview/memory-redesign/prompts/06-detail-pages.md "Episode" + "Provenance"
+// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §4, §6
+// ---------------------------------------------------------------------------
 
-import { Badge } from "@/components/ui/badge";
-import { Time } from "@/components/ui/time";
+import { useMemo } from "react";
+import { Link, useParams } from "react-router";
+
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { DetailPage } from "@/components/layout/DetailPage";
-import { useEpisode } from "@/hooks/use-memory";
+  DetailEyebrow,
+  DetailHeading,
+  DetailSkeleton,
+  KVBand,
+  ProvenanceLink,
+  ProvenanceSection,
+  StateLine,
+} from "@/components/memory/DetailSkeleton";
+import { Mono } from "@/components/ui/Mono";
+import { Voice } from "@/components/ui/Voice";
+import { useEpisode, useFactsByEpisode } from "@/hooks/use-memory";
+import { consolidationGlyph } from "@/lib/memory-derived";
+import { cn } from "@/lib/utils";
+
+/** `2026-06-10` local date, or null for an unparseable timestamp. */
+function fmtDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** First 8 chars of an id for inline provenance labels. */
+function shortFragment(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id;
+}
 
 export default function EpisodeDetailPage() {
   const { episodeId } = useParams<{ episodeId: string }>();
-  const { data, isLoading, error } = useEpisode(episodeId);
+  const { data, isLoading } = useEpisode(episodeId);
   const episode = data?.data;
 
-  // Derive record fields from the loaded episode (or a loading placeholder).
-  // title  = first non-empty line of content (trimmed), capped at 80 chars;
-  //          leading blank lines are skipped so whitespace-padded content
-  //          does not produce a blank title.
-  // subtitle = source butler (the "lane")
-  const title = useMemo(() => {
-    if (!episode) return "Episode";
-    const firstLine = episode.content.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
-    return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine || "Episode";
+  // Facts derived from this episode (reverse provenance). The endpoint is live;
+  // when no facts come back the section is omitted (never a faked chain).
+  const { data: derivedResp } = useFactsByEpisode(episodeId);
+  const derivedFacts = derivedResp?.data ?? [];
+
+  // Heading = first non-empty line of content (the rest renders as the body).
+  const heading = useMemo(() => {
+    if (!episode) return "";
+    return (
+      episode.content
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.length > 0) ?? "Episode"
+    );
   }, [episode]);
 
-  const subtitle = episode?.butler ?? undefined;
+  if (!episode) {
+    return (
+      <DetailSkeleton backHref="/memory?register=episodes" backLabel="daybook">
+        <Voice variant="italic" className="py-6 text-[var(--mfg)]">
+          {isLoading ? "Turning to the daybook…" : "This episode is not in the daybook."}
+        </Voice>
+      </DetailSkeleton>
+    );
+  }
 
-  const breadcrumbs = useMemo(
-    () => [
-      { label: "Memory", href: "/memory" },
-      { label: "Episodes", href: "/memory?register=episodes" },
-      { label: title },
-    ],
-    [title],
-  );
+  const status = episode.consolidation_status;
+  const isDead = status === "dead_letter" || status === "failed";
+
+  // Provenance: derived facts only. Omit the section when there are none.
+  const provenance =
+    derivedFacts.length > 0 ? (
+      <>
+        {derivedFacts.map((f) => (
+          <ProvenanceLink
+            key={f.id}
+            to={`/memory/facts/${f.id}`}
+            label={`derived fact ${shortFragment(f.id)} — ${f.subject} · ${f.predicate}`}
+          />
+        ))}
+      </>
+    ) : null;
 
   return (
-    <DetailPage
-      record={{ title, subtitle, type: "episode" }}
-      breadcrumbs={breadcrumbs}
-      loading={isLoading}
-      error={error ?? null}
-      pulse={null}
-      primary={
-        episode ? (
-          <Card>
-            <CardHeader>
-              <div className="flex flex-wrap items-center gap-3">
-                <CardTitle>Content</CardTitle>
-                <Badge variant="outline">{episode.butler}</Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Full content */}
-              <div className="rounded-md bg-muted/30 p-4">
-                <p className="text-sm whitespace-pre-wrap break-words">
-                  {episode.content}
-                </p>
-              </div>
+    <DetailSkeleton backHref="/memory?register=episodes" backLabel="daybook">
+      <DetailEyebrow kind="episode" id={episode.id} />
 
-              {/* Status row */}
-              <div className="flex flex-wrap items-center gap-4">
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Importance
-                  </p>
-                  <span className="text-sm tabular-nums">
-                    {episode.importance.toFixed(1)}
-                  </span>
-                </div>
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Consolidated
-                  </p>
-                  {episode.consolidated ? (
-                    <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-                      Yes
-                    </Badge>
-                  ) : (
-                    <Badge variant="secondary">No</Badge>
-                  )}
-                </div>
-              </div>
+      {/* Heading: the episode's opening line. */}
+      <DetailHeading>{heading}</DetailHeading>
 
-              {/* Details */}
-              <div className="flex flex-wrap gap-6 text-sm">
-                {episode.session_id && (
-                  <div>
-                    <span className="text-muted-foreground">Session ID: </span>
-                    <span className="font-mono text-xs">
-                      {episode.session_id}
-                    </span>
-                  </div>
-                )}
-                <div>
-                  <span className="text-muted-foreground">
-                    Reference count:{" "}
-                  </span>
-                  <span className="tabular-nums">
-                    {episode.reference_count}
-                  </span>
-                </div>
-                {episode.expires_at && (
-                  <div>
-                    <span className="text-muted-foreground">Expires: </span>
-                    <span>
-                      <Time value={episode.expires_at} mode="absolute" />
-                    </span>
-                  </div>
-                )}
-              </div>
+      {/* State line — consolidation state + butler, in the API's words. */}
+      <StateLine fragments={[status, episode.butler ? `${episode.butler} lane` : null]} />
 
-              {/* Metadata */}
-              {Object.keys(episode.metadata).length > 0 && (
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Metadata
-                  </p>
-                  <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto">
-                    {JSON.stringify(episode.metadata, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ) : null
-      }
-      supporting={
-        episode ? (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Provenance</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-wrap gap-6 text-xs text-muted-foreground">
-                <span>
-                  Created: <Time value={episode.created_at} mode="absolute" />
-                </span>
-                {episode.last_referenced_at && (
-                  <span>
-                    Last referenced:{" "}
-                    <Time value={episode.last_referenced_at} mode="absolute" />
-                  </span>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ) : null
-      }
-    />
+      {/* Full content — readable sans measure (~65ch). The body lives here. */}
+      <Voice as="div" className="max-w-[65ch] whitespace-pre-wrap text-[14px] leading-relaxed">
+        {episode.content}
+      </Voice>
+
+      {/* KV band — empty keys omitted. */}
+      <KVBand
+        entries={[
+          {
+            key: "session",
+            value: episode.session_id ? (
+              <Link
+                to={`/sessions/${episode.session_id}`}
+                className="font-mono text-[11px] underline [text-underline-offset:3px] hover:text-[var(--fg)]"
+              >
+                {episode.session_id}
+              </Link>
+            ) : null,
+          },
+          { key: "importance", value: <Mono>{episode.importance.toFixed(1)}</Mono> },
+          {
+            key: "consolidation",
+            value: (
+              <Mono className={cn(isDead && "text-[var(--red)]")}>
+                {consolidationGlyph(status)} {status}
+              </Mono>
+            ),
+          },
+          { key: "references", value: <Mono>{episode.reference_count}</Mono> },
+          { key: "created", value: <Mono>{fmtDate(episode.created_at)}</Mono> },
+          { key: "last referenced", value: episode.last_referenced_at ? <Mono>{fmtDate(episode.last_referenced_at)}</Mono> : null },
+          { key: "expires", value: episode.expires_at ? <Mono>{fmtDate(episode.expires_at)}</Mono> : null },
+        ]}
+      />
+
+      {/* Provenance — derived facts only; omitted when none. */}
+      <ProvenanceSection>{provenance}</ProvenanceSection>
+    </DetailSkeleton>
   );
 }

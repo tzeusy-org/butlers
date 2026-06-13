@@ -82,6 +82,8 @@ export {
   getEntityConcentration,
   updateEntityDunbarTier,
   forgetRelationshipEntity,
+  confirmFact,
+  retractFact,
   getEpisode,
   getEpisodes,
   getFact,

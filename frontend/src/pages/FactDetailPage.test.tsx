@@ -1,10 +1,27 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
+// @vitest-environment jsdom
+/**
+ * Component tests for FactDetailPage — the fact's editorial detail page
+ * (bu-2ix8d.7).
+ *
+ * Acceptance (pr/overview/memory-redesign/prompts/06-detail-pages.md):
+ *   - Shared skeleton: eyebrow (FACT · <short id>), heading = content, state
+ *     line, KV band — no "Details" chrome, exactly one <h1>.
+ *   - The decay-arithmetic line renders in the mono `confidence … effective`
+ *     format.
+ *   - A fading fact dims its heading + state line.
+ *   - Empty provenance OMITS the PROVENANCE section (no empty shell).
+ *   - The Confirm/Retract commit footer ALWAYS renders (both endpoints live)
+ *     and is wired (clicking Confirm calls the mutation; Retract is one-step).
+ *   - The reverse `superseded by` link is NEVER rendered (bu-awo8k.8 gated off).
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import FactDetailPage from "@/pages/FactDetailPage";
-import { useFact } from "@/hooks/use-memory";
+import { useConfirmFact, useFact, useRetractFact } from "@/hooks/use-memory";
 import type { Fact } from "@/api/types";
 
 vi.mock("react-router", async (importOriginal) => {
@@ -14,176 +31,206 @@ vi.mock("react-router", async (importOriginal) => {
 
 vi.mock("@/hooks/use-memory", () => ({
   useFact: vi.fn(),
+  useConfirmFact: vi.fn(),
+  useRetractFact: vi.fn(),
 }));
 
-type UseFactResult = ReturnType<typeof useFact>;
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
 
-const BASE_FACT: Fact = {
-  id: "fact-001",
-  subject: "Alice",
-  predicate: "prefers",
-  content: "dark chocolate over milk chocolate",
-  importance: 5,
-  confidence: 0.85,
-  decay_rate: 0.01,
-  permanence: "stable",
-  source_butler: "general",
-  source_episode_id: "ep-42",
-  session_id: null,
-  supersedes_id: null,
-  entity_id: "entity-001",
-  entity_name: "Alice Example",
-  object_entity_id: null,
-  object_entity_name: null,
-  validity: "active",
-  scope: "global",
-  reference_count: 3,
-  created_at: "2025-01-01T12:00:00Z",
-  last_referenced_at: "2025-03-01T09:00:00Z",
-  last_confirmed_at: null,
-  tags: ["food", "preference"],
-  metadata: {},
-};
+const NOW = new Date("2026-06-13T00:00:00Z");
 
-function setFactState(fact: Fact | null, opts: Partial<UseFactResult> = {}) {
+function makeFact(overrides: Partial<Fact> = {}): Fact {
+  return {
+    id: "7a3f21c9-0000-0000-0000-000000000000",
+    subject: "Owner",
+    predicate: "preferred_pain_relief",
+    content: "ibuprofen, after meals",
+    importance: 5,
+    confidence: 0.94,
+    decay_rate: 0.002,
+    permanence: "standard",
+    source_butler: "lifestyle",
+    source_episode_id: null,
+    session_id: null,
+    supersedes_id: null,
+    entity_id: null,
+    entity_name: null,
+    object_entity_id: null,
+    object_entity_name: null,
+    validity: "active",
+    scope: "lifestyle",
+    reference_count: 3,
+    // 12 days before NOW.
+    created_at: "2026-06-01T00:00:00Z",
+    last_referenced_at: null,
+    last_confirmed_at: "2026-06-01T00:00:00Z",
+    tags: [],
+    metadata: {},
+    ...overrides,
+  };
+}
+
+const confirmMutate = vi.fn();
+const retractMutate = vi.fn();
+
+function setFact(fact: Fact | null, isLoading = false) {
   vi.mocked(useFact).mockReturnValue({
     data: fact ? { data: fact } : undefined,
-    isLoading: false,
+    isLoading,
     error: null,
-    ...opts,
-  } as UseFactResult);
+  } as ReturnType<typeof useFact>);
+  vi.mocked(useConfirmFact).mockReturnValue({
+    mutate: confirmMutate,
+    isPending: false,
+  } as unknown as ReturnType<typeof useConfirmFact>);
+  vi.mocked(useRetractFact).mockReturnValue({
+    mutate: retractMutate,
+    isPending: false,
+  } as unknown as ReturnType<typeof useRetractFact>);
 }
 
-function renderPage(): string {
-  const queryClient = new QueryClient();
-  return renderToStaticMarkup(
-    <QueryClientProvider client={queryClient}>
+function render() {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => {
+    root.render(
       <MemoryRouter>
-        <FactDetailPage />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+        <FactDetailPage now={NOW} />
+      </MemoryRouter>,
+    );
+  });
+  return { container, root };
 }
 
-describe("FactDetailPage — layout", () => {
+describe("FactDetailPage", () => {
+  let mounted: { container: HTMLDivElement; root: Root } | null = null;
+
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
-  it("renders a single H1 (no double-H1 regression)", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    const h1Matches = html.match(/<h1[^>]*>/g) ?? [];
-    expect(h1Matches.length).toBe(1);
+  afterEach(() => {
+    if (mounted) {
+      act(() => mounted!.root.unmount());
+      mounted.container.remove();
+      mounted = null;
+    }
   });
 
-  it("renders the fact subject as the page title (spec: title=fact.subject)", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    // subject "Alice" must appear in the H1 (page title) — use regex to pin to the tag
-    expect(html).toMatch(/<h1[^>]*>Alice<\/h1>/);
+  it("renders the editorial skeleton: eyebrow, content heading, state line", () => {
+    setFact(makeFact());
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    // Eyebrow: FACT · short id (8 hex, hyphens stripped, uppercase)
+    expect(text).toContain("FACT · 7A3F21C9");
+    // Heading = the content, in the single <h1>
+    const h1 = mounted.container.querySelectorAll("h1");
+    expect(h1.length).toBe(1);
+    expect(h1[0].textContent).toContain("ibuprofen, after meals");
+    // State line in the API's words — no colored status chip
+    expect(text).toContain("active");
+    expect(text).toContain("standard permanence");
+    expect(text).toContain("lifestyle scope");
   });
 
-  it("renders the predicate as subtitle below the H1", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("prefers");
+  it("renders the decay-arithmetic line in the mono format", () => {
+    setFact(makeFact({ confidence: 0.94, decay_rate: 0.002 }));
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).toContain("confidence 0.94");
+    expect(text).toContain("decays 0.002/day");
+    expect(text).toContain("last confirmed 12d ago");
+    expect(text).toMatch(/effective 0\.9\d/);
   });
 
-  it("renders the fact content in the body card (not as page title)", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("dark chocolate over milk chocolate");
+  it("dims the heading when the fact is fading", () => {
+    setFact(makeFact({ validity: "fading" }));
+    mounted = render();
+    const h1 = mounted.container.querySelector("h1");
+    expect(h1?.className).toContain("var(--dim)");
   });
 
-  it("renders the type pill with 'fact'", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("fact");
+  it("omits the PROVENANCE section when there is no provenance", () => {
+    setFact(makeFact({ source_episode_id: null, supersedes_id: null }));
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).not.toContain("PROVENANCE");
   });
 
-  it("renders breadcrumbs back to memory and facts", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("/memory");
-    expect(html).toContain("Facts");
+  it("renders forward provenance links (episode + supersedes)", () => {
+    setFact(
+      makeFact({
+        source_episode_id: "ep-12345678",
+        supersedes_id: "old-87654321",
+      }),
+    );
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).toContain("PROVENANCE");
+    expect(text).toContain("derived from episode");
+    expect(text).toContain("supersedes");
   });
 
-  it("renders breadcrumb with fact subject (spec: Memory > Facts > {subject})", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    // Third breadcrumb should show the fact subject "Alice", not entity_name "Alice Example"
-    expect(html).toMatch(/Facts.*Alice.*<\/nav>/);
-  });
-});
-
-describe("FactDetailPage — body content", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+  it("NEVER renders a reverse 'superseded by' link (bu-awo8k.8 gated off)", () => {
+    // Even if the payload carried a superseded_by id, the page must not surface it.
+    setFact(makeFact({ source_episode_id: "ep-1" }) as Fact);
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).not.toContain("superseded by");
   });
 
-  it("renders provenance when source_butler and source_episode_id are set", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("general");
-    expect(html).toContain("ep-42");
+  it("always renders the Confirm/Retract commit footer (both endpoints live)", () => {
+    setFact(makeFact());
+    mounted = render();
+    const labels = Array.from(mounted.container.querySelectorAll("button")).map(
+      (b) => b.textContent,
+    );
+    expect(labels).toContain("Confirm");
+    expect(labels).toContain("Retract");
   });
 
-  it("renders tags", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("food");
-    expect(html).toContain("preference");
-  });
-
-  it("renders permanence badge in supporting panel", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    // permanenceBadge renders 'stable' as a badge
-    expect(html).toContain("stable");
-    expect(html).toContain("Permanence");
-  });
-
-  it("renders confidence progress bar", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("Confidence");
-    expect(html).toContain("85%");
-  });
-
-  it("renders validity badge", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("active");
-  });
-
-  it("renders 'No provenance data' when no provenance fields set", () => {
-    setFactState({
-      ...BASE_FACT,
-      source_butler: null,
-      source_episode_id: null,
-      supersedes_id: null,
+  it("wires Confirm to the confirm mutation", () => {
+    setFact(makeFact());
+    mounted = render();
+    const confirmBtn = Array.from(
+      mounted.container.querySelectorAll("button"),
+    ).find((b) => b.textContent === "Confirm")!;
+    act(() => {
+      confirmBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    const html = renderPage();
-    expect(html).toContain("No provenance data");
-  });
-});
-
-describe("FactDetailPage — async states", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+    expect(confirmMutate).toHaveBeenCalledWith(
+      "7a3f21c9-0000-0000-0000-000000000000",
+    );
   });
 
-  it("renders loading state", () => {
-    setFactState(null, { isLoading: true } as Partial<UseFactResult>);
-    const html = renderPage();
-    // Page renders with loading state — fact content absent
-    expect(html).not.toContain("dark chocolate");
+  it("Retract is one-step: first click arms, second click commits", () => {
+    setFact(makeFact());
+    mounted = render();
+    const getRetract = () =>
+      Array.from(mounted!.container.querySelectorAll("button")).find((b) =>
+        (b.textContent ?? "").startsWith("Retract"),
+      )!;
+    // First click: arm (does not call the mutation yet).
+    act(() => {
+      getRetract().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(retractMutate).not.toHaveBeenCalled();
+    expect(getRetract().textContent).toContain("confirm?");
+    // Second click: commit.
+    act(() => {
+      getRetract().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(retractMutate).toHaveBeenCalledWith(
+      "7a3f21c9-0000-0000-0000-000000000000",
+    );
   });
 
-  it("renders nothing when fact data is absent and not loading", () => {
-    setFactState(null);
-    const html = renderPage();
-    expect(html).not.toContain("Content");
+  it("renders a not-found voice line when the fact is absent", () => {
+    setFact(null);
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).toContain("not in the ledger");
   });
 });

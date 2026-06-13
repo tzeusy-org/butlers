@@ -12,6 +12,8 @@ import type { Fact } from '@/api/types.ts'
 import {
   consolidationGlyph,
   daysSince,
+  decayArithmeticLine,
+  decayDaysAgo,
   effectiveConfidence,
   inspectResultToEpisode,
   inspectResultToFact,
@@ -293,5 +295,82 @@ describe('isWriteupOverdue', () => {
 
   it('is false for an unparseable timestamp', () => {
     expect(isWriteupOverdue('not-a-date', now)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// decayDaysAgo (detail-page fragment)
+// ---------------------------------------------------------------------------
+
+describe('decayDaysAgo', () => {
+  it('floors fractional days since last confirmation', () => {
+    const fact = makeFact({
+      last_confirmed_at: '2026-05-31T06:00:00.000Z', // 11.75d before NOW
+      created_at: '2026-01-01T00:00:00.000Z',
+    })
+    expect(decayDaysAgo(fact, NOW)).toBe(11)
+  })
+
+  it('anchors on created_at when last_confirmed_at is null', () => {
+    const fact = makeFact({
+      last_confirmed_at: null,
+      created_at: '2026-06-02T00:00:00.000Z', // 10d before NOW
+    })
+    expect(decayDaysAgo(fact, NOW)).toBe(10)
+  })
+
+  it('returns null when there is no anchor timestamp', () => {
+    const fact = makeFact({ last_confirmed_at: null, created_at: '' })
+    expect(decayDaysAgo(fact, NOW)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// decayArithmeticLine (detail-page mono line)
+// ---------------------------------------------------------------------------
+
+describe('decayArithmeticLine', () => {
+  it('matches the documented format with all fragments', () => {
+    const fact = makeFact({
+      confidence: 0.94,
+      decay_rate: 0.002,
+      last_confirmed_at: '2026-05-31T00:00:00.000Z', // 12d before NOW
+      created_at: '2026-01-01T00:00:00.000Z',
+    })
+    const line = decayArithmeticLine(fact, NOW)
+    expect(line).toBe(
+      `confidence 0.94 · decays 0.002/day · last confirmed 12d ago · effective ${effectiveConfidence(
+        fact,
+        NOW,
+      ).toFixed(2)}`,
+    )
+  })
+
+  it('drops the "last confirmed" fragment when there is no anchor', () => {
+    const fact = makeFact({
+      confidence: 0.5,
+      decay_rate: 0.01,
+      last_confirmed_at: null,
+      created_at: '',
+    })
+    const line = decayArithmeticLine(fact, NOW)
+    expect(line).not.toContain('last confirmed')
+    expect(line).toContain('confidence 0.50')
+    expect(line).toContain('decays 0.010/day')
+    expect(line).toContain('effective')
+  })
+
+  it('shows decay reducing the effective value over time', () => {
+    const fact = makeFact({
+      confidence: 0.94,
+      decay_rate: 0.05,
+      last_confirmed_at: '2026-05-13T00:00:00.000Z', // 30d before NOW
+      created_at: '2026-01-01T00:00:00.000Z',
+    })
+    const line = decayArithmeticLine(fact, NOW)
+    // effective is meaningfully below the nominal confidence after 30 days.
+    const effective = effectiveConfidence(fact, NOW)
+    expect(effective).toBeLessThan(0.94)
+    expect(line).toContain(`effective ${effective.toFixed(2)}`)
   })
 })

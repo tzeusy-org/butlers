@@ -1450,6 +1450,12 @@ export interface FactParams {
    * high-importance fading facts (`validity=fading & importance_min=8`).
    */
   importance_min?: number;
+  /**
+   * Source-episode provenance filter — GET /api/memory/facts supports
+   * `source_episode_id` (bu-awo8k.6 / #2181). Used by the episode detail page
+   * to list the facts derived from that episode (the reverse provenance link).
+   */
+  source_episode_id?: string;
   offset?: number;
   limit?: number;
 }

@@ -86,6 +86,40 @@ export function permanenceTag(permanence: string): string {
   }
 }
 
+/**
+ * Whole days elapsed since a fact's last confirmation (or creation), for the
+ * detail-page decay-arithmetic line. Floors fractional days so the line reads
+ * `12d ago`, not `12.4d ago`. Returns null when there is no timestamp to
+ * anchor on (the line then omits the "last confirmed" fragment).
+ */
+export function decayDaysAgo(fact: Fact, now: Date = new Date()): number | null {
+  const anchor = fact.last_confirmed_at ?? fact.created_at
+  if (!anchor) return null
+  return Math.floor(daysSince(anchor, now))
+}
+
+/**
+ * The honest decay-arithmetic line for a fact's detail page, one mono string:
+ *
+ *   confidence 0.94 · decays 0.002/day · last confirmed 12d ago · effective 0.92
+ *
+ * The "last confirmed" fragment is dropped when there is no confirmation/creation
+ * timestamp to anchor on; every other fragment always renders. `effective` is
+ * the same clamped effectiveConfidence() the ledger belief column shows.
+ * MEMORY_LANGUAGE.md §4; prompts/06-detail-pages.md "Fact".
+ */
+export function decayArithmeticLine(fact: Fact, now: Date = new Date()): string {
+  const confidence = fact.confidence.toFixed(2)
+  const rate = fact.decay_rate.toFixed(3)
+  const effective = effectiveConfidence(fact, now).toFixed(2)
+  const daysAgo = decayDaysAgo(fact, now)
+
+  const parts = [`confidence ${confidence}`, `decays ${rate}/day`]
+  if (daysAgo != null) parts.push(`last confirmed ${daysAgo}d ago`)
+  parts.push(`effective ${effective}`)
+  return parts.join(' · ')
+}
+
 // ---------------------------------------------------------------------------
 // Daybook (episodes register) day grouping
 // ---------------------------------------------------------------------------

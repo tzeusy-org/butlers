@@ -1,11 +1,24 @@
+/**
+ * Component tests for EpisodeDetailPage — the episode's editorial detail page
+ * (bu-2ix8d.7).
+ *
+ * Acceptance (pr/overview/memory-redesign/prompts/06-detail-pages.md "Episode"
+ * + "Provenance"):
+ *   - Shared skeleton: eyebrow (EPISODE · <short id>), heading = first content
+ *     line, state line, KV band — exactly one <h1>, no "Details" chrome.
+ *   - Full content renders below the heading; session id links to the session
+ *     log; the consolidation glyph gets its WORD (`◦ pending`).
+ *   - Provenance lists facts derived from this episode (GET /facts?source_
+ *     episode_id is live), and the section is OMITTED when no facts derived.
+ */
+
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EpisodeDetailPage from "@/pages/EpisodeDetailPage";
-import { useEpisode } from "@/hooks/use-memory";
-import type { Episode } from "@/api/types";
+import { useEpisode, useFactsByEpisode } from "@/hooks/use-memory";
+import type { Episode, Fact } from "@/api/types";
 
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
@@ -14,15 +27,17 @@ vi.mock("react-router", async (importOriginal) => {
 
 vi.mock("@/hooks/use-memory", () => ({
   useEpisode: vi.fn(),
+  useFactsByEpisode: vi.fn(),
 }));
 
 type UseEpisodeResult = ReturnType<typeof useEpisode>;
+type UseFactsByEpisodeResult = ReturnType<typeof useFactsByEpisode>;
 
 const BASE_EPISODE: Episode = {
-  id: "ep-001",
+  id: "ep001abc-0000-0000-0000-000000000000",
   butler: "general",
   session_id: "sess-abc",
-  content: "Alice mentioned she prefers tea over coffee.",
+  content: "Alice mentioned she prefers tea over coffee.\nShe drinks it black.",
   importance: 7.5,
   reference_count: 3,
   consolidated: false,
@@ -33,7 +48,37 @@ const BASE_EPISODE: Episode = {
   metadata: {},
 };
 
-function setEpisodeState(episode: Episode | null, opts: Partial<UseEpisodeResult> = {}) {
+function makeFact(overrides: Partial<Fact> = {}): Fact {
+  return {
+    id: "f1aaaaaa-0000-0000-0000-000000000000",
+    subject: "Alice",
+    predicate: "prefers",
+    content: "tea over coffee",
+    importance: 5,
+    confidence: 0.9,
+    decay_rate: 0,
+    permanence: "stable",
+    source_butler: "general",
+    source_episode_id: "ep001abc-0000-0000-0000-000000000000",
+    session_id: null,
+    supersedes_id: null,
+    entity_id: null,
+    entity_name: null,
+    object_entity_id: null,
+    object_entity_name: null,
+    validity: "active",
+    scope: "global",
+    reference_count: 1,
+    created_at: "2025-01-01T11:00:00Z",
+    last_referenced_at: null,
+    last_confirmed_at: null,
+    tags: [],
+    metadata: {},
+    ...overrides,
+  };
+}
+
+function setEpisode(episode: Episode | null, opts: Partial<UseEpisodeResult> = {}) {
   vi.mocked(useEpisode).mockReturnValue({
     data: episode ? { data: episode } : undefined,
     isLoading: false,
@@ -42,141 +87,78 @@ function setEpisodeState(episode: Episode | null, opts: Partial<UseEpisodeResult
   } as UseEpisodeResult);
 }
 
-function renderPage(): string {
-  const queryClient = new QueryClient();
+function setDerivedFacts(facts: Fact[]) {
+  vi.mocked(useFactsByEpisode).mockReturnValue({
+    data: { data: facts, meta: { total: facts.length, offset: 0, limit: 50, has_more: false } },
+  } as unknown as UseFactsByEpisodeResult);
+}
+
+function html(): string {
   return renderToStaticMarkup(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <EpisodeDetailPage />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <EpisodeDetailPage />
+    </MemoryRouter>,
   );
 }
 
-describe("EpisodeDetailPage — single-H1 contract", () => {
+describe("EpisodeDetailPage", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    setDerivedFacts([]);
   });
 
-  it("renders exactly one H1 when episode is loaded", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(1);
+  it("renders the editorial skeleton with a single H1 = first content line", () => {
+    setEpisode(BASE_EPISODE);
+    const out = html();
+    expect((out.match(/<h1[^>]*>/g) ?? []).length).toBe(1);
+    expect(out).toContain("Alice mentioned she prefers tea over coffee.");
+    expect(out).toContain("EPISODE · EP001ABC");
+    // State line in the API's words
+    expect(out).toContain("pending");
+    expect(out).toContain("general lane");
   });
 
-  it("renders zero H1s in loading state (skeleton, no heading)", () => {
-    vi.mocked(useEpisode).mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      error: null,
-    } as UseEpisodeResult);
-    const html = renderPage();
-    expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(0);
-  });
-});
-
-describe("EpisodeDetailPage — content", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+  it("renders the consolidation glyph WITH its word in the KV band", () => {
+    setEpisode(BASE_EPISODE);
+    const out = html();
+    // `◦ pending` — the detail page is the one place the glyph gets its word.
+    expect(out).toContain("◦ pending");
   });
 
-  it("renders episode content in the page", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html).toContain("Alice mentioned she prefers tea over coffee.");
+  it("links the session id to the session log", () => {
+    setEpisode(BASE_EPISODE);
+    const out = html();
+    expect(out).toContain("/sessions/sess-abc");
+    expect(out).toContain("sess-abc");
   });
 
-  it("uses first line of content as H1 title", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html).toContain("Alice mentioned she prefers tea over coffee.");
+  it("renders importance and reference count in the KV band", () => {
+    setEpisode(BASE_EPISODE);
+    const out = html();
+    expect(out).toContain("7.5");
+    expect(out).toContain("importance");
+    expect(out).toContain("references");
   });
 
-  it("renders butler name as page description and as badge", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    // Appears in description and in the badge
-    expect(html.match(/general/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+  it("lists facts derived from this episode (reverse provenance live)", () => {
+    setEpisode(BASE_EPISODE);
+    setDerivedFacts([makeFact()]);
+    const out = html();
+    expect(out).toContain("PROVENANCE");
+    expect(out).toContain("derived fact");
+    expect(out).toContain("/memory/facts/f1aaaaaa-0000-0000-0000-000000000000");
   });
 
-  it("renders importance and reference count", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html).toContain("7.5");
-    expect(html).toContain("Reference count");
-    expect(html).toContain("3");
+  it("omits the PROVENANCE section when no facts were derived (no faked chain)", () => {
+    setEpisode(BASE_EPISODE);
+    setDerivedFacts([]);
+    const out = html();
+    expect(out).not.toContain("PROVENANCE");
   });
 
-  it("renders consolidated badge as No", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html).toContain("Consolidated");
-    expect(html).toContain("No");
-  });
-
-  it("renders consolidated badge as Yes when consolidated=true", () => {
-    setEpisodeState({ ...BASE_EPISODE, consolidated: true });
-    const html = renderPage();
-    expect(html).toContain("Yes");
-  });
-
-  it("renders session ID when present", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html).toContain("sess-abc");
-  });
-
-  it("renders metadata when non-empty", () => {
-    setEpisodeState({ ...BASE_EPISODE, metadata: { source: "telegram" } });
-    const html = renderPage();
-    expect(html).toContain("Metadata");
-    expect(html).toContain("telegram");
-  });
-
-  it("truncates long first-line content for H1 title", () => {
-    const longContent = "A".repeat(100);
-    setEpisodeState({ ...BASE_EPISODE, content: longContent });
-    const html = renderPage();
-    // The full 100-char string is NOT in the title, but appears in the content area
-    // The title is capped at 80 chars (77 + ellipsis)
-    expect(html).toContain("A".repeat(77) + "…");
-  });
-
-  it("skips leading blank lines when deriving H1 title", () => {
-    setEpisodeState({ ...BASE_EPISODE, content: "\n\n  \nActual content here" });
-    const html = renderPage();
-    // The first non-empty line is used, not the blank first line
-    expect(html.match(/<h1[^>]*>.*?<\/h1>/s)?.[0]).toContain("Actual content here");
-  });
-
-  it("renders provenance timestamps", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html).toContain("Created");
-    expect(html).toContain("Provenance");
-  });
-
-  it("renders breadcrumbs to Memory and Episodes", () => {
-    setEpisodeState(BASE_EPISODE);
-    const html = renderPage();
-    expect(html).toContain("/memory");
-    expect(html).toContain("/memory?register=episodes");
-  });
-});
-
-describe("EpisodeDetailPage — error state", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  it("shows an error region when fetch fails", () => {
-    vi.mocked(useEpisode).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      error: new Error("Not found"),
-    } as UseEpisodeResult);
-    const html = renderPage();
-    expect(html).toContain("Something went wrong");
-    expect(html).toContain("Not found");
+  it("renders a not-found voice line when the episode is absent", () => {
+    setEpisode(null);
+    const out = html();
+    expect(out).toContain("not in the daybook");
   });
 });

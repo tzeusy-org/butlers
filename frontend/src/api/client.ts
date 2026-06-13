@@ -1546,6 +1546,8 @@ function factSearchParams(params?: FactParams): URLSearchParams {
   if (params?.subject) sp.set("subject", params.subject);
   if (params?.importance_min != null)
     sp.set("importance_min", String(params.importance_min));
+  if (params?.source_episode_id)
+    sp.set("source_episode_id", params.source_episode_id);
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   return sp;
@@ -1598,6 +1600,29 @@ export function getFacts(
 export function getFact(factId: string): Promise<ApiResponse<Fact>> {
   return apiFetch<ApiResponse<Fact>>(
     `/memory/facts/${encodeURIComponent(factId)}`,
+  );
+}
+
+/**
+ * Re-ink a fact: reset its confidence-decay timer (last_confirmed_at = now).
+ * POST /api/memory/facts/{id}/confirm (bu-awo8k.3). Returns the refreshed fact.
+ */
+export function confirmFact(factId: string): Promise<ApiResponse<Fact>> {
+  return apiFetch<ApiResponse<Fact>>(
+    `/memory/facts/${encodeURIComponent(factId)}/confirm`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * Retract a fact: mark it invalid (validity = 'retracted'). The inverse of
+ * confirm. POST /api/memory/facts/{id}/retract (bu-awo8k.4). Returns the
+ * refreshed fact.
+ */
+export function retractFact(factId: string): Promise<ApiResponse<Fact>> {
+  return apiFetch<ApiResponse<Fact>>(
+    `/memory/facts/${encodeURIComponent(factId)}/retract`,
+    { method: "POST" },
   );
 }
 

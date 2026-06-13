@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   archiveEntity,
+  confirmFact,
   createEntityInfo,
   deleteEntity,
   deleteEntityInfo,
@@ -24,6 +25,7 @@ import {
   inspectMemory,
   mergeEntity,
   promoteEntity,
+  retractFact,
   revealEntitySecret,
   setEntityLinkedContact,
   unarchiveEntity,
@@ -106,6 +108,51 @@ export function useFact(factId: string | null) {
     queryKey: ["memory-fact", factId],
     queryFn: () => getFact(factId!),
     enabled: !!factId,
+  });
+}
+
+/**
+ * Re-ink a fact (POST /facts/:id/confirm). On success, invalidates the
+ * single-fact and facts-list caches so the detail page reflects the reset
+ * decay timer immediately. bu-awo8k.3.
+ */
+export function useConfirmFact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (factId: string) => confirmFact(factId),
+    onSuccess: (_, factId) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-fact", factId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-facts"] });
+    },
+  });
+}
+
+/**
+ * Retract a fact (POST /facts/:id/retract). On success, invalidates the
+ * single-fact and facts-list caches so the detail page reflects the retracted
+ * validity immediately. bu-awo8k.4.
+ */
+export function useRetractFact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (factId: string) => retractFact(factId),
+    onSuccess: (_, factId) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-fact", factId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-facts"] });
+    },
+  });
+}
+
+/**
+ * Fetch the facts derived from a given episode (GET /facts?source_episode_id).
+ * Powers the episode detail page's "facts derived from this episode" section.
+ * bu-awo8k.6. Disabled when no episodeId is provided.
+ */
+export function useFactsByEpisode(episodeId: string | undefined, limit = 50) {
+  return useQuery({
+    queryKey: ["memory-facts", "by-episode", episodeId, limit],
+    queryFn: () => getFacts({ source_episode_id: episodeId!, limit }),
+    enabled: !!episodeId,
   });
 }
 
