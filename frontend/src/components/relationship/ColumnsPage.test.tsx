@@ -50,6 +50,18 @@ vi.mock("@/api/index", async (importOriginal) => {
   };
 });
 
+const mockNavigate = vi.fn();
+
+// Keep MemoryRouter + useSearchParams real; only intercept navigation so the
+// Enter-to-open-detail key can be asserted.
+vi.mock("react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>();
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  };
+});
+
 // Mock useQuery so we can control loading/data/error state for the owner
 // status query directly (avoids async React-Query resolution complexity).
 vi.mock("@tanstack/react-query", async (importOriginal) => {
@@ -471,6 +483,80 @@ describe("ColumnsPage — owner fallback", () => {
     const calls = vi.mocked(useEntityNeighbours).mock.calls;
     const ownerCall = calls.find((c) => c[0] === OWNER_ENTITY_ID);
     expect(ownerCall).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ranked truncation request
+// ---------------------------------------------------------------------------
+
+describe("ColumnsPage — ranked truncation", () => {
+  it("requests ranked neighbours (rank=weight, per_predicate=6)", () => {
+    renderPage("/entities/columns?path=" + OWNER_ENTITY_ID);
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    const ranked = calls.find((c) => c[1]?.rank === "weight" && c[1]?.per_predicate === 6);
+    expect(ranked).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard map (view-local)
+// ---------------------------------------------------------------------------
+
+describe("ColumnsPage — keyboard map", () => {
+  function getCascade() {
+    return container.querySelector("[data-testid='columns-cascade']") as HTMLElement | null;
+  }
+
+  it("the cascade is focusable (tabIndex) so the map is view-local", () => {
+    renderPage("/entities/columns?path=" + OWNER_ENTITY_ID);
+    expect(getCascade()?.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("ArrowRight deepens — opens a new column for the cursored neighbour", async () => {
+    renderPage("/entities/columns?path=" + OWNER_ENTITY_ID);
+    const cascade = getCascade();
+    // flatEntries are predicate-sorted: row 0 = Carol (family-of).
+    // ArrowRight appends a column for Carol.
+    await act(async () => {
+      cascade?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    expect(calls.find((c) => c[0] === CAROL_ENTITY_ID)).toBeTruthy();
+  });
+
+  it("ArrowDown then ArrowRight deepens on the moved cursor (Bob)", async () => {
+    renderPage("/entities/columns?path=" + OWNER_ENTITY_ID);
+    const cascade = getCascade();
+    await act(async () => {
+      cascade?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    await act(async () => {
+      cascade?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    expect(calls.find((c) => c[0] === BOB_ENTITY_ID)).toBeTruthy();
+  });
+
+  it("Enter opens the cursored neighbour's detail page", async () => {
+    renderPage("/entities/columns?path=" + OWNER_ENTITY_ID);
+    const cascade = getCascade();
+    // Cursor row 0 = Carol (family-of sorts first).
+    await act(async () => {
+      cascade?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith(`/entities/${CAROL_ENTITY_ID}`);
+  });
+
+  it("ArrowLeft pops the rightmost column", async () => {
+    renderPage(`/entities/columns?path=${OWNER_ENTITY_ID},${BOB_ENTITY_ID}`);
+    expect(container.querySelector("[data-testid='column-panel-1']")).toBeTruthy();
+    const cascade = getCascade();
+    await act(async () => {
+      cascade?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    });
+    // The second column is removed.
+    expect(container.querySelector("[data-testid='column-panel-1']")).toBeNull();
   });
 });
 

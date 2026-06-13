@@ -20,9 +20,9 @@
  */
 
 import { useCallback } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 
-import type { ConcentrationEntry, PredicateTab } from "@/api/types";
+import type { ConcentrationEntry, ConcentrationResponse, PredicateTab } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityConcentration } from "@/hooks/use-entities";
+
+/** Tail threshold: entities holding less than 1% of total weight (spec). */
+const TAIL_SHARE_THRESHOLD = 0.01;
 
 // ---------------------------------------------------------------------------
 // Predicate tab strip (horizontal, one per relational predicate in registry)
@@ -122,58 +125,140 @@ function RollupHeader({ total, top3Share, predicate }: RollupHeaderProps) {
 interface ConcentrationRowProps {
   entry: ConcentrationEntry;
   rank: number;
+  /** Largest weight_sum across the active predicate's rows (bar denominator). */
+  maxWeight: number;
+  /** Navigate to this entity's detail page (the only row affordance). */
+  onOpen: (entityId: string) => void;
 }
 
-function ConcentrationRow({ entry, rank }: ConcentrationRowProps) {
+function ConcentrationRow({ entry, rank, maxWeight, onOpen }: ConcentrationRowProps) {
   const sharePercent =
     entry.share != null ? `${(entry.share * 100).toFixed(1)}%` : "—";
 
+  // Weight bar: width = weight / max × 100%, 6px tall, NO animation (spec).
+  // Guard a zero/absent max so the bar is empty rather than NaN%.
+  const barPercent =
+    maxWeight > 0 ? `${Math.round((entry.weight_sum / maxWeight) * 100)}%` : "0%";
+
   return (
     <li
-      className="flex items-center gap-3 py-2 border-b last:border-0 hover:bg-muted/40 px-2 rounded-sm"
+      className="border-b last:border-0"
       data-testid="concentration-row"
       data-entity-id={entry.entity_id}
     >
-      {/* Rank badge */}
-      <span
-        className="inline-flex items-center justify-center h-5 w-6 shrink-0 rounded text-xs font-mono tabular-nums bg-muted text-muted-foreground"
-        aria-label={`Rank ${rank}`}
+      {/* Read-mode: the whole row is the click target (cursor: pointer), no
+          hover treatment beyond the standard list-row tint. */}
+      <button
+        type="button"
+        onClick={() => onOpen(entry.entity_id)}
+        className="flex w-full items-center gap-3 py-2 px-2 rounded-sm text-left hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label={`Open ${entry.canonical_name}`}
       >
-        {rank}
-      </span>
-
-      {/* Name */}
-      <span className="flex-1 text-sm font-medium truncate" title={entry.canonical_name}>
-        {entry.canonical_name}
-      </span>
-
-      {/* Metrics */}
-      <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+        {/* Rank badge */}
         <span
-          className="tabular-nums"
-          title={`Weight sum: ${entry.weight_sum}`}
-          data-testid="weight-sum"
+          className="inline-flex items-center justify-center h-5 w-6 shrink-0 rounded text-xs font-mono tabular-nums bg-muted text-muted-foreground"
+          aria-label={`Rank ${rank}`}
         >
-          w={entry.weight_sum}
+          {rank}
         </span>
 
-        <span
-          className="tabular-nums"
-          title={`Fact count: ${entry.fact_count}`}
-          data-testid="fact-count"
-        >
-          ×{entry.fact_count}
+        {/* Name + proportional weight bar */}
+        <span className="flex-1 min-w-0">
+          <span className="block text-sm font-medium truncate" title={entry.canonical_name}>
+            {entry.canonical_name}
+          </span>
+          {/* Weight bar — proportional, quiet, no animation. */}
+          <span
+            className="mt-1 block w-full overflow-hidden rounded-sm"
+            style={{ height: 6, backgroundColor: "var(--border)" }}
+            data-testid="weight-bar"
+            role="meter"
+            aria-label={`Weight ${entry.weight_sum} of ${maxWeight}`}
+            aria-valuenow={entry.weight_sum}
+            aria-valuemin={0}
+            aria-valuemax={maxWeight}
+          >
+            <span
+              className="block h-full"
+              style={{ width: barPercent, backgroundColor: "var(--mfg)" }}
+            />
+          </span>
         </span>
 
-        <Badge variant="outline" className="text-xs tabular-nums" data-testid="share-badge">
-          {sharePercent}
-        </Badge>
+        {/* Metrics */}
+        <span className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+          <span
+            className="tabular-nums"
+            title={`Weight sum: ${entry.weight_sum}`}
+            data-testid="weight-sum"
+          >
+            {entry.weight_sum}
+          </span>
 
-        {entry.last_seen != null && (
-          <Time value={entry.last_seen} mode="relative" />
-        )}
-      </div>
+          <span
+            className="tabular-nums"
+            title={`Fact count: ${entry.fact_count}`}
+            data-testid="fact-count"
+          >
+            ×{entry.fact_count}
+          </span>
+
+          <Badge variant="outline" className="text-xs tabular-nums" data-testid="share-badge">
+            {sharePercent}
+          </Badge>
+
+          {entry.last_seen != null && <Time value={entry.last_seen} mode="relative" />}
+        </span>
+      </button>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Footer KPI strip — total touches | entity count | top entity | tail share
+// ---------------------------------------------------------------------------
+
+interface KpiStripProps {
+  data: ConcentrationResponse;
+}
+
+/** One hairline-divided cell in the footer KPI strip. */
+function KpiCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-0.5 px-4 first:pl-0">
+      <span className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+        {label}
+      </span>
+      <span className="text-sm font-medium tabular-nums text-foreground truncate" title={value}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function KpiStrip({ data }: KpiStripProps) {
+  // total touches — the predicate's total edge weight.
+  const totalTouches = data.rollup.total;
+  // entity count — number of entities under the active predicate.
+  const entityCount = data.total;
+  // top entity — the highest-weight row (items are server-sorted descending).
+  const topEntity = data.items[0]?.canonical_name ?? "—";
+  // tail share — combined share held by entities below 1%.
+  const tailShare = data.items.reduce(
+    (sum, e) => (e.share != null && e.share < TAIL_SHARE_THRESHOLD ? sum + e.share : sum),
+    0,
+  );
+
+  return (
+    <div
+      className="mt-4 flex items-stretch divide-x divide-border border-t border-border pt-3"
+      data-testid="concentration-kpi-strip"
+    >
+      <KpiCell label="total touches" value={totalTouches.toLocaleString()} />
+      <KpiCell label="entities" value={entityCount.toLocaleString()} />
+      <KpiCell label="top entity" value={topEntity} />
+      <KpiCell label="tail < 1%" value={`${(tailShare * 100).toFixed(1)}%`} />
+    </div>
   );
 }
 
@@ -184,9 +269,15 @@ function ConcentrationRow({ entry, rank }: ConcentrationRowProps) {
 interface ConcentrationListProps {
   predicate: string;
   onSelectPredicate: (predicate: string) => void;
+  /** Navigate to an entity's detail page (row click). */
+  onOpenEntity: (entityId: string) => void;
 }
 
-function ConcentrationList({ predicate, onSelectPredicate }: ConcentrationListProps) {
+function ConcentrationList({
+  predicate,
+  onSelectPredicate,
+  onOpenEntity,
+}: ConcentrationListProps) {
   const { data, isLoading, error, refetch } = useEntityConcentration(predicate || undefined);
 
   if (isLoading) {
@@ -223,6 +314,9 @@ function ConcentrationList({ predicate, onSelectPredicate }: ConcentrationListPr
   // Render predicate tab strip using tabs from the response
   const effectivePredicate = data.predicate;
 
+  // Bar denominator: the largest weight_sum across the active predicate's rows.
+  const maxWeight = data.items.reduce((m, e) => Math.max(m, e.weight_sum), 0);
+
   return (
     <div className="space-y-4" data-testid="concentration-panel">
       {/* Predicate tabs from registry */}
@@ -246,11 +340,22 @@ function ConcentrationList({ predicate, onSelectPredicate }: ConcentrationListPr
           description={`No active triples found for predicate "${effectivePredicate}". They will appear here once the butler builds the knowledge graph.`}
         />
       ) : (
-        <ul data-testid="concentration-list">
-          {data.items.map((entry, idx) => (
-            <ConcentrationRow key={String(entry.entity_id)} entry={entry} rank={idx + 1} />
-          ))}
-        </ul>
+        <>
+          <ul data-testid="concentration-list">
+            {data.items.map((entry, idx) => (
+              <ConcentrationRow
+                key={String(entry.entity_id)}
+                entry={entry}
+                rank={idx + 1}
+                maxWeight={maxWeight}
+                onOpen={onOpenEntity}
+              />
+            ))}
+          </ul>
+
+          {/* Footer KPI strip */}
+          <KpiStrip data={data} />
+        </>
       )}
     </div>
   );
@@ -262,10 +367,18 @@ function ConcentrationList({ predicate, onSelectPredicate }: ConcentrationListPr
 
 export default function ConcentrationPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   // ?predicate= URL state — the active predicate ID.
   // Absent param → empty string → backend defaults to 'knows'.
   const predicateParam = searchParams.get("predicate") ?? "";
+
+  const handleOpenEntity = useCallback(
+    (entityId: string) => {
+      navigate(`/entities/${entityId}`);
+    },
+    [navigate],
+  );
 
   const handleSelectPredicate = useCallback(
     (predicate: string) => {
@@ -304,6 +417,7 @@ export default function ConcentrationPage() {
           <ConcentrationList
             predicate={predicateParam}
             onSelectPredicate={handleSelectPredicate}
+            onOpenEntity={handleOpenEntity}
           />
         </CardContent>
       </Card>

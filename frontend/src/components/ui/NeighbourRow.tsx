@@ -25,6 +25,12 @@ export interface NeighbourRowProps {
   ariaLabel?: string;
   /** data-testid applied to the <li> element. */
   testId?: string;
+  /**
+   * When true, the row is the keyboard cursor's active row. Renders the
+   * design-language focus treatment (2px left border, no glow) and a stable
+   * ``hop-neighbour-<entity_id>`` element id for aria-activedescendant wiring.
+   */
+  cursored?: boolean;
   /** Additional data attributes forwarded to the <li> element. */
   "data-column-index"?: number;
 }
@@ -48,6 +54,7 @@ export function NeighbourRow({
   onClick,
   ariaLabel,
   testId = "neighbour-row",
+  cursored = false,
   "data-column-index": columnIndex,
 }: NeighbourRowProps) {
   const entityId = entry.entity_id;
@@ -56,8 +63,16 @@ export function NeighbourRow({
 
   return (
     <li
-      className="flex items-center justify-between py-2 border-b last:border-0 hover:bg-muted/40 px-2 rounded-sm"
+      id={`hop-neighbour-${entityId}`}
+      role="option"
+      aria-selected={cursored || undefined}
+      className={[
+        "flex items-center justify-between py-2 border-b last:border-0 hover:bg-muted/40 px-2 rounded-sm",
+        // Design-language focus treatment: 2px left border, no glow.
+        cursored ? "border-l-2 border-l-foreground bg-muted/40" : "border-l-2 border-l-transparent",
+      ].join(" ")}
       data-testid={testId}
+      data-cursored={cursored ? "true" : undefined}
       data-column-index={columnIndex}
     >
       <button

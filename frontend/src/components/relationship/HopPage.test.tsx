@@ -317,10 +317,10 @@ describe("HopPage — neighbour list", () => {
     expect(container.textContent).toContain("No neighbours yet.");
   });
 
-  it("requests ranked neighbours (rank=weight) for the +N more affordance", () => {
+  it("requests ranked neighbours (rank=weight, per_predicate=6) for the +N more affordance", () => {
     renderPage("/entities/hop?center=owner-uuid-001");
     const calls = vi.mocked(useEntityNeighbours).mock.calls;
-    const ranked = calls.find((c) => c[1]?.rank === "weight");
+    const ranked = calls.find((c) => c[1]?.rank === "weight" && c[1]?.per_predicate === 6);
     expect(ranked).toBeTruthy();
   });
 
@@ -384,6 +384,111 @@ describe("HopPage — re-centre interaction", () => {
 // ---------------------------------------------------------------------------
 // Empty state — no owner registered
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Breadcrumb trail
+// ---------------------------------------------------------------------------
+
+describe("HopPage — breadcrumb trail", () => {
+  it("does not render a trail at depth 0 (no ?trail=)", () => {
+    renderPage("/entities/hop?center=owner-uuid-001");
+    expect(container.querySelector("[data-testid='hop-trail']")).toBeNull();
+  });
+
+  it("renders the trail with clickable past segments + a current segment", () => {
+    // owner › A › (current B)
+    renderPage("/entities/hop?center=ent-bob-002&trail=owner-uuid-001,ent-a-009");
+    const trail = container.querySelector("[data-testid='hop-trail']");
+    expect(trail).toBeTruthy();
+    // Two past segments are links.
+    expect(trail?.querySelector("[data-testid='hop-trail-segment-0']")).toBeTruthy();
+    expect(trail?.querySelector("[data-testid='hop-trail-segment-1']")).toBeTruthy();
+    // The current segment is not a link button.
+    const current = trail?.querySelector("[data-testid='hop-trail-current']");
+    expect(current).toBeTruthy();
+    expect(current?.tagName).not.toBe("BUTTON");
+  });
+
+  it("shows the reset pill only at depth > 1", () => {
+    // depth 1 → no reset pill
+    renderPage("/entities/hop?center=ent-a-009&trail=owner-uuid-001");
+    expect(container.querySelector("[data-testid='hop-trail-reset']")).toBeNull();
+  });
+
+  it("shows the reset pill at depth 2", () => {
+    renderPage("/entities/hop?center=ent-bob-002&trail=owner-uuid-001,ent-a-009");
+    expect(container.querySelector("[data-testid='hop-trail-reset']")).toBeTruthy();
+  });
+
+  it("pushes the leaving centre onto the trail when re-centring", async () => {
+    renderPage("/entities/hop?center=owner-uuid-001");
+    const neighbourBtn = container.querySelector(
+      "[data-entity-id='ent-bob-002']",
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // After re-centring, the hook is queried for the new centre, and the trail
+    // now holds the previous owner centre (rendered as a clickable segment).
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    expect(calls.find((c) => c[0] === "ent-bob-002")).toBeTruthy();
+    const segment = container.querySelector("[data-testid='hop-trail-segment-0']");
+    expect(segment?.getAttribute("data-entity-id")).toBe("owner-uuid-001");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard map (view-local)
+// ---------------------------------------------------------------------------
+
+describe("HopPage — keyboard map", () => {
+  function getPane() {
+    return container.querySelector("[data-testid='neighbours-panel']") as HTMLElement | null;
+  }
+
+  it("the relations pane is focusable (tabIndex) and a listbox", () => {
+    renderPage("/entities/hop?center=owner-uuid-001");
+    const pane = getPane();
+    expect(pane?.getAttribute("tabindex")).toBe("0");
+    expect(pane?.getAttribute("role")).toBe("listbox");
+  });
+
+  it("ArrowDown then Enter re-centres on the cursored neighbour", async () => {
+    renderPage("/entities/hop?center=owner-uuid-001");
+    const pane = getPane();
+    // flatEntries are predicate-sorted: row 0 = Carol (family-of),
+    // row 1 = Bob (knows). ArrowDown moves to Bob; Enter re-centres on Bob.
+    await act(async () => {
+      pane?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    await act(async () => {
+      pane?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    expect(calls.find((c) => c[0] === "ent-bob-002")).toBeTruthy();
+  });
+
+  it("'r' resets to the owner anchor (clears ?center=)", async () => {
+    renderPage("/entities/hop?center=ent-bob-002&trail=owner-uuid-001,ent-a-009");
+    const pane = getPane();
+    await act(async () => {
+      pane?.dispatchEvent(new KeyboardEvent("keydown", { key: "r", bubbles: true }));
+    });
+    // Reset clears the trail → no trail rendered any more.
+    expect(container.querySelector("[data-testid='hop-trail']")).toBeNull();
+  });
+
+  it("Escape pops the trail (steps back one hop)", async () => {
+    renderPage("/entities/hop?center=ent-bob-002&trail=owner-uuid-001,ent-a-009");
+    const pane = getPane();
+    await act(async () => {
+      pane?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    // After popping, the centre becomes ent-a-009 → hook queried for it.
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    expect(calls.find((c) => c[0] === "ent-a-009")).toBeTruthy();
+  });
+});
 
 describe("HopPage — no owner registered", () => {
   it("shows loading state while resolving owner when no ?center= param", () => {

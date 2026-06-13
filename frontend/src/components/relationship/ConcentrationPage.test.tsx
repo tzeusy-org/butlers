@@ -27,6 +27,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // Mock hooks — must appear before component imports
 // ---------------------------------------------------------------------------
 
+const mockNavigate = vi.fn();
+
+vi.mock("react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>();
+  return {
+    ...actual,
+    // Keep MemoryRouter + useSearchParams real; only intercept navigation.
+    useNavigate: () => mockNavigate,
+  };
+});
+
 vi.mock("@/hooks/use-entities", () => ({
   useEntityConcentration: vi.fn(),
   // Re-export everything else as passthrough stubs
@@ -283,10 +294,37 @@ describe("ConcentrationPage — entity rows", () => {
     expect(container.textContent).toContain("Bob Jones");
   });
 
-  it("renders weight_sum for each row", () => {
+  it("renders weight_sum for each row (bare numeral, no 'w=' prefix)", () => {
     renderPage("/entities/concentration");
     const aliceRow = container.querySelector("[data-entity-id='ent-alice-001']");
-    expect(aliceRow?.textContent).toContain("w=12");
+    // The 'w=123' text presentation was replaced by a proportional bar; the
+    // numeral itself still renders for readout.
+    const weightSum = aliceRow?.querySelector("[data-testid='weight-sum']");
+    expect(weightSum?.textContent).toBe("12");
+    expect(aliceRow?.textContent).not.toContain("w=");
+  });
+
+  it("renders a proportional weight bar per row (bar of half-weight is half-width)", () => {
+    renderPage("/entities/concentration");
+    // Alice weight_sum=12 (max), Bob weight_sum=8.
+    const bars = container.querySelectorAll("[data-testid='weight-bar']");
+    expect(bars.length).toBe(2);
+    // Alice is the max → 100%; Bob is 8/12 ≈ 67%.
+    const aliceFill = bars[0].querySelector("span") as HTMLElement | null;
+    const bobFill = bars[1].querySelector("span") as HTMLElement | null;
+    expect(aliceFill?.style.width).toBe("100%");
+    expect(bobFill?.style.width).toBe("67%");
+  });
+
+  it("navigates to the entity detail page when a row is clicked", async () => {
+    renderPage("/entities/concentration");
+    const aliceRow = container.querySelector("[data-entity-id='ent-alice-001']");
+    const btn = aliceRow?.querySelector("button") as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+    await act(async () => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/entities/ent-alice-001");
   });
 
   it("renders share badge for each row", () => {
@@ -323,6 +361,69 @@ describe("ConcentrationPage — rollup header", () => {
     renderPage("/entities/concentration");
     const rollup = container.querySelector("[data-testid='rollup-header']");
     expect(rollup?.textContent).not.toContain("Top-3 share");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Footer KPI strip tests
+// ---------------------------------------------------------------------------
+
+describe("ConcentrationPage — footer KPI strip", () => {
+  it("renders the KPI strip with total touches, entity count, and top entity", () => {
+    renderPage("/entities/concentration");
+    const strip = container.querySelector("[data-testid='concentration-kpi-strip']");
+    expect(strip).toBeTruthy();
+    // total touches = rollup.total (25), entities = total (2), top entity = Alice.
+    expect(strip?.textContent).toContain("25");
+    expect(strip?.textContent).toContain("Alice Smith");
+  });
+
+  it("computes the tail-<1% share from the items", () => {
+    // Add a long-tail entity below the 1% threshold.
+    const withTail: ConcentrationResponse = {
+      ...KNOWS_RESPONSE,
+      items: [
+        ...KNOWS_RESPONSE.items,
+        {
+          entity_id: "ent-tail-009",
+          canonical_name: "Tail Entity",
+          weight_sum: 1,
+          fact_count: 1,
+          share: 0.005, // 0.5% < 1% threshold
+          last_seen: null,
+          src: "relationship",
+          conf: 1.0,
+          verified: false,
+          primary: null,
+        },
+      ],
+      total: 3,
+    };
+    vi.mocked(useEntityConcentration).mockReturnValue({
+      data: withTail,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityConcentration>);
+
+    renderPage("/entities/concentration");
+    const strip = container.querySelector("[data-testid='concentration-kpi-strip']");
+    // Only the 0.5% entity is below threshold → tail share 0.5%.
+    expect(strip?.textContent).toContain("0.5%");
+  });
+
+  it("does not render the KPI strip when there are no items", () => {
+    vi.mocked(useEntityConcentration).mockReturnValue({
+      data: EMPTY_RESPONSE,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityConcentration>);
+
+    renderPage("/entities/concentration");
+    expect(container.querySelector("[data-testid='concentration-kpi-strip']")).toBeNull();
   });
 });
 

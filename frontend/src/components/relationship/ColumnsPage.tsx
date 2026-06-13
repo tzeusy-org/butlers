@@ -10,21 +10,32 @@
  *                   (e.g. ?path=ent-a,ent-b,ent-c means three columns)
  *                   Absent or empty → column 0 = owner entity
  *
+ * Keyboard map (view-local; attached to the focused cascade container so the
+ * app-wide ⌘K / "/" never get shadowed). All keys operate on the rightmost
+ * (active) column's cursor:
+ *   ↑ / ↓   move the cursor within the active column
+ *   →       deepen — open a new column for the cursored neighbour
+ *   ←       pop the rightmost column
+ *   Enter   open the cursored neighbour's detail page
+ *
  * Data sources:
  *   GET /api/relationship/owner/setup-status       — resolve owner entity_id
  *   GET /api/relationship/entities/{id}/neighbours — each column's neighbours
+ *     (rank=weight&per_predicate=6 — ranked truncation with "+N more")
  *
- * No new server endpoint is required (resolves Phase 1 Open Question 15).
- * All cascade is client-side via chained useEntityNeighbours calls.
+ * No new server endpoint is required (standing option (a)): all cascade is
+ * client-side via chained useEntityNeighbours calls.
  *
- * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.3
- *       specs/dashboard-relationship/spec.md §"Requirement: Entity Columns view"
+ * Spec: openspec/changes/entity-v3-lifecycle-and-depth/specs/dashboard-relationship/spec.md
+ *       §"Neighbour ranking and truncation (Hop and Columns)", §"Keyboard maps per view"
  */
 
-import { useSearchParams } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { getOwnerSetupStatus } from "@/api/index";
+import type { NeighbourEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
@@ -32,6 +43,9 @@ import { PredicateGroup } from "@/components/ui/PredicateGroup";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityNeighbours } from "@/hooks/use-entities";
+
+/** Top-N neighbours per predicate group; overflow renders as "+N more". */
+const PER_PREDICATE = 6;
 
 // ---------------------------------------------------------------------------
 // URL helpers
@@ -61,17 +75,42 @@ interface ColumnPanelProps {
   /** True when this column is the rightmost (currently active) one. */
   isActive: boolean;
   onSelect: (entityId: string, columnIndex: number) => void;
+  /**
+   * The entity_id of the cursored neighbour in the active column (focus ring).
+   * Only meaningful when ``isActive``. Reported back via ``onEntriesChange`` so
+   * the page can drive the cursor against the live, flattened entry list.
+   */
+  cursoredEntityId?: string | null;
+  /** Reports the active column's flattened, cursor-orderable neighbour list. */
+  onEntriesChange?: (entries: NeighbourEntry[]) => void;
 }
 
-function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelProps) {
+function ColumnPanel({
+  entityId,
+  columnIndex,
+  isActive,
+  onSelect,
+  cursoredEntityId,
+  onEntriesChange,
+}: ColumnPanelProps) {
   // Ranked truncation: top-N by weight per predicate; overflow → "+N more".
   const { data, isLoading, error, refetch } = useEntityNeighbours(entityId, {
     rank: "weight",
+    per_predicate: PER_PREDICATE,
   });
 
-  const neighbours = data?.neighbours ?? {};
+  const neighbours = useMemo(() => data?.neighbours ?? {}, [data]);
   const remainders = data?.remainders ?? {};
-  const predicates = Object.keys(neighbours).sort();
+  const predicates = useMemo(() => Object.keys(neighbours).sort(), [neighbours]);
+
+  // Surface the active column's flattened entries so the page can cursor them.
+  const flatEntries = useMemo<NeighbourEntry[]>(
+    () => predicates.flatMap((p) => neighbours[p]),
+    [predicates, neighbours],
+  );
+  useEffect(() => {
+    if (isActive) onEntriesChange?.(flatEntries);
+  }, [isActive, flatEntries, onEntriesChange]);
 
   return (
     <div
@@ -133,7 +172,8 @@ function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelP
                 entries={neighbours[predicate]}
                 remainder={remainders[predicate]}
                 columnIndex={columnIndex}
-                onSelect={(entityId) => onSelect(entityId, columnIndex)}
+                onSelect={(selectedId) => onSelect(selectedId, columnIndex)}
+                cursoredEntityId={isActive ? cursoredEntityId : null}
               />
             ))}
           </div>
@@ -149,6 +189,7 @@ function ColumnPanel({ entityId, columnIndex, isActive, onSelect }: ColumnPanelP
 
 export default function ColumnsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   const pathParam = searchParams.get("path");
   const pathIds = parsePath(pathParam);
@@ -168,6 +209,31 @@ export default function ColumnsPage() {
   // When ?path= is given, we show pathIds directly.
   const columnIds: string[] = pathIds.length > 0 ? pathIds : anchorId ? [anchorId] : [];
 
+  // ---- Active-column cursor (view-local keyboard navigation) -------------
+  // The cursor tracks a row in the rightmost (active) column. ColumnPanel
+  // reports that column's flattened neighbour list back up here so the cursor
+  // is driven against live data.
+  const [rawCursor, setRawCursor] = useState(0);
+  const [activeEntries, setActiveEntries] = useState<NeighbourEntry[]>([]);
+  const cascadeRef = useRef<HTMLDivElement>(null);
+
+  const handleEntriesChange = useCallback((entries: NeighbourEntry[]) => {
+    setActiveEntries((prev) => {
+      // Avoid an update loop: only commit when the id list actually changed.
+      if (
+        prev.length === entries.length &&
+        prev.every((e, i) => e.entity_id === entries[i].entity_id)
+      ) {
+        return prev;
+      }
+      return entries;
+    });
+  }, []);
+
+  // Clamp the cursor to the live entry list at read-time (deriving it during
+  // render avoids a setState-in-effect cascade).
+  const cursor = activeEntries.length === 0 ? 0 : Math.min(rawCursor, activeEntries.length - 1);
+
   /**
    * Select an entity from column `columnIndex`, truncating any columns to the
    * right before appending the new selection.
@@ -179,28 +245,33 @@ export default function ColumnsPage() {
    * seeded with [anchorId] so the URL captures both the anchor and the new
    * selection.
    */
-  function handleSelect(selectedEntityId: string, columnIndex: number) {
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        const currentPath = parsePath(next.get("path"));
-        // If no ?path= yet, seed with the resolved anchor (owner fallback).
-        const base =
-          currentPath.length > 0 ? currentPath : anchorId ? [anchorId] : [];
-        // Truncate to the clicked column's position, then append the selection.
-        const truncated = base.slice(0, columnIndex + 1);
-        // No-op if the clicked column already ends with this entity.
-        if (truncated[truncated.length - 1] === selectedEntityId) return next;
-        const newPath = [...truncated, selectedEntityId];
-        next.set("path", serialisePath(newPath));
-        return next;
-      },
-      { replace: false },
-    );
-  }
+  const handleSelect = useCallback(
+    (selectedEntityId: string, columnIndex: number) => {
+      // A new rightmost column becomes active — start its cursor at the top.
+      setRawCursor(0);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          const currentPath = parsePath(next.get("path"));
+          // If no ?path= yet, seed with the resolved anchor (owner fallback).
+          const base =
+            currentPath.length > 0 ? currentPath : anchorId ? [anchorId] : [];
+          // Truncate to the clicked column's position, then append the selection.
+          const truncated = base.slice(0, columnIndex + 1);
+          // No-op if the clicked column already ends with this entity.
+          if (truncated[truncated.length - 1] === selectedEntityId) return next;
+          const newPath = [...truncated, selectedEntityId];
+          next.set("path", serialisePath(newPath));
+          return next;
+        },
+        { replace: false },
+      );
+    },
+    [setSearchParams, anchorId],
+  );
 
   /** Clear path — return to owner column-0 default. */
-  function handleReset() {
+  const handleReset = useCallback(() => {
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -209,7 +280,61 @@ export default function ColumnsPage() {
       },
       { replace: false },
     );
-  }
+  }, [setSearchParams]);
+
+  /** Pop the rightmost column (← key). No-op at a single column. */
+  const handlePopRightmost = useCallback(() => {
+    // The previous column becomes active again — reset its cursor to the top.
+    setRawCursor(0);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        const currentPath = parsePath(next.get("path"));
+        // Seed from the rendered cascade when no explicit path yet.
+        const base =
+          currentPath.length > 0 ? currentPath : anchorId ? [anchorId] : [];
+        if (base.length <= 1) return next; // nothing to pop
+        const popped = base.slice(0, -1);
+        next.set("path", serialisePath(popped));
+        return next;
+      },
+      { replace: false },
+    );
+  }, [setSearchParams, anchorId]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // View-local only: never consume keys reserved for the app-wide Finder.
+      const activeColumnIndex = columnIds.length - 1;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setRawCursor(
+          activeEntries.length === 0 ? 0 : Math.min(cursor + 1, activeEntries.length - 1),
+        );
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setRawCursor(Math.max(cursor - 1, 0));
+      } else if (e.key === "ArrowRight") {
+        const entry = activeEntries[cursor];
+        if (entry) {
+          e.preventDefault();
+          handleSelect(entry.entity_id, activeColumnIndex);
+        }
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        handlePopRightmost();
+      } else if (e.key === "Enter") {
+        const entry = activeEntries[cursor];
+        if (entry) {
+          e.preventDefault();
+          navigate(`/entities/${entry.entity_id}`);
+        }
+      }
+    },
+    [activeEntries, cursor, columnIds.length, handleSelect, handlePopRightmost, navigate],
+  );
+
+  const cursoredId = activeEntries[cursor]?.entity_id ?? null;
 
   // Loading: waiting for owner resolution when no explicit path
   if (pathIds.length === 0 && ownerLoading) {
@@ -261,12 +386,17 @@ export default function ColumnsPage() {
           />
         </div>
       ) : (
-        /* Cascading columns — horizontal scroll container */
+        /* Cascading columns — horizontal scroll container.
+           tabIndex makes the cascade focusable so the view-local keyboard map
+           (↑↓ → ← Enter) attaches here and never shadows ⌘K / "/". */
         <div
-          className="flex overflow-x-auto border border-border rounded-md min-h-[400px]"
+          ref={cascadeRef}
+          className="flex overflow-x-auto border border-border rounded-md min-h-[400px] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="columns-cascade"
           role="region"
-          aria-label="Cascading column view"
+          aria-label="Cascading column view — use arrow keys to navigate, Enter to open detail"
+          tabIndex={0}
+          onKeyDown={handleKeyDown}
         >
           {columnIds.map((entityId, index) => (
             <ColumnPanel
@@ -275,6 +405,8 @@ export default function ColumnsPage() {
               columnIndex={index}
               isActive={index === columnIds.length - 1}
               onSelect={handleSelect}
+              cursoredEntityId={index === columnIds.length - 1 ? cursoredId : null}
+              onEntriesChange={index === columnIds.length - 1 ? handleEntriesChange : undefined}
             />
           ))}
         </div>

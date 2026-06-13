@@ -58,6 +58,12 @@ export interface PredicateGroupProps {
    * undefined renders nothing.
    */
   remainder?: number;
+  /**
+   * The entity_id of the keyboard-cursored neighbour (Hop view). The matching
+   * row renders the design-language focus treatment. Undefined when no cursor
+   * is active (e.g. the Columns cascade tracks its cursor separately).
+   */
+  cursoredEntityId?: string | null;
 }
 
 /**
@@ -86,6 +92,7 @@ export function PredicateGroup({
   columnIndex,
   getRowAriaLabel,
   remainder,
+  cursoredEntityId,
 }: PredicateGroupProps) {
   const label = predicate.replace(/-/g, " ");
   const isColumns = columnIndex !== undefined;
@@ -117,6 +124,7 @@ export function PredicateGroup({
             onClick={onSelect}
             ariaLabel={getRowAriaLabel?.(entry)}
             testId={rowTestId}
+            cursored={cursoredEntityId != null && entry.entity_id === cursoredEntityId}
             {...(isColumns ? { "data-column-index": columnIndex } : {})}
           />
         ))}
