@@ -168,6 +168,12 @@ async def list_measurements(
 
 # ---------------------------------------------------------------------------
 # GET /medications — list medications
+#
+# Storage: reads from the `facts` table using predicate `medication`
+# (scope = 'health', validity = 'active').  This matches the write path of the
+# `medication_add` MCP tool, which stores medications as property facts with
+# name/dosage/frequency/schedule/active/notes carried in `metadata`.  The legacy
+# `health.medications` relational table is orphaned (no longer written).
 # ---------------------------------------------------------------------------
 
 
@@ -178,46 +184,57 @@ async def list_medications(
     limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Medication]:
-    """List medications with optional active status filter."""
+    """List medications with optional active status filter.
+
+    Reads from the ``facts`` table (predicate = ``medication``,
+    scope = ``health``), the same surface written by the ``medication_add``
+    MCP tool.
+    """
     pool = _pool(db)
 
-    conditions: list[str] = []
+    conditions: list[str] = [
+        "predicate = 'medication'",
+        "validity = 'active'",
+        "scope = 'health'",
+    ]
     args: list[object] = []
     idx = 1
 
     if active is not None:
-        conditions.append(f"active = ${idx}")
+        conditions.append(f"(metadata->>'active')::boolean = ${idx}")
         args.append(active)
         idx += 1
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = " WHERE " + " AND ".join(conditions)
 
-    total = await pool.fetchval(f"SELECT count(*) FROM medications{where}", *args) or 0
+    total = await pool.fetchval(f"SELECT count(*) FROM facts{where}", *args) or 0
 
     rows = await pool.fetch(
-        f"SELECT id, name, dosage, frequency, schedule, active, notes, created_at, updated_at"
-        f" FROM medications{where}"
-        f" ORDER BY name"
+        f"SELECT id, content, created_at, metadata"
+        f" FROM facts{where}"
+        f" ORDER BY metadata->>'name'"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
         offset,
         limit,
     )
 
-    data = [
-        Medication(
-            id=str(r["id"]),
-            name=r["name"],
-            dosage=r["dosage"],
-            frequency=r["frequency"],
-            schedule=list(r["schedule"]) if r["schedule"] else [],
-            active=r["active"],
-            notes=r["notes"],
-            created_at=r["created_at"].isoformat(),
-            updated_at=r["updated_at"].isoformat(),
+    data = []
+    for r in rows:
+        meta = _as_json_object(r["metadata"])
+        data.append(
+            Medication(
+                id=str(r["id"]),
+                name=meta.get("name", ""),
+                dosage=meta.get("dosage", ""),
+                frequency=meta.get("frequency", ""),
+                schedule=list(meta.get("schedule") or []),
+                active=bool(meta.get("active", True)),
+                notes=meta.get("notes"),
+                created_at=r["created_at"].isoformat(),
+                updated_at=r["created_at"].isoformat(),
+            )
         )
-        for r in rows
-    ]
 
     return PaginatedResponse[Medication](
         data=data,
@@ -227,6 +244,12 @@ async def list_medications(
 
 # ---------------------------------------------------------------------------
 # GET /medications/{medication_id}/doses — dose log for a medication
+#
+# Storage: reads from the `facts` table using predicate `took_dose`
+# (scope = 'health', validity = 'active').  This matches the write path of the
+# `medication_log_dose` MCP tool, which stores each dose as a temporal fact with
+# `valid_at` = taken_at and metadata carrying `medication_id`/`skipped`/`notes`.
+# The legacy `health.medication_doses` relational table is orphaned.
 # ---------------------------------------------------------------------------
 
 
@@ -237,47 +260,65 @@ async def list_medication_doses(
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> list[Dose]:
-    """List dose log entries for a specific medication."""
+    """List dose log entries for a specific medication.
+
+    Reads from the ``facts`` table (predicate = ``took_dose``,
+    scope = ``health``), the same surface written by the ``medication_log_dose``
+    MCP tool.  Doses are scoped to the medication via
+    ``metadata->>'medication_id'``.
+    """
     pool = _pool(db)
 
-    conditions: list[str] = ["medication_id = $1"]
+    conditions: list[str] = [
+        "predicate = 'took_dose'",
+        "validity = 'active'",
+        "scope = 'health'",
+        "metadata->>'medication_id' = $1",
+    ]
     args: list[object] = [medication_id]
     idx = 2
 
     if since is not None:
-        conditions.append(f"taken_at >= ${idx}")
+        conditions.append(f"valid_at >= ${idx}")
         args.append(since)
         idx += 1
 
     if until is not None:
-        conditions.append(f"taken_at <= ${idx}")
+        conditions.append(f"valid_at <= ${idx}")
         args.append(until)
         idx += 1
 
     where = " WHERE " + " AND ".join(conditions)
 
     rows = await pool.fetch(
-        f"SELECT id, medication_id, taken_at, skipped, notes, created_at"
-        f" FROM medication_doses{where}"
-        f" ORDER BY taken_at DESC",
+        f"SELECT id, valid_at, created_at, metadata FROM facts{where} ORDER BY valid_at DESC",
         *args,
     )
 
-    return [
-        Dose(
-            id=str(r["id"]),
-            medication_id=str(r["medication_id"]),
-            taken_at=r["taken_at"].isoformat(),
-            skipped=r["skipped"],
-            notes=r["notes"],
-            created_at=r["created_at"].isoformat(),
+    data = []
+    for r in rows:
+        meta = _as_json_object(r["metadata"])
+        data.append(
+            Dose(
+                id=str(r["id"]),
+                medication_id=str(meta.get("medication_id", medication_id)),
+                taken_at=r["valid_at"].isoformat(),
+                skipped=bool(meta.get("skipped", False)),
+                notes=meta.get("notes"),
+                created_at=r["created_at"].isoformat(),
+            )
         )
-        for r in rows
-    ]
+    return data
 
 
 # ---------------------------------------------------------------------------
 # GET /conditions — list conditions
+#
+# Storage: reads from the `facts` table using predicate `condition`
+# (scope = 'health', validity = 'active').  This matches the write path of the
+# `condition_add` / `condition_update` MCP tools, which store conditions as
+# property facts with name/status/diagnosed_at/notes carried in `metadata`.
+# The legacy `health.conditions` relational table is orphaned.
 # ---------------------------------------------------------------------------
 
 
@@ -287,32 +328,41 @@ async def list_conditions(
     limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Condition]:
-    """List health conditions."""
+    """List health conditions.
+
+    Reads from the ``facts`` table (predicate = ``condition``,
+    scope = ``health``), the same surface written by the ``condition_add``
+    MCP tool.
+    """
     pool = _pool(db)
 
-    total = await pool.fetchval("SELECT count(*) FROM conditions") or 0
+    where = " WHERE predicate = 'condition' AND validity = 'active' AND scope = 'health'"
+
+    total = await pool.fetchval(f"SELECT count(*) FROM facts{where}") or 0
 
     rows = await pool.fetch(
-        "SELECT id, name, status, diagnosed_at, notes, created_at, updated_at"
-        " FROM conditions"
-        " ORDER BY created_at DESC"
-        " OFFSET $1 LIMIT $2",
+        f"SELECT id, content, created_at, metadata"
+        f" FROM facts{where}"
+        f" ORDER BY created_at DESC"
+        f" OFFSET $1 LIMIT $2",
         offset,
         limit,
     )
 
-    data = [
-        Condition(
-            id=str(r["id"]),
-            name=r["name"],
-            status=r["status"],
-            diagnosed_at=r["diagnosed_at"].isoformat() if r["diagnosed_at"] else None,
-            notes=r["notes"],
-            created_at=r["created_at"].isoformat(),
-            updated_at=r["updated_at"].isoformat(),
+    data = []
+    for r in rows:
+        meta = _as_json_object(r["metadata"])
+        data.append(
+            Condition(
+                id=str(r["id"]),
+                name=meta.get("name", r["content"] or ""),
+                status=meta.get("status", "active"),
+                diagnosed_at=meta.get("diagnosed_at"),
+                notes=meta.get("notes"),
+                created_at=r["created_at"].isoformat(),
+                updated_at=r["created_at"].isoformat(),
+            )
         )
-        for r in rows
-    ]
 
     return PaginatedResponse[Condition](
         data=data,
@@ -322,6 +372,13 @@ async def list_conditions(
 
 # ---------------------------------------------------------------------------
 # GET /symptoms — list symptoms
+#
+# Storage: reads from the `facts` table using predicate `symptom`
+# (scope = 'health', validity = 'active').  This matches the write path of the
+# `symptom_log` MCP tool, which stores each symptom as a temporal fact with
+# `content` = name, `valid_at` = occurred_at, and severity/condition_id/notes
+# carried in `metadata`.  The legacy `health.symptoms` relational table is
+# orphaned.
 # ---------------------------------------------------------------------------
 
 
@@ -334,54 +391,67 @@ async def list_symptoms(
     limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Symptom]:
-    """List symptoms with optional name and date range filters."""
+    """List symptoms with optional name and date range filters.
+
+    Reads from the ``facts`` table (predicate = ``symptom``,
+    scope = ``health``), the same surface written by the ``symptom_log``
+    MCP tool.  The symptom name lives in ``content``; ``valid_at`` is the
+    occurrence timestamp.
+    """
     pool = _pool(db)
 
-    conditions: list[str] = []
+    conditions: list[str] = [
+        "predicate = 'symptom'",
+        "validity = 'active'",
+        "scope = 'health'",
+    ]
     args: list[object] = []
     idx = 1
 
     if name is not None:
-        conditions.append(f"name ILIKE '%' || ${idx} || '%'")
+        conditions.append(f"content ILIKE '%' || ${idx} || '%'")
         args.append(name)
         idx += 1
 
     if since is not None:
-        conditions.append(f"occurred_at >= ${idx}")
+        conditions.append(f"valid_at >= ${idx}")
         args.append(since)
         idx += 1
 
     if until is not None:
-        conditions.append(f"occurred_at <= ${idx}")
+        conditions.append(f"valid_at <= ${idx}")
         args.append(until)
         idx += 1
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = " WHERE " + " AND ".join(conditions)
 
-    total = await pool.fetchval(f"SELECT count(*) FROM symptoms{where}", *args) or 0
+    total = await pool.fetchval(f"SELECT count(*) FROM facts{where}", *args) or 0
 
     rows = await pool.fetch(
-        f"SELECT id, name, severity, condition_id, occurred_at, notes, created_at"
-        f" FROM symptoms{where}"
-        f" ORDER BY occurred_at DESC"
+        f"SELECT id, content, valid_at, created_at, metadata"
+        f" FROM facts{where}"
+        f" ORDER BY valid_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
         offset,
         limit,
     )
 
-    data = [
-        Symptom(
-            id=str(r["id"]),
-            name=r["name"],
-            severity=r["severity"],
-            condition_id=str(r["condition_id"]) if r["condition_id"] else None,
-            occurred_at=r["occurred_at"].isoformat(),
-            notes=r["notes"],
-            created_at=r["created_at"].isoformat(),
+    data = []
+    for r in rows:
+        meta = _as_json_object(r["metadata"])
+        cond_id = meta.get("condition_id")
+        data.append(
+            Symptom(
+                id=str(r["id"]),
+                name=r["content"] or "",
+                severity=int(meta.get("severity")) if meta.get("severity") is not None else 0,
+                condition_id=str(cond_id) if cond_id else None,
+                occurred_at=r["valid_at"].isoformat(),
+                notes=meta.get("notes"),
+                created_at=r["created_at"].isoformat(),
+            )
         )
-        for r in rows
-    ]
 
     return PaginatedResponse[Symptom](
         data=data,
@@ -490,6 +560,12 @@ async def list_meals(
 
 # ---------------------------------------------------------------------------
 # GET /research — list/search research
+#
+# Storage: reads from the `facts` table using predicate `research`
+# (scope = 'health', validity = 'active').  This matches the write path of the
+# `research_save` MCP tool, which stores research notes as property facts with
+# `content` = body and title/tags/source_url/condition_id carried in
+# `metadata`.  The legacy `health.research` relational table is orphaned.
 # ---------------------------------------------------------------------------
 
 
@@ -501,32 +577,42 @@ async def list_research(
     limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Research]:
-    """List or search research entries."""
+    """List or search research entries.
+
+    Reads from the ``facts`` table (predicate = ``research``,
+    scope = ``health``), the same surface written by the ``research_save``
+    MCP tool.  The title lives in ``metadata->>'title'`` and the note body in
+    ``content``.
+    """
     pool = _pool(db)
 
-    conditions: list[str] = []
+    conditions: list[str] = [
+        "predicate = 'research'",
+        "validity = 'active'",
+        "scope = 'health'",
+    ]
     args: list[object] = []
     idx = 1
 
     if q is not None:
         conditions.append(
-            f"(title ILIKE '%' || ${idx} || '%' OR content ILIKE '%' || ${idx} || '%')"
+            f"(metadata->>'title' ILIKE '%' || ${idx} || '%' OR content ILIKE '%' || ${idx} || '%')"
         )
         args.append(q)
         idx += 1
 
     if tag is not None:
-        conditions.append(f"tags @> ${idx}::jsonb")
-        args.append([tag])
+        conditions.append(f"metadata->'tags' @> ${idx}::jsonb")
+        args.append(json.dumps([tag]))
         idx += 1
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = " WHERE " + " AND ".join(conditions)
 
-    total = await pool.fetchval(f"SELECT count(*) FROM research{where}", *args) or 0
+    total = await pool.fetchval(f"SELECT count(*) FROM facts{where}", *args) or 0
 
     rows = await pool.fetch(
-        f"SELECT id, title, content, tags, source_url, condition_id, created_at, updated_at"
-        f" FROM research{where}"
+        f"SELECT id, content, created_at, metadata"
+        f" FROM facts{where}"
         f" ORDER BY created_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
@@ -534,19 +620,22 @@ async def list_research(
         limit,
     )
 
-    data = [
-        Research(
-            id=str(r["id"]),
-            title=r["title"],
-            content=r["content"],
-            tags=list(r["tags"]) if r["tags"] else [],
-            source_url=r["source_url"],
-            condition_id=str(r["condition_id"]) if r["condition_id"] else None,
-            created_at=r["created_at"].isoformat(),
-            updated_at=r["updated_at"].isoformat(),
+    data = []
+    for r in rows:
+        meta = _as_json_object(r["metadata"])
+        cond_id = meta.get("condition_id")
+        data.append(
+            Research(
+                id=str(r["id"]),
+                title=meta.get("title", ""),
+                content=r["content"] or "",
+                tags=list(meta.get("tags") or []),
+                source_url=meta.get("source_url"),
+                condition_id=str(cond_id) if cond_id else None,
+                created_at=r["created_at"].isoformat(),
+                updated_at=r["created_at"].isoformat(),
+            )
         )
-        for r in rows
-    ]
 
     return PaginatedResponse[Research](
         data=data,
