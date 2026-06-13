@@ -757,6 +757,51 @@ _ROUTING_INSTRUCTIONS_TABLE = "routing_instructions"
 _missing_routing_instructions_warnings: set[str] = set()
 
 
+async def fetch_system_prompt_override(
+    pool: asyncpg.Pool | None,
+    butler_name: str,
+) -> str | None:
+    """Fetch the live system-prompt override from ``public.system_prompt_history``.
+
+    Returns the HEAD (highest-version) prompt body for *butler_name*, or
+    ``None`` when no prompt has been recorded, the pool is absent, or the table
+    does not yet exist. This is the live override set by the dashboard prompt
+    editor; the on-disk ``CLAUDE.md`` remains the seed/default fallback.
+
+    This function is **fail-open**: any unexpected error is logged at WARNING
+    level and ``None`` is returned so spawning proceeds with the on-disk prompt.
+    """
+    if pool is None:
+        return None
+
+    try:
+        prompt = await pool.fetchval(
+            "SELECT prompt FROM public.system_prompt_history"
+            " WHERE butler_name = $1"
+            " ORDER BY version DESC"
+            " LIMIT 1",
+            butler_name,
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "does not exist" in msg and "system_prompt_history" in msg:
+            logger.debug(
+                "system_prompt_history table not yet created for %s; using on-disk prompt",
+                butler_name,
+            )
+            return None
+        logger.warning(
+            "Failed to fetch system prompt override for %s: %s",
+            butler_name,
+            exc,
+        )
+        return None
+
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    return prompt
+
+
 async def fetch_routing_instructions(
     pool: asyncpg.Pool | None,
     butler_name: str,
@@ -1813,8 +1858,18 @@ class Spawner:
                 ensure_runtime_session_capture(runtime_session_id)
                 set_runtime_session_routing_context(runtime_session_id, routing_context)
 
-            # Read system prompt
-            system_prompt = read_system_prompt(self._config_dir, self._config.name)
+            # Read system prompt. The live override (HEAD of
+            # public.system_prompt_history, set via the dashboard prompt editor)
+            # takes precedence over the on-disk CLAUDE.md seed when present.
+            shared_pool = (
+                self._credential_store.shared_pool if self._credential_store is not None else None
+            )
+            prompt_override = await fetch_system_prompt_override(
+                shared_pool or self._pool, self._config.name
+            )
+            system_prompt = read_system_prompt(
+                self._config_dir, self._config.name, db_override=prompt_override
+            )
 
             # Fetch situational context preamble (fail-open)
             context_preamble_ctx = await fetch_situational_context_preamble(

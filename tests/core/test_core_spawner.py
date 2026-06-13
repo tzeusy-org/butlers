@@ -882,6 +882,92 @@ class TestSpawnerInvocation:
 
 
 # ---------------------------------------------------------------------------
+# 8.2b: System-prompt resolution at spawn time (bu-dr03f.1)
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnSystemPromptResolution:
+    """The spawner resolves the live prompt edit (DB HEAD) over on-disk CLAUDE.md.
+
+    Regression for bu-dr03f.1: the dashboard prompt editor writes
+    ``public.system_prompt_history`` only. Previously nothing read it at spawn
+    time, so edits were decorative. These tests prove the NEXT spawned session
+    receives the edited prompt, while on-disk CLAUDE.md remains the fallback.
+    """
+
+    async def test_next_session_uses_on_disk_prompt_when_no_history(self, tmp_path: Path):
+        """With no history row, the spawned session gets the on-disk CLAUDE.md."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "CLAUDE.md").write_text("# On-disk seed prompt", encoding="utf-8")
+        config = _make_config()
+
+        adapter = MockAdapter(result_text="ok", capture=True)
+        # No pool -> fetch_system_prompt_override returns None -> disk fallback.
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+        result = await spawner.trigger("hello", "tick")
+
+        assert result.success is True
+        assert adapter.calls[0]["system_prompt"] == "# On-disk seed prompt"
+
+    async def test_next_session_uses_edited_prompt_from_history(self, tmp_path: Path):
+        """A freshly-edited prompt (DB HEAD) is what the next session receives."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        # On-disk seed differs from the live edit to prove the edit wins.
+        (config_dir / "CLAUDE.md").write_text("# Stale on-disk prompt", encoding="utf-8")
+        config = _make_config()
+
+        adapter = MockAdapter(result_text="ok", capture=True)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        # Simulate the dashboard PUT having written the HEAD of
+        # public.system_prompt_history for this butler.
+        with patch(
+            "butlers.core.spawner.fetch_system_prompt_override",
+            new_callable=AsyncMock,
+            return_value="# Freshly edited live prompt",
+        ):
+            result = await spawner.trigger("hello", "tick")
+
+        assert result.success is True
+        assert adapter.calls[0]["system_prompt"] == "# Freshly edited live prompt"
+        assert "Stale on-disk prompt" not in adapter.calls[0]["system_prompt"]
+
+
+class TestFetchSystemPromptOverride:
+    """Unit tests for the DB read helper (fail-open, HEAD selection)."""
+
+    async def test_returns_head_prompt(self):
+        from butlers.core.spawner import fetch_system_prompt_override
+
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="# Edited")
+        assert await fetch_system_prompt_override(pool, "mail") == "# Edited"
+
+    async def test_none_pool_returns_none(self):
+        from butlers.core.spawner import fetch_system_prompt_override
+
+        assert await fetch_system_prompt_override(None, "mail") is None
+
+    async def test_blank_prompt_treated_as_absent(self):
+        from butlers.core.spawner import fetch_system_prompt_override
+
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="   \n ")
+        assert await fetch_system_prompt_override(pool, "mail") is None
+
+    async def test_missing_table_fails_open(self):
+        from butlers.core.spawner import fetch_system_prompt_override
+
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(
+            side_effect=Exception('relation "public.system_prompt_history" does not exist')
+        )
+        assert await fetch_system_prompt_override(pool, "mail") is None
+
+
+# ---------------------------------------------------------------------------
 # 8.3: Credential passthrough
 # ---------------------------------------------------------------------------
 

@@ -146,24 +146,53 @@ def _append_shared_files(content: str, roster_dir: Path) -> str:
     return _append_shared_markdown(content, roster_dir, "MCP_LOGGING.md")
 
 
-def read_system_prompt(config_dir: Path, butler_name: str) -> str:
-    """Read the system prompt from *config_dir*/CLAUDE.md.
+def process_system_prompt_base(base_content: str, config_dir: Path) -> str:
+    """Resolve includes and append shared snippets for a raw base prompt.
 
-    Returns the file content if present and non-empty.  Otherwise returns a
-    sensible default incorporating the butler's name.
+    *base_content* is the raw system-prompt body (either the on-disk
+    ``CLAUDE.md`` content or a DB-stored override). ``<!-- @include ... -->``
+    and bare ``@file.md`` directives are resolved relative to the roster
+    directory (``config_dir.parent``) / config directory, then shared snippets
+    (``BUTLER_SKILLS.md`` and ``MCP_LOGGING.md``) are appended if present.
 
-    Any ``<!-- @include ... -->`` directives are resolved relative to the
-    roster directory (``config_dir.parent``). After include resolution,
-    shared snippets are appended if present (currently ``BUTLER_SKILLS.md``
-    and ``MCP_LOGGING.md``).
+    This keeps the include/shared-file processing identical regardless of
+    whether the base prompt comes from disk or the database.
     """
+    roster_dir = config_dir.parent
+    content = _resolve_includes(base_content, roster_dir, base_dir=config_dir)
+    return _append_shared_files(content, roster_dir)
+
+
+def read_system_prompt(
+    config_dir: Path,
+    butler_name: str,
+    db_override: str | None = None,
+) -> str:
+    """Resolve the system prompt for a butler.
+
+    Resolution order (DB is the live override, disk is the seed/default):
+
+    1. If *db_override* is a non-empty string, it is treated as the raw base
+       prompt (the HEAD of ``public.system_prompt_history``). This lets the
+       dashboard's prompt editor take effect on the next spawned session.
+    2. Otherwise, the on-disk *config_dir*/``CLAUDE.md`` content is used when
+       present and non-empty.
+    3. Otherwise, a sensible default incorporating the butler's name is used.
+
+    In cases 1 and 2 the base content is passed through
+    :func:`process_system_prompt_base` so ``@include`` directives and shared
+    snippets (``BUTLER_SKILLS.md``, ``MCP_LOGGING.md``) are applied uniformly.
+    """
+    if db_override is not None:
+        base = db_override.strip()
+        if base:
+            return process_system_prompt_base(base, config_dir)
+
     claude_md = config_dir / "CLAUDE.md"
     if claude_md.is_file():
         content = claude_md.read_text(encoding="utf-8").strip()
         if content:
-            roster_dir = config_dir.parent
-            content = _resolve_includes(content, roster_dir, base_dir=config_dir)
-            return _append_shared_files(content, roster_dir)
+            return process_system_prompt_base(content, config_dir)
     default = _DEFAULT_PROMPT_TEMPLATE.format(butler_name=butler_name)
     logger.debug("CLAUDE.md missing or empty in %s — using default prompt", config_dir)
     return default

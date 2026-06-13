@@ -169,6 +169,47 @@ def test_read_system_prompt_butler_skills_appended(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 9.1 — DB override (live prompt edits, bu-dr03f.1)
+# ---------------------------------------------------------------------------
+
+
+def test_read_system_prompt_db_override_takes_precedence(tmp_path: Path) -> None:
+    """A non-empty db_override is used over on-disk CLAUDE.md."""
+    config_dir = _setup_roster(tmp_path)
+    (config_dir / "CLAUDE.md").write_text("# On-disk seed prompt", encoding="utf-8")
+
+    result = read_system_prompt(config_dir, "test", db_override="# Edited live prompt")
+    assert result == "# Edited live prompt"
+    assert "On-disk seed prompt" not in result
+
+
+def test_read_system_prompt_db_override_falls_back_when_absent(tmp_path: Path) -> None:
+    """No / empty override falls back to the on-disk CLAUDE.md seed."""
+    config_dir = _setup_roster(tmp_path)
+    (config_dir / "CLAUDE.md").write_text("# On-disk seed prompt", encoding="utf-8")
+
+    # None override -> disk
+    assert read_system_prompt(config_dir, "test", db_override=None) == "# On-disk seed prompt"
+    # Blank/whitespace override -> disk (treated as no override)
+    assert read_system_prompt(config_dir, "test", db_override="   \n ") == "# On-disk seed prompt"
+
+
+def test_read_system_prompt_db_override_resolves_includes_and_shared(tmp_path: Path) -> None:
+    """The DB override is processed through include + shared-file resolution too."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "NOTIFY.md").write_text("Notify body.", encoding="utf-8")
+    (shared / "BUTLER_SKILLS.md").write_text("## Skills\n- a", encoding="utf-8")
+
+    override = "# Live\n<!-- @include shared/NOTIFY.md -->\nEnd."
+    result = read_system_prompt(config_dir, "test", db_override=override)
+    assert "Notify body." in result
+    assert "<!-- @include" not in result
+    assert result.endswith("## Skills\n- a")
+
+
+# ---------------------------------------------------------------------------
 # 9.1 — get_skills_dir
 # ---------------------------------------------------------------------------
 

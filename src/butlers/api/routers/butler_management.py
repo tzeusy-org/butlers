@@ -204,9 +204,15 @@ async def update_butler_prompt(
 ) -> ApiResponse[PromptVersion]:
     """Update a butler's system prompt.
 
-    The existing prompt is first snapshotted into ``public.system_prompt_history``,
-    then the new prompt is appended as the next version.  Appends an audit entry
-    for ``butler.prompt_set``.
+    The new prompt is appended as the next version in
+    ``public.system_prompt_history``.  Appends an audit entry for
+    ``butler.prompt_set``.
+
+    This edit is **load-bearing**: the spawner reads the HEAD of
+    ``public.system_prompt_history`` for the butler at spawn time and uses it as
+    the live system prompt (falling back to the on-disk ``CLAUDE.md`` seed when
+    no history row exists). The next session the butler spawns therefore
+    receives this prompt.
     """
     _assert_butler_exists(name, configs)
     pool = await _get_shared_pool(db)
