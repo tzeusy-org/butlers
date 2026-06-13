@@ -2199,20 +2199,36 @@ class TestEntityCoreDates:
         assert days == sorted(days)
 
     async def test_query_filters_date_kind_predicates_server_side(self):
-        """Extraction is server-side: the SQL filters to date-kind predicates.
+        """Extraction is server-side and registry-driven (two queries).
 
-        The predicate set is passed as a bound array param (``= ANY($2)``), not
-        interpolated, so assert it appears among the query's bound arguments and
-        that the query targets the identity store.
+        The endpoint first reads the eligible date-kind predicates from
+        ``relationship.entity_predicate_registry`` (registry-driven, #2230), then
+        filters the identity store to exactly those predicates. The predicate set
+        is passed as a bound array param (``= ANY($2)``), not interpolated, so
+        assert it appears among the second query's bound arguments and that the
+        second query targets the identity store.
         """
-        app, pool = self._make_app(date_rows=[])
+        # A date-fact row doubles as the registry-predicate source: the first
+        # fetch (_fetch_date_kind_predicates) reads r["predicate"] -> ["has-birthday"],
+        # which makes the second (entity_facts) query run with that bound set.
+        app, pool = self._make_app(date_rows=[self._make_date_fact_row()])
         await _get(app, _CORE_DATES_PATH)
-        call = pool.fetch.call_args
-        sql = call[0][0]
-        assert "relationship.entity_facts" in sql
-        assert "ANY(" in sql
+
+        fetch_sqls = [c[0][0] for c in pool.fetch.await_args_list]
+        # Query 1: registry-driven predicate selection.
+        assert any("relationship.entity_predicate_registry" in sql for sql in fetch_sqls), (
+            "Date predicates must be sourced from the predicate registry, not hardcoded"
+        )
+
+        # Query 2: server-side identity-store filter, bound to the registry predicates.
+        facts_calls = [
+            c for c in pool.fetch.await_args_list if "relationship.entity_facts" in str(c[0][0])
+        ]
+        assert facts_calls, "Core-dates must filter the identity store server-side"
+        facts_call = facts_calls[0]
+        assert "ANY(" in facts_call[0][0]
         # The date-kind predicate set is a bound argument to the query.
-        bound_predicates = next(a for a in call[0][1:] if isinstance(a, list))
+        bound_predicates = next(a for a in facts_call[0][1:] if isinstance(a, list))
         assert "has-birthday" in bound_predicates
 
     async def test_core_dates_owner_gated(self):
@@ -2610,8 +2626,6 @@ class TestMergeWritesAuditRow:
         )
         # snapshot fetch: identity_a, identity_b, narrative_a, narrative_b, single-preds.
         mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
-        # fetchval: review-row INSERT RETURNING id (after the transaction).
-        mock_pool.fetchval = AsyncMock(return_value=uuid4())
 
         lock_rows = sorted(
             [self._make_lock_row(_ENT_ID), self._make_lock_row(_ENT_ID_B)],
@@ -2620,7 +2634,10 @@ class TestMergeWritesAuditRow:
         mock_conn = AsyncMock()
         mock_conn.fetch = AsyncMock(return_value=lock_rows)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
-        mock_conn.fetchval = AsyncMock(return_value=0)
+        # In-transaction conn.fetchval call order (#2230): subject-rewire count,
+        # object-rewire count, then the merge_reviews INSERT ... RETURNING id.
+        # The two counts are ints; the audit row returns a UUID review id.
+        mock_conn.fetchval = AsyncMock(side_effect=[0, 0, uuid4()])
         mock_txn = AsyncMock()
         mock_txn.__aenter__ = AsyncMock(return_value=None)
         mock_txn.__aexit__ = AsyncMock(return_value=False)
@@ -2639,11 +2656,19 @@ class TestMergeWritesAuditRow:
             {"entityA": str(_ENT_ID), "entityB": str(_ENT_ID_B), "keepAs": "B"},
         )
         assert resp.status_code == 200, resp.text
+        # The audit row is written in-transaction on the acquired connection
+        # (#2230: "writing the audit row on `conn` (not `pool`) closes the crash
+        # window where a committed merge could leave no audit trail"), so the
+        # INSERT lands on mock_conn.fetchval — never on the pool.
         insert_calls = [
-            c for c in mock_pool.fetchval.await_args_list if "merge_reviews" in str(c[0][0])
+            c for c in mock_conn.fetchval.await_args_list if "merge_reviews" in str(c[0][0])
         ]
-        assert insert_calls, "Merge MUST write a merge_reviews audit row"
+        assert insert_calls, "Merge MUST write a merge_reviews audit row (in-transaction)"
         assert "merged" in insert_calls[0][0]
+        # And it must NOT leak onto the pool — the row commits atomically with the merge.
+        assert not [
+            c for c in mock_pool.fetchval.await_args_list if "merge_reviews" in str(c[0][0])
+        ], "Merge audit row must be written on the in-tx connection, not the pool"
 
 
 class TestQueueDismissedPairSuppression:
