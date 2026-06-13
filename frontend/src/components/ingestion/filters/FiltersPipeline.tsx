@@ -44,6 +44,7 @@ import { GateSection } from './GateSection'
 import { PrioritySendersBlock } from './PrioritySendersBlock'
 import { ChannelDefaultsBlock } from './ChannelDefaultsBlock'
 import { ArchivedRulesSection } from './ArchivedRulesSection'
+import { RuleEditor, type EditorMode } from './RuleEditor'
 import type { IngestionRule } from '@/api/types'
 
 /**
@@ -74,6 +75,13 @@ export function FiltersPipeline() {
   const [priorityMutationError, setPriorityMutationError] = useState<string | null>(null)
   const [channelMutationError, setChannelMutationError] = useState<string | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+
+  // Rule editor (create / edit / DSL) — wires the footer + per-rule edit
+  // affordances to a real create/update flow.
+  const [editorState, setEditorState] = useState<{
+    mode: EditorMode
+    rule: IngestionRule | null
+  } | null>(null)
 
   // Pipeline stats
   const { data: statsData, isLoading: statsLoading } = usePipelineStats('24h')
@@ -219,6 +227,26 @@ export function FiltersPipeline() {
     )
   }
 
+  // Rule editor wiring -------------------------------------------------------
+
+  function handleAddRule() {
+    setEditorState({ mode: 'create', rule: null })
+  }
+
+  function handleOpenDsl() {
+    setEditorState({ mode: 'dsl', rule: null })
+  }
+
+  function handleEditRule(id: string) {
+    const target = allActiveRules.find((r) => r.id === id) ?? null
+    if (!target) return
+    setEditorState({ mode: 'edit', rule: target })
+  }
+
+  function handleCloseEditor() {
+    setEditorState(null)
+  }
+
   // -------------------------------------------------------------------------
   // Loading state
   // -------------------------------------------------------------------------
@@ -271,7 +299,7 @@ export function FiltersPipeline() {
             index={i}
             rules={rulesByGate[def.key] ?? []}
             onToggleRule={handleToggleRule}
-            onEditRule={() => undefined}
+            onEditRule={handleEditRule}
             onDeleteRule={handleDeleteRule}
           />
         ))}
@@ -333,6 +361,7 @@ export function FiltersPipeline() {
           type="button"
           className="font-mono text-[11px] border border-foreground px-3 py-1.5 hover:bg-foreground hover:text-background transition-colors"
           data-testid="filters-add-rule"
+          onClick={handleAddRule}
         >
           + add rule
         </button>
@@ -340,10 +369,21 @@ export function FiltersPipeline() {
           type="button"
           className="font-mono text-[11px] border border-foreground/30 px-3 py-1.5 hover:bg-foreground/5 transition-colors text-muted-foreground"
           data-testid="filters-open-dsl"
+          onClick={handleOpenDsl}
         >
           open DSL
         </button>
       </div>
+
+      {/* Rule editor (create / edit / DSL) */}
+      {editorState && (
+        <RuleEditor
+          key={`${editorState.mode}:${editorState.rule?.id ?? 'new'}`}
+          mode={editorState.mode}
+          rule={editorState.rule}
+          onClose={handleCloseEditor}
+        />
+      )}
     </div>
   )
 }

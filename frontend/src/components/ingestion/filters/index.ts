@@ -9,6 +9,8 @@ export { RuleRow } from './RuleRow'
 export { PrioritySendersBlock } from './PrioritySendersBlock'
 export { ChannelDefaultsBlock } from './ChannelDefaultsBlock'
 export { ArchivedRulesSection } from './ArchivedRulesSection'
+export { RuleEditor } from './RuleEditor'
+export type { EditorMode, RuleEditorProps } from './RuleEditor'
 export {
   GATE_DEFS,
   gateForRule,

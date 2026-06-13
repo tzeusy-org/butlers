@@ -34,7 +34,21 @@ import { createRoot, type Root } from 'react-dom/client'
 const mockUsePipelineStats = vi.fn()
 const mockUseIngestionRules = vi.fn()
 const mockUpdateMutate = vi.fn()
+const mockUpdateMutateAsync = vi.fn(() => Promise.resolve({ data: {} }))
 const mockDeleteMutate = vi.fn()
+const mockCreateMutateAsync = vi.fn(() => Promise.resolve({ data: {} }))
+const mockTestMutateAsync = vi.fn(() =>
+  Promise.resolve({
+    data: {
+      matched: true,
+      decision: 'drop',
+      target_butler: null,
+      matched_rule_id: 'rule-001',
+      matched_rule_type: 'sender_domain',
+      reason: 'matched sender domain',
+    },
+  }),
+)
 const mockUsePriorityContacts = vi.fn()
 const mockUseContacts = vi.fn()
 const mockAddPriorityMutate = vi.fn()
@@ -45,9 +59,22 @@ vi.mock('@/hooks/use-ingestion', () => ({
 }))
 
 vi.mock('@/hooks/use-ingestion-rules', () => ({
-  useIngestionRules: () => mockUseIngestionRules(),
-  useUpdateIngestionRule: () => ({ mutate: mockUpdateMutate }),
+  useIngestionRules: (params?: { enabled?: boolean }) =>
+    mockUseIngestionRules(params),
+  useUpdateIngestionRule: () => ({
+    mutate: mockUpdateMutate,
+    mutateAsync: mockUpdateMutateAsync,
+    isPending: false,
+  }),
   useDeleteIngestionRule: () => ({ mutate: mockDeleteMutate }),
+  useCreateIngestionRule: () => ({
+    mutateAsync: mockCreateMutateAsync,
+    isPending: false,
+  }),
+  useTestIngestionRule: () => ({
+    mutateAsync: mockTestMutateAsync,
+    isPending: false,
+  }),
 }))
 
 vi.mock('@/hooks/use-priority-contacts', () => ({
@@ -179,6 +206,21 @@ function renderComponent(container: HTMLDivElement, root: Root, component: React
   return container
 }
 
+/**
+ * Set a controlled <input>/<select> value the way React expects, using the
+ * native value setter so React's change tracking fires onChange.
+ */
+function setInputValue(el: HTMLInputElement | HTMLSelectElement, value: string) {
+  const proto =
+    el instanceof HTMLSelectElement
+      ? HTMLSelectElement.prototype
+      : HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+  setter?.call(el, value)
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+  el.dispatchEvent(new Event('change', { bubbles: true }))
+}
+
 // ---------------------------------------------------------------------------
 // Default mock setup
 // ---------------------------------------------------------------------------
@@ -193,18 +235,14 @@ function setupDefaultMocks(
     isLoading: false,
   })
 
-  // useIngestionRules is called twice — first for active, then for archived
-  mockUseIngestionRules
-    .mockReturnValueOnce({
-      data: { data: activeRules },
-      isLoading: false,
-      isError: false,
-    })
-    .mockReturnValueOnce({
-      data: { data: archivedRules },
-      isLoading: false,
-      isError: false,
-    })
+  // useIngestionRules is called twice per render — { enabled: true } for active
+  // rules and { enabled: false } for archived. Switch on the param so the mock
+  // survives re-renders (editor open/close triggers extra renders).
+  mockUseIngestionRules.mockImplementation((params?: { enabled?: boolean }) => ({
+    data: { data: params?.enabled === false ? archivedRules : activeRules },
+    isLoading: false,
+    isError: false,
+  }))
 
   mockUsePriorityContacts.mockReturnValue({
     data: { data: [] as PriorityContactEntry[] },
@@ -415,6 +453,139 @@ describe('GateSection + RuleRow: renders condition and action', () => {
     // Action should show 'drop'
     const action = container.querySelector('[data-testid="rule-action-rule-001"]')
     expect(action?.textContent?.toLowerCase()).toContain('drop')
+  })
+})
+
+// ============================================================================
+// Rule editor wiring — '+ add rule' / 'edit' / 'open DSL'
+// ============================================================================
+
+describe('FiltersPipeline: rule editor wiring', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    mockCreateMutateAsync.mockClear()
+    mockUpdateMutateAsync.mockClear()
+    mockTestMutateAsync.mockClear()
+  })
+  afterEach(() => cleanup(root, container))
+
+  it("'+ add rule' opens a create form", () => {
+    setupDefaultMocks()
+    renderComponent(container, root, <FiltersPipeline />)
+
+    expect(container.querySelector('[data-testid="rule-editor"]')).toBeNull()
+
+    const addBtn = container.querySelector('[data-testid="filters-add-rule"]')
+    act(() => { ;(addBtn as HTMLButtonElement).click() })
+
+    const editor = container.querySelector('[data-testid="rule-editor"]')
+    expect(editor, 'editor should open on + add rule').not.toBeNull()
+    // Create mode shows the "create rule" save label.
+    const save = container.querySelector('[data-testid="rule-editor-save"]')
+    expect(save?.textContent?.toLowerCase()).toContain('create')
+  })
+
+  it('submitting the create form calls useCreateIngestionRule', async () => {
+    setupDefaultMocks()
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="filters-add-rule"]') as HTMLButtonElement).click()
+    })
+
+    // Fill the required condition field (sender_domain default).
+    const domain = container.querySelector(
+      '[data-testid="rule-editor-condition-domain"]',
+    ) as HTMLInputElement
+    act(() => { setInputValue(domain, 'spam.example.com') })
+
+    await act(async () => {
+      ;(container.querySelector('[data-testid="rule-editor-save"]') as HTMLButtonElement).click()
+    })
+
+    expect(mockCreateMutateAsync).toHaveBeenCalledTimes(1)
+    const body = (mockCreateMutateAsync.mock.calls[0] as unknown[])[0] as Record<string, unknown>
+    expect(body.rule_type).toBe('sender_domain')
+    expect(body.action).toBe('drop')
+    expect((body.condition as Record<string, unknown>).domain).toBe('spam.example.com')
+  })
+
+  it('blocks create when the required condition field is empty', async () => {
+    setupDefaultMocks()
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="filters-add-rule"]') as HTMLButtonElement).click()
+    })
+
+    await act(async () => {
+      ;(container.querySelector('[data-testid="rule-editor-save"]') as HTMLButtonElement).click()
+    })
+
+    expect(mockCreateMutateAsync).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="rule-editor-error"]')).not.toBeNull()
+  })
+
+  it("per-rule 'edit' opens a prefilled edit form and calls update on save", async () => {
+    setupDefaultMocks({}, [
+      makeRule({
+        id: 'rule-001',
+        name: 'Drop spam',
+        action: 'drop',
+        rule_type: 'sender_domain',
+        condition: { domain: 'spam.example.com', match: 'exact' },
+      }),
+    ])
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const editBtn = container.querySelector('[data-testid="rule-edit-rule-001"]')
+    expect(editBtn, 'per-rule edit affordance missing').not.toBeNull()
+    act(() => { ;(editBtn as HTMLButtonElement).click() })
+
+    const editor = container.querySelector('[data-testid="rule-editor"]')
+    expect(editor).not.toBeNull()
+    // Prefilled name.
+    const nameInput = container.querySelector(
+      '[data-testid="rule-editor-name"]',
+    ) as HTMLInputElement
+    expect(nameInput.value).toBe('Drop spam')
+    // Edit mode shows the "save changes" label.
+    const save = container.querySelector('[data-testid="rule-editor-save"]')
+    expect(save?.textContent?.toLowerCase()).toContain('save')
+
+    await act(async () => { ;(save as HTMLButtonElement).click() })
+
+    expect(mockUpdateMutateAsync).toHaveBeenCalledTimes(1)
+    const arg = (mockUpdateMutateAsync.mock.calls[0] as unknown[])[0] as { id: string }
+    expect(arg.id).toBe('rule-001')
+  })
+
+  it("'open DSL' opens the editor with the DSL test panel and runs a test", async () => {
+    setupDefaultMocks()
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const dslBtn = container.querySelector('[data-testid="filters-open-dsl"]')
+    act(() => { ;(dslBtn as HTMLButtonElement).click() })
+
+    const panel = container.querySelector('[data-testid="rule-editor-dsl-panel"]')
+    expect(panel, 'DSL test panel should be visible in dsl mode').not.toBeNull()
+
+    const sender = container.querySelector(
+      '[data-testid="rule-editor-test-sender"]',
+    ) as HTMLInputElement
+    act(() => { setInputValue(sender, 'alerts@spam.example.com') })
+
+    await act(async () => {
+      ;(container.querySelector('[data-testid="rule-editor-test-run"]') as HTMLButtonElement).click()
+    })
+
+    expect(mockTestMutateAsync).toHaveBeenCalledTimes(1)
+    const result = container.querySelector('[data-testid="rule-editor-test-result"]')
+    expect(result, 'test result should render').not.toBeNull()
+    expect(result?.textContent?.toLowerCase()).toContain('decision')
   })
 })
 
