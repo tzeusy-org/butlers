@@ -31,6 +31,12 @@
 import { useState } from 'react'
 import { usePipelineStats } from '@/hooks/use-ingestion'
 import { useIngestionRules, useUpdateIngestionRule, useDeleteIngestionRule } from '@/hooks/use-ingestion-rules'
+import {
+  usePriorityContacts,
+  useAddPriorityContact,
+  useRemovePriorityContact,
+} from '@/hooks/use-priority-contacts'
+import { useContacts } from '@/hooks/use-contacts'
 import { GATE_DEFS, groupRulesByGate, deriveGateCounts } from './gate-state'
 import type { GateKey } from './gate-state'
 import { PipelineGateDiagram } from './PipelineGateDiagram'
@@ -40,17 +46,16 @@ import { ChannelDefaultsBlock } from './ChannelDefaultsBlock'
 import { ArchivedRulesSection } from './ArchivedRulesSection'
 import type { IngestionRule } from '@/api/types'
 
+/**
+ * Butler that owns the priority-sender list. The Gmail policy evaluator
+ * (connectors/gmail_policy.py) queries public.priority_contacts WHERE
+ * butler = 'gmail', so the dashboard surface is scoped to the same butler.
+ */
+const PRIORITY_BUTLER = 'gmail'
+
 // ---------------------------------------------------------------------------
 // Rule classification helpers
 // ---------------------------------------------------------------------------
-
-function isPrioritySender(rule: IngestionRule): boolean {
-  return (
-    rule.rule_type === 'priority_sender' ||
-    rule.scope === 'priority' ||
-    (rule.action.toLowerCase().startsWith('route') && rule.rule_type === 'priority')
-  )
-}
 
 function isChannelDefault(rule: IngestionRule): boolean {
   return (
@@ -92,6 +97,19 @@ export function FiltersPipeline() {
   const updateRule = useUpdateIngestionRule()
   const deleteRule = useDeleteIngestionRule()
 
+  // Priority senders — backed by public.priority_contacts (the runtime source
+  // of truth), NOT the ingestion-rule DSL proxy.
+  const {
+    data: priorityContactsResp,
+    isLoading: priorityLoading,
+    isError: priorityError,
+  } = usePriorityContacts({ butler: PRIORITY_BUTLER })
+  const addPriorityContact = useAddPriorityContact()
+  const removePriorityContact = useRemovePriorityContact()
+
+  // Contact candidates for the add picker.
+  const { data: contactsResp, isLoading: contactsLoading } = useContacts({ limit: 200 })
+
   // -------------------------------------------------------------------------
   // Derived data
   // -------------------------------------------------------------------------
@@ -101,12 +119,12 @@ export function FiltersPipeline() {
     (r) => !r.enabled || r.deleted_at != null,
   )
 
+  const priorityContacts = priorityContactsResp?.data ?? []
+  const contactCandidates = contactsResp?.contacts ?? []
+
   // Split out special-purpose rules before gate bucketing
-  const prioritySenderRules = allActiveRules.filter(isPrioritySender)
   const channelDefaultRules = allActiveRules.filter(isChannelDefault)
-  const gatableRules = allActiveRules.filter(
-    (r) => !isPrioritySender(r) && !isChannelDefault(r),
-  )
+  const gatableRules = allActiveRules.filter((r) => !isChannelDefault(r))
 
   const rulesByGate = groupRulesByGate(gatableRules)
 
@@ -152,15 +170,32 @@ export function FiltersPipeline() {
     })
   }
 
-  function handleRemovePrioritySender(id: string) {
+  function handleAddPrioritySender(contactId: string) {
     setPriorityMutationError(null)
-    deleteRule.mutate(id, {
-      onError: (err) => {
-        setPriorityMutationError(
-          err instanceof Error ? err.message : 'Failed to remove priority sender.',
-        )
+    addPriorityContact.mutate(
+      { contact_id: contactId, butler: PRIORITY_BUTLER },
+      {
+        onError: (err) => {
+          setPriorityMutationError(
+            err instanceof Error ? err.message : 'Failed to add priority sender.',
+          )
+        },
       },
-    })
+    )
+  }
+
+  function handleRemovePrioritySender(contactId: string) {
+    setPriorityMutationError(null)
+    removePriorityContact.mutate(
+      { contactId, butler: PRIORITY_BUTLER },
+      {
+        onError: (err) => {
+          setPriorityMutationError(
+            err instanceof Error ? err.message : 'Failed to remove priority sender.',
+          )
+        },
+      },
+    )
   }
 
   function handleEditChannelDefault(id: string) {
@@ -248,10 +283,13 @@ export function FiltersPipeline() {
         style={{ gridTemplateColumns: '1.3fr 1fr' }}
       >
         <PrioritySendersBlock
-          rules={prioritySenderRules}
-          loaded={!rulesLoading}
-          error={rulesError}
+          contacts={priorityContacts}
+          loaded={!priorityLoading}
+          error={priorityError}
           mutationError={priorityMutationError}
+          addCandidates={contactCandidates}
+          candidatesLoading={contactsLoading}
+          onAdd={handleAddPrioritySender}
           onRemove={handleRemovePrioritySender}
         />
         <ChannelDefaultsBlock

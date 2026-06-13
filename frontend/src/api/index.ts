@@ -600,6 +600,19 @@ export type {
 } from "./types.ts";
 
 export {
+  addPriorityContact,
+  getPriorityContacts,
+  removePriorityContact,
+} from "./client.ts";
+
+export type {
+  PriorityContactAddRequest,
+  PriorityContactAddResponse,
+  PriorityContactEntry,
+  PriorityContactListParams,
+} from "./types.ts";
+
+export {
   fetchPricingMap,
   listModelCatalog,
   createModelCatalogEntry,

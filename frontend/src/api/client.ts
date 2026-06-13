@@ -154,6 +154,10 @@ import type {
   IngestionRuleListParams,
   IngestionRuleTestRequest,
   IngestionRuleTestResponse,
+  PriorityContactEntry,
+  PriorityContactAddRequest,
+  PriorityContactAddResponse,
+  PriorityContactListParams,
   ModelCatalogEntry,
   PricingMap,
   ModelCatalogCreate,
@@ -3871,6 +3875,48 @@ export function testIngestionRule(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Priority contacts (GET/POST/DELETE /api/ingestion/priority-contacts)
+//
+// Runtime source of truth for priority senders — public.priority_contacts.
+// ---------------------------------------------------------------------------
+
+/** List priority-contact assignments, optionally filtered by butler. */
+export function getPriorityContacts(
+  params?: PriorityContactListParams,
+): Promise<PaginatedResponse<PriorityContactEntry>> {
+  const sp = new URLSearchParams();
+  if (params?.butler) sp.set("butler", params.butler);
+  if (params?.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params?.limit !== undefined) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<PriorityContactEntry>>(
+    qs ? `/ingestion/priority-contacts?${qs}` : "/ingestion/priority-contacts",
+  );
+}
+
+/** Add a priority-contact assignment for a butler. */
+export function addPriorityContact(
+  body: PriorityContactAddRequest,
+): Promise<PriorityContactAddResponse> {
+  return apiFetch<PriorityContactAddResponse>("/ingestion/priority-contacts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Remove a priority-contact assignment. */
+export function removePriorityContact(
+  contactId: string,
+  butler: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/ingestion/priority-contacts/${encodeURIComponent(contactId)}/${encodeURIComponent(butler)}`,
+    { method: "DELETE" },
+  );
 }
 
 // ---------------------------------------------------------------------------

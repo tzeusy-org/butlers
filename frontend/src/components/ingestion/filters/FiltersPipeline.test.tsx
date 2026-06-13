@@ -35,6 +35,10 @@ const mockUsePipelineStats = vi.fn()
 const mockUseIngestionRules = vi.fn()
 const mockUpdateMutate = vi.fn()
 const mockDeleteMutate = vi.fn()
+const mockUsePriorityContacts = vi.fn()
+const mockUseContacts = vi.fn()
+const mockAddPriorityMutate = vi.fn()
+const mockRemovePriorityMutate = vi.fn()
 
 vi.mock('@/hooks/use-ingestion', () => ({
   usePipelineStats: () => mockUsePipelineStats(),
@@ -46,7 +50,22 @@ vi.mock('@/hooks/use-ingestion-rules', () => ({
   useDeleteIngestionRule: () => ({ mutate: mockDeleteMutate }),
 }))
 
-import type { PipelineStats, IngestionRule } from '@/api/types'
+vi.mock('@/hooks/use-priority-contacts', () => ({
+  usePriorityContacts: () => mockUsePriorityContacts(),
+  useAddPriorityContact: () => ({ mutate: mockAddPriorityMutate }),
+  useRemovePriorityContact: () => ({ mutate: mockRemovePriorityMutate }),
+}))
+
+vi.mock('@/hooks/use-contacts', () => ({
+  useContacts: () => mockUseContacts(),
+}))
+
+import type {
+  PipelineStats,
+  IngestionRule,
+  PriorityContactEntry,
+  ContactSummary,
+} from '@/api/types'
 import { FiltersPipeline } from './FiltersPipeline'
 import {
   PipelineGateDiagram,
@@ -106,6 +125,38 @@ function makeArchivedRule(overrides: Partial<IngestionRule> = {}): IngestionRule
   })
 }
 
+function makeContactSummary(
+  overrides: Partial<ContactSummary> = {},
+): ContactSummary {
+  return {
+    id: 'contact-001',
+    full_name: 'VIP Contact',
+    first_name: 'VIP',
+    last_name: 'Contact',
+    nickname: null,
+    email: 'vip@example.com',
+    phone: null,
+    labels: [],
+    last_interaction_at: null,
+    entity_id: null,
+    ...overrides,
+  }
+}
+
+function makePriorityContact(
+  overrides: Partial<PriorityContactEntry> = {},
+): PriorityContactEntry {
+  return {
+    contact_id: 'contact-001',
+    butler: 'gmail',
+    added_at: '2026-01-01T00:00:00Z',
+    added_by: 'dashboard',
+    name: 'VIP Contact',
+    contact_info_values: ['vip@example.com'],
+    ...overrides,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DOM helpers
 // ---------------------------------------------------------------------------
@@ -154,6 +205,17 @@ function setupDefaultMocks(
       isLoading: false,
       isError: false,
     })
+
+  mockUsePriorityContacts.mockReturnValue({
+    data: { data: [] as PriorityContactEntry[] },
+    isLoading: false,
+    isError: false,
+  })
+
+  mockUseContacts.mockReturnValue({
+    data: { contacts: [], total: 0 },
+    isLoading: false,
+  })
 }
 
 // ============================================================================
@@ -360,24 +422,23 @@ describe('GateSection + RuleRow: renders condition and action', () => {
 // AC3: Priority senders mutation error
 // ============================================================================
 
-describe('AC3: priority senders mutation surfaces error', () => {
+describe('AC3: priority senders read + mutation (public.priority_contacts)', () => {
   let container: HTMLDivElement
   let root: Root
 
   beforeEach(() => { ;({ container, root } = makeRoot()) })
   afterEach(() => cleanup(root, container))
 
-  it('renders priority senders section when rules are loaded', () => {
-    const priorityRule = makeRule({
-      id: 'priority-001',
-      rule_type: 'priority_sender',
-      action: 'route general',
+  it('renders a row per priority contact (read from priority-contacts API)', () => {
+    const entry = makePriorityContact({
+      contact_id: 'contact-001',
       name: 'VIP contact',
+      contact_info_values: ['vip@example.com'],
     })
 
     renderComponent(container, root, (
       <PrioritySendersBlock
-        rules={[priorityRule]}
+        contacts={[entry]}
         loaded={true}
         error={false}
         mutationError={null}
@@ -387,14 +448,16 @@ describe('AC3: priority senders mutation surfaces error', () => {
     const block = container.querySelector('[data-testid="priority-senders-block"]')
     expect(block).not.toBeNull()
 
-    const row = container.querySelector('[data-testid="priority-sender-row-priority-001"]')
+    const row = container.querySelector('[data-testid="priority-sender-row-contact-001"]')
     expect(row).not.toBeNull()
+    // Channel identifier from contact_info_values is shown.
+    expect(row?.textContent).toContain('vip@example.com')
   })
 
   it('renders mutation error when API fails', () => {
     renderComponent(container, root, (
       <PrioritySendersBlock
-        rules={[]}
+        contacts={[]}
         loaded={true}
         error={false}
         mutationError="Failed to remove priority sender: 500 Internal Server Error"
@@ -406,16 +469,13 @@ describe('AC3: priority senders mutation surfaces error', () => {
     expect(errorEl?.textContent).toContain('Failed to remove priority sender')
   })
 
-  it('calls onRemove with correct rule id when remove is clicked', () => {
+  it('calls onRemove with the contact id when remove is clicked', () => {
     const onRemove = vi.fn()
-    const priorityRule = makeRule({
-      id: 'priority-001',
-      rule_type: 'priority_sender',
-    })
+    const entry = makePriorityContact({ contact_id: 'contact-001' })
 
     renderComponent(container, root, (
       <PrioritySendersBlock
-        rules={[priorityRule]}
+        contacts={[entry]}
         loaded={true}
         error={false}
         mutationError={null}
@@ -423,17 +483,54 @@ describe('AC3: priority senders mutation surfaces error', () => {
       />
     ))
 
-    const removeBtn = container.querySelector('[data-testid="priority-sender-remove-priority-001"]')
+    const removeBtn = container.querySelector('[data-testid="priority-sender-remove-contact-001"]')
     expect(removeBtn).not.toBeNull()
 
     act(() => { ;(removeBtn as HTMLButtonElement).click() })
-    expect(onRemove).toHaveBeenCalledWith('priority-001')
+    expect(onRemove).toHaveBeenCalledWith('contact-001')
+  })
+
+  it('opens the add picker and calls onAdd with the selected contact id', () => {
+    const onAdd = vi.fn()
+    const candidates = [
+      makeContactSummary({ id: 'c-1', full_name: 'Alice', email: 'alice@example.com' }),
+      makeContactSummary({ id: 'c-2', full_name: 'Bob', email: 'bob@example.com' }),
+    ]
+
+    renderComponent(container, root, (
+      <PrioritySendersBlock
+        contacts={[]}
+        loaded={true}
+        error={false}
+        mutationError={null}
+        addCandidates={candidates}
+        onAdd={onAdd}
+      />
+    ))
+
+    // Picker is hidden until "+ add" is clicked.
+    expect(container.querySelector('[data-testid="priority-senders-add-picker"]')).toBeNull()
+
+    const addBtn = container.querySelector('[data-testid="priority-senders-add"]')
+    act(() => { ;(addBtn as HTMLButtonElement).click() })
+
+    const select = container.querySelector(
+      '[data-testid="priority-senders-contact-select"]',
+    ) as HTMLSelectElement
+    expect(select).not.toBeNull()
+
+    act(() => {
+      select.value = 'c-2'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(onAdd).toHaveBeenCalledWith('c-2')
   })
 
   it('renders error state when fetch fails', () => {
     renderComponent(container, root, (
       <PrioritySendersBlock
-        rules={[]}
+        contacts={[]}
         loaded={true}
         error={true}
         mutationError={null}

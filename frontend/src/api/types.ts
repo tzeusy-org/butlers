@@ -2753,6 +2753,48 @@ export interface IngestionRuleListParams {
 }
 
 // ---------------------------------------------------------------------------
+// Priority contacts — runtime source of truth for priority senders.
+//
+// Unlike ingestion rules (a DSL proxy), these rows live in
+// public.priority_contacts and are the table the Gmail policy evaluator
+// actually reads at runtime (connectors/gmail_policy.py). The dashboard
+// reads/writes them via GET/POST/DELETE /api/ingestion/priority-contacts.
+// ---------------------------------------------------------------------------
+
+/** One priority-contact assignment, joined to public.contacts for display. */
+export interface PriorityContactEntry {
+  contact_id: string;
+  butler: string;
+  added_at: string;
+  added_by: string | null;
+  /** Canonical contact name from public.contacts (may be null). */
+  name: string | null;
+  /** Non-sensitive channel identifiers (email/handle) from entity_facts. */
+  contact_info_values: string[];
+}
+
+/** Request body for POST /api/ingestion/priority-contacts. */
+export interface PriorityContactAddRequest {
+  contact_id: string;
+  butler: string;
+}
+
+/** Response body for POST /api/ingestion/priority-contacts (201). */
+export interface PriorityContactAddResponse {
+  contact_id: string;
+  butler: string;
+  added_at: string;
+  added_by: string | null;
+}
+
+/** Query parameters for GET /api/ingestion/priority-contacts. */
+export interface PriorityContactListParams {
+  butler?: string;
+  offset?: number;
+  limit?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Connector detail sections — events, incidents, routing rules [bu-5ywn2]
 // ---------------------------------------------------------------------------
 
