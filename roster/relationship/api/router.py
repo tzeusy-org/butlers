@@ -4845,44 +4845,6 @@ async def patch_entity_dunbar_tier(
 # ---------------------------------------------------------------------------
 
 
-async def _assert_owner_entity_exists(pool) -> None:
-    """Raise HTTP 403 (owner_required) unless an owner entity is registered.
-
-    Checks that at least one entity with ``'owner' = ANY(roles)`` exists in
-    ``public.entities``.  This is the Clause 12b owner-only gate for
-    PII-bearing read surfaces (Amendment 12b, entity-redesign Phase 2).
-
-    In v1, the dashboard is single-tenant and there is no per-request caller
-    identity attached to API calls.  The gate therefore checks system-level
-    bootstrapping: if the owner entity is present, access is granted; if not,
-    the system is considered misconfigured and access is denied to prevent
-    data leakage.
-
-    Returns HTTP 403 with ``{"code": "owner_required"}`` on failure, matching
-    the envelope contract in ``rfcs/0007:75-87``.
-    """
-    try:
-        row = await pool.fetchrow(
-            """
-            SELECT id FROM public.entities
-            WHERE 'owner' = ANY(COALESCE(roles, '{}'))
-            LIMIT 1
-            """
-        )
-    except Exception as exc:
-        logger.warning("Owner entity assertion query failed: %s", exc)
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "owner_required", "message": "Owner entity assertion failed"},
-        )
-
-    if row is None:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "owner_required", "message": "Owner entity not found"},
-        )
-
-
 @router.get(
     "/entities/{entity_id}/neighbours",
     response_model=NeighboursResponse,
@@ -5744,8 +5706,9 @@ async def list_entity_facts(
 
     pool = _pool(db)
 
-    # Owner-only gate (Clause 12b).
-    await _assert_owner_entity_exists(pool)
+    # Owner-only gate (Clause 12b) — roles-aware via _assert_owner_role.
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
 
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)

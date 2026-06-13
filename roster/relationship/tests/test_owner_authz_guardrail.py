@@ -30,10 +30,10 @@ owner check calls ``_get_owner_roles(pool)`` which fetches the first entity whos
 ``roles`` column contains ``'owner'`` and returns the roles list.  Access is denied
 when the list is ``None`` (DB error) or does not include ``'owner'``.
 
-The pattern used here is ``_get_owner_roles`` + roles inspection — NOT the older
-``_assert_owner_entity_exists`` helper which only checks for row existence and is
-therefore incompatible with the mock fixture below.  All owner-gated endpoints in
-this router use the ``_get_owner_roles`` pattern.
+The pattern used here is ``_get_owner_roles`` + roles inspection via the
+``_assert_owner_role`` helper, which returns a 403 JSONResponse for non-owner
+callers.  All owner-gated endpoints in this router use that single helper; the
+older row-existence-only helper has been removed (bu-prdr0).
 
 The tests use httpx.AsyncClient with a mocked DB pool (same approach as
 test_entity_tabs.py and test_chronicler_boundary.py) so no real Postgres or
@@ -263,6 +263,8 @@ class TestClause12aMutationOwner:
 #   GET /entities/{id}/contacts    → bead 9.7 (entity contacts read)
 #   GET /entities/{id}/neighbours  → bead 9.7 (entity neighbours)
 #   GET /entities/{id}/activity    → bead 9.13 (activity aggregator)
+#   GET /entities/{id}/facts       → facts drill / identity-staleness list
+#                                    (migrated onto _assert_owner_role, bu-prdr0)
 # ---------------------------------------------------------------------------
 
 
@@ -294,6 +296,11 @@ class TestClause12bPiiReadsNonOwner:
         resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/activity")
         _assert_owner_required(resp)
 
+    async def test_get_entity_facts_non_owner_403(self):
+        app = _non_owner_app()
+        resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/facts")
+        _assert_owner_required(resp)
+
 
 class TestClause12bPiiReadsOwner:
     """Owner callers MUST NOT be rejected by the owner_required gate on PII GET endpoints."""
@@ -309,6 +316,14 @@ class TestClause12bPiiReadsOwner:
     async def test_get_entity_contacts_owner_not_rejected(self):
         app = _owner_app()
         resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/contacts")
+        if resp.status_code == 403:
+            body = resp.json()
+            code = body.get("code") or (body.get("error") or {}).get("code")
+            assert code != "owner_required", "Owner caller was incorrectly rejected."
+
+    async def test_get_entity_facts_owner_not_rejected(self):
+        app = _owner_app()
+        resp = await _request(app, "get", f"{_BASE}/{_ENT_ID}/facts")
         if resp.status_code == 403:
             body = resp.json()
             code = body.get("code") or (body.get("error") or {}).get("code")

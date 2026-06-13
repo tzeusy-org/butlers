@@ -86,7 +86,7 @@ def _app_with_pool(
 ) -> tuple[FastAPI, AsyncMock]:
     """Wire a FastAPI app with a mocked relationship DB pool.
 
-    ``owner_row`` controls _assert_owner_entity_exists() — defaults to passing.
+    ``owner_row`` controls _assert_owner_role() — defaults to passing (owner).
     ``entity_exists`` controls _assert_entity_exists() fetchval result.
     ``fetch_rows`` is returned by pool.fetch (the neighbours query).
     """
