@@ -186,6 +186,79 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
         assert _schema_owner(db_url, schema) == expected_owner
 
 
+def test_core_migrations_seed_permissions_vocabulary(postgres_container):
+    """core@head seeds public.permissions so the matrix renders non-empty, and the
+    runtime enforcer (check_permission) honours a revoked grant against real rows."""
+    import asyncpg
+
+    from butlers.core.permissions import (
+        SPAWN_PERMISSION,
+        check_permission,
+        require_permission,
+    )
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    # Matrix vocabulary is seeded (non-empty): both axes have real options.
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            total = conn.execute(text("SELECT COUNT(*) FROM public.permissions")).scalar_one()
+            assert total > 0, "permissions matrix must be seeded non-empty"
+            distinct_butlers = conn.execute(
+                text("SELECT COUNT(DISTINCT butler) FROM public.permissions")
+            ).scalar_one()
+            distinct_perms = conn.execute(
+                text("SELECT COUNT(DISTINCT permission) FROM public.permissions")
+            ).scalar_one()
+            assert distinct_butlers >= 2
+            assert distinct_perms >= 1
+            # The enforced spawn permission is part of the seeded vocabulary.
+            spawn_rows = conn.execute(
+                text("SELECT COUNT(*) FROM public.permissions WHERE permission = :p"),
+                {"p": SPAWN_PERMISSION},
+            ).scalar_one()
+            assert spawn_rows >= 2
+    finally:
+        engine.dispose()
+
+    # Runtime enforcer against a real asyncpg pool: seeded grant allows, an explicit
+    # revoke denies (deny BLOCKS), and an unknown butler default-allows.
+    async def _exercise_enforcer() -> None:
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        try:
+            # Seeded default → allowed.
+            allowed = await check_permission(pool, "chronicler", SPAWN_PERMISSION)
+            assert allowed.allowed is True
+
+            # Revoke chronicler's spawn grant; enforcer must now deny + require_permission raises.
+            await pool.execute(
+                "UPDATE public.permissions SET granted = FALSE, reason = 'test-revoke' "
+                "WHERE butler = 'chronicler' AND permission = $1",
+                SPAWN_PERMISSION,
+            )
+            denied = await check_permission(pool, "chronicler", SPAWN_PERMISSION)
+            assert denied.allowed is False
+            assert denied.explicit is True
+
+            from butlers.core.permissions import PermissionDenied
+
+            with pytest.raises(PermissionDenied):
+                await require_permission(pool, "chronicler", SPAWN_PERMISSION)
+
+            # Unknown butler with no row → default allow.
+            unknown = await check_permission(pool, "nonexistent-butler", SPAWN_PERMISSION)
+            assert unknown.allowed is True
+            assert unknown.explicit is False
+        finally:
+            await pool.close()
+
+    asyncio.run(_exercise_enforcer())
+
+
 def test_core_migrations_create_delivery_tables_in_target_schema(postgres_container):
     """Schema-scoped core runs create notification delivery tables for new butlers."""
     from butlers.migrations import run_migrations

@@ -64,6 +64,7 @@ from butlers.core.model_routing import (
     record_token_usage,
     resolve_model_with_effective_tier,
 )
+from butlers.core.permissions import SPAWN_PERMISSION, check_permission
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
@@ -1706,6 +1707,45 @@ class Spawner:
         effective_request_id: str = request_id or generate_uuid7_string()
 
         _attempted_ids: list[uuid.UUID] = []
+
+        # ---------------------------------------------------------------------------
+        # Permissions-matrix enforcement (public.permissions)
+        #
+        # The Settings → Permissions matrix governs which butler may act. Before this
+        # gate the matrix was decorative: cells were persisted + audited but never
+        # consulted at runtime. Here we enforce the per-butler ``spawn`` permission at
+        # the universal choke point where a butler acts — the spawn. A cell flipped to
+        # ``granted=false`` blocks the spawn outright (no model can bring it back; this
+        # is an authorization decision, not a budget one). Mirrors the spend-ceiling /
+        # token-quota denial path: a ``quota_skip`` dispatch-attempt row (so the denial
+        # is observable in provenance) plus a failed SpawnerResult. check_permission
+        # fails open, so a DB error never wedges spawns.
+        # ---------------------------------------------------------------------------
+        if catalog_entry_id is not None and self._pool is not None:
+            perm = await check_permission(self._pool, self._config.name, SPAWN_PERMISSION)
+            if not perm.allowed:
+                perm_msg = (
+                    f"Permission denied: butler '{self._config.name}' is not granted "
+                    f"'{SPAWN_PERMISSION}'"
+                )
+                if perm.reason:
+                    perm_msg += f" (reason: {perm.reason})"
+                logger.warning(
+                    "Spawn blocked by permissions matrix for butler=%s: %s",
+                    self._config.name,
+                    perm_msg,
+                )
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome="quota_skip",
+                    attempt_index=len(_attempted_ids),
+                    failure_reason=perm_msg,
+                    tool_call_count=0,
+                    logical_session_id=effective_request_id,
+                )
+                return SpawnerResult(success=False, error=perm_msg, model=model)
 
         if catalog_entry_id is not None and self._pool is not None:
             while True:
