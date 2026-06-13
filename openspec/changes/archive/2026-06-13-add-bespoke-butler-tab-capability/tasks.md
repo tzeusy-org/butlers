@@ -44,7 +44,7 @@ checklist tracks the skeleton; actual panel content is per-butler scope.
       implement Panel grid conforming to bu-iuol4.1 visual contract.
 - [ ] 2.11 qa / Investigations tab: implement Panel grid conforming to
       bu-iuol4.1 visual contract.
-- [ ] 2.12 health / Measurements tab: relabel from "Health" to "Measurements"
+- [x] 2.12 health / Measurements tab: relabel from "Health" to "Measurements"
       per the canonical registry; no content change required at this stage.
 
 ## 3. Verification

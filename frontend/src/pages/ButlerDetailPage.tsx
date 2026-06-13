@@ -366,7 +366,7 @@ export default function ButlerDetailPage() {
               {showCollectionsTab && (
                 <DetailTabTrigger value="collections">Collections</DetailTabTrigger>
               )}
-              {showHealthTab && <DetailTabTrigger value="health">Health</DetailTabTrigger>}
+              {showHealthTab && <DetailTabTrigger value="health">Measurements</DetailTabTrigger>}
               {isSwitchboard && (
                 <>
                   <DetailTabTrigger value="routing-log">Routing Log</DetailTabTrigger>
