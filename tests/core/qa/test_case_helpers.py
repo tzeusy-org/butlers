@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -93,6 +94,29 @@ def test_state_of_case_accepts_object_rows() -> None:
     attempt = SimpleNamespace(status="pr_open", error_detail=None)
 
     assert state_of_case(attempt) == "pr"
+
+
+@pytest.mark.integration
+async def test_state_of_case_accepts_asyncpg_record(provisioned_postgres_pool) -> None:
+    """A real ``asyncpg.Record`` row must derive its state from key access.
+
+    Regression for the StateTrack-frozen-at-``detect`` bug: ``asyncpg.Record``
+    is not a ``Mapping`` subclass, so the prior ``isinstance(source, Mapping)``
+    gate fell through to ``getattr`` and yielded ``status=None`` → ``detect``
+    for every case regardless of the actual ``status`` column. Exercising a
+    genuine Record (not a dict subclass, which would mask the bug) proves the
+    duck-typed key accessor reads the column.
+    """
+
+    async with provisioned_postgres_pool() as pool:
+        record = await pool.fetchrow(
+            "SELECT $1::text AS status, NULL::text AS error_detail",
+            "pr_open",
+        )
+
+    # Guard the test's own premise: a real Record is not a Mapping.
+    assert not isinstance(record, Mapping)
+    assert state_of_case(record) == "pr"
 
 
 def test_headline_fallback_chain() -> None:

@@ -141,6 +141,13 @@ def _investigation_notes_headline(finding: QaFinding | None) -> str | None:
 
 
 def _get_field(source: Mapping[str, Any] | object, field: str) -> Any:
-    if isinstance(source, Mapping):
-        return source.get(field)
+    # asyncpg.Record supports key access (``record[field]``, ``field in record``)
+    # and exposes ``keys()`` but is NOT a ``Mapping`` subclass, so an
+    # ``isinstance(source, Mapping)`` gate silently skips it. Duck-type on key
+    # access instead so both dict/Mapping rows and asyncpg.Record rows resolve.
+    if hasattr(source, "keys") and hasattr(source, "__getitem__"):
+        try:
+            return source[field]  # preserves None-vs-missing via the KeyError path
+        except (KeyError, IndexError, TypeError):
+            return None
     return getattr(source, field, None)
