@@ -808,20 +808,29 @@ async def _repoint_facts_on_pool(
         async with conn.transaction():
             # Subject-side facts
             src_facts = await conn.fetch(
-                "SELECT id, scope, predicate, confidence FROM facts "
+                "SELECT id, scope, predicate, confidence, valid_at FROM facts "
                 "WHERE entity_id = $1 AND validity = 'active'",
                 src_uuid,
             )
 
             for src_fact in src_facts:
-                conflict = await conn.fetchrow(
-                    "SELECT id, confidence FROM facts "
-                    "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
-                    "AND validity = 'active'",
-                    tgt_uuid,
-                    src_fact["scope"],
-                    src_fact["predicate"],
-                )
+                # Mirror store_fact temporal-coexistence semantics: supersession
+                # applies ONLY to property facts (valid_at IS NULL). A temporal
+                # source fact (valid_at IS NOT NULL) always coexists — it never
+                # supersedes nor is superseded — so it is repointed unconditionally,
+                # and it must not collide with a target PROPERTY fact either. We
+                # therefore only look for a conflict when the source is a property
+                # fact, and that conflict is restricted to target PROPERTY facts.
+                conflict = None
+                if src_fact["valid_at"] is None:
+                    conflict = await conn.fetchrow(
+                        "SELECT id, confidence FROM facts "
+                        "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
+                        "AND validity = 'active' AND valid_at IS NULL",
+                        tgt_uuid,
+                        src_fact["scope"],
+                        src_fact["predicate"],
+                    )
 
                 if conflict is None:
                     await conn.execute(
@@ -857,22 +866,28 @@ async def _repoint_facts_on_pool(
 
             # Edge facts (object_entity_id)
             obj_facts = await conn.fetch(
-                "SELECT id, entity_id, scope, predicate, confidence FROM facts "
+                "SELECT id, entity_id, scope, predicate, confidence, valid_at FROM facts "
                 "WHERE object_entity_id = $1 AND validity = 'active'",
                 src_uuid,
             )
 
             for obj_fact in obj_facts:
-                edge_conflict = await conn.fetchrow(
-                    "SELECT id, confidence FROM facts "
-                    "WHERE entity_id = $1 AND object_entity_id = $2 "
-                    "AND scope = $3 AND predicate = $4 "
-                    "AND validity = 'active'",
-                    obj_fact["entity_id"],
-                    tgt_uuid,
-                    obj_fact["scope"],
-                    obj_fact["predicate"],
-                )
+                # Same temporal-coexistence guard as the subject side: a temporal
+                # edge-fact (valid_at IS NOT NULL) always coexists and is repointed
+                # unconditionally; only property edge-facts resolve by confidence,
+                # and only against a target PROPERTY edge-fact.
+                edge_conflict = None
+                if obj_fact["valid_at"] is None:
+                    edge_conflict = await conn.fetchrow(
+                        "SELECT id, confidence FROM facts "
+                        "WHERE entity_id = $1 AND object_entity_id = $2 "
+                        "AND scope = $3 AND predicate = $4 "
+                        "AND validity = 'active' AND valid_at IS NULL",
+                        obj_fact["entity_id"],
+                        tgt_uuid,
+                        obj_fact["scope"],
+                        obj_fact["predicate"],
+                    )
 
                 if edge_conflict is None:
                     await conn.execute(

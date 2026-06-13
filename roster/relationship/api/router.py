@@ -6342,6 +6342,54 @@ async def merge_entities(
                 target_id,
             )
 
+            # Resolve single-cardinality DIVERGENCE before moving the remainder.
+            # For a predicate registered with cardinality='single', source and
+            # target may each hold an active row with DIFFERENT objects (no exact
+            # (p,o) collision, so the retraction above left both standing). The
+            # merge-review spec calls these "the conflicts a merge must resolve";
+            # the lifecycle spec rationale states merge keeps higher-conf facts.
+            #
+            # Resolution rule (registry-driven; NO hardcoded predicate list):
+            # keep the higher-conf row and supersede the loser. Ties go to the
+            # TARGET (the row whose subject is already the survivor), consistent
+            # with the assert-path supersession semantics. Multi-valued predicates
+            # are absent from this set and union normally (three-emails rule).
+            #
+            # The window orders winners by (conf DESC, target-first, id) so the
+            # top row per predicate is the keeper; every other active row across
+            # the source/target pair for that single-cardinality predicate is
+            # superseded. Multi-row pre-existing duplicates on one side (should not
+            # happen for single-cardinality, but be defensive) collapse to one.
+            await conn.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        ef.id,
+                        row_number() OVER (
+                            PARTITION BY ef.predicate
+                            ORDER BY
+                                ef.conf DESC,
+                                (ef.subject = $2) DESC,
+                                ef.id
+                        ) AS rn
+                    FROM relationship.entity_facts ef
+                    JOIN relationship.entity_predicate_registry pr
+                      ON pr.predicate = ef.predicate
+                    WHERE ef.subject IN ($1, $2)
+                      AND ef.validity = 'active'
+                      AND pr.cardinality = 'single'
+                )
+                UPDATE relationship.entity_facts AS ef
+                SET validity = 'superseded',
+                    updated_at = now()
+                FROM ranked
+                WHERE ef.id = ranked.id
+                  AND ranked.rn > 1
+                """,
+                source_id,
+                target_id,
+            )
+
             # Then move the remaining (non-conflicting) active source subject-rows.
             subject_result = await conn.fetchval(
                 """

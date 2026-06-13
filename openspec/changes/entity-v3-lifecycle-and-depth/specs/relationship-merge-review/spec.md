@@ -45,6 +45,22 @@ The relationship schema SHALL gain `relationship.merge_reviews` (DDL home: the `
 - **THEN** a `merge_reviews` row with `outcome = 'dismissed'` MUST be written
 - **AND** the queue MUST stop listing that pair as duplicate-candidate until new shared evidence arises
 
+### Requirement: Merge resolves single-cardinality divergence and preserves temporal coexistence
+
+Executing a merge MUST resolve the `divergent` set rather than carry it forward as two contradictory active rows. Resolution is deterministic and registry-driven (consulting `relationship.entity_predicate_registry.cardinality`); no predicate list is hardcoded and no model participates.
+
+- **Identity store (`relationship.entity_facts`).** For a predicate with `cardinality = 'single'` where the surviving and tombstoned entities each hold an active row with DIFFERENT objects, the merge MUST keep the higher-`conf` row and supersede the loser (`validity = 'superseded'`), consistent with the central-writer assert-path supersession. On equal `conf`, the surviving entity's (target) row is kept. After the merge the survivor MUST hold exactly one active row for that predicate. Multi-valued predicates (`cardinality = 'multi'`) union and are never resolved this way (the three-emails-three-rows rule). `conf` is never mutated — resolution only flips `validity` (per `relationship-entity-lifecycle` conf-immutability).
+- **Narrative store (memory-module `facts`).** Re-pointing narrative facts from the tombstoned entity to the survivor MUST honor `store_fact` temporal-coexistence semantics: only PROPERTY facts (`valid_at IS NULL`) for the same `(entity_id, scope, predicate)` key resolve by confidence (higher-`conf` wins, loser superseded); TEMPORAL facts (`valid_at IS NOT NULL`) always coexist as independent active rows and MUST NOT be superseded by — nor supersede — any other fact (property or temporal). A merge MUST NOT collapse coexisting `valid_at` rows.
+
+#### Scenario: Single-cardinality conflict resolves to one active row
+- **WHEN** two entities holding different `has-birthday` objects (`cardinality = 'single'`) are merged
+- **THEN** the survivor MUST hold exactly one active `has-birthday` row — the higher-`conf` value (tie → survivor's own value)
+- **AND** the losing row MUST be `superseded`, not left active and not deleted
+
+#### Scenario: Temporal narrative facts coexist across merge
+- **WHEN** the surviving and tombstoned entities each hold a temporal narrative fact for the same predicate but different `valid_at`
+- **THEN** both temporal rows MUST remain active on the survivor after the merge (no collapse, no supersession)
+
 ### Requirement: Single-pair review UX
 
 The review flow SHALL be reachable from these enumerated entry points, and no others: (1) the queue's duplicate-candidate card (its merge action opens the compare view for that pair); (2) the Workbench duplicate warning panel and "shares identifiers with" hint (per `dashboard-relationship`); (3) the Index bulk gutter's merge action, enabled only when exactly two rows are selected; (4) the detail page's `m` key when duplicate evidence exists for the entity; (5) the queue's unidentified-card merge action (standing queue requirement), which opens the compare view for the unidentified entity and an owner-selected target entity. Every entry point routes through the same compare view. The compare view renders the structural diff two-column with shared evidence and divergences grouped; its commit actions are `merge` (choosing the surviving entity) and `dismiss`. Among dashboard entity-merge surfaces, there is no path that merges more than one pair at a time, and no merge without the compare view having been shown. Additionally, `POST /api/relationship/entities/{id}/merge` itself MUST write a `merge_reviews` audit row regardless of entry path, so merges executed outside the dashboard flow (e.g. session-side tooling) still leave history; when no compare context exists, the merge endpoint computes the shared/divergent snapshot server-side at merge time.
