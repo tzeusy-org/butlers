@@ -24,11 +24,17 @@ no spawner), but can be overridden via
 available in-process (e.g. embedded use, tests).
 
 When ``_get_dispatch_fn`` returns a callable the row is created with status
-``investigating`` and the dispatch callable is scheduled as a background task.
+``investigating``, the dispatch callable is scheduled as a background task, and
+the response reports ``dispatched=true``.
 
-When ``_get_dispatch_fn`` returns ``None`` the row is created with status
-``investigating`` and the workflow deadline watchdog will handle it if no agent
-is spawned within the allotted time (``dispatch_pending`` was removed in core_066).
+When ``_get_dispatch_fn`` returns ``None`` (the typical dashboard deployment)
+the row is created with status ``investigating`` but NO agent is spawned, and
+the response reports ``dispatched=false`` with a truthful ``detail`` message.
+The daemon does not adopt orphan rows during normal runtime — it only reaps
+them as ``timeout``/``failed`` on restart via ``recover_stale_attempts`` — so
+the retry does not progress until a daemon-side dispatch path is wired (see the
+follow-up bead recommended in bu-cnvg7.2).  Callers MUST surface ``dispatched``
+honestly instead of claiming the investigation was re-dispatched.
 
 Callers that override ``_get_dispatch_fn`` must return an async callable
 conforming to ``DispatchCallable`` (see class definition below).
@@ -143,11 +149,23 @@ class CircuitBreakerStatus(BaseModel):
 
 
 class RetryResponse(BaseModel):
-    """Response from a retry request."""
+    """Response from a retry request.
+
+    ``dispatched`` reports whether a healing agent was actually scheduled to
+    spawn.  It is ``True`` only when an in-process dispatch callable was
+    available (via ``_get_dispatch_fn`` override) and was invoked.  In the
+    typical dashboard deployment the dashboard API runs in a separate process
+    from the butler daemon and has no spawner, so ``dispatched`` is ``False``:
+    the row is merely queued (status ``investigating``) and the daemon must
+    pick it up.  Clients MUST NOT claim an investigation was re-dispatched when
+    ``dispatched`` is ``False`` — that was the bug fixed in bu-cnvg7.2.
+    """
 
     attempt_id: uuid.UUID
     fingerprint: str
     status: str
+    dispatched: bool
+    detail: str
 
 
 # ---------------------------------------------------------------------------
@@ -448,23 +466,30 @@ async def retry_healing_attempt(
             new_attempt_id,
             fingerprint[:12],
         )
+        dispatched = True
+        detail = "Investigation re-dispatched."
     else:
         # No in-process dispatch available (dashboard API is a separate process
-        # from the butler daemon).  The row is created as 'investigating'; the
-        # daemon will pick it up via the per-phase watchdog if no agent is
-        # spawned within the workflow deadline.
+        # from the butler daemon).  The row is created as 'investigating' but NO
+        # agent is spawned here.  The daemon does not adopt orphan rows during
+        # normal runtime, so the investigation only progresses if a daemon-side
+        # dispatch path is wired (future work).  We MUST report dispatched=False
+        # so the UI does not falsely claim the investigation was re-dispatched.
         logger.warning(
             "No dispatch function available for retry attempt=%s; "
-            "row created with status='investigating'. "
-            "The butler daemon will handle this via the workflow deadline watchdog. "
+            "row queued with status='investigating' but NO agent spawned. "
             "Override _get_dispatch_fn dependency to enable immediate dispatch.",
             new_attempt_id,
         )
+        dispatched = False
+        detail = "Retry queued — no agent dispatched (daemon dispatch not wired)."
 
     return RetryResponse(
         attempt_id=new_row["id"],
         fingerprint=new_row["fingerprint"],
         status=new_row["status"],
+        dispatched=dispatched,
+        detail=detail,
     )
 
 

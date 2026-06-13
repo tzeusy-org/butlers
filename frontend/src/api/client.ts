@@ -4601,6 +4601,14 @@ export interface RetryHealingAttemptResponse {
   attempt_id: string;
   fingerprint: string;
   status: string;
+  /**
+   * Whether a healing agent was actually scheduled to spawn. False in the
+   * typical dashboard deployment (no in-process spawner) — the row is merely
+   * queued. Do NOT claim the investigation was re-dispatched when false.
+   */
+  dispatched: boolean;
+  /** Truthful human-readable summary of what happened. */
+  detail: string;
 }
 
 /** POST /api/healing/attempts/:id/retry — create a new attempt for the same fingerprint */

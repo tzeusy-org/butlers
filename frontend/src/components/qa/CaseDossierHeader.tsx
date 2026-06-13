@@ -101,7 +101,13 @@ export function CaseDossierHeader({
                 retryAttempt.mutate(
                   String(qaCase.id),
                   {
-                    onSuccess: () => toast.success("Investigation re-dispatched."),
+                    onSuccess: (data) =>
+                      data.dispatched
+                        ? toast.success("Investigation re-dispatched.")
+                        : toast.message("Retry queued.", {
+                            description:
+                              "Awaiting daemon dispatch — no investigation agent was spawned yet.",
+                          }),
                     onError: (err) =>
                       toast.error(`Retry failed: ${err instanceof Error ? err.message : "Unknown error"}`),
                   },

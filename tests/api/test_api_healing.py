@@ -20,7 +20,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.healing import _get_db_manager
+from butlers.api.routers.healing import _get_db_manager, _get_dispatch_fn
 
 pytestmark = pytest.mark.unit
 
@@ -184,3 +184,99 @@ async def test_get_attempt_detail_404():
     ) as client:
         resp = await client.get(f"/api/healing/attempts/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Retry dispatch (bu-cnvg7.2)
+#
+# The retry endpoint previously *always* claimed an investigation was
+# re-dispatched even though no agent was ever spawned in the typical dashboard
+# deployment (no in-process spawner → _get_dispatch_fn returns None). These
+# tests pin the two truths:
+#   1. With NO dispatch fn: response reports dispatched=False (no agent spawned).
+#   2. With a dispatch fn override: the dispatch callable is actually invoked
+#      with the new attempt's metadata, and the response reports dispatched=True.
+# ---------------------------------------------------------------------------
+
+
+def _retry_fetchrow_sequence(
+    *,
+    original_status: str = "failed",
+) -> list[Any]:
+    """Build the 3-call fetchrow sequence the retry path consumes.
+
+    1. get_attempt(original)   -> the original (terminal) attempt row
+    2. get_active_attempt(fp)  -> None (no active row for the fingerprint)
+    3. INSERT ... RETURNING     -> the freshly-created attempt row
+    """
+    original = _make_attempt_row(status=original_status)
+    new_id = uuid.uuid4()
+    inserted = {
+        "id": new_id,
+        "fingerprint": original["fingerprint"],
+        "status": "investigating",
+    }
+    return [_MockRecord(original), None, _MockRecord(inserted)]
+
+
+async def test_retry_without_dispatch_fn_reports_not_dispatched():
+    """Default deployment: no spawner → retry must NOT claim re-dispatch."""
+    app, mock_pool = _build_app()
+    mock_pool.fetchrow = AsyncMock(side_effect=_retry_fetchrow_sequence())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
+
+    assert resp.status_code == 201
+    body = resp.json()
+    # The bug: response used to omit `dispatched` and the UI always claimed
+    # "Investigation re-dispatched." Now the API tells the truth.
+    assert body["dispatched"] is False
+    assert "re-dispatched" not in body["detail"].lower()
+    assert body["status"] == "investigating"
+
+
+async def test_retry_with_dispatch_fn_invokes_dispatch_and_reports_dispatched():
+    """When a dispatch callable is wired, it MUST actually be invoked."""
+    app, mock_pool = _build_app()
+    seq = _retry_fetchrow_sequence()
+    mock_pool.fetchrow = AsyncMock(side_effect=seq)
+    new_attempt_id = seq[2]["id"]
+    fingerprint = seq[2]["fingerprint"]
+
+    spy = AsyncMock()
+    app.dependency_overrides[_get_dispatch_fn] = lambda: spy
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["dispatched"] is True
+
+    # The regression assertion: the dispatch fn was actually called (spawned),
+    # with the NEW attempt's id and fingerprint — not a silent no-op.
+    spy.assert_awaited_once()
+    _, kwargs = spy.await_args
+    assert kwargs["attempt_id"] == new_attempt_id
+    assert kwargs["fingerprint"] == fingerprint
+    assert kwargs["butler_name"] == "general"
+
+
+async def test_retry_rejects_non_terminal_attempt():
+    """Retry on an still-active attempt is a 409 (no row created, no dispatch)."""
+    app, mock_pool = _build_app()
+    mock_pool.fetchrow = AsyncMock(
+        return_value=_MockRecord(_make_attempt_row(status="investigating"))
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
+
+    assert resp.status_code == 409
