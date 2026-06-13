@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -300,7 +301,7 @@ async def test_scanner() -> None:
                 __aexit__=AsyncMock(return_value=None),
             )
         )
-        mock_conn.fetch = AsyncMock(return_value=rows)
+        mock_conn.fetch = AsyncMock(side_effect=[rows, []])
         if execute:
             mock_conn.execute = AsyncMock()
         return mock_pool, mock_conn
@@ -345,6 +346,93 @@ async def test_scanner() -> None:
     mock_conn5.fetch = AsyncMock(side_effect=RuntimeError("DB error"))
     buf5 = DurableBuffer(config=_make_config(), pool=mock_pool5, process_fn=AsyncMock())
     assert await buf5._run_scanner_sweep() == 0
+
+
+async def test_scanner_fetches_accepted_and_expired_processing_rows_separately() -> None:
+    """Scanner recovery uses index-friendly lifecycle-specific queries."""
+
+    def _make_row(
+        request_id: str,
+        normalized_text: str,
+        policy_tier: str = POLICY_TIER_DEFAULT,
+        *,
+        received_at: datetime | None = None,
+    ) -> MagicMock:
+        row = MagicMock()
+        row.__getitem__ = lambda self, key: {
+            "id": request_id,
+            "received_at": received_at or datetime.now(UTC) - timedelta(minutes=5),
+            "request_context": {"request_id": request_id},
+            "raw_payload": {
+                "source": {"channel": "telegram", "endpoint_identity": "bot"},
+                "event": {"observed_at": "2026-02-18T12:00:00Z"},
+                "sender": {"identity": "u1"},
+                "control": {"policy_tier": policy_tier},
+            },
+            "normalized_text": normalized_text,
+        }[key]
+        return row
+
+    accepted_row = _make_row(
+        "accepted",
+        "hello",
+        received_at=datetime(2026, 2, 18, 12, 0, tzinfo=UTC),
+    )
+    processing_row = _make_row(
+        "processing",
+        "stuck",
+        received_at=datetime(2026, 2, 18, 11, 0, tzinfo=UTC),
+    )
+    mock_pool = MagicMock()
+    mock_conn = AsyncMock()
+    mock_pool.acquire = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock(return_value=None),
+        )
+    )
+    mock_conn.fetch = AsyncMock(side_effect=[[accepted_row], [processing_row]])
+
+    buf = DurableBuffer(
+        config=_make_config(scanner_batch_size=3), pool=mock_pool, process_fn=AsyncMock()
+    )
+
+    assert await buf._run_scanner_sweep() == 2
+
+    assert mock_conn.fetch.await_count == 2
+    accepted_sql = mock_conn.fetch.await_args_list[0].args[0].lower()
+    processing_sql = mock_conn.fetch.await_args_list[1].args[0].lower()
+    assert "lifecycle_state = 'accepted'" in accepted_sql
+    assert "updated_at" not in accepted_sql
+    assert " or " not in accepted_sql
+    assert "lifecycle_state = 'processing'" in processing_sql
+    assert "updated_at" in processing_sql
+    assert " or " not in processing_sql
+    assert mock_conn.fetch.await_args_list[1].args[2] == 2
+
+
+async def test_scanner_db_timeout_warns_without_actionable_error(caplog) -> None:
+    """Transient DB timeouts are retried later without creating ERROR log findings."""
+    mock_pool = MagicMock()
+    mock_conn = AsyncMock()
+    mock_pool.acquire = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock(return_value=None),
+        )
+    )
+    mock_conn.fetch = AsyncMock(side_effect=TimeoutError)
+    buf = DurableBuffer(config=_make_config(), pool=mock_pool, process_fn=AsyncMock())
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.buffer"):
+        assert await buf._run_scanner_sweep() == 0
+
+    assert any(
+        record.levelno == logging.WARNING
+        and record.message == "Buffer scanner DB query timed out; will retry on next sweep"
+        for record in caplog.records
+    )
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------
