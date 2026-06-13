@@ -88,14 +88,14 @@ These tables power identity resolution for all ingress routing (Switchboard reve
 
 ### Runtime Config Architecture
 
-Butler operational config (model, concurrency, core_groups, session timeout) follows a seed-and-manage pattern:
+Butler operational config (concurrency, core_groups) follows a seed-and-manage pattern:
 
 - **`[butler.runtime_seed]`** in `butler.toml` provides initial defaults (seed). This section replaces the old `[butler.runtime]` and `[butler.seed_configs]`.
-- **`{schema}.runtime_config`** DB table is the runtime source of truth, seeded from toml on first boot.
+- **`{schema}.runtime_config`** DB table is the runtime source of truth, seeded from toml on first boot. It holds only **`core_groups`, `max_concurrent`, `max_queued`** — all cold fields requiring a daemon restart to take effect.
 - **`RuntimeConfigAccessor`** (`src/butlers/core/runtime_config.py`) provides TTL-cached access (30s) to the DB table.
-- **Hot fields** (model, runtime_type, args, session_timeout_s) take effect within 30s without restart.
-- **Cold fields** (core_groups, max_concurrent, max_queued) require daemon restart.
 - **Dashboard API** at `GET/PATCH /api/butlers/{name}/runtime-config` reads/writes the DB table.
+
+**Model / runtime / session_timeout config lives elsewhere.** As of migration `core_073`, `model`, `runtime_type`, `args`, and `session_timeout_s` were moved OFF `runtime_config` ONTO **`public.model_catalog`** (`session_timeout_s INT NOT NULL DEFAULT 1800`). These are resolved per **complexity tier** by `src/butlers/core/model_routing.py` (`resolve_model()` returns the catalog entry id and `session_timeout_s` for the chosen tier) and edited via the **Models tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`), not the runtime-config surface.
 
 ### Butler Config Directory (git-based, `roster/`)
 
