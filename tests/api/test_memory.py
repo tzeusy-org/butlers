@@ -1303,6 +1303,72 @@ async def test_inspect_all_kinds_each_carry_their_register_payload(app):
     assert by_kind["episode"]["episode"] is not None
 
 
+class _InspectEntityPool(_InspectPool):
+    """``_InspectPool`` that also resolves ``public.entities`` name lookups.
+
+    The base pool returns ``[]`` for the entity-resolution query (no linked
+    entities).  This variant returns the configured entity rows so the inspect
+    handler's ``_resolve_entity_names`` pass populates ``entity_name`` /
+    ``object_entity_name`` on the embedded fact, exactly like GET /facts.
+    """
+
+    def __init__(self, *, entities: dict[uuid.UUID, str], **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._entities = entities
+
+    async def fetch(self, query: str, *args: object):
+        self.fetch_calls.append((query, args))
+        if "FROM public.entities" in query:
+            requested = set(args[0])
+            return [
+                _make_record({"id": eid, "canonical_name": name})
+                for eid, name in self._entities.items()
+                if eid in requested
+            ]
+        if "FROM episodes" in query:
+            return self._episodes
+        if "FROM facts" in query:
+            return self._facts
+        if "FROM rules" in query:
+            return self._rules
+        return []
+
+
+async def test_inspect_fact_result_resolves_embedded_entity_names(app):
+    """An inspect fact whose embedded fact has entity_id/object_entity_id gets
+    entity_name/object_entity_name resolved, mirroring GET /facts (#2199)."""
+    fact_id = uuid.uuid4()
+    subject_entity_id = uuid.uuid4()
+    object_entity_id = uuid.uuid4()
+    row = _make_fact_row(fact_id=fact_id)
+    row["entity_id"] = subject_entity_id
+    row["object_entity_id"] = object_entity_id
+    pool = _InspectEntityPool(
+        facts=[row],
+        entities={subject_entity_id: "Owner", object_entity_id: "Green Tea"},
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect", params={"kind": "fact"})
+
+    assert resp.status_code == 200
+    results = resp.json()["data"]
+    assert len(results) == 1
+    embedded = results[0]["fact"]
+    assert embedded is not None
+    # The embedded ids carry through, and the resolver populated the names.
+    assert embedded["entity_id"] == str(subject_entity_id)
+    assert embedded["object_entity_id"] == str(object_entity_id)
+    assert embedded["entity_name"] == "Owner"
+    assert embedded["object_entity_name"] == "Green Tea"
+    # The resolution actually queried public.entities (not a hardcoded value).
+    entity_fetches = [c for c in pool.fetch_calls if "FROM public.entities" in c[0]]
+    assert entity_fetches
+
+
 # ---------------------------------------------------------------------------
 # GET /api/memory/facts/{fact_id} — superseded_by reverse lookup (bu-awo8k.8)
 # ---------------------------------------------------------------------------
