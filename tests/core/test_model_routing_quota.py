@@ -21,10 +21,64 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from butlers.core.model_routing import QuotaStatus, check_token_quota, record_token_usage
+from butlers.core.model_routing import (
+    CeilingStatus,
+    QuotaStatus,
+    check_monthly_ceiling,
+    check_token_quota,
+    record_token_usage,
+)
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
+
+
+@pytest.mark.unit
+async def test_check_monthly_ceiling_unit_behaviors() -> None:
+    """check_monthly_ceiling: fast path, over/under pricing, and fail-open."""
+    # No ceiling row → unlimited fast path; ledger is never queried.
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock()
+    result = await check_monthly_ceiling(pool)
+    assert result == CeilingStatus(allowed=True, mtd_usd=0.0, ceiling_usd=None)
+    pool.fetch.assert_not_called()
+
+    # Non-positive ceiling is treated as "no ceiling configured".
+    pool_zero = MagicMock()
+    pool_zero.fetchrow = AsyncMock(return_value={"monthly_usd": 0})
+    pool_zero.fetch = AsyncMock()
+    result_zero = await check_monthly_ceiling(pool_zero)
+    assert result_zero.allowed is True and result_zero.ceiling_usd is None
+    pool_zero.fetch.assert_not_called()
+
+    # Ceiling configured; price the ledger via estimate_session_cost.
+    usage_rows = [{"model_id": "claude-haiku", "input_tokens": 1000, "output_tokens": 500}]
+
+    # Under ceiling → allowed.
+    pool_under = MagicMock()
+    pool_under.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
+    pool_under.fetch = AsyncMock(return_value=usage_rows)
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+        under = await check_monthly_ceiling(pool_under)
+    assert under.allowed is True and under.mtd_usd == 42.0 and under.ceiling_usd == 100.0
+
+    # Over ceiling → blocked.
+    pool_over = MagicMock()
+    pool_over.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
+    pool_over.fetch = AsyncMock(return_value=usage_rows)
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=150.0):
+        over = await check_monthly_ceiling(pool_over)
+    assert over.allowed is False and over.mtd_usd == 150.0 and over.ceiling_usd == 100.0
+
+    # Fail-open on DB error.
+    pool_err = MagicMock()
+    pool_err.fetchrow = AsyncMock(side_effect=RuntimeError("connection refused"))
+    with patch("butlers.core.model_routing.logger") as mock_logger:
+        err = await check_monthly_ceiling(pool_err)
+    assert err.allowed is True and err.ceiling_usd is None
+    mock_logger.warning.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Unit tests — no DB required

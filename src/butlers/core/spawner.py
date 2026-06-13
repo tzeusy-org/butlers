@@ -58,6 +58,7 @@ from butlers.core.mcp_urls import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
+    check_monthly_ceiling,
     check_token_quota,
     next_same_tier_candidate,
     record_token_usage,
@@ -1781,6 +1782,44 @@ class Spawner:
                 catalog_entry_id = next_entry_id
                 catalog_timeout_s = next_timeout_s
                 # Loop again to check quota for the new candidate.
+
+        # ---------------------------------------------------------------------------
+        # Monthly spend-ceiling enforcement
+        #
+        # Independent of (and in addition to) the per-catalog-entry token quota above:
+        # block the spawn when month-to-date spend has reached the configured monthly
+        # USD ceiling.  Unlike the token quota — which is per-model and can be skipped
+        # to a same-tier fallback — the ceiling is a global budget, so exceeding it is
+        # a hard block regardless of which model resolved (switching models would not
+        # bring spend back under budget).  Reuses the quota denial path: a
+        # ``quota_skip`` dispatch-attempt row (so the denial is observable in
+        # provenance) plus a failed SpawnerResult.  Fails open inside
+        # check_monthly_ceiling, so a DB/pricing error never wedges spawns.
+        # ---------------------------------------------------------------------------
+        if catalog_entry_id is not None and self._pool is not None:
+            ceiling = await check_monthly_ceiling(self._pool)
+            if not ceiling.allowed:
+                ceiling_msg = (
+                    "Monthly spend ceiling reached: "
+                    f"month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
+                    f"${ceiling.ceiling_usd:.2f}"
+                )
+                logger.warning(
+                    "Spawn blocked by monthly spend ceiling for butler=%s: %s",
+                    self._config.name,
+                    ceiling_msg,
+                )
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome="quota_skip",
+                    attempt_index=len(_attempted_ids),
+                    failure_reason=ceiling_msg,
+                    tool_call_count=0,
+                    logical_session_id=effective_request_id,
+                )
+                return SpawnerResult(success=False, error=ceiling_msg, model=model)
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         provider_config = await self._resolve_provider_config(model)
