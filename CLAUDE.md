@@ -155,17 +155,17 @@ tests/               # pytest tests
 
 ## Issue Tracking (Beads)
 
-This project uses `bd` (beads) for issue tracking with SQLite DB mode (`no-db: false`) and a `beads-sync` branch for protected-branch compatibility.
+This project uses `bd` (beads, v1.0.x) for issue tracking. The backend is the
+**shared Dolt server** on `127.0.0.1:3307` (database `butlers`), discovered via
+`.beads/metadata.json` (`dolt_mode: server`).
 
-**Data flow:** `bd create/update/close` write to SQLite only. Run `bd export -o .beads/issues.jsonl` to flush DB → main JSONL. Run `bd sync` to commit main JSONL → `beads-sync` branch. Run `bd sync --merge` to merge `beads-sync` → `main`.
-
-**Key gotcha:** `bd sync` does NOT auto-export from DB to main JSONL. Without a prior `bd export`, it syncs stale JSONL. Always `bd export` before `bd sync`.
-
-**If SQLite becomes corrupt:** delete `.beads/beads.db` and run `bd init` to reimport from JSONL, then run the DB repair below. `bd init` imports issues but can leave `dependencies.metadata` and `dependencies.thread_id` columns with empty strings that break the blocked_issues_cache rebuild (`sqlite3: SQL logic error: malformed JSON`). Fix with:
-```sql
-UPDATE dependencies SET metadata = NULL WHERE metadata = '';
-UPDATE dependencies SET thread_id = NULL WHERE thread_id = '';
-```
+**Data flow:** `bd create/update/close` write directly to Dolt and auto-commit to
+its history — there is **no `bd sync` step** (that subcommand does not exist in
+this bd version). To refresh the git-tracked JSONL mirror, run
+`bd export -o .beads/issues.export.jsonl`. **Never create `.beads/issues.jsonl`** —
+on bd 1.0.4 server mode its presence triggers a full-file re-import on every write
+that can wedge bd town-wide; the mirror lives at `.beads/issues.export.jsonl`
+(see `export.path` in `.beads/config.yaml`).
 
 See `AGENTS.md` for full beads workflow details.
 

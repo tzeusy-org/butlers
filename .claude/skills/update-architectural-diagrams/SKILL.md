@@ -205,7 +205,7 @@ Use `/beads-writer` conventions:
 
 1. `bd dep tree <epic-id>` — confirm structure
 2. `bd ready | grep <epic-prefix>` — confirm children are unblocked
-3. `bd export -o .beads/issues.jsonl && bd sync` — persist
+3. Bead mutations already auto-commit to the shared Dolt server — no sync step. (Optionally `bd export -o .beads/issues.export.jsonl` to refresh the git-tracked mirror.)
 
 > **Merge policy:** If a worker's changes are exclusively docs/diagram files
 > (`.excalidraw`, `docs/`), a direct commit + push to `main` is fine — no PR

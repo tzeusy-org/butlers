@@ -170,7 +170,7 @@ may already account for it.
 
 ### Beads Creation Safety
 - Create child beads sequentially (`&&`-chained), never in parallel
-- Run `bd sync` between unrelated batches
+- Mutations auto-commit to the shared Dolt server — there is no `bd sync` step
 - Use `bd dep add` after creation, not `--deps` flag
 - See CLAUDE.md "Beads CLI Gotchas" for full list
 

@@ -25,18 +25,21 @@ bd show <issue-id>
 # Update issue status
 bd update <issue-id> --status in_progress
 bd update <issue-id> --status done
-
-# Sync with git remote
-bd sync
 ```
+
+> **This repo's setup:** `bd` v1.0.x runs against the shared **Dolt server**
+> (`127.0.0.1:3307`, db `butlers`). Mutations auto-commit to Dolt — there is **no
+> `bd sync` command** and no SQLite. The git-tracked mirror is
+> `.beads/issues.export.jsonl` (refresh with `bd export`); never create
+> `.beads/issues.jsonl`. See the repo `AGENTS.md` / `CLAUDE.md` for details.
 
 ### Working with Issues
 
 Issues in Beads are:
-- **Git-native**: Stored in `.beads/issues.jsonl` and synced like code
+- **Dolt-backed**: Mutations persist immediately to the shared Dolt server; the
+  `.beads/issues.export.jsonl` mirror is what git tracks.
 - **AI-friendly**: CLI-first design works perfectly with AI coding agents
 - **Branch-aware**: Issues can follow your branch workflow
-- **Always in sync**: Auto-syncs with your commits
 
 ## Why Beads?
 
