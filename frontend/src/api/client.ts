@@ -54,6 +54,7 @@ import type {
   GroupParams,
   HealthResponse,
   Issue,
+  DismissIssueResult,
   Label,
   CursorPaginatedResponse,
   AckFailedResult,
@@ -671,6 +672,16 @@ export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
 /** Fetch grouped issues across all butlers. */
 export function getIssues(): Promise<ApiResponse<Issue[]>> {
   return apiFetch<ApiResponse<Issue[]>>("/issues");
+}
+
+/** Dismiss (ack) an issue group server-side so it persists across browsers. */
+export function dismissIssue(
+  issueKey: string,
+): Promise<ApiResponse<DismissIssueResult>> {
+  return apiFetch<ApiResponse<DismissIssueResult>>("/issues/dismiss", {
+    method: "POST",
+    body: JSON.stringify({ issue_key: issueKey }),
+  });
 }
 
 // ---------------------------------------------------------------------------

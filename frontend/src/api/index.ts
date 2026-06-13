@@ -93,6 +93,7 @@ export {
   getFacts,
   getHealth,
   getIssues,
+  dismissIssue,
   getMemoryActivity,
   getMemoryCompactionLog,
   getMemoryRetentionPolicies,

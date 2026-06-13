@@ -1,8 +1,9 @@
 import IssuesPanel from "@/components/issues/IssuesPanel";
-import { useIssues } from "@/hooks/use-issues";
+import { useDismissIssue, useIssues } from "@/hooks/use-issues";
 
 export default function IssuesPage() {
-  const { data, isLoading } = useIssues();
+  const { data, isLoading, isError } = useIssues();
+  const dismiss = useDismissIssue();
   const issues = data?.data ?? [];
 
   return (
@@ -14,7 +15,13 @@ export default function IssuesPage() {
         </p>
       </div>
 
-      <IssuesPanel issues={issues} isLoading={isLoading} />
+      <IssuesPanel
+        issues={issues}
+        isLoading={isLoading}
+        isError={isError}
+        onDismiss={(issueKey) => dismiss.mutate(issueKey)}
+        isDismissing={dismiss.isPending}
+      />
     </div>
   );
 }

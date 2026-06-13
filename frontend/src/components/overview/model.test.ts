@@ -33,6 +33,7 @@ function issue(overrides: Partial<Issue> = {}): Issue {
     first_seen_at: "2026-05-14T10:00:00.000Z",
     last_seen_at: "2026-05-14T11:00:00.000Z",
     occurrences: 1,
+    issue_key: "runtime::general",
     ...overrides,
   };
 }

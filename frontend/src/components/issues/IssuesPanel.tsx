@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react'
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
 import { Badge } from '../ui/badge'
@@ -7,36 +6,23 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { EmptyState } from '../ui/empty-state'
 import type { Issue } from '../../api/types'
 
-const DISMISSED_KEY = 'butlers-dismissed-issues'
-
-function getDismissedIssues(): Set<string> {
-  try {
-    const raw = localStorage.getItem(DISMISSED_KEY)
-    if (raw) return new Set(JSON.parse(raw))
-  } catch {
-    // ignore
-  }
-  return new Set()
-}
-
-function issueKey(issue: Issue): string {
-  return `${issue.type}:${issue.error_message ?? issue.description}`
-}
-
 interface IssuesPanelProps {
   issues: Issue[]
   isLoading?: boolean
+  isError?: boolean
+  /** Called with an issue's stable key when the user dismisses it. */
+  onDismiss?: (issueKey: string) => void
+  /** Disables the Dismiss control while a dismissal is in flight. */
+  isDismissing?: boolean
 }
 
-export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
-  const [dismissed, setDismissed] = useState<Set<string>>(() => getDismissedIssues())
-
-  useEffect(() => {
-    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed]))
-  }, [dismissed])
-
-  const visibleIssues = issues.filter(i => !dismissed.has(issueKey(i)))
-
+export default function IssuesPanel({
+  issues,
+  isLoading,
+  isError,
+  onDismiss,
+  isDismissing,
+}: IssuesPanelProps) {
   if (isLoading) {
     return (
       <Card>
@@ -54,7 +40,23 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
     )
   }
 
-  if (visibleIssues.length === 0) {
+  if (isError) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Issues</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <EmptyState
+            title="Could not load issues."
+            description="The issues feed is unavailable right now. Retrying automatically; check the backend if this persists."
+          />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (issues.length === 0) {
     return (
       <Card>
         <CardHeader>
@@ -70,21 +72,17 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
     )
   }
 
-  const dismiss = (issue: Issue) => {
-    setDismissed(prev => new Set([...prev, issueKey(issue)]))
-  }
-
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Issues</CardTitle>
-        <Badge variant="destructive">{visibleIssues.length}</Badge>
+        <Badge variant="destructive">{issues.length}</Badge>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
-          {visibleIssues.map((issue) => (
+          {issues.map((issue) => (
             <div
-              key={issueKey(issue)}
+              key={issue.issue_key}
               className="flex items-start justify-between gap-3 rounded-md border p-3"
             >
               <div className="flex-1 space-y-1">
@@ -115,7 +113,8 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => dismiss(issue)}
+                  onClick={() => onDismiss?.(issue.issue_key)}
+                  disabled={isDismissing || !onDismiss}
                   className="text-muted-foreground"
                 >
                   Dismiss

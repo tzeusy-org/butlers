@@ -244,6 +244,16 @@ export interface Issue {
   first_seen_at?: string | null;
   last_seen_at?: string | null;
   butlers?: string[];
+  /** Stable, server-computed key identifying this issue group (ack key). */
+  issue_key: string;
+  /** True when this issue has been dismissed (acked) server-side. */
+  dismissed?: boolean;
+}
+
+/** Result of dismissing (acking) an issue group. */
+export interface DismissIssueResult {
+  issue_key: string;
+  dismissed: boolean;
 }
 
 // ---------------------------------------------------------------------------

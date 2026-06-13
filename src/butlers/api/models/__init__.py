@@ -213,6 +213,24 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def compute_issue_key(issue_type: str, butler: str) -> str:
+    """Return a deterministic, persistence-safe key identifying an issue group.
+
+    The key is stable across requests so a server-side dismissal (ack) can be
+    keyed against it:
+
+    - Audit-derived issues already carry a deterministic ``type`` slug that
+      encodes the normalized error message (see ``audit_grouping``), so the
+      ``type`` component alone identifies the group.
+    - Reachability issues all share ``type == "unreachable"``; the ``butler``
+      component disambiguates one unreachable butler from another.
+
+    Multi-butler audit groups use ``butler == "multiple"``, which is itself
+    stable for a given error type, so the composite key stays consistent.
+    """
+    return f"{issue_type}::{butler}"
+
+
 class Issue(BaseModel):
     """Active issue detected across butler infrastructure."""
 
@@ -226,6 +244,20 @@ class Issue(BaseModel):
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
     butlers: list[str] = Field(default_factory=list)
+    dismissed: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def issue_key(self) -> str:
+        """Stable identifier used by the dismissal (ack) store and the UI."""
+        return compute_issue_key(self.type, self.butler)
+
+
+class DismissIssueRequest(BaseModel):
+    """Request body for dismissing (acking) an issue group."""
+
+    issue_key: str
+    dismissed_by: str | None = None
 
 
 # ---------------------------------------------------------------------------
