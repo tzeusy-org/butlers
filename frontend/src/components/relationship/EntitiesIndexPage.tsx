@@ -422,7 +422,7 @@ function MergeTargetPickerDialog({
 }) {
   const [search, setSearch] = useState("");
   const [targetId, setTargetId] = useState<string | null>(null);
-  const { data, isFetching } = useEntityFinderSearch(search, { limit: 8 });
+  const { data, isFetching, isError } = useEntityFinderSearch(search, { limit: 8 });
 
   const candidates = (data?.results ?? []).filter(
     (candidate) => candidate.entity_id !== sourceEntity?.id,
@@ -464,7 +464,12 @@ function MergeTargetPickerDialog({
             }}
           />
           {isFetching && <Skeleton className="h-10 w-full" />}
-          {search.trim() !== "" && candidates.length === 0 && !isFetching && (
+          {search.trim() !== "" && isError && !isFetching && (
+            <p className="text-sm text-destructive" role="alert">
+              Search failed. Try again in a moment.
+            </p>
+          )}
+          {search.trim() !== "" && !isError && candidates.length === 0 && !isFetching && (
             <p className="text-sm text-muted-foreground">No matching entity found.</p>
           )}
           {candidates.length > 0 && (
@@ -584,6 +589,12 @@ interface EntityTableProps {
   onToggleSelect: (id: string) => void;
   /** Keyboard-cursor row index (``-1`` when no row is focused). */
   cursor?: number;
+  /**
+   * True when the active toolbar search query failed (e.g. a 500). Renders an
+   * error state instead of the "no entities found" empty copy so a failed
+   * search is never mistaken for a genuinely empty result set.
+   */
+  searchFailed?: boolean;
 }
 
 function EntityTable({
@@ -594,6 +605,7 @@ function EntityTable({
   selectedIds,
   onToggleSelect,
   cursor = -1,
+  searchFailed = false,
 }: EntityTableProps) {
   if (isLoading) {
     return (
@@ -602,6 +614,15 @@ function EntityTable({
           <Skeleton key={i} className="h-10 w-full" />
         ))}
       </div>
+    );
+  }
+
+  if (searchFailed) {
+    return (
+      <EmptyState
+        title="Search failed."
+        description="The entity search could not be completed. Try again in a moment."
+      />
     );
   }
 
@@ -1090,8 +1111,13 @@ export function EntitiesIndexPage() {
   // Toolbar search: the search endpoint is authoritative for WHICH entities
   // match (same ranking as the Finder); we filter the loaded rows in place to
   // that ranked id set so the table keeps its rich relationship columns.
-  const { data: searchData } = useEntityFinderSearch(searchQuery, { limit: 50 });
+  const { data: searchData, isError: isSearchError } = useEntityFinderSearch(searchQuery, {
+    limit: 50,
+  });
   const isSearching = searchQuery.trim().length > 0;
+  // A failed search must not masquerade as "no entities" — surface the error
+  // distinctly instead of collapsing to the empty state.
+  const searchFailed = isSearching && isSearchError;
   const entities = isSearching
     ? (() => {
         const byId = new Map(allEntities.map((e) => [e.id, e]));
@@ -1345,6 +1371,7 @@ export function EntitiesIndexPage() {
               selectedIds={selectedIds}
               onToggleSelect={toggleSelect}
               cursor={cursor}
+              searchFailed={searchFailed}
             />
           </div>
 

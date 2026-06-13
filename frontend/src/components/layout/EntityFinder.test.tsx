@@ -135,6 +135,14 @@ function mockSearchResults(
   } as UseEntityFinderSearchResult);
 }
 
+function mockSearchError(): void {
+  vi.mocked(useEntityFinderSearch).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as UseEntityFinderSearchResult);
+}
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
@@ -354,6 +362,48 @@ describe("EntityFinder", () => {
       "[data-testid='entity-finder-entity-item']",
     );
     expect(entityItems.length).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+
+  it("surfaces a search error — NOT the 'No results' empty copy — when the query errors", async () => {
+    mockSearchError();
+
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    // A non-empty query is required for the error/empty branches to render.
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "zzznomatch");
+      await flush();
+    });
+
+    const errorBanner = document.body.querySelector(
+      "[data-testid='entity-finder-search-error']",
+    );
+    expect(errorBanner).toBeTruthy();
+    expect(errorBanner?.textContent).toContain("Search failed.");
+    expect(document.body.textContent).not.toContain("No results for");
   });
 
   // -------------------------------------------------------------------------

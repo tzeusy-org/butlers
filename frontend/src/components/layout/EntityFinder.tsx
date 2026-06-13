@@ -280,7 +280,7 @@ export default function EntityFinder() {
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
-  const { data: searchData, isLoading } = useEntityFinderSearch(query, {
+  const { data: searchData, isLoading, isError } = useEntityFinderSearch(query, {
     limit: 8,
   });
 
@@ -453,8 +453,21 @@ export default function EntityFinder() {
           </div>
 
           <Command.List className="max-h-[420px] flex-1 overflow-y-auto p-2">
+            {/* Search error — a failed entity search must surface as an error,
+             * not collapse into the "no results" empty copy. Client-side page
+             * matches (which never hit the network) still render below. */}
+            {!isLoading && !isEmptyQuery && isError && entityResults.length === 0 && (
+              <div
+                className="py-6 text-center text-sm text-destructive"
+                role="alert"
+                data-testid="entity-finder-search-error"
+              >
+                Search failed. Try again in a moment.
+              </div>
+            )}
+
             {/* Empty state */}
-            {!isLoading && !isEmptyQuery && !hasResults && (
+            {!isLoading && !isEmptyQuery && !isError && !hasResults && (
               <Command.Empty className="py-6 text-center text-sm text-muted-foreground">
                 No results for &ldquo;{query}&rdquo;
               </Command.Empty>

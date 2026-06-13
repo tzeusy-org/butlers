@@ -1334,4 +1334,96 @@ describe("EntitiesIndexPage — toolbar search", () => {
       { limit: 50 },
     );
   });
+
+  it("shows a search error — NOT the empty 'No entities found.' — when the search query errors", () => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE, BOB]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+
+    // The search endpoint 500s: collapses to [] but must not lie "no results".
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useEntityFinderSearch>);
+
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+
+    renderPage();
+
+    const input = container.querySelector(
+      "[data-testid='entities-toolbar-search']",
+    ) as HTMLInputElement;
+    act(() => {
+      setter?.call(input, "hatch");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Search failed.");
+    expect(container.textContent).not.toContain("No entities found.");
+  });
+});
+
+describe("EntitiesIndexPage — merge-target picker", () => {
+  beforeEach(() => {
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+  });
+
+  function openPickerAndType(value: string) {
+    renderPage();
+    const mergeButton = container.querySelector(
+      "button[aria-label='Merge Alice Fogg']",
+    ) as HTMLButtonElement;
+    act(() => mergeButton.click());
+
+    // The dialog renders through a portal to document.body.
+    const input = document.body.querySelector(
+      "input[aria-label='Search merge target']",
+    ) as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    act(() => {
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("shows a search error — NOT 'No matching entity found.' — when the picker search errors", () => {
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: undefined,
+      isFetching: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useEntityFinderSearch>);
+
+    openPickerAndType("hatch");
+
+    expect(document.body.textContent).toContain("Search failed.");
+    expect(document.body.textContent).not.toContain("No matching entity found.");
+  });
+
+  it("still shows the empty copy when the picker search genuinely returns no matches", () => {
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: { results: [], total: 0, q: "hatch", limit: 8 },
+      isFetching: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntityFinderSearch>);
+
+    openPickerAndType("hatch");
+
+    expect(document.body.textContent).toContain("No matching entity found.");
+    expect(document.body.textContent).not.toContain("Search failed.");
+  });
 });
