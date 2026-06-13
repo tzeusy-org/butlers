@@ -3008,45 +3008,57 @@ _DUP_DETECTION_PREDICATES = ("has-email", "has-phone")
 
 
 def _dismissed_pair_suppression_sql(entity_id_sql: str, predicate_sql: str, value_sql: str) -> str:
-    """SQL ``NOT EXISTS`` clause suppressing a dismissed duplicate-candidate row.
+    """SQL clause suppressing a duplicate-candidate row only when every peer is dismissed.
 
     A duplicate-candidate row for the entity at ``entity_id_sql`` (e.g. ``e.id``
-    or a bound ``$1``) carrying evidence ``(predicate_sql, value_sql)`` is
-    suppressed iff a peer that shares that value was dismissed against this entity
-    AND the dismissal's ``shared_facts`` snapshot already contains a row with the
-    SAME ``(predicate, object)`` (per ``relationship-entity-lifecycle`` queue
-    derivation + ``relationship-merge-review`` dismissal-suppression). New shared
-    evidence — a ``{predicate, shared_value}`` NOT in the snapshot — is not
-    suppressed, so the pair re-raises on new evidence.
+    or a bound ``$1``) carrying evidence ``(predicate_sql, value_sql)`` represents
+    that entity's membership in the dup group for that value. The group can have
+    more than one peer (entity X may share value V with both Y and Z). The row is
+    suppressed iff **every** current peer that shares this exact value with the
+    entity has a dismissed ``merge_reviews`` row against the entity whose
+    ``shared_facts`` snapshot already covered this ``(predicate, object)`` (per
+    ``relationship-entity-lifecycle`` queue derivation +
+    ``relationship-merge-review`` dismissal-suppression).
 
-    The clause is deterministic and order-independent on the pair: it checks both
-    ``(entity_a, entity_b)`` column orderings against the peer set.
+    Suppression is therefore keyed on the **peer pair**, not on the entity x
+    evidence. If even one peer sharing the value is undismissed (or its dismissal
+    snapshot did not cover this ``(predicate, value)``), the row MUST surface — so
+    dismissing X-Y never hides a still-live X-Z candidate for the same value, and
+    new shared evidence re-raises the pair.
+
+    The clause is deterministic and order-independent on the pair: each peer is
+    matched against both ``(entity_a, entity_b)`` column orderings.
     """
     return f"""
-        NOT EXISTS (
+        EXISTS (
+            -- A peer that shares this exact value with the entity but has NOT
+            -- been dismissed against it (for this {{predicate, value}}). The
+            -- presence of any such peer keeps the row in the queue; only when
+            -- every sharing peer is dismissed (or there is no sharing peer at
+            -- all) does this clause evaluate false and suppress the row.
             SELECT 1
-            FROM relationship.merge_reviews mr
-            WHERE mr.outcome = 'dismissed'
-              AND (
-                  mr.entity_a = {entity_id_sql}
-                  OR mr.entity_b = {entity_id_sql}
-              )
-              -- The other side of the dismissed pair must be a current peer that
-              -- shares this exact value with the entity.
-              AND EXISTS (
-                  SELECT 1 FROM relationship.entity_facts peer_f
-                  WHERE peer_f.predicate = {predicate_sql}
-                    AND peer_f.object = {value_sql}
-                    AND peer_f.validity = 'active'
-                    AND peer_f.subject <> {entity_id_sql}
-                    AND (peer_f.subject = mr.entity_a OR peer_f.subject = mr.entity_b)
-              )
-              -- The dismissal snapshot already covered this {{predicate, value}}.
-              AND EXISTS (
+            FROM relationship.entity_facts peer_f
+            WHERE peer_f.predicate = {predicate_sql}
+              AND peer_f.object = {value_sql}
+              AND peer_f.validity = 'active'
+              AND peer_f.subject <> {entity_id_sql}
+              AND NOT EXISTS (
                   SELECT 1
-                  FROM jsonb_array_elements(mr.shared_facts) AS sf
-                  WHERE sf->>'predicate' = {predicate_sql}
-                    AND sf->>'object' = {value_sql}
+                  FROM relationship.merge_reviews mr
+                  WHERE mr.outcome = 'dismissed'
+                    -- The dismissal must be between this entity and this peer,
+                    -- in either column ordering.
+                    AND (
+                        (mr.entity_a = {entity_id_sql} AND mr.entity_b = peer_f.subject)
+                        OR (mr.entity_a = peer_f.subject AND mr.entity_b = {entity_id_sql})
+                    )
+                    -- The dismissal snapshot already covered this {{predicate, value}}.
+                    AND EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements(mr.shared_facts) AS sf
+                        WHERE sf->>'predicate' = {predicate_sql}
+                          AND sf->>'object' = {value_sql}
+                    )
               )
         )
     """
