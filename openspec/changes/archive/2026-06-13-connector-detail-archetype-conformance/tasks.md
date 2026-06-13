@@ -1,3 +1,9 @@
+> ⛔ **WITHDRAWN — SUPERSEDED (2026-06-13, bead `bu-kondu`).** These tasks are
+> obsolete: `ConnectorDetailPage` was redesigned off the `<DetailPage>` archetype
+> onto the Dispatch console layout (PRs #1941, #1956). The delta was never synced
+> into `connector-base-spec`. See `proposal.md` for the full withdrawal rationale.
+> No task here will be completed. Preserved for history only.
+
 ## 1. Spec Authoring
 
 - [x] 1.1 Decide ConnectorDetailPage spec home (connector-base-spec chosen; see proposal.md).

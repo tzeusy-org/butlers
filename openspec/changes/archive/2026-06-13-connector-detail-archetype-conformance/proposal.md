@@ -1,3 +1,40 @@
+> # ⛔ WITHDRAWN — SUPERSEDED BY THE INGESTION DISPATCH-CONSOLE REDESIGN
+>
+> **Status:** Archived as obsolete on 2026-06-13 (bead `bu-kondu`). This change
+> was **never synced** into `openspec/specs/connector-base-spec/spec.md`; its
+> `ADDED` requirement was deliberately *not* merged into the live spec.
+>
+> **Why withdrawn:** Every requirement below rests on a premise that is now
+> **false**. When this change was authored (against PR #1397),
+> `ConnectorDetailPage.tsx` rendered via the `<DetailPage>` / `<Page
+> archetype="detail">` slot archetype, and this change merely closed the
+> spec-to-implementation gap for that archetype. The page was subsequently
+> **redesigned off the archetype** onto the Dispatch console layout:
+>
+> - PR #1941 (commit `26d254e70`) and PR #1956 (commit `2054c64b7`) moved
+>   `ConnectorDetailPage` to `<DispatchLayout>` / `<DispatchSurface>` rendering
+>   `ConnectorDetailView`, with inline `LoadingSkeleton` / `ErrorState` /
+>   `NotFoundState` handled at the page layer.
+> - The current `frontend/src/pages/ConnectorDetailPage.tsx` is the **opposite**
+>   of this change's slot/shell/loading/error requirements (no `<DetailPage>`,
+>   no archetype slots, inline loading/error states by design).
+> - The page's authoritative spec home is now
+>   `dashboard-ingestion-dispatch-console` (synced this cycle from
+>   `complete-ingestion-redesign-parity`, archived
+>   `2026-06-13-complete-ingestion-redesign-parity`), **not**
+>   `connector-base-spec`.
+>
+> Syncing this change's delta would write requirements that contradict shipped,
+> intentional behavior. Re-speccing the page back onto the archetype would be a
+> backward UX regression nobody requested. Therefore the change is abandoned and
+> archived **without** applying its delta. The live `connector-base-spec`
+> remains accurate and untouched.
+>
+> Everything below is preserved verbatim for historical context only and no
+> longer reflects required behavior.
+
+---
+
 ## Why
 
 `openspec/changes/detail-page-archetype/tasks.md` §5.1 explicitly deferred the

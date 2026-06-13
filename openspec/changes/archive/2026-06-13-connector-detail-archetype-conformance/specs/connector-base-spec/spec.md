@@ -1,3 +1,10 @@
+> ⛔ **WITHDRAWN — NOT SYNCED (2026-06-13, bead `bu-kondu`).** The requirement
+> below was never merged into `openspec/specs/connector-base-spec/spec.md` and
+> never will be. `ConnectorDetailPage` was redesigned off the `<DetailPage>`
+> archetype onto the Dispatch console layout (PRs #1941, #1956); its spec home is
+> now `dashboard-ingestion-dispatch-console`. This `ADDED` block contradicts
+> shipped behavior and is preserved for history only. See `proposal.md`.
+
 ## ADDED Requirements
 
 ### Requirement: ConnectorDetailPage conforms to the detail-page archetype
